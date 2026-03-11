@@ -304,8 +304,10 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
             // We always send 2 keep alive requests per timeout. Http2 should manage most of our
             // timeout issues, this is a secondary check to ensure we can still send data.
             sleep(Duration::from_secs_f32(timeout / 2.)).await;
+            let load = get_cpu_load_pct();
+            debug!("KeepAlive cpu_load_pct={load}");
             if let Err(e) = grpc_client.keep_alive(KeepAliveRequest {
-                cpu_load_pct: get_cpu_load_pct(),
+                cpu_load_pct: load,
             }).await {
                 return Err(make_err!(
                     Code::Internal,
@@ -363,13 +365,15 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
         let new_or_touched_count = digest_infos.len();
         let evicted_count = evicted_digests.len();
 
+        let load = get_cpu_load_pct();
+        debug!("BlobsAvailable cpu_load_pct={load}");
         let notification = BlobsAvailableNotification {
             worker_cas_endpoint: state.cas_endpoint.clone(),
             digests: Vec::new(),
             is_full_snapshot: is_first,
             evicted_digests,
             digest_infos,
-            cpu_load_pct: get_cpu_load_pct(),
+            cpu_load_pct: load,
         };
 
         if let Err(err) = grpc_client.blobs_available(notification).await {
@@ -610,9 +614,11 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                     .unwrap_or_default();
 
                                 let running_actions_manager = self.running_actions_manager.clone();
+                                let exec_load = get_cpu_load_pct();
+                                debug!("ExecuteComplete cpu_load_pct={exec_load}");
                                 let complete = ExecuteComplete {
                                     operation_id: operation_id.clone(),
-                                    cpu_load_pct: get_cpu_load_pct(),
+                                    cpu_load_pct: exec_load,
                                 };
                                 move |res: Result<ActionResult, Error>| async move {
                                     let instance_name = maybe_instance_name
@@ -645,6 +651,8 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                             //    (worker API stream vs AC/historical stores).
                                             let blobs_fut = async {
                                                 if !output_digests.is_empty() {
+                                                    let load = get_cpu_load_pct();
+                                                    debug!("BlobsAvailable cpu_load_pct={load}");
                                                     if let Err(err) = grpc_client.blobs_available(
                                                         BlobsAvailableNotification {
                                                             worker_cas_endpoint: cas_endpoint_for_notify.clone(),
@@ -652,7 +660,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                                             is_full_snapshot: false,
                                                             evicted_digests: Vec::new(),
                                                             digest_infos: Vec::new(),
-                                                            cpu_load_pct: get_cpu_load_pct(),
+                                                            cpu_load_pct: load,
                                                         }
                                                     ).await {
                                                         warn!(?err, "Failed to send blobs_available notification");
@@ -882,43 +890,6 @@ pub async fn new_local_worker(
         Duration::from_secs(config.max_upload_timeout as u64)
     };
 
-    // Initialize directory cache if configured
-    let directory_cache = if let Some(cache_config) = &config.directory_cache {
-        use std::path::PathBuf;
-
-        use crate::directory_cache::{
-            DirectoryCache, DirectoryCacheConfig as WorkerDirCacheConfig,
-        };
-
-        let cache_root = if cache_config.cache_root.is_empty() {
-            PathBuf::from(&config.work_directory).parent().map_or_else(
-                || PathBuf::from("/tmp/nativelink_directory_cache"),
-                |p| p.join("directory_cache"),
-            )
-        } else {
-            PathBuf::from(&cache_config.cache_root)
-        };
-
-        let worker_cache_config = WorkerDirCacheConfig {
-            max_entries: cache_config.max_entries,
-            max_size_bytes: cache_config.max_size_bytes,
-            cache_root,
-        };
-
-        match DirectoryCache::new(worker_cache_config, Store::new(fast_slow_store.clone())).await {
-            Ok(cache) => {
-                tracing::info!("Directory cache initialized successfully");
-                Some(Arc::new(cache))
-            }
-            Err(e) => {
-                tracing::warn!("Failed to initialize directory cache: {:?}", e);
-                None
-            }
-        }
-    } else {
-        None
-    };
-
     // If peer blob sharing is configured (cas_server_port is set), create a
     // worker-local locality map and wrap the slow store with WorkerProxyStore.
     // This enables workers to fetch blobs from peers instead of the central CAS.
@@ -956,6 +927,49 @@ pub async fn new_local_worker(
         (new_fss, Some(locality_map))
     } else {
         (fast_slow_store.clone(), None)
+    };
+
+    // Initialize directory cache if configured.
+    // This is done after effective_cas_store is created so the cache can use
+    // the same FastSlowStore (with WorkerProxyStore) for batch downloads.
+    let directory_cache = if let Some(cache_config) = &config.directory_cache {
+        use std::path::PathBuf;
+
+        use crate::directory_cache::{
+            DirectoryCache, DirectoryCacheConfig as WorkerDirCacheConfig,
+        };
+
+        let cache_root = if cache_config.cache_root.is_empty() {
+            PathBuf::from(&config.work_directory).parent().map_or_else(
+                || PathBuf::from("/tmp/nativelink_directory_cache"),
+                |p| p.join("directory_cache"),
+            )
+        } else {
+            PathBuf::from(&cache_config.cache_root)
+        };
+
+        let worker_cache_config = WorkerDirCacheConfig {
+            max_entries: cache_config.max_entries,
+            max_size_bytes: cache_config.max_size_bytes,
+            cache_root,
+        };
+
+        match DirectoryCache::new(
+            worker_cache_config,
+            Store::new(effective_cas_store.clone()),
+            Some(effective_cas_store.clone()),
+        ).await {
+            Ok(cache) => {
+                tracing::info!("Directory cache initialized successfully");
+                Some(Arc::new(cache))
+            }
+            Err(e) => {
+                tracing::warn!("Failed to initialize directory cache: {:?}", e);
+                None
+            }
+        }
+    } else {
+        None
     };
 
     let effective_cas_store_for_cas_server = effective_cas_store.clone();

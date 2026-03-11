@@ -365,8 +365,12 @@ impl WorkerConnection {
             .worker_keep_alive_received(&self.worker_id, (self.now_fn)()?.as_secs())
             .await
             .err_tip(|| "Could not process keep_alive from worker in inner_keep_alive()")?;
-        if keep_alive_request.cpu_load_pct > 0 {
-            drop(self.scheduler.update_worker_load(&self.worker_id, keep_alive_request.cpu_load_pct).await);
+        let cpu_load_pct = keep_alive_request.cpu_load_pct;
+        if cpu_load_pct > 0 {
+            debug!(worker_id=?self.worker_id, cpu_load_pct, "KeepAlive received with CPU load");
+            if let Err(err) = self.scheduler.update_worker_load(&self.worker_id, cpu_load_pct).await {
+                warn!(worker_id=?self.worker_id, ?err, cpu_load_pct, "Failed to update worker load");
+            }
         }
         Ok(())
     }
@@ -474,8 +478,12 @@ impl WorkerConnection {
         &self,
         notification: nativelink_proto::com::github::trace_machina::nativelink::remote_execution::BlobsAvailableNotification,
     ) -> Result<(), Error> {
-        if notification.cpu_load_pct > 0 {
-            drop(self.scheduler.update_worker_load(&self.worker_id, notification.cpu_load_pct).await);
+        let cpu_load_pct = notification.cpu_load_pct;
+        if cpu_load_pct > 0 {
+            debug!(worker_id=?self.worker_id, cpu_load_pct, "BlobsAvailable received with CPU load");
+            if let Err(err) = self.scheduler.update_worker_load(&self.worker_id, cpu_load_pct).await {
+                warn!(worker_id=?self.worker_id, ?err, cpu_load_pct, "Failed to update worker load");
+            }
         }
         let Some(ref locality_map) = self.locality_map else {
             return Ok(());
@@ -555,8 +563,12 @@ impl WorkerConnection {
     }
 
     async fn execution_complete(&self, execute_complete: ExecuteComplete) -> Result<(), Error> {
-        if execute_complete.cpu_load_pct > 0 {
-            drop(self.scheduler.update_worker_load(&self.worker_id, execute_complete.cpu_load_pct).await);
+        let cpu_load_pct = execute_complete.cpu_load_pct;
+        if cpu_load_pct > 0 {
+            debug!(worker_id=?self.worker_id, cpu_load_pct, "ExecuteComplete received with CPU load");
+            if let Err(err) = self.scheduler.update_worker_load(&self.worker_id, cpu_load_pct).await {
+                warn!(worker_id=?self.worker_id, ?err, cpu_load_pct, "Failed to update worker load");
+            }
         }
         let operation_id = OperationId::from(execute_complete.operation_id);
         self.scheduler

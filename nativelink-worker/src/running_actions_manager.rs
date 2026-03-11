@@ -172,8 +172,17 @@ async fn resolve_directory_tree(
     root_digest: &DigestInfo,
 ) -> Result<HashMap<DigestInfo, ProtoDirectory>, Error> {
     let tree_start = std::time::Instant::now();
+    info!(
+        root = ?root_digest,
+        "resolve_directory_tree: starting tree resolution",
+    );
     // Try the fast path: GetTree RPC via the underlying GrpcStore.
     if let Some(grpc_store) = cas_store.slow_store().downcast_ref::<GrpcStore>(None) {
+        info!(
+            root = ?root_digest,
+            method = "GetTree RPC",
+            "resolve_directory_tree: using GetTree RPC fast path",
+        );
         let request = GetTreeRequest {
             instance_name: String::new(), // GrpcStore fills this in
             root_digest: Some((*root_digest).into()),
@@ -188,76 +197,159 @@ async fn resolve_directory_tree(
 
         match grpc_store.get_tree(Request::new(request)).await {
             Ok(response) => {
+                let rpc_elapsed = tree_start.elapsed();
                 let mut stream = response.into_inner();
-                let mut tree = HashMap::new();
-                let hasher_func = Context::current()
-                    .get::<DigestHasherFunc>()
-                    .copied()
-                    .unwrap_or_else(default_digest_hasher_func);
+                // Collect all directories from the stream into a flat list.
+                let mut all_dirs: Vec<ProtoDirectory> = Vec::new();
                 while let Some(resp) = stream.message().await.err_tip(|| "In GetTree stream")? {
-                    for dir in resp.directories {
-                        let encoded = dir.encode_to_vec();
-                        let dir_digest =
-                            compute_buf_digest(&encoded, &mut hasher_func.hasher());
-                        tree.insert(dir_digest, dir);
-                    }
+                    all_dirs.extend(resp.directories);
                 }
-                // Validate that the root and ALL referenced child digests
-                // are present in the map. Protobuf serialization is not
-                // guaranteed deterministic across implementations, so the
-                // recomputed digest may differ from the server's stored
-                // digest for non-nativelink servers.
-                let tree_valid = tree.contains_key(root_digest) && {
-                    tree.values().all(|dir| {
-                        dir.directories.iter().all(|node| {
+                let stream_elapsed = tree_start.elapsed();
+
+                info!(
+                    root = ?root_digest,
+                    raw_dir_count = all_dirs.len(),
+                    rpc_connect_ms = rpc_elapsed.as_millis() as u64,
+                    stream_complete_ms = stream_elapsed.as_millis() as u64,
+                    "resolve_directory_tree: GetTree stream received",
+                );
+
+                if !all_dirs.is_empty() {
+                    // Build the tree using BFS assignment from the root.
+                    // The GetTree response returns directories in BFS order
+                    // (root first). Rather than re-encoding each directory
+                    // and hoping the digest matches (which fails when the
+                    // original bytes were serialized by a different protobuf
+                    // implementation, e.g. Java), we assign digests by
+                    // walking the tree structure: the root gets `root_digest`,
+                    // and each child gets the digest its parent references.
+                    //
+                    // The server deduplicates: if two parents reference the
+                    // same child digest, the child appears only once in the
+                    // response. We mirror this by tracking `seen` digests
+                    // and only consuming a new position for unseen children.
+                    let mut tree = HashMap::with_capacity(all_dirs.len());
+                    let mut dir_by_pos: Vec<ProtoDirectory> = all_dirs;
+                    // BFS queue: (position_in_dir_by_pos, assigned_digest).
+                    let mut queue: VecDeque<(usize, DigestInfo)> = VecDeque::new();
+                    queue.push_back((0, *root_digest));
+                    let mut next_child_pos: usize = 1;
+                    // Track digests we've already assigned a position to,
+                    // mirroring the server's deduplication.
+                    let mut seen: HashSet<DigestInfo> = HashSet::new();
+                    seen.insert(*root_digest);
+
+                    while let Some((pos, digest)) = queue.pop_front() {
+                        if pos >= dir_by_pos.len() {
+                            break;
+                        }
+                        let dir = std::mem::take(&mut dir_by_pos[pos]);
+                        for child_node in &dir.directories {
+                            if let Some(child_digest) = child_node
+                                .digest
+                                .as_ref()
+                                .and_then(|d| DigestInfo::try_from(d).ok())
+                            {
+                                // Only assign a new position for previously
+                                // unseen digests (matching server dedup).
+                                if seen.insert(child_digest) {
+                                    if next_child_pos < dir_by_pos.len() {
+                                        queue.push_back((next_child_pos, child_digest));
+                                        next_child_pos += 1;
+                                    }
+                                }
+                            }
+                        }
+                        tree.insert(digest, dir);
+                    }
+
+                    // Validate structural completeness: every child reference
+                    // should point to a digest in the tree.
+                    let tree_valid = tree.contains_key(root_digest) && {
+                        tree.values().all(|dir| {
+                            dir.directories.iter().all(|node| {
+                                node.digest
+                                    .as_ref()
+                                    .and_then(|d| DigestInfo::try_from(d).ok())
+                                    .is_some_and(|d| tree.contains_key(&d))
+                            })
+                        })
+                    };
+
+                    if tree_valid {
+                        let elapsed = tree_start.elapsed();
+                        let total_bytes: u64 = tree.keys().map(|d| d.size_bytes()).sum();
+                        let total_files: usize = tree.values().map(|d| d.files.len()).sum();
+                        let total_symlinks: usize = tree.values().map(|d| d.symlinks.len()).sum();
+                        info!(
+                            root = ?root_digest,
+                            dir_count = tree.len(),
+                            total_files,
+                            total_symlinks,
+                            total_bytes,
+                            elapsed_ms = elapsed.as_millis() as u64,
+                            "resolve_directory_tree: completed via GetTree RPC"
+                        );
+                        return Ok(tree);
+                    }
+                    // Tree structure didn't match BFS ordering; fall through.
+                    // Count how many child references are missing from the tree
+                    // so the warning includes actionable diagnostic info.
+                    let missing_children: usize = tree.values().map(|dir| {
+                        dir.directories.iter().filter(|node| {
                             node.digest
                                 .as_ref()
                                 .and_then(|d| DigestInfo::try_from(d).ok())
-                                .is_some_and(|d| tree.contains_key(&d))
-                        })
-                    })
-                };
-                if tree_valid {
-                    let elapsed = tree_start.elapsed();
-                    let total_bytes: u64 = tree.keys().map(|d| d.size_bytes()).sum();
-                    info!(
+                                .map_or(true, |d| !tree.contains_key(&d))
+                        }).count()
+                    }).sum();
+                    warn!(
                         root = ?root_digest,
-                        dir_count = tree.len(),
-                        total_bytes,
-                        elapsed_ms = elapsed.as_millis() as u64,
-                        "Resolved directory tree via GetTree RPC"
+                        tree_has_root = tree.contains_key(root_digest),
+                        tree_size = tree.len(),
+                        expected_size = dir_by_pos.len(),
+                        missing_children,
+                        validation_elapsed_ms = tree_start.elapsed().as_millis() as u64,
+                        "resolve_directory_tree: GetTree BFS validation failed, falling back to recursive fetch"
                     );
-                    return Ok(tree);
                 }
-                // Server returned an incomplete or digest-mismatched tree; fall through.
-                warn!(
-                    root = ?root_digest,
-                    tree_has_root = tree.contains_key(root_digest),
-                    tree_size = tree.len(),
-                    "GetTree response failed validation, falling back to recursive fetch"
-                );
             }
             Err(e) => {
-                debug!(
+                warn!(
                     root = ?root_digest,
                     err = ?e,
-                    "GetTree RPC failed, falling back to recursive fetch"
+                    elapsed_ms = tree_start.elapsed().as_millis() as u64,
+                    "resolve_directory_tree: GetTree RPC failed, falling back to recursive fetch"
                 );
             }
         }
+    } else {
+        info!(
+            root = ?root_digest,
+            method = "recursive fetch",
+            "resolve_directory_tree: no GrpcStore available, using recursive fetch",
+        );
     }
 
     // Fallback: recursive fetch (original behavior).
+    let recursive_start = std::time::Instant::now();
     let mut tree = HashMap::new();
     resolve_directory_tree_recursive(cas_store, root_digest, &mut tree).await?;
-    let elapsed = tree_start.elapsed();
+    let recursive_elapsed = recursive_start.elapsed();
+    let total_elapsed = tree_start.elapsed();
     let total_bytes: u64 = tree.keys().map(|d| d.size_bytes()).sum();
+    let total_files: usize = tree.values().map(|d| d.files.len()).sum();
+    let total_symlinks: usize = tree.values().map(|d| d.symlinks.len()).sum();
     info!(
         root = ?root_digest,
         dir_count = tree.len(),
+        total_files,
+        total_symlinks,
         total_bytes,
-        elapsed_ms = elapsed.as_millis() as u64,
-        "Resolved directory tree via recursive fetch"
+        individual_fetches = tree.len(),
+        recursive_ms = recursive_elapsed.as_millis() as u64,
+        total_elapsed_ms = total_elapsed.as_millis() as u64,
+        "resolve_directory_tree: completed via recursive fetch"
     );
     Ok(tree)
 }
@@ -708,61 +800,45 @@ async fn populate_and_hardlink(
     Ok(())
 }
 
-/// Hardlink a file from the filesystem store to the destination, then apply
-/// permissions and mtime.
-async fn hardlink_and_set_metadata(
+/// Like `hardlink_and_set_metadata` but uses a pre-fetched file entry
+/// (from batch `get_file_entries_batch`) to avoid per-file EvictingMap lock
+/// contention. Falls back to the regular path on cache miss.
+async fn hardlink_and_set_metadata_prefetched(
     cas_store: &FastSlowStore,
     filesystem_store: Pin<&FilesystemStore>,
     file: FileToMaterialize,
-    already_in_cache: bool,
+    prefetched_entry: Option<Arc<nativelink_store::filesystem_store::FileEntryImpl>>,
 ) -> Result<(), Error> {
     let digest = file.digest;
-    let dest = file.dest;
+    let dest = file.dest.clone();
 
-    if already_in_cache && !is_zero_digest(digest) {
-        // Already in fast store — just hardlink directly (with retry for eviction).
-        const MAX_RETRIES: u32 = 3;
-        let mut last_err = None;
-        for attempt in 0..MAX_RETRIES {
-            if attempt > 0 {
-                // Re-populate if evicted between cache check and hardlink.
-                filesystem_store.remove_entry_for_digest(&digest).await;
-                cas_store.populate_fast_store(digest.into()).await?;
-            }
-            let result = async {
-                let file_entry = filesystem_store
-                    .get_file_entry_for_digest(&digest)
-                    .await
-                    .err_tip(|| "Getting file entry for hardlink (cached)")?;
-                let dest_clone = dest.clone();
-                file_entry
-                    .get_file_path_locked(move |src| async move {
-                        fs::hard_link(&src, &dest_clone).await
-                    })
-                    .await
-            }
+    if let Some(file_entry) = prefetched_entry {
+        // We have a pre-fetched entry — try hardlink directly.
+        let dest_clone = dest.clone();
+        let result = file_entry
+            .get_file_path_locked(move |src| async move {
+                fs::hard_link(&src, &dest_clone).await
+            })
             .await;
-            match result {
-                Ok(()) => {
-                    last_err = None;
-                    break;
-                }
-                Err(e) if e.code == Code::NotFound => {
-                    last_err = Some(e);
-                }
-                Err(e) => {
-                    return Err(make_err!(
-                        Code::Internal,
-                        "Could not make hardlink (cached), {e:?} : {dest}"
-                    ));
-                }
+
+        match result {
+            Ok(()) => {
+                // Success — apply permissions and mtime, then return.
             }
-        }
-        if let Some(_e) = last_err {
-            // Fall back to full populate+hardlink.
-            populate_and_hardlink(cas_store, filesystem_store, digest, &dest).await?;
+            Err(e) if e.code == Code::NotFound => {
+                // File was evicted between pre-fetch and hardlink.
+                // Fall back to full populate+hardlink.
+                populate_and_hardlink(cas_store, filesystem_store, digest, &dest).await?;
+            }
+            Err(e) => {
+                return Err(make_err!(
+                    Code::Internal,
+                    "Could not make hardlink (prefetched), {e:?} : {dest}"
+                ));
+            }
         }
     } else {
+        // No pre-fetched entry (cache miss or zero digest).
         populate_and_hardlink(cas_store, filesystem_store, digest, &dest).await?;
     }
 
@@ -824,15 +900,33 @@ pub fn download_to_directory<'a>(
         // Step 2: Walk the tree, creating all directories and collecting files.
         let (files, symlinks) = collect_files_from_tree(&tree, digest, current_directory)?;
 
+        info!(
+            root = ?digest,
+            total_dirs = tree.len(),
+            total_files = files.len(),
+            total_symlinks = symlinks.len(),
+            "download_to_directory: starting materialization",
+        );
+
         // Create all subdirectories using level-parallel BFS — siblings at
         // the same depth are created concurrently while parent-before-child
         // ordering is maintained (each level completes before the next starts).
+        let mkdir_start = std::time::Instant::now();
+        let mut dirs_created: usize = 0;
+        let mut mkdir_depth: u32 = 0;
         {
             let mut current_level = vec![(*digest, current_directory.to_string())];
             while !current_level.is_empty() {
                 let mut next_level = Vec::new();
                 for (dir_digest, dir_path) in &current_level {
                     if let Some(directory) = tree.get(dir_digest) {
+                        debug!(
+                            depth = mkdir_depth,
+                            path = %dir_path,
+                            files = directory.files.len(),
+                            subdirs = directory.directories.len(),
+                            "download_to_directory: processing directory",
+                        );
                         for subdir in &directory.directories {
                             let child_digest: DigestInfo = subdir
                                 .digest
@@ -846,6 +940,7 @@ pub fn download_to_directory<'a>(
                     }
                 }
                 if !next_level.is_empty() {
+                    dirs_created += next_level.len();
                     try_join_all(next_level.iter().map(|(_, path)| {
                         let path = path.clone();
                         async move {
@@ -856,9 +951,17 @@ pub fn download_to_directory<'a>(
                     }))
                     .await?;
                 }
+                mkdir_depth += 1;
                 current_level = next_level;
             }
         }
+        let mkdir_elapsed = mkdir_start.elapsed();
+        info!(
+            dirs_created,
+            mkdir_depth_levels = mkdir_depth,
+            mkdir_ms = mkdir_elapsed.as_millis() as u64,
+            "download_to_directory: directories created",
+        );
 
         // Create symlinks concurrently.
         #[cfg(target_family = "unix")]
@@ -877,6 +980,10 @@ pub fn download_to_directory<'a>(
         }
 
         if files.is_empty() {
+            info!(
+                root = ?digest,
+                "download_to_directory: no files to materialize (directory-only tree)",
+            );
             return Ok(());
         }
 
@@ -896,6 +1003,7 @@ pub fn download_to_directory<'a>(
                 .collect()
         };
 
+        let has_check_start = std::time::Instant::now();
         let store_keys: Vec<StoreKey<'_>> =
             unique_digests.iter().map(|d| (*d).into()).collect();
         let mut has_results = vec![None; store_keys.len()];
@@ -922,14 +1030,20 @@ pub fn download_to_directory<'a>(
             .filter_map(|(digest, result)| if result.is_none() { Some(*digest) } else { None })
             .collect();
 
+        let has_check_elapsed = has_check_start.elapsed();
         let has_check_ms = phase_start.elapsed().as_millis();
 
+        let cached_bytes: u64 = cached_set.iter().map(|d| d.size_bytes()).sum();
+        let missing_bytes: u64 = missing_digests.iter().map(|d| d.size_bytes()).sum();
         info!(
             total_files = files.len(),
             unique_digests = unique_digests.len(),
             cached = cached_set.len(),
+            cached_bytes,
             missing = missing_digests.len(),
-            "Batch existence check complete"
+            missing_bytes,
+            elapsed_ms = has_check_elapsed.as_millis() as u64,
+            "download_to_directory: batch existence check complete"
         );
 
         // Step 4: Fetch missing blobs.
@@ -938,29 +1052,60 @@ pub fn download_to_directory<'a>(
         // and ByteStream fetches (16 concurrent) run in parallel.
         let mut small_missing = Vec::new();
         let mut large_missing = Vec::new();
-        for &digest in &missing_digests {
-            if is_zero_digest(digest) {
+        let mut small_missing_bytes: u64 = 0;
+        let mut large_missing_bytes: u64 = 0;
+        for &d in &missing_digests {
+            if is_zero_digest(d) {
                 continue;
             }
-            if digest.size_bytes() <= BATCH_READ_MAX_BLOB_SIZE {
-                small_missing.push(digest);
+            if d.size_bytes() <= BATCH_READ_MAX_BLOB_SIZE {
+                small_missing_bytes += d.size_bytes();
+                small_missing.push(d);
             } else {
-                large_missing.push(digest);
+                large_missing_bytes += d.size_bytes();
+                large_missing.push(d);
             }
         }
 
-        debug!(
-            small = small_missing.len(),
-            large = large_missing.len(),
-            "Fetching missing blobs (BatchReadBlobs + ByteStream concurrent)"
+        info!(
+            small_count = small_missing.len(),
+            small_bytes = small_missing_bytes,
+            large_count = large_missing.len(),
+            large_bytes = large_missing_bytes,
+            "download_to_directory: fetching missing blobs (BatchReadBlobs + ByteStream concurrent)"
         );
+
+        let fetch_start = std::time::Instant::now();
 
         // Launch BatchReadBlobs for small blobs (bounded at BATCH_READ_CONCURRENCY).
         let batch_fut = async {
             if small_missing.is_empty() {
                 return Ok::<HashSet<DigestInfo>, Error>(HashSet::new());
             }
-            batch_read_small_blobs(cas_store, &small_missing).await
+            let batch_start = std::time::Instant::now();
+            let result = batch_read_small_blobs(cas_store, &small_missing).await;
+            let batch_elapsed = batch_start.elapsed();
+            match &result {
+                Ok(fetched) => {
+                    info!(
+                        requested = small_missing.len(),
+                        fetched = fetched.len(),
+                        total_bytes = small_missing_bytes,
+                        elapsed_ms = batch_elapsed.as_millis() as u64,
+                        throughput_mbps = format!("{:.1}", throughput_mbps(small_missing_bytes, batch_elapsed)),
+                        "download_to_directory: BatchReadBlobs fetch completed",
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        requested = small_missing.len(),
+                        elapsed_ms = batch_elapsed.as_millis() as u64,
+                        err = ?e,
+                        "download_to_directory: BatchReadBlobs fetch failed",
+                    );
+                }
+            }
+            result
         };
 
         // Launch ByteStream for large blobs (bounded at BYTESTREAM_CONCURRENCY).
@@ -968,14 +1113,43 @@ pub fn download_to_directory<'a>(
             if large_missing.is_empty() {
                 return Ok::<(), Error>(());
             }
-            futures::stream::iter(large_missing.iter().map(Ok::<_, Error>))
-                .try_for_each_concurrent(BYTESTREAM_CONCURRENCY, |&digest| async move {
+            let bs_start = std::time::Instant::now();
+            let large_count = large_missing.len();
+            let result = futures::stream::iter(large_missing.iter().map(Ok::<_, Error>))
+                .try_for_each_concurrent(BYTESTREAM_CONCURRENCY, |&d| async move {
+                    let blob_start = std::time::Instant::now();
                     cas_store
-                        .populate_fast_store_unchecked(digest.into())
+                        .populate_fast_store_unchecked(d.into())
                         .await
-                        .err_tip(|| format!("Populating fast store for {digest:?}"))
+                        .err_tip(|| format!("Populating fast store for {d:?}"))?;
+                    let blob_elapsed = blob_start.elapsed();
+                    info!(
+                        digest = ?d,
+                        size_bytes = d.size_bytes(),
+                        elapsed_ms = blob_elapsed.as_millis() as u64,
+                        throughput_mbps = format!("{:.1}", throughput_mbps(d.size_bytes(), blob_elapsed)),
+                        "download_to_directory: ByteStream large blob fetched",
+                    );
+                    if blob_elapsed.as_secs() >= 2 {
+                        warn!(
+                            digest = ?d,
+                            size_bytes = d.size_bytes(),
+                            elapsed_ms = blob_elapsed.as_millis() as u64,
+                            "download_to_directory: slow blob fetch (>2s)",
+                        );
+                    }
+                    Ok(())
                 })
-                .await
+                .await;
+            let bs_elapsed = bs_start.elapsed();
+            info!(
+                large_blob_count = large_count,
+                total_bytes = large_missing_bytes,
+                elapsed_ms = bs_elapsed.as_millis() as u64,
+                throughput_mbps = format!("{:.1}", throughput_mbps(large_missing_bytes, bs_elapsed)),
+                "download_to_directory: ByteStream large blobs completed",
+            );
+            result
         };
 
         // Run both concurrently.
@@ -992,30 +1166,98 @@ pub fn download_to_directory<'a>(
             .copied()
             .collect();
         if !batch_fallback.is_empty() {
-            debug!(count = batch_fallback.len(), "Fetching BatchReadBlobs fallback via ByteStream");
+            let fallback_bytes: u64 = batch_fallback.iter().map(|d| d.size_bytes()).sum();
+            info!(
+                count = batch_fallback.len(),
+                total_bytes = fallback_bytes,
+                "download_to_directory: fetching BatchReadBlobs fallback via ByteStream",
+            );
             futures::stream::iter(batch_fallback.iter().map(Ok::<_, Error>))
-                .try_for_each_concurrent(BYTESTREAM_CONCURRENCY, |&digest| async move {
+                .try_for_each_concurrent(BYTESTREAM_CONCURRENCY, |&d| async move {
+                    let blob_start = std::time::Instant::now();
                     cas_store
-                        .populate_fast_store_unchecked(digest.into())
+                        .populate_fast_store_unchecked(d.into())
                         .await
-                        .err_tip(|| format!("Populating fast store (fallback) for {digest:?}"))
+                        .err_tip(|| format!("Populating fast store (fallback) for {d:?}"))?;
+                    let blob_elapsed = blob_start.elapsed();
+                    if blob_elapsed.as_secs() >= 2 {
+                        warn!(
+                            digest = ?d,
+                            size_bytes = d.size_bytes(),
+                            elapsed_ms = blob_elapsed.as_millis() as u64,
+                            "download_to_directory: slow fallback blob fetch (>2s)",
+                        );
+                    }
+                    Ok(())
                 })
                 .await?;
         }
 
+        let fetch_elapsed = fetch_start.elapsed();
         let fetch_ms = phase_start.elapsed().as_millis();
 
-        // Step 5: Hardlink all files from the fast store to the work directory.
+        info!(
+            total_missing = missing_digests.len(),
+            total_missing_bytes = missing_bytes,
+            fetch_elapsed_ms = fetch_elapsed.as_millis() as u64,
+            throughput_mbps = format!("{:.1}", throughput_mbps(missing_bytes, fetch_elapsed)),
+            "download_to_directory: all blob fetching completed",
+        );
+
+        // Step 5: Pre-fetch file entries from the EvictingMap in batches,
+        // then hardlink all files to the work directory.
         // By this point, all non-zero digests have been populated into the fast
-        // store (via cache hit, BatchReadBlobs, or ByteStream). Pass
-        // already_in_cache=true so hardlink_and_set_metadata skips the redundant
-        // populate_fast_store call on the first attempt.
+        // store (via cache hit, BatchReadBlobs, or ByteStream). Pre-fetching
+        // file entries in batches reduces EvictingMap mutex contention compared
+        // to 64 concurrent tasks each doing individual get() calls.
         const HARDLINK_CONCURRENCY: usize = 64;
-        futures::stream::iter(files.into_iter().map(Ok::<_, Error>))
-            .try_for_each_concurrent(HARDLINK_CONCURRENCY, |file| async move {
-                let in_cache = !is_zero_digest(file.digest);
-                let digest = file.digest;
-                hardlink_and_set_metadata(cas_store, filesystem_store, file, in_cache)
+
+        // Pre-resolve file entries in batches to minimize EvictingMap lock contention.
+        // Each batch acquires the lock once for up to PREFETCH_BATCH entries.
+        const PREFETCH_BATCH: usize = 500;
+        let file_digests: Vec<DigestInfo> = files.iter().map(|f| f.digest).collect();
+        let mut prefetched_entries: Vec<Option<Arc<nativelink_store::filesystem_store::FileEntryImpl>>> =
+            Vec::with_capacity(files.len());
+        for chunk in file_digests.chunks(PREFETCH_BATCH) {
+            let batch = filesystem_store.get_file_entries_batch(chunk).await;
+            prefetched_entries.extend(batch);
+        }
+
+        let prefetch_hits = prefetched_entries.iter().filter(|e| e.is_some()).count();
+        let prefetch_misses = prefetched_entries.iter().filter(|e| e.is_none()).count();
+        debug!(
+            total = prefetched_entries.len(),
+            hits = prefetch_hits,
+            misses = prefetch_misses,
+            "download_to_directory: file entry prefetch complete",
+        );
+
+        // Pair each file with its pre-fetched entry for the hardlink phase.
+        let total_files_to_link = files.len();
+        let files_with_entries: Vec<(FileToMaterialize, Option<Arc<nativelink_store::filesystem_store::FileEntryImpl>>)> =
+            files.into_iter().zip(prefetched_entries).collect();
+
+        let hardlink_start = std::time::Instant::now();
+        let slow_hardlinks = std::sync::atomic::AtomicU32::new(0);
+        let max_hardlink_ms = std::sync::atomic::AtomicU64::new(0);
+
+        info!(
+            total_files = total_files_to_link,
+            concurrency = HARDLINK_CONCURRENCY,
+            "download_to_directory: starting hardlink phase",
+        );
+
+        futures::stream::iter(files_with_entries.into_iter().map(Ok::<_, Error>))
+            .try_for_each_concurrent(HARDLINK_CONCURRENCY, |(file, prefetched)| {
+                let slow_hardlinks = &slow_hardlinks;
+                let max_hardlink_ms = &max_hardlink_ms;
+                async move {
+                    let digest = file.digest;
+                    let dest = file.dest.clone();
+                    let link_start = std::time::Instant::now();
+                    hardlink_and_set_metadata_prefetched(
+                        cas_store, filesystem_store, file, prefetched,
+                    )
                     .await
                     .map_err(move |e| {
                         let mut e = e.append(format!("for digest {digest}"));
@@ -1023,9 +1265,41 @@ pub fn download_to_directory<'a>(
                             e.details.push(make_precondition_failure_any(digest));
                         }
                         e
-                    })
+                    })?;
+                    let link_elapsed = link_start.elapsed();
+                    let link_ms = link_elapsed.as_millis() as u64;
+
+                    // Track max hardlink time.
+                    max_hardlink_ms.fetch_max(link_ms, Ordering::Relaxed);
+
+                    if link_ms > 50 {
+                        slow_hardlinks.fetch_add(1, Ordering::Relaxed);
+                        warn!(
+                            dest = %dest,
+                            digest = ?digest,
+                            elapsed_ms = link_ms,
+                            "download_to_directory: slow hardlink (>50ms)",
+                        );
+                    }
+                    Ok(())
+                }
             })
             .await?;
+
+        let hardlink_elapsed = hardlink_start.elapsed();
+        let slow_count = slow_hardlinks.load(Ordering::Relaxed);
+        let max_link_ms = max_hardlink_ms.load(Ordering::Relaxed);
+
+        info!(
+            total_links = total_files_to_link,
+            elapsed_ms = hardlink_elapsed.as_millis() as u64,
+            slow_links_over_50ms = slow_count,
+            max_link_ms,
+            avg_link_us = if total_files_to_link > 0 {
+                hardlink_elapsed.as_micros() as u64 / total_files_to_link as u64
+            } else { 0 },
+            "download_to_directory: hardlink phase completed",
+        );
 
         let total_bytes: u64 = unique_digests.iter().map(|d| d.size_bytes()).sum();
         let total_ms = phase_start.elapsed().as_millis();
@@ -2935,6 +3209,14 @@ impl RunningActionsManagerImpl {
     /// fast store (local FilesystemStore) to the slow store (remote CAS).
     /// This is called after the execution result has been reported to the
     /// scheduler, so it does not block action completion latency.
+    ///
+    /// To prevent a race condition where the EvictingMap evicts small blobs
+    /// before the background task can read them, we pre-read all small blobs
+    /// (<=1 MiB) from the fast store *before* spawning the background task.
+    /// The pre-read data is passed into the spawned task via a HashMap, so
+    /// the background upload never needs to re-read small blobs from the
+    /// store. Large blobs are streamed directly from the store as before
+    /// (they are much less likely to be evicted quickly due to their size).
     pub fn spawn_upload_to_remote(self: &Arc<Self>, action_result: &ActionResult) {
         let slow_store = self.cas_store.slow_store();
         if slow_store
@@ -2980,10 +3262,58 @@ impl RunningActionsManagerImpl {
             let slow_store = cas_store.slow_store();
             let start = std::time::Instant::now();
 
-            // Extract file digests from output directory trees so they
-            // are also pushed to the remote CAS (not just the Tree blob).
+            // Small blobs use update_oneshot which routes through
+            // BatchUpdateBlobs for efficient coalescing. Large blobs
+            // stream through a channel to avoid loading into memory.
+            const BATCH_THRESHOLD: u64 = 1024 * 1024; // 1 MiB
+
+            // Phase 1: Pre-read all known small blobs into memory to
+            // prevent the eviction race condition. The EvictingMap can
+            // evict tiny blobs (e.g. 4-byte tree blobs, stdout, stderr)
+            // before the background task gets a chance to read them.
+            // By reading them eagerly at the start of the spawned task
+            // (which runs immediately), we capture the data before any
+            // subsequent action's uploads can trigger eviction.
+            let mut preread_data: HashMap<DigestInfo, Bytes> =
+                HashMap::with_capacity(digests.len());
+
+            // Pre-read initial small digests (stdout, stderr, tree blobs,
+            // small output files).
+            let preread_futures: FuturesUnordered<_> = digests
+                .iter()
+                .filter(|d| d.size_bytes() <= BATCH_THRESHOLD)
+                .copied()
+                .map(|digest| async move {
+                    let result = fast_store.get_part_unchunked(digest, 0, None).await;
+                    (digest, result)
+                })
+                .collect();
+            let preread_results: Vec<_> = preread_futures.collect().await;
+            for (digest, result) in preread_results {
+                match result {
+                    Ok(data) => {
+                        preread_data.insert(digest, data);
+                    }
+                    Err(e) => {
+                        warn!(
+                            ?digest,
+                            ?e,
+                            "upload_to_remote: failed to pre-read small blob from fast store",
+                        );
+                    }
+                }
+            }
+
+            // Extract file digests from output directory trees. Use
+            // pre-read data if available (avoids re-reading from store).
             for tree_digest in &tree_digests {
-                match get_and_decode_digest::<ProtoTree>(fast_store, (*tree_digest).into()).await {
+                let tree_result = if let Some(data) = preread_data.get(tree_digest) {
+                    ProtoTree::decode(data.clone())
+                        .map_err(|e| make_err!(Code::Internal, "Failed to decode Tree proto: {e}"))
+                } else {
+                    get_and_decode_digest::<ProtoTree>(fast_store, (*tree_digest).into()).await
+                };
+                match tree_result {
                     Ok(tree) => {
                         let file_digests: Vec<DigestInfo> = tree
                             .children
@@ -2998,6 +3328,35 @@ impl RunningActionsManagerImpl {
                             file_count = file_digests.len(),
                             "upload_to_remote: extracted file digests from output directory tree",
                         );
+                        // Pre-read any newly-discovered small file digests.
+                        let new_preread_futures: FuturesUnordered<_> = file_digests
+                            .iter()
+                            .filter(|d| {
+                                d.size_bytes() <= BATCH_THRESHOLD
+                                    && !preread_data.contains_key(d)
+                            })
+                            .copied()
+                            .map(|digest| async move {
+                                let result =
+                                    fast_store.get_part_unchunked(digest, 0, None).await;
+                                (digest, result)
+                            })
+                            .collect();
+                        let new_results: Vec<_> = new_preread_futures.collect().await;
+                        for (digest, result) in new_results {
+                            match result {
+                                Ok(data) => {
+                                    preread_data.insert(digest, data);
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        ?digest,
+                                        ?e,
+                                        "upload_to_remote: failed to pre-read tree file blob",
+                                    );
+                                }
+                            }
+                        }
                         digests.extend(file_digests);
                     }
                     Err(e) => {
@@ -3011,23 +3370,32 @@ impl RunningActionsManagerImpl {
             }
 
             let total = digests.len();
+            let preread_count = preread_data.len();
             info!(
                 total_digests = total,
+                preread_count,
                 tree_count = tree_digests.len(),
                 "upload_to_remote: starting background CAS upload",
             );
 
-            // Small blobs use update_oneshot which routes through
-            // BatchUpdateBlobs for efficient coalescing. Large blobs
-            // stream through a channel to avoid loading into memory.
-            const BATCH_THRESHOLD: u64 = 1024 * 1024; // 1 MiB
-
+            // Phase 2: Upload all digests to the slow store. Small blobs
+            // use pre-read data; large blobs stream from the fast store.
             let mut success_count = 0u64;
             let mut fail_count = 0u64;
             let mut uploads = FuturesUnordered::new();
             for digest in digests {
+                // Use pre-read data for small blobs that were captured
+                // eagerly. This avoids the eviction race where EvictingMap
+                // removes the blob before we can read it.
+                let cached_data = preread_data.remove(&digest);
                 uploads.push(async move {
-                    let result = if digest.size_bytes() <= BATCH_THRESHOLD {
+                    let result = if let Some(data) = cached_data {
+                        // Data was pre-read -- upload directly without
+                        // touching the fast store.
+                        slow_store.update_oneshot(digest, data).await
+                    } else if digest.size_bytes() <= BATCH_THRESHOLD {
+                        // Small blob that wasn't pre-read (e.g. pre-read
+                        // failed). Try reading from the store as fallback.
                         match fast_store.get_part_unchunked(digest, 0, None).await {
                             Ok(data) => slow_store.update_oneshot(digest, data).await,
                             Err(e) => Err(e),

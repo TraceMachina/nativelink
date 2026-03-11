@@ -25,12 +25,14 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
     Directory as ProtoDirectory, DirectoryNode, FileNode, SymlinkNode,
 };
 use nativelink_store::ac_utils::get_and_decode_digest;
+use nativelink_store::fast_slow_store::FastSlowStore;
+use nativelink_store::filesystem_store::FilesystemStore;
 use nativelink_util::common::DigestInfo;
-use nativelink_util::fs_util::{hardlink_directory_tree, set_readonly_recursive};
+use nativelink_util::fs_util::hardlink_directory_tree;
 use nativelink_util::store_trait::{Store, StoreKey, StoreLike};
 use tokio::fs;
 use tokio::sync::{Mutex, RwLock};
-use tracing::{debug, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 /// Configuration for the directory cache
 #[derive(Debug, Clone)]
@@ -114,13 +116,29 @@ pub struct DirectoryCache {
     ///    last finisher. The worst case of a missed cleanup is a stale empty Mutex
     ///    in the HashMap, which is harmless.
     construction_locks: Arc<Mutex<HashMap<DigestInfo, Arc<Mutex<()>>>>>,
-    /// CAS store for fetching directories
+    /// CAS store for fetching directories (used as fallback in construct_directory_impl)
     cas_store: Store,
+    /// Concrete FastSlowStore for the fast `download_to_directory` path.
+    /// When available, cache-miss construction uses batch RPCs instead of
+    /// serial per-file fetches.
+    fast_slow_store: Option<Arc<FastSlowStore>>,
+    /// Concrete FilesystemStore (the fast store inside FastSlowStore).
+    /// Required for hardlinking files from the CAS to the cache directory.
+    filesystem_store: Option<Arc<FilesystemStore>>,
 }
 
 impl DirectoryCache {
-    /// Creates a new `DirectoryCache`
-    pub async fn new(config: DirectoryCacheConfig, cas_store: Store) -> Result<Self, Error> {
+    /// Creates a new `DirectoryCache`.
+    ///
+    /// If `fast_slow_store` is provided, cache-miss construction will use the
+    /// fast batch `download_to_directory` path (GetTree + BatchReadBlobs +
+    /// parallel hardlinks). Otherwise falls back to the serial
+    /// `construct_directory_impl` method.
+    pub async fn new(
+        config: DirectoryCacheConfig,
+        cas_store: Store,
+        fast_slow_store: Option<Arc<FastSlowStore>>,
+    ) -> Result<Self, Error> {
         // Ensure cache root exists
         fs::create_dir_all(&config.cache_root).await.err_tip(|| {
             format!(
@@ -129,11 +147,26 @@ impl DirectoryCache {
             )
         })?;
 
+        // Try to extract the FilesystemStore from the FastSlowStore if provided.
+        let filesystem_store = fast_slow_store.as_ref().and_then(|fss| {
+            fss.fast_store()
+                .downcast_ref::<FilesystemStore>(None)
+                .and_then(|fs| fs.get_arc())
+        });
+
+        if fast_slow_store.is_some() && filesystem_store.is_some() {
+            info!("DirectoryCache: using fast download_to_directory path for cache misses");
+        } else if fast_slow_store.is_some() {
+            warn!("DirectoryCache: FastSlowStore provided but could not extract FilesystemStore; falling back to serial construction");
+        }
+
         Ok(Self {
             config,
             cache: Arc::new(RwLock::new(HashMap::new())),
             construction_locks: Arc::new(Mutex::new(HashMap::new())),
             cas_store,
+            fast_slow_store,
+            filesystem_store,
         })
     }
 
@@ -186,12 +219,65 @@ impl DirectoryCache {
         drop(fs::remove_dir_all(&temp_path).await);
 
         let construction_result: Result<u64, Error> = async {
-            self.construct_directory(digest, &temp_path).await
-                .err_tip(|| "Failed to construct directory for cache")?;
-            set_readonly_recursive(&temp_path).await
-                .err_tip(|| "Failed to set cache directory to readonly")?;
-            let size = nativelink_util::fs_util::calculate_directory_size(&temp_path).await
-                .err_tip(|| "Failed to calculate directory size")?;
+            // Try the fast batch path first if concrete stores are available.
+            let fast_path_result = if let (Some(fss), Some(_fs_store)) =
+                (&self.fast_slow_store, &self.filesystem_store)
+            {
+                let fs_pin = Pin::new(
+                    fss.fast_store()
+                        .downcast_ref::<FilesystemStore>(None)
+                        .err_tip(|| "Could not downcast fast store to FilesystemStore")?,
+                );
+                let temp_str = temp_path.to_string_lossy().to_string();
+                fs::create_dir_all(&temp_path).await.err_tip(|| {
+                    format!("Failed to create temp dir: {}", temp_path.display())
+                })?;
+                let construction_start = std::time::Instant::now();
+                let result = crate::running_actions_manager::download_to_directory(
+                    fss, fs_pin, &digest, &temp_str,
+                )
+                .await;
+                let elapsed = construction_start.elapsed();
+                match &result {
+                    Ok(()) => {
+                        info!(
+                            ?digest,
+                            elapsed_ms = elapsed.as_millis() as u64,
+                            "DirectoryCache: fast download_to_directory completed",
+                        );
+                        Some(Ok(()))
+                    }
+                    Err(e) => {
+                        warn!(
+                            ?digest,
+                            ?e,
+                            elapsed_ms = elapsed.as_millis() as u64,
+                            "DirectoryCache: fast download_to_directory failed, trying serial fallback",
+                        );
+                        // Clean up the partial temp directory before fallback
+                        drop(fs::remove_dir_all(&temp_path).await);
+                        Some(Err(e.clone()))
+                    }
+                }
+            } else {
+                None
+            };
+
+            // Use the fast path result, or fall back to serial construction.
+            match fast_path_result {
+                Some(Ok(())) => {
+                    // Fast path succeeded -- directory is populated in temp_path
+                }
+                Some(Err(_)) | None => {
+                    // Fall back to serial construct_directory_impl
+                    self.construct_directory(digest, &temp_path).await
+                        .err_tip(|| "Failed to construct directory for cache")?;
+                }
+            }
+
+            // Combined walk: set read-only permissions and calculate size in one pass.
+            let size = Self::set_readonly_and_calculate_size(&temp_path).await
+                .err_tip(|| "Failed to set readonly and calculate size for cache directory")?;
             fs::rename(&temp_path, &cache_path).await.err_tip(|| {
                 format!(
                     "Failed to rename temp dir {} to cache path {}",
@@ -418,6 +504,84 @@ impl DirectoryCache {
         }
 
         Ok(())
+    }
+
+    /// Walks a directory tree, setting all entries to read-only and computing
+    /// the total file size in a single traversal (avoiding two separate walks).
+    fn set_readonly_and_calculate_size<'a>(
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<u64, Error>> + Send + 'a>> {
+        Box::pin(async move {
+            let metadata = fs::symlink_metadata(path)
+                .await
+                .err_tip(|| format!("Failed to get metadata for: {}", path.display()))?;
+
+            // Skip symlinks -- do not follow them or change permissions.
+            if metadata.is_symlink() {
+                return Ok(0);
+            }
+
+            if metadata.is_dir() {
+                let mut entries = fs::read_dir(path)
+                    .await
+                    .err_tip(|| format!("Failed to read directory: {}", path.display()))?;
+
+                let mut total_size = 0u64;
+                while let Some(entry) = entries
+                    .next_entry()
+                    .await
+                    .err_tip(|| format!("Failed to get next entry in: {}", path.display()))?
+                {
+                    total_size += Self::set_readonly_and_calculate_size(&entry.path()).await?;
+                }
+
+                // Set directory to r-xr-xr-x (0o555)
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let mut perms = metadata.permissions();
+                    perms.set_mode(0o555);
+                    fs::set_permissions(path, perms)
+                        .await
+                        .err_tip(|| format!("Failed to set permissions for: {}", path.display()))?;
+                }
+                #[cfg(windows)]
+                {
+                    let mut perms = metadata.permissions();
+                    perms.set_readonly(true);
+                    fs::set_permissions(path, perms)
+                        .await
+                        .err_tip(|| format!("Failed to set permissions for: {}", path.display()))?;
+                }
+
+                Ok(total_size)
+            } else if metadata.is_file() {
+                let size = metadata.len();
+
+                // Set file to r--r--r-- (0o444)
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let mut perms = metadata.permissions();
+                    perms.set_mode(0o444);
+                    fs::set_permissions(path, perms)
+                        .await
+                        .err_tip(|| format!("Failed to set permissions for: {}", path.display()))?;
+                }
+                #[cfg(windows)]
+                {
+                    let mut perms = metadata.permissions();
+                    perms.set_readonly(true);
+                    fs::set_permissions(path, perms)
+                        .await
+                        .err_tip(|| format!("Failed to set permissions for: {}", path.display()))?;
+                }
+
+                Ok(size)
+            } else {
+                Ok(0)
+            }
+        })
     }
 
     /// Constructs a directory from the CAS at the given path.
@@ -818,7 +982,7 @@ mod tests {
             cache_root,
         };
 
-        let cache = DirectoryCache::new(config, store).await?;
+        let cache = DirectoryCache::new(config, store, None).await?;
 
         // First access - cache miss
         let dest1 = temp_dir.path().join("dest1");
@@ -851,7 +1015,7 @@ mod tests {
             cache_root,
         };
 
-        let cache = DirectoryCache::new(config, store).await?;
+        let cache = DirectoryCache::new(config, store, None).await?;
 
         // Pre-create destination directory (simulates work_directory already existing)
         let dest = temp_dir.path().join("existing_dest");
@@ -892,7 +1056,7 @@ mod tests {
             cache_root: cache_root.clone(),
         };
 
-        let cache = DirectoryCache::new(config, store).await?;
+        let cache = DirectoryCache::new(config, store, None).await?;
 
         let dest = temp_dir.path().join("dest");
         let result = cache.get_or_create(bogus_digest, &dest).await;
@@ -931,7 +1095,7 @@ mod tests {
             cache_root,
         };
 
-        let cache = DirectoryCache::new(config, store).await?;
+        let cache = DirectoryCache::new(config, store, None).await?;
 
         // Fill the cache
         let dest1 = temp_dir.path().join("dest1");
@@ -976,7 +1140,7 @@ mod tests {
             cache_root,
         };
 
-        let cache = Arc::new(DirectoryCache::new(config, store).await?);
+        let cache = Arc::new(DirectoryCache::new(config, store, None).await?);
 
         // Spawn multiple concurrent requests for the same digest
         let mut handles = Vec::new();
@@ -1031,7 +1195,7 @@ mod tests {
             cache_root,
         };
 
-        let cache = DirectoryCache::new(config, store).await?;
+        let cache = DirectoryCache::new(config, store, None).await?;
 
         let dest = temp_dir.path().join("dest");
         cache.get_or_create(dir_digest, &dest).await?;
@@ -1057,7 +1221,7 @@ mod tests {
             cache_root: cache_root.clone(),
         };
 
-        let cache = DirectoryCache::new(config, store).await?;
+        let cache = DirectoryCache::new(config, store, None).await?;
 
         // Insert entry A
         let dest_a = temp_dir.path().join("dest_a");
@@ -1179,7 +1343,7 @@ mod tests {
             max_size_bytes: 1024 * 1024,
             cache_root,
         };
-        let cache = DirectoryCache::new(config, store).await?;
+        let cache = DirectoryCache::new(config, store, None).await?;
 
         let dest = temp_dir.path().join("dest");
         let result = cache.get_or_create(dir_digest, &dest).await;
@@ -1226,7 +1390,7 @@ mod tests {
             max_size_bytes: 1024 * 1024,
             cache_root,
         };
-        let cache = DirectoryCache::new(config, store).await?;
+        let cache = DirectoryCache::new(config, store, None).await?;
 
         let dest = temp_dir.path().join("dest");
         let result = cache.get_or_create(dir_digest, &dest).await;
@@ -1247,7 +1411,7 @@ mod tests {
             cache_root,
         };
 
-        let cache = DirectoryCache::new(config, store).await?;
+        let cache = DirectoryCache::new(config, store, None).await?;
 
         // Cache miss
         let dest1 = temp_dir.path().join("dest1");
@@ -1276,7 +1440,7 @@ mod tests {
             cache_root: cache_root.clone(),
         };
 
-        let cache = DirectoryCache::new(config, store).await?;
+        let cache = DirectoryCache::new(config, store, None).await?;
 
         // Insert entry A (14 bytes for "File A content")
         let dest_a = temp_dir.path().join("dest_a");

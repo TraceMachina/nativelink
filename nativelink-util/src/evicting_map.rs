@@ -513,6 +513,65 @@ where
         result
     }
 
+    /// Retrieves multiple entries in a single lock acquisition, reducing
+    /// contention compared to calling `get()` in a loop.
+    pub async fn get_many<'b, Iter>(&self, keys: Iter) -> Vec<Option<T>>
+    where
+        Iter: IntoIterator<Item = &'b Q>,
+        Q: 'b,
+    {
+        let mut state = self.state.lock();
+
+        // Perform eviction if needed, collecting items for background cleanup.
+        let eviction_cleanup = {
+            if let Some((_, peek_entry)) = state.lru.peek_lru() {
+                if self.should_evict(
+                    state.lru.len(),
+                    peek_entry,
+                    state.sum_store_size,
+                    self.max_bytes,
+                ) {
+                    let (items_to_unref, removal_futures) = self.evict_items(&mut *state);
+                    if !removal_futures.is_empty() || !items_to_unref.is_empty() {
+                        Some((items_to_unref, removal_futures))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+
+        let now = i32::try_from(self.anchor_time.elapsed().as_secs()).unwrap_or(i32::MAX);
+        let results: Vec<Option<T>> = keys
+            .into_iter()
+            .map(|key: &'b Q| {
+                state.lru.get_mut(key.borrow()).map(|entry| {
+                    entry.seconds_since_anchor = now;
+                    entry.data.clone()
+                })
+            })
+            .collect();
+
+        drop(state);
+
+        // Fire-and-forget eviction cleanup in background.
+        if let Some((items_to_unref, removal_futures)) = eviction_cleanup {
+            drop(background_spawn!("evicting_map_get_many_cleanup", async move {
+                let mut futures: FuturesUnordered<_> = removal_futures.into_iter().collect();
+                while futures.next().await.is_some() {}
+                let mut callbacks: FuturesUnordered<_> =
+                    items_to_unref.iter().map(LenEntry::unref).collect();
+                while callbacks.next().await.is_some() {}
+            }));
+        }
+
+        results
+    }
+
     /// Returns the replaced item if any.
     pub async fn insert(&self, key: K, data: T) -> Option<T>
     where

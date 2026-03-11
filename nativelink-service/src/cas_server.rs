@@ -14,7 +14,7 @@
 
 use core::convert::Into;
 use core::pin::Pin;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use bytes::Bytes;
 use futures::stream::{FuturesUnordered, Stream};
@@ -42,7 +42,7 @@ use nativelink_util::store_trait::{IS_WORKER_REQUEST, Store, StoreLike};
 use opentelemetry::context::FutureExt;
 use prost::Message;
 use tonic::{Request, Response, Status};
-use tracing::{Instrument, Level, debug, error, error_span, info, instrument};
+use tracing::{Instrument, Level, debug, error, error_span, info, instrument, warn};
 
 #[derive(Debug)]
 pub struct CasServer {
@@ -303,6 +303,15 @@ impl CasServer {
             .err_tip(|| "In GetTreeRequest::root_digest")?;
 
         let mut deque: VecDeque<DigestInfo> = VecDeque::new();
+        // Track all digests we have ever enqueued to avoid fetching/processing
+        // the same directory twice. In a Merkle tree, identical subdirectory
+        // structures share the same digest, so multiple parents at the same BFS
+        // level can reference the same child digest. Without deduplication:
+        //   1. We fetch the same blob N times concurrently (wasteful).
+        //   2. `level_results.remove()` succeeds for the first occurrence but
+        //      returns None for duplicates, causing a spurious
+        //      "Directory missing from level results" error.
+        let mut seen: HashSet<DigestInfo> = HashSet::new();
         let mut directories: Vec<Directory> = Vec::new();
         // `page_token` will return the `{hash_str}-{size_bytes}` of the current request's first directory digest.
         let page_token_digest = if request.page_token.is_empty() {
@@ -329,10 +338,17 @@ impl CasServer {
             usize::try_from(page_size).unwrap_or(usize::MAX)
         };
         let mut page_token_matched = page_size == 0;
+        seen.insert(root_digest);
         deque.push_back(root_digest);
         let mut page_filled = false;
 
+        // Per-level timing and dedup tracking for diagnostics.
+        let mut bfs_level: u32 = 0;
+        let mut total_duplicates_skipped: u64 = 0;
+        let mut level_timings: Vec<(u32, usize, u64, u64)> = Vec::new(); // (level, dirs_fetched, children_discovered, elapsed_ms)
+
         while !deque.is_empty() && !page_filled {
+            let level_start = std::time::Instant::now();
             let level: Vec<DigestInfo> = deque.drain(..).collect();
             // Fetch all directories in this BFS level concurrently.
             let mut futs = FuturesUnordered::new();
@@ -342,7 +358,12 @@ impl CasServer {
                 futs.push(async move {
                     let dir = get_and_decode_digest::<Directory>(&store, digest.into())
                         .await
-                        .err_tip(|| "Converting digest to Directory")?;
+                        .err_tip(|| {
+                            format!(
+                                "Converting digest to Directory (digest: {})",
+                                digest,
+                            )
+                        })?;
                     Ok::<_, Error>((digest, dir))
                 });
             }
@@ -354,10 +375,20 @@ impl CasServer {
                 level_results.insert(digest, directory);
             }
             // Process directories in the order they appeared in the deque (BFS discovery order).
+            let mut level_new_children: u64 = 0;
+            let mut level_duplicates: u64 = 0;
             for (i, digest) in level.iter().enumerate() {
                 let directory = level_results
-                    .remove(digest)
-                    .err_tip(|| "Directory missing from level results")?;
+                    .get(digest)
+                    .cloned()
+                    .err_tip(|| {
+                        format!(
+                            "Directory missing from level results (digest: {}, level_size: {}, results_size: {})",
+                            digest,
+                            level.len(),
+                            level_results.len(),
+                        )
+                    })?;
                 if *digest == page_token_digest {
                     page_token_matched = true;
                 }
@@ -372,7 +403,14 @@ impl CasServer {
                         })?
                         .try_into()
                         .err_tip(|| "In Directory::file::digest")?;
-                    deque.push_back(child_digest);
+                    // Only enqueue children we haven't seen before to avoid
+                    // duplicate fetches and processing.
+                    if seen.insert(child_digest) {
+                        deque.push_back(child_digest);
+                        level_new_children += 1;
+                    } else {
+                        level_duplicates += 1;
+                    }
                 }
                 if page_token_matched {
                     directories.push(directory);
@@ -390,6 +428,42 @@ impl CasServer {
                     }
                 }
             }
+
+            let level_elapsed_ms = level_start.elapsed().as_millis() as u64;
+            total_duplicates_skipped += level_duplicates;
+
+            if level_duplicates > 0 {
+                debug!(
+                    ?root_digest,
+                    bfs_level,
+                    duplicates_skipped = level_duplicates,
+                    "GetTree: deduplication skipped children at this level",
+                );
+            }
+
+            debug!(
+                ?root_digest,
+                bfs_level,
+                dirs_fetched = level.len(),
+                new_children = level_new_children,
+                duplicates_skipped = level_duplicates,
+                elapsed_ms = level_elapsed_ms,
+                "GetTree: BFS level completed",
+            );
+
+            if level_elapsed_ms > 100 {
+                warn!(
+                    ?root_digest,
+                    bfs_level,
+                    dirs_fetched = level.len(),
+                    new_children = level_new_children,
+                    elapsed_ms = level_elapsed_ms,
+                    "GetTree: slow BFS level (>100ms)",
+                );
+            }
+
+            level_timings.push((bfs_level, level.len(), level_new_children, level_elapsed_ms));
+            bfs_level += 1;
         }
         // `next_page_token` will return the `{hash_str}-{size_bytes}` of the next request's first directory digest.
         // It will be an empty string when it reached the end of the directory tree.
@@ -399,11 +473,24 @@ impl CasServer {
 
         let elapsed = tree_start.elapsed();
         let total_bytes: u64 = directories.iter().map(|d| d.encoded_len() as u64).sum();
+
+        // Build per-level timing breakdown string for the summary log.
+        let level_breakdown: String = level_timings
+            .iter()
+            .map(|(lvl, dirs, children, ms)| {
+                format!("L{lvl}:{dirs}dirs/{children}children/{ms}ms")
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+
         info!(
             ?root_digest,
             dir_count = directories.len(),
             total_bytes,
+            total_duplicates_skipped,
+            bfs_levels = bfs_level,
             elapsed_ms = elapsed.as_millis() as u64,
+            level_breakdown = %level_breakdown,
             "GetTree: resolved directory tree",
         );
 
