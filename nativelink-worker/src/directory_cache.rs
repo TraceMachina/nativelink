@@ -42,7 +42,7 @@ const MERKLE_METADATA_FILENAME: &str = ".merkle_tree_meta";
 /// if the version file is missing or stale, the entire cache is wiped.
 const CACHE_VERSION_FILENAME: &str = ".cache_version";
 /// Bump this when the cache format changes.
-const CACHE_FORMAT_VERSION: u32 = 2;
+const CACHE_FORMAT_VERSION: u32 = 3;
 
 /// Merkle tree metadata for a cached directory entry.
 ///
