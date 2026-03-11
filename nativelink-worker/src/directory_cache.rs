@@ -14,7 +14,7 @@
 
 use core::future::Future;
 use core::pin::Pin;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -26,13 +26,115 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
 };
 use nativelink_store::ac_utils::get_and_decode_digest;
 use nativelink_store::fast_slow_store::FastSlowStore;
-use nativelink_store::filesystem_store::FilesystemStore;
+use nativelink_store::filesystem_store::{FileEntry, FilesystemStore};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::fs_util::hardlink_directory_tree;
 use nativelink_util::store_trait::{Store, StoreKey, StoreLike};
 use tokio::fs;
 use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, info, trace, warn};
+
+/// Name of the merkle tree metadata file stored alongside each cached directory.
+const MERKLE_METADATA_FILENAME: &str = ".merkle_tree_meta";
+
+/// Merkle tree metadata for a cached directory entry.
+///
+/// Stores the mapping from each directory digest in the tree to its relative
+/// path within the cached directory on disk. This allows us to index subtrees
+/// so that future cache misses can reuse already-cached subtrees via symlinks.
+#[derive(Debug, Clone)]
+pub struct MerkleTreeMetadata {
+    /// Map from directory digest -> relative path within the cache entry.
+    /// For the root directory, the relative path is "" (empty string).
+    pub digest_to_relpath: HashMap<DigestInfo, String>,
+}
+
+impl MerkleTreeMetadata {
+    /// Serialize to a simple line-based text format:
+    /// `hash:size_bytes:relative_path\n`
+    fn serialize(&self) -> String {
+        let mut lines = Vec::with_capacity(self.digest_to_relpath.len());
+        for (digest, relpath) in &self.digest_to_relpath {
+            lines.push(format!("{}:{}:{}", digest.packed_hash(), digest.size_bytes(), relpath));
+        }
+        // Sort for deterministic output
+        lines.sort();
+        lines.join("\n")
+    }
+
+    /// Deserialize from the line-based text format.
+    fn deserialize(data: &str) -> Result<Self, Error> {
+        let mut digest_to_relpath = HashMap::new();
+        for line in data.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            // Format: hash:size_bytes:relative_path
+            // The relative path may contain colons, so split at most 3 parts.
+            let mut parts = line.splitn(3, ':');
+            let hash = parts.next().ok_or_else(|| {
+                make_err!(Code::Internal, "Missing hash in merkle metadata line: {line}")
+            })?;
+            let size_str = parts.next().ok_or_else(|| {
+                make_err!(Code::Internal, "Missing size in merkle metadata line: {line}")
+            })?;
+            let relpath = parts.next().unwrap_or("");
+
+            let size: i64 = size_str.parse().map_err(|e| {
+                make_err!(Code::Internal, "Invalid size in merkle metadata line: {line}: {e}")
+            })?;
+
+            let digest = DigestInfo::try_new(hash, size)
+                .err_tip(|| format!("Invalid digest in merkle metadata line: {line}"))?;
+
+            digest_to_relpath.insert(digest, relpath.to_string());
+        }
+        Ok(Self { digest_to_relpath })
+    }
+
+    /// Build merkle tree metadata by walking a resolved directory tree.
+    ///
+    /// `tree` is the map from digest -> Directory proto (as returned by
+    /// `resolve_directory_tree`). `root_digest` is the root of the tree.
+    ///
+    /// Returns a mapping from each directory digest to its relative path
+    /// within the cache entry (root = "").
+    fn from_directory_tree(
+        tree: &HashMap<DigestInfo, ProtoDirectory>,
+        root_digest: &DigestInfo,
+    ) -> Self {
+        let mut digest_to_relpath = HashMap::with_capacity(tree.len());
+        let mut queue = VecDeque::new();
+        queue.push_back((*root_digest, String::new()));
+
+        while let Some((digest, relpath)) = queue.pop_front() {
+            if digest_to_relpath.contains_key(&digest) {
+                continue; // Already visited (handles diamond dependencies)
+            }
+            digest_to_relpath.insert(digest, relpath.clone());
+
+            if let Some(dir) = tree.get(&digest) {
+                for subdir_node in &dir.directories {
+                    if let Some(child_digest) = subdir_node
+                        .digest
+                        .as_ref()
+                        .and_then(|d| DigestInfo::try_from(d).ok())
+                    {
+                        let child_relpath = if relpath.is_empty() {
+                            subdir_node.name.clone()
+                        } else {
+                            format!("{}/{}", relpath, subdir_node.name)
+                        };
+                        queue.push_back((child_digest, child_relpath));
+                    }
+                }
+            }
+        }
+
+        Self { digest_to_relpath }
+    }
+}
 
 /// Configuration for the directory cache
 #[derive(Debug, Clone)]
@@ -125,10 +227,19 @@ pub struct DirectoryCache {
     /// Concrete FilesystemStore (the fast store inside FastSlowStore).
     /// Required for hardlinking files from the CAS to the cache directory.
     filesystem_store: Option<Arc<FilesystemStore>>,
+    /// Subtree index: maps each directory digest to its absolute path on disk
+    /// within a cached entry. This allows partial reuse of cached subtrees
+    /// when a new root digest is requested that shares subtrees with an
+    /// already-cached root.
+    ///
+    /// Updated when cache entries are inserted or evicted.
+    subtree_index: RwLock<HashMap<DigestInfo, PathBuf>>,
     /// Cumulative hit count for stats logging
     hit_count: AtomicU64,
     /// Cumulative miss count for stats logging
     miss_count: AtomicU64,
+    /// Cumulative subtree hit count for stats logging
+    subtree_hit_count: AtomicU64,
 }
 
 impl DirectoryCache {
@@ -185,15 +296,114 @@ impl DirectoryCache {
             );
         }
 
+        let mut initial_cache = HashMap::new();
+        let mut initial_subtree_index = HashMap::new();
+
+        // Load existing cache entries from disk on startup.
+        let load_start = Instant::now();
+        let mut loaded_count = 0u64;
+        let mut loaded_subtrees = 0u64;
+        let mut loaded_errors = 0u64;
+        if let Ok(mut entries) = fs::read_dir(&config.cache_root).await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let entry_name = entry.file_name().to_string_lossy().to_string();
+                // Skip temp directories and the merkle metadata files
+                if entry_name.starts_with(".tmp-") || entry_name == MERKLE_METADATA_FILENAME {
+                    continue;
+                }
+                let entry_path = entry.path();
+                let Ok(metadata) = fs::symlink_metadata(&entry_path).await else {
+                    continue;
+                };
+                if !metadata.is_dir() {
+                    continue;
+                }
+
+                // Try to parse the entry name as a DigestInfo
+                let Some(digest) = Self::parse_digest_from_dirname(&entry_name) else {
+                    debug!(name = %entry_name, "Skipping non-digest cache directory entry");
+                    continue;
+                };
+
+                // Calculate the directory size
+                let size = match Self::set_readonly_and_calculate_size(&entry_path).await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        warn!(
+                            name = %entry_name,
+                            ?e,
+                            "Failed to calculate size for existing cache entry, skipping",
+                        );
+                        loaded_errors += 1;
+                        continue;
+                    }
+                };
+
+                // Load merkle tree metadata if available
+                let merkle_path = entry_path.join(MERKLE_METADATA_FILENAME);
+                if let Ok(data) = fs::read_to_string(&merkle_path).await {
+                    match MerkleTreeMetadata::deserialize(&data) {
+                        Ok(merkle) => {
+                            for (sub_digest, relpath) in &merkle.digest_to_relpath {
+                                let abs_path = if relpath.is_empty() {
+                                    entry_path.clone()
+                                } else {
+                                    entry_path.join(relpath)
+                                };
+                                initial_subtree_index.insert(*sub_digest, abs_path);
+                                loaded_subtrees += 1;
+                            }
+                        }
+                        Err(e) => {
+                            debug!(
+                                name = %entry_name,
+                                ?e,
+                                "Failed to parse merkle metadata, subtrees won't be indexed",
+                            );
+                        }
+                    }
+                }
+
+                let now_millis = SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+
+                initial_cache.insert(
+                    digest,
+                    CachedDirectoryMetadata {
+                        path: entry_path,
+                        size,
+                        last_access_millis: AtomicU64::new(now_millis),
+                        ref_count: AtomicUsize::new(0),
+                    },
+                );
+                loaded_count += 1;
+            }
+        }
+
+        let load_elapsed = load_start.elapsed();
+        if loaded_count > 0 || loaded_errors > 0 {
+            info!(
+                loaded_entries = loaded_count,
+                loaded_subtrees,
+                load_errors = loaded_errors,
+                elapsed_ms = load_elapsed.as_millis() as u64,
+                "DirectoryCache: loaded existing entries from disk on startup",
+            );
+        }
+
         Ok(Self {
             config,
-            cache: Arc::new(RwLock::new(HashMap::new())),
+            cache: Arc::new(RwLock::new(initial_cache)),
             construction_locks: Arc::new(Mutex::new(HashMap::new())),
             cas_store,
             fast_slow_store,
             filesystem_store,
+            subtree_index: RwLock::new(initial_subtree_index),
             hit_count: AtomicU64::new(0),
             miss_count: AtomicU64::new(0),
+            subtree_hit_count: AtomicU64::new(0),
         })
     }
 
@@ -280,74 +490,102 @@ impl DirectoryCache {
         drop(fs::remove_dir_all(&temp_path).await);
 
         let construction_result: Result<u64, Error> = async {
-            // Try the fast batch path first if concrete stores are available.
-            let fast_path_result = if let (Some(fss), Some(_fs_store)) =
-                (&self.fast_slow_store, &self.filesystem_store)
-            {
-                let fs_pin = Pin::new(
-                    fss.fast_store()
-                        .downcast_ref::<FilesystemStore>(None)
-                        .err_tip(|| "Could not downcast fast store to FilesystemStore")?,
-                );
-                let temp_str = temp_path.to_string_lossy().to_string();
-                fs::create_dir_all(&temp_path).await.err_tip(|| {
-                    format!("Failed to create temp dir: {}", temp_path.display())
-                })?;
-                info!(
-                    hash = %&digest.packed_hash().to_string()[..12],
-                    "DirectoryCache: fast download_to_directory starting",
-                );
-                let construction_start = Instant::now();
-                let result = crate::running_actions_manager::download_to_directory(
-                    fss, fs_pin, &digest, &temp_str,
-                )
-                .await;
-                let elapsed = construction_start.elapsed();
-                match &result {
-                    Ok(()) => {
-                        info!(
-                            hash = %&digest.packed_hash().to_string()[..12],
-                            elapsed_ms = elapsed.as_millis() as u64,
-                            "DirectoryCache: fast download_to_directory completed",
-                        );
-                        Some(Ok(()))
-                    }
+            fs::create_dir_all(&temp_path).await.err_tip(|| {
+                format!("Failed to create temp dir: {}", temp_path.display())
+            })?;
+
+            // Step 1: Resolve the merkle tree if we have a FastSlowStore.
+            // This gives us the full directory tree structure, which we use for:
+            //   (a) subtree matching against the subtree_index
+            //   (b) storing merkle metadata alongside the cache entry
+            let resolved_tree = if let Some(fss) = &self.fast_slow_store {
+                match crate::running_actions_manager::resolve_directory_tree(fss, &digest).await {
+                    Ok(tree) => Some(tree),
                     Err(e) => {
                         warn!(
                             hash = %&digest.packed_hash().to_string()[..12],
                             ?e,
-                            elapsed_ms = elapsed.as_millis() as u64,
-                            "DirectoryCache: fast download_to_directory failed, trying serial fallback",
+                            "DirectoryCache: failed to resolve directory tree, skipping subtree matching",
                         );
-                        // Clean up the partial temp directory before fallback
-                        drop(fs::remove_dir_all(&temp_path).await);
-                        Some(Err(e.clone()))
+                        None
                     }
                 }
             } else {
                 None
             };
 
-            // Use the fast path result, or fall back to serial construction.
-            match fast_path_result {
-                Some(Ok(())) => {
-                    // Fast path succeeded -- directory is populated in temp_path
-                }
-                Some(Err(_)) | None => {
-                    // Fall back to serial construct_directory_impl
-                    if fast_path_result.is_none() {
-                        info!(
-                            hash = %&digest.packed_hash().to_string()[..12],
-                            "DirectoryCache: using serial construct_directory_impl (no fast path available)",
-                        );
+            // Step 2: Check for cached subtrees and construct a partial build plan.
+            // A "subtree hit" means a directory node in the requested tree is
+            // already materialized on disk from a different cached root. We can
+            // symlink to it instead of downloading.
+            let subtree_hits: HashMap<DigestInfo, PathBuf> = if let Some(tree) = &resolved_tree {
+                let index = self.subtree_index.read().await;
+                let mut hits = HashMap::new();
+                for dir_digest in tree.keys() {
+                    // Don't count the root itself (that's a full cache hit, handled above)
+                    if *dir_digest == digest {
+                        continue;
                     }
-                    let serial_start = Instant::now();
-                    self.construct_directory(digest, &temp_path).await
-                        .err_tip(|| "Failed to construct directory for cache")?;
-                    info!(
+                    if let Some(cached_path) = index.get(dir_digest) {
+                        // Verify the cached path still exists on disk
+                        if cached_path.exists() {
+                            hits.insert(*dir_digest, cached_path.clone());
+                        }
+                    }
+                }
+                hits
+            } else {
+                HashMap::new()
+            };
+
+            if !subtree_hits.is_empty() {
+                let subtree_count = subtree_hits.len();
+                let total_dirs = resolved_tree.as_ref().map_or(0, |t| t.len());
+                self.subtree_hit_count.fetch_add(subtree_count as u64, Ordering::Relaxed);
+                info!(
+                    hash = %&digest.packed_hash().to_string()[..12],
+                    subtree_hits = subtree_count,
+                    total_dirs,
+                    "DirectoryCache: found cached subtrees, will symlink instead of downloading",
+                );
+            }
+
+            // Step 3: Build the directory tree.
+            // If we have subtree hits and a resolved tree, use subtree-aware
+            // construction. Otherwise, fall back to full construction.
+            if let Some(tree) = &resolved_tree {
+                if !subtree_hits.is_empty() {
+                    // Subtree-aware construction: walk the tree, symlink cached
+                    // subtrees, and only download uncached portions.
+                    self.construct_with_subtrees(
+                        &digest,
+                        tree,
+                        &subtree_hits,
+                        &temp_path,
+                    )
+                    .await
+                    .err_tip(|| "Failed subtree-aware construction")?;
+                } else {
+                    // No subtree hits -- use fast download_to_directory if available.
+                    self.construct_full(&digest, &temp_path).await
+                        .err_tip(|| "Failed full construction")?;
+                }
+            } else {
+                // No resolved tree -- use full construction.
+                self.construct_full(&digest, &temp_path).await
+                    .err_tip(|| "Failed full construction (no resolved tree)")?;
+            }
+
+            // Step 4: Store merkle tree metadata alongside the cache entry.
+            if let Some(tree) = &resolved_tree {
+                let merkle_meta = MerkleTreeMetadata::from_directory_tree(tree, &digest);
+                let merkle_path = temp_path.join(MERKLE_METADATA_FILENAME);
+                let serialized = merkle_meta.serialize();
+                if let Err(e) = fs::write(&merkle_path, serialized.as_bytes()).await {
+                    warn!(
                         hash = %&digest.packed_hash().to_string()[..12],
-                        elapsed_ms = serial_start.elapsed().as_millis() as u64,
-                        "DirectoryCache: serial construct_directory_impl completed",
+                        ?e,
+                        "DirectoryCache: failed to write merkle metadata, subtrees won't be indexed",
                     );
                 }
             }
@@ -370,6 +608,21 @@ impl DirectoryCache {
                     cache_path.display()
                 )
             })?;
+
+            // Step 5: Update the subtree index with all directories from this entry.
+            if let Some(tree) = &resolved_tree {
+                let merkle_meta = MerkleTreeMetadata::from_directory_tree(tree, &digest);
+                let mut index = self.subtree_index.write().await;
+                for (sub_digest, relpath) in &merkle_meta.digest_to_relpath {
+                    let abs_path = if relpath.is_empty() {
+                        cache_path.clone()
+                    } else {
+                        cache_path.join(relpath)
+                    };
+                    index.insert(*sub_digest, abs_path);
+                }
+            }
+
             Ok(size)
         }
         .await;
@@ -425,9 +678,16 @@ impl DirectoryCache {
 
         // Delete evicted directories outside the lock.
         // Cached directories are read-only (0o555/0o444), so we must make them
-        // writable before removal.
-        for path in evicted_paths {
-            Self::remove_readonly_dir(&path).await;
+        // writable before removal. Also clean up the subtree index.
+        if !evicted_paths.is_empty() {
+            let mut index = self.subtree_index.write().await;
+            for path in &evicted_paths {
+                self.remove_subtree_index_for_path(path, &mut index).await;
+            }
+            drop(index);
+            for path in evicted_paths {
+                Self::remove_readonly_dir(&path).await;
+            }
         }
 
         // Hardlink to destination (safe — ref_count=1 prevents eviction)
@@ -738,6 +998,377 @@ impl DirectoryCache {
                 Ok(0)
             }
         })
+    }
+
+    /// Full construction path: tries fast download_to_directory, falls back to serial.
+    /// Used when there are no subtree hits.
+    async fn construct_full(&self, digest: &DigestInfo, temp_path: &Path) -> Result<(), Error> {
+        // Try the fast batch path first if concrete stores are available.
+        let fast_path_result = if let (Some(fss), Some(_fs_store)) =
+            (&self.fast_slow_store, &self.filesystem_store)
+        {
+            let fs_pin = Pin::new(
+                fss.fast_store()
+                    .downcast_ref::<FilesystemStore>(None)
+                    .err_tip(|| "Could not downcast fast store to FilesystemStore")?,
+            );
+            let temp_str = temp_path.to_string_lossy().to_string();
+            info!(
+                hash = %&digest.packed_hash().to_string()[..12],
+                "DirectoryCache: fast download_to_directory starting",
+            );
+            let construction_start = Instant::now();
+            let result = crate::running_actions_manager::download_to_directory(
+                fss, fs_pin, digest, &temp_str,
+            )
+            .await;
+            let elapsed = construction_start.elapsed();
+            match &result {
+                Ok(()) => {
+                    info!(
+                        hash = %&digest.packed_hash().to_string()[..12],
+                        elapsed_ms = elapsed.as_millis() as u64,
+                        "DirectoryCache: fast download_to_directory completed",
+                    );
+                    Some(Ok(()))
+                }
+                Err(e) => {
+                    warn!(
+                        hash = %&digest.packed_hash().to_string()[..12],
+                        ?e,
+                        elapsed_ms = elapsed.as_millis() as u64,
+                        "DirectoryCache: fast download_to_directory failed, trying serial fallback",
+                    );
+                    // Clean up the partial temp directory before fallback
+                    drop(fs::remove_dir_all(temp_path).await);
+                    drop(fs::create_dir_all(temp_path).await);
+                    Some(Err(e.clone()))
+                }
+            }
+        } else {
+            None
+        };
+
+        // Use the fast path result, or fall back to serial construction.
+        match fast_path_result {
+            Some(Ok(())) => Ok(()),
+            Some(Err(_)) | None => {
+                if fast_path_result.is_none() {
+                    info!(
+                        hash = %&digest.packed_hash().to_string()[..12],
+                        "DirectoryCache: using serial construct_directory_impl (no fast path available)",
+                    );
+                }
+                let serial_start = Instant::now();
+                self.construct_directory(*digest, temp_path).await
+                    .err_tip(|| "Failed to construct directory for cache")?;
+                info!(
+                    hash = %&digest.packed_hash().to_string()[..12],
+                    elapsed_ms = serial_start.elapsed().as_millis() as u64,
+                    "DirectoryCache: serial construct_directory_impl completed",
+                );
+                Ok(())
+            }
+        }
+    }
+
+    /// Subtree-aware construction: walks the resolved directory tree, creates
+    /// directory symlinks for cached subtrees, and only downloads uncached
+    /// portions via `download_to_directory` or serial fallback.
+    ///
+    /// Uses directory symlinks (not hardlinks) because:
+    /// - APFS does not support directory hardlinks
+    /// - Files within symlinked subtrees are already CAS hardlinks and work correctly
+    async fn construct_with_subtrees(
+        &self,
+        root_digest: &DigestInfo,
+        tree: &HashMap<DigestInfo, ProtoDirectory>,
+        subtree_hits: &HashMap<DigestInfo, PathBuf>,
+        dest_path: &Path,
+    ) -> Result<(), Error> {
+        let construction_start = Instant::now();
+
+        // BFS walk of the tree, creating directories and symlinks.
+        // When we encounter a subtree hit, we create a directory symlink and
+        // skip its entire subtree (no need to traverse children).
+        let mut queue = VecDeque::new();
+        queue.push_back((*root_digest, dest_path.to_path_buf()));
+
+        let mut dirs_created = 0usize;
+        let mut subtrees_linked = 0usize;
+        let mut files_to_download = Vec::new();
+        let mut symlinks_to_create: Vec<(String, PathBuf)> = Vec::new();
+
+        while let Some((dir_digest, dir_path)) = queue.pop_front() {
+            let directory = tree.get(&dir_digest).ok_or_else(|| {
+                make_err!(
+                    Code::Internal,
+                    "Directory {:?} not found in resolved tree during subtree construction",
+                    dir_digest
+                )
+            })?;
+
+            // Process subdirectories
+            for subdir_node in &directory.directories {
+                Self::validate_node_name(&subdir_node.name)?;
+                let child_digest: DigestInfo = subdir_node
+                    .digest
+                    .as_ref()
+                    .ok_or_else(|| {
+                        make_err!(Code::InvalidArgument, "Directory node missing digest")
+                    })?
+                    .try_into()
+                    .err_tip(|| "Invalid directory digest in subtree construction")?;
+
+                let child_path = dir_path.join(&subdir_node.name);
+
+                if let Some(cached_path) = subtree_hits.get(&child_digest) {
+                    // Subtree hit: create a directory symlink to the cached location.
+                    #[cfg(unix)]
+                    {
+                        fs::symlink(cached_path, &child_path)
+                            .await
+                            .err_tip(|| format!(
+                                "Failed to create directory symlink from {} to {}",
+                                cached_path.display(),
+                                child_path.display(),
+                            ))?;
+                    }
+                    #[cfg(windows)]
+                    {
+                        fs::symlink_dir(cached_path, &child_path)
+                            .await
+                            .err_tip(|| format!(
+                                "Failed to create directory symlink from {} to {}",
+                                cached_path.display(),
+                                child_path.display(),
+                            ))?;
+                    }
+                    subtrees_linked += 1;
+                    debug!(
+                        child_hash = %&child_digest.packed_hash().to_string()[..12],
+                        src = %cached_path.display(),
+                        dst = %child_path.display(),
+                        "DirectoryCache: symlinked cached subtree",
+                    );
+                    // Do NOT enqueue children -- the symlink covers the entire subtree.
+                } else {
+                    // No subtree hit -- create the directory and recurse.
+                    fs::create_dir_all(&child_path).await.err_tip(|| {
+                        format!("Failed to create directory: {}", child_path.display())
+                    })?;
+                    dirs_created += 1;
+                    queue.push_back((child_digest, child_path));
+                }
+            }
+
+            // Collect files that need to be downloaded for this (non-symlinked) directory.
+            for file_node in &directory.files {
+                Self::validate_node_name(&file_node.name)?;
+                let file_digest: DigestInfo = file_node
+                    .digest
+                    .as_ref()
+                    .ok_or_else(|| {
+                        make_err!(Code::InvalidArgument, "File node missing digest")
+                    })?
+                    .try_into()
+                    .err_tip(|| "Invalid file digest in subtree construction")?;
+
+                let file_path = dir_path.join(&file_node.name);
+                files_to_download.push((file_digest, file_path, file_node.is_executable));
+            }
+
+            // Collect symlinks from the proto
+            for symlink_node in &directory.symlinks {
+                Self::validate_node_name(&symlink_node.name)?;
+                let link_path = dir_path.join(&symlink_node.name);
+                symlinks_to_create.push((symlink_node.target.clone(), link_path));
+            }
+        }
+
+        info!(
+            hash = %&root_digest.packed_hash().to_string()[..12],
+            dirs_created,
+            subtrees_linked,
+            files_to_download = files_to_download.len(),
+            symlinks = symlinks_to_create.len(),
+            "DirectoryCache: subtree-aware construction plan",
+        );
+
+        // Create symlinks from the proto
+        #[cfg(target_family = "unix")]
+        for (target, link_path) in &symlinks_to_create {
+            fs::symlink(target, link_path)
+                .await
+                .err_tip(|| format!("Failed to create symlink: {} -> {}", link_path.display(), target))?;
+        }
+
+        // Download uncached files.
+        // If we have a FastSlowStore + FilesystemStore, use hardlinks from CAS.
+        // Otherwise fall back to serial CAS fetch.
+        if !files_to_download.is_empty() {
+            if let (Some(fss), Some(_fs_store)) = (&self.fast_slow_store, &self.filesystem_store) {
+                let fs_store_pin = Pin::new(
+                    fss.fast_store()
+                        .downcast_ref::<FilesystemStore>(None)
+                        .err_tip(|| "Could not downcast fast store to FilesystemStore")?,
+                );
+
+                // Check which blobs are already in the fast store.
+                let unique_digests: Vec<DigestInfo> = {
+                    let mut seen = std::collections::HashSet::new();
+                    files_to_download
+                        .iter()
+                        .filter_map(|(d, _, _)| if seen.insert(*d) { Some(*d) } else { None })
+                        .collect()
+                };
+                let store_keys: Vec<StoreKey<'_>> =
+                    unique_digests.iter().map(|d| (*d).into()).collect();
+                let mut has_results = vec![None; store_keys.len()];
+                Pin::new(fss.fast_store())
+                    .has_with_results(&store_keys, &mut has_results)
+                    .await
+                    .err_tip(|| "Batch has_with_results in subtree construction")?;
+
+                // Populate missing blobs into the fast store.
+                let missing: Vec<&DigestInfo> = unique_digests
+                    .iter()
+                    .zip(has_results.iter())
+                    .filter_map(|(d, r)| if r.is_none() { Some(d) } else { None })
+                    .collect();
+
+                if !missing.is_empty() {
+                    info!(
+                        hash = %&root_digest.packed_hash().to_string()[..12],
+                        missing = missing.len(),
+                        "DirectoryCache: fetching missing blobs for uncached files",
+                    );
+                    for d in &missing {
+                        let key: StoreKey<'_> = (**d).into();
+                        fss.populate_fast_store(key).await
+                            .err_tip(|| format!("Failed to populate fast store for {:?}", d))?;
+                    }
+                }
+
+                // Hardlink files from the fast store to their destination paths.
+                for (file_digest, file_path, is_executable) in &files_to_download {
+                    let file_entry = fs_store_pin
+                        .get_file_entry_for_digest(file_digest)
+                        .await
+                        .err_tip(|| format!("Getting file entry for {:?}", file_digest))?;
+                    let dest = file_path.clone();
+                    file_entry
+                        .get_file_path_locked(|src_path| async move {
+                            fs::hard_link(&src_path, &dest)
+                                .await
+                                .err_tip(|| format!(
+                                    "Failed to hardlink {:?} to {}",
+                                    src_path,
+                                    dest.display(),
+                                ))
+                        })
+                        .await?;
+
+                    // Set executable permission if needed
+                    #[cfg(unix)]
+                    if *is_executable {
+                        use std::os::unix::fs::PermissionsExt;
+                        let meta = fs::metadata(&file_path).await
+                            .err_tip(|| "Failed to get file metadata for exec bit")?;
+                        let current_mode = meta.permissions().mode() & 0o777;
+                        let new_mode = current_mode | 0o111;
+                        if new_mode != current_mode {
+                            let mut perms = meta.permissions();
+                            perms.set_mode(new_mode);
+                            fs::set_permissions(&file_path, perms).await
+                                .err_tip(|| "Failed to set executable permission")?;
+                        }
+                    }
+                }
+            } else {
+                // Serial fallback: fetch each file from CAS individually.
+                for (file_digest, file_path, is_executable) in &files_to_download {
+                    let data = self
+                        .cas_store
+                        .get_part_unchunked(StoreKey::Digest(*file_digest), 0, None)
+                        .await
+                        .err_tip(|| format!("Failed to fetch file: {}", file_path.display()))?;
+                    fs::write(&file_path, data.as_ref())
+                        .await
+                        .err_tip(|| format!("Failed to write file: {}", file_path.display()))?;
+
+                    #[cfg(unix)]
+                    if *is_executable {
+                        use std::os::unix::fs::PermissionsExt;
+                        let mut perms = fs::metadata(&file_path).await
+                            .err_tip(|| "Failed to get file metadata")?
+                            .permissions();
+                        perms.set_mode(0o755);
+                        fs::set_permissions(&file_path, perms).await
+                            .err_tip(|| "Failed to set file permissions")?;
+                    }
+                }
+            }
+        }
+
+        let elapsed = construction_start.elapsed();
+        info!(
+            hash = %&root_digest.packed_hash().to_string()[..12],
+            dirs_created,
+            subtrees_linked,
+            files_downloaded = files_to_download.len(),
+            elapsed_ms = elapsed.as_millis() as u64,
+            "DirectoryCache: subtree-aware construction completed",
+        );
+
+        Ok(())
+    }
+
+    /// Removes subtree index entries that belong to a given cache entry path.
+    /// Loads the merkle metadata file from the cache entry to determine which
+    /// digests to remove.
+    async fn remove_subtree_index_for_path(
+        &self,
+        cache_entry_path: &Path,
+        index: &mut HashMap<DigestInfo, PathBuf>,
+    ) {
+        let merkle_path = cache_entry_path.join(MERKLE_METADATA_FILENAME);
+        if let Ok(data) = fs::read_to_string(&merkle_path).await {
+            if let Ok(merkle) = MerkleTreeMetadata::deserialize(&data) {
+                let mut removed = 0usize;
+                for (sub_digest, relpath) in &merkle.digest_to_relpath {
+                    // Only remove if the index entry points to this specific cache entry.
+                    let abs_path = if relpath.is_empty() {
+                        cache_entry_path.to_path_buf()
+                    } else {
+                        cache_entry_path.join(relpath)
+                    };
+                    if let Some(existing) = index.get(sub_digest) {
+                        if *existing == abs_path {
+                            index.remove(sub_digest);
+                            removed += 1;
+                        }
+                    }
+                }
+                debug!(
+                    path = %cache_entry_path.display(),
+                    removed_subtrees = removed,
+                    "DirectoryCache: cleaned up subtree index for evicted entry",
+                );
+            }
+        }
+    }
+
+    /// Try to parse a directory entry name as a DigestInfo.
+    /// Expected format is the same as `DigestInfo::to_string()`,
+    /// i.e., `{hash}-{size_bytes}`.
+    fn parse_digest_from_dirname(name: &str) -> Option<DigestInfo> {
+        // DigestInfo::to_string() produces "{hash}-{size}", so split on the last '-'
+        let last_dash = name.rfind('-')?;
+        let hash = &name[..last_dash];
+        let size_str = &name[last_dash + 1..];
+        let size: i64 = size_str.parse().ok()?;
+        DigestInfo::try_new(hash, size).ok()
     }
 
     /// Constructs a directory from the CAS at the given path.
@@ -1638,6 +2269,230 @@ mod tests {
             cache_map.contains_key(&digest_b),
             "Digest B should be present"
         );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_merkle_tree_metadata_roundtrip() -> Result<(), Error> {
+        // Test serialization/deserialization of MerkleTreeMetadata
+        let mut digest_to_relpath = HashMap::new();
+        let d1 = DigestInfo::try_new(
+            "aaaa567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+            100,
+        )
+        .unwrap();
+        let d2 = DigestInfo::try_new(
+            "bbbb567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+            200,
+        )
+        .unwrap();
+
+        digest_to_relpath.insert(d1, String::new()); // root
+        digest_to_relpath.insert(d2, "subdir/nested".to_string());
+
+        let meta = MerkleTreeMetadata { digest_to_relpath };
+        let serialized = meta.serialize();
+        let deserialized = MerkleTreeMetadata::deserialize(&serialized)?;
+
+        assert_eq!(deserialized.digest_to_relpath.len(), 2);
+        assert_eq!(deserialized.digest_to_relpath.get(&d1).unwrap(), "");
+        assert_eq!(
+            deserialized.digest_to_relpath.get(&d2).unwrap(),
+            "subdir/nested"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_merkle_tree_metadata_from_directory_tree() -> Result<(), Error> {
+        // Build a small directory tree and verify MerkleTreeMetadata generation
+        let file_digest = DigestInfo::try_new(
+            "dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f",
+            13,
+        )
+        .unwrap();
+
+        // Child directory
+        let child_dir = ProtoDirectory {
+            files: vec![FileNode {
+                name: "child_file.txt".to_string(),
+                digest: Some(file_digest.into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut child_data = Vec::new();
+        child_dir.encode(&mut child_data).unwrap();
+        let child_digest = DigestInfo::try_new(
+            "cccc567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+            child_data.len() as i64,
+        )
+        .unwrap();
+
+        // Root directory referencing the child
+        let root_dir = ProtoDirectory {
+            files: vec![FileNode {
+                name: "root_file.txt".to_string(),
+                digest: Some(file_digest.into()),
+                ..Default::default()
+            }],
+            directories: vec![DirectoryNode {
+                name: "child".to_string(),
+                digest: Some(child_digest.into()),
+            }],
+            ..Default::default()
+        };
+        let mut root_data = Vec::new();
+        root_dir.encode(&mut root_data).unwrap();
+        let root_digest = DigestInfo::try_new(
+            "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+            root_data.len() as i64,
+        )
+        .unwrap();
+
+        let mut tree = HashMap::new();
+        tree.insert(root_digest, root_dir);
+        tree.insert(child_digest, child_dir);
+
+        let meta = MerkleTreeMetadata::from_directory_tree(&tree, &root_digest);
+        assert_eq!(meta.digest_to_relpath.len(), 2);
+        assert_eq!(meta.digest_to_relpath.get(&root_digest).unwrap(), "");
+        assert_eq!(meta.digest_to_relpath.get(&child_digest).unwrap(), "child");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_parse_digest_from_dirname() -> Result<(), Error> {
+        // Valid format: hash-size
+        let name = "aaaa567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef-100";
+        let parsed = DirectoryCache::parse_digest_from_dirname(name);
+        assert!(parsed.is_some());
+        let d = parsed.unwrap();
+        assert_eq!(d.size_bytes(), 100);
+
+        // Invalid: no dash
+        assert!(DirectoryCache::parse_digest_from_dirname("nodashhere").is_none());
+
+        // Invalid: not a number after dash
+        assert!(DirectoryCache::parse_digest_from_dirname("hash-notanumber").is_none());
+
+        // Invalid: empty
+        assert!(DirectoryCache::parse_digest_from_dirname("").is_none());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_merkle_metadata_stored_on_construction() -> Result<(), Error> {
+        let temp_dir = TempDir::new().unwrap();
+        let cache_root = temp_dir.path().join("cache");
+        let (store, dir_digest) = setup_test_store().await;
+
+        let config = DirectoryCacheConfig {
+            max_entries: 10,
+            max_size_bytes: 1024 * 1024,
+            cache_root: cache_root.clone(),
+        };
+
+        let cache = DirectoryCache::new(config, store, None).await?;
+
+        // Construct a directory (serial path, no FastSlowStore)
+        let dest = temp_dir.path().join("dest");
+        cache.get_or_create(dir_digest, &dest).await?;
+
+        // Merkle metadata file should NOT exist because we don't have
+        // FastSlowStore (resolve_directory_tree requires it).
+        // This is expected -- subtree indexing is only available with
+        // the fast path.
+        let cache_path = cache.get_cache_path(&dir_digest);
+        let merkle_path = cache_path.join(MERKLE_METADATA_FILENAME);
+        // Without FastSlowStore, no merkle metadata is generated
+        assert!(
+            !merkle_path.exists(),
+            "Merkle metadata should not exist without FastSlowStore"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_subtree_index_populated_and_cleaned_on_eviction() -> Result<(), Error> {
+        let temp_dir = TempDir::new().unwrap();
+        let cache_root = temp_dir.path().join("cache");
+        let (store, digest_a, digest_b) = setup_two_digest_store().await;
+
+        let config = DirectoryCacheConfig {
+            max_entries: 1,
+            max_size_bytes: 0,
+            cache_root: cache_root.clone(),
+        };
+
+        let cache = DirectoryCache::new(config, store, None).await?;
+
+        // Insert entry A
+        let dest_a = temp_dir.path().join("dest_a");
+        cache.get_or_create(digest_a, &dest_a).await?;
+
+        // Without FastSlowStore, subtree index should be empty (no merkle tree resolved)
+        {
+            let index = cache.subtree_index.read().await;
+            assert!(
+                index.is_empty(),
+                "Subtree index should be empty without FastSlowStore"
+            );
+        }
+
+        // Insert entry B (evicts A)
+        let dest_b = temp_dir.path().join("dest_b");
+        cache.get_or_create(digest_b, &dest_b).await?;
+        assert_eq!(cache.stats().await.entries, 1);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_cache_reload_from_disk() -> Result<(), Error> {
+        let temp_dir = TempDir::new().unwrap();
+        let cache_root = temp_dir.path().join("cache");
+        let (store, dir_digest) = setup_test_store().await;
+
+        // Create a cache and populate it
+        {
+            let config = DirectoryCacheConfig {
+                max_entries: 10,
+                max_size_bytes: 1024 * 1024,
+                cache_root: cache_root.clone(),
+            };
+            let cache = DirectoryCache::new(config, store.clone(), None).await?;
+            let dest = temp_dir.path().join("dest1");
+            cache.get_or_create(dir_digest, &dest).await?;
+            assert_eq!(cache.stats().await.entries, 1);
+        }
+
+        // Create a NEW cache pointing to the same cache_root -- it should
+        // reload the existing entry from disk.
+        {
+            let config = DirectoryCacheConfig {
+                max_entries: 10,
+                max_size_bytes: 1024 * 1024,
+                cache_root: cache_root.clone(),
+            };
+            let cache = DirectoryCache::new(config, store, None).await?;
+            assert_eq!(
+                cache.stats().await.entries,
+                1,
+                "Cache should have reloaded the entry from disk"
+            );
+
+            // The reloaded entry should be usable (cache hit)
+            let dest2 = temp_dir.path().join("dest2");
+            let hit = cache.get_or_create(dir_digest, &dest2).await?;
+            assert!(hit, "Reloaded entry should produce a cache hit");
+            assert!(dest2.join("test.txt").exists());
+        }
 
         Ok(())
     }

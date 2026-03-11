@@ -167,7 +167,7 @@ const BATCH_READ_MAX_REQUEST_SIZE: u64 = 4 * 1024 * 1024;
 /// Falls back to recursive `get_and_decode_digest` calls otherwise.
 ///
 /// Returns a map from digest to Directory proto for every directory in the tree.
-async fn resolve_directory_tree(
+pub async fn resolve_directory_tree(
     cas_store: &FastSlowStore,
     root_digest: &DigestInfo,
 ) -> Result<HashMap<DigestInfo, ProtoDirectory>, Error> {
