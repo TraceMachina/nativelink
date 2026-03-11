@@ -37,6 +37,13 @@ use tracing::{debug, info, trace, warn};
 /// Name of the merkle tree metadata file stored alongside each cached directory.
 const MERKLE_METADATA_FILENAME: &str = ".merkle_tree_meta";
 
+/// Cache format version file. Bump when the on-disk format changes in a way
+/// that makes old entries invalid (e.g., permission semantics). On startup,
+/// if the version file is missing or stale, the entire cache is wiped.
+const CACHE_VERSION_FILENAME: &str = ".cache_version";
+/// Bump this when the cache format changes.
+const CACHE_FORMAT_VERSION: u32 = 2;
+
 /// Merkle tree metadata for a cached directory entry.
 ///
 /// Stores the mapping from each directory digest in the tree to its relative
@@ -315,6 +322,35 @@ impl DirectoryCache {
         let mut initial_cache = HashMap::new();
         let mut initial_subtree_index = HashMap::new();
         let mut initial_subtree_refcount: HashMap<DigestInfo, usize> = HashMap::new();
+
+        // Check cache format version. If stale or missing, wipe the cache.
+        let version_path = config.cache_root.join(CACHE_VERSION_FILENAME);
+        let version_ok = match fs::read_to_string(&version_path).await {
+            Ok(v) => v.trim().parse::<u32>().ok() == Some(CACHE_FORMAT_VERSION),
+            Err(_) => false,
+        };
+        if !version_ok {
+            info!(
+                expected = CACHE_FORMAT_VERSION,
+                "DirectoryCache: format version mismatch, clearing stale entries",
+            );
+            if let Ok(mut entries) = fs::read_dir(&config.cache_root).await {
+                while let Ok(Some(entry)) = entries.next_entry().await {
+                    let p = entry.path();
+                    // chmod +rw so we can delete read-only entries
+                    drop(tokio::process::Command::new("chmod")
+                        .args(["-R", "u+rw"])
+                        .arg(&p)
+                        .status()
+                        .await);
+                    drop(fs::remove_dir_all(&p).await);
+                    drop(fs::remove_file(&p).await);
+                }
+            }
+            fs::write(&version_path, format!("{CACHE_FORMAT_VERSION}\n"))
+                .await
+                .err_tip(|| "Failed to write cache version file")?;
+        }
 
         // Load existing cache entries from disk on startup.
         let load_start = Instant::now();
