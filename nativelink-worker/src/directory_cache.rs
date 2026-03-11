@@ -42,7 +42,7 @@ const MERKLE_METADATA_FILENAME: &str = ".merkle_tree_meta";
 /// if the version file is missing or stale, the entire cache is wiped.
 const CACHE_VERSION_FILENAME: &str = ".cache_version";
 /// Bump this when the cache format changes.
-const CACHE_FORMAT_VERSION: u32 = 4;
+const CACHE_FORMAT_VERSION: u32 = 5;
 
 /// Merkle tree metadata for a cached directory entry.
 ///
@@ -1104,20 +1104,16 @@ impl DirectoryCache {
             } else if metadata.is_file() {
                 let size = metadata.len();
 
-                // Strip write bits only, preserving read+execute.
-                // This avoids corrupting CAS inodes (hardlinks share the inode)
-                // while correctly making cached files read-only.
-                // 0o555 files (CAS default) stay 0o555 — no syscall needed.
-                // 0o644 files (serial fallback) become 0o444.
-                // 0o755 files (serial fallback executable) become 0o555.
+                // Ensure all cached files are 0o555 (read+execute, no write).
+                // This both protects cache integrity and ensures shell scripts
+                // remain executable. Old CAS files with 0o644 become 0o555.
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
                     let current_mode = metadata.permissions().mode() & 0o777;
-                    let new_mode = current_mode & 0o555; // strip write bits
-                    if new_mode != current_mode {
+                    if current_mode != 0o555 {
                         let mut perms = metadata.permissions();
-                        perms.set_mode(new_mode);
+                        perms.set_mode(0o555);
                         fs::set_permissions(path, perms)
                             .await
                             .err_tip(|| format!("Failed to set permissions for: {}", path.display()))?;
@@ -1398,19 +1394,26 @@ impl DirectoryCache {
                         })
                         .await?;
 
-                    // Set executable permission if needed
+                    // Ensure all files have 0o555. CAS files ingested before the
+                    // 0o555 default may still be 0o644; we must fix them here since
+                    // hardlinks share the inode and set_readonly_and_calculate_size
+                    // would turn 0o644 into 0o444 (no execute), breaking shell scripts.
                     #[cfg(unix)]
-                    if *is_executable {
+                    {
                         use std::os::unix::fs::PermissionsExt;
                         let meta = fs::metadata(&file_path).await
-                            .err_tip(|| "Failed to get file metadata for exec bit")?;
+                            .err_tip(|| "Failed to get file metadata for permission fix")?;
                         let current_mode = meta.permissions().mode() & 0o777;
-                        let new_mode = current_mode | 0o111;
+                        let new_mode = if *is_executable {
+                            current_mode | 0o111
+                        } else {
+                            0o555
+                        };
                         if new_mode != current_mode {
                             let mut perms = meta.permissions();
                             perms.set_mode(new_mode);
                             fs::set_permissions(&file_path, perms).await
-                                .err_tip(|| "Failed to set executable permission")?;
+                                .err_tip(|| "Failed to set file permission")?;
                         }
                     }
                 }
