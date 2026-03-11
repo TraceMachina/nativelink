@@ -2090,9 +2090,20 @@ impl RunningActionImpl {
                         .parent()
                         .err_tip(|| format!("Parent path for {full_output_path} has no parent"))?;
 
-                    // Fast path: usually succeeds when no symlinks are involved.
+                    // Fast path: create_dir_all and verify the directory is writable.
+                    // create_dir_all succeeds even if the directory is read-only
+                    // (it already exists), but rustc needs write access for outputs.
                     if fs::create_dir_all(full_parent_path).await.is_ok() {
-                        return Result::<(), Error>::Ok(());
+                        let mut dir_writable = true;
+                        #[cfg(target_family = "unix")]
+                        if let Ok(m) = fs::metadata(full_parent_path).await {
+                            dir_writable = m.mode() & 0o200 != 0;
+                        }
+                        if dir_writable {
+                            return Result::<(), Error>::Ok(());
+                        }
+                        // Directory exists but is not writable (likely through
+                        // a symlink to the read-only cache). Fall through to fix.
                     }
 
                     // Slow path: symlinks in the input tree (e.g., bazel-out)
