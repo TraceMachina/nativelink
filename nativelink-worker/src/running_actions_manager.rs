@@ -841,15 +841,14 @@ async fn hardlink_and_set_metadata_prefetched(
         populate_and_hardlink(cas_store, filesystem_store, digest, &dest).await?;
     }
 
-    // Default CAS file permissions — files in the CAS store are pre-set to 0o555
-    // (read+execute for all). Skip chmod when the requested mode matches.
+    // Always set permissions — CAS files default to 0o555 but concurrent
+    // hardlinks from other actions can change the shared inode's mode.
+    // We must unconditionally chmod to ensure correctness.
     #[cfg(target_family = "unix")]
     if let Some(unix_mode) = file.unix_mode {
-        if unix_mode != 0o555 {
-            fs::set_permissions(&dest, Permissions::from_mode(unix_mode))
-                .await
-                .err_tip(|| format!("Could not set unix mode in download_to_directory {dest}"))?;
-        }
+        fs::set_permissions(&dest, Permissions::from_mode(unix_mode))
+            .await
+            .err_tip(|| format!("Could not set unix mode in download_to_directory {dest}"))?;
     }
 
     // Apply mtime.
@@ -2909,6 +2908,10 @@ pub trait RunningActionsManager: Sync + Send + Sized + Unpin + 'static {
     fn spawn_upload_to_remote(self: &Arc<Self>, _action_result: &ActionResult) {}
 
     fn metrics(&self) -> &Arc<Metrics>;
+
+    /// Returns the digests of input root directories cached in the worker's
+    /// directory cache. Returns an empty Vec if no directory cache is configured.
+    fn cached_directory_digests(&self) -> impl Future<Output = Vec<DigestInfo>> + Send;
 }
 
 /// A function to get the current system time, used to allow mocking for tests
@@ -3938,6 +3941,13 @@ impl RunningActionsManager for RunningActionsManagerImpl {
     #[inline]
     fn metrics(&self) -> &Arc<Metrics> {
         &self.metrics
+    }
+
+    async fn cached_directory_digests(&self) -> Vec<DigestInfo> {
+        match &self.directory_cache {
+            Some(cache) => cache.cached_digests().await,
+            None => Vec::new(),
+        }
     }
 }
 

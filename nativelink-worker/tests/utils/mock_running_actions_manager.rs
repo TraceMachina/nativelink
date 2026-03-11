@@ -183,6 +183,10 @@ impl RunningActionsManager for MockRunningActionsManager {
     fn metrics(&self) -> &Arc<Metrics> {
         &self.metrics
     }
+
+    async fn cached_directory_digests(&self) -> Vec<DigestInfo> {
+        Vec::new()
+    }
 }
 
 #[derive(Debug)]

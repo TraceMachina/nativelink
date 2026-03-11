@@ -485,6 +485,21 @@ impl WorkerConnection {
                 warn!(worker_id=?self.worker_id, ?err, cpu_load_pct, "Failed to update worker load");
             }
         }
+
+        // Update the worker's cached directory digests if any were reported.
+        if !notification.cached_directory_digests.is_empty() {
+            let cached_dirs: std::collections::HashSet<DigestInfo> = notification
+                .cached_directory_digests
+                .iter()
+                .filter_map(|d| DigestInfo::try_from(d.clone()).ok())
+                .collect();
+            let count = cached_dirs.len();
+            debug!(worker_id=?self.worker_id, count, "BlobsAvailable received with cached directory digests");
+            if let Err(err) = self.scheduler.update_cached_directories(&self.worker_id, cached_dirs).await {
+                warn!(worker_id=?self.worker_id, ?err, count, "Failed to update cached directory digests");
+            }
+        }
+
         let Some(ref locality_map) = self.locality_map else {
             return Ok(());
         };

@@ -16,7 +16,7 @@ use core::num::NonZeroUsize;
 use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -472,6 +472,43 @@ impl ApiWorkerSchedulerImpl {
             platform_properties.is_satisfied_by(&w.platform_properties, false)
         };
 
+        // ── Directory cache hit bonus ──
+        // If a viable worker has the action's input_root_digest in its directory
+        // cache, it can hardlink the entire input tree in milliseconds instead of
+        // reconstructing it from CAS. This is a massive win (seconds of I/O saved)
+        // and should override load and locality scoring.
+        let dir_cache_winner: Option<WorkerId> = {
+            let mut best: Option<(WorkerId, u32)> = None; // (id, cpu_load)
+            for wid in &candidates {
+                if let Some(w) = self.workers.0.peek(wid) {
+                    if w.cached_directory_digests.contains(&input_root_digest)
+                        && worker_is_viable(wid)
+                    {
+                        let load = w.cpu_load_pct;
+                        // Among workers with a cache hit, prefer the one with
+                        // the lowest CPU load.
+                        let dominated = best.as_ref().is_some_and(|(_, best_load)| {
+                            let effective_best = if *best_load == 0 { u32::MAX } else { *best_load };
+                            let effective_this = if load == 0 { u32::MAX } else { load };
+                            effective_this >= effective_best
+                        });
+                        if !dominated {
+                            best = Some((wid.clone(), load));
+                        }
+                    }
+                }
+            }
+            if let Some((ref wid, load)) = best {
+                info!(
+                    ?wid,
+                    cpu_load_pct = load,
+                    %input_root_digest,
+                    "Directory cache hit -- worker has input_root_digest cached, giving scheduling priority"
+                );
+            }
+            best.map(|(wid, _)| wid)
+        };
+
         // ── Locality scoring ──
         // Convert pre-computed endpoint scores to worker scores, filtering
         // to the candidate set. This is O(endpoints) not O(files).
@@ -542,7 +579,11 @@ impl ApiWorkerSchedulerImpl {
             None
         };
 
-        let worker_id = if let Some(wid) = locality_winner {
+        let worker_id = if let Some(wid) = dir_cache_winner {
+            // Directory cache hit trumps all other scoring.
+            self.workers.get_mut(&wid);
+            wid
+        } else if let Some(wid) = locality_winner {
             // Promote in LRU.
             self.workers.get_mut(&wid);
             wid
@@ -1565,6 +1606,24 @@ impl WorkerScheduler for ApiWorkerScheduler {
         })?;
         worker.cpu_load_pct = cpu_load_pct;
         debug!(%worker_id, cpu_load_pct, "Worker load updated");
+        Ok(())
+    }
+
+    async fn update_cached_directories(
+        &self,
+        worker_id: &WorkerId,
+        digests: HashSet<DigestInfo>,
+    ) -> Result<(), Error> {
+        let mut inner = self.inner.write().await;
+        let worker = inner.workers.0.peek_mut(worker_id).ok_or_else(|| {
+            make_input_err!(
+                "Worker not found in worker map in update_cached_directories() {}",
+                worker_id
+            )
+        })?;
+        let count = digests.len();
+        worker.cached_directory_digests = digests;
+        debug!(%worker_id, count, "Worker cached directory digests updated");
         Ok(())
     }
 }
