@@ -78,13 +78,19 @@ impl PlatformPropertyManager {
     pub fn make_prop_value(&self, key: &str, value: &str) -> Result<PlatformPropertyValue, Error> {
         if let Some(prop_type) = self.known_properties.get(key) {
             return match prop_type {
-                PropertyType::Minimum => Ok(PlatformPropertyValue::Minimum(
-                    value.parse::<f64>().map_err(|e| {
+                PropertyType::Minimum => {
+                    let v = value.parse::<f64>().map_err(|e| {
                         make_input_err!(
                             "Cannot convert platform property to number: {value} - {e}"
                         )
-                    })?,
-                )),
+                    })?;
+                    if !v.is_finite() || v < 0.0 {
+                        return Err(make_input_err!(
+                            "Minimum platform property must be a non-negative finite number, got: {value}"
+                        ));
+                    }
+                    Ok(PlatformPropertyValue::Minimum(v))
+                }
                 PropertyType::Exact => Ok(PlatformPropertyValue::Exact(value.to_string())),
                 PropertyType::Priority => Ok(PlatformPropertyValue::Priority(value.to_string())),
                 PropertyType::Ignore => Ok(PlatformPropertyValue::Ignore(value.to_string())),
