@@ -29,6 +29,7 @@ name = "nativelink"
 
 [features]
 nix = ["nativelink-worker/nix"]
+quic = ["dep:tonic-h3", "dep:quinn", "dep:h3-quinn", "dep:rcgen", "nativelink-util/quic", "nativelink-store/quic"]
 
 [dependencies]
 nativelink-config = { path = "nativelink-config" }
@@ -83,6 +84,10 @@ tonic = { version = "0.14.5", features = [
   "transport",
   "zstd",
 ], default-features = false }
+tonic-h3 = { version = "0.0.5", default-features = false, features = ["quinn"], optional = true }
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-aws-lc-rs"], optional = true }
+h3-quinn = { version = "0.0.10", default-features = false, optional = true }
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "aws_lc_rs", "pem"], optional = true }
 tower = { version = "0.5.2", default-features = false }
 tracing = { version = "0.1.41", default-features = false }
 

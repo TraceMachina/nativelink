@@ -169,6 +169,7 @@ impl WorkerProxyStore {
                 http2_keepalive_interval_s: 30,
                 http2_keepalive_timeout_s: 20,
                 tcp_nodelay: true,
+                use_http3: false,
             }],
             store_type: StoreType::Cas,
             retry: Retry::default(),

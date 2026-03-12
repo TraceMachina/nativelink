@@ -1214,6 +1214,18 @@ pub struct GrpcEndpoint {
     /// Default: true
     #[serde(default = "default_tcp_nodelay")]
     pub tcp_nodelay: bool,
+
+    /// When true, connect using QUIC/HTTP3 instead of TCP/HTTP2.
+    /// Requires the `quic` feature flag and a server listening on an
+    /// `http3` listener. QUIC multiplexes internally so multiple
+    /// `connections_per_endpoint` are not needed.
+    /// Default: true
+    #[serde(default = "default_use_http3")]
+    pub use_http3: bool,
+}
+
+fn default_use_http3() -> bool {
+    true
 }
 
 fn default_sync_data_only() -> bool {

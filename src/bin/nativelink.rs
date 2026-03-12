@@ -78,6 +78,8 @@ use tokio_rustls::rustls::server::WebPkiClientVerifier;
 use tokio_rustls::rustls::{RootCertStore, ServerConfig as TlsServerConfig};
 use tonic::codec::CompressionEncoding;
 use tonic::service::Routes;
+#[cfg(feature = "quic")]
+use {quinn, tonic_h3};
 use tracing::{error, error_span, info, trace_span, warn};
 
 #[global_allocator]
@@ -155,38 +157,6 @@ const DEFAULT_MAX_DECODING_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
 /// need larger responses should use a separate listener with a higher
 /// `max_encoding_message_size` in the config.
 const DEFAULT_MAX_ENCODING_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
-
-macro_rules! service_setup {
-    ($service: expr, $http_config: ident) => {{
-        let mut service = $service;
-        let max_decoding_message_size = if $http_config.max_decoding_message_size == 0 {
-            DEFAULT_MAX_DECODING_MESSAGE_SIZE
-        } else {
-            $http_config.max_decoding_message_size
-        };
-        service = service.max_decoding_message_size(max_decoding_message_size);
-        let max_encoding_message_size = if $http_config.max_encoding_message_size == 0 {
-            DEFAULT_MAX_ENCODING_MESSAGE_SIZE
-        } else {
-            $http_config.max_encoding_message_size
-        };
-        service = service.max_encoding_message_size(max_encoding_message_size);
-        let send_algo = &$http_config.compression.send_compression_algorithm;
-        if let Some(encoding) = into_encoding(send_algo.unwrap_or(HttpCompressionAlgorithm::None)) {
-            service = service.send_compressed(encoding);
-        }
-        for encoding in $http_config
-            .compression
-            .accepted_compression_algorithms
-            .iter()
-            // Filter None values.
-            .filter_map(|from: &HttpCompressionAlgorithm| into_encoding(*from))
-        {
-            service = service.accept_compressed(encoding);
-        }
-        service
-    }};
-}
 
 async fn inner_main(
     cfg: CasConfig,
@@ -308,8 +278,36 @@ async fn inner_main(
             .services
             .err_tip(|| "'services' must be configured")?;
 
-        // Currently we only support http as our socket type.
-        let ListenerConfig::Http(http_config) = server_cfg.listener;
+        // Extract message size limits from the listener config.
+        // Both HTTP and HTTP3 listeners support these; HTTP also has compression.
+        let (max_decode, max_encode) = match &server_cfg.listener {
+            ListenerConfig::Http(http) => (http.max_decoding_message_size, http.max_encoding_message_size),
+            ListenerConfig::Http3(h3) => (h3.max_decoding_message_size, h3.max_encoding_message_size),
+        };
+        let max_decoding = if max_decode == 0 { DEFAULT_MAX_DECODING_MESSAGE_SIZE } else { max_decode };
+        let max_encoding = if max_encode == 0 { DEFAULT_MAX_ENCODING_MESSAGE_SIZE } else { max_encode };
+
+        // Helper to configure a tonic service with message size limits and
+        // optional compression from the HTTP listener config.
+        macro_rules! svc_setup {
+            ($v:expr) => {{
+                let mut service = $v.into_service();
+                service = service.max_decoding_message_size(max_decoding);
+                service = service.max_encoding_message_size(max_encoding);
+                if let ListenerConfig::Http(ref http_config) = server_cfg.listener {
+                    let send_algo = &http_config.compression.send_compression_algorithm;
+                    if let Some(encoding) = into_encoding(send_algo.unwrap_or(HttpCompressionAlgorithm::None)) {
+                        service = service.send_compressed(encoding);
+                    }
+                    for encoding in http_config.compression.accepted_compression_algorithms.iter()
+                        .filter_map(|from: &HttpCompressionAlgorithm| into_encoding(*from))
+                    {
+                        service = service.accept_compressed(encoding);
+                    }
+                }
+                service
+            }};
+        }
 
         let execution_server = services
             .execution
@@ -325,7 +323,7 @@ async fn inner_main(
                     .ac
                     .map_or(Ok(None), |cfg| {
                         AcServer::new(&cfg, &store_manager)
-                            .map(|v| Some(service_setup!(v.into_service(), http_config)))
+                            .map(|v| Some(svc_setup!(v)))
                     })
                     .err_tip(|| "Could not create AC service")?,
             )
@@ -334,24 +332,40 @@ async fn inner_main(
                     .cas
                     .map_or(Ok(None), |cfg| {
                         CasServer::new(&cfg, &store_manager)
-                            .map(|v| Some(service_setup!(v.into_service(), http_config)))
+                            .map(|v| Some(svc_setup!(v)))
                     })
                     .err_tip(|| "Could not create CAS service")?,
             )
             .add_optional_service(
                 execution_server
                     .clone()
-                    .map(|v| service_setup!(v.into_service(), http_config)),
+                    .map(|v| svc_setup!(v)),
             )
             .add_optional_service(
-                execution_server.map(|v| service_setup!(v.into_operations_service(), http_config)),
+                execution_server.map(|v| {
+                    let mut service = v.into_operations_service();
+                    service = service.max_decoding_message_size(max_decoding);
+                    service = service.max_encoding_message_size(max_encoding);
+                    if let ListenerConfig::Http(ref http_config) = server_cfg.listener {
+                        let send_algo = &http_config.compression.send_compression_algorithm;
+                        if let Some(encoding) = into_encoding(send_algo.unwrap_or(HttpCompressionAlgorithm::None)) {
+                            service = service.send_compressed(encoding);
+                        }
+                        for encoding in http_config.compression.accepted_compression_algorithms.iter()
+                            .filter_map(|from: &HttpCompressionAlgorithm| into_encoding(*from))
+                        {
+                            service = service.accept_compressed(encoding);
+                        }
+                    }
+                    service
+                }),
             )
             .add_optional_service(
                 services
                     .fetch
                     .map_or(Ok(None), |cfg| {
                         FetchServer::new(&cfg, &store_manager)
-                            .map(|v| Some(service_setup!(v.into_service(), http_config)))
+                            .map(|v| Some(svc_setup!(v)))
                     })
                     .err_tip(|| "Could not create Fetch service")?,
             )
@@ -360,7 +374,7 @@ async fn inner_main(
                     .push
                     .map_or(Ok(None), |cfg| {
                         PushServer::new(&cfg, &store_manager)
-                            .map(|v| Some(service_setup!(v.into_service(), http_config)))
+                            .map(|v| Some(svc_setup!(v)))
                     })
                     .err_tip(|| "Could not create Push service")?,
             )
@@ -369,7 +383,7 @@ async fn inner_main(
                     .bytestream
                     .map_or(Ok(None), |cfg| {
                         ByteStreamServer::new(&cfg, &store_manager)
-                            .map(|v| Some(service_setup!(v.into_service(), http_config)))
+                            .map(|v| Some(svc_setup!(v)))
                     })
                     .err_tip(|| "Could not create ByteStream service")?,
             )
@@ -385,14 +399,14 @@ async fn inner_main(
                     Ok(Some(server?))
                 })
                 .err_tip(|| "Could not create Capabilities service")?
-                .map(|v| service_setup!(v.into_service(), http_config)),
+                .map(|v| svc_setup!(v)),
             )
             .add_optional_service(
                 services
                     .worker_api
                     .map_or(Ok(None), |cfg| {
                         WorkerApiServer::new(&cfg, &worker_schedulers, Some(locality_map.clone()))
-                            .map(|v| Some(service_setup!(v.into_service(), http_config)))
+                            .map(|v| Some(svc_setup!(v)))
                     })
                     .err_tip(|| "Could not create WorkerApi service")?,
             )
@@ -401,13 +415,15 @@ async fn inner_main(
                     .experimental_bep
                     .map_or(Ok(None), |cfg| {
                         BepServer::new(&cfg, &store_manager)
-                            .map(|v| Some(service_setup!(v.into_service(), http_config)))
+                            .map(|v| Some(svc_setup!(v)))
                     })
                     .err_tip(|| "Could not create BEP service")?,
             );
 
         let health_registry = health_registry_builder.lock().await.build();
 
+        match server_cfg.listener {
+        ListenerConfig::Http(http_config) => {
         let mut svc =
             tonic_services
                 .into_axum_router()
@@ -481,7 +497,6 @@ async fn inner_main(
             warn!("No route for {uri}");
             (StatusCode::NOT_FOUND, format!("No route for {uri}"))
         });
-
         // Configure our TLS acceptor if we have TLS configured.
         let maybe_tls_acceptor = http_config.tls.map_or(Ok(None), |tls_config| {
             fn read_cert(cert_file: &str) -> Result<Vec<CertificateDer<'static>>, Error> {
@@ -650,6 +665,25 @@ async fn inner_main(
                                         "Failed to set SO_KEEPALIVE"
                                     );
                                 }
+                                // Set large socket buffers for 10 GbE throughput.
+                                // BDP = 1.25 GB/s × 0.5ms RTT = 625 KB; 4 MiB
+                                // provides headroom for bursts. Linux doubles the
+                                // value internally for bookkeeping.
+                                const SOCKET_BUF_SIZE: usize = 4 * 1024 * 1024;
+                                if let Err(err) = sock_ref.set_send_buffer_size(SOCKET_BUF_SIZE) {
+                                    error!(
+                                        target: "nativelink::services",
+                                        ?err,
+                                        "Failed to set SO_SNDBUF"
+                                    );
+                                }
+                                if let Err(err) = sock_ref.set_recv_buffer_size(SOCKET_BUF_SIZE) {
+                                    error!(
+                                        target: "nativelink::services",
+                                        ?err,
+                                        "Failed to set SO_RCVBUF"
+                                    );
+                                }
                                 info!(
                                     target: "nativelink::services",
                                     ?remote_addr,
@@ -707,6 +741,107 @@ async fn inner_main(
             }
             // Unreachable
         }));
+        } // end ListenerConfig::Http
+
+        #[cfg(feature = "quic")]
+        ListenerConfig::Http3(h3_config) => {
+            let socket_addr = h3_config
+                .socket_address
+                .parse::<SocketAddr>()
+                .map_err(|e| {
+                    make_input_err!("Invalid address '{}' - {e:?}", h3_config.socket_address)
+                })?;
+
+            // Load TLS cert + key for QUIC (TLS 1.3 is mandatory).
+            let cert_pem = std::fs::read(&h3_config.cert_file)
+                .err_tip(|| format!("Could not read cert file {}", h3_config.cert_file))?;
+            let key_pem = std::fs::read(&h3_config.key_file)
+                .err_tip(|| format!("Could not read key file {}", h3_config.key_file))?;
+
+            let certs: Vec<CertificateDer<'static>> =
+                CertificateDer::pem_reader_iter(&mut &cert_pem[..])
+                    .collect::<Result<_, _>>()
+                    .err_tip(|| "Could not parse PEM certs for QUIC")?;
+            let key = PrivateKeyDer::from_pem_reader(&mut &key_pem[..])
+                .err_tip(|| "Could not parse PEM key for QUIC")?;
+
+            use tokio_rustls::rustls as rustls;
+            let mut tls_config = rustls::ServerConfig::builder_with_provider(
+                rustls::crypto::aws_lc_rs::default_provider().into(),
+            )
+            .with_safe_default_protocol_versions()
+            .map_err(|e| make_err!(Code::Internal, "QUIC TLS version error: {e:?}"))?
+            .with_no_client_auth()
+            .with_single_cert(certs, key)
+            .map_err(|e| make_err!(Code::Internal, "QUIC TLS config error: {e:?}"))?;
+            tls_config.alpn_protocols = vec![b"h3".to_vec()];
+            tls_config.max_early_data_size = u32::MAX;
+
+            let mut quic_server_config = quinn::ServerConfig::with_crypto(Arc::new(
+                quinn::crypto::rustls::QuicServerConfig::try_from(Arc::new(tls_config))
+                    .map_err(|e| make_err!(Code::Internal, "Quinn server config error: {e:?}"))?,
+            ));
+
+            // Tune QUIC transport for 10 GbE LAN (~0.5ms RTT).
+            // BDP = 1.25 GB/s × 0.5ms ≈ 625 KB. Use generous windows to
+            // handle bursts and multiple concurrent streams.
+            let mut transport = quinn::TransportConfig::default();
+            transport.stream_receive_window((16 * 1024 * 1024u32).into()); // 16 MiB per stream (vs 1 MiB)
+            transport.receive_window((64 * 1024 * 1024u32).into()); // 64 MiB connection (vs 24 MiB)
+            transport.send_window(64 * 1024 * 1024); // 64 MiB (vs 24 MiB)
+            transport.max_concurrent_bidi_streams(1024u32.into()); // vs 256
+            transport.max_concurrent_uni_streams(1024u32.into());
+            transport.initial_rtt(Duration::from_micros(500)); // 0.5ms LAN RTT (vs 333ms)
+            quic_server_config.transport_config(Arc::new(transport));
+
+            // Pre-create UDP socket with large buffers for 10 GbE.
+            // quinn-udp defaults to ~2 MiB; we want 8 MiB for burst absorption.
+            let udp_socket = std::net::UdpSocket::bind(socket_addr)
+                .map_err(|e| make_err!(Code::Internal, "QUIC UDP bind on {socket_addr}: {e:?}"))?;
+            {
+                const QUIC_UDP_BUF: usize = 8 * 1024 * 1024;
+                let sock_ref = socket2::SockRef::from(&udp_socket);
+                if let Err(err) = sock_ref.set_send_buffer_size(QUIC_UDP_BUF) {
+                    warn!(?err, "Failed to set QUIC SO_SNDBUF");
+                }
+                if let Err(err) = sock_ref.set_recv_buffer_size(QUIC_UDP_BUF) {
+                    warn!(?err, "Failed to set QUIC SO_RCVBUF");
+                }
+            }
+
+            let quinn_endpoint = quinn::Endpoint::new(
+                quinn::EndpointConfig::default(),
+                Some(quic_server_config),
+                udp_socket,
+                quinn::default_runtime().ok_or_else(|| {
+                    make_err!(Code::Internal, "No async runtime for QUIC endpoint")
+                })?,
+            )
+            .map_err(|e| make_err!(Code::Internal, "Failed to create QUIC endpoint: {e:?}"))?;
+
+            // Build tonic Routes from the same services.
+            let routes = tonic_services;
+            let acceptor = tonic_h3::quinn::H3QuinnAcceptor::new(quinn_endpoint.clone());
+            let h3_router = tonic_h3::server::H3Router::new(routes);
+
+            info!("Ready, listening on {socket_addr} (QUIC/HTTP3)");
+            root_futures.push(Box::pin(async move {
+                if let Err(err) = h3_router.serve(acceptor).await {
+                    error!(?err, "QUIC/HTTP3 server error");
+                }
+                Ok(())
+            }));
+        }
+
+        #[cfg(not(feature = "quic"))]
+        ListenerConfig::Http3(_) => {
+            return Err(make_err!(
+                Code::InvalidArgument,
+                "HTTP3/QUIC listener configured but the 'quic' feature is not enabled. \
+                 Rebuild with: cargo build --features quic"
+            ));
+        }
+        } // end match server_cfg.listener
     }
 
     {

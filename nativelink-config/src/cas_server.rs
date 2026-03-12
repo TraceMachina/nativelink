@@ -528,6 +528,36 @@ pub struct HttpServerConfig {
 pub enum ListenerConfig {
     /// Listener for HTTP/HTTPS/HTTP2 sockets.
     Http(HttpListener),
+
+    /// Listener for QUIC/HTTP3 sockets. Requires TLS (mandatory in QUIC).
+    /// Use self-signed certs with `skip_cert_verification` for internal networks.
+    Http3(Http3Listener),
+}
+
+#[derive(Deserialize, Serialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct Http3Listener {
+    /// UDP address to listen on. Example: `0.0.0.0:50051`
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub socket_address: String,
+
+    /// TLS certificate file (PEM). Required for QUIC.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub cert_file: String,
+
+    /// TLS private key file (PEM). Required for QUIC.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub key_file: String,
+
+    /// Maximum number of bytes to decode on each inbound gRPC message.
+    /// Default: 4 MiB
+    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
+    pub max_decoding_message_size: usize,
+
+    /// Maximum number of bytes to encode on each outbound gRPC message.
+    /// Default: 4 MiB
+    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
+    pub max_encoding_message_size: usize,
 }
 
 #[derive(Deserialize, Serialize, Debug, Default)]
@@ -926,7 +956,7 @@ pub struct DirectoryCacheConfig {
 }
 
 const fn default_direct_use_mode() -> bool {
-    false
+    true
 }
 
 const fn default_directory_cache_max_entries() -> usize {

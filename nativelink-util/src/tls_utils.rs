@@ -192,3 +192,198 @@ pub fn endpoint(endpoint_config: &GrpcEndpoint) -> Result<tonic::transport::Endp
 
     Ok(endpoint)
 }
+
+/// Clone-able QUIC/HTTP3 channel for gRPC clients.
+///
+/// `tonic_h3::H3Channel` wraps a `BoxService` internally and doesn't
+/// implement `Clone`, but tonic generated clients require `T: Clone`.
+/// This wrapper stores the Clone-able `H3QuinnConnector` + `Uri` and
+/// creates a fresh `H3Channel` for each RPC call. This is cheap since
+/// `H3Channel::new()` just wraps the connector in a BoxService with
+/// no network I/O — actual QUIC connections are managed at the
+/// `quinn::Endpoint` level (which is Arc-based).
+#[cfg(feature = "quic")]
+#[derive(Clone)]
+pub struct QuicChannel {
+    connector: tonic_h3::quinn::H3QuinnConnector,
+    uri: Uri,
+}
+
+#[cfg(feature = "quic")]
+impl std::fmt::Debug for QuicChannel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QuicChannel")
+            .field("uri", &self.uri)
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(feature = "quic")]
+impl tower::Service<hyper::Request<tonic::body::Body>> for QuicChannel {
+    type Response = <tonic_h3::H3Channel<tonic_h3::quinn::H3QuinnConnector> as tower::Service<
+        hyper::Request<tonic::body::Body>,
+    >>::Response;
+    type Error = <tonic_h3::H3Channel<tonic_h3::quinn::H3QuinnConnector> as tower::Service<
+        hyper::Request<tonic::body::Body>,
+    >>::Error;
+    type Future = <tonic_h3::H3Channel<tonic_h3::quinn::H3QuinnConnector> as tower::Service<
+        hyper::Request<tonic::body::Body>,
+    >>::Future;
+
+    fn poll_ready(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, req: hyper::Request<tonic::body::Body>) -> Self::Future {
+        let mut inner =
+            tonic_h3::H3Channel::new(self.connector.clone(), self.uri.clone());
+        tower::Service::call(&mut inner, req)
+    }
+}
+
+/// Create a QUIC/HTTP3 channel for a gRPC endpoint.
+///
+/// QUIC mandates TLS 1.3 — we skip server certificate verification for
+/// internal networks (self-signed certs). QUIC multiplexes internally
+/// so a single channel replaces the multi-connection pool used by TCP.
+#[cfg(feature = "quic")]
+pub fn h3_channel(endpoint_config: &GrpcEndpoint) -> Result<QuicChannel, Error> {
+    use std::sync::Arc;
+    use h3_quinn as _;
+
+    let uri: Uri = endpoint_config
+        .address
+        .parse()
+        .map_err(|e| make_input_err!("Invalid URI for QUIC endpoint: {e:?}"))?;
+
+    let server_name = uri
+        .host()
+        .ok_or_else(|| make_input_err!("QUIC endpoint URI has no host: {}", uri))?
+        .to_string();
+
+    // Build rustls ClientConfig with no cert verification (internal network).
+    let mut tls_config = rustls::ClientConfig::builder_with_provider(
+        rustls::crypto::aws_lc_rs::default_provider().into(),
+    )
+    .with_safe_default_protocol_versions()
+    .map_err(|e| make_err!(Code::Internal, "QUIC TLS version error: {e:?}"))?
+    .dangerous()
+    .with_custom_certificate_verifier(Arc::new(NoCertVerification(
+        rustls::crypto::aws_lc_rs::default_provider(),
+    )))
+    .with_no_client_auth();
+
+    tls_config.enable_early_data = true;
+    tls_config.alpn_protocols = vec![b"h3".to_vec()];
+
+    let mut client_config = quinn::ClientConfig::new(Arc::new(
+        quinn::crypto::rustls::QuicClientConfig::try_from(tls_config)
+            .map_err(|e| make_err!(Code::Internal, "Quinn client config error: {e:?}"))?,
+    ));
+
+    // Tune QUIC transport for 10 GbE LAN (~0.5ms RTT).
+    // BDP = 1.25 GB/s × 0.5ms ≈ 625 KB. Use generous windows to
+    // handle bursts and concurrent streams without flow-control stalls.
+    let mut transport = quinn::TransportConfig::default();
+    transport.stream_receive_window((16 * 1024 * 1024u32).into()); // 16 MiB per stream (vs 1 MiB)
+    transport.receive_window((64 * 1024 * 1024u32).into()); // 64 MiB connection (vs 24 MiB)
+    transport.send_window(64 * 1024 * 1024); // 64 MiB (vs 24 MiB)
+    transport.max_concurrent_bidi_streams(1024u32.into()); // vs 256
+    transport.max_concurrent_uni_streams(1024u32.into());
+    transport.initial_rtt(Duration::from_micros(500)); // 0.5ms LAN RTT (vs 333ms default)
+    client_config.transport_config(Arc::new(transport));
+
+    // Pre-create UDP socket with large buffers for 10 GbE.
+    let udp_socket = std::net::UdpSocket::bind("[::]:0")
+        .map_err(|e| make_err!(Code::Internal, "QUIC client UDP bind: {e:?}"))?;
+    {
+        const QUIC_UDP_BUF: usize = 8 * 1024 * 1024;
+        let sock_ref = socket2::SockRef::from(&udp_socket);
+        if let Err(err) = sock_ref.set_send_buffer_size(QUIC_UDP_BUF) {
+            info!(?err, "Failed to set QUIC client SO_SNDBUF");
+        }
+        if let Err(err) = sock_ref.set_recv_buffer_size(QUIC_UDP_BUF) {
+            info!(?err, "Failed to set QUIC client SO_RCVBUF");
+        }
+    }
+
+    let mut client_endpoint = quinn::Endpoint::new(
+        quinn::EndpointConfig::default(),
+        None,
+        udp_socket,
+        quinn::default_runtime()
+            .ok_or_else(|| make_err!(Code::Internal, "No async runtime for QUIC client"))?,
+    )
+    .map_err(|e| make_err!(Code::Internal, "Failed to create QUIC client endpoint: {e:?}"))?;
+    client_endpoint.set_default_client_config(client_config);
+
+    let connector = tonic_h3::quinn::H3QuinnConnector::new(
+        uri.clone(),
+        server_name,
+        client_endpoint,
+    );
+
+    info!(
+        address = %endpoint_config.address,
+        "tls_utils::h3_channel: creating QUIC/HTTP3 channel",
+    );
+
+    Ok(QuicChannel { connector, uri })
+}
+
+/// Certificate verifier that accepts any server certificate.
+/// Used for internal networks with self-signed certs.
+#[cfg(feature = "quic")]
+#[derive(Debug)]
+struct NoCertVerification(rustls::crypto::CryptoProvider);
+
+#[cfg(feature = "quic")]
+impl rustls::client::danger::ServerCertVerifier for NoCertVerification {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.0.signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.0.signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.0
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
