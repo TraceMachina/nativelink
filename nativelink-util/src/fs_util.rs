@@ -52,13 +52,15 @@ pub async fn hardlink_directory_tree(src_dir: &Path, dst_dir: &Path) -> Result<(
 
 /// Uses macOS `clonefile(2)` to CoW-clone an entire directory tree in one syscall.
 /// Handles pre-existing (empty) destination by removing it first.
-/// After cloning, makes all directories writable (0o755) since the clone
-/// inherits the cache's read-only (0o555) permissions.
+///
+/// Cache directories are stored with writable permissions (0o755) on macOS,
+/// so the clone inherits those permissions directly — no post-clone chmod walk
+/// is needed. This works because clonefile creates CoW copies that are
+/// independent of the cache, so write-protection is unnecessary.
 #[cfg(target_os = "macos")]
 fn try_clonefile(src: &Path, dst: &Path) -> Result<(), Error> {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
-    use std::os::unix::fs::PermissionsExt;
 
     unsafe extern "C" {
         fn clonefile(
@@ -111,70 +113,6 @@ fn try_clonefile(src: &Path, dst: &Path) -> Result<(), Error> {
             src.display(),
             dst.display()
         ));
-    }
-
-    // The clone inherits the cache's read-only directory permissions (0o555).
-    // Actions need writable directories to create output files, so walk the
-    // cloned tree and make all directories writable.
-    make_dirs_writable_sync(dst)?;
-
-    Ok(())
-}
-
-/// Recursively makes all directories in a tree writable (0o755).
-/// Only touches directories — files keep their existing permissions.
-#[cfg(target_os = "macos")]
-fn make_dirs_writable_sync(path: &Path) -> Result<(), Error> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let metadata = std::fs::symlink_metadata(path).map_err(|e| {
-        make_err!(
-            nativelink_error::Code::Internal,
-            "Failed to get metadata for {}: {e}",
-            path.display()
-        )
-    })?;
-
-    if !metadata.is_dir() {
-        return Ok(());
-    }
-
-    // Make this directory writable
-    let mut perms = metadata.permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(path, perms).map_err(|e| {
-        make_err!(
-            nativelink_error::Code::Internal,
-            "Failed to chmod directory {}: {e}",
-            path.display()
-        )
-    })?;
-
-    // Recurse into subdirectories only (skip files and symlinks)
-    for entry in std::fs::read_dir(path).map_err(|e| {
-        make_err!(
-            nativelink_error::Code::Internal,
-            "Failed to read directory {}: {e}",
-            path.display()
-        )
-    })? {
-        let entry = entry.map_err(|e| {
-            make_err!(
-                nativelink_error::Code::Internal,
-                "Failed to read entry in {}: {e}",
-                path.display()
-            )
-        })?;
-        let ft = entry.file_type().map_err(|e| {
-            make_err!(
-                nativelink_error::Code::Internal,
-                "Failed to get file type for {:?}: {e}",
-                entry.path()
-            )
-        })?;
-        if ft.is_dir() {
-            make_dirs_writable_sync(&entry.path())?;
-        }
     }
 
     Ok(())
