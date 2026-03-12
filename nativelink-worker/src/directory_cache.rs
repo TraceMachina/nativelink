@@ -28,7 +28,7 @@ use nativelink_store::ac_utils::get_and_decode_digest;
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::{FileEntry, FilesystemStore};
 use nativelink_util::common::DigestInfo;
-use nativelink_util::fs_util::hardlink_directory_tree;
+use nativelink_util::fs_util::{CloneMethod, hardlink_directory_tree};
 #[cfg(target_os = "macos")]
 use nativelink_util::fs_util::calculate_directory_size;
 #[cfg(not(target_os = "macos"))]
@@ -156,6 +156,10 @@ pub struct DirectoryCacheConfig {
     pub max_size_bytes: u64,
     /// Base directory for cache storage
     pub cache_root: PathBuf,
+    /// When true, use the cache directory directly via symlinks instead of
+    /// hardlinking/cloning. Eliminates copy overhead; subtrees are reused
+    /// via symlinks from the new cache entry to existing cached subtrees.
+    pub direct_use_mode: bool,
 }
 
 impl Default for DirectoryCacheConfig {
@@ -164,6 +168,7 @@ impl Default for DirectoryCacheConfig {
             max_entries: 1000,
             max_size_bytes: 10 * 1024 * 1024 * 1024, // 10 GB
             cache_root: std::env::temp_dir().join("nativelink_directory_cache"),
+            direct_use_mode: true,
         }
     }
 }
@@ -258,6 +263,13 @@ pub struct DirectoryCache {
     miss_count: AtomicU64,
     /// Cumulative subtree hit count for stats logging
     subtree_hit_count: AtomicU64,
+    /// Cumulative hit-via-clonefile count
+    hit_clonefile_count: AtomicU64,
+    /// Cumulative hit-via-hardlink count
+    hit_hardlink_count: AtomicU64,
+    /// When true, use the cache directory directly via symlinks instead of
+    /// hardlinking/cloning. See `DirectoryCacheConfig::direct_use_mode`.
+    direct_use_mode: bool,
 }
 
 /// Accumulated subtree digest changes between periodic reports.
@@ -297,6 +309,7 @@ impl DirectoryCache {
         });
 
         let has_fast_path = fast_slow_store.is_some() && filesystem_store.is_some();
+        let direct_use_mode = config.direct_use_mode;
 
         if has_fast_path {
             info!(
@@ -304,6 +317,7 @@ impl DirectoryCache {
                 max_entries = config.max_entries,
                 max_size_bytes = config.max_size_bytes,
                 fast_path = true,
+                direct_use_mode,
                 "DirectoryCache initialized: using fast download_to_directory path for cache misses",
             );
         } else if fast_slow_store.is_some() {
@@ -311,6 +325,7 @@ impl DirectoryCache {
                 cache_root = %config.cache_root.display(),
                 max_entries = config.max_entries,
                 max_size_bytes = config.max_size_bytes,
+                direct_use_mode,
                 "DirectoryCache initialized: FastSlowStore provided but could not extract FilesystemStore; falling back to serial construction",
             );
         } else {
@@ -319,6 +334,7 @@ impl DirectoryCache {
                 max_entries = config.max_entries,
                 max_size_bytes = config.max_size_bytes,
                 fast_path = false,
+                direct_use_mode,
                 "DirectoryCache initialized: no FastSlowStore, using serial construction",
             );
         }
@@ -470,6 +486,9 @@ impl DirectoryCache {
             hit_count: AtomicU64::new(0),
             miss_count: AtomicU64::new(0),
             subtree_hit_count: AtomicU64::new(0),
+            hit_clonefile_count: AtomicU64::new(0),
+            hit_hardlink_count: AtomicU64::new(0),
+            direct_use_mode,
         })
     }
 
@@ -495,6 +514,411 @@ impl DirectoryCache {
         let added: Vec<DigestInfo> = pending.added.drain().collect();
         let removed: Vec<DigestInfo> = pending.removed.drain().collect();
         (added, removed)
+    }
+
+    /// Returns whether direct-use mode is enabled.
+    pub fn is_direct_use_mode(&self) -> bool {
+        self.direct_use_mode
+    }
+
+    /// Gets or creates a directory in the cache, then symlinks `dest_path` to
+    /// the cache directory. The cache entry's `ref_count` is incremented for
+    /// the entire action lifetime (caller MUST call `release_direct_use` on
+    /// cleanup).
+    ///
+    /// In direct-use mode, subtree reuse is done via symlinks from the new
+    /// cache entry to already-cached subtree directories, instead of
+    /// hardlinks/clonefiles.
+    ///
+    /// # Returns
+    /// * `Ok((cache_path, was_hit))` - The cache directory path and whether it was a hit.
+    pub async fn get_or_create_direct(
+        &self,
+        digest: DigestInfo,
+        dest_path: &Path,
+    ) -> Result<(PathBuf, bool), Error> {
+        let overall_start = Instant::now();
+
+        // Fast path: check if already in cache (read lock only for the lookup)
+        if let Some(cache_path) = self.try_symlink_cached(&digest, dest_path).await? {
+            let hits = self.hit_count.fetch_add(1, Ordering::Relaxed) + 1;
+            let misses = self.miss_count.load(Ordering::Relaxed);
+            let total = hits + misses;
+            let hit_rate = if total > 0 { (hits as f64 / total as f64) * 100.0 } else { 0.0 };
+            info!(
+                hash = %&digest.packed_hash().to_string()[..12],
+                elapsed_ms = overall_start.elapsed().as_millis() as u64,
+                hits,
+                misses,
+                hit_rate = format!("{hit_rate:.1}%"),
+                "DirectoryCache DIRECT-USE HIT (symlinked to cache)",
+            );
+            return Ok((cache_path, true));
+        }
+
+        let misses = self.miss_count.fetch_add(1, Ordering::Relaxed) + 1;
+        let hits = self.hit_count.load(Ordering::Relaxed);
+        let total = hits + misses;
+        let hit_rate = if total > 0 { (hits as f64 / total as f64) * 100.0 } else { 0.0 };
+        info!(
+            hash = %&digest.packed_hash().to_string()[..12],
+            size_bytes = digest.size_bytes(),
+            hits,
+            misses,
+            hit_rate = format!("{hit_rate:.1}%"),
+            has_fast_path = self.fast_slow_store.is_some() && self.filesystem_store.is_some(),
+            "DirectoryCache DIRECT-USE MISS, starting construction",
+        );
+
+        // Get or create construction lock to prevent stampede
+        let construction_lock = {
+            let mut locks = self.construction_locks.lock().await;
+            locks
+                .entry(digest)
+                .or_insert_with(|| Arc::new(Mutex::new(())))
+                .clone()
+        };
+
+        // Only one task constructs at a time for this digest
+        let _guard = construction_lock.lock().await;
+
+        // Double-check after acquiring lock -- another task may have just constructed it
+        if let Some(cache_path) = self.try_symlink_cached(&digest, dest_path).await? {
+            self.cleanup_construction_lock(&digest, &construction_lock);
+            return Ok((cache_path, true));
+        }
+
+        // Construct in a temp path, rename to final path on success.
+        let cache_path = self.get_cache_path(&digest);
+        let temp_path = self.config.cache_root.join(format!(
+            ".tmp-{digest}-{}-{}",
+            std::process::id(),
+            self.next_temp_id(),
+        ));
+
+        // Clean up any stale temp path from a previous crashed attempt
+        drop(fs::remove_dir_all(&temp_path).await);
+
+        let construction_result: Result<u64, Error> = async {
+            fs::create_dir_all(&temp_path).await.err_tip(|| {
+                format!("Failed to create temp dir: {}", temp_path.display())
+            })?;
+
+            // Step 1: Resolve the merkle tree if we have a FastSlowStore.
+            let resolved_tree = if let Some(fss) = &self.fast_slow_store {
+                match crate::running_actions_manager::resolve_directory_tree(fss, &digest).await {
+                    Ok(tree) => Some(tree),
+                    Err(e) => {
+                        warn!(
+                            hash = %&digest.packed_hash().to_string()[..12],
+                            ?e,
+                            "DirectoryCache direct-use: failed to resolve directory tree, skipping subtree matching",
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
+            // Step 2: Check for cached subtrees.
+            let subtree_hits: HashMap<DigestInfo, PathBuf> = if let Some(tree) = &resolved_tree {
+                let index = self.subtree_index.read().await;
+                let mut hits = HashMap::new();
+                for dir_digest in tree.keys() {
+                    if *dir_digest == digest {
+                        continue;
+                    }
+                    if let Some(cached_path) = index.get(dir_digest) {
+                        if cached_path.exists() {
+                            hits.insert(*dir_digest, cached_path.clone());
+                        }
+                    }
+                }
+                hits
+            } else {
+                HashMap::new()
+            };
+
+            if !subtree_hits.is_empty() {
+                let subtree_count = subtree_hits.len();
+                let total_dirs = resolved_tree.as_ref().map_or(0, |t| t.len());
+                self.subtree_hit_count.fetch_add(subtree_count as u64, Ordering::Relaxed);
+                info!(
+                    hash = %&digest.packed_hash().to_string()[..12],
+                    subtree_hits = subtree_count,
+                    total_dirs,
+                    "DirectoryCache direct-use: found cached subtrees, will symlink",
+                );
+            }
+
+            // Step 3: Build the directory tree.
+            // In direct-use mode, subtree reuse creates symlinks instead of
+            // hardlinks/clonefile.
+            if let Some(tree) = &resolved_tree {
+                if !subtree_hits.is_empty() {
+                    self.construct_with_subtrees_direct(
+                        &digest,
+                        tree,
+                        &subtree_hits,
+                        &temp_path,
+                    )
+                    .await
+                    .err_tip(|| "Failed subtree-aware direct-use construction")?;
+                } else {
+                    self.construct_full(&digest, &temp_path).await
+                        .err_tip(|| "Failed full construction in direct-use mode")?;
+                }
+            } else {
+                self.construct_full(&digest, &temp_path).await
+                    .err_tip(|| "Failed full construction in direct-use mode (no resolved tree)")?;
+            }
+
+            // Step 4: Store merkle tree metadata alongside the cache entry.
+            if let Some(tree) = &resolved_tree {
+                let merkle_meta = MerkleTreeMetadata::from_directory_tree(tree, &digest);
+                let merkle_path = temp_path.join(MERKLE_METADATA_FILENAME);
+                let serialized = merkle_meta.serialize();
+                if let Err(e) = fs::write(&merkle_path, serialized.as_bytes()).await {
+                    warn!(
+                        hash = %&digest.packed_hash().to_string()[..12],
+                        ?e,
+                        "DirectoryCache direct-use: failed to write merkle metadata",
+                    );
+                }
+            }
+
+            // Calculate size. On macOS, cache dirs stay writable (0o755).
+            // On other platforms, set read-only permissions in the same pass.
+            let finalize_start = Instant::now();
+            #[cfg(target_os = "macos")]
+            let size = calculate_directory_size(&temp_path).await
+                .err_tip(|| "Failed to calculate size for cache directory")?;
+            #[cfg(not(target_os = "macos"))]
+            let size = set_readonly_and_calculate_size(&temp_path).await
+                .err_tip(|| "Failed to set readonly and calculate size for cache directory")?;
+            info!(
+                hash = %&digest.packed_hash().to_string()[..12],
+                size_bytes = size,
+                size_mb = format!("{:.2}", size as f64 / (1024.0 * 1024.0)),
+                elapsed_ms = finalize_start.elapsed().as_millis() as u64,
+                "DirectoryCache direct-use: finalize cache entry completed",
+            );
+
+            // Rename temp to final cache path (same as hardlink mode).
+            #[cfg(all(unix, not(target_os = "macos")))]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = fs::metadata(&temp_path).await
+                    .err_tip(|| "Failed to get temp dir metadata before rename")?
+                    .permissions();
+                perms.set_mode(0o755);
+                fs::set_permissions(&temp_path, perms).await
+                    .err_tip(|| "Failed to make temp dir writable before rename")?;
+            }
+            fs::rename(&temp_path, &cache_path).await.err_tip(|| {
+                format!(
+                    "Failed to rename temp dir {} to cache path {}",
+                    temp_path.display(),
+                    cache_path.display()
+                )
+            })?;
+            #[cfg(all(unix, not(target_os = "macos")))]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = fs::metadata(&cache_path).await
+                    .err_tip(|| "Failed to get cache dir metadata after rename")?
+                    .permissions();
+                perms.set_mode(0o555);
+                fs::set_permissions(&cache_path, perms).await
+                    .err_tip(|| "Failed to lock down cache dir after rename")?;
+            }
+
+            // Step 5: Update the subtree index.
+            if let Some(tree) = &resolved_tree {
+                let merkle_meta = MerkleTreeMetadata::from_directory_tree(tree, &digest);
+                let mut index = self.subtree_index.write().await;
+                for (sub_digest, relpath) in &merkle_meta.digest_to_relpath {
+                    let abs_path = if relpath.is_empty() {
+                        cache_path.clone()
+                    } else {
+                        cache_path.join(relpath)
+                    };
+                    index.insert(*sub_digest, abs_path);
+                }
+                drop(index);
+                self.record_subtree_insertion(&merkle_meta).await;
+            }
+
+            Ok(size)
+        }
+        .await;
+
+        let size = match construction_result {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(
+                    hash = %&digest.packed_hash().to_string()[..12],
+                    ?e,
+                    elapsed_ms = overall_start.elapsed().as_millis() as u64,
+                    "DirectoryCache DIRECT-USE MISS construction FAILED",
+                );
+                Self::remove_readonly_dir(&temp_path).await;
+                self.cleanup_construction_lock(&digest, &construction_lock);
+                return Err(e);
+            }
+        };
+
+        // Insert with ref_count=1 (held for the action's lifetime).
+        let (evicted_paths, cache_entries, cache_total_size) = {
+            let mut cache = self.cache.write().await;
+            let evicted = self.collect_evictions(size, &mut cache);
+            cache.insert(
+                digest,
+                CachedDirectoryMetadata {
+                    path: cache_path.clone(),
+                    size,
+                    last_access_millis: AtomicU64::new(
+                        SystemTime::now()
+                            .duration_since(SystemTime::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as u64,
+                    ),
+                    ref_count: AtomicUsize::new(1),
+                },
+            );
+            let total_size: u64 = cache.values().map(|m| m.size).sum();
+            (evicted, cache.len(), total_size)
+        };
+
+        info!(
+            hash = %&digest.packed_hash().to_string()[..12],
+            size_bytes = size,
+            size_mb = format!("{:.2}", size as f64 / (1024.0 * 1024.0)),
+            cache_entries,
+            cache_total_size_mb = format!("{:.2}", cache_total_size as f64 / (1024.0 * 1024.0)),
+            evicted_count = evicted_paths.len(),
+            elapsed_ms = overall_start.elapsed().as_millis() as u64,
+            "DirectoryCache DIRECT-USE MISS construction complete, inserted into cache",
+        );
+
+        // Delete evicted directories outside the lock.
+        if !evicted_paths.is_empty() {
+            let mut index = self.subtree_index.write().await;
+            for path in &evicted_paths {
+                self.remove_subtree_index_for_path(path, &mut index).await;
+            }
+            drop(index);
+            for path in evicted_paths {
+                Self::remove_readonly_dir(&path).await;
+            }
+        }
+
+        // Create symlink: dest_path -> cache_path
+        let symlink_start = Instant::now();
+        #[cfg(unix)]
+        fs::symlink(&cache_path, dest_path).await.err_tip(|| {
+            format!(
+                "Failed to symlink {} -> {}",
+                dest_path.display(),
+                cache_path.display()
+            )
+        })?;
+        #[cfg(not(unix))]
+        {
+            // On non-unix, fall back to junction or directory symlink
+            fs::symlink_dir(&cache_path, dest_path).await.err_tip(|| {
+                format!(
+                    "Failed to symlink_dir {} -> {}",
+                    dest_path.display(),
+                    cache_path.display()
+                )
+            })?;
+        }
+
+        info!(
+            hash = %&digest.packed_hash().to_string()[..12],
+            symlink_ms = symlink_start.elapsed().as_millis() as u64,
+            total_ms = overall_start.elapsed().as_millis() as u64,
+            src = %cache_path.display(),
+            dst = %dest_path.display(),
+            "DirectoryCache direct-use: symlinked newly constructed directory to dest",
+        );
+
+        // Drop the construction lock guard before cleanup
+        drop(_guard);
+        self.cleanup_construction_lock(&digest, &construction_lock);
+
+        Ok((cache_path, false))
+    }
+
+    /// Attempts to symlink a cached directory to dest for direct-use mode.
+    /// Increments ref_count on hit (held for action lifetime).
+    /// Returns `Ok(Some(cache_path))` on hit, `Ok(None)` on miss.
+    async fn try_symlink_cached(
+        &self,
+        digest: &DigestInfo,
+        dest_path: &Path,
+    ) -> Result<Option<PathBuf>, Error> {
+        let src_path = {
+            let cache = self.cache.read().await;
+            let Some(metadata) = cache.get(digest) else {
+                return Ok(None);
+            };
+            metadata.touch();
+            metadata.ref_count.fetch_add(1, Ordering::Relaxed);
+            metadata.path.clone()
+        };
+
+        // Create symlink: dest_path -> src_path
+        #[cfg(unix)]
+        let symlink_result = fs::symlink(&src_path, dest_path).await;
+        #[cfg(not(unix))]
+        let symlink_result = fs::symlink_dir(&src_path, dest_path).await;
+
+        match symlink_result {
+            Ok(()) => {
+                info!(
+                    hash = %&digest.packed_hash().to_string()[..12],
+                    src = %src_path.display(),
+                    dst = %dest_path.display(),
+                    "DirectoryCache direct-use: symlink from cache succeeded",
+                );
+                Ok(Some(src_path))
+            }
+            Err(e) => {
+                // Decrement ref_count on failure
+                let cache = self.cache.read().await;
+                if let Some(metadata) = cache.get(digest) {
+                    metadata.ref_count.fetch_sub(1, Ordering::Relaxed);
+                }
+                warn!(
+                    hash = %&digest.packed_hash().to_string()[..12],
+                    error = ?e,
+                    "DirectoryCache direct-use: symlink from cache FAILED, will reconstruct",
+                );
+                Ok(None)
+            }
+        }
+    }
+
+    /// Releases a direct-use reference on a cache entry. Must be called once
+    /// per successful `get_or_create_direct()` call when the action completes.
+    pub async fn release_direct_use(&self, digest: &DigestInfo) {
+        let cache = self.cache.read().await;
+        if let Some(metadata) = cache.get(digest) {
+            let prev = metadata.ref_count.fetch_sub(1, Ordering::Relaxed);
+            debug!(
+                hash = %&digest.packed_hash().to_string()[..12],
+                prev_ref_count = prev,
+                "DirectoryCache direct-use: released ref_count",
+            );
+        } else {
+            warn!(
+                hash = %&digest.packed_hash().to_string()[..12],
+                "DirectoryCache direct-use: release_direct_use called but entry not in cache (evicted?)",
+            );
+        }
     }
 
     /// Records that subtree digests from a merkle tree were added (new cache entry).
@@ -549,18 +973,27 @@ impl DirectoryCache {
         let overall_start = Instant::now();
 
         // Fast path: check if already in cache (read lock only for the lookup)
-        if self.try_hardlink_cached(&digest, dest_path).await? {
+        if let Some(method) = self.try_hardlink_cached(&digest, dest_path).await? {
             let hits = self.hit_count.fetch_add(1, Ordering::Relaxed) + 1;
             let misses = self.miss_count.load(Ordering::Relaxed);
             let total = hits + misses;
             let hit_rate = if total > 0 { (hits as f64 / total as f64) * 100.0 } else { 0.0 };
+            let clonefiles = self.hit_clonefile_count.load(Ordering::Relaxed);
+            let hardlinks = self.hit_hardlink_count.load(Ordering::Relaxed);
+            let method_str = match method {
+                CloneMethod::Clonefile => "clonefile",
+                CloneMethod::Hardlink => "hardlink",
+            };
             info!(
                 hash = %&digest.packed_hash().to_string()[..12],
                 elapsed_ms = overall_start.elapsed().as_millis() as u64,
+                method = method_str,
                 hits,
                 misses,
                 hit_rate = format!("{hit_rate:.1}%"),
-                "DirectoryCache HIT (hardlinked from cache)",
+                clonefiles,
+                hardlinks,
+                "DirectoryCache HIT (cloned from cache)",
             );
             return Ok(true);
         }
@@ -592,7 +1025,7 @@ impl DirectoryCache {
         let _guard = construction_lock.lock().await;
 
         // Double-check after acquiring lock — another task may have just constructed it
-        if self.try_hardlink_cached(&digest, dest_path).await? {
+        if self.try_hardlink_cached(&digest, dest_path).await?.is_some() {
             self.cleanup_construction_lock(&digest, &construction_lock);
             return Ok(true);
         }
@@ -859,12 +1292,17 @@ impl DirectoryCache {
         self.cleanup_construction_lock(&digest, &construction_lock);
 
         match &hardlink_result {
-            Ok(()) => {
+            Ok(method) => {
+                let method_str = match method {
+                    CloneMethod::Clonefile => "clonefile",
+                    CloneMethod::Hardlink => "hardlink",
+                };
                 info!(
                     hash = %&digest.packed_hash().to_string()[..12],
                     hardlink_ms = hardlink_elapsed.as_millis() as u64,
                     total_ms = overall_start.elapsed().as_millis() as u64,
-                    "DirectoryCache: hardlinked newly constructed directory to dest",
+                    method = method_str,
+                    "DirectoryCache: cloned newly constructed directory to dest",
                 );
             }
             Err(e) => {
@@ -883,13 +1321,13 @@ impl DirectoryCache {
     }
 
     /// Attempts to hardlink a cached directory to dest, guarding eviction with ref_count.
-    /// Returns `Ok(true)` on cache hit + successful hardlink, `Ok(false)` on cache miss
-    /// or failed hardlink (caller should fall through to reconstruction).
+    /// Returns `Ok(Some(method))` on cache hit + successful clone/hardlink,
+    /// `Ok(None)` on cache miss or failed hardlink (caller falls through to reconstruction).
     async fn try_hardlink_cached(
         &self,
         digest: &DigestInfo,
         dest_path: &Path,
-    ) -> Result<bool, Error> {
+    ) -> Result<Option<CloneMethod>, Error> {
         let (src_path, cached_size) = {
             // Read lock is sufficient — ref_count and last_access are atomic.
             let cache = self.cache.read().await;
@@ -898,7 +1336,7 @@ impl DirectoryCache {
                     hash = %&digest.packed_hash().to_string()[..12],
                     "DirectoryCache: not in cache (miss)",
                 );
-                return Ok(false);
+                return Ok(None);
             };
             metadata.touch();
             metadata.ref_count.fetch_add(1, Ordering::Relaxed);
@@ -924,14 +1362,27 @@ impl DirectoryCache {
         }
 
         match result {
-            Ok(()) => {
+            Ok(method) => {
+                let method_str = match method {
+                    CloneMethod::Clonefile => "clonefile",
+                    CloneMethod::Hardlink => "hardlink",
+                };
+                match method {
+                    CloneMethod::Clonefile => {
+                        self.hit_clonefile_count.fetch_add(1, Ordering::Relaxed);
+                    }
+                    CloneMethod::Hardlink => {
+                        self.hit_hardlink_count.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
                 info!(
                     hash = %&digest.packed_hash().to_string()[..12],
                     cached_size_bytes = cached_size,
                     hardlink_ms = hardlink_elapsed.as_millis() as u64,
-                    "DirectoryCache: hardlink from cache succeeded",
+                    method = method_str,
+                    "DirectoryCache: clone from cache succeeded",
                 );
-                Ok(true)
+                Ok(Some(method))
             }
             Err(e) => {
                 warn!(
@@ -940,7 +1391,7 @@ impl DirectoryCache {
                     hardlink_ms = hardlink_elapsed.as_millis() as u64,
                     "DirectoryCache: hardlink from cache FAILED, will reconstruct",
                 );
-                Ok(false)
+                Ok(None)
             }
         }
     }
@@ -1265,7 +1716,7 @@ impl DirectoryCache {
                 let (digest, src, dst, result) = join_result
                     .map_err(|e| make_err!(Code::Internal, "Subtree clone join error: {e}"))?;
                 match result {
-                    Ok(()) => {
+                    Ok(_method) => {
                         debug!(
                             child_hash = %&digest.packed_hash().to_string()[..12],
                             src = %src.display(),
@@ -1540,6 +1991,274 @@ impl DirectoryCache {
             files_downloaded = files_to_download.len(),
             elapsed_ms = elapsed.as_millis() as u64,
             "DirectoryCache: subtree-aware construction completed",
+        );
+
+        Ok(())
+    }
+
+    /// Subtree-aware construction for direct-use mode.
+    ///
+    /// Similar to `construct_with_subtrees`, but uses **symlinks** for cached
+    /// subtrees instead of hardlinks/clonefiles. This means the new cache
+    /// entry's subdirectory is a symlink pointing at the existing cached
+    /// subtree directory, rather than a copy of it.
+    ///
+    /// Files in non-cached portions are still hardlinked from the CAS (or
+    /// fetched via serial fallback).
+    async fn construct_with_subtrees_direct(
+        &self,
+        root_digest: &DigestInfo,
+        tree: &HashMap<DigestInfo, ProtoDirectory>,
+        subtree_hits: &HashMap<DigestInfo, PathBuf>,
+        dest_path: &Path,
+    ) -> Result<(), Error> {
+        let construction_start = Instant::now();
+
+        let mut queue = VecDeque::new();
+        queue.push_back((*root_digest, dest_path.to_path_buf()));
+
+        let mut dirs_created = 0usize;
+        let mut subtrees_symlinked = 0usize;
+        let mut files_to_download = Vec::new();
+        let mut proto_symlinks_to_create: Vec<(String, PathBuf)> = Vec::new();
+
+        while let Some((dir_digest, dir_path)) = queue.pop_front() {
+            let directory = tree.get(&dir_digest).ok_or_else(|| {
+                make_err!(
+                    Code::Internal,
+                    "Directory {:?} not found in resolved tree during direct-use subtree construction",
+                    dir_digest
+                )
+            })?;
+
+            // Process subdirectories
+            for subdir_node in &directory.directories {
+                Self::validate_node_name(&subdir_node.name)?;
+                let child_digest: DigestInfo = subdir_node
+                    .digest
+                    .as_ref()
+                    .ok_or_else(|| {
+                        make_err!(Code::InvalidArgument, "Directory node missing digest")
+                    })?
+                    .try_into()
+                    .err_tip(|| "Invalid directory digest in direct-use subtree construction")?;
+
+                let child_path = dir_path.join(&subdir_node.name);
+
+                if let Some(cached_path) = subtree_hits.get(&child_digest) {
+                    // Subtree hit: create a symlink instead of clonefile/hardlink.
+                    #[cfg(unix)]
+                    fs::symlink(cached_path, &child_path).await.err_tip(|| {
+                        format!(
+                            "Failed to symlink subtree {} -> {}",
+                            child_path.display(),
+                            cached_path.display()
+                        )
+                    })?;
+                    #[cfg(not(unix))]
+                    fs::symlink_dir(cached_path, &child_path).await.err_tip(|| {
+                        format!(
+                            "Failed to symlink_dir subtree {} -> {}",
+                            child_path.display(),
+                            cached_path.display()
+                        )
+                    })?;
+                    subtrees_symlinked += 1;
+                    debug!(
+                        child_hash = %&child_digest.packed_hash().to_string()[..12],
+                        src = %cached_path.display(),
+                        dst = %child_path.display(),
+                        "DirectoryCache direct-use: symlinked cached subtree",
+                    );
+                    // Do NOT enqueue children -- the symlink covers the entire subtree.
+                    continue;
+                }
+
+                // No subtree hit -- create the directory and recurse.
+                fs::create_dir_all(&child_path).await.err_tip(|| {
+                    format!("Failed to create directory: {}", child_path.display())
+                })?;
+                dirs_created += 1;
+                queue.push_back((child_digest, child_path));
+            }
+
+            // Collect files that need to be downloaded for this (non-cached) directory.
+            for file_node in &directory.files {
+                Self::validate_node_name(&file_node.name)?;
+                let file_digest: DigestInfo = file_node
+                    .digest
+                    .as_ref()
+                    .ok_or_else(|| {
+                        make_err!(Code::InvalidArgument, "File node missing digest")
+                    })?
+                    .try_into()
+                    .err_tip(|| "Invalid file digest in direct-use subtree construction")?;
+
+                let file_path = dir_path.join(&file_node.name);
+                files_to_download.push((file_digest, file_path, file_node.is_executable));
+            }
+
+            // Collect proto-defined symlinks
+            for symlink_node in &directory.symlinks {
+                Self::validate_node_name(&symlink_node.name)?;
+                let link_path = dir_path.join(&symlink_node.name);
+                proto_symlinks_to_create.push((symlink_node.target.clone(), link_path));
+            }
+        }
+
+        info!(
+            hash = %&root_digest.packed_hash().to_string()[..12],
+            dirs_created,
+            subtrees_symlinked,
+            files_to_download = files_to_download.len(),
+            proto_symlinks = proto_symlinks_to_create.len(),
+            "DirectoryCache direct-use: subtree-aware construction plan",
+        );
+
+        // Create proto-defined symlinks
+        #[cfg(target_family = "unix")]
+        for (target, link_path) in &proto_symlinks_to_create {
+            fs::symlink(target, link_path)
+                .await
+                .err_tip(|| format!("Failed to create symlink: {} -> {}", link_path.display(), target))?;
+        }
+
+        // Download files (same logic as construct_with_subtrees)
+        if !files_to_download.is_empty() {
+            if let (Some(fss), Some(_fs_store)) = (&self.fast_slow_store, &self.filesystem_store) {
+                let fs_store_pin = Pin::new(
+                    fss.fast_store()
+                        .downcast_ref::<FilesystemStore>(None)
+                        .err_tip(|| "Could not downcast fast store to FilesystemStore")?,
+                );
+
+                // Check which blobs are already in the fast store.
+                let unique_digests: Vec<DigestInfo> = {
+                    let mut seen = HashSet::new();
+                    files_to_download
+                        .iter()
+                        .filter_map(|(d, _, _)| {
+                            if d.size_bytes() > 0 && seen.insert(*d) { Some(*d) } else { None }
+                        })
+                        .collect()
+                };
+                let store_keys: Vec<StoreKey<'_>> =
+                    unique_digests.iter().map(|d| (*d).into()).collect();
+                let mut has_results = vec![None; store_keys.len()];
+                Pin::new(fss.fast_store())
+                    .has_with_results(&store_keys, &mut has_results)
+                    .await
+                    .err_tip(|| "Batch has_with_results in direct-use subtree construction")?;
+
+                // Populate missing blobs into the fast store.
+                let missing: Vec<&DigestInfo> = unique_digests
+                    .iter()
+                    .zip(has_results.iter())
+                    .filter_map(|(d, r)| if r.is_none() { Some(d) } else { None })
+                    .collect();
+
+                if !missing.is_empty() {
+                    info!(
+                        hash = %&root_digest.packed_hash().to_string()[..12],
+                        missing = missing.len(),
+                        "DirectoryCache direct-use: fetching missing blobs",
+                    );
+                    let semaphore = Arc::new(tokio::sync::Semaphore::new(32));
+                    let mut join_set = tokio::task::JoinSet::new();
+                    for d in missing {
+                        let sem = semaphore.clone();
+                        let fss = fss.clone();
+                        let digest = *d;
+                        join_set.spawn(async move {
+                            let _permit = sem.acquire().await;
+                            let key: StoreKey<'_> = digest.into();
+                            fss.populate_fast_store_unchecked(key).await
+                                .err_tip(|| format!("Failed to populate fast store for {digest:?}"))
+                        });
+                    }
+                    while let Some(result) = join_set.join_next().await {
+                        result.map_err(|e| make_err!(Code::Internal, "Join error: {e}"))??;
+                    }
+                }
+
+                // Hardlink files from the fast store to their destination paths.
+                for (file_digest, file_path, is_executable) in &files_to_download {
+                    if file_digest.size_bytes() == 0 {
+                        fs::write(&file_path, b"")
+                            .await
+                            .err_tip(|| format!("Failed to create empty file: {}", file_path.display()))?;
+                    } else {
+                        let file_entry = fs_store_pin
+                            .get_file_entry_for_digest(file_digest)
+                            .await
+                            .err_tip(|| format!("Getting file entry for {:?}", file_digest))?;
+                        let dest = file_path.clone();
+                        file_entry
+                            .get_file_path_locked(|src_path| async move {
+                                fs::hard_link(&src_path, &dest)
+                                    .await
+                                    .err_tip(|| format!(
+                                        "Failed to hardlink {:?} to {}",
+                                        src_path,
+                                        dest.display(),
+                                    ))
+                            })
+                            .await?;
+                    }
+
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let meta = fs::metadata(&file_path).await
+                            .err_tip(|| "Failed to get file metadata for permission fix")?;
+                        let current_mode = meta.permissions().mode() & 0o777;
+                        let new_mode = if *is_executable {
+                            current_mode | 0o111
+                        } else {
+                            0o555
+                        };
+                        if new_mode != current_mode {
+                            let mut perms = meta.permissions();
+                            perms.set_mode(new_mode);
+                            fs::set_permissions(&file_path, perms).await
+                                .err_tip(|| "Failed to set file permission")?;
+                        }
+                    }
+                }
+            } else {
+                // Serial fallback: fetch each file from CAS individually.
+                for (file_digest, file_path, _is_executable) in &files_to_download {
+                    let data = self
+                        .cas_store
+                        .get_part_unchunked(StoreKey::Digest(*file_digest), 0, None)
+                        .await
+                        .err_tip(|| format!("Failed to fetch file: {}", file_path.display()))?;
+                    fs::write(&file_path, data.as_ref())
+                        .await
+                        .err_tip(|| format!("Failed to write file: {}", file_path.display()))?;
+
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let mut perms = fs::metadata(&file_path).await
+                            .err_tip(|| "Failed to get file metadata")?
+                            .permissions();
+                        perms.set_mode(0o555);
+                        fs::set_permissions(&file_path, perms).await
+                            .err_tip(|| "Failed to set file permissions")?;
+                    }
+                }
+            }
+        }
+
+        let elapsed = construction_start.elapsed();
+        info!(
+            hash = %&root_digest.packed_hash().to_string()[..12],
+            dirs_created,
+            subtrees_symlinked,
+            files_downloaded = files_to_download.len(),
+            elapsed_ms = elapsed.as_millis() as u64,
+            "DirectoryCache direct-use: subtree-aware construction completed",
         );
 
         Ok(())
@@ -2014,6 +2733,7 @@ mod tests {
             max_entries: 10,
             max_size_bytes: 1024 * 1024,
             cache_root,
+            direct_use_mode: false,
         };
 
         let cache = DirectoryCache::new(config, store, None).await?;
@@ -2047,6 +2767,7 @@ mod tests {
             max_entries: 10,
             max_size_bytes: 1024 * 1024,
             cache_root,
+            direct_use_mode: false,
         };
 
         let cache = DirectoryCache::new(config, store, None).await?;
@@ -2088,6 +2809,7 @@ mod tests {
             max_entries: 10,
             max_size_bytes: 1024 * 1024,
             cache_root: cache_root.clone(),
+            direct_use_mode: false,
         };
 
         let cache = DirectoryCache::new(config, store, None).await?;
@@ -2127,6 +2849,7 @@ mod tests {
             max_entries: 1,
             max_size_bytes: 0,
             cache_root,
+            direct_use_mode: false,
         };
 
         let cache = DirectoryCache::new(config, store, None).await?;
@@ -2172,6 +2895,7 @@ mod tests {
             max_entries: 10,
             max_size_bytes: 1024 * 1024,
             cache_root,
+            direct_use_mode: false,
         };
 
         let cache = Arc::new(DirectoryCache::new(config, store, None).await?);
@@ -2227,6 +2951,7 @@ mod tests {
             max_entries: 10,
             max_size_bytes: 1024 * 1024,
             cache_root,
+            direct_use_mode: false,
         };
 
         let cache = DirectoryCache::new(config, store, None).await?;
@@ -2253,6 +2978,7 @@ mod tests {
             max_entries: 1, // Only 1 entry allowed
             max_size_bytes: 0,
             cache_root: cache_root.clone(),
+            direct_use_mode: false,
         };
 
         let cache = DirectoryCache::new(config, store, None).await?;
@@ -2376,6 +3102,7 @@ mod tests {
             max_entries: 10,
             max_size_bytes: 1024 * 1024,
             cache_root,
+            direct_use_mode: false,
         };
         let cache = DirectoryCache::new(config, store, None).await?;
 
@@ -2423,6 +3150,7 @@ mod tests {
             max_entries: 10,
             max_size_bytes: 1024 * 1024,
             cache_root,
+            direct_use_mode: false,
         };
         let cache = DirectoryCache::new(config, store, None).await?;
 
@@ -2443,6 +3171,7 @@ mod tests {
             max_entries: 10,
             max_size_bytes: 1024 * 1024,
             cache_root,
+            direct_use_mode: false,
         };
 
         let cache = DirectoryCache::new(config, store, None).await?;
@@ -2472,6 +3201,7 @@ mod tests {
             max_entries: 100,       // High entry limit
             max_size_bytes: 20,     // Very small — forces size-based eviction
             cache_root: cache_root.clone(),
+            direct_use_mode: false,
         };
 
         let cache = DirectoryCache::new(config, store, None).await?;
@@ -2623,6 +3353,7 @@ mod tests {
             max_entries: 10,
             max_size_bytes: 1024 * 1024,
             cache_root: cache_root.clone(),
+            direct_use_mode: false,
         };
 
         let cache = DirectoryCache::new(config, store, None).await?;
@@ -2656,6 +3387,7 @@ mod tests {
             max_entries: 1,
             max_size_bytes: 0,
             cache_root: cache_root.clone(),
+            direct_use_mode: false,
         };
 
         let cache = DirectoryCache::new(config, store, None).await?;
@@ -2693,6 +3425,7 @@ mod tests {
                 max_entries: 10,
                 max_size_bytes: 1024 * 1024,
                 cache_root: cache_root.clone(),
+                direct_use_mode: false,
             };
             let cache = DirectoryCache::new(config, store.clone(), None).await?;
             let dest = temp_dir.path().join("dest1");
@@ -2707,6 +3440,7 @@ mod tests {
                 max_entries: 10,
                 max_size_bytes: 1024 * 1024,
                 cache_root: cache_root.clone(),
+                direct_use_mode: false,
             };
             let cache = DirectoryCache::new(config, store, None).await?;
             assert_eq!(
@@ -2721,6 +3455,121 @@ mod tests {
             assert!(hit, "Reloaded entry should produce a cache hit");
             assert!(dest2.join("test.txt").exists());
         }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_direct_use_mode_basic() -> Result<(), Error> {
+        let temp_dir = TempDir::new().unwrap();
+        let cache_root = temp_dir.path().join("cache");
+        let (store, dir_digest) = setup_test_store().await;
+
+        let config = DirectoryCacheConfig {
+            max_entries: 10,
+            max_size_bytes: 1024 * 1024,
+            cache_root: cache_root.clone(),
+            direct_use_mode: true,
+        };
+
+        let cache = DirectoryCache::new(config, store, None).await?;
+        assert!(cache.is_direct_use_mode());
+
+        // First access - cache miss
+        let dest1 = temp_dir.path().join("dest1");
+        let (cache_path1, was_hit) = cache.get_or_create_direct(dir_digest, &dest1).await?;
+        assert!(!was_hit, "First access should be cache miss");
+
+        // dest1 should be a symlink to the cache path
+        let dest1_meta = fs::symlink_metadata(&dest1).await.unwrap();
+        assert!(dest1_meta.is_symlink(), "dest should be a symlink");
+        let link_target = fs::read_link(&dest1).await.unwrap();
+        assert_eq!(link_target, cache_path1, "symlink should point to cache path");
+
+        // File should be accessible through the symlink
+        assert!(dest1.join("test.txt").exists(), "test.txt should be accessible through symlink");
+        let content = fs::read_to_string(dest1.join("test.txt")).await.unwrap();
+        assert_eq!(content, "Hello, World!");
+
+        // ref_count should be 1 (held for action lifetime)
+        let stats = cache.stats().await;
+        assert_eq!(stats.in_use_entries, 1, "Entry should be in use");
+
+        // Second access - cache hit
+        let dest2 = temp_dir.path().join("dest2");
+        let (_cache_path2, was_hit) = cache.get_or_create_direct(dir_digest, &dest2).await?;
+        assert!(was_hit, "Second access should be cache hit");
+
+        // dest2 should also be a symlink
+        let dest2_meta = fs::symlink_metadata(&dest2).await.unwrap();
+        assert!(dest2_meta.is_symlink(), "dest2 should be a symlink");
+        assert!(dest2.join("test.txt").exists(), "test.txt should be accessible through dest2");
+
+        // ref_count should be 2 (both actions using it)
+        let stats = cache.stats().await;
+        assert_eq!(stats.in_use_entries, 1, "Should still be 1 cache entry");
+
+        // Release first use
+        cache.release_direct_use(&dir_digest).await;
+
+        // Release second use
+        cache.release_direct_use(&dir_digest).await;
+
+        // ref_count should be 0
+        let stats = cache.stats().await;
+        assert_eq!(stats.in_use_entries, 0, "No entries should be in use after release");
+
+        // Cleanup: removing symlinks should NOT affect cache
+        fs::remove_file(&dest1).await.unwrap();
+        fs::remove_file(&dest2).await.unwrap();
+
+        // Cache should still be intact
+        assert!(cache_path1.join("test.txt").exists(), "Cache should be intact after symlink removal");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_direct_use_mode_eviction_blocked_by_ref_count() -> Result<(), Error> {
+        let temp_dir = TempDir::new().unwrap();
+        let cache_root = temp_dir.path().join("cache");
+        let (store, digest_a, digest_b) = setup_two_digest_store().await;
+
+        let config = DirectoryCacheConfig {
+            max_entries: 1, // Only 1 entry allowed
+            max_size_bytes: 0,
+            cache_root: cache_root.clone(),
+            direct_use_mode: true,
+        };
+
+        let cache = DirectoryCache::new(config, store, None).await?;
+
+        // Fill cache with digest_a and hold the ref_count
+        let dest_a = temp_dir.path().join("dest_a");
+        let (_cache_path_a, was_hit) = cache.get_or_create_direct(digest_a, &dest_a).await?;
+        assert!(!was_hit);
+        assert_eq!(cache.stats().await.entries, 1);
+        assert_eq!(cache.stats().await.in_use_entries, 1);
+
+        // Try to insert digest_b -- should succeed but eviction is blocked
+        // because digest_a is in use (ref_count > 0).
+        let dest_b = temp_dir.path().join("dest_b");
+        let (_cache_path_b, was_hit) = cache.get_or_create_direct(digest_b, &dest_b).await?;
+        assert!(!was_hit);
+
+        // Both should be in cache now (eviction was blocked)
+        let stats = cache.stats().await;
+        assert_eq!(stats.entries, 2, "Both entries should exist (eviction blocked by ref_count)");
+
+        // Release digest_a
+        cache.release_direct_use(&digest_a).await;
+
+        // Release digest_b
+        cache.release_direct_use(&digest_b).await;
+
+        // Cleanup symlinks
+        fs::remove_file(&dest_a).await.unwrap();
+        fs::remove_file(&dest_b).await.unwrap();
 
         Ok(())
     }

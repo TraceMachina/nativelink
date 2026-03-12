@@ -16,6 +16,15 @@ use std::path::Path;
 
 use nativelink_error::{Error, make_err};
 
+/// Indicates which method was used to clone a directory tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloneMethod {
+    /// macOS `clonefile(2)` CoW clone.
+    Clonefile,
+    /// Per-file `hard_link` + directory creation.
+    Hardlink,
+}
+
 /// Copies an entire directory tree from source to destination using the
 /// fastest available method:
 ///
@@ -27,14 +36,14 @@ use nativelink_error::{Error, make_err};
 /// After a successful clonefile, directories are made writable (0o755) since the
 /// clone inherits the cache's read-only permissions and actions need to create
 /// output files.
-pub async fn hardlink_directory_tree(src_dir: &Path, dst_dir: &Path) -> Result<(), Error> {
+pub async fn hardlink_directory_tree(src_dir: &Path, dst_dir: &Path) -> Result<CloneMethod, Error> {
     let src = src_dir.to_path_buf();
     let dst = dst_dir.to_path_buf();
     tokio::task::spawn_blocking(move || {
         #[cfg(target_os = "macos")]
         {
             match try_clonefile(&src, &dst) {
-                Ok(()) => return Ok(()),
+                Ok(()) => return Ok(CloneMethod::Clonefile),
                 Err(e) => {
                     tracing::debug!(
                         src = %src.display(),
@@ -44,7 +53,8 @@ pub async fn hardlink_directory_tree(src_dir: &Path, dst_dir: &Path) -> Result<(
                 }
             }
         }
-        hardlink_directory_tree_sync(&src, &dst)
+        hardlink_directory_tree_sync(&src, &dst)?;
+        Ok(CloneMethod::Hardlink)
     })
     .await
     .map_err(|e| make_err!(nativelink_error::Code::Internal, "spawn_blocking join error: {e}"))?
@@ -494,7 +504,9 @@ mod tests {
         let dst_dir = temp_dir.path().join("test_dst");
 
         // Hardlink the directory
-        hardlink_directory_tree(&src_dir, &dst_dir).await?;
+        let method = hardlink_directory_tree(&src_dir, &dst_dir).await?;
+        // On macOS this will be Clonefile, on Linux it will be Hardlink
+        assert!(method == CloneMethod::Clonefile || method == CloneMethod::Hardlink);
 
         // Verify structure
         assert!(dst_dir.join("file1.txt").exists());
