@@ -41,12 +41,12 @@ mod tests {
     use nativelink_proto::build::bazel::remote::execution::v2::command::EnvironmentVariable;
     #[cfg_attr(target_family = "windows", allow(unused_imports))]
     use nativelink_proto::build::bazel::remote::execution::v2::{
-        Action, ActionResult as ProtoActionResult, Command, Directory, DirectoryNode,
+        Action, ActionResult as ProtoActionResult, Command, Digest, Directory, DirectoryNode,
         ExecuteRequest, ExecuteResponse, FileNode, NodeProperties, Platform, SymlinkNode, Tree,
         digest_function::Value as ProtoDigestFunction, platform::Property,
     };
     use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-        HistoricalExecuteResponse, StartExecute,
+        HistoricalExecuteResponse, PeerHint, StartExecute,
     };
     use nativelink_proto::google::rpc::Status;
     use nativelink_store::ac_utils::{get_and_decode_digest, serialize_and_upload_message};
@@ -60,6 +60,7 @@ mod tests {
     use nativelink_util::action_messages::{
         ActionResult, ExecutionMetadata, FileInfo, NameOrPath, OperationId,
     };
+    use nativelink_util::blob_locality_map::new_shared_blob_locality_map;
     use nativelink_util::common::{DigestInfo, fs};
     use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
     use nativelink_util::store_trait::{Store, StoreLike};
@@ -430,6 +431,506 @@ mod tests {
     }
 
     #[nativelink_test]
+    async fn download_to_directory_batch_existence_check_test(
+    ) -> Result<(), Box<dyn core::error::Error>> {
+        // Verifies that files already in the fast store are hardlinked
+        // without being re-fetched from the slow store.
+        const FILE1_NAME: &str = "cached_file.txt";
+        const FILE1_CONTENT: &str = "ALREADY_IN_FAST";
+        const FILE2_NAME: &str = "uncached_file.txt";
+        const FILE2_CONTENT: &str = "ONLY_IN_SLOW";
+
+        let (fast_store, slow_store, cas_store, _ac_store) = setup_stores().await?;
+
+        let root_directory_digest = {
+            let file1_content_digest = DigestInfo::new([10u8; 32], FILE1_CONTENT.len() as u64);
+            let file2_content_digest = DigestInfo::new([11u8; 32], FILE2_CONTENT.len() as u64);
+
+            // Put file1 in BOTH slow and fast store (simulates a cached blob).
+            slow_store
+                .as_ref()
+                .update_oneshot(file1_content_digest, FILE1_CONTENT.into())
+                .await?;
+            fast_store
+                .as_ref()
+                .update_oneshot(file1_content_digest, FILE1_CONTENT.into())
+                .await?;
+
+            // Put file2 ONLY in slow store (simulates a cache miss).
+            slow_store
+                .as_ref()
+                .update_oneshot(file2_content_digest, FILE2_CONTENT.into())
+                .await?;
+
+            let root_directory_digest = DigestInfo::new([12u8; 32], 32);
+            let root_directory = Directory {
+                files: vec![
+                    FileNode {
+                        name: FILE1_NAME.to_string(),
+                        digest: Some(file1_content_digest.into()),
+                        ..Default::default()
+                    },
+                    FileNode {
+                        name: FILE2_NAME.to_string(),
+                        digest: Some(file2_content_digest.into()),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            };
+
+            slow_store
+                .as_ref()
+                .update_oneshot(root_directory_digest, root_directory.encode_to_vec().into())
+                .await?;
+            root_directory_digest
+        };
+
+        let download_dir = make_temp_path("download_dir_batch_check");
+        fs::create_dir_all(&download_dir).await?;
+        download_to_directory(
+            cas_store.as_ref(),
+            fast_store.as_pin(),
+            &root_directory_digest,
+            &download_dir,
+        )
+        .await?;
+
+        // Both files should be present with correct content.
+        let file1_content = fs::read(format!("{download_dir}/{FILE1_NAME}")).await?;
+        assert_eq!(from_utf8(&file1_content)?, FILE1_CONTENT);
+
+        let file2_content = fs::read(format!("{download_dir}/{FILE2_NAME}")).await?;
+        assert_eq!(from_utf8(&file2_content)?, FILE2_CONTENT);
+
+        Ok(())
+    }
+
+    #[nativelink_test]
+    async fn download_to_directory_dedup_digests_test(
+    ) -> Result<(), Box<dyn core::error::Error>> {
+        // Verifies that multiple files sharing the same digest content
+        // are all materialized correctly (the digest is only downloaded once
+        // but hardlinked to multiple destinations).
+        const SHARED_CONTENT: &str = "SHARED_CONTENT_DATA";
+        const FILE_A_NAME: &str = "file_a.txt";
+        const FILE_B_NAME: &str = "file_b.txt";
+        const FILE_C_NAME: &str = "file_c.txt";
+
+        let (fast_store, slow_store, cas_store, _ac_store) = setup_stores().await?;
+
+        let root_directory_digest = {
+            let shared_digest = DigestInfo::new([20u8; 32], SHARED_CONTENT.len() as u64);
+            slow_store
+                .as_ref()
+                .update_oneshot(shared_digest, SHARED_CONTENT.into())
+                .await?;
+
+            let root_directory_digest = DigestInfo::new([21u8; 32], 32);
+            let root_directory = Directory {
+                files: vec![
+                    FileNode {
+                        name: FILE_A_NAME.to_string(),
+                        digest: Some(shared_digest.into()),
+                        ..Default::default()
+                    },
+                    FileNode {
+                        name: FILE_B_NAME.to_string(),
+                        digest: Some(shared_digest.into()),
+                        ..Default::default()
+                    },
+                    FileNode {
+                        name: FILE_C_NAME.to_string(),
+                        digest: Some(shared_digest.into()),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            };
+
+            slow_store
+                .as_ref()
+                .update_oneshot(root_directory_digest, root_directory.encode_to_vec().into())
+                .await?;
+            root_directory_digest
+        };
+
+        let download_dir = make_temp_path("download_dir_dedup");
+        fs::create_dir_all(&download_dir).await?;
+        download_to_directory(
+            cas_store.as_ref(),
+            fast_store.as_pin(),
+            &root_directory_digest,
+            &download_dir,
+        )
+        .await?;
+
+        // All three files should exist with the same content.
+        for name in &[FILE_A_NAME, FILE_B_NAME, FILE_C_NAME] {
+            let content = fs::read(format!("{download_dir}/{name}")).await?;
+            assert_eq!(from_utf8(&content)?, SHARED_CONTENT, "Mismatch for {name}");
+        }
+
+        Ok(())
+    }
+
+    #[nativelink_test]
+    async fn download_to_directory_deep_nested_tree_test(
+    ) -> Result<(), Box<dyn core::error::Error>> {
+        // Verifies that deeply nested directory trees (3 levels) are resolved
+        // correctly via the recursive fallback path (MemoryStore).
+        const LEAF_FILE_NAME: &str = "leaf.txt";
+        const LEAF_CONTENT: &str = "DEEP_LEAF_DATA";
+
+        let (fast_store, slow_store, cas_store, _ac_store) = setup_stores().await?;
+
+        let root_directory_digest = {
+            let leaf_content_digest = DigestInfo::new([30u8; 32], LEAF_CONTENT.len() as u64);
+            slow_store
+                .as_ref()
+                .update_oneshot(leaf_content_digest, LEAF_CONTENT.into())
+                .await?;
+
+            // Level 3 (deepest): directory containing a file
+            let level3_digest = DigestInfo::new([31u8; 32], 32);
+            let level3_dir = Directory {
+                files: vec![FileNode {
+                    name: LEAF_FILE_NAME.to_string(),
+                    digest: Some(leaf_content_digest.into()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            slow_store
+                .as_ref()
+                .update_oneshot(level3_digest, level3_dir.encode_to_vec().into())
+                .await?;
+
+            // Level 2: directory containing level3
+            let level2_digest = DigestInfo::new([32u8; 32], 32);
+            let level2_dir = Directory {
+                directories: vec![DirectoryNode {
+                    name: "level3".to_string(),
+                    digest: Some(level3_digest.into()),
+                }],
+                ..Default::default()
+            };
+            slow_store
+                .as_ref()
+                .update_oneshot(level2_digest, level2_dir.encode_to_vec().into())
+                .await?;
+
+            // Level 1 (root): directory containing level2
+            let root_digest = DigestInfo::new([33u8; 32], 32);
+            let root_dir = Directory {
+                directories: vec![DirectoryNode {
+                    name: "level2".to_string(),
+                    digest: Some(level2_digest.into()),
+                }],
+                ..Default::default()
+            };
+            slow_store
+                .as_ref()
+                .update_oneshot(root_digest, root_dir.encode_to_vec().into())
+                .await?;
+            root_digest
+        };
+
+        let download_dir = make_temp_path("download_dir_deep");
+        fs::create_dir_all(&download_dir).await?;
+        download_to_directory(
+            cas_store.as_ref(),
+            fast_store.as_pin(),
+            &root_directory_digest,
+            &download_dir,
+        )
+        .await?;
+
+        // Verify the deeply nested file exists with correct content.
+        let leaf_path = format!("{download_dir}/level2/level3/{LEAF_FILE_NAME}");
+        let leaf_content = fs::read(&leaf_path).await?;
+        assert_eq!(from_utf8(&leaf_content)?, LEAF_CONTENT);
+
+        // Verify intermediate directories exist.
+        let level2_meta = fs::metadata(format!("{download_dir}/level2")).await?;
+        assert!(level2_meta.is_dir());
+        let level3_meta = fs::metadata(format!("{download_dir}/level2/level3")).await?;
+        assert!(level3_meta.is_dir());
+
+        Ok(())
+    }
+
+    #[nativelink_test]
+    async fn download_to_directory_empty_directory_test(
+    ) -> Result<(), Box<dyn core::error::Error>> {
+        // Verifies that an empty root directory is handled correctly.
+        let (fast_store, slow_store, cas_store, _ac_store) = setup_stores().await?;
+
+        let root_directory_digest = {
+            let root_digest = DigestInfo::new([40u8; 32], 32);
+            let root_dir = Directory::default();
+            slow_store
+                .as_ref()
+                .update_oneshot(root_digest, root_dir.encode_to_vec().into())
+                .await?;
+            root_digest
+        };
+
+        let download_dir = make_temp_path("download_dir_empty");
+        fs::create_dir_all(&download_dir).await?;
+        download_to_directory(
+            cas_store.as_ref(),
+            fast_store.as_pin(),
+            &root_directory_digest,
+            &download_dir,
+        )
+        .await?;
+
+        // Directory should exist and be empty.
+        let meta = fs::metadata(&download_dir).await?;
+        assert!(meta.is_dir());
+
+        Ok(())
+    }
+
+    #[nativelink_test]
+    async fn download_to_directory_many_files_test(
+    ) -> Result<(), Box<dyn core::error::Error>> {
+        // Verifies that a directory with many files (simulating a real build
+        // with many inputs) is handled correctly by the batch existence check
+        // and parallel download paths.
+        const FILE_COUNT: usize = 50;
+
+        let (fast_store, slow_store, cas_store, _ac_store) = setup_stores().await?;
+
+        let root_directory_digest = {
+            let mut file_nodes = Vec::with_capacity(FILE_COUNT);
+            for i in 0..FILE_COUNT {
+                let content = format!("content_of_file_{i}");
+                // Create unique digests using the index.
+                let mut hash = [0u8; 32];
+                hash[0] = 50;
+                hash[1] = (i >> 8) as u8;
+                hash[2] = (i & 0xff) as u8;
+                let digest = DigestInfo::new(hash, content.len() as u64);
+
+                slow_store
+                    .as_ref()
+                    .update_oneshot(digest, content.into())
+                    .await?;
+
+                // Pre-populate every 3rd file in the fast store to test
+                // the mixed cached/uncached path.
+                if i % 3 == 0 {
+                    let content_again = format!("content_of_file_{i}");
+                    fast_store
+                        .as_ref()
+                        .update_oneshot(digest, content_again.into())
+                        .await?;
+                }
+
+                file_nodes.push(FileNode {
+                    name: format!("file_{i:04}.txt"),
+                    digest: Some(digest.into()),
+                    ..Default::default()
+                });
+            }
+
+            let root_digest = DigestInfo::new([51u8; 32], 32);
+            let root_dir = Directory {
+                files: file_nodes,
+                ..Default::default()
+            };
+            slow_store
+                .as_ref()
+                .update_oneshot(root_digest, root_dir.encode_to_vec().into())
+                .await?;
+            root_digest
+        };
+
+        let download_dir = make_temp_path("download_dir_many");
+        fs::create_dir_all(&download_dir).await?;
+        download_to_directory(
+            cas_store.as_ref(),
+            fast_store.as_pin(),
+            &root_directory_digest,
+            &download_dir,
+        )
+        .await?;
+
+        // Verify all files.
+        for i in 0..FILE_COUNT {
+            let expected = format!("content_of_file_{i}");
+            let path = format!("{download_dir}/file_{i:04}.txt");
+            let content = fs::read(&path).await?;
+            assert_eq!(
+                from_utf8(&content)?,
+                expected,
+                "Content mismatch for file {i}"
+            );
+        }
+
+        Ok(())
+    }
+
+    #[nativelink_test]
+    async fn download_to_directory_missing_blob_returns_error_test(
+    ) -> Result<(), Box<dyn core::error::Error>> {
+        // Verifies that a reference to a missing blob in the slow store
+        // propagates an error (not silently ignored).
+        const FILE_NAME: &str = "missing.txt";
+
+        let (fast_store, slow_store, cas_store, _ac_store) = setup_stores().await?;
+
+        let root_directory_digest = {
+            // Reference a file content digest that does NOT exist in any store.
+            let missing_content_digest = DigestInfo::new([60u8; 32], 100);
+
+            let root_digest = DigestInfo::new([61u8; 32], 32);
+            let root_directory = Directory {
+                files: vec![FileNode {
+                    name: FILE_NAME.to_string(),
+                    digest: Some(missing_content_digest.into()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+
+            slow_store
+                .as_ref()
+                .update_oneshot(root_digest, root_directory.encode_to_vec().into())
+                .await?;
+            root_digest
+        };
+
+        let download_dir = make_temp_path("download_dir_missing_blob");
+        fs::create_dir_all(&download_dir).await?;
+        let result = download_to_directory(
+            cas_store.as_ref(),
+            fast_store.as_pin(),
+            &root_directory_digest,
+            &download_dir,
+        )
+        .await;
+
+        assert!(result.is_err(), "Expected error for missing blob");
+        Ok(())
+    }
+
+    #[nativelink_test]
+    async fn download_to_directory_missing_directory_digest_returns_error_test(
+    ) -> Result<(), Box<dyn core::error::Error>> {
+        // Verifies that a DirectoryNode referencing a non-existent directory
+        // digest propagates an error during tree resolution.
+        let (fast_store, slow_store, cas_store, _ac_store) = setup_stores().await?;
+
+        let root_directory_digest = {
+            // Reference a child directory digest that does NOT exist.
+            let missing_child_digest = DigestInfo::new([70u8; 32], 32);
+
+            let root_digest = DigestInfo::new([71u8; 32], 32);
+            let root_directory = Directory {
+                directories: vec![DirectoryNode {
+                    name: "missing_dir".to_string(),
+                    digest: Some(missing_child_digest.into()),
+                }],
+                ..Default::default()
+            };
+
+            slow_store
+                .as_ref()
+                .update_oneshot(root_digest, root_directory.encode_to_vec().into())
+                .await?;
+            root_digest
+        };
+
+        let download_dir = make_temp_path("download_dir_missing_dir");
+        fs::create_dir_all(&download_dir).await?;
+        let result = download_to_directory(
+            cas_store.as_ref(),
+            fast_store.as_pin(),
+            &root_directory_digest,
+            &download_dir,
+        )
+        .await;
+
+        assert!(result.is_err(), "Expected error for missing directory digest");
+        Ok(())
+    }
+
+    #[nativelink_test]
+    async fn download_to_directory_zero_digest_file_test(
+    ) -> Result<(), Box<dyn core::error::Error>> {
+        // Verifies that zero-digest (empty) files are created correctly.
+        // Zero-digest files have special handling and skip batch existence checks.
+        const EMPTY_FILE_NAME: &str = "empty.txt";
+        const NORMAL_FILE_NAME: &str = "normal.txt";
+        const NORMAL_CONTENT: &str = "NORMAL_DATA";
+
+        // SHA-256 of zero bytes.
+        const ZERO_HASH: [u8; 32] = [
+            0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f,
+            0xb9, 0x24, 0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c, 0xa4, 0x95, 0x99, 0x1b,
+            0x78, 0x52, 0xb8, 0x55,
+        ];
+
+        let (fast_store, slow_store, cas_store, _ac_store) = setup_stores().await?;
+
+        let root_directory_digest = {
+            let zero_digest = DigestInfo::new(ZERO_HASH, 0);
+            let normal_digest = DigestInfo::new([80u8; 32], NORMAL_CONTENT.len() as u64);
+            slow_store
+                .as_ref()
+                .update_oneshot(normal_digest, NORMAL_CONTENT.into())
+                .await?;
+
+            let root_digest = DigestInfo::new([81u8; 32], 32);
+            let root_directory = Directory {
+                files: vec![
+                    FileNode {
+                        name: EMPTY_FILE_NAME.to_string(),
+                        digest: Some(zero_digest.into()),
+                        ..Default::default()
+                    },
+                    FileNode {
+                        name: NORMAL_FILE_NAME.to_string(),
+                        digest: Some(normal_digest.into()),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            };
+
+            slow_store
+                .as_ref()
+                .update_oneshot(root_digest, root_directory.encode_to_vec().into())
+                .await?;
+            root_digest
+        };
+
+        let download_dir = make_temp_path("download_dir_zero");
+        fs::create_dir_all(&download_dir).await?;
+        download_to_directory(
+            cas_store.as_ref(),
+            fast_store.as_pin(),
+            &root_directory_digest,
+            &download_dir,
+        )
+        .await?;
+
+        // Zero-digest file should exist and be empty.
+        let empty_path = format!("{download_dir}/{EMPTY_FILE_NAME}");
+        let empty_content = fs::read(&empty_path).await?;
+        assert_eq!(empty_content.len(), 0, "Zero-digest file should be empty");
+
+        // Normal file should also exist.
+        let normal_content = fs::read(format!("{download_dir}/{NORMAL_FILE_NAME}")).await?;
+        assert_eq!(from_utf8(&normal_content)?, NORMAL_CONTENT);
+
+        Ok(())
+    }
+
+    #[nativelink_test]
     async fn ensure_output_files_full_directories_are_created_no_working_directory_test()
     -> Result<(), Box<dyn core::error::Error>> {
         const WORKER_ID: &str = "foo_worker_id";
@@ -460,6 +961,7 @@ mod tests {
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                peer_locality_map: None,
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -529,6 +1031,7 @@ mod tests {
                         queued_timestamp: None,
                         platform: action.platform.clone(),
                         worker_id: WORKER_ID.to_string(),
+                        peer_hints: Vec::new(),
                     },
                 )
                 .await?;
@@ -584,6 +1087,7 @@ mod tests {
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                peer_locality_map: None,
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -655,6 +1159,7 @@ mod tests {
                         queued_timestamp: None,
                         platform: action.platform.clone(),
                         worker_id: WORKER_ID.to_string(),
+                        peer_hints: Vec::new(),
                     },
                 )
                 .await?;
@@ -689,7 +1194,7 @@ mod tests {
             monotonic_clock(&CLOCK)
         }
 
-        let (_, slow_store, cas_store, ac_store) = setup_stores().await?;
+        let (_, _slow_store, cas_store, ac_store) = setup_stores().await?;
         let root_action_directory = make_temp_path("root_action_directory");
         fs::create_dir_all(&root_action_directory).await?;
 
@@ -710,6 +1215,7 @@ mod tests {
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                peer_locality_map: None,
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -797,23 +1303,24 @@ mod tests {
                         queued_timestamp: None,
                         platform: action.platform.clone(),
                         worker_id: WORKER_ID.to_string(),
+                        peer_hints: Vec::new(),
                     },
                 )
                 .await?;
 
             run_action(running_action_impl.clone()).await?
         };
-        let file_content = slow_store
+        let file_content = cas_store
             .as_ref()
             .get_part_unchunked(action_result.output_files[0].digest, 0, None)
             .await?;
         assert_eq!(from_utf8(&file_content)?, "123 ");
-        let stdout_content = slow_store
+        let stdout_content = cas_store
             .as_ref()
             .get_part_unchunked(action_result.stdout_digest, 0, None)
             .await?;
         assert_eq!(from_utf8(&stdout_content)?, "foo-stdout ");
-        let stderr_content = slow_store
+        let stderr_content = cas_store
             .as_ref()
             .get_part_unchunked(action_result.stderr_digest, 0, None)
             .await?;
@@ -871,7 +1378,7 @@ mod tests {
             monotonic_clock(&CLOCK)
         }
 
-        let (_, slow_store, cas_store, ac_store) = setup_stores().await?;
+        let (_, _slow_store, cas_store, ac_store) = setup_stores().await?;
         let root_action_directory = make_temp_path("root_action_directory");
         fs::create_dir_all(&root_action_directory).await?;
 
@@ -892,6 +1399,7 @@ mod tests {
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                peer_locality_map: None,
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -978,23 +1486,24 @@ mod tests {
                         queued_timestamp: None,
                         platform: action.platform.clone(),
                         worker_id: WORKER_ID.to_string(),
+                        peer_hints: Vec::new(),
                     },
                 )
                 .await?;
 
             run_action(running_action_impl.clone()).await?
         };
-        let file_content = slow_store
+        let file_content = cas_store
             .as_ref()
             .get_part_unchunked(action_result.output_files[0].digest, 0, None)
             .await?;
         assert_eq!(from_utf8(&file_content)?, "123 ");
-        let stdout_content = slow_store
+        let stdout_content = cas_store
             .as_ref()
             .get_part_unchunked(action_result.stdout_digest, 0, None)
             .await?;
         assert_eq!(from_utf8(&stdout_content)?, "foo-stdout ");
-        let stderr_content = slow_store
+        let stderr_content = cas_store
             .as_ref()
             .get_part_unchunked(action_result.stderr_digest, 0, None)
             .await?;
@@ -1054,7 +1563,7 @@ mod tests {
             monotonic_clock(&CLOCK)
         }
 
-        let (_, slow_store, cas_store, ac_store) = setup_stores().await?;
+        let (_, _slow_store, cas_store, ac_store) = setup_stores().await?;
         let root_action_directory = make_temp_path("root_action_directory");
         fs::create_dir_all(&root_action_directory).await?;
 
@@ -1075,6 +1584,7 @@ mod tests {
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                peer_locality_map: None,
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -1143,6 +1653,7 @@ mod tests {
                         queued_timestamp: Some(queued_timestamp.into()),
                         platform: action.platform.clone(),
                         worker_id: WORKER_ID.to_string(),
+                        peer_hints: Vec::new(),
                     },
                 )
                 .await?;
@@ -1150,7 +1661,7 @@ mod tests {
             run_action(running_action_impl.clone()).await?
         };
         let tree = get_and_decode_digest::<Tree>(
-            slow_store.as_ref(),
+            cas_store.as_ref(),
             action_result.output_folders[0].tree_digest.into(),
         )
         .await?;
@@ -1284,6 +1795,7 @@ mod tests {
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                peer_locality_map: None,
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -1347,6 +1859,7 @@ mod tests {
                         queued_timestamp: Some(queued_timestamp.into()),
                         platform: action.platform.clone(),
                         worker_id: WORKER_ID.to_string(),
+                        peer_hints: Vec::new(),
                     },
                 )
                 .await?;
@@ -1420,6 +1933,7 @@ mod tests {
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                peer_locality_map: None,
             })?);
 
         #[cfg(target_family = "unix")]
@@ -1497,6 +2011,7 @@ mod tests {
                     queued_timestamp: Some(make_system_time(1000).into()),
                     platform: action.platform.clone(),
                     worker_id: WORKER_ID.to_string(),
+                    peer_hints: Vec::new(),
                 },
             )
             .await?;
@@ -1624,6 +2139,7 @@ exit 0
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                peer_locality_map: None,
             })?);
         #[cfg(target_family = "unix")]
         let arguments = vec!["printf".to_string(), EXPECTED_STDOUT.to_string()];
@@ -1678,6 +2194,7 @@ exit 0
                     queued_timestamp: Some(make_system_time(1000).into()),
                     platform: action.platform.clone(),
                     worker_id: WORKER_ID.to_string(),
+                    peer_hints: Vec::new(),
                 },
             )
             .await?;
@@ -1801,6 +2318,7 @@ exit 0
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                peer_locality_map: None,
             })?);
         #[cfg(target_family = "unix")]
         let arguments = vec!["printf".to_string(), EXPECTED_STDOUT.to_string()];
@@ -1865,6 +2383,7 @@ exit 0
                     queued_timestamp: Some(make_system_time(1000).into()),
                     platform: action.platform.clone(),
                     worker_id: WORKER_ID.to_string(),
+                    peer_hints: Vec::new(),
                 },
             )
             .await?;
@@ -1972,6 +2491,7 @@ exit 1
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                peer_locality_map: None,
             })?);
         let arguments = vec!["true".to_string()];
         let command = Command {
@@ -2023,6 +2543,7 @@ exit 1
                     queued_timestamp: Some(make_system_time(1000).into()),
                     platform: action.platform.clone(),
                     worker_id: WORKER_ID.to_string(),
+                    peer_hints: Vec::new(),
                 },
             )
             .await?;
@@ -2057,6 +2578,7 @@ exit 1
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                peer_locality_map: None,
             })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
@@ -2133,6 +2655,7 @@ exit 1
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                peer_locality_map: None,
             })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
@@ -2215,6 +2738,7 @@ exit 1
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                peer_locality_map: None,
             })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
@@ -2318,6 +2842,7 @@ exit 1
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                peer_locality_map: None,
             })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
@@ -2365,6 +2890,7 @@ exit 1
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                peer_locality_map: None,
             })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
@@ -2434,6 +2960,7 @@ exit 1
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                peer_locality_map: None,
             })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
@@ -2554,6 +3081,7 @@ exit 1
                     max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                     timeout_handled_externally: false,
                     directory_cache: None,
+                    peer_locality_map: None,
                 },
                 Callbacks {
                     now_fn: test_monotonic_clock,
@@ -2582,6 +3110,7 @@ exit 1
                         queued_timestamp: Some(make_system_time(1000).into()),
                         platform: action.platform.clone(),
                         worker_id: WORKER_ID.to_string(),
+                        peer_hints: Vec::new(),
                     },
                 )
                 .and_then(|action| {
@@ -2642,6 +3171,7 @@ exit 1
                     max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                     timeout_handled_externally: false,
                     directory_cache: None,
+                    peer_locality_map: None,
                 },
                 Callbacks {
                     now_fn: test_monotonic_clock,
@@ -2670,6 +3200,7 @@ exit 1
                         queued_timestamp: Some(make_system_time(1000).into()),
                         platform: action.platform.clone(),
                         worker_id: WORKER_ID.to_string(),
+                        peer_hints: Vec::new(),
                     },
                 )
                 .and_then(|action| {
@@ -2730,6 +3261,7 @@ exit 1
                     max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                     timeout_handled_externally: false,
                     directory_cache: None,
+                    peer_locality_map: None,
                 },
                 Callbacks {
                     now_fn: test_monotonic_clock,
@@ -2758,6 +3290,7 @@ exit 1
                         queued_timestamp: Some(make_system_time(1000).into()),
                         platform: action.platform.clone(),
                         worker_id: WORKER_ID.to_string(),
+                        peer_hints: Vec::new(),
                     },
                 )
                 .and_then(|action| {
@@ -2815,6 +3348,7 @@ exit 1
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                peer_locality_map: None,
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -2891,6 +3425,7 @@ exit 1
                     queued_timestamp: Some(make_system_time(1000).into()),
                     platform: action.platform.clone(),
                     worker_id: WORKER_ID.to_string(),
+                    peer_hints: Vec::new(),
                 },
             )
             .and_then(|action| {
@@ -2968,6 +3503,7 @@ exit 1
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                peer_locality_map: None,
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -3041,6 +3577,7 @@ exit 1
                     queued_timestamp: Some(make_system_time(1000).into()),
                     platform: action.platform.clone(),
                     worker_id: WORKER_ID.to_string(),
+                    peer_hints: Vec::new(),
                 },
             )
             .await?;
@@ -3138,6 +3675,7 @@ exit 1
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                peer_locality_map: None,
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -3239,6 +3777,7 @@ exit 1
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                peer_locality_map: None,
             })?);
         let queued_timestamp = make_system_time(1000);
 
@@ -3296,6 +3835,7 @@ exit 1
                     queued_timestamp: Some(queued_timestamp.into()),
                     platform: action.platform.clone(),
                     worker_id: WORKER_ID.to_string(),
+                    peer_hints: Vec::new(),
                 },
             )
             .await?;
@@ -3326,7 +3866,7 @@ exit 1
             monotonic_clock(&CLOCK)
         }
 
-        let (_, slow_store, cas_store, ac_store) = setup_stores().await?;
+        let (_, _slow_store, cas_store, ac_store) = setup_stores().await?;
         let root_action_directory = make_temp_path("root_action_directory");
         fs::create_dir_all(&root_action_directory).await?;
 
@@ -3354,6 +3894,7 @@ exit 1
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                peer_locality_map: None,
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -3431,23 +3972,24 @@ exit 1
                         queued_timestamp: None,
                         platform: action.platform.clone(),
                         worker_id: WORKER_ID.to_string(),
+                        peer_hints: Vec::new(),
                     },
                 )
                 .await?;
 
             run_action(running_action_impl.clone()).await?
         };
-        let file_content = slow_store
+        let file_content = cas_store
             .as_ref()
             .get_part_unchunked(action_result.output_files[0].digest, 0, None)
             .await?;
         assert_eq!(from_utf8(&file_content)?, "123 ");
-        let stdout_content = slow_store
+        let stdout_content = cas_store
             .as_ref()
             .get_part_unchunked(action_result.stdout_digest, 0, None)
             .await?;
         assert_eq!(from_utf8(&stdout_content)?, "foo-stdout ");
-        let stderr_content = slow_store
+        let stderr_content = cas_store
             .as_ref()
             .get_part_unchunked(action_result.stderr_digest, 0, None)
             .await?;
@@ -3535,6 +4077,7 @@ exit 1
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                peer_locality_map: None,
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -3614,6 +4157,7 @@ exit 1
                     queued_timestamp: Some(make_system_time(1000).into()),
                     platform: action.platform.clone(),
                     worker_id: WORKER_ID.to_string(),
+                    peer_hints: Vec::new(),
                 },
             )
             .await?;
@@ -3656,6 +4200,7 @@ exit 1
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                peer_locality_map: None,
             })?);
 
         // Create a simple action
@@ -3734,6 +4279,7 @@ exit 1
                     queued_timestamp: Some(SystemTime::now().into()),
                     platform: None,
                     worker_id: WORKER_ID.to_string(),
+                    peer_hints: Vec::new(),
                 },
             )
             .await;
@@ -3798,6 +4344,7 @@ exit 1
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                peer_locality_map: None,
             })?);
 
         // Create a simple action
@@ -3846,6 +4393,7 @@ exit 1
                     queued_timestamp: Some(SystemTime::now().into()),
                     platform: None,
                     worker_id: WORKER_ID.to_string(),
+                    peer_hints: Vec::new(),
                 },
             )
             .await?;
@@ -3867,6 +4415,7 @@ exit 1
                     queued_timestamp: Some(SystemTime::now().into()),
                     platform: None,
                     worker_id: WORKER_ID.to_string(),
+                    peer_hints: Vec::new(),
                 },
             )
             .await;
@@ -3881,6 +4430,275 @@ exit 1
         if let Ok(action2) = result {
             action2.cleanup().await?;
         }
+        fs::remove_dir_all(&root_action_directory).await?;
+        Ok(())
+    }
+
+    /// Helper: set up a RunningActionsManagerImpl with stores, a root directory,
+    /// and a minimal action (empty command + empty input root) uploaded to the CAS.
+    /// Returns (manager, execute_request, action) for use in peer hint tests.
+    async fn setup_peer_hint_test(
+        peer_locality_map: Option<nativelink_util::blob_locality_map::SharedBlobLocalityMap>,
+    ) -> Result<
+        (
+            Arc<RunningActionsManagerImpl>,
+            ExecuteRequest,
+            Action,
+            String,
+        ),
+        Box<dyn core::error::Error>,
+    > {
+        let (_, _, cas_store, ac_store) = setup_stores().await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory: root_action_directory.clone(),
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config:
+                    &nativelink_config::cas_server::UploadActionResultConfig {
+                        upload_ac_results_strategy:
+                            nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
+                        ..Default::default()
+                    },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                timeout_handled_externally: false,
+                directory_cache: None,
+                peer_locality_map,
+            })?);
+
+        // Upload a minimal command + empty input root + action to CAS.
+        #[cfg(target_family = "unix")]
+        let arguments = vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "true".to_string(),
+        ];
+        #[cfg(target_family = "windows")]
+        let arguments = vec![
+            "cmd".to_string(),
+            "/C".to_string(),
+            "echo ok".to_string(),
+        ];
+
+        let command = Command {
+            arguments,
+            output_paths: vec![],
+            working_directory: ".".to_string(),
+            environment_variables: vec![EnvironmentVariable {
+                name: "PATH".to_string(),
+                value: env::var("PATH").unwrap(),
+            }],
+            ..Default::default()
+        };
+        let command_digest = serialize_and_upload_message(
+            &command,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let input_root_digest = serialize_and_upload_message(
+            &Directory::default(),
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let action = Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(input_root_digest.into()),
+            ..Default::default()
+        };
+        let action_digest = serialize_and_upload_message(
+            &action,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+
+        let execute_request = ExecuteRequest {
+            action_digest: Some(action_digest.into()),
+            ..Default::default()
+        };
+
+        Ok((
+            running_actions_manager,
+            execute_request,
+            action,
+            root_action_directory,
+        ))
+    }
+
+    #[nativelink_test]
+    async fn test_peer_hints_registered_in_locality_map(
+    ) -> Result<(), Box<dyn core::error::Error>> {
+        const WORKER_ID: &str = "peer_hint_worker";
+
+        let locality_map = new_shared_blob_locality_map();
+        let (running_actions_manager, execute_request, action, root_action_directory) =
+            setup_peer_hint_test(Some(locality_map.clone())).await?;
+
+        let d1 = DigestInfo::new([0xAA; 32], 1000);
+        let d1_proto: Digest = d1.into();
+
+        let running_action = running_actions_manager
+            .clone()
+            .create_and_add_action(
+                WORKER_ID.to_string(),
+                StartExecute {
+                    execute_request: Some(execute_request),
+                    operation_id: OperationId::default().to_string(),
+                    queued_timestamp: Some(make_system_time(1000).into()),
+                    platform: action.platform.clone(),
+                    worker_id: WORKER_ID.to_string(),
+                    peer_hints: vec![PeerHint {
+                        digest: Some(d1_proto),
+                        peer_endpoints: vec!["worker-a:50081".to_string()],
+                    }],
+                },
+            )
+            .await?;
+
+        // Verify the locality map was populated.
+        {
+            let map = locality_map.read();
+            let workers = map.lookup_workers(&d1);
+            assert_eq!(workers.len(), 1, "Expected 1 endpoint for d1");
+            assert_eq!(&*workers[0], "worker-a:50081");
+        }
+
+        // Clean up.
+        running_action.cleanup().await?;
+        fs::remove_dir_all(&root_action_directory).await?;
+        Ok(())
+    }
+
+    #[nativelink_test]
+    async fn test_empty_peer_hints_no_error() -> Result<(), Box<dyn core::error::Error>> {
+        const WORKER_ID: &str = "empty_hints_worker";
+
+        let locality_map = new_shared_blob_locality_map();
+        let (running_actions_manager, execute_request, action, root_action_directory) =
+            setup_peer_hint_test(Some(locality_map.clone())).await?;
+
+        let running_action = running_actions_manager
+            .clone()
+            .create_and_add_action(
+                WORKER_ID.to_string(),
+                StartExecute {
+                    execute_request: Some(execute_request),
+                    operation_id: OperationId::default().to_string(),
+                    queued_timestamp: Some(make_system_time(1000).into()),
+                    platform: action.platform.clone(),
+                    worker_id: WORKER_ID.to_string(),
+                    peer_hints: Vec::new(),
+                },
+            )
+            .await?;
+
+        // Locality map should be empty.
+        {
+            let map = locality_map.read();
+            assert_eq!(map.digest_count(), 0, "Expected no digests in locality map");
+            assert_eq!(
+                map.endpoint_count(),
+                0,
+                "Expected no endpoints in locality map"
+            );
+        }
+
+        running_action.cleanup().await?;
+        fs::remove_dir_all(&root_action_directory).await?;
+        Ok(())
+    }
+
+    #[nativelink_test]
+    async fn test_peer_hints_without_locality_map() -> Result<(), Box<dyn core::error::Error>> {
+        const WORKER_ID: &str = "no_map_worker";
+
+        // Pass None for peer_locality_map.
+        let (running_actions_manager, execute_request, action, root_action_directory) =
+            setup_peer_hint_test(None).await?;
+
+        let d1 = DigestInfo::new([0xBB; 32], 500);
+        let d1_proto: Digest = d1.into();
+
+        // Should not panic or error even though peer_hints are provided.
+        let running_action = running_actions_manager
+            .clone()
+            .create_and_add_action(
+                WORKER_ID.to_string(),
+                StartExecute {
+                    execute_request: Some(execute_request),
+                    operation_id: OperationId::default().to_string(),
+                    queued_timestamp: Some(make_system_time(1000).into()),
+                    platform: action.platform.clone(),
+                    worker_id: WORKER_ID.to_string(),
+                    peer_hints: vec![PeerHint {
+                        digest: Some(d1_proto),
+                        peer_endpoints: vec!["worker-x:50081".to_string()],
+                    }],
+                },
+            )
+            .await?;
+
+        running_action.cleanup().await?;
+        fs::remove_dir_all(&root_action_directory).await?;
+        Ok(())
+    }
+
+    #[nativelink_test]
+    async fn test_multiple_endpoints_per_hint() -> Result<(), Box<dyn core::error::Error>> {
+        const WORKER_ID: &str = "multi_endpoint_worker";
+
+        let locality_map = new_shared_blob_locality_map();
+        let (running_actions_manager, execute_request, action, root_action_directory) =
+            setup_peer_hint_test(Some(locality_map.clone())).await?;
+
+        let d1 = DigestInfo::new([0xCC; 32], 2000);
+        let d1_proto: Digest = d1.into();
+
+        let running_action = running_actions_manager
+            .clone()
+            .create_and_add_action(
+                WORKER_ID.to_string(),
+                StartExecute {
+                    execute_request: Some(execute_request),
+                    operation_id: OperationId::default().to_string(),
+                    queued_timestamp: Some(make_system_time(1000).into()),
+                    platform: action.platform.clone(),
+                    worker_id: WORKER_ID.to_string(),
+                    peer_hints: vec![PeerHint {
+                        digest: Some(d1_proto),
+                        peer_endpoints: vec![
+                            "worker-a:50081".to_string(),
+                            "worker-b:50081".to_string(),
+                        ],
+                    }],
+                },
+            )
+            .await?;
+
+        // Both endpoints should be registered for d1.
+        {
+            let map = locality_map.read();
+            let workers = map.lookup_workers(&d1);
+            assert_eq!(workers.len(), 2, "Expected 2 endpoints for d1");
+            assert!(
+                workers.iter().any(|w| &**w == "worker-a:50081"),
+                "Expected worker-a:50081 in endpoints"
+            );
+            assert!(
+                workers.iter().any(|w| &**w == "worker-b:50081"),
+                "Expected worker-b:50081 in endpoints"
+            );
+        }
+
+        running_action.cleanup().await?;
         fs::remove_dir_all(&root_action_directory).await?;
         Ok(())
     }

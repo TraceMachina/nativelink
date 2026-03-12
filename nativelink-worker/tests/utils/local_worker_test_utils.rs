@@ -32,13 +32,10 @@ use nativelink_worker::local_worker::LocalWorker;
 use nativelink_worker::worker_api_client_wrapper::WorkerApiClientTrait;
 use tokio::sync::{broadcast, mpsc};
 use tonic::Status;
-use tonic::{
-    Response,
-    Streaming,
-    codec::Codec, // Needed for .decoder().
-    codec::CompressionEncoding,
-    codec::ProstCodec,
-};
+use tonic::{Response, Streaming, codec::CompressionEncoding};
+use tonic_prost::ProstCodec;
+// Needed for .decoder().
+use tonic::codec::Codec;
 
 use super::mock_running_actions_manager::MockRunningActionsManager;
 
@@ -186,6 +183,13 @@ impl WorkerApiClientTrait for MockWorkerApiClient {
     async fn execution_complete(&mut self, _request: ExecuteComplete) -> Result<(), Error> {
         Ok(())
     }
+
+    async fn blobs_available(
+        &mut self,
+        _request: nativelink_proto::com::github::trace_machina::nativelink::remote_execution::BlobsAvailableNotification,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
 }
 
 pub(crate) fn setup_grpc_stream() -> (
@@ -213,6 +217,8 @@ pub(crate) async fn setup_local_worker_with_config(
             Box::pin(async move { Ok(mock_worker_api_client) })
         }),
         Box::new(move |_| Box::pin(async move { /* No sleep */ })),
+        None, // No periodic BlobsAvailable in tests
+        None, // No CAS server guard in tests
     );
     let (shutdown_tx_test, _) = broadcast::channel::<ShutdownGuard>(BROADCAST_CAPACITY);
 
