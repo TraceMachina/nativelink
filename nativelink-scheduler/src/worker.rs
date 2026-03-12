@@ -117,7 +117,7 @@ pub struct Worker {
     #[metric(help = "The worker's CAS endpoint for peer blob sharing.")]
     pub cas_endpoint: String,
 
-    /// CPU load percentage reported by the worker (load_avg_1m / num_cpus * 100).
+    /// CPU utilization percentage (0-100) reported by the worker, sampled every 100ms.
     /// 0 means unknown (worker hasn't reported load yet).
     #[metric(help = "CPU load percentage reported by the worker.")]
     pub cpu_load_pct: u32,
