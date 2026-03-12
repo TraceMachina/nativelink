@@ -484,7 +484,11 @@ async fn batch_read_small_blobs(
     let slow_store = cas_store.slow_store();
 
     // Try locality-aware routing through WorkerProxyStore.
-    if let Some(proxy) = slow_store.downcast_ref::<WorkerProxyStore>(None) {
+    // Use as_store_driver().as_any() instead of downcast_ref() because
+    // WorkerProxyStore::inner_store() delegates to its inner GrpcStore,
+    // so Store::downcast_ref (which walks inner_store()) would skip past
+    // the WorkerProxyStore and never find it.
+    if let Some(proxy) = slow_store.as_store_driver().as_any().downcast_ref::<WorkerProxyStore>() {
         let peer_stores = proxy.peer_stores();
         if !peer_stores.is_empty() {
             // Assign digests to endpoints using the locality map.
