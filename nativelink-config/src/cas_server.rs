@@ -650,6 +650,12 @@ pub struct EndpointConfig {
 
     /// The TLS configuration to use to connect to the endpoint.
     pub tls_config: Option<ClientTlsConfig>,
+
+    /// Use QUIC/HTTP3 transport instead of TCP/HTTP2.
+    /// Requires the `quic` feature to be enabled at build time.
+    /// Default: false
+    #[serde(default)]
+    pub use_http3: bool,
 }
 
 #[derive(Copy, Clone, Deserialize, Serialize, Debug, Default)]

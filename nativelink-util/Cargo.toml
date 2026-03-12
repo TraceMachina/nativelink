@@ -7,7 +7,7 @@ name = "nativelink-util"
 version = "1.0.0"
 
 [features]
-quic = ["dep:tonic-h3", "dep:quinn", "dep:h3-quinn", "dep:rustls", "dep:socket2"]
+quic = ["dep:tonic-h3", "dep:h3-util", "dep:quinn", "dep:h3-quinn", "dep:rustls", "dep:socket2"]
 
 [dependencies]
 nativelink-config = { path = "../nativelink-config" }
@@ -79,7 +79,7 @@ tonic = { version = "0.14.5", features = [
   "tls-aws-lc",
   "transport",
 ], default-features = false }
-tower = { version = "0.5.2", default-features = false }
+tower = { version = "0.5.2", default-features = false, features = ["buffer"] }
 tracing = { version = "0.1.41", default-features = false }
 tracing-opentelemetry = { version = "0.32.1", default-features = false, features = [
   "metrics",
@@ -98,6 +98,7 @@ uuid = { version = "1.16.0", default-features = false, features = [
 ] }
 walkdir = { version = "2.5.0", default-features = false }
 tonic-h3 = { version = "0.0.5", default-features = false, features = ["quinn"], optional = true }
+h3-util = { version = "0.0.5", default-features = false, features = ["quinn"], optional = true }
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-aws-lc-rs"], optional = true }
 h3-quinn = { version = "0.0.10", default-features = false, optional = true }
 rustls = { version = "0.23", default-features = false, features = ["std", "aws_lc_rs"], optional = true }

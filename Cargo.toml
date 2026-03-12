@@ -29,7 +29,7 @@ name = "nativelink"
 
 [features]
 nix = ["nativelink-worker/nix"]
-quic = ["dep:tonic-h3", "dep:quinn", "dep:h3-quinn", "dep:rcgen", "nativelink-util/quic", "nativelink-store/quic"]
+quic = ["dep:tonic-h3", "dep:quinn", "dep:h3-quinn", "dep:rcgen", "nativelink-util/quic", "nativelink-store/quic", "nativelink-worker/quic"]
 
 [dependencies]
 nativelink-config = { path = "nativelink-config" }

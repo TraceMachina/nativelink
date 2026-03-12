@@ -240,6 +240,103 @@ fn cas_advertised_endpoint(port: u16) -> String {
     format!("grpc://{hostname}:{port}")
 }
 
+/// Start a QUIC/H3 server for the worker CAS, alongside the TCP server.
+///
+/// Generates a self-signed TLS certificate at startup (QUIC mandates TLS 1.3)
+/// and binds a UDP socket on the same port as the TCP server. Peer workers
+/// connecting with `use_http3: true` will use this QUIC endpoint for blob
+/// fetches, benefiting from QUIC's built-in stream multiplexing.
+#[cfg(feature = "quic")]
+fn start_worker_quic_server(
+    port: u16,
+    worker_name: &str,
+    routes: tonic::service::Routes,
+) -> Result<JoinHandleDropGuard<Result<(), Error>>, Error> {
+    use std::sync::Arc;
+    use h3_quinn as _;
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+
+    // Generate self-signed certificate for this worker.
+    let cert = rcgen::generate_simple_self_signed(vec![
+        "localhost".to_string(),
+        worker_name.to_string(),
+    ])
+    .map_err(|e| make_err!(Code::Internal, "Failed to generate self-signed cert: {e:?}"))?;
+
+    let cert_der = CertificateDer::from(cert.cert.der().to_vec());
+    let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
+        cert.signing_key.serialize_der(),
+    ));
+
+    let mut tls_config = rustls::ServerConfig::builder_with_provider(
+        rustls::crypto::aws_lc_rs::default_provider().into(),
+    )
+    .with_safe_default_protocol_versions()
+    .map_err(|e| make_err!(Code::Internal, "Worker QUIC TLS version error: {e:?}"))?
+    .with_no_client_auth()
+    .with_single_cert(vec![cert_der], key_der)
+    .map_err(|e| make_err!(Code::Internal, "Worker QUIC TLS config error: {e:?}"))?;
+    tls_config.alpn_protocols = vec![b"h3".to_vec()];
+    tls_config.max_early_data_size = u32::MAX;
+
+    let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(
+        quinn::crypto::rustls::QuicServerConfig::try_from(Arc::new(tls_config))
+            .map_err(|e| make_err!(Code::Internal, "Worker Quinn server config error: {e:?}"))?,
+    ));
+
+    // Tune QUIC transport for LAN usage.
+    let mut transport = quinn::TransportConfig::default();
+    transport.stream_receive_window((16 * 1024 * 1024u32).into());
+    transport.receive_window((128 * 1024 * 1024u32).into());
+    transport.send_window(128 * 1024 * 1024);
+    transport.max_concurrent_bidi_streams(1024u32.into());
+    transport.max_concurrent_uni_streams(1024u32.into());
+    transport.initial_rtt(Duration::from_micros(500));
+    server_config.transport_config(Arc::new(transport));
+
+    // Bind UDP socket with large buffers.
+    let socket_addr: std::net::SocketAddr = ([0, 0, 0, 0], port).into();
+    let udp_socket = std::net::UdpSocket::bind(socket_addr)
+        .map_err(|e| make_err!(Code::Internal, "Worker QUIC UDP bind on {socket_addr}: {e:?}"))?;
+    {
+        const QUIC_UDP_BUF: usize = 8 * 1024 * 1024;
+        let sock_ref = socket2::SockRef::from(&udp_socket);
+        if let Err(err) = sock_ref.set_send_buffer_size(QUIC_UDP_BUF) {
+            info!(?err, "Failed to set worker QUIC SO_SNDBUF");
+        }
+        if let Err(err) = sock_ref.set_recv_buffer_size(QUIC_UDP_BUF) {
+            info!(?err, "Failed to set worker QUIC SO_RCVBUF");
+        }
+    }
+
+    let quinn_endpoint = quinn::Endpoint::new(
+        quinn::EndpointConfig::default(),
+        Some(server_config),
+        udp_socket,
+        quinn::default_runtime()
+            .ok_or_else(|| make_err!(Code::Internal, "No async runtime for worker QUIC"))?,
+    )
+    .map_err(|e| make_err!(Code::Internal, "Failed to create worker QUIC endpoint: {e:?}"))?;
+
+    let acceptor = tonic_h3::quinn::H3QuinnAcceptor::new(quinn_endpoint);
+    let h3_router = tonic_h3::server::H3Router::new(routes);
+
+    let worker_name = worker_name.to_string();
+    info!(
+        worker_name = %worker_name,
+        %socket_addr,
+        "Starting worker CAS QUIC/H3 server for peer blob sharing"
+    );
+
+    Ok(spawn!("worker_cas_quic", async move {
+        if let Err(err) = h3_router.serve(acceptor).await {
+            error!(?err, "Worker CAS QUIC/H3 server error");
+            return Err(make_err!(Code::Internal, "Worker CAS QUIC server: {err:?}"));
+        }
+        Ok(())
+    }))
+}
+
 /// Accumulated blob changes between BlobsAvailable ticks.
 #[derive(Debug, Default)]
 pub struct BlobChanges {
@@ -1264,24 +1361,49 @@ pub async fn new_local_worker(
         let advertised = cas_advertised_endpoint(cas_port);
 
         let worker_name = config.name.clone();
-        Some(spawn!("worker_cas_server", async move {
+
+        // Build tonic service wrappers first (they wrap in Arc internally
+        // and implement Clone), so we can share them between TCP and QUIC.
+        let cas_svc = cas_server.into_service();
+        let bs_svc = bytestream_server.into_service();
+
+        // Start TCP server.
+        let tcp_cas_svc = cas_svc.clone();
+        let tcp_bs_svc = bs_svc.clone();
+        let tcp_worker_name = worker_name.clone();
+        let tcp_guard = spawn!("worker_cas_tcp", async move {
             info!(
-                worker_name = %worker_name,
+                worker_name = %tcp_worker_name,
                 %addr,
                 %advertised,
-                "Starting worker CAS server for peer blob sharing"
+                "Starting worker CAS TCP server for peer blob sharing"
             );
             let result = tonic::transport::Server::builder()
-                .add_service(cas_server.into_service())
-                .add_service(bytestream_server.into_service())
+                .add_service(tcp_cas_svc)
+                .add_service(tcp_bs_svc)
                 .serve(addr)
                 .await
-                .map_err(|e| make_err!(Code::Internal, "Worker CAS server failed: {e:?}"));
+                .map_err(|e| make_err!(Code::Internal, "Worker CAS TCP server failed: {e:?}"));
             if let Err(ref e) = result {
-                error!(%addr, ?e, "Worker CAS server exited with error");
+                error!(%addr, ?e, "Worker CAS TCP server exited with error");
             }
             result
-        }))
+        });
+
+        // Start QUIC/H3 server on the same port (UDP) for peer blob sharing.
+        #[cfg(feature = "quic")]
+        let _quic_guard = {
+            let quic_routes = tonic::service::Routes::new(cas_svc).add_service(bs_svc);
+            match start_worker_quic_server(cas_port, &worker_name, quic_routes) {
+                Ok(guard) => Some(guard),
+                Err(e) => {
+                    warn!(?e, "Failed to start worker QUIC CAS server, falling back to TCP only");
+                    None
+                }
+            }
+        };
+
+        Some(tcp_guard)
     } else {
         None
     };
@@ -1292,6 +1414,32 @@ pub async fn new_local_worker(
         Box::new(move || {
             let config = config.clone();
             Box::pin(async move {
+                // Check if QUIC/HTTP3 is requested for the worker API endpoint.
+                #[cfg(feature = "quic")]
+                if config.worker_api_endpoint.use_http3 {
+                    let grpc_endpoint = nativelink_config::stores::GrpcEndpoint {
+                        address: config.worker_api_endpoint.uri.clone(),
+                        tls_config: None,
+                        concurrency_limit: None,
+                        connect_timeout_s: 0,
+                        tcp_keepalive_s: 0,
+                        http2_keepalive_interval_s: 0,
+                        http2_keepalive_timeout_s: 0,
+                        tcp_nodelay: true,
+                        use_http3: true,
+                    };
+                    let quic_channel = tls_utils::h3_channel(&grpc_endpoint)
+                        .map_err(|e| make_err!(
+                            Code::Internal,
+                            "Failed to create QUIC channel for worker API: {e:?}"
+                        ))?;
+                    info!(
+                        uri = %config.worker_api_endpoint.uri,
+                        "Worker API: using QUIC/HTTP3 transport"
+                    );
+                    return Ok(WorkerApiClient::new(quic_channel).into());
+                }
+
                 let timeout = config
                     .worker_api_endpoint
                     .timeout
