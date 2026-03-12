@@ -3725,6 +3725,12 @@ impl RunningActionsManagerImpl {
             return;
         }
 
+        // Pin output digests to prevent eviction during background upload.
+        let filesystem_store = self.filesystem_store.clone();
+        for digest in &digests {
+            filesystem_store.pin_digest(digest);
+        }
+
         let cas_store = self.cas_store.clone();
         tokio::spawn(async move {
             let fast_store = cas_store.fast_store();
@@ -3826,6 +3832,10 @@ impl RunningActionsManagerImpl {
                                 }
                             }
                         }
+                        // Pin tree file digests to prevent eviction.
+                        for digest in &file_digests {
+                            filesystem_store.pin_digest(digest);
+                        }
                         digests.extend(file_digests);
                     }
                     Err(e) => {
@@ -3852,7 +3862,7 @@ impl RunningActionsManagerImpl {
             let mut success_count = 0u64;
             let mut fail_count = 0u64;
             let mut uploads = FuturesUnordered::new();
-            for digest in digests {
+            for &digest in &digests {
                 // Use pre-read data for small blobs that were captured
                 // eagerly. This avoids the eviction race where EvictingMap
                 // removes the blob before we can read it.
@@ -3899,6 +3909,11 @@ impl RunningActionsManagerImpl {
                 } else {
                     fail_count += 1;
                 }
+            }
+
+            // Unpin all digests now that upload is complete.
+            for digest in &digests {
+                filesystem_store.unpin_digest(digest);
             }
 
             info!(

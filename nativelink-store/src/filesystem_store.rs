@@ -746,6 +746,18 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         self.weak_self.upgrade()
     }
 
+    /// Pin a digest to prevent eviction during background upload.
+    pub fn pin_digest(&self, digest: &DigestInfo) {
+        let key: StoreKey<'static> = (*digest).into();
+        self.evicting_map.pin_key(StoreKeyBorrow::from(key));
+    }
+
+    /// Unpin a digest, allowing eviction again.
+    pub fn unpin_digest(&self, digest: &DigestInfo) {
+        let key: StoreKey<'static> = (*digest).into();
+        self.evicting_map.unpin_key(&key);
+    }
+
     /// Returns all digest entries in the cache with their absolute last-access
     /// timestamps (seconds since UNIX epoch). String-keyed entries are skipped.
     /// This is a peek-only operation and does NOT promote entries in the LRU.
