@@ -384,8 +384,12 @@ impl DirectoryCache {
                     continue;
                 };
 
-                // Calculate the directory size
-                let size = match set_readonly_and_calculate_size(&entry_path).await {
+                // Calculate the directory size (on macOS, dirs stay writable).
+                #[cfg(target_os = "macos")]
+                let size_result = calculate_directory_size(&entry_path).await;
+                #[cfg(not(target_os = "macos"))]
+                let size_result = set_readonly_and_calculate_size(&entry_path).await;
+                let size = match size_result {
                     Ok(s) => s,
                     Err(e) => {
                         warn!(
