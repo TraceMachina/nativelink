@@ -913,9 +913,17 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             // The insert might have resulted in an eviction/unref so we need to check
             // it still exists in there. But first, get the lock...
             let mut encoded_file_path = entry.get_encoded_file_path().write().await;
-            // Then check it's still in there...
-            if evicting_map.get(&key).await.is_none() {
-                info!(%key, "Got eviction while emplacing, dropping");
+            // Check that OUR specific entry is still in the map. A concurrent
+            // write for the same key may have replaced our entry (calling
+            // unref which deletes our temp file). Checking just the key
+            // would pass if the replacement entry exists, but our temp file
+            // would already be deleted → ENOENT on rename.
+            let still_ours = match evicting_map.get(&key).await {
+                Some(map_entry) => Arc::ptr_eq(&map_entry, &entry),
+                None => false,
+            };
+            if !still_ours {
+                info!(%key, "Got eviction or replacement while emplacing, dropping");
                 return Ok(());
             }
 
