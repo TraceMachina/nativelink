@@ -1822,7 +1822,7 @@ impl DirectoryCache {
                         missing = missing.len(),
                         "DirectoryCache: fetching missing blobs for uncached files",
                     );
-                    let semaphore = Arc::new(tokio::sync::Semaphore::new(32));
+                    let semaphore = Arc::new(tokio::sync::Semaphore::new(64));
                     let mut join_set = tokio::task::JoinSet::new();
                     for d in missing {
                         let sem = semaphore.clone();
@@ -2163,7 +2163,7 @@ impl DirectoryCache {
                         missing = missing.len(),
                         "DirectoryCache direct-use: fetching missing blobs",
                     );
-                    let semaphore = Arc::new(tokio::sync::Semaphore::new(32));
+                    let semaphore = Arc::new(tokio::sync::Semaphore::new(64));
                     let mut join_set = tokio::task::JoinSet::new();
                     for d in missing {
                         let sem = semaphore.clone();

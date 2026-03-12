@@ -503,6 +503,36 @@ pub struct HttpServerConfig {
 pub enum ListenerConfig {
     /// Listener for HTTP/HTTPS/HTTP2 sockets.
     Http(HttpListener),
+
+    /// Listener for QUIC/HTTP3 sockets. Requires TLS (mandatory in QUIC).
+    /// Use self-signed certs with `skip_cert_verification` for internal networks.
+    Http3(Http3Listener),
+}
+
+#[derive(Deserialize, Serialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct Http3Listener {
+    /// UDP address to listen on. Example: `0.0.0.0:50051`
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub socket_address: String,
+
+    /// TLS certificate file (PEM). Required for QUIC.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub cert_file: String,
+
+    /// TLS private key file (PEM). Required for QUIC.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub key_file: String,
+
+    /// Maximum number of bytes to decode on each inbound gRPC message.
+    /// Default: 4 MiB
+    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
+    pub max_decoding_message_size: usize,
+
+    /// Maximum number of bytes to encode on each outbound gRPC message.
+    /// Default: 4 MiB
+    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
+    pub max_encoding_message_size: usize,
 }
 
 #[derive(Deserialize, Serialize, Debug, Default)]
@@ -872,6 +902,27 @@ pub struct DirectoryCacheConfig {
     /// Default: `{work_directory}/../directory_cache`
     #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
     pub cache_root: String,
+
+    /// When enabled, the action's work directory is symlinked directly to the
+    /// cache directory instead of hardlinking/cloning files into it.
+    /// This eliminates all copy/hardlink overhead but requires that actions
+    /// do not modify their input tree (Bazel actions satisfy this).
+    ///
+    /// Subtree reuse is preserved: when a new root shares subtrees with
+    /// already-cached roots, the new cache entry uses symlinks to point at
+    /// the cached subtree directories.
+    ///
+    /// The existing `prepare_output_directories` logic handles read-only
+    /// directories by replacing blocking symlinks with writable shallow-copy
+    /// directories that preserve access to original content.
+    ///
+    /// Default: true
+    #[serde(default = "default_direct_use_mode")]
+    pub direct_use_mode: bool,
+}
+
+const fn default_direct_use_mode() -> bool {
+    true
 }
 
 const fn default_directory_cache_max_entries() -> usize {

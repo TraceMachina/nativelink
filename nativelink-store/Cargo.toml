@@ -111,6 +111,9 @@ uuid = { version = "1.16.0", default-features = false, features = [
   "v4",
 ] }
 
+[features]
+quic = ["nativelink-util/quic"]
+
 [dev-dependencies]
 nativelink-macro = { path = "../nativelink-macro" }
 

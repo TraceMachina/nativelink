@@ -21,7 +21,7 @@ use std::sync::{Arc, Weak};
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use futures::stream::{FuturesUnordered, unfold};
-use futures::{Future, Stream, StreamExt, TryFutureExt, TryStreamExt, future};
+use futures::{Future, Stream, StreamExt, TryStreamExt, future};
 use nativelink_config::stores::GrpcSpec;
 use nativelink_error::{Error, ResultExt, error_if, make_input_err};
 use nativelink_metric::MetricsComponent;
@@ -75,13 +75,31 @@ struct PendingBatchEntry {
     result_tx: tokio::sync::oneshot::Sender<Result<(), Error>>,
 }
 
+/// Transport backend: either a multi-connection TCP pool or a single
+/// QUIC channel (which multiplexes internally).
+enum Transport {
+    Tcp(ConnectionManager),
+    #[cfg(feature = "quic")]
+    Quic(tls_utils::QuicChannel),
+}
+
+impl std::fmt::Debug for Transport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Tcp(cm) => f.debug_tuple("Tcp").field(cm).finish(),
+            #[cfg(feature = "quic")]
+            Self::Quic(_) => write!(f, "Quic"),
+        }
+    }
+}
+
 #[derive(Debug, MetricsComponent)]
 pub struct GrpcStore {
     #[metric(help = "Instance name for the store")]
     instance_name: String,
     store_type: nativelink_config::stores::StoreType,
     retrier: Retrier,
-    connection_manager: ConnectionManager,
+    transport: Transport,
     /// Per-RPC timeout. Duration::ZERO means disabled.
     rpc_timeout: Duration,
     /// Blobs at or below this size use BatchUpdateBlobs instead of
@@ -105,17 +123,51 @@ impl GrpcStore {
             spec.endpoints.is_empty(),
             "Expected at least 1 endpoint in GrpcStore"
         );
-        let mut endpoints = Vec::with_capacity(spec.endpoints.len());
-        for endpoint_config in &spec.endpoints {
-            let endpoint = tls_utils::endpoint(endpoint_config)
-                .map_err(|e| make_input_err!("Invalid URI for GrpcStore endpoint : {e:?}"))?;
-            endpoints.push(endpoint);
-        }
 
         let rpc_timeout = if spec.rpc_timeout_s > 0 {
             Duration::from_secs(spec.rpc_timeout_s)
         } else {
             Duration::from_secs(120)
+        };
+
+        // Choose transport based on the first endpoint's use_http3 flag.
+        #[cfg(feature = "quic")]
+        let use_quic = spec.endpoints.first().is_some_and(|ep| ep.use_http3);
+        #[cfg(not(feature = "quic"))]
+        let use_quic = false;
+
+        let transport = if use_quic {
+            #[cfg(feature = "quic")]
+            {
+                let ep = &spec.endpoints[0];
+                let channel = tls_utils::h3_channel(ep)
+                    .map_err(|e| make_input_err!("Failed to create QUIC channel: {e:?}"))?;
+                info!(
+                    address = %ep.address,
+                    "GrpcStore: using QUIC/HTTP3 transport",
+                );
+                Transport::Quic(channel)
+            }
+            #[cfg(not(feature = "quic"))]
+            {
+                return Err(make_input_err!(
+                    "use_http3 is set but the 'quic' feature is not enabled"
+                ));
+            }
+        } else {
+            let mut endpoints = Vec::with_capacity(spec.endpoints.len());
+            for endpoint_config in &spec.endpoints {
+                let endpoint = tls_utils::endpoint(endpoint_config)
+                    .map_err(|e| make_input_err!("Invalid URI for GrpcStore endpoint : {e:?}"))?;
+                endpoints.push(endpoint);
+            }
+            Transport::Tcp(ConnectionManager::new(
+                endpoints.into_iter(),
+                spec.connections_per_endpoint,
+                spec.max_concurrent_requests,
+                spec.retry.clone(),
+                jitter_fn.clone(),
+            ))
         };
 
         let batch_update_threshold = spec.batch_update_threshold_bytes;
@@ -137,13 +189,7 @@ impl GrpcStore {
                 jitter_fn.clone(),
                 spec.retry.clone(),
             ),
-            connection_manager: ConnectionManager::new(
-                endpoints.into_iter(),
-                spec.connections_per_endpoint,
-                spec.max_concurrent_requests,
-                spec.retry.clone(),
-                jitter_fn,
-            ),
+            transport,
             rpc_timeout,
             batch_update_threshold,
             batch_tx,
@@ -356,16 +402,24 @@ impl GrpcStore {
         let mut request = grpc_request.into_inner();
         request.instance_name.clone_from(&self.instance_name);
         self.perform_request(request, |request| async move {
-            let channel = self
-                .connection_manager
-                .connection()
-                .await
-                .err_tip(|| "in find_missing_blobs")?;
-            ContentAddressableStorageClient::new(channel)
-                .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
-                .find_missing_blobs(Request::new(request))
-                .await
-                .err_tip(|| "in GrpcStore::find_missing_blobs")
+            match &self.transport {
+                Transport::Tcp(cm) => {
+                    let channel = cm.connection().await.err_tip(|| "in find_missing_blobs")?;
+                    ContentAddressableStorageClient::new(channel)
+                        .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
+                        .find_missing_blobs(Request::new(request))
+                        .await
+                        .err_tip(|| "in GrpcStore::find_missing_blobs")
+                }
+                #[cfg(feature = "quic")]
+                Transport::Quic(ch) => {
+                    ContentAddressableStorageClient::new(ch.clone())
+                        .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
+                        .find_missing_blobs(Request::new(request))
+                        .await
+                        .err_tip(|| "in GrpcStore::find_missing_blobs (quic)")
+                }
+            }
         })
         .await
     }
@@ -382,16 +436,24 @@ impl GrpcStore {
         let mut request = grpc_request.into_inner();
         request.instance_name.clone_from(&self.instance_name);
         self.perform_request(request, |request| async move {
-            let channel = self
-                .connection_manager
-                .connection()
-                .await
-                .err_tip(|| "in batch_update_blobs")?;
-            ContentAddressableStorageClient::new(channel)
-                .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
-                .batch_update_blobs(Request::new(request))
-                .await
-                .err_tip(|| "in GrpcStore::batch_update_blobs")
+            match &self.transport {
+                Transport::Tcp(cm) => {
+                    let channel = cm.connection().await.err_tip(|| "in batch_update_blobs")?;
+                    ContentAddressableStorageClient::new(channel)
+                        .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
+                        .batch_update_blobs(Request::new(request))
+                        .await
+                        .err_tip(|| "in GrpcStore::batch_update_blobs")
+                }
+                #[cfg(feature = "quic")]
+                Transport::Quic(ch) => {
+                    ContentAddressableStorageClient::new(ch.clone())
+                        .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
+                        .batch_update_blobs(Request::new(request))
+                        .await
+                        .err_tip(|| "in GrpcStore::batch_update_blobs (quic)")
+                }
+            }
         })
         .await
     }
@@ -409,11 +471,6 @@ impl GrpcStore {
         request.instance_name.clone_from(&self.instance_name);
         let is_worker = IS_WORKER_REQUEST.try_with(|v| *v).unwrap_or(false);
         self.perform_request(request, |request| async move {
-            let channel = self
-                .connection_manager
-                .connection()
-                .await
-                .err_tip(|| "in batch_read_blobs")?;
             let mut grpc_request = Request::new(request);
             if is_worker {
                 grpc_request.metadata_mut().insert(
@@ -421,11 +478,24 @@ impl GrpcStore {
                     tonic::metadata::MetadataValue::from_static("true"),
                 );
             }
-            ContentAddressableStorageClient::new(channel)
-                .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
-                .batch_read_blobs(grpc_request)
-                .await
-                .err_tip(|| "in GrpcStore::batch_read_blobs")
+            match &self.transport {
+                Transport::Tcp(cm) => {
+                    let channel = cm.connection().await.err_tip(|| "in batch_read_blobs")?;
+                    ContentAddressableStorageClient::new(channel)
+                        .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
+                        .batch_read_blobs(grpc_request)
+                        .await
+                        .err_tip(|| "in GrpcStore::batch_read_blobs")
+                }
+                #[cfg(feature = "quic")]
+                Transport::Quic(ch) => {
+                    ContentAddressableStorageClient::new(ch.clone())
+                        .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
+                        .batch_read_blobs(grpc_request)
+                        .await
+                        .err_tip(|| "in GrpcStore::batch_read_blobs (quic)")
+                }
+            }
         })
         .await
     }
@@ -442,16 +512,24 @@ impl GrpcStore {
         let mut request = grpc_request.into_inner();
         request.instance_name.clone_from(&self.instance_name);
         self.perform_request(request, |request| async move {
-            let channel = self
-                .connection_manager
-                .connection()
-                .await
-                .err_tip(|| "in get_tree")?;
-            ContentAddressableStorageClient::new(channel)
-                .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
-                .get_tree(Request::new(request))
-                .await
-                .err_tip(|| "in GrpcStore::get_tree")
+            match &self.transport {
+                Transport::Tcp(cm) => {
+                    let channel = cm.connection().await.err_tip(|| "in get_tree")?;
+                    ContentAddressableStorageClient::new(channel)
+                        .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
+                        .get_tree(Request::new(request))
+                        .await
+                        .err_tip(|| "in GrpcStore::get_tree")
+                }
+                #[cfg(feature = "quic")]
+                Transport::Quic(ch) => {
+                    ContentAddressableStorageClient::new(ch.clone())
+                        .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
+                        .get_tree(Request::new(request))
+                        .await
+                        .err_tip(|| "in GrpcStore::get_tree (quic)")
+                }
+            }
         })
         .await
     }
@@ -470,11 +548,6 @@ impl GrpcStore {
         &self,
         request: ReadRequest,
     ) -> Result<impl Stream<Item = Result<ReadResponse, Status>> + use<>, Error> {
-        let channel = self
-            .connection_manager
-            .connection()
-            .await
-            .err_tip(|| "in read_internal")?;
         let mut grpc_request = Request::new(request);
         if IS_WORKER_REQUEST.try_with(|v| *v).unwrap_or(false) {
             grpc_request.metadata_mut().insert(
@@ -482,12 +555,26 @@ impl GrpcStore {
                 tonic::metadata::MetadataValue::from_static("true"),
             );
         }
-        let mut response = ByteStreamClient::new(channel)
-            .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
-            .read(grpc_request)
-            .await
-            .err_tip(|| "in GrpcStore::read")?
-            .into_inner();
+        let mut response = match &self.transport {
+            Transport::Tcp(cm) => {
+                let channel = cm.connection().await.err_tip(|| "in read_internal")?;
+                ByteStreamClient::new(channel)
+                    .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
+                    .read(grpc_request)
+                    .await
+                    .err_tip(|| "in GrpcStore::read")?
+                    .into_inner()
+            }
+            #[cfg(feature = "quic")]
+            Transport::Quic(ch) => {
+                ByteStreamClient::new(ch.clone())
+                    .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
+                    .read(grpc_request)
+                    .await
+                    .err_tip(|| "in GrpcStore::read (quic)")?
+                    .into_inner()
+            }
+        };
         let first_response = response
             .message()
             .await
@@ -558,35 +645,64 @@ impl GrpcStore {
                         "GrpcStore::write: requesting connection from pool",
                     );
                     let conn_start = std::time::Instant::now();
-                    let rpc_fut = self.connection_manager.connection().and_then(|channel| {
-                        let conn_elapsed = conn_start.elapsed();
-                        let instance_for_rpc = instance_name.clone();
-                        let conn_elapsed_ms =
-                            u64::try_from(conn_elapsed.as_millis()).unwrap_or(u64::MAX);
-                        trace!(
-                            instance_name = %instance_for_rpc,
-                            conn_elapsed_ms,
-                            "GrpcStore::write: got connection, starting ByteStream.Write RPC",
-                        );
-                        let rpc_start = std::time::Instant::now();
-                        let local_state_for_rpc = local_state.clone();
-                        async move {
-                            let res = ByteStreamClient::new(channel)
-                                .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
-                                .write(WriteStateWrapper::new(local_state_for_rpc))
-                                .await
-                                .err_tip(|| "in GrpcStore::write");
-                            let rpc_elapsed_ms =
-                                u64::try_from(rpc_start.elapsed().as_millis()).unwrap_or(u64::MAX);
-                            trace!(
-                                instance_name = %instance_for_rpc,
-                                rpc_elapsed_ms,
-                                success = res.is_ok(),
-                                "GrpcStore::write: ByteStream.Write RPC returned",
-                            );
-                            res
+                    let instance_for_rpc = instance_name.clone();
+                    let local_state_for_rpc = local_state.clone();
+                    let rpc_fut = async {
+                        match &self.transport {
+                            Transport::Tcp(cm) => {
+                                let channel = cm
+                                    .connection()
+                                    .await
+                                    .err_tip(|| "in GrpcStore::write")?;
+                                let conn_elapsed_ms = u64::try_from(
+                                    conn_start.elapsed().as_millis(),
+                                )
+                                .unwrap_or(u64::MAX);
+                                trace!(
+                                    instance_name = %instance_for_rpc,
+                                    conn_elapsed_ms,
+                                    "GrpcStore::write: got connection, starting ByteStream.Write RPC",
+                                );
+                                let rpc_start = std::time::Instant::now();
+                                let res = ByteStreamClient::new(channel)
+                                    .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
+                                    .write(WriteStateWrapper::new(local_state_for_rpc))
+                                    .await
+                                    .err_tip(|| "in GrpcStore::write");
+                                let rpc_elapsed_ms = u64::try_from(
+                                    rpc_start.elapsed().as_millis(),
+                                )
+                                .unwrap_or(u64::MAX);
+                                trace!(
+                                    instance_name = %instance_for_rpc,
+                                    rpc_elapsed_ms,
+                                    success = res.is_ok(),
+                                    "GrpcStore::write: ByteStream.Write RPC returned",
+                                );
+                                res
+                            }
+                            #[cfg(feature = "quic")]
+                            Transport::Quic(ch) => {
+                                let rpc_start = std::time::Instant::now();
+                                let res = ByteStreamClient::new(ch.clone())
+                                    .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
+                                    .write(WriteStateWrapper::new(local_state_for_rpc))
+                                    .await
+                                    .err_tip(|| "in GrpcStore::write (quic)");
+                                let rpc_elapsed_ms = u64::try_from(
+                                    rpc_start.elapsed().as_millis(),
+                                )
+                                .unwrap_or(u64::MAX);
+                                trace!(
+                                    instance_name = %instance_for_rpc,
+                                    rpc_elapsed_ms,
+                                    success = res.is_ok(),
+                                    "GrpcStore::write: ByteStream.Write RPC returned (quic)",
+                                );
+                                res
+                            }
                         }
-                    });
+                    };
 
                     let result = if rpc_timeout > Duration::ZERO {
                         match tokio::time::timeout(rpc_timeout, rpc_fut).await {
@@ -676,16 +792,24 @@ impl GrpcStore {
         }
 
         self.perform_request(request, |request| async move {
-            let channel = self
-                .connection_manager
-                .connection()
-                .await
-                .err_tip(|| "in query_write_status")?;
-            ByteStreamClient::new(channel)
-                .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
-                .query_write_status(Request::new(request))
-                .await
-                .err_tip(|| "in GrpcStore::query_write_status")
+            match &self.transport {
+                Transport::Tcp(cm) => {
+                    let channel = cm.connection().await.err_tip(|| "in query_write_status")?;
+                    ByteStreamClient::new(channel)
+                        .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
+                        .query_write_status(Request::new(request))
+                        .await
+                        .err_tip(|| "in GrpcStore::query_write_status")
+                }
+                #[cfg(feature = "quic")]
+                Transport::Quic(ch) => {
+                    ByteStreamClient::new(ch.clone())
+                        .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
+                        .query_write_status(Request::new(request))
+                        .await
+                        .err_tip(|| "in GrpcStore::query_write_status (quic)")
+                }
+            }
         })
         .await
     }
@@ -697,16 +821,24 @@ impl GrpcStore {
         let mut request = grpc_request.into_inner();
         request.instance_name.clone_from(&self.instance_name);
         self.perform_request(request, |request| async move {
-            let channel = self
-                .connection_manager
-                .connection()
-                .await
-                .err_tip(|| "in get_action_result")?;
-            ActionCacheClient::new(channel)
-                .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
-                .get_action_result(Request::new(request))
-                .await
-                .err_tip(|| "in GrpcStore::get_action_result")
+            match &self.transport {
+                Transport::Tcp(cm) => {
+                    let channel = cm.connection().await.err_tip(|| "in get_action_result")?;
+                    ActionCacheClient::new(channel)
+                        .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
+                        .get_action_result(Request::new(request))
+                        .await
+                        .err_tip(|| "in GrpcStore::get_action_result")
+                }
+                #[cfg(feature = "quic")]
+                Transport::Quic(ch) => {
+                    ActionCacheClient::new(ch.clone())
+                        .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
+                        .get_action_result(Request::new(request))
+                        .await
+                        .err_tip(|| "in GrpcStore::get_action_result (quic)")
+                }
+            }
         })
         .await
     }
@@ -718,16 +850,24 @@ impl GrpcStore {
         let mut request = grpc_request.into_inner();
         request.instance_name.clone_from(&self.instance_name);
         self.perform_request(request, |request| async move {
-            let channel = self
-                .connection_manager
-                .connection()
-                .await
-                .err_tip(|| "in update_action_result")?;
-            ActionCacheClient::new(channel)
-                .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
-                .update_action_result(Request::new(request))
-                .await
-                .err_tip(|| "in GrpcStore::update_action_result")
+            match &self.transport {
+                Transport::Tcp(cm) => {
+                    let channel = cm.connection().await.err_tip(|| "in update_action_result")?;
+                    ActionCacheClient::new(channel)
+                        .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
+                        .update_action_result(Request::new(request))
+                        .await
+                        .err_tip(|| "in GrpcStore::update_action_result")
+                }
+                #[cfg(feature = "quic")]
+                Transport::Quic(ch) => {
+                    ActionCacheClient::new(ch.clone())
+                        .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
+                        .update_action_result(Request::new(request))
+                        .await
+                        .err_tip(|| "in GrpcStore::update_action_result (quic)")
+                }
+            }
         })
         .await
     }

@@ -22,7 +22,7 @@ use std::ffi::OsString;
 use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use futures::{FutureExt, join};
 use nativelink_config::stores::{FastSlowSpec, StoreDirection};
 use nativelink_error::{Code, Error, ResultExt, make_err};
@@ -65,6 +65,10 @@ pub struct FastSlowStore {
     // actually it's faster because we're not downloading the file multiple
     // times are doing loads of duplicate IO.
     populating_digests: Mutex<HashMap<StoreKey<'static>, Loader>>,
+    /// Holds data for blobs whose background slow-store write is still in
+    /// progress. If the fast store evicts the blob before the slow write
+    /// completes, `get_part` serves from this map to prevent NotFound gaps.
+    in_flight_slow_writes: Arc<Mutex<HashMap<StoreKey<'static>, Bytes>>>,
 }
 
 // This guard ensures that the populating_digests is cleared even if the future
@@ -128,6 +132,7 @@ impl FastSlowStore {
             weak_self: weak_self.clone(),
             metrics: FastSlowStoreMetrics::default(),
             populating_digests: Mutex::new(HashMap::new()),
+            in_flight_slow_writes: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -392,7 +397,23 @@ impl StoreDriver for FastSlowStore {
         // down stream might be unable to get it.  This should not affect
         // workers as they only use get() and a CAS can use an
         // ExistenceCacheStore to avoid the bottleneck.
-        self.slow_store.has_with_results(key, results).await
+        self.slow_store.has_with_results(key, results).await?;
+        // Fill in any blobs that are in-flight (written to fast store but
+        // background slow write not yet complete).
+        {
+            let in_flight = self.in_flight_slow_writes.lock();
+            if !in_flight.is_empty() {
+                for (k, result) in key.iter().zip(results.iter_mut()) {
+                    if result.is_none() {
+                        let owned = k.borrow().into_owned();
+                        if let Some(data) = in_flight.get(&owned) {
+                            *result = Some(data.len() as u64);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     async fn update(
@@ -431,115 +452,99 @@ impl StoreDriver for FastSlowStore {
             return self.slow_store.update(key, reader, size_info).await;
         }
 
-        // Use 128 slots (~32MiB at 256KiB chunks) for dual-store
-        // update to reduce backpressure between fast and slow stores.
+        // Decoupled write: stream to fast store while accumulating data,
+        // then spawn a background task for the slow store write.
+        // This prevents slow-store latency (e.g. ZFS txg sync) from
+        // blocking the fast-store (MemoryStore) write path.
         let (mut fast_tx, fast_rx) = make_buf_channel_pair_with_size(128);
-        let (mut slow_tx, slow_rx) = make_buf_channel_pair_with_size(128);
 
         let key_debug = format!("{key:?}");
-        trace!(
-            key = %key_debug,
-            "FastSlowStore::update: starting dual-store upload",
-        );
         let update_start = std::time::Instant::now();
-        let mut bytes_sent: u64 = 0;
 
+        // Read from upstream, forward to fast store, accumulate for slow store.
         let data_stream_fut = async move {
+            let mut accumulated: Vec<Bytes> = Vec::new();
+            let mut bytes_sent: u64 = 0;
             loop {
                 let buffer = reader
                     .recv()
                     .await
                     .err_tip(|| "Failed to read buffer in fastslow store")?;
                 if buffer.is_empty() {
-                    // EOF received.
                     fast_tx.send_eof().err_tip(
                         || "Failed to write eof to fast store in fast_slow store update",
                     )?;
-                    slow_tx
-                        .send_eof()
-                        .err_tip(|| "Failed to write eof to writer in fast_slow store update")?;
-                    debug!(
-                        total_bytes = bytes_sent,
-                        "FastSlowStore::update: data_stream sent EOF to both stores",
-                    );
-                    return Result::<(), Error>::Ok(());
+                    return Result::<(Vec<Bytes>, u64), Error>::Ok((accumulated, bytes_sent));
                 }
-
-                let chunk_len = buffer.len();
-                let send_start = std::time::Instant::now();
-                let (fast_result, slow_result) =
-                    join!(fast_tx.send(buffer.clone()), slow_tx.send(buffer));
-                let send_elapsed = send_start.elapsed();
-                if send_elapsed.as_secs() >= 5 {
-                    warn!(
-                        chunk_len,
-                        send_elapsed_ms = send_elapsed.as_millis(),
-                        total_bytes = bytes_sent,
-                        "FastSlowStore::update: channel send stalled (>5s). A downstream store may be hanging",
-                    );
-                }
-                bytes_sent += u64::try_from(chunk_len).unwrap_or(u64::MAX);
-                fast_result
-                    .map_err(|e| {
-                        make_err!(
-                            Code::Internal,
-                            "Failed to send message to fast_store in fast_slow_store {:?}",
-                            e
-                        )
-                    })
-                    .merge(slow_result.map_err(|e| {
-                        make_err!(
-                            Code::Internal,
-                            "Failed to send message to slow_store in fast_slow store {:?}",
-                            e
-                        )
-                    }))?;
+                bytes_sent += u64::try_from(buffer.len()).unwrap_or(u64::MAX);
+                accumulated.push(buffer.clone());
+                fast_tx.send(buffer).await.map_err(|e| {
+                    make_err!(
+                        Code::Internal,
+                        "Failed to send message to fast_store in fast_slow_store {:?}",
+                        e
+                    )
+                })?;
             }
         };
 
-        let fast_start = std::time::Instant::now();
-        let fast_store_fut = async {
-            let res = self.fast_store.update(key.borrow(), fast_rx, size_info).await;
-            (res, fast_start.elapsed())
-        };
-        let slow_start = std::time::Instant::now();
-        let slow_store_fut = async {
-            let res = self.slow_store.update(key.borrow(), slow_rx, size_info).await;
-            (res, slow_start.elapsed())
-        };
+        let fast_store_fut = self.fast_store.update(key.borrow(), fast_rx, size_info);
+        let (data_res, fast_res) = join!(data_stream_fut, fast_store_fut);
+        let (accumulated, bytes_sent) = data_res?;
+        fast_res?;
 
-        let (data_stream_res, (fast_res, fast_elapsed), (slow_res, slow_elapsed)) =
-            join!(data_stream_fut, fast_store_fut, slow_store_fut);
+        let fast_elapsed = update_start.elapsed();
+        debug!(
+            key = %key_debug,
+            fast_ms = fast_elapsed.as_millis(),
+            total_bytes = bytes_sent,
+            "FastSlowStore::update: fast store complete, spawning background slow write",
+        );
 
-        let total_elapsed = update_start.elapsed();
-        let fast_ms = fast_elapsed.as_millis();
-        let slow_ms = slow_elapsed.as_millis();
-        let slower_leg = if fast_ms >= slow_ms { "fast" } else { "slow" };
-        if data_stream_res.is_err() || fast_res.is_err() || slow_res.is_err() {
-            warn!(
-                key = %key_debug,
-                elapsed_ms = total_elapsed.as_millis(),
-                fast_ms,
-                slow_ms,
-                slower_leg,
-                total_bytes = bytes_sent,
-                data_stream_ok = data_stream_res.is_ok(),
-                fast_store_ok = fast_res.is_ok(),
-                slow_store_ok = slow_res.is_ok(),
-                "FastSlowStore::update: completed with error(s)",
-            );
-        } else {
-            debug!(
-                key = %key_debug,
-                elapsed_ms = total_elapsed.as_millis(),
-                fast_ms,
-                slow_ms,
-                slower_leg,
-                total_bytes = bytes_sent,
-                "FastSlowStore::update: completed successfully",
-            );
+        // Reassemble accumulated chunks into a single Bytes for slow store.
+        let total_len: usize = accumulated.iter().map(|b| b.len()).sum();
+        let mut combined = BytesMut::with_capacity(total_len);
+        for chunk in accumulated {
+            combined.extend_from_slice(&chunk);
         }
-        data_stream_res.merge(fast_res).merge(slow_res)?;
+        let data = combined.freeze();
+
+        // Insert into in-flight map so get_part can serve this blob even if
+        // the fast store evicts it before the slow write completes.
+        let owned_key = key.borrow().into_owned();
+        self.in_flight_slow_writes
+            .lock()
+            .insert(owned_key.clone(), data.clone());
+
+        let in_flight = self.in_flight_slow_writes.clone();
+        let slow_store = self.slow_store.clone();
+        let key_for_bg = owned_key.clone();
+        let key_debug_bg = key_debug.clone();
+        tokio::spawn(async move {
+            let slow_start = std::time::Instant::now();
+            let result = slow_store
+                .update_oneshot(key_for_bg.borrow(), data)
+                .await;
+            in_flight.lock().remove(&key_for_bg);
+            let slow_ms = slow_start.elapsed().as_millis();
+            match result {
+                Ok(()) => debug!(
+                    key = %key_debug_bg,
+                    slow_ms,
+                    total_bytes = bytes_sent,
+                    "FastSlowStore: background slow write completed",
+                ),
+                Err(e) => warn!(
+                    key = %key_debug_bg,
+                    slow_ms,
+                    total_bytes = bytes_sent,
+                    error = ?e,
+                    "FastSlowStore: background slow write FAILED — \
+                     blob may be lost when fast store evicts it",
+                ),
+            }
+        });
+
         Ok(())
     }
 
@@ -571,49 +576,58 @@ impl StoreDriver for FastSlowStore {
             return self.slow_store.update_oneshot(key, data).await;
         }
 
-        let oneshot_start = std::time::Instant::now();
         let key_debug = format!("{key:?}");
         let data_len = data.len();
-        let fast_oneshot_start = std::time::Instant::now();
-        let data_for_slow = data.clone();
-        let fast_fut = async {
-            let res = self.fast_store.update_oneshot(key.borrow(), data).await;
-            (res, fast_oneshot_start.elapsed())
-        };
-        let slow_oneshot_start = std::time::Instant::now();
-        let slow_fut = async {
-            let res = self.slow_store.update_oneshot(key.borrow(), data_for_slow).await;
-            (res, slow_oneshot_start.elapsed())
-        };
-        let ((fast_res, fast_elapsed), (slow_res, slow_elapsed)) = join!(fast_fut, slow_fut);
-        let total_elapsed = oneshot_start.elapsed();
-        let fast_ms = fast_elapsed.as_millis();
-        let slow_ms = slow_elapsed.as_millis();
-        let slower_leg = if fast_ms >= slow_ms { "fast" } else { "slow" };
-        if fast_res.is_err() || slow_res.is_err() {
-            warn!(
-                key = %key_debug,
-                elapsed_ms = total_elapsed.as_millis(),
-                fast_ms,
-                slow_ms,
-                slower_leg,
-                data_len,
-                fast_store_ok = fast_res.is_ok(),
-                slow_store_ok = slow_res.is_ok(),
-                "FastSlowStore::update_oneshot: completed with error(s)",
-            );
-        } else {
-            debug!(
-                key = %key_debug,
-                elapsed_ms = total_elapsed.as_millis(),
-                fast_ms,
-                slow_ms,
-                slower_leg,
-                data_len,
-                "FastSlowStore::update_oneshot: completed",
-            );
-        }
-        fast_res.merge(slow_res)?;
+
+        // Write to fast store first (blocking — typically MemoryStore, near-instant).
+        let fast_start = std::time::Instant::now();
+        self.fast_store
+            .update_oneshot(key.borrow(), data.clone())
+            .await?;
+        let fast_ms = fast_start.elapsed().as_millis();
+
+        // Spawn background slow store write.
+        let owned_key = key.borrow().into_owned();
+        self.in_flight_slow_writes
+            .lock()
+            .insert(owned_key.clone(), data.clone());
+
+        let in_flight = self.in_flight_slow_writes.clone();
+        let slow_store = self.slow_store.clone();
+        let key_for_bg = owned_key.clone();
+        let key_debug_bg = key_debug.clone();
+        tokio::spawn(async move {
+            let slow_start = std::time::Instant::now();
+            let result = slow_store
+                .update_oneshot(key_for_bg.borrow(), data)
+                .await;
+            in_flight.lock().remove(&key_for_bg);
+            let slow_ms = slow_start.elapsed().as_millis();
+            match result {
+                Ok(()) => debug!(
+                    key = %key_debug_bg,
+                    fast_ms,
+                    slow_ms,
+                    data_len,
+                    "FastSlowStore::update_oneshot: background slow write completed",
+                ),
+                Err(e) => warn!(
+                    key = %key_debug_bg,
+                    fast_ms,
+                    slow_ms,
+                    data_len,
+                    error = ?e,
+                    "FastSlowStore::update_oneshot: background slow write FAILED",
+                ),
+            }
+        });
+
+        debug!(
+            key = %key_debug,
+            fast_ms,
+            data_len,
+            "FastSlowStore::update_oneshot: fast store complete, slow write spawned",
+        );
         Ok(())
     }
 
@@ -745,6 +759,37 @@ impl StoreDriver for FastSlowStore {
                     );
                 }
                 Err(err) => return Err(err),
+            }
+        }
+
+        // Check in-flight slow writes: the blob may have been evicted from the
+        // fast store while its background slow-store write is still in progress.
+        {
+            let owned_key = key.borrow().into_owned();
+            let maybe_data = self.in_flight_slow_writes.lock().get(&owned_key).cloned();
+            if let Some(data) = maybe_data {
+                let data_len = data.len();
+                let offset_usize = usize::try_from(offset)
+                    .err_tip(|| "Could not convert offset to usize")?;
+                let end = length
+                    .and_then(|l| usize::try_from(l).ok())
+                    .map(|l| (offset_usize.saturating_add(l)).min(data_len))
+                    .unwrap_or(data_len);
+                if offset_usize < end {
+                    writer
+                        .send(data.slice(offset_usize..end))
+                        .await
+                        .err_tip(|| "Failed to send in-flight data in fast_slow get_part")?;
+                }
+                writer
+                    .send_eof()
+                    .err_tip(|| "Failed to send EOF for in-flight data")?;
+                debug!(
+                    ?key,
+                    data_len,
+                    "Served blob from in-flight slow-write buffer (fast store evicted it)",
+                );
+                return Ok(());
             }
         }
 

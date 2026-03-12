@@ -6,6 +6,9 @@ edition = "2024"
 name = "nativelink-util"
 version = "1.0.0-rc2"
 
+[features]
+quic = ["dep:tonic-h3", "dep:quinn", "dep:h3-quinn", "dep:rustls", "dep:socket2"]
+
 [dependencies]
 nativelink-config = { path = "../nativelink-config" }
 nativelink-error = { path = "../nativelink-error" }
@@ -91,6 +94,11 @@ uuid = { version = "1.16.0", default-features = false, features = [
   "v6",
 ] }
 walkdir = { version = "2.5.0", default-features = false }
+tonic-h3 = { version = "0.0.5", default-features = false, features = ["quinn"], optional = true }
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-aws-lc-rs"], optional = true }
+h3-quinn = { version = "0.0.10", default-features = false, optional = true }
+rustls = { version = "0.23", default-features = false, features = ["std", "aws_lc_rs"], optional = true }
+socket2 = { version = "0.5", default-features = false, optional = true }
 
 [dev-dependencies]
 nativelink-macro = { path = "../nativelink-macro" }
