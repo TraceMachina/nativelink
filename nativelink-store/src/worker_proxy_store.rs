@@ -32,7 +32,7 @@ use nativelink_util::store_trait::{
 };
 use parking_lot::RwLock;
 use tokio::task::JoinHandle;
-use tracing::{debug, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 use crate::grpc_store::GrpcStore;
 
@@ -117,7 +117,7 @@ impl WorkerProxyStore {
     pub fn remove_worker_endpoint(&self, endpoint: &str) {
         let mut conns = self.worker_connections.write();
         if conns.remove(endpoint).is_some() {
-            debug!(endpoint, "WorkerProxyStore: removed worker connection");
+            info!(endpoint, "WorkerProxyStore: removed worker connection");
         }
     }
 

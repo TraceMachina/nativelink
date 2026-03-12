@@ -425,7 +425,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                 "Failed to send periodic BlobsAvailable"
             );
         } else {
-            debug!(
+            info!(
                 new_or_touched_count,
                 evicted_count,
                 cached_dir_count,

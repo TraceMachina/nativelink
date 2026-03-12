@@ -83,7 +83,7 @@ use tokio::time::Instant;
 use tokio_stream::wrappers::ReadDirStream;
 use opentelemetry::context::Context;
 use tonic::Request;
-use tracing::{debug, error, event, trace, warn, Level};
+use tracing::{debug, error, event, info, trace, warn, Level};
 use uuid::Uuid;
 
 /// For simplicity we use a fixed exit code for cases when our program is terminated
@@ -556,7 +556,7 @@ async fn batch_read_small_blobs(
             for (ep, result) in results {
                 match result {
                     Ok(completed) => fetched.extend(completed),
-                    Err(e) => debug!(endpoint = ep, ?e, "BatchReadBlobs: batch failed"),
+                    Err(e) => warn!(endpoint = ep, ?e, "BatchReadBlobs: batch failed"),
                 }
             }
 
@@ -584,12 +584,12 @@ async fn batch_read_small_blobs(
                         Ok(()) => { fetched.insert(digest); }
                         Err(e) => {
                             retry_failures += 1;
-                            debug!(?digest, ?e, "BatchReadBlobs: retry fetch failed");
+                            warn!(?digest, ?e, "BatchReadBlobs: retry fetch failed");
                         }
                     }
                 }
                 if retry_failures > 0 {
-                    debug!(retry_failures, "BatchReadBlobs: some retries failed");
+                    warn!(retry_failures, "BatchReadBlobs: some retries failed");
                 }
             }
 
@@ -1452,7 +1452,7 @@ pub fn download_to_directory<'a>(
 
         let total_bytes: u64 = unique_digests.iter().map(|d| d.size_bytes()).sum();
         let total_ms = phase_start.elapsed().as_millis();
-        debug!(
+        info!(
             tree_resolve_ms,
             has_check_ms = has_check_ms - tree_resolve_ms,
             fetch_ms = fetcher_elapsed.as_millis() as u64,
@@ -2515,7 +2515,7 @@ impl RunningActionImpl {
                     {
                         let joined_command = args.join(OsStr::new(" "));
                         let command = joined_command.to_string_lossy();
-                        debug!(
+                        info!(
                             seconds = self.action_info.timeout.as_secs_f32(),
                             %command,
                             "Command timed out"
@@ -2875,7 +2875,7 @@ impl RunningActionImpl {
                     .unwrap_or_else(|e| -(e.duration().as_millis() as i64))
             };
             let em = &execution_metadata;
-            debug!(
+            info!(
                 operation_id = ?self.operation_id,
                 queue_ms = duration_ms(em.queued_timestamp, em.worker_start_timestamp),
                 input_fetch_ms = duration_ms(em.input_fetch_start_timestamp, em.input_fetch_completed_timestamp),
@@ -3033,7 +3033,7 @@ impl RunningAction for RunningActionImpl {
         })?;
         match &res {
             Ok(_) if stall_warned.load(Ordering::Relaxed) => {
-                debug!(
+                info!(
                     ?operation_id,
                     elapsed_s = upload_start.elapsed().as_secs(),
                     "upload_results: completed after stall",
@@ -3794,7 +3794,7 @@ impl RunningActionsManagerImpl {
                 }
             }
 
-            debug!(
+            info!(
                 total_digests = total,
                 success_count,
                 fail_count,

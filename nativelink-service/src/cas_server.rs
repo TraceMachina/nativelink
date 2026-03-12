@@ -42,7 +42,7 @@ use nativelink_util::store_trait::{IS_WORKER_REQUEST, Store, StoreLike};
 use opentelemetry::context::FutureExt;
 use prost::Message;
 use tonic::{Request, Response, Status};
-use tracing::{Instrument, Level, debug, error, error_span, instrument, warn};
+use tracing::{Instrument, Level, debug, error, error_span, info, instrument, warn};
 
 #[derive(Debug)]
 pub struct CasServer {
@@ -95,7 +95,7 @@ impl CasServer {
             .filter_map(|(maybe_size, digest)| maybe_size.map_or_else(|| Some(digest), |_| None))
             .collect();
 
-        debug!(
+        info!(
             requested = requested_blobs.len(),
             missing = missing_blob_digests.len(),
             "FindMissingBlobs",
@@ -483,7 +483,7 @@ impl CasServer {
             .collect::<Vec<_>>()
             .join(", ");
 
-        debug!(
+        info!(
             ?root_digest,
             dir_count = directories.len(),
             total_bytes,

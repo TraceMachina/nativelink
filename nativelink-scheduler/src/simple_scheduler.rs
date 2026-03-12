@@ -41,7 +41,7 @@ use opentelemetry::context::{Context, FutureExt as OtelFutureExt};
 use opentelemetry_semantic_conventions::attribute::ENDUSER_ID;
 use tokio::sync::{Notify, mpsc};
 use tokio::time::Duration;
-use tracing::{debug, error, info_span, warn};
+use tracing::{debug, error, info, info_span, warn};
 
 use crate::api_worker_scheduler::ApiWorkerScheduler;
 use crate::awaited_action_db::{AwaitedActionDb, CLIENT_KEEPALIVE_DURATION};
@@ -698,7 +698,7 @@ impl SimpleScheduler {
                                         for item in value {
                                             items.push(item.to_string());
                                         }
-                                        debug!(?items, "Oldest actions in state");
+                                        info!(?items, "Oldest actions in state");
                                     }
 
                                     worker_match_logging_last.replace(now);
