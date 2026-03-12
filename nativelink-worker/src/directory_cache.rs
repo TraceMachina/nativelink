@@ -573,6 +573,7 @@ impl DirectoryCache {
 
         let misses = self.miss_count.fetch_add(1, Ordering::Relaxed) + 1;
         let hits = self.hit_count.load(Ordering::Relaxed);
+        let fuzzy = self.fuzzy_match_count.load(Ordering::Relaxed);
         let total = hits + misses;
         let hit_rate = if total > 0 { (hits as f64 / total as f64) * 100.0 } else { 0.0 };
         info!(
@@ -580,6 +581,7 @@ impl DirectoryCache {
             size_bytes = digest.size_bytes(),
             hits,
             misses,
+            fuzzy_matches = fuzzy,
             hit_rate = format!("{hit_rate:.1}%"),
             has_fast_path = self.fast_slow_store.is_some() && self.filesystem_store.is_some(),
             "DirectoryCache DIRECT-USE MISS, starting construction",
@@ -1173,7 +1175,8 @@ impl DirectoryCache {
 
             // Step 3: Build the directory tree.
             // If we have subtree hits and a resolved tree, use subtree-aware
-            // construction. Otherwise, fall back to full construction.
+            // construction. Otherwise, try fuzzy matching before falling back
+            // to full construction.
             if let Some(tree) = &resolved_tree {
                 if !subtree_hits.is_empty() {
                     // Subtree-aware construction: walk the tree, symlink cached
@@ -1187,9 +1190,34 @@ impl DirectoryCache {
                     .await
                     .err_tip(|| "Failed subtree-aware construction")?;
                 } else {
-                    // No subtree hits -- use fast download_to_directory if available.
-                    self.construct_full(&digest, &temp_path).await
-                        .err_tip(|| "Failed full construction")?;
+                    // No direct subtree hits -- try fuzzy matching.
+                    let tree_digests: HashSet<DigestInfo> = tree.keys().copied().collect();
+                    if let Some((best_root, shared, total)) =
+                        self.find_best_fuzzy_match(&digest, &tree_digests).await
+                    {
+                        let similarity = (shared as f64 / total as f64) * 100.0;
+                        info!(
+                            hash = %&digest.packed_hash().to_string()[..12],
+                            best_match = %&best_root.packed_hash().to_string()[..12],
+                            shared_subtrees = shared,
+                            total_dirs = total,
+                            similarity = format!("{similarity:.1}%"),
+                            "DirectoryCache: FUZZY MATCH found, patching from best match",
+                        );
+                        self.fuzzy_match_count.fetch_add(1, Ordering::Relaxed);
+                        self.construct_from_fuzzy_match(
+                            &digest,
+                            tree,
+                            &best_root,
+                            &temp_path,
+                        )
+                        .await
+                        .err_tip(|| "Failed fuzzy-match construction")?;
+                    } else {
+                        // No fuzzy match -- use fast download_to_directory if available.
+                        self.construct_full(&digest, &temp_path).await
+                            .err_tip(|| "Failed full construction")?;
+                    }
                 }
             } else {
                 // No resolved tree -- use full construction.
@@ -2798,11 +2826,14 @@ impl DirectoryCache {
             .values()
             .filter(|m| m.ref_count.load(Ordering::Relaxed) > 0)
             .count();
+        let reverse_index_size = self.subtree_to_roots.read().await.len();
 
         CacheStats {
             entries: cache.len(),
             total_size_bytes: total_size,
             in_use_entries: in_use,
+            fuzzy_matches: self.fuzzy_match_count.load(Ordering::Relaxed),
+            reverse_index_entries: reverse_index_size,
         }
     }
 }
@@ -2813,6 +2844,10 @@ pub struct CacheStats {
     pub entries: usize,
     pub total_size_bytes: u64,
     pub in_use_entries: usize,
+    /// Number of times a fuzzy match was used instead of full construction
+    pub fuzzy_matches: u64,
+    /// Number of entries in the subtree-to-roots reverse index
+    pub reverse_index_entries: usize,
 }
 
 #[cfg(test)]
