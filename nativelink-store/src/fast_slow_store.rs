@@ -397,7 +397,23 @@ impl StoreDriver for FastSlowStore {
         // down stream might be unable to get it.  This should not affect
         // workers as they only use get() and a CAS can use an
         // ExistenceCacheStore to avoid the bottleneck.
-        self.slow_store.has_with_results(key, results).await
+        self.slow_store.has_with_results(key, results).await?;
+        // Fill in any blobs that are in-flight (written to fast store but
+        // background slow write not yet complete).
+        {
+            let in_flight = self.in_flight_slow_writes.lock();
+            if !in_flight.is_empty() {
+                for (k, result) in key.iter().zip(results.iter_mut()) {
+                    if result.is_none() {
+                        let owned = k.borrow().into_owned();
+                        if let Some(data) = in_flight.get(&owned) {
+                            *result = Some(data.len() as u64);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     async fn update(
