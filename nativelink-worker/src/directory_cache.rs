@@ -168,7 +168,7 @@ impl Default for DirectoryCacheConfig {
             max_entries: 1000,
             max_size_bytes: 10 * 1024 * 1024 * 1024, // 10 GB
             cache_root: std::env::temp_dir().join("nativelink_directory_cache"),
-            direct_use_mode: true,
+            direct_use_mode: false,
         }
     }
 }

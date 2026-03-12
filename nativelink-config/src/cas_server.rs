@@ -926,7 +926,7 @@ pub struct DirectoryCacheConfig {
 }
 
 const fn default_direct_use_mode() -> bool {
-    true
+    false
 }
 
 const fn default_directory_cache_max_entries() -> usize {
