@@ -20,7 +20,7 @@ use core::hash::Hash;
 use core::marker::PhantomData;
 use core::ops::RangeBounds;
 use core::pin::Pin;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -124,6 +124,8 @@ struct State<
 
     _key_type: PhantomData<Q>,
     item_callbacks: Vec<C>,
+    /// Keys that are pinned and should not be evicted.
+    pinned_keys: HashSet<K>,
 }
 
 type RemoveFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
@@ -150,6 +152,8 @@ impl<
         if let Some(btree) = &mut self.btree {
             btree.remove(key);
         }
+        // Remove any stale pin for this key.
+        self.pinned_keys.retain(|k| k.borrow() != key);
         self.sum_store_size -= eviction_item.data.len();
         if replaced {
             self.replaced_items.inc();
@@ -250,6 +254,7 @@ where
                 lifetime_inserted_bytes: Counter::default(),
                 _key_type: PhantomData,
                 item_callbacks: Vec::new(),
+                pinned_keys: HashSet::new(),
             }),
             anchor_time,
             max_bytes: config.max_bytes as u64,
@@ -257,6 +262,16 @@ where
             max_seconds: config.max_seconds as i32,
             max_count: config.max_count,
         }
+    }
+
+    /// Pin a key to prevent eviction. Idempotent.
+    pub fn pin_key(&self, key: K) {
+        self.state.lock().pinned_keys.insert(key);
+    }
+
+    /// Unpin a key, allowing eviction again. Idempotent.
+    pub fn unpin_key(&self, key: &Q) {
+        self.state.lock().pinned_keys.retain(|k| k.borrow() != key);
     }
 
     pub async fn enable_filtering(&self) {
@@ -349,12 +364,28 @@ where
 
         let mut items_to_unref = Vec::new();
         let mut removal_futures = Vec::new();
+        let mut skipped_pinned = Vec::new();
 
-        while self.should_evict(state.lru.len(), peek_entry, state.sum_store_size, max_bytes) {
+        while self.should_evict(
+            state.lru.len() + skipped_pinned.len(),
+            peek_entry,
+            state.sum_store_size,
+            max_bytes,
+        ) {
             let (key, eviction_item) = state
                 .lru
                 .pop_lru()
                 .expect("Tried to peek() then pop() but failed");
+
+            if state.pinned_keys.contains(key.borrow()) {
+                skipped_pinned.push((key, eviction_item));
+                peek_entry = match state.lru.peek_lru() {
+                    Some((_, entry)) => entry,
+                    None => break,
+                };
+                continue;
+            }
+
             let age_secs = elapsed_seconds.saturating_sub(eviction_item.seconds_since_anchor);
             let size = eviction_item.data.len();
             if age_secs < 120 {
@@ -371,6 +402,11 @@ where
             } else {
                 break;
             };
+        }
+
+        // Re-insert pinned items back into LRU
+        for (key, item) in skipped_pinned {
+            state.lru.push(key, item);
         }
 
         (items_to_unref, removal_futures)
