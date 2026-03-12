@@ -28,7 +28,7 @@ use nativelink_store::ac_utils::get_and_decode_digest;
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::{FileEntry, FilesystemStore};
 use nativelink_util::common::DigestInfo;
-use nativelink_util::fs_util::hardlink_directory_tree;
+use nativelink_util::fs_util::{CloneMethod, hardlink_directory_tree};
 #[cfg(target_os = "macos")]
 use nativelink_util::fs_util::calculate_directory_size;
 #[cfg(not(target_os = "macos"))]
@@ -263,6 +263,10 @@ pub struct DirectoryCache {
     miss_count: AtomicU64,
     /// Cumulative subtree hit count for stats logging
     subtree_hit_count: AtomicU64,
+    /// Cumulative hit-via-clonefile count
+    hit_clonefile_count: AtomicU64,
+    /// Cumulative hit-via-hardlink count
+    hit_hardlink_count: AtomicU64,
     /// When true, use the cache directory directly via symlinks instead of
     /// hardlinking/cloning. See `DirectoryCacheConfig::direct_use_mode`.
     direct_use_mode: bool,
@@ -482,6 +486,8 @@ impl DirectoryCache {
             hit_count: AtomicU64::new(0),
             miss_count: AtomicU64::new(0),
             subtree_hit_count: AtomicU64::new(0),
+            hit_clonefile_count: AtomicU64::new(0),
+            hit_hardlink_count: AtomicU64::new(0),
             direct_use_mode,
         })
     }
@@ -967,18 +973,27 @@ impl DirectoryCache {
         let overall_start = Instant::now();
 
         // Fast path: check if already in cache (read lock only for the lookup)
-        if self.try_hardlink_cached(&digest, dest_path).await? {
+        if let Some(method) = self.try_hardlink_cached(&digest, dest_path).await? {
             let hits = self.hit_count.fetch_add(1, Ordering::Relaxed) + 1;
             let misses = self.miss_count.load(Ordering::Relaxed);
             let total = hits + misses;
             let hit_rate = if total > 0 { (hits as f64 / total as f64) * 100.0 } else { 0.0 };
+            let clonefiles = self.hit_clonefile_count.load(Ordering::Relaxed);
+            let hardlinks = self.hit_hardlink_count.load(Ordering::Relaxed);
+            let method_str = match method {
+                CloneMethod::Clonefile => "clonefile",
+                CloneMethod::Hardlink => "hardlink",
+            };
             info!(
                 hash = %&digest.packed_hash().to_string()[..12],
                 elapsed_ms = overall_start.elapsed().as_millis() as u64,
+                method = method_str,
                 hits,
                 misses,
                 hit_rate = format!("{hit_rate:.1}%"),
-                "DirectoryCache HIT (hardlinked from cache)",
+                clonefiles,
+                hardlinks,
+                "DirectoryCache HIT (cloned from cache)",
             );
             return Ok(true);
         }
@@ -1010,7 +1025,7 @@ impl DirectoryCache {
         let _guard = construction_lock.lock().await;
 
         // Double-check after acquiring lock — another task may have just constructed it
-        if self.try_hardlink_cached(&digest, dest_path).await? {
+        if self.try_hardlink_cached(&digest, dest_path).await?.is_some() {
             self.cleanup_construction_lock(&digest, &construction_lock);
             return Ok(true);
         }
@@ -1277,12 +1292,17 @@ impl DirectoryCache {
         self.cleanup_construction_lock(&digest, &construction_lock);
 
         match &hardlink_result {
-            Ok(()) => {
+            Ok(method) => {
+                let method_str = match method {
+                    CloneMethod::Clonefile => "clonefile",
+                    CloneMethod::Hardlink => "hardlink",
+                };
                 info!(
                     hash = %&digest.packed_hash().to_string()[..12],
                     hardlink_ms = hardlink_elapsed.as_millis() as u64,
                     total_ms = overall_start.elapsed().as_millis() as u64,
-                    "DirectoryCache: hardlinked newly constructed directory to dest",
+                    method = method_str,
+                    "DirectoryCache: cloned newly constructed directory to dest",
                 );
             }
             Err(e) => {
@@ -1301,13 +1321,13 @@ impl DirectoryCache {
     }
 
     /// Attempts to hardlink a cached directory to dest, guarding eviction with ref_count.
-    /// Returns `Ok(true)` on cache hit + successful hardlink, `Ok(false)` on cache miss
-    /// or failed hardlink (caller should fall through to reconstruction).
+    /// Returns `Ok(Some(method))` on cache hit + successful clone/hardlink,
+    /// `Ok(None)` on cache miss or failed hardlink (caller falls through to reconstruction).
     async fn try_hardlink_cached(
         &self,
         digest: &DigestInfo,
         dest_path: &Path,
-    ) -> Result<bool, Error> {
+    ) -> Result<Option<CloneMethod>, Error> {
         let (src_path, cached_size) = {
             // Read lock is sufficient — ref_count and last_access are atomic.
             let cache = self.cache.read().await;
@@ -1316,7 +1336,7 @@ impl DirectoryCache {
                     hash = %&digest.packed_hash().to_string()[..12],
                     "DirectoryCache: not in cache (miss)",
                 );
-                return Ok(false);
+                return Ok(None);
             };
             metadata.touch();
             metadata.ref_count.fetch_add(1, Ordering::Relaxed);
@@ -1342,14 +1362,27 @@ impl DirectoryCache {
         }
 
         match result {
-            Ok(()) => {
+            Ok(method) => {
+                let method_str = match method {
+                    CloneMethod::Clonefile => "clonefile",
+                    CloneMethod::Hardlink => "hardlink",
+                };
+                match method {
+                    CloneMethod::Clonefile => {
+                        self.hit_clonefile_count.fetch_add(1, Ordering::Relaxed);
+                    }
+                    CloneMethod::Hardlink => {
+                        self.hit_hardlink_count.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
                 info!(
                     hash = %&digest.packed_hash().to_string()[..12],
                     cached_size_bytes = cached_size,
                     hardlink_ms = hardlink_elapsed.as_millis() as u64,
-                    "DirectoryCache: hardlink from cache succeeded",
+                    method = method_str,
+                    "DirectoryCache: clone from cache succeeded",
                 );
-                Ok(true)
+                Ok(Some(method))
             }
             Err(e) => {
                 warn!(
@@ -1358,7 +1391,7 @@ impl DirectoryCache {
                     hardlink_ms = hardlink_elapsed.as_millis() as u64,
                     "DirectoryCache: hardlink from cache FAILED, will reconstruct",
                 );
-                Ok(false)
+                Ok(None)
             }
         }
     }
@@ -1683,7 +1716,7 @@ impl DirectoryCache {
                 let (digest, src, dst, result) = join_result
                     .map_err(|e| make_err!(Code::Internal, "Subtree clone join error: {e}"))?;
                 match result {
-                    Ok(()) => {
+                    Ok(_method) => {
                         debug!(
                             child_hash = %&digest.packed_hash().to_string()[..12],
                             src = %src.display(),
