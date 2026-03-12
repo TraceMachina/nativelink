@@ -61,7 +61,7 @@ use crate::worker_api_client_wrapper::{WorkerApiClientTrait, WorkerApiClientWrap
 use crate::worker_utils::make_connect_worker_request;
 
 /// Default interval for periodic BlobsAvailable reports (milliseconds).
-const DEFAULT_BLOBS_AVAILABLE_INTERVAL_MS: u64 = 500;
+const DEFAULT_BLOBS_AVAILABLE_INTERVAL_MS: u64 = 100;
 
 /// Platform-specific cumulative CPU time reading.
 #[cfg(target_os = "linux")]
@@ -925,6 +925,14 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                                     if action_result.stderr_digest.size_bytes() > 0 {
                                                         v.push(action_result.stderr_digest.into());
                                                     }
+                                                    // Expand Tree protos to include individual file
+                                                    // digests in the locality map. Without this, the
+                                                    // server can't proxy reads for tree file blobs
+                                                    // until the background upload completes.
+                                                    let tree_file_digests = running_actions_manager
+                                                        .expand_tree_file_digests(&action_result)
+                                                        .await;
+                                                    v.extend(tree_file_digests.into_iter().map(Into::into));
                                                 }
                                                 v
                                             };

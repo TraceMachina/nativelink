@@ -3217,6 +3217,16 @@ pub trait RunningActionsManager: Sync + Send + Sized + Unpin + 'static {
     /// fast store to the remote slow store. No-op by default.
     fn spawn_upload_to_remote(self: &Arc<Self>, _action_result: &ActionResult) {}
 
+    /// Expand output directory Tree protos and return the contained file digests.
+    /// Used to register tree file digests in the locality map before reporting
+    /// the execution result, so the server can proxy reads immediately.
+    fn expand_tree_file_digests(
+        &self,
+        _action_result: &ActionResult,
+    ) -> impl Future<Output = Vec<DigestInfo>> + Send {
+        std::future::ready(Vec::new())
+    }
+
     fn metrics(&self) -> &Arc<Metrics>;
 
     /// Returns the digests of input root directories cached in the worker's
@@ -3672,6 +3682,49 @@ impl RunningActionsManagerImpl {
                 sleep_fn: |duration| Box::pin(tokio::time::sleep(duration)),
             },
         )
+    }
+
+    /// Expand Tree protos from output folders and return the contained file
+    /// digests. Used to register tree file digests in the locality map before
+    /// reporting the execution result, so the server can proxy reads immediately.
+    pub async fn expand_tree_file_digests(
+        &self,
+        action_result: &ActionResult,
+    ) -> Vec<DigestInfo> {
+        let fast_store = self.cas_store.fast_store();
+        let mut file_digests = Vec::new();
+        for folder in &action_result.output_folders {
+            let tree_digest = folder.tree_digest;
+            if tree_digest.size_bytes() == 0 {
+                continue;
+            }
+            match get_and_decode_digest::<ProtoTree>(fast_store, tree_digest.into()).await {
+                Ok(tree) => {
+                    let digests: Vec<DigestInfo> = tree
+                        .children
+                        .into_iter()
+                        .chain(tree.root)
+                        .flat_map(|dir| dir.files)
+                        .filter_map(|f| f.digest.and_then(|d| DigestInfo::try_from(d).ok()))
+                        .filter(|d| d.size_bytes() > 0)
+                        .collect();
+                    info!(
+                        ?tree_digest,
+                        file_count = digests.len(),
+                        "expanded tree for locality hints",
+                    );
+                    file_digests.extend(digests);
+                }
+                Err(e) => {
+                    warn!(
+                        ?tree_digest,
+                        ?e,
+                        "failed to expand tree for locality hints",
+                    );
+                }
+            }
+        }
+        file_digests
     }
 
     /// Spawn a background task that uploads all action output blobs from the
@@ -4281,6 +4334,13 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                 .wait_for(|()| self.running_actions.lock().is_empty())
                 .await,
         );
+    }
+
+    fn expand_tree_file_digests(
+        &self,
+        action_result: &ActionResult,
+    ) -> impl Future<Output = Vec<DigestInfo>> + Send {
+        RunningActionsManagerImpl::expand_tree_file_digests(self, action_result)
     }
 
     fn spawn_upload_to_remote(self: &Arc<Self>, action_result: &ActionResult) {
