@@ -519,62 +519,75 @@ impl ApiWorkerSchedulerImpl {
         };
 
         // ── Tier 1.5: Partial subtree coverage scoring ──
-        // When no worker has the exact root cached, score workers by the total
-        // file bytes under their cached subtrees. A worker caching a subtree with
-        // 10GB of files scores higher than one caching a subtree with 100 bytes.
-        // We sum the subtree_bytes for each matching directory, taking only the
-        // top-level match (avoid double-counting nested matches).
+        // When no worker has the exact root cached, score workers by a blended
+        // metric of cached bytes and cached file count. Each cached file is
+        // worth PER_FILE_WEIGHT bytes in the score because hardlink/clonefile
+        // operations have a fixed per-file I/O cost (~0.1ms each, equivalent
+        // to ~100KB of network transfer at 10Gbps).
+        const PER_FILE_WEIGHT: u64 = 100 * 1024; // 100KB per file
         let subtree_coverage_winner: Option<WorkerId> = if dir_cache_winner.is_some() {
             None // exact match found, skip coverage scoring
         } else if let Some(tree) = resolved_tree {
             let total_bytes: u64 = tree.subtree_bytes.get(&input_root_digest).copied().unwrap_or(0);
-            if tree.dir_digests.len() <= 1 || total_bytes == 0 {
+            let total_files: u64 = tree.subtree_files.get(&input_root_digest).copied().unwrap_or(0);
+            let total_score = total_bytes + total_files * PER_FILE_WEIGHT;
+            if tree.dir_digests.len() <= 1 || total_score == 0 {
                 None // only root (or empty), no subtrees to match
             } else {
-                let mut best: Option<(WorkerId, u64, u32)> = None; // (id, cached_bytes, cpu_load)
+                // (id, cached_score, cached_bytes, cached_files, cpu_load)
+                let mut best: Option<(WorkerId, u64, u64, u64, u32)> = None;
                 for wid in &candidates {
                     if let Some(w) = self.workers.0.peek(wid) {
                         if !worker_is_viable(wid) {
                             continue;
                         }
-                        // Sum the subtree_bytes for each of the action's directory
+                        // Sum bytes and files for each of the action's directory
                         // digests that this worker has cached.
-                        let cached_bytes: u64 = tree.dir_digests.iter()
+                        let (cached_bytes, cached_files): (u64, u64) = tree.dir_digests.iter()
                             .filter(|d| w.cached_subtree_digests.contains(d))
-                            .map(|d| tree.subtree_bytes.get(d).copied().unwrap_or(0))
-                            .sum();
-                        if cached_bytes == 0 {
+                            .fold((0u64, 0u64), |(ab, af), d| {
+                                (
+                                    ab + tree.subtree_bytes.get(d).copied().unwrap_or(0),
+                                    af + tree.subtree_files.get(d).copied().unwrap_or(0),
+                                )
+                            });
+                        let cached_score = cached_bytes + cached_files * PER_FILE_WEIGHT;
+                        if cached_score == 0 {
                             continue;
                         }
                         let load = w.cpu_load_pct;
-                        let dominated = best.as_ref().is_some_and(|(_, best_bytes, best_load)| {
-                            if cached_bytes != *best_bytes {
-                                return cached_bytes < *best_bytes;
+                        let dominated = best.as_ref().is_some_and(|(_, best_score, _, _, best_load)| {
+                            if cached_score != *best_score {
+                                return cached_score < *best_score;
                             }
-                            // Same coverage — prefer lower CPU load.
+                            // Same score — prefer lower CPU load.
                             let effective_best = if *best_load == 0 { u32::MAX } else { *best_load };
                             let effective_this = if load == 0 { u32::MAX } else { load };
                             effective_this >= effective_best
                         });
                         if !dominated {
-                            best = Some((wid.clone(), cached_bytes, load));
+                            best = Some((wid.clone(), cached_score, cached_bytes, cached_files, load));
                         }
                     }
                 }
-                if let Some((ref wid, cached_bytes, load)) = best {
-                    let pct = if total_bytes > 0 { cached_bytes * 100 / total_bytes } else { 0 };
+                if let Some((ref wid, cached_score, cached_bytes, cached_files, load)) = best {
+                    let pct = if total_score > 0 { cached_score * 100 / total_score } else { 0 };
                     info!(
                         ?wid,
                         cached_bytes,
+                        cached_files,
                         total_bytes,
+                        total_files,
+                        cached_score,
+                        total_score,
                         cpu_load_pct = load,
                         coverage_pct = pct,
                         %input_root_digest,
-                        "Subtree coverage winner -- worker has {}% of input tree bytes cached in subtrees",
+                        "Subtree coverage winner -- worker has {}% of input tree (bytes+files) cached",
                         pct,
                     );
                 }
-                best.map(|(wid, _, _)| wid)
+                best.map(|(wid, _, _, _, _)| wid)
             }
         } else {
             None
@@ -1292,6 +1305,11 @@ struct ResolvedTree {
     /// Used to weight subtree coverage scoring — a subtree with 10GB
     /// of files is worth more than one with 100 bytes.
     subtree_bytes: HashMap<DigestInfo, u64>,
+    /// Total file count under each directory subtree (recursive).
+    /// Blended with subtree_bytes for coverage scoring: many small files
+    /// have higher per-file I/O cost (hardlinks, clonefile) than fewer
+    /// large files at the same total byte count.
+    subtree_files: HashMap<DigestInfo, u64>,
 }
 
 /// Resolves a directory tree from the CAS store by recursively reading
@@ -1312,8 +1330,9 @@ async fn resolve_tree_from_cas(
     let mut seen_dirs: HashSet<DigestInfo> = HashSet::new();
     seen_dirs.insert(root_digest);
 
-    // Track tree structure for bottom-up subtree size computation.
+    // Track tree structure for bottom-up subtree size/file-count computation.
     let mut dir_direct_bytes: HashMap<DigestInfo, u64> = HashMap::new();
+    let mut dir_direct_files: HashMap<DigestInfo, u64> = HashMap::new();
     let mut dir_children: HashMap<DigestInfo, Vec<DigestInfo>> = HashMap::new();
     // BFS order — used for bottom-up traversal (reverse of BFS = leaves first).
     let mut bfs_order: Vec<DigestInfo> = vec![root_digest];
@@ -1345,13 +1364,15 @@ async fn resolve_tree_from_cas(
         for result in results {
             let (parent_digest, directory) = result?;
 
-            // Sum direct file bytes for this directory.
+            // Sum direct file bytes and count for this directory.
             let mut direct_bytes: u64 = 0;
+            let mut direct_files: u64 = 0;
             for file_node in &directory.files {
                 if let Some(ref digest) = file_node.digest {
                     if let Ok(digest_info) = DigestInfo::try_from(digest) {
                         let size = digest_info.size_bytes();
                         direct_bytes += size;
+                        direct_files += 1;
                         if seen_files.insert(digest_info) {
                             file_digests.push((digest_info, size));
                         }
@@ -1359,6 +1380,7 @@ async fn resolve_tree_from_cas(
                 }
             }
             dir_direct_bytes.insert(parent_digest, direct_bytes);
+            dir_direct_files.insert(parent_digest, direct_files);
 
             // Queue subdirectories for visiting (dedup via seen_dirs).
             let mut children = Vec::new();
@@ -1377,27 +1399,34 @@ async fn resolve_tree_from_cas(
         }
     }
 
-    // Bottom-up pass: compute total file bytes under each subtree.
+    // Bottom-up pass: compute total file bytes and file count under each subtree.
     // Reverse BFS order gives us leaves-first, so children are always
     // computed before parents.
     let mut subtree_bytes: HashMap<DigestInfo, u64> = HashMap::new();
+    let mut subtree_files: HashMap<DigestInfo, u64> = HashMap::new();
     for &dir_digest in bfs_order.iter().rev() {
-        let direct = dir_direct_bytes.get(&dir_digest).copied().unwrap_or(0);
-        let children_total: u64 = dir_children
+        let direct_b = dir_direct_bytes.get(&dir_digest).copied().unwrap_or(0);
+        let direct_f = dir_direct_files.get(&dir_digest).copied().unwrap_or(0);
+        let (children_bytes, children_files): (u64, u64) = dir_children
             .get(&dir_digest)
             .map(|children| {
-                children.iter()
-                    .map(|c| subtree_bytes.get(c).copied().unwrap_or(0))
-                    .sum()
+                children.iter().fold((0u64, 0u64), |(ab, af), c| {
+                    (
+                        ab + subtree_bytes.get(c).copied().unwrap_or(0),
+                        af + subtree_files.get(c).copied().unwrap_or(0),
+                    )
+                })
             })
-            .unwrap_or(0);
-        subtree_bytes.insert(dir_digest, direct + children_total);
+            .unwrap_or((0, 0));
+        subtree_bytes.insert(dir_digest, direct_b + children_bytes);
+        subtree_files.insert(dir_digest, direct_f + children_files);
     }
 
     Ok(ResolvedTree {
         file_digests,
         dir_digests: seen_dirs,
         subtree_bytes,
+        subtree_files,
     })
 }
 
