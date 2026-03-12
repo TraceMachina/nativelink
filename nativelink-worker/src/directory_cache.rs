@@ -1227,8 +1227,29 @@ impl DirectoryCache {
             }
         }
 
-        // Clone all subtrees in parallel.
-        if !subtree_clone_jobs.is_empty() {
+        info!(
+            hash = %&root_digest.packed_hash().to_string()[..12],
+            dirs_created,
+            subtrees_linked,
+            files_to_download = files_to_download.len(),
+            symlinks = symlinks_to_create.len(),
+            "DirectoryCache: subtree-aware construction plan",
+        );
+
+        // Create symlinks (parent dirs exist from BFS, independent of clones/downloads).
+        #[cfg(target_family = "unix")]
+        for (target, link_path) in &symlinks_to_create {
+            fs::symlink(target, link_path)
+                .await
+                .err_tip(|| format!("Failed to create symlink: {} -> {}", link_path.display(), target))?;
+        }
+
+        // Run subtree clones and file downloads concurrently.
+        // Both write to non-overlapping paths, so they're safe to overlap.
+        let clone_future = async {
+            if subtree_clone_jobs.is_empty() {
+                return Ok::<Vec<(DigestInfo, PathBuf)>, Error>(Vec::new());
+            }
             let clone_start = Instant::now();
             let num_jobs = subtree_clone_jobs.len();
             let mut clone_set = tokio::task::JoinSet::new();
@@ -1272,71 +1293,13 @@ impl DirectoryCache {
                 "DirectoryCache: parallel subtree clones completed",
             );
 
-            // For failed subtrees (evicted between check and clone), walk the
-            // tree to collect their files for download.
-            for (failed_digest, failed_dst) in failed_subtrees {
-                subtrees_linked -= 1;
-                // Clean up any partial state from the failed clone attempt.
-                drop(fs::remove_dir_all(&failed_dst).await);
+            Ok(failed_subtrees)
+        };
 
-                let mut sub_queue = VecDeque::new();
-                sub_queue.push_back((failed_digest, failed_dst));
-                while let Some((d, p)) = sub_queue.pop_front() {
-                    if let Some(dir) = tree.get(&d) {
-                        fs::create_dir_all(&p).await.err_tip(|| {
-                            format!("Failed to create directory for failed subtree: {}", p.display())
-                        })?;
-                        dirs_created += 1;
-                        for subdir_node in &dir.directories {
-                            Self::validate_node_name(&subdir_node.name)?;
-                            let cd: DigestInfo = subdir_node
-                                .digest
-                                .as_ref()
-                                .ok_or_else(|| make_err!(Code::InvalidArgument, "Directory node missing digest"))?
-                                .try_into()
-                                .err_tip(|| "Invalid directory digest in failed subtree walk")?;
-                            sub_queue.push_back((cd, p.join(&subdir_node.name)));
-                        }
-                        for file_node in &dir.files {
-                            Self::validate_node_name(&file_node.name)?;
-                            let fd: DigestInfo = file_node
-                                .digest
-                                .as_ref()
-                                .ok_or_else(|| make_err!(Code::InvalidArgument, "File node missing digest"))?
-                                .try_into()
-                                .err_tip(|| "Invalid file digest in failed subtree walk")?;
-                            files_to_download.push((fd, p.join(&file_node.name), file_node.is_executable));
-                        }
-                        for symlink_node in &dir.symlinks {
-                            Self::validate_node_name(&symlink_node.name)?;
-                            symlinks_to_create.push((symlink_node.target.clone(), p.join(&symlink_node.name)));
-                        }
-                    }
-                }
+        let download_future = async {
+            if files_to_download.is_empty() {
+                return Ok::<(), Error>(());
             }
-        }
-
-        info!(
-            hash = %&root_digest.packed_hash().to_string()[..12],
-            dirs_created,
-            subtrees_linked,
-            files_to_download = files_to_download.len(),
-            symlinks = symlinks_to_create.len(),
-            "DirectoryCache: subtree-aware construction plan",
-        );
-
-        // Create symlinks from the proto
-        #[cfg(target_family = "unix")]
-        for (target, link_path) in &symlinks_to_create {
-            fs::symlink(target, link_path)
-                .await
-                .err_tip(|| format!("Failed to create symlink: {} -> {}", link_path.display(), target))?;
-        }
-
-        // Download uncached files.
-        // If we have a FastSlowStore + FilesystemStore, use hardlinks from CAS.
-        // Otherwise fall back to serial CAS fetch.
-        if !files_to_download.is_empty() {
             if let (Some(fss), Some(_fs_store)) = (&self.fast_slow_store, &self.filesystem_store) {
                 let fs_store_pin = Pin::new(
                     fss.fast_store()
@@ -1345,7 +1308,6 @@ impl DirectoryCache {
                 );
 
                 // Check which blobs are already in the fast store.
-                // Skip zero-byte digests — they aren't stored in FilesystemStore.
                 let unique_digests: Vec<DigestInfo> = {
                     let mut seen = HashSet::new();
                     files_to_download
@@ -1376,7 +1338,6 @@ impl DirectoryCache {
                         missing = missing.len(),
                         "DirectoryCache: fetching missing blobs for uncached files",
                     );
-                    // Download missing blobs in parallel with bounded concurrency.
                     let semaphore = Arc::new(tokio::sync::Semaphore::new(32));
                     let mut join_set = tokio::task::JoinSet::new();
                     for d in missing {
@@ -1398,8 +1359,6 @@ impl DirectoryCache {
                 // Hardlink files from the fast store to their destination paths.
                 for (file_digest, file_path, is_executable) in &files_to_download {
                     if file_digest.size_bytes() == 0 {
-                        // Zero-byte files aren't stored in FilesystemStore.
-                        // Create them directly.
                         fs::write(&file_path, b"")
                             .await
                             .err_tip(|| format!("Failed to create empty file: {}", file_path.display()))?;
@@ -1422,10 +1381,6 @@ impl DirectoryCache {
                             .await?;
                     }
 
-                    // Ensure all files have 0o555. CAS files ingested before the
-                    // 0o555 default may still be 0o644; we must fix them here since
-                    // hardlinks share the inode and set_readonly_and_calculate_size
-                    // would turn 0o644 into 0o444 (no execute), breaking shell scripts.
                     #[cfg(unix)]
                     {
                         use std::os::unix::fs::PermissionsExt;
@@ -1457,7 +1412,6 @@ impl DirectoryCache {
                         .await
                         .err_tip(|| format!("Failed to write file: {}", file_path.display()))?;
 
-                    // Always set 0o555 to match CAS defaults (see create_file).
                     #[cfg(unix)]
                     {
                         use std::os::unix::fs::PermissionsExt;
@@ -1468,6 +1422,79 @@ impl DirectoryCache {
                         fs::set_permissions(&file_path, perms).await
                             .err_tip(|| "Failed to set file permissions")?;
                     }
+                }
+            }
+            Ok(())
+        };
+
+        let (clone_result, download_result) = tokio::join!(clone_future, download_future);
+        let failed_subtrees = clone_result?;
+        download_result?;
+
+        // Handle failed subtrees (rare — subtree evicted between check and clone).
+        // Walk the tree to reconstruct, using serial CAS fetch for simplicity.
+        for (failed_digest, failed_dst) in &failed_subtrees {
+            subtrees_linked -= 1;
+            drop(fs::remove_dir_all(failed_dst).await);
+
+            let mut sub_queue = VecDeque::new();
+            sub_queue.push_back((*failed_digest, failed_dst.clone()));
+            while let Some((d, p)) = sub_queue.pop_front() {
+                if let Some(dir) = tree.get(&d) {
+                    fs::create_dir_all(&p).await.err_tip(|| {
+                        format!("Failed to create directory for failed subtree: {}", p.display())
+                    })?;
+                    dirs_created += 1;
+                    for subdir_node in &dir.directories {
+                        Self::validate_node_name(&subdir_node.name)?;
+                        let cd: DigestInfo = subdir_node
+                            .digest
+                            .as_ref()
+                            .ok_or_else(|| make_err!(Code::InvalidArgument, "Directory node missing digest"))?
+                            .try_into()
+                            .err_tip(|| "Invalid directory digest in failed subtree walk")?;
+                        sub_queue.push_back((cd, p.join(&subdir_node.name)));
+                    }
+                    for file_node in &dir.files {
+                        Self::validate_node_name(&file_node.name)?;
+                        let fd: DigestInfo = file_node
+                            .digest
+                            .as_ref()
+                            .ok_or_else(|| make_err!(Code::InvalidArgument, "File node missing digest"))?
+                            .try_into()
+                            .err_tip(|| "Invalid file digest in failed subtree walk")?;
+                        let fp = p.join(&file_node.name);
+                        let data = self
+                            .cas_store
+                            .get_part_unchunked(StoreKey::Digest(fd), 0, None)
+                            .await
+                            .err_tip(|| format!("Failed to fetch file for failed subtree: {}", fp.display()))?;
+                        fs::write(&fp, data.as_ref())
+                            .await
+                            .err_tip(|| format!("Failed to write file: {}", fp.display()))?;
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            let mut perms = fs::metadata(&fp).await
+                                .err_tip(|| "Failed to get file metadata")?.permissions();
+                            perms.set_mode(0o555);
+                            fs::set_permissions(&fp, perms).await
+                                .err_tip(|| "Failed to set file permissions")?;
+                        }
+                    }
+                    #[cfg(target_family = "unix")]
+                    for symlink_node in &dir.symlinks {
+                        Self::validate_node_name(&symlink_node.name)?;
+                        let link_path = p.join(&symlink_node.name);
+                        fs::symlink(&symlink_node.target, &link_path)
+                            .await
+                            .err_tip(|| format!("Failed to create symlink: {}", link_path.display()))?;
+                    }
+                } else {
+                    warn!(
+                        digest = ?d,
+                        "DirectoryCache: directory not found in tree during failed subtree walk",
+                    );
                 }
             }
         }
