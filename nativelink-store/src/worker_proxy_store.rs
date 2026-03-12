@@ -169,6 +169,8 @@ impl WorkerProxyStore {
                 http2_keepalive_interval_s: 30,
                 http2_keepalive_timeout_s: 20,
                 tcp_nodelay: true,
+                // Workers start QUIC CAS servers with self-signed certs
+                // on the same port (40081). Use QUIC when available.
                 use_http3: cfg!(feature = "quic"),
             }],
             store_type: StoreType::Cas,

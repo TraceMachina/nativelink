@@ -311,6 +311,9 @@ pub fn h3_channel(endpoint_config: &GrpcEndpoint) -> Result<QuicChannel, Error> 
     transport.max_concurrent_bidi_streams(1024u32.into()); // vs 256
     transport.max_concurrent_uni_streams(1024u32.into());
     transport.initial_rtt(Duration::from_micros(500)); // 0.5ms LAN RTT (vs 333ms default)
+    // Send QUIC keepalives every 5s to detect dead connections and
+    // prevent NAT/firewall timeouts on the server→worker path.
+    transport.keep_alive_interval(Some(Duration::from_secs(5)));
     client_config.transport_config(Arc::new(transport));
 
     // Pre-create UDP socket with large buffers for 10 GbE.
