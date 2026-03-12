@@ -267,6 +267,13 @@ pub struct DirectoryCache {
     hit_clonefile_count: AtomicU64,
     /// Cumulative hit-via-hardlink count
     hit_hardlink_count: AtomicU64,
+    /// Cumulative fuzzy match count (cache miss resolved via best-match patching)
+    fuzzy_match_count: AtomicU64,
+    /// Reverse index: maps each subtree digest to the set of root digests
+    /// whose cached entries contain that subtree. Used for fuzzy matching --
+    /// when a new root misses the cache, we score each cached root by how
+    /// many subtree digests it shares with the new tree and pick the best one.
+    subtree_to_roots: RwLock<HashMap<DigestInfo, HashSet<DigestInfo>>>,
     /// When true, use the cache directory directly via symlinks instead of
     /// hardlinking/cloning. See `DirectoryCacheConfig::direct_use_mode`.
     direct_use_mode: bool,
@@ -342,6 +349,7 @@ impl DirectoryCache {
         let mut initial_cache = HashMap::new();
         let mut initial_subtree_index = HashMap::new();
         let mut initial_subtree_refcount: HashMap<DigestInfo, usize> = HashMap::new();
+        let mut initial_subtree_to_roots: HashMap<DigestInfo, HashSet<DigestInfo>> = HashMap::new();
 
         // Check cache format version. If stale or missing, wipe the cache.
         let version_path = config.cache_root.join(CACHE_VERSION_FILENAME);
@@ -431,6 +439,11 @@ impl DirectoryCache {
                                 };
                                 initial_subtree_index.insert(*sub_digest, abs_path);
                                 *initial_subtree_refcount.entry(*sub_digest).or_insert(0) += 1;
+                                // Populate reverse index: subtree -> set of roots
+                                initial_subtree_to_roots
+                                    .entry(*sub_digest)
+                                    .or_default()
+                                    .insert(digest);
                                 loaded_subtrees += 1;
                             }
                         }
@@ -488,6 +501,8 @@ impl DirectoryCache {
             subtree_hit_count: AtomicU64::new(0),
             hit_clonefile_count: AtomicU64::new(0),
             hit_hardlink_count: AtomicU64::new(0),
+            fuzzy_match_count: AtomicU64::new(0),
+            subtree_to_roots: RwLock::new(initial_subtree_to_roots),
             direct_use_mode,
         })
     }
@@ -655,6 +670,10 @@ impl DirectoryCache {
             // Step 3: Build the directory tree.
             // In direct-use mode, subtree reuse creates symlinks instead of
             // hardlinks/clonefile.
+            //
+            // When there are no direct subtree hits, try fuzzy matching:
+            // find the cached entry with the most shared subtrees and use it
+            // as a template, patching in only the differences.
             if let Some(tree) = &resolved_tree {
                 if !subtree_hits.is_empty() {
                     self.construct_with_subtrees_direct(
@@ -666,8 +685,33 @@ impl DirectoryCache {
                     .await
                     .err_tip(|| "Failed subtree-aware direct-use construction")?;
                 } else {
-                    self.construct_full(&digest, &temp_path).await
-                        .err_tip(|| "Failed full construction in direct-use mode")?;
+                    // No direct subtree hits -- try fuzzy matching.
+                    let tree_digests: HashSet<DigestInfo> = tree.keys().copied().collect();
+                    if let Some((best_root, shared, total)) =
+                        self.find_best_fuzzy_match(&digest, &tree_digests).await
+                    {
+                        let similarity = (shared as f64 / total as f64) * 100.0;
+                        info!(
+                            hash = %&digest.packed_hash().to_string()[..12],
+                            best_match = %&best_root.packed_hash().to_string()[..12],
+                            shared_subtrees = shared,
+                            total_dirs = total,
+                            similarity = format!("{similarity:.1}%"),
+                            "DirectoryCache direct-use: FUZZY MATCH found, patching from best match",
+                        );
+                        self.fuzzy_match_count.fetch_add(1, Ordering::Relaxed);
+                        self.construct_from_fuzzy_match(
+                            &digest,
+                            tree,
+                            &best_root,
+                            &temp_path,
+                        )
+                        .await
+                        .err_tip(|| "Failed fuzzy-match construction in direct-use mode")?;
+                    } else {
+                        self.construct_full(&digest, &temp_path).await
+                            .err_tip(|| "Failed full construction in direct-use mode")?;
+                    }
                 }
             } else {
                 self.construct_full(&digest, &temp_path).await
@@ -747,7 +791,7 @@ impl DirectoryCache {
                     index.insert(*sub_digest, abs_path);
                 }
                 drop(index);
-                self.record_subtree_insertion(&merkle_meta).await;
+                self.record_subtree_insertion(&digest, &merkle_meta).await;
             }
 
             Ok(size)
@@ -922,10 +966,16 @@ impl DirectoryCache {
     }
 
     /// Records that subtree digests from a merkle tree were added (new cache entry).
-    /// Increments refcounts and records newly-appearing digests in pending added.
-    async fn record_subtree_insertion(&self, merkle: &MerkleTreeMetadata) {
+    /// Increments refcounts, updates reverse index, and records newly-appearing
+    /// digests in pending added.
+    async fn record_subtree_insertion(
+        &self,
+        root_digest: &DigestInfo,
+        merkle: &MerkleTreeMetadata,
+    ) {
         let mut refcount = self.subtree_refcount.write().await;
         let mut pending = self.pending_subtree_changes.lock().await;
+        let mut reverse = self.subtree_to_roots.write().await;
         for sub_digest in merkle.digest_to_relpath.keys() {
             let count = refcount.entry(*sub_digest).or_insert(0);
             if *count == 0 {
@@ -936,14 +986,22 @@ impl DirectoryCache {
                 pending.removed.remove(sub_digest);
             }
             *count += 1;
+            // Update reverse index: this subtree is now in this root.
+            reverse.entry(*sub_digest).or_default().insert(*root_digest);
         }
     }
 
     /// Records that subtree digests from a merkle tree were removed (evicted cache entry).
-    /// Decrements refcounts and records fully-removed digests in pending removed.
-    async fn record_subtree_removal(&self, merkle_digests: &[DigestInfo]) {
+    /// Decrements refcounts, updates reverse index, and records fully-removed
+    /// digests in pending removed.
+    async fn record_subtree_removal(
+        &self,
+        root_digest: &DigestInfo,
+        merkle_digests: &[DigestInfo],
+    ) {
         let mut refcount = self.subtree_refcount.write().await;
         let mut pending = self.pending_subtree_changes.lock().await;
+        let mut reverse = self.subtree_to_roots.write().await;
         for sub_digest in merkle_digests {
             if let Some(count) = refcount.get_mut(sub_digest) {
                 *count = count.saturating_sub(1);
@@ -954,6 +1012,16 @@ impl DirectoryCache {
                     // If it was in the added set (added then evicted before
                     // the delta was taken), cancel it out.
                     pending.added.remove(sub_digest);
+                    // Remove from reverse index entirely.
+                    reverse.remove(sub_digest);
+                } else {
+                    // Just remove this root from the reverse index entry.
+                    if let Some(roots) = reverse.get_mut(sub_digest) {
+                        roots.remove(root_digest);
+                        if roots.is_empty() {
+                            reverse.remove(sub_digest);
+                        }
+                    }
                 }
             }
         }
@@ -1204,7 +1272,7 @@ impl DirectoryCache {
                     index.insert(*sub_digest, abs_path);
                 }
                 drop(index);
-                self.record_subtree_insertion(&merkle_meta).await;
+                self.record_subtree_insertion(&digest, &merkle_meta).await;
             }
 
             Ok(size)
@@ -1509,6 +1577,158 @@ impl DirectoryCache {
                 }
             }
         }
+
+        Ok(())
+    }
+
+    /// Minimum fraction of shared directory digests to consider a fuzzy match
+    /// worthwhile. Below this threshold, constructing from scratch is likely
+    /// cheaper than patching a largely-different tree.
+    const FUZZY_MATCH_MIN_SIMILARITY: f64 = 0.30;
+
+    /// Finds the best fuzzy match for a new tree among cached entries.
+    ///
+    /// Scores each cached root by counting how many directory digests from
+    /// `new_tree_digests` appear in that root's cached entry (via the reverse
+    /// index). Returns `(best_root_digest, shared_count, total_new)` if a
+    /// match exceeds `FUZZY_MATCH_MIN_SIMILARITY`.
+    ///
+    /// This enables "closest tree" reuse: instead of building from scratch
+    /// on a cache miss, we clone the best-matching cached tree and patch
+    /// only the differences (remove stale subtrees, add new ones).
+    async fn find_best_fuzzy_match(
+        &self,
+        new_digest: &DigestInfo,
+        new_tree_digests: &HashSet<DigestInfo>,
+    ) -> Option<(DigestInfo, usize, usize)> {
+        if new_tree_digests.len() < 2 {
+            // Trees with 0 or 1 directory are too small for fuzzy matching
+            // to be beneficial.
+            return None;
+        }
+
+        let reverse = self.subtree_to_roots.read().await;
+        let cache = self.cache.read().await;
+
+        // Score each cached root by counting shared subtree digests.
+        let mut scores: HashMap<DigestInfo, usize> = HashMap::new();
+        for sub_digest in new_tree_digests {
+            if let Some(roots) = reverse.get(sub_digest) {
+                for root in roots {
+                    // Don't match against ourselves or evicted roots.
+                    if *root != *new_digest && cache.contains_key(root) {
+                        *scores.entry(*root).or_insert(0) += 1;
+                    }
+                }
+            }
+        }
+
+        if scores.is_empty() {
+            return None;
+        }
+
+        // Find the root with the highest overlap.
+        let total = new_tree_digests.len();
+        let (best_root, best_count) = scores
+            .into_iter()
+            .max_by_key(|&(_, count)| count)?;
+
+        let similarity = best_count as f64 / total as f64;
+        if similarity >= Self::FUZZY_MATCH_MIN_SIMILARITY {
+            Some((best_root, best_count, total))
+        } else {
+            debug!(
+                best_root = %&best_root.packed_hash().to_string()[..12],
+                best_count,
+                total,
+                similarity = format!("{similarity:.1}%"),
+                "DirectoryCache: fuzzy match below threshold, skipping",
+            );
+            None
+        }
+    }
+
+    /// Constructs a new cache entry by patching a fuzzy-matched cached entry.
+    ///
+    /// The approach:
+    /// 1. Walk the new tree via BFS.
+    /// 2. For subtrees that exist in the best-match entry (same digest at same
+    ///    relative path, or available via the subtree index), create symlinks
+    ///    (direct-use mode) or hardlinks to the existing cached subtree.
+    /// 3. For subtrees that are new (not in the best match), download them from
+    ///    CAS as usual.
+    /// 4. Stale subtrees from the best match are simply not referenced -- the
+    ///    new entry is built fresh, so there's nothing to "remove".
+    ///
+    /// This is effectively the same as `construct_with_subtrees_direct` but
+    /// with a richer set of subtree hits derived from the fuzzy match.
+    async fn construct_from_fuzzy_match(
+        &self,
+        new_digest: &DigestInfo,
+        new_tree: &HashMap<DigestInfo, ProtoDirectory>,
+        best_root: &DigestInfo,
+        temp_path: &Path,
+    ) -> Result<(), Error> {
+        let fuzzy_start = Instant::now();
+
+        // Gather all subtree hits: check every directory digest in the new tree
+        // against the subtree index. The fuzzy match guarantees high overlap,
+        // so most will hit.
+        let subtree_hits: HashMap<DigestInfo, PathBuf> = {
+            let index = self.subtree_index.read().await;
+            let mut hits = HashMap::new();
+            for dir_digest in new_tree.keys() {
+                if *dir_digest == *new_digest {
+                    continue;
+                }
+                if let Some(cached_path) = index.get(dir_digest) {
+                    if cached_path.exists() {
+                        hits.insert(*dir_digest, cached_path.clone());
+                    }
+                }
+            }
+            hits
+        };
+
+        info!(
+            new_hash = %&new_digest.packed_hash().to_string()[..12],
+            best_match = %&best_root.packed_hash().to_string()[..12],
+            subtree_hits = subtree_hits.len(),
+            total_dirs = new_tree.len(),
+            "DirectoryCache: fuzzy match construction starting",
+        );
+
+        self.subtree_hit_count
+            .fetch_add(subtree_hits.len() as u64, Ordering::Relaxed);
+
+        // Reuse the existing subtree-aware construction method which handles
+        // both symlink mode (direct-use) and hardlink mode.
+        if self.direct_use_mode {
+            self.construct_with_subtrees_direct(
+                new_digest,
+                new_tree,
+                &subtree_hits,
+                temp_path,
+            )
+            .await
+            .err_tip(|| "Failed fuzzy-match subtree-aware direct-use construction")?;
+        } else {
+            self.construct_with_subtrees(
+                new_digest,
+                new_tree,
+                &subtree_hits,
+                temp_path,
+            )
+            .await
+            .err_tip(|| "Failed fuzzy-match subtree-aware construction")?;
+        }
+
+        info!(
+            new_hash = %&new_digest.packed_hash().to_string()[..12],
+            best_match = %&best_root.packed_hash().to_string()[..12],
+            elapsed_ms = fuzzy_start.elapsed().as_millis() as u64,
+            "DirectoryCache: fuzzy match construction completed",
+        );
 
         Ok(())
     }
@@ -2266,13 +2486,20 @@ impl DirectoryCache {
 
     /// Removes subtree index entries that belong to a given cache entry path.
     /// Loads the merkle metadata file from the cache entry to determine which
-    /// digests to remove. Also decrements subtree refcounts and records
-    /// fully-removed digests for delta reporting.
+    /// digests to remove. Also decrements subtree refcounts, updates the
+    /// reverse index, and records fully-removed digests for delta reporting.
     async fn remove_subtree_index_for_path(
         &self,
         cache_entry_path: &Path,
         index: &mut HashMap<DigestInfo, PathBuf>,
     ) {
+        // Parse the root digest from the directory name so we can update the
+        // reverse index (subtree_to_roots).
+        let root_digest = cache_entry_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(Self::parse_digest_from_dirname);
+
         let merkle_path = cache_entry_path.join(MERKLE_METADATA_FILENAME);
         if let Ok(data) = fs::read_to_string(&merkle_path).await {
             if let Ok(merkle) = MerkleTreeMetadata::deserialize(&data) {
@@ -2294,9 +2521,12 @@ impl DirectoryCache {
                     }
                 }
                 // Record subtree removals for delta reporting.
-                // This decrements refcounts and only marks digests as removed
-                // when they are no longer present in ANY cached entry.
-                self.record_subtree_removal(&merkle_digests).await;
+                // This decrements refcounts, updates the reverse index, and
+                // only marks digests as removed when they are no longer in
+                // ANY cached entry.
+                if let Some(rd) = &root_digest {
+                    self.record_subtree_removal(rd, &merkle_digests).await;
+                }
                 debug!(
                     path = %cache_entry_path.display(),
                     removed_subtrees = removed,
