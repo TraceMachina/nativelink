@@ -1325,6 +1325,39 @@ impl DirectoryCache {
                     .await
                     .err_tip(|| "Batch has_with_results in subtree construction")?;
 
+                // Fire-and-forget: warm page cache for blobs already present
+                // on disk so they're hot by the time we hardlink them.
+                {
+                    let present: Vec<DigestInfo> = unique_digests
+                        .iter()
+                        .zip(has_results.iter())
+                        .filter_map(|(d, r)| if r.is_some() { Some(*d) } else { None })
+                        .collect();
+                    if !present.is_empty() {
+                        let fs_store_arc = _fs_store.clone();
+                        tokio::task::spawn(async move {
+                            for digest in &present {
+                                if let Ok(entry) =
+                                    fs_store_arc.get_file_entry_for_digest(digest).await
+                                {
+                                    let size = digest.size_bytes() as usize;
+                                    entry
+                                        .get_file_path_locked(|path| async move {
+                                            if let Ok(f) =
+                                                nativelink_util::fs::open_file(&path, 0).await
+                                            {
+                                                f.advise_willneed(0, size);
+                                            }
+                                            Ok(())
+                                        })
+                                        .await
+                                        .ok();
+                                }
+                            }
+                        });
+                    }
+                }
+
                 // Populate missing blobs into the fast store.
                 let missing: Vec<&DigestInfo> = unique_digests
                     .iter()
@@ -1347,7 +1380,7 @@ impl DirectoryCache {
                         join_set.spawn(async move {
                             let _permit = sem.acquire().await;
                             let key: StoreKey<'_> = digest.into();
-                            fss.populate_fast_store(key).await
+                            fss.populate_fast_store_unchecked(key).await
                                 .err_tip(|| format!("Failed to populate fast store for {digest:?}"))
                         });
                     }
