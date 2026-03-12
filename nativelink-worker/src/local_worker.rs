@@ -107,7 +107,7 @@ mod cpu_impl {
         cpu_ticks: [u32; 4],
     }
 
-    extern "C" {
+    unsafe extern "C" {
         fn mach_host_self() -> u32;
         fn host_statistics(
             host: u32,
