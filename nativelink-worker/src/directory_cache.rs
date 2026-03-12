@@ -29,6 +29,10 @@ use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::{FileEntry, FilesystemStore};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::fs_util::hardlink_directory_tree;
+#[cfg(target_os = "macos")]
+use nativelink_util::fs_util::calculate_directory_size;
+#[cfg(not(target_os = "macos"))]
+use nativelink_util::fs_util::set_readonly_and_calculate_size;
 use nativelink_util::store_trait::{Store, StoreKey, StoreLike};
 use tokio::fs;
 use tokio::sync::{Mutex, RwLock};
@@ -42,7 +46,7 @@ const MERKLE_METADATA_FILENAME: &str = ".merkle_tree_meta";
 /// if the version file is missing or stale, the entire cache is wiped.
 const CACHE_VERSION_FILENAME: &str = ".cache_version";
 /// Bump this when the cache format changes.
-const CACHE_FORMAT_VERSION: u32 = 5;
+const CACHE_FORMAT_VERSION: u32 = 6;
 
 /// Merkle tree metadata for a cached directory entry.
 ///
@@ -380,8 +384,12 @@ impl DirectoryCache {
                     continue;
                 };
 
-                // Calculate the directory size
-                let size = match Self::set_readonly_and_calculate_size(&entry_path).await {
+                // Calculate the directory size (on macOS, dirs stay writable).
+                #[cfg(target_os = "macos")]
+                let size_result = calculate_directory_size(&entry_path).await;
+                #[cfg(not(target_os = "macos"))]
+                let size_result = set_readonly_and_calculate_size(&entry_path).await;
+                let size = match size_result {
                     Ok(s) => s,
                     Err(e) => {
                         warn!(
@@ -546,7 +554,7 @@ impl DirectoryCache {
             let misses = self.miss_count.load(Ordering::Relaxed);
             let total = hits + misses;
             let hit_rate = if total > 0 { (hits as f64 / total as f64) * 100.0 } else { 0.0 };
-            debug!(
+            info!(
                 hash = %&digest.packed_hash().to_string()[..12],
                 elapsed_ms = overall_start.elapsed().as_millis() as u64,
                 hits,
@@ -561,7 +569,7 @@ impl DirectoryCache {
         let hits = self.hit_count.load(Ordering::Relaxed);
         let total = hits + misses;
         let hit_rate = if total > 0 { (hits as f64 / total as f64) * 100.0 } else { 0.0 };
-        debug!(
+        info!(
             hash = %&digest.packed_hash().to_string()[..12],
             size_bytes = digest.size_bytes(),
             hits,
@@ -702,21 +710,26 @@ impl DirectoryCache {
                 }
             }
 
-            // Combined walk: set read-only permissions and calculate size in one pass.
-            let readonly_start = Instant::now();
-            let size = Self::set_readonly_and_calculate_size(&temp_path).await
+            // Calculate size. On macOS, cache dirs stay writable (0o755) because
+            // clonefile creates independent CoW copies — no write-protection needed.
+            // On other platforms, set read-only permissions in the same pass.
+            let finalize_start = Instant::now();
+            #[cfg(target_os = "macos")]
+            let size = calculate_directory_size(&temp_path).await
+                .err_tip(|| "Failed to calculate size for cache directory")?;
+            #[cfg(not(target_os = "macos"))]
+            let size = set_readonly_and_calculate_size(&temp_path).await
                 .err_tip(|| "Failed to set readonly and calculate size for cache directory")?;
             debug!(
                 hash = %&digest.packed_hash().to_string()[..12],
                 size_bytes = size,
                 size_mb = format!("{:.2}", size as f64 / (1024.0 * 1024.0)),
-                elapsed_ms = readonly_start.elapsed().as_millis() as u64,
-                "DirectoryCache: set_readonly_and_calculate_size completed",
+                elapsed_ms = finalize_start.elapsed().as_millis() as u64,
+                "DirectoryCache: finalize cache entry completed",
             );
-            // macOS requires the source directory to be writable for rename(2).
-            // Temporarily restore write permission on the root, rename, then
-            // lock it down again.
-            #[cfg(unix)]
+            // On non-macOS Unix, directories are read-only (0o555) and need a
+            // chmod dance for rename(2) then re-lock afterwards.
+            #[cfg(all(unix, not(target_os = "macos")))]
             {
                 use std::os::unix::fs::PermissionsExt;
                 let mut perms = fs::metadata(&temp_path).await
@@ -733,7 +746,7 @@ impl DirectoryCache {
                     cache_path.display()
                 )
             })?;
-            #[cfg(unix)]
+            #[cfg(all(unix, not(target_os = "macos")))]
             {
                 use std::os::unix::fs::PermissionsExt;
                 let mut perms = fs::metadata(&cache_path).await
@@ -803,7 +816,7 @@ impl DirectoryCache {
             (evicted, cache.len(), total_size)
         };
 
-        debug!(
+        info!(
             hash = %&digest.packed_hash().to_string()[..12],
             size_bytes = size,
             size_mb = format!("{:.2}", size as f64 / (1024.0 * 1024.0)),
@@ -1049,92 +1062,6 @@ impl DirectoryCache {
         Ok(())
     }
 
-    /// Walks a directory tree, setting all entries to read-only and computing
-    /// the total file size in a single traversal (avoiding two separate walks).
-    /// Directories are set to 0o555, files have write bits stripped.
-    fn set_readonly_and_calculate_size<'a>(
-        path: &'a Path,
-    ) -> Pin<Box<dyn Future<Output = Result<u64, Error>> + Send + 'a>> {
-        Box::pin(async move {
-            let metadata = fs::symlink_metadata(path)
-                .await
-                .err_tip(|| format!("Failed to get metadata for: {}", path.display()))?;
-
-            // Skip symlinks -- do not follow them or change permissions.
-            if metadata.is_symlink() {
-                return Ok(0);
-            }
-
-            if metadata.is_dir() {
-                let mut entries = fs::read_dir(path)
-                    .await
-                    .err_tip(|| format!("Failed to read directory: {}", path.display()))?;
-
-                let mut total_size = 0u64;
-                while let Some(entry) = entries
-                    .next_entry()
-                    .await
-                    .err_tip(|| format!("Failed to get next entry in: {}", path.display()))?
-                {
-                    total_size += Self::set_readonly_and_calculate_size(&entry.path()).await?;
-                }
-
-                // Set directory to read-only (0o555) to protect cache integrity.
-                // Since we use hardlinks (not symlinks), actions never access
-                // cached directories directly — they get fresh writable copies.
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let mut perms = metadata.permissions();
-                    perms.set_mode(0o555);
-                    fs::set_permissions(path, perms)
-                        .await
-                        .err_tip(|| format!("Failed to set permissions for: {}", path.display()))?;
-                }
-                #[cfg(windows)]
-                {
-                    let mut perms = metadata.permissions();
-                    perms.set_readonly(true);
-                    fs::set_permissions(path, perms)
-                        .await
-                        .err_tip(|| format!("Failed to set permissions for: {}", path.display()))?;
-                }
-
-                Ok(total_size)
-            } else if metadata.is_file() {
-                let size = metadata.len();
-
-                // Ensure all cached files are 0o555 (read+execute, no write).
-                // This both protects cache integrity and ensures shell scripts
-                // remain executable. Old CAS files with 0o644 become 0o555.
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let current_mode = metadata.permissions().mode() & 0o777;
-                    if current_mode != 0o555 {
-                        let mut perms = metadata.permissions();
-                        perms.set_mode(0o555);
-                        fs::set_permissions(path, perms)
-                            .await
-                            .err_tip(|| format!("Failed to set permissions for: {}", path.display()))?;
-                    }
-                }
-                #[cfg(windows)]
-                {
-                    let mut perms = metadata.permissions();
-                    perms.set_readonly(true);
-                    fs::set_permissions(path, perms)
-                        .await
-                        .err_tip(|| format!("Failed to set permissions for: {}", path.display()))?;
-                }
-
-                Ok(size)
-            } else {
-                Ok(0)
-            }
-        })
-    }
-
     /// Full construction path: tries fast download_to_directory, falls back to serial.
     /// Used when there are no subtree hits.
     async fn construct_full(&self, digest: &DigestInfo, temp_path: &Path) -> Result<(), Error> {
@@ -1234,6 +1161,9 @@ impl DirectoryCache {
         let mut files_to_download = Vec::new();
         let mut symlinks_to_create: Vec<(String, PathBuf)> = Vec::new();
 
+        // Deferred subtree clone jobs: (child_digest, cached_src, dest_path)
+        let mut subtree_clone_jobs: Vec<(DigestInfo, PathBuf, PathBuf)> = Vec::new();
+
         while let Some((dir_digest, dir_path)) = queue.pop_front() {
             let directory = tree.get(&dir_digest).ok_or_else(|| {
                 make_err!(
@@ -1258,37 +1188,14 @@ impl DirectoryCache {
                 let child_path = dir_path.join(&subdir_node.name);
 
                 if let Some(cached_path) = subtree_hits.get(&child_digest) {
-                    // Subtree hit: hardlink files from cached subtree into
-                    // fresh writable directories. We can't use directory symlinks
-                    // because Bazel creates output directories inside the input
-                    // tree, which would mutate the cache.
-                    match hardlink_directory_tree(cached_path, &child_path).await {
-                        Ok(()) => {
-                            subtrees_linked += 1;
-                            debug!(
-                                child_hash = %&child_digest.packed_hash().to_string()[..12],
-                                src = %cached_path.display(),
-                                dst = %child_path.display(),
-                                "DirectoryCache: hardlinked cached subtree",
-                            );
-                            // Do NOT enqueue children -- the hardlink covers the entire subtree.
-                            continue;
-                        }
-                        Err(e) => {
-                            // The cached subtree was evicted between our
-                            // exists() check and now. Fall back to creating
-                            // the directory and downloading its contents.
-                            warn!(
-                                child_hash = %&child_digest.packed_hash().to_string()[..12],
-                                src = %cached_path.display(),
-                                ?e,
-                                "DirectoryCache: subtree evicted during construction, falling back to download",
-                            );
-                        }
-                    }
+                    // Subtree hit: defer clonefile/hardlink to parallel phase.
+                    subtree_clone_jobs.push((child_digest, cached_path.clone(), child_path));
+                    subtrees_linked += 1;
+                    // Do NOT enqueue children — the clone covers the entire subtree.
+                    continue;
                 }
 
-                // No subtree hit (or subtree evicted) -- create the directory and recurse.
+                // No subtree hit — create the directory and recurse.
                 fs::create_dir_all(&child_path).await.err_tip(|| {
                     format!("Failed to create directory: {}", child_path.display())
                 })?;
@@ -1296,7 +1203,7 @@ impl DirectoryCache {
                 queue.push_back((child_digest, child_path));
             }
 
-            // Collect files that need to be downloaded for this (non-symlinked) directory.
+            // Collect files that need to be downloaded for this (non-cached) directory.
             for file_node in &directory.files {
                 Self::validate_node_name(&file_node.name)?;
                 let file_digest: DigestInfo = file_node
@@ -1329,7 +1236,7 @@ impl DirectoryCache {
             "DirectoryCache: subtree-aware construction plan",
         );
 
-        // Create symlinks from the proto
+        // Create symlinks (parent dirs exist from BFS, independent of clones/downloads).
         #[cfg(target_family = "unix")]
         for (target, link_path) in &symlinks_to_create {
             fs::symlink(target, link_path)
@@ -1337,10 +1244,62 @@ impl DirectoryCache {
                 .err_tip(|| format!("Failed to create symlink: {} -> {}", link_path.display(), target))?;
         }
 
-        // Download uncached files.
-        // If we have a FastSlowStore + FilesystemStore, use hardlinks from CAS.
-        // Otherwise fall back to serial CAS fetch.
-        if !files_to_download.is_empty() {
+        // Run subtree clones and file downloads concurrently.
+        // Both write to non-overlapping paths, so they're safe to overlap.
+        let clone_future = async {
+            if subtree_clone_jobs.is_empty() {
+                return Ok::<Vec<(DigestInfo, PathBuf)>, Error>(Vec::new());
+            }
+            let clone_start = Instant::now();
+            let num_jobs = subtree_clone_jobs.len();
+            let mut clone_set = tokio::task::JoinSet::new();
+            for (digest, src, dst) in subtree_clone_jobs {
+                clone_set.spawn(async move {
+                    let result = hardlink_directory_tree(&src, &dst).await;
+                    (digest, src, dst, result)
+                });
+            }
+
+            let mut failed_subtrees = Vec::new();
+            while let Some(join_result) = clone_set.join_next().await {
+                let (digest, src, dst, result) = join_result
+                    .map_err(|e| make_err!(Code::Internal, "Subtree clone join error: {e}"))?;
+                match result {
+                    Ok(()) => {
+                        debug!(
+                            child_hash = %&digest.packed_hash().to_string()[..12],
+                            src = %src.display(),
+                            dst = %dst.display(),
+                            "DirectoryCache: cloned cached subtree",
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            child_hash = %&digest.packed_hash().to_string()[..12],
+                            src = %src.display(),
+                            ?e,
+                            "DirectoryCache: subtree evicted during construction, falling back to download",
+                        );
+                        failed_subtrees.push((digest, dst));
+                    }
+                }
+            }
+
+            debug!(
+                hash = %&root_digest.packed_hash().to_string()[..12],
+                num_jobs,
+                failed = failed_subtrees.len(),
+                elapsed_ms = clone_start.elapsed().as_millis() as u64,
+                "DirectoryCache: parallel subtree clones completed",
+            );
+
+            Ok(failed_subtrees)
+        };
+
+        let download_future = async {
+            if files_to_download.is_empty() {
+                return Ok::<(), Error>(());
+            }
             if let (Some(fss), Some(_fs_store)) = (&self.fast_slow_store, &self.filesystem_store) {
                 let fs_store_pin = Pin::new(
                     fss.fast_store()
@@ -1349,7 +1308,6 @@ impl DirectoryCache {
                 );
 
                 // Check which blobs are already in the fast store.
-                // Skip zero-byte digests — they aren't stored in FilesystemStore.
                 let unique_digests: Vec<DigestInfo> = {
                     let mut seen = HashSet::new();
                     files_to_download
@@ -1367,6 +1325,39 @@ impl DirectoryCache {
                     .await
                     .err_tip(|| "Batch has_with_results in subtree construction")?;
 
+                // Fire-and-forget: warm page cache for blobs already present
+                // on disk so they're hot by the time we hardlink them.
+                {
+                    let present: Vec<DigestInfo> = unique_digests
+                        .iter()
+                        .zip(has_results.iter())
+                        .filter_map(|(d, r)| if r.is_some() { Some(*d) } else { None })
+                        .collect();
+                    if !present.is_empty() {
+                        let fs_store_arc = _fs_store.clone();
+                        tokio::task::spawn(async move {
+                            for digest in &present {
+                                if let Ok(entry) =
+                                    fs_store_arc.get_file_entry_for_digest(digest).await
+                                {
+                                    let size = digest.size_bytes() as usize;
+                                    entry
+                                        .get_file_path_locked(|path| async move {
+                                            if let Ok(f) =
+                                                nativelink_util::fs::open_file(&path, 0).await
+                                            {
+                                                f.advise_willneed(0, size);
+                                            }
+                                            Ok(())
+                                        })
+                                        .await
+                                        .ok();
+                                }
+                            }
+                        });
+                    }
+                }
+
                 // Populate missing blobs into the fast store.
                 let missing: Vec<&DigestInfo> = unique_digests
                     .iter()
@@ -1380,18 +1371,27 @@ impl DirectoryCache {
                         missing = missing.len(),
                         "DirectoryCache: fetching missing blobs for uncached files",
                     );
-                    for d in &missing {
-                        let key: StoreKey<'_> = (**d).into();
-                        fss.populate_fast_store(key).await
-                            .err_tip(|| format!("Failed to populate fast store for {:?}", d))?;
+                    let semaphore = Arc::new(tokio::sync::Semaphore::new(32));
+                    let mut join_set = tokio::task::JoinSet::new();
+                    for d in missing {
+                        let sem = semaphore.clone();
+                        let fss = fss.clone();
+                        let digest = *d;
+                        join_set.spawn(async move {
+                            let _permit = sem.acquire().await;
+                            let key: StoreKey<'_> = digest.into();
+                            fss.populate_fast_store_unchecked(key).await
+                                .err_tip(|| format!("Failed to populate fast store for {digest:?}"))
+                        });
+                    }
+                    while let Some(result) = join_set.join_next().await {
+                        result.map_err(|e| make_err!(Code::Internal, "Join error: {e}"))??;
                     }
                 }
 
                 // Hardlink files from the fast store to their destination paths.
                 for (file_digest, file_path, is_executable) in &files_to_download {
                     if file_digest.size_bytes() == 0 {
-                        // Zero-byte files aren't stored in FilesystemStore.
-                        // Create them directly.
                         fs::write(&file_path, b"")
                             .await
                             .err_tip(|| format!("Failed to create empty file: {}", file_path.display()))?;
@@ -1414,10 +1414,6 @@ impl DirectoryCache {
                             .await?;
                     }
 
-                    // Ensure all files have 0o555. CAS files ingested before the
-                    // 0o555 default may still be 0o644; we must fix them here since
-                    // hardlinks share the inode and set_readonly_and_calculate_size
-                    // would turn 0o644 into 0o444 (no execute), breaking shell scripts.
                     #[cfg(unix)]
                     {
                         use std::os::unix::fs::PermissionsExt;
@@ -1449,7 +1445,6 @@ impl DirectoryCache {
                         .await
                         .err_tip(|| format!("Failed to write file: {}", file_path.display()))?;
 
-                    // Always set 0o555 to match CAS defaults (see create_file).
                     #[cfg(unix)]
                     {
                         use std::os::unix::fs::PermissionsExt;
@@ -1460,6 +1455,79 @@ impl DirectoryCache {
                         fs::set_permissions(&file_path, perms).await
                             .err_tip(|| "Failed to set file permissions")?;
                     }
+                }
+            }
+            Ok(())
+        };
+
+        let (clone_result, download_result) = tokio::join!(clone_future, download_future);
+        let failed_subtrees = clone_result?;
+        download_result?;
+
+        // Handle failed subtrees (rare — subtree evicted between check and clone).
+        // Walk the tree to reconstruct, using serial CAS fetch for simplicity.
+        for (failed_digest, failed_dst) in &failed_subtrees {
+            subtrees_linked -= 1;
+            drop(fs::remove_dir_all(failed_dst).await);
+
+            let mut sub_queue = VecDeque::new();
+            sub_queue.push_back((*failed_digest, failed_dst.clone()));
+            while let Some((d, p)) = sub_queue.pop_front() {
+                if let Some(dir) = tree.get(&d) {
+                    fs::create_dir_all(&p).await.err_tip(|| {
+                        format!("Failed to create directory for failed subtree: {}", p.display())
+                    })?;
+                    dirs_created += 1;
+                    for subdir_node in &dir.directories {
+                        Self::validate_node_name(&subdir_node.name)?;
+                        let cd: DigestInfo = subdir_node
+                            .digest
+                            .as_ref()
+                            .ok_or_else(|| make_err!(Code::InvalidArgument, "Directory node missing digest"))?
+                            .try_into()
+                            .err_tip(|| "Invalid directory digest in failed subtree walk")?;
+                        sub_queue.push_back((cd, p.join(&subdir_node.name)));
+                    }
+                    for file_node in &dir.files {
+                        Self::validate_node_name(&file_node.name)?;
+                        let fd: DigestInfo = file_node
+                            .digest
+                            .as_ref()
+                            .ok_or_else(|| make_err!(Code::InvalidArgument, "File node missing digest"))?
+                            .try_into()
+                            .err_tip(|| "Invalid file digest in failed subtree walk")?;
+                        let fp = p.join(&file_node.name);
+                        let data = self
+                            .cas_store
+                            .get_part_unchunked(StoreKey::Digest(fd), 0, None)
+                            .await
+                            .err_tip(|| format!("Failed to fetch file for failed subtree: {}", fp.display()))?;
+                        fs::write(&fp, data.as_ref())
+                            .await
+                            .err_tip(|| format!("Failed to write file: {}", fp.display()))?;
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            let mut perms = fs::metadata(&fp).await
+                                .err_tip(|| "Failed to get file metadata")?.permissions();
+                            perms.set_mode(0o555);
+                            fs::set_permissions(&fp, perms).await
+                                .err_tip(|| "Failed to set file permissions")?;
+                        }
+                    }
+                    #[cfg(target_family = "unix")]
+                    for symlink_node in &dir.symlinks {
+                        Self::validate_node_name(&symlink_node.name)?;
+                        let link_path = p.join(&symlink_node.name);
+                        fs::symlink(&symlink_node.target, &link_path)
+                            .await
+                            .err_tip(|| format!("Failed to create symlink: {}", link_path.display()))?;
+                    }
+                } else {
+                    warn!(
+                        digest = ?d,
+                        "DirectoryCache: directory not found in tree during failed subtree walk",
+                    );
                 }
             }
         }
