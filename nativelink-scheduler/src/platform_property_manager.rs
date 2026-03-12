@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 
 use nativelink_config::schedulers::PropertyType;
-use nativelink_error::{Code, Error, ResultExt, make_input_err};
+use nativelink_error::{Error, make_input_err};
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent, group,
 };
@@ -79,10 +79,9 @@ impl PlatformPropertyManager {
         if let Some(prop_type) = self.known_properties.get(key) {
             return match prop_type {
                 PropertyType::Minimum => Ok(PlatformPropertyValue::Minimum(
-                    value.parse::<u64>().err_tip_with_code(|e| {
-                        (
-                            Code::InvalidArgument,
-                            format!("Cannot convert to platform property to u64: {value} - {e}"),
+                    value.parse::<f64>().map_err(|e| {
+                        make_input_err!(
+                            "Cannot convert platform property to number: {value} - {e}"
                         )
                     })?,
                 )),

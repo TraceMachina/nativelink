@@ -1809,7 +1809,7 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
     let action_digest2 = DigestInfo::new([99u8; 32], 512);
 
     let mut properties = HashMap::new();
-    properties.insert("prop1".to_string(), PlatformPropertyValue::Minimum(1));
+    properties.insert("prop1".to_string(), PlatformPropertyValue::Minimum(1.0));
     let platform_properties = PlatformProperties {
         properties: properties.clone(),
     };
@@ -1980,7 +1980,7 @@ async fn run_jobs_in_the_order_they_were_queued() -> Result<(), Error> {
 
     // Use property to restrict the worker to a single action at a time.
     let mut properties = HashMap::new();
-    properties.insert("prop1".to_string(), PlatformPropertyValue::Minimum(1));
+    properties.insert("prop1".to_string(), PlatformPropertyValue::Minimum(1.0));
     let action_props: HashMap<String, String> = properties
         .iter()
         .map(|(k, v)| (k.clone(), v.as_str().into_owned()))
@@ -2493,7 +2493,7 @@ async fn logs_when_no_workers_match() -> Result<(), Error> {
     let mut worker_properties = PlatformProperties::default();
     worker_properties
         .properties
-        .insert("prop".to_string(), PlatformPropertyValue::Minimum(0));
+        .insert("prop".to_string(), PlatformPropertyValue::Minimum(0.0));
 
     setup_new_worker(&scheduler, worker_id.clone(), worker_properties).await?;
 
@@ -2509,7 +2509,7 @@ async fn logs_when_no_workers_match() -> Result<(), Error> {
     scheduler.do_try_match_for_test().await?;
 
     assert!(logs_contain(
-        "Property mismatch on worker property prop. Minimum(0) < Minimum(1)"
+        "Property mismatch on worker property prop. Minimum(0.0) < Minimum(1.0)"
     ));
     assert!(logs_contain("No workers matched"));
 
