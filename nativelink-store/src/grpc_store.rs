@@ -23,7 +23,7 @@ use bytes::{Bytes, BytesMut};
 use futures::stream::{FuturesUnordered, unfold};
 use futures::{Future, Stream, StreamExt, TryStreamExt, future};
 use nativelink_config::stores::GrpcSpec;
-use nativelink_error::{Error, ResultExt, error_if, make_input_err};
+use nativelink_error::{Error, ResultExt, error_if, make_err, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_proto::build::bazel::remote::execution::v2::action_cache_client::ActionCacheClient;
 use nativelink_proto::build::bazel::remote::execution::v2::content_addressable_storage_client::ContentAddressableStorageClient;
@@ -108,6 +108,11 @@ pub struct GrpcStore {
     /// Sender for coalescing batch entries. None when coalescing is
     /// disabled (delay_ms == 0 or threshold == 0).
     batch_tx: Option<tokio::sync::mpsc::UnboundedSender<PendingBatchEntry>>,
+    /// Minimum blob size to trigger parallel chunked ByteStream reads.
+    /// 0 means disabled.
+    parallel_chunk_read_threshold: u64,
+    /// Number of parallel Read RPCs for chunked reads.
+    parallel_chunk_count: u64,
 }
 
 impl GrpcStore {
@@ -193,6 +198,8 @@ impl GrpcStore {
             rpc_timeout,
             batch_update_threshold,
             batch_tx,
+            parallel_chunk_read_threshold: spec.parallel_chunk_read_threshold,
+            parallel_chunk_count: spec.parallel_chunk_count.max(1),
         });
 
         if let Some(rx) = batch_rx {
@@ -948,6 +955,234 @@ impl GrpcStore {
             .await
             .map(|_| ())
     }
+
+    /// Single-stream ByteStream read with retry support. Used for blobs
+    /// below the parallel chunk threshold.
+    async fn get_part_single_stream(
+        &self,
+        resource_name: String,
+        writer: &mut DropCloserWriteHalf,
+        offset: u64,
+        length: Option<u64>,
+    ) -> Result<(), Error> {
+        struct LocalState<'a> {
+            resource_name: String,
+            writer: &'a mut DropCloserWriteHalf,
+            read_offset: i64,
+            read_limit: i64,
+        }
+
+        let local_state = LocalState {
+            resource_name,
+            writer,
+            read_offset: i64::try_from(offset)
+                .err_tip(|| "Could not convert offset to i64")?,
+            read_limit: i64::try_from(length.unwrap_or(0))
+                .err_tip(|| "Could not convert length to i64")?,
+        };
+
+        self.retrier
+            .retry(unfold(local_state, move |mut local_state| async move {
+                let request = ReadRequest {
+                    resource_name: local_state.resource_name.clone(),
+                    read_offset: local_state.read_offset,
+                    read_limit: local_state.read_limit,
+                };
+                let mut stream = match self
+                    .read_internal(request)
+                    .await
+                    .err_tip(|| "in GrpcStore::get_part()")
+                {
+                    Ok(stream) => stream,
+                    Err(err) => {
+                        return Some((RetryResult::Retry(err), local_state))
+                    }
+                };
+
+                loop {
+                    let data = match stream.next().await {
+                        None => Bytes::new(),
+                        Some(Ok(message)) => message.data,
+                        Some(Err(status)) => {
+                            return Some((
+                                RetryResult::Retry(
+                                    Into::<Error>::into(status).append(
+                                        "While fetching message in \
+                                         GrpcStore::get_part()",
+                                    ),
+                                ),
+                                local_state,
+                            ));
+                        }
+                    };
+                    let length = data.len() as i64;
+                    if length == 0 {
+                        let eof_result = local_state
+                            .writer
+                            .send_eof()
+                            .err_tip(|| {
+                                "Could not send eof in GrpcStore::get_part()"
+                            })
+                            .map_or_else(RetryResult::Err, RetryResult::Ok);
+                        return Some((eof_result, local_state));
+                    }
+                    if let Err(err) = local_state
+                        .writer
+                        .send(data)
+                        .await
+                        .err_tip(|| {
+                            "While sending in GrpcStore::get_part()"
+                        })
+                    {
+                        return Some((RetryResult::Err(err), local_state));
+                    }
+                    local_state.read_offset += length;
+                }
+            }))
+            .await
+    }
+
+    /// Parallel chunked ByteStream read. Splits the byte range into
+    /// `parallel_chunk_count` sub-ranges, issues concurrent Read RPCs,
+    /// buffers each chunk, then writes them to the output in order.
+    async fn get_part_parallel(
+        &self,
+        resource_name: &str,
+        writer: &mut DropCloserWriteHalf,
+        offset: u64,
+        total_length: u64,
+    ) -> Result<(), Error> {
+        let chunk_count = self.parallel_chunk_count;
+        let base_chunk_size = total_length / chunk_count;
+        let remainder = total_length % chunk_count;
+        let read_start = std::time::Instant::now();
+
+        // Build chunk descriptors: (chunk_offset, chunk_length).
+        let mut chunks: Vec<(u64, u64)> =
+            Vec::with_capacity(chunk_count as usize);
+        let mut current_offset = offset;
+        for i in 0..chunk_count {
+            let this_chunk =
+                base_chunk_size + if i < remainder { 1 } else { 0 };
+            if this_chunk == 0 {
+                break;
+            }
+            chunks.push((current_offset, this_chunk));
+            current_offset += this_chunk;
+        }
+
+        let actual_chunk_count = chunks.len();
+
+        // Issue all chunk reads concurrently. Each future collects its
+        // stream into a Vec<Bytes> buffer.
+        let chunk_futures: FuturesUnordered<_> = chunks
+            .into_iter()
+            .enumerate()
+            .map(|(idx, (chunk_offset, chunk_length))| {
+                let resource_name = resource_name.to_string();
+                async move {
+                    let request = ReadRequest {
+                        resource_name,
+                        read_offset: i64::try_from(chunk_offset)
+                            .err_tip(|| {
+                                "Could not convert chunk offset to i64"
+                            })?,
+                        read_limit: i64::try_from(chunk_length)
+                            .err_tip(|| {
+                                "Could not convert chunk length to i64"
+                            })?,
+                    };
+                    let mut stream = self
+                        .read_internal(request)
+                        .await
+                        .err_tip(|| {
+                            format!(
+                                "in GrpcStore::get_part_parallel chunk {idx}"
+                            )
+                        })?;
+
+                    let mut buf: Vec<Bytes> = Vec::new();
+                    let mut bytes_received: u64 = 0;
+                    loop {
+                        match stream.next().await {
+                            None => break,
+                            Some(Ok(message)) => {
+                                if message.data.is_empty() {
+                                    break;
+                                }
+                                bytes_received +=
+                                    message.data.len() as u64;
+                                buf.push(message.data);
+                            }
+                            Some(Err(status)) => {
+                                return Err(
+                                    Into::<Error>::into(status).append(
+                                        format!(
+                                            "chunk {idx} at offset \
+                                             {chunk_offset}"
+                                        ),
+                                    ),
+                                );
+                            }
+                        }
+                    }
+
+                    if bytes_received != chunk_length {
+                        return Err(make_err!(
+                            Code::DataLoss,
+                            "parallel read chunk {idx}: expected \
+                             {chunk_length} bytes but got \
+                             {bytes_received}"
+                        ));
+                    }
+
+                    Ok((idx, buf))
+                }
+            })
+            .collect();
+
+        // Collect all chunk results. If any fail, propagate the error.
+        let mut chunk_results: Vec<(usize, Vec<Bytes>)> = chunk_futures
+            .try_collect()
+            .await
+            .err_tip(|| "in GrpcStore::get_part_parallel")?;
+
+        // Sort by chunk index to reassemble in order.
+        chunk_results.sort_unstable_by_key(|(idx, _)| *idx);
+
+        // Write all chunks to the output writer in order.
+        let mut total_bytes: u64 = 0;
+        for (_idx, bufs) in &chunk_results {
+            for data in bufs {
+                total_bytes += data.len() as u64;
+                writer
+                    .send(data.clone())
+                    .await
+                    .err_tip(|| "while writing parallel chunk data")?;
+            }
+        }
+
+        writer
+            .send_eof()
+            .err_tip(|| "could not send eof in get_part_parallel")?;
+
+        let elapsed = read_start.elapsed();
+        let throughput_mbps = if elapsed.as_secs_f64() > 0.0 {
+            (total_bytes as f64 / (1024.0 * 1024.0))
+                / elapsed.as_secs_f64()
+        } else {
+            0.0
+        };
+        info!(
+            %total_bytes,
+            chunks = actual_chunk_count,
+            elapsed_ms = elapsed.as_millis() as u64,
+            throughput_mbps = format!("{throughput_mbps:.1}"),
+            "parallel chunked ByteStream read complete"
+        );
+
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -1184,18 +1419,15 @@ impl StoreDriver for GrpcStore {
         offset: u64,
         length: Option<u64>,
     ) -> Result<(), Error> {
-        struct LocalState<'a> {
-            resource_name: String,
-            writer: &'a mut DropCloserWriteHalf,
-            read_offset: i64,
-            read_limit: i64,
-        }
-
         let digest = key.into_digest();
         if matches!(self.store_type, nativelink_config::stores::StoreType::Ac) {
-            let offset = usize::try_from(offset).err_tip(|| "Could not convert offset to usize")?;
+            let offset = usize::try_from(offset)
+                .err_tip(|| "Could not convert offset to usize")?;
             let length = length
-                .map(|v| usize::try_from(v).err_tip(|| "Could not convert length to usize"))
+                .map(|v| {
+                    usize::try_from(v)
+                        .err_tip(|| "Could not convert length to usize")
+                })
                 .transpose()?;
 
             return self
@@ -1223,68 +1455,35 @@ impl StoreDriver for GrpcStore {
             digest.size_bytes(),
         );
 
-        let local_state = LocalState {
+        // Determine the effective read length for parallel chunking.
+        let effective_length = length.unwrap_or_else(|| {
+            digest.size_bytes().saturating_sub(offset)
+        });
+
+        // Use parallel chunked reads for large blobs.
+        if self.parallel_chunk_read_threshold > 0
+            && effective_length >= self.parallel_chunk_read_threshold
+            && self.parallel_chunk_count > 1
+        {
+            return self
+                .get_part_parallel(
+                    &resource_name,
+                    writer,
+                    offset,
+                    effective_length,
+                )
+                .await;
+        }
+
+        // Single-stream path for small blobs or when parallel reads
+        // are disabled.
+        self.get_part_single_stream(
             resource_name,
             writer,
-            read_offset: i64::try_from(offset).err_tip(|| "Could not convert offset to i64")?,
-            read_limit: i64::try_from(length.unwrap_or(0))
-                .err_tip(|| "Could not convert length to i64")?,
-        };
-
-        self.retrier
-            .retry(unfold(local_state, move |mut local_state| async move {
-                let request = ReadRequest {
-                    resource_name: local_state.resource_name.clone(),
-                    read_offset: local_state.read_offset,
-                    read_limit: local_state.read_limit,
-                };
-                let mut stream = match self
-                    .read_internal(request)
-                    .await
-                    .err_tip(|| "in GrpcStore::get_part()")
-                {
-                    Ok(stream) => stream,
-                    Err(err) => return Some((RetryResult::Retry(err), local_state)),
-                };
-
-                loop {
-                    let data = match stream.next().await {
-                        // Create an empty response to represent EOF.
-                        None => Bytes::new(),
-                        Some(Ok(message)) => message.data,
-                        Some(Err(status)) => {
-                            return Some((
-                                RetryResult::Retry(
-                                    Into::<Error>::into(status)
-                                        .append("While fetching message in GrpcStore::get_part()"),
-                                ),
-                                local_state,
-                            ));
-                        }
-                    };
-                    let length = data.len() as i64;
-                    // This is the usual exit from the loop at EOF.
-                    if length == 0 {
-                        let eof_result = local_state
-                            .writer
-                            .send_eof()
-                            .err_tip(|| "Could not send eof in GrpcStore::get_part()")
-                            .map_or_else(RetryResult::Err, RetryResult::Ok);
-                        return Some((eof_result, local_state));
-                    }
-                    // Forward the data upstream.
-                    if let Err(err) = local_state
-                        .writer
-                        .send(data)
-                        .await
-                        .err_tip(|| "While sending in GrpcStore::get_part()")
-                    {
-                        return Some((RetryResult::Err(err), local_state));
-                    }
-                    local_state.read_offset += length;
-                }
-            }))
-            .await
+            offset,
+            length,
+        )
+        .await
     }
 
     fn inner_store(&self, _digest: Option<StoreKey>) -> &dyn StoreDriver {
