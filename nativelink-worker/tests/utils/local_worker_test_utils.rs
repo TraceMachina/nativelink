@@ -218,7 +218,7 @@ pub(crate) async fn setup_local_worker_with_config(
         }),
         Box::new(move |_| Box::pin(async move { /* No sleep */ })),
         None, // No periodic BlobsAvailable in tests
-        None, // No CAS server guard in tests
+        Vec::new(), // No CAS server guards in tests
     );
     let (shutdown_tx_test, _) = broadcast::channel::<ShutdownGuard>(BROADCAST_CAPACITY);
 

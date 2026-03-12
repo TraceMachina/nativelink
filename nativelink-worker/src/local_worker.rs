@@ -1414,6 +1414,7 @@ pub async fn new_local_worker(
             }
         };
 
+        #[allow(unused_mut)]
         let mut guards = vec![tcp_guard];
         #[cfg(feature = "quic")]
         if let Some(quic_guard) = _quic_guard {
