@@ -40,7 +40,7 @@ use nativelink_util::store_trait::{
 };
 use tokio::sync::Semaphore;
 use tokio_stream::wrappers::ReadDirStream;
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::callback_utils::ItemCallbackHolder;
 use crate::cas_utils::is_zero_digest;
@@ -903,7 +903,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             let mut encoded_file_path = entry.get_encoded_file_path().write().await;
             // Then check it's still in there...
             if evicting_map.get(&key).await.is_none() {
-                debug!(%key, "Got eviction while emplacing, dropping");
+                info!(%key, "Got eviction while emplacing, dropping");
                 return Ok(());
             }
 
@@ -1256,7 +1256,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         // The same blobs are frequently read by multiple workers within
         // seconds of each other — keeping them in page cache avoids
         // redundant disk I/O (measured: 76% of read I/O is re-reads).
-        fs::read_file_to_channel(temp_file, writer, read_limit, self.read_buffer_size)
+        fs::read_file_to_channel(temp_file, writer, read_limit, self.read_buffer_size, offset)
             .await
             .err_tip(|| "Failed to read data in filesystem store")?;
         writer

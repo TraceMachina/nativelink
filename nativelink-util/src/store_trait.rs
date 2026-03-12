@@ -106,7 +106,7 @@ pub async fn slow_update_store_with_file<S: StoreDriver + ?Sized>(
         .update(digest.into(), rx, upload_size)
         .map(|r| r.err_tip(|| "Could not upload data to store in upload_file_to_store"));
     let read_data_fut = async move {
-        let file = fs::read_file_to_channel(file, &mut tx, u64::MAX, fs::DEFAULT_READ_BUFF_SIZE)
+        let file = fs::read_file_to_channel(file, &mut tx, u64::MAX, fs::DEFAULT_READ_BUFF_SIZE, 0)
             .await
             .err_tip(|| "Failed to read in upload_file_to_store")?;
         tx.send_eof()
