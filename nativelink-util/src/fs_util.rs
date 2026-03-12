@@ -55,12 +55,12 @@ pub async fn hardlink_directory_tree(src_dir: &Path, dst_dir: &Path) -> Result<(
 /// After cloning, makes all directories writable (0o755) since the clone
 /// inherits the cache's read-only (0o555) permissions.
 #[cfg(target_os = "macos")]
-fn try_clonefile(src: &std::path::Path, dst: &std::path::Path) -> Result<(), Error> {
+fn try_clonefile(src: &Path, dst: &Path) -> Result<(), Error> {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::PermissionsExt;
 
-    extern "C" {
+    unsafe extern "C" {
         fn clonefile(
             src: *const std::ffi::c_char,
             dst: *const std::ffi::c_char,
@@ -124,7 +124,7 @@ fn try_clonefile(src: &std::path::Path, dst: &std::path::Path) -> Result<(), Err
 /// Recursively makes all directories in a tree writable (0o755).
 /// Only touches directories — files keep their existing permissions.
 #[cfg(target_os = "macos")]
-fn make_dirs_writable_sync(path: &std::path::Path) -> Result<(), Error> {
+fn make_dirs_writable_sync(path: &Path) -> Result<(), Error> {
     use std::os::unix::fs::PermissionsExt;
 
     let metadata = std::fs::symlink_metadata(path).map_err(|e| {
