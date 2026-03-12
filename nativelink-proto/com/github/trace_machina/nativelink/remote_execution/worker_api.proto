@@ -44,7 +44,7 @@ service WorkerApi {
 /// Request object for keep alive requests.
 message KeepAliveRequest {
     reserved 1; // NextId.
-    /// CPU load percentage: load_avg_1m / num_cpus * 100.
+    /// CPU utilization percentage (0-100), sampled every 100ms.
     /// 0 means unknown (old workers that don't report load).
     uint32 cpu_load_pct = 2;
 }
@@ -114,7 +114,7 @@ message BlobsAvailableNotification {
     /// Per-digest info with LRU timestamps. When present, the server should
     /// prefer this over the plain `digests` field.
     repeated BlobDigestInfo digest_infos = 5;
-    /// CPU load percentage: load_avg_1m / num_cpus * 100.
+    /// CPU utilization percentage (0-100), sampled every 100ms.
     /// 0 means unknown (old workers that don't report load).
     uint32 cpu_load_pct = 6;
     /// Digests of input root directories that are cached in this worker's
@@ -188,7 +188,7 @@ message ExecuteResult {
 message ExecuteComplete {
     /// The operation ID that was executed.
     string operation_id = 1;
-    /// CPU load percentage: load_avg_1m / num_cpus * 100.
+    /// CPU utilization percentage (0-100), sampled every 100ms.
     /// 0 means unknown (old workers that don't report load).
     uint32 cpu_load_pct = 2;
 }

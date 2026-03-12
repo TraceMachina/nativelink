@@ -14,7 +14,7 @@
 
 use core::pin::Pin;
 use core::str;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use core::time::Duration;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -63,21 +63,144 @@ use crate::worker_utils::make_connect_worker_request;
 /// Default interval for periodic BlobsAvailable reports (milliseconds).
 const DEFAULT_BLOBS_AVAILABLE_INTERVAL_MS: u64 = 500;
 
-/// Returns the current CPU load as a percentage (load_avg_1m / num_cpus * 100).
-/// Returns 0 if the load cannot be determined.
-fn get_cpu_load_pct() -> u32 {
-    let num_cpus = std::thread::available_parallelism()
-        .map(|n| n.get() as f64)
-        .unwrap_or(1.0);
-    let mut loadavg: [f64; 1] = [0.0];
-    // SAFETY: getloadavg writes at most `nelem` doubles into the array.
-    let ret = unsafe { libc::getloadavg(loadavg.as_mut_ptr(), 1) };
-    if ret < 1 {
-        return 0;
+/// Platform-specific cumulative CPU time reading.
+#[cfg(target_os = "linux")]
+mod cpu_impl {
+    pub(super) struct CpuTimes {
+        pub(super) busy: u64,
+        pub(super) total: u64,
     }
-    let pct = (loadavg[0] / num_cpus * 100.0).round() as u32;
-    // Clamp to a reasonable maximum (can exceed 100 on overloaded systems).
-    pct.min(1000)
+
+    pub(super) fn read_cpu_times() -> Option<CpuTimes> {
+        let contents = std::fs::read_to_string("/proc/stat").ok()?;
+        let line = contents.lines().next()?;
+        if !line.starts_with("cpu ") {
+            return None;
+        }
+        // fields: user(0) nice(1) system(2) idle(3) iowait(4) irq(5) softirq(6) steal(7)
+        let fields: Vec<u64> = line[4..]
+            .split_whitespace()
+            .filter_map(|s| s.parse().ok())
+            .collect();
+        if fields.len() < 8 {
+            return None;
+        }
+        let busy = fields[0] + fields[1] + fields[2] + fields[5] + fields[6] + fields[7];
+        let total = busy + fields[3] + fields[4];
+        Some(CpuTimes { busy, total })
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod cpu_impl {
+    use std::mem::MaybeUninit;
+
+    const CPU_STATE_USER: usize = 0;
+    const CPU_STATE_SYSTEM: usize = 1;
+    const CPU_STATE_IDLE: usize = 2;
+    const CPU_STATE_NICE: usize = 3;
+    const HOST_CPU_LOAD_INFO: i32 = 3;
+    const HOST_CPU_LOAD_INFO_COUNT: u32 = 4;
+
+    #[repr(C)]
+    struct HostCpuLoadInfo {
+        cpu_ticks: [u32; 4],
+    }
+
+    extern "C" {
+        fn mach_host_self() -> u32;
+        fn host_statistics(
+            host: u32,
+            flavor: i32,
+            host_info: *mut HostCpuLoadInfo,
+            count: *mut u32,
+        ) -> i32;
+    }
+
+    pub(super) struct CpuTimes {
+        pub(super) busy: u64,
+        pub(super) total: u64,
+    }
+
+    pub(super) fn read_cpu_times() -> Option<CpuTimes> {
+        // SAFETY: mach_host_self() and host_statistics() are stable macOS kernel APIs.
+        // We pass a correctly-sized buffer and check the return code.
+        unsafe {
+            let host = mach_host_self();
+            let mut info = MaybeUninit::<HostCpuLoadInfo>::uninit();
+            let mut count = HOST_CPU_LOAD_INFO_COUNT;
+            let ret = host_statistics(host, HOST_CPU_LOAD_INFO, info.as_mut_ptr(), &mut count);
+            if ret != 0 {
+                return None;
+            }
+            let info = info.assume_init();
+            let user = info.cpu_ticks[CPU_STATE_USER] as u64;
+            let system = info.cpu_ticks[CPU_STATE_SYSTEM] as u64;
+            let idle = info.cpu_ticks[CPU_STATE_IDLE] as u64;
+            let nice = info.cpu_ticks[CPU_STATE_NICE] as u64;
+            let busy = user + system + nice;
+            let total = busy + idle;
+            Some(CpuTimes { busy, total })
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+mod cpu_impl {
+    pub(super) struct CpuTimes {
+        pub(super) busy: u64,
+        pub(super) total: u64,
+    }
+
+    pub(super) fn read_cpu_times() -> Option<CpuTimes> {
+        None
+    }
+}
+
+static CPU_PCT: AtomicU32 = AtomicU32::new(0);
+static SAMPLER_STARTED: AtomicBool = AtomicBool::new(false);
+
+/// Starts a dedicated OS thread that samples system-wide CPU utilization
+/// every 100ms. Idempotent — only the first call spawns the thread.
+fn start_cpu_sampler() {
+    if SAMPLER_STARTED
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
+        .is_err()
+    {
+        return;
+    }
+    std::thread::Builder::new()
+        .name("cpu-sampler".into())
+        .spawn(cpu_sample_loop)
+        .expect("spawn cpu-sampler thread");
+}
+
+fn cpu_sample_loop() {
+    let mut prev = cpu_impl::read_cpu_times();
+    loop {
+        std::thread::sleep(Duration::from_millis(100));
+        let curr = cpu_impl::read_cpu_times();
+        match (&prev, &curr) {
+            (Some(p), Some(c)) => {
+                let total_delta = c.total.wrapping_sub(p.total);
+                let busy_delta = c.busy.wrapping_sub(p.busy);
+                let pct = if total_delta > 0 {
+                    ((busy_delta as f64 / total_delta as f64) * 100.0).round() as u32
+                } else {
+                    0
+                };
+                CPU_PCT.store(pct.min(100), Ordering::Relaxed);
+            }
+            _ => CPU_PCT.store(0, Ordering::Relaxed),
+        }
+        prev = curr;
+    }
+}
+
+/// Returns the current system-wide CPU utilization as a percentage (0-100),
+/// sampled every 100ms by a dedicated OS thread.
+fn get_cpu_load_pct() -> u32 {
+    CPU_PCT.load(Ordering::Relaxed)
 }
 
 /// Build the advertised gRPC endpoint for peer blob sharing.
@@ -659,13 +782,14 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                     .unwrap_or_default();
 
                                 let running_actions_manager = self.running_actions_manager.clone();
-                                let exec_load = get_cpu_load_pct();
-                                debug!("ExecuteComplete cpu_load_pct={exec_load}");
-                                let complete = ExecuteComplete {
-                                    operation_id: operation_id.clone(),
-                                    cpu_load_pct: exec_load,
-                                };
                                 move |res: Result<ActionResult, Error>| async move {
+                                    // Sample CPU at completion time, not action start time.
+                                    let exec_load = get_cpu_load_pct();
+                                    debug!("ExecuteComplete cpu_load_pct={exec_load}");
+                                    let complete = ExecuteComplete {
+                                        operation_id: operation_id.clone(),
+                                        cpu_load_pct: exec_load,
+                                    };
                                     let instance_name = maybe_instance_name
                                         .err_tip(|| "`instance_name` could not be resolved; this is likely an internal error in local_worker.")?;
                                     match res {
@@ -896,6 +1020,8 @@ pub async fn new_local_worker(
     ac_store: Option<Store>,
     historical_store: Store,
 ) -> Result<LocalWorker<WorkerApiClientWrapper, RunningActionsManagerImpl>, Error> {
+    start_cpu_sampler();
+
     let fast_slow_store = cas_store
         .downcast_ref::<FastSlowStore>(None)
         .err_tip(|| "Expected store for LocalWorker's store to be a FastSlowStore")?
