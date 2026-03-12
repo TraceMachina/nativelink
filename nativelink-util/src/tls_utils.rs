@@ -281,6 +281,34 @@ pub fn h3_channel(endpoint_config: &GrpcEndpoint) -> Result<QuicChannel, Error> 
         .ok_or_else(|| make_input_err!("QUIC endpoint URI has no host: {}", uri))?
         .to_string();
 
+    // Resolve hostname to an IPv4 address to avoid IPv6 link-local addresses
+    // (fe80::) which require a zone ID and cause QUIC timeouts on Linux when
+    // connecting to macOS .local hosts (mDNS returns IPv6 link-local first).
+    let uri: Uri = {
+        let port = uri.port_u16().unwrap_or(443);
+        let resolved_host = std::net::ToSocketAddrs::to_socket_addrs(
+            &(server_name.as_str(), port),
+        )
+        .map_err(|e| make_input_err!("Failed to resolve QUIC host {server_name}: {e:?}"))?
+        .find(|addr| addr.is_ipv4())
+        .ok_or_else(|| make_input_err!("No IPv4 address found for QUIC host {server_name}"))?;
+        let new_uri = format!(
+            "{}://{}:{}{}",
+            uri.scheme_str().unwrap_or("https"),
+            resolved_host.ip(),
+            resolved_host.port(),
+            uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/"),
+        );
+        info!(
+            %server_name,
+            resolved = %resolved_host.ip(),
+            "QUIC: resolved hostname to IPv4",
+        );
+        new_uri
+            .parse()
+            .map_err(|e| make_input_err!("Failed to parse resolved QUIC URI: {e:?}"))?
+    };
+
     // Build rustls ClientConfig with no cert verification (internal network).
     let mut tls_config = rustls::ClientConfig::builder_with_provider(
         rustls::crypto::aws_lc_rs::default_provider().into(),
