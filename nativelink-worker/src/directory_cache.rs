@@ -28,7 +28,7 @@ use nativelink_store::ac_utils::get_and_decode_digest;
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::{FileEntry, FilesystemStore};
 use nativelink_util::common::DigestInfo;
-use nativelink_util::fs_util::hardlink_directory_tree;
+use nativelink_util::fs_util::{hardlink_directory_tree, set_readonly_and_calculate_size};
 use nativelink_util::store_trait::{Store, StoreKey, StoreLike};
 use tokio::fs;
 use tokio::sync::{Mutex, RwLock};
@@ -381,7 +381,7 @@ impl DirectoryCache {
                 };
 
                 // Calculate the directory size
-                let size = match Self::set_readonly_and_calculate_size(&entry_path).await {
+                let size = match set_readonly_and_calculate_size(&entry_path).await {
                     Ok(s) => s,
                     Err(e) => {
                         warn!(
@@ -704,7 +704,7 @@ impl DirectoryCache {
 
             // Combined walk: set read-only permissions and calculate size in one pass.
             let readonly_start = Instant::now();
-            let size = Self::set_readonly_and_calculate_size(&temp_path).await
+            let size = set_readonly_and_calculate_size(&temp_path).await
                 .err_tip(|| "Failed to set readonly and calculate size for cache directory")?;
             info!(
                 hash = %&digest.packed_hash().to_string()[..12],
@@ -1049,92 +1049,6 @@ impl DirectoryCache {
         Ok(())
     }
 
-    /// Walks a directory tree, setting all entries to read-only and computing
-    /// the total file size in a single traversal (avoiding two separate walks).
-    /// Directories are set to 0o555, files have write bits stripped.
-    fn set_readonly_and_calculate_size<'a>(
-        path: &'a Path,
-    ) -> Pin<Box<dyn Future<Output = Result<u64, Error>> + Send + 'a>> {
-        Box::pin(async move {
-            let metadata = fs::symlink_metadata(path)
-                .await
-                .err_tip(|| format!("Failed to get metadata for: {}", path.display()))?;
-
-            // Skip symlinks -- do not follow them or change permissions.
-            if metadata.is_symlink() {
-                return Ok(0);
-            }
-
-            if metadata.is_dir() {
-                let mut entries = fs::read_dir(path)
-                    .await
-                    .err_tip(|| format!("Failed to read directory: {}", path.display()))?;
-
-                let mut total_size = 0u64;
-                while let Some(entry) = entries
-                    .next_entry()
-                    .await
-                    .err_tip(|| format!("Failed to get next entry in: {}", path.display()))?
-                {
-                    total_size += Self::set_readonly_and_calculate_size(&entry.path()).await?;
-                }
-
-                // Set directory to read-only (0o555) to protect cache integrity.
-                // Since we use hardlinks (not symlinks), actions never access
-                // cached directories directly — they get fresh writable copies.
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let mut perms = metadata.permissions();
-                    perms.set_mode(0o555);
-                    fs::set_permissions(path, perms)
-                        .await
-                        .err_tip(|| format!("Failed to set permissions for: {}", path.display()))?;
-                }
-                #[cfg(windows)]
-                {
-                    let mut perms = metadata.permissions();
-                    perms.set_readonly(true);
-                    fs::set_permissions(path, perms)
-                        .await
-                        .err_tip(|| format!("Failed to set permissions for: {}", path.display()))?;
-                }
-
-                Ok(total_size)
-            } else if metadata.is_file() {
-                let size = metadata.len();
-
-                // Ensure all cached files are 0o555 (read+execute, no write).
-                // This both protects cache integrity and ensures shell scripts
-                // remain executable. Old CAS files with 0o644 become 0o555.
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let current_mode = metadata.permissions().mode() & 0o777;
-                    if current_mode != 0o555 {
-                        let mut perms = metadata.permissions();
-                        perms.set_mode(0o555);
-                        fs::set_permissions(path, perms)
-                            .await
-                            .err_tip(|| format!("Failed to set permissions for: {}", path.display()))?;
-                    }
-                }
-                #[cfg(windows)]
-                {
-                    let mut perms = metadata.permissions();
-                    perms.set_readonly(true);
-                    fs::set_permissions(path, perms)
-                        .await
-                        .err_tip(|| format!("Failed to set permissions for: {}", path.display()))?;
-                }
-
-                Ok(size)
-            } else {
-                Ok(0)
-            }
-        })
-    }
-
     /// Full construction path: tries fast download_to_directory, falls back to serial.
     /// Used when there are no subtree hits.
     async fn construct_full(&self, digest: &DigestInfo, temp_path: &Path) -> Result<(), Error> {
@@ -1380,10 +1294,22 @@ impl DirectoryCache {
                         missing = missing.len(),
                         "DirectoryCache: fetching missing blobs for uncached files",
                     );
-                    for d in &missing {
-                        let key: StoreKey<'_> = (**d).into();
-                        fss.populate_fast_store(key).await
-                            .err_tip(|| format!("Failed to populate fast store for {:?}", d))?;
+                    // Download missing blobs in parallel with bounded concurrency.
+                    let semaphore = Arc::new(tokio::sync::Semaphore::new(32));
+                    let mut join_set = tokio::task::JoinSet::new();
+                    for d in missing {
+                        let sem = semaphore.clone();
+                        let fss = fss.clone();
+                        let digest = *d;
+                        join_set.spawn(async move {
+                            let _permit = sem.acquire().await;
+                            let key: StoreKey<'_> = digest.into();
+                            fss.populate_fast_store(key).await
+                                .err_tip(|| format!("Failed to populate fast store for {digest:?}"))
+                        });
+                    }
+                    while let Some(result) = join_set.join_next().await {
+                        result.map_err(|e| make_err!(Code::Internal, "Join error: {e}"))??;
                     }
                 }
 
