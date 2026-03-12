@@ -121,13 +121,74 @@ impl From<&PlatformProperties> for ProtoPlatform {
 /// Ignore   - Jobs can request this key, but workers do not have to have it. This allows
 ///            for example the `InputRootAbsolutePath` case for chromium builds, where we can safely
 ///            ignore it without having to change the worker configs.
-#[derive(Eq, PartialEq, Hash, Clone, Ord, PartialOrd, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum PlatformPropertyValue {
     Exact(String),
-    Minimum(u64),
+    /// Minimum resource requirement. Accepts both integer and floating-point
+    /// values (e.g. `cpu_count: "0.5"` for half a core).
+    Minimum(f64),
     Priority(String),
     Ignore(String),
     Unknown(String),
+}
+
+// Manual trait impls because f64 doesn't implement Eq/Hash/Ord.
+// We use to_bits() which gives a total ordering (NaN == NaN, -0 != +0).
+impl PartialEq for PlatformPropertyValue {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Exact(a), Self::Exact(b))
+            | (Self::Priority(a), Self::Priority(b))
+            | (Self::Ignore(a), Self::Ignore(b))
+            | (Self::Unknown(a), Self::Unknown(b)) => a == b,
+            (Self::Minimum(a), Self::Minimum(b)) => a.to_bits() == b.to_bits(),
+            _ => false,
+        }
+    }
+}
+
+impl Eq for PlatformPropertyValue {}
+
+impl std::hash::Hash for PlatformPropertyValue {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        core::mem::discriminant(self).hash(state);
+        match self {
+            Self::Exact(v) | Self::Priority(v) | Self::Ignore(v) | Self::Unknown(v) => {
+                v.hash(state);
+            }
+            Self::Minimum(v) => v.to_bits().hash(state),
+        }
+    }
+}
+
+impl PartialOrd for PlatformPropertyValue {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for PlatformPropertyValue {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match (self, other) {
+            (Self::Exact(a), Self::Exact(b))
+            | (Self::Priority(a), Self::Priority(b))
+            | (Self::Ignore(a), Self::Ignore(b))
+            | (Self::Unknown(a), Self::Unknown(b)) => a.cmp(b),
+            (Self::Minimum(a), Self::Minimum(b)) => a.total_cmp(b),
+            _ => {
+                let rank = |v: &Self| -> u8 {
+                    match v {
+                        Self::Exact(_) => 0,
+                        Self::Minimum(_) => 1,
+                        Self::Priority(_) => 2,
+                        Self::Ignore(_) => 3,
+                        Self::Unknown(_) => 4,
+                    }
+                };
+                rank(self).cmp(&rank(other))
+            }
+        }
+    }
 }
 
 impl PlatformPropertyValue {

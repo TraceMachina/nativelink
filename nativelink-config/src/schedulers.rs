@@ -36,9 +36,10 @@ pub enum SchedulerSpec {
 #[derive(Deserialize, Serialize, Debug, Clone, Copy, Hash, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum PropertyType {
-    /// Requires the platform property to be a u64 and when the scheduler looks
-    /// for appropriate worker nodes that are capable of executing the task,
-    /// the task will not run on a node that has less than this value.
+    /// Requires the platform property to be a number (integer or floating-point)
+    /// and when the scheduler looks for appropriate worker nodes that are
+    /// capable of executing the task, the task will not run on a node that
+    /// has less than this value.
     Minimum,
 
     /// Requires the platform property to be a string and when the scheduler

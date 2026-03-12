@@ -86,11 +86,11 @@ fn test_minimum_property_presence_only() {
 
     index.add_worker(
         &worker1,
-        &make_properties(&[("cpu_count", PlatformPropertyValue::Minimum(4))]),
+        &make_properties(&[("cpu_count", PlatformPropertyValue::Minimum(4.0))]),
     );
     index.add_worker(
         &worker2,
-        &make_properties(&[("cpu_count", PlatformPropertyValue::Minimum(8))]),
+        &make_properties(&[("cpu_count", PlatformPropertyValue::Minimum(8.0))]),
     );
     // Worker3 has no cpu_count property
     index.add_worker(
@@ -99,7 +99,7 @@ fn test_minimum_property_presence_only() {
     );
 
     // Any request for cpu_count returns workers that HAVE the property (regardless of value)
-    let props = make_properties(&[("cpu_count", PlatformPropertyValue::Minimum(2))]);
+    let props = make_properties(&[("cpu_count", PlatformPropertyValue::Minimum(2.0))]);
     let result = index.find_matching_workers(&props, true);
     assert_eq!(result.len(), 2);
     assert!(result.contains(&worker1));
@@ -107,7 +107,7 @@ fn test_minimum_property_presence_only() {
     assert!(!result.contains(&worker3)); // Doesn't have cpu_count
 
     // Even a high value returns the same workers - actual value check is done at runtime
-    let props = make_properties(&[("cpu_count", PlatformPropertyValue::Minimum(100))]);
+    let props = make_properties(&[("cpu_count", PlatformPropertyValue::Minimum(100.0))]);
     let result = index.find_matching_workers(&props, true);
     assert_eq!(result.len(), 2);
 }
@@ -124,14 +124,14 @@ fn test_mixed_properties() {
         &worker1,
         &make_properties(&[
             ("os", PlatformPropertyValue::Exact("linux".to_string())),
-            ("cpu_count", PlatformPropertyValue::Minimum(4)),
+            ("cpu_count", PlatformPropertyValue::Minimum(4.0)),
         ]),
     );
     index.add_worker(
         &worker2,
         &make_properties(&[
             ("os", PlatformPropertyValue::Exact("linux".to_string())),
-            ("cpu_count", PlatformPropertyValue::Minimum(8)),
+            ("cpu_count", PlatformPropertyValue::Minimum(8.0)),
         ]),
     );
     // Worker3 has different OS
@@ -139,14 +139,14 @@ fn test_mixed_properties() {
         &worker3,
         &make_properties(&[
             ("os", PlatformPropertyValue::Exact("windows".to_string())),
-            ("cpu_count", PlatformPropertyValue::Minimum(16)),
+            ("cpu_count", PlatformPropertyValue::Minimum(16.0)),
         ]),
     );
 
     // Match linux with cpu_count - both linux workers match (Minimum is presence-only)
     let props = make_properties(&[
         ("os", PlatformPropertyValue::Exact("linux".to_string())),
-        ("cpu_count", PlatformPropertyValue::Minimum(6)),
+        ("cpu_count", PlatformPropertyValue::Minimum(6.0)),
     ]);
     let result = index.find_matching_workers(&props, true);
     // Both worker1 and worker2 have linux OS and cpu_count property
