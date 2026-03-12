@@ -124,10 +124,15 @@ mod cpu_impl {
     }
 
     pub(super) fn read_cpu_times() -> Option<CpuTimes> {
+        use std::sync::OnceLock;
+        // Cache the host port to avoid leaking a Mach port send right
+        // on every call (mach_host_self() increments the send-right refcount).
+        static HOST_PORT: OnceLock<u32> = OnceLock::new();
+
         // SAFETY: mach_host_self() and host_statistics() are stable macOS kernel APIs.
         // We pass a correctly-sized buffer and check the return code.
         unsafe {
-            let host = mach_host_self();
+            let host = *HOST_PORT.get_or_init(|| mach_host_self());
             let mut info = MaybeUninit::<HostCpuLoadInfo>::uninit();
             let mut count = HOST_CPU_LOAD_INFO_COUNT;
             let ret = host_statistics(host, HOST_CPU_LOAD_INFO, info.as_mut_ptr(), &mut count);
@@ -163,17 +168,18 @@ static SAMPLER_STARTED: AtomicBool = AtomicBool::new(false);
 
 /// Starts a dedicated OS thread that samples system-wide CPU utilization
 /// every 100ms. Idempotent — only the first call spawns the thread.
-fn start_cpu_sampler() {
+fn start_cpu_sampler() -> Result<(), Error> {
     if SAMPLER_STARTED
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
         .is_err()
     {
-        return;
+        return Ok(());
     }
     std::thread::Builder::new()
         .name("cpu-sampler".into())
         .spawn(cpu_sample_loop)
-        .expect("spawn cpu-sampler thread");
+        .map_err(|e| make_err!(Code::Internal, "failed to spawn cpu-sampler thread: {:?}", e))?;
+    Ok(())
 }
 
 fn cpu_sample_loop() {
@@ -1031,7 +1037,7 @@ pub async fn new_local_worker(
     ac_store: Option<Store>,
     historical_store: Store,
 ) -> Result<LocalWorker<WorkerApiClientWrapper, RunningActionsManagerImpl>, Error> {
-    start_cpu_sampler();
+    start_cpu_sampler()?;
 
     let fast_slow_store = cas_store
         .downcast_ref::<FastSlowStore>(None)
@@ -1473,8 +1479,10 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
                         }
                         (sleep_fn_pin)(Duration::from_secs_f32(sleep_duration)).await;
                     }
-                    error!(ERROR_MSG);
-                    return Err(err.append(ERROR_MSG));
+                    // Don't terminate the worker process — fall through to
+                    // kill_all + reconnect. The stuck create_and_add_action
+                    // futures will be cancelled when kill_all drops them.
+                    warn!(ERROR_MSG);
                 }
                 error!(?err, "Worker disconnected from scheduler");
                 // Kill off any existing actions because if we re-connect, we'll
