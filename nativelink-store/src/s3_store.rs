@@ -47,7 +47,7 @@ use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthS
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::store_trait::{
-    RemoveItemCallback, StoreDriver, StoreKey, StoreOptimizations, UploadSizeInfo,
+    ItemCallback, StoreDriver, StoreKey, StoreOptimizations, UploadSizeInfo,
 };
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
@@ -93,7 +93,7 @@ pub struct S3Store<NowFn> {
     #[metric(help = "The number of concurrent uploads allowed for multipart uploads")]
     multipart_max_concurrent_uploads: usize,
 
-    remove_callbacks: Mutex<Vec<Arc<dyn RemoveItemCallback>>>,
+    item_callbacks: Mutex<Vec<Arc<dyn ItemCallback>>>,
 }
 
 impl<I, NowFn> S3Store<NowFn>
@@ -115,7 +115,7 @@ where
                 .build()
                 .await;
 
-            let config = aws_config::defaults(BehaviorVersion::v2025_08_07())
+            let config = aws_config::defaults(BehaviorVersion::v2026_01_12())
                 .credentials_provider(credential_provider)
                 .app_name(AppName::new("nativelink").expect("valid app name"))
                 .timeout_config(
@@ -163,7 +163,7 @@ where
                 .common
                 .multipart_max_concurrent_uploads
                 .map_or(DEFAULT_MULTIPART_MAX_CONCURRENT_UPLOADS, |v| v),
-            remove_callbacks: Mutex::new(Vec::new()),
+            item_callbacks: Mutex::new(Vec::new()),
         }))
     }
 
@@ -192,8 +192,8 @@ where
                                     let now_s = (self.now_fn)().unix_timestamp() as i64;
                                     if last_modified.secs() + self.consider_expired_after_s <= now_s
                                     {
-                                        let remove_callbacks = self.remove_callbacks.lock().clone();
-                                        let mut callbacks: FuturesUnordered<_> = remove_callbacks
+                                        let item_callbacks = self.item_callbacks.lock().clone();
+                                        let mut callbacks: FuturesUnordered<_> = item_callbacks
                                             .iter()
                                             .map(|callback| {
                                                 callback.callback(local_digest.borrow())
@@ -653,11 +653,11 @@ where
         registry.register_indicator(self);
     }
 
-    fn register_remove_callback(
+    fn register_item_callback(
         self: Arc<Self>,
-        callback: Arc<dyn RemoveItemCallback>,
+        callback: Arc<dyn ItemCallback>,
     ) -> Result<(), Error> {
-        self.remove_callbacks.lock().push(callback);
+        self.item_callbacks.lock().push(callback);
         Ok(())
     }
 }

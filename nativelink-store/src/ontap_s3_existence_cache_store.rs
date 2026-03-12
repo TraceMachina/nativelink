@@ -36,7 +36,7 @@ use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::metrics_utils::CounterWithTime;
 use nativelink_util::spawn;
 use nativelink_util::store_trait::{
-    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+    ItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };
 use serde::{Deserialize, Serialize};
 use tokio::fs;
@@ -97,7 +97,7 @@ where
     }
 }
 
-impl<I, NowFn> RemoveItemCallback for OntapS3CacheCallback<I, NowFn>
+impl<I, NowFn> ItemCallback for OntapS3CacheCallback<I, NowFn>
 where
     I: InstantWrapper,
     NowFn: Fn() -> I + Send + Sync + Unpin + Clone + 'static,
@@ -368,7 +368,7 @@ where
         let other_ref = Arc::downgrade(&cache);
         cache
             .inner_store
-            .register_remove_callback(Arc::new(OntapS3CacheCallback { cache: other_ref }))?;
+            .register_item_callback(Arc::new(OntapS3CacheCallback { cache: other_ref }))?;
 
         // Try to load existing cache file
         if let Ok(contents) = fs::read_to_string(&spec.index_path).await {
@@ -429,7 +429,7 @@ async fn create_s3_client(spec: &ExperimentalOntapS3Spec) -> Result<Client, Erro
         .endpoint_url(&spec.endpoint)
         .region(Region::new(spec.vserver_name.clone()))
         .force_path_style(true)
-        .behavior_version(BehaviorVersion::v2025_08_07())
+        .behavior_version(BehaviorVersion::v2026_01_12())
         .build();
 
     Ok(Client::from_conf(config))
@@ -533,15 +533,15 @@ where
         self
     }
 
-    fn register_remove_callback(
+    fn register_item_callback(
         self: Arc<Self>,
-        callback: Arc<dyn RemoveItemCallback>,
+        callback: Arc<dyn ItemCallback>,
     ) -> Result<(), Error> {
-        self.inner_store.register_remove_callback(callback)
+        self.inner_store.register_item_callback(callback)
     }
 }
 
-impl<I, NowFn> RemoveItemCallback for OntapS3ExistenceCache<I, NowFn>
+impl<I, NowFn> ItemCallback for OntapS3ExistenceCache<I, NowFn>
 where
     I: InstantWrapper,
     NowFn: Fn() -> I + Send + Sync + Unpin + Clone + 'static,

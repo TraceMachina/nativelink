@@ -28,8 +28,11 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
     WorkerApi, WorkerApiServer as Server,
 };
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    execute_result, ExecuteComplete, ExecuteResult, GoingAwayRequest, KeepAliveRequest, UpdateForScheduler, UpdateForWorker
+    execute_result, ExecuteComplete, ExecuteResult, GoingAwayRequest, KeepAliveRequest,
+    UpdateForScheduler, UpdateForWorker,
 };
+use nativelink_util::blob_locality_map::SharedBlobLocalityMap;
+use nativelink_util::common::DigestInfo;
 use nativelink_scheduler::worker::Worker;
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
 use nativelink_util::background_spawn;
@@ -40,7 +43,7 @@ use rand::RngCore;
 use tokio::sync::mpsc;
 use tokio::time::interval;
 use tonic::{Response, Status};
-use tracing::{debug, error, warn, instrument, Level};
+use tracing::{debug, error, info, warn, instrument, Level};
 use uuid::Uuid;
 
 pub type ConnectWorkerStream =
@@ -52,6 +55,7 @@ pub struct WorkerApiServer {
     scheduler: Arc<dyn WorkerScheduler>,
     now_fn: Arc<NowFn>,
     node_id: [u8; 6],
+    locality_map: Option<SharedBlobLocalityMap>,
 }
 
 impl core::fmt::Debug for WorkerApiServer {
@@ -66,6 +70,7 @@ impl WorkerApiServer {
     pub fn new(
         config: &WorkerApiConfig,
         schedulers: &HashMap<String, Arc<dyn WorkerScheduler>>,
+        locality_map: Option<SharedBlobLocalityMap>,
     ) -> Result<Self, Error> {
         let node_id = {
             let mut out = [0; 6];
@@ -108,6 +113,7 @@ impl WorkerApiServer {
                     .map_err(|_| make_err!(Code::Internal, "System time is now behind unix epoch"))
             }),
             node_id,
+            locality_map,
         )
     }
 
@@ -118,6 +124,7 @@ impl WorkerApiServer {
         schedulers: &HashMap<String, Arc<dyn WorkerScheduler>>,
         now_fn: NowFn,
         node_id: [u8; 6],
+        locality_map: Option<SharedBlobLocalityMap>,
     ) -> Result<Self, Error> {
         let scheduler = schedulers
             .get(&config.scheduler)
@@ -132,6 +139,7 @@ impl WorkerApiServer {
             scheduler,
             now_fn: Arc::new(now_fn),
             node_id,
+            locality_map,
         })
     }
 
@@ -159,6 +167,8 @@ impl WorkerApiServer {
             ));
         };
 
+        let worker_cas_endpoint = connect_worker_request.cas_endpoint.clone();
+
         let (tx, rx) = mpsc::unbounded_channel();
 
         // First convert our proto platform properties into one our scheduler understands.
@@ -184,12 +194,13 @@ impl WorkerApiServer {
                 connect_worker_request.worker_id_prefix,
                 Uuid::now_v6(&self.node_id).hyphenated()
             ));
-            let worker = Worker::new(
+            let worker = Worker::new_with_cas_endpoint(
                 worker_id.clone(),
                 platform_properties,
                 tx,
                 (self.now_fn)()?.as_secs(),
                 connect_worker_request.max_inflight_tasks,
+                worker_cas_endpoint.clone(),
             );
             self.scheduler
                 .add_worker(worker)
@@ -202,6 +213,8 @@ impl WorkerApiServer {
             self.scheduler.clone(),
             self.now_fn.clone(),
             worker_id.clone(),
+            self.locality_map.clone(),
+            worker_cas_endpoint,
             update_stream,
         );
 
@@ -259,6 +272,8 @@ struct WorkerConnection {
     scheduler: Arc<dyn WorkerScheduler>,
     now_fn: Arc<NowFn>,
     worker_id: WorkerId,
+    locality_map: Option<SharedBlobLocalityMap>,
+    cas_endpoint: String,
 }
 
 impl WorkerConnection {
@@ -266,12 +281,16 @@ impl WorkerConnection {
         scheduler: Arc<dyn WorkerScheduler>,
         now_fn: Arc<NowFn>,
         worker_id: WorkerId,
+        locality_map: Option<SharedBlobLocalityMap>,
+        cas_endpoint: String,
         mut connection: impl Stream<Item = Result<UpdateForScheduler, Status>> + Unpin + Send + 'static,
     ) {
         let instance = Self {
             scheduler,
             now_fn,
             worker_id,
+            locality_map,
+            cas_endpoint,
         };
 
         background_spawn!("worker_api", async move {
@@ -307,23 +326,52 @@ impl WorkerConnection {
                     Update::ExecuteComplete(execute_complete) => {
                         instance.execution_complete(execute_complete).await
                     }
+                    Update::BlobsAvailable(notification) => {
+                        instance.handle_blobs_available(notification).await
+                    }
+                    Update::BlobsEvicted(_notification) => {
+                        // Dead code path: evictions now go through
+                        // BlobsAvailableNotification.evicted_digests.
+                        // Kept for wire compatibility with older workers.
+                        Ok(())
+                    }
                 };
                 if let Err(err) = result {
                     tracing::warn!(worker_id=?instance.worker_id, ?err, "Error processing worker message");
                 }
             }
             tracing::debug!(worker_id=?instance.worker_id, "Update for scheduler dropped");
+
+            // Clean up locality map on disconnect.
+            if !instance.cas_endpoint.is_empty() {
+                if let Some(ref locality_map) = instance.locality_map {
+                    locality_map.write().remove_endpoint(&instance.cas_endpoint);
+                    info!(
+                        worker_id=?instance.worker_id,
+                        endpoint=%instance.cas_endpoint,
+                        "Removed worker from blob locality map on disconnect"
+                    );
+                }
+            }
+
             if !had_going_away {
                 drop(instance.scheduler.remove_worker(&instance.worker_id).await);
             }
         });
     }
 
-    async fn inner_keep_alive(&self, _keep_alive_request: KeepAliveRequest) -> Result<(), Error> {
+    async fn inner_keep_alive(&self, keep_alive_request: KeepAliveRequest) -> Result<(), Error> {
         self.scheduler
             .worker_keep_alive_received(&self.worker_id, (self.now_fn)()?.as_secs())
             .await
             .err_tip(|| "Could not process keep_alive from worker in inner_keep_alive()")?;
+        let cpu_load_pct = keep_alive_request.cpu_load_pct;
+        if cpu_load_pct > 0 {
+            debug!(worker_id=?self.worker_id, cpu_load_pct, "KeepAlive received with CPU load");
+            if let Err(err) = self.scheduler.update_worker_load(&self.worker_id, cpu_load_pct).await {
+                warn!(worker_id=?self.worker_id, ?err, cpu_load_pct, "Failed to update worker load");
+            }
+        }
         Ok(())
     }
 
@@ -335,6 +383,51 @@ impl WorkerConnection {
         Ok(())
     }
 
+    fn register_action_result_digests(
+        locality_map: &SharedBlobLocalityMap,
+        endpoint: &str,
+        execute_response: &nativelink_proto::build::bazel::remote::execution::v2::ExecuteResponse,
+    ) {
+        let Some(ref action_result) = execute_response.result else {
+            return;
+        };
+        let now = SystemTime::now();
+        let mut digests = Vec::new();
+        for file in &action_result.output_files {
+            if let Some(ref d) = file.digest {
+                if let Ok(di) = DigestInfo::try_from(d.clone()) {
+                    digests.push((di, now));
+                }
+            }
+        }
+        for dir in &action_result.output_directories {
+            if let Some(ref d) = dir.tree_digest {
+                if let Ok(di) = DigestInfo::try_from(d.clone()) {
+                    digests.push((di, now));
+                }
+            }
+        }
+        if let Some(ref d) = action_result.stdout_digest {
+            if d.size_bytes > 0 {
+                if let Ok(di) = DigestInfo::try_from(d.clone()) {
+                    digests.push((di, now));
+                }
+            }
+        }
+        if let Some(ref d) = action_result.stderr_digest {
+            if d.size_bytes > 0 {
+                if let Ok(di) = DigestInfo::try_from(d.clone()) {
+                    digests.push((di, now));
+                }
+            }
+        }
+        if !digests.is_empty() {
+            locality_map
+                .write()
+                .register_blobs_with_timestamps(endpoint, &digests);
+        }
+    }
+
     async fn inner_execution_response(&self, execute_result: ExecuteResult) -> Result<(), Error> {
         let operation_id = OperationId::from(execute_result.operation_id);
 
@@ -343,6 +436,18 @@ impl WorkerConnection {
             .err_tip(|| "Expected result to exist in ExecuteResult")?
         {
             execute_result::Result::ExecuteResponse(finished_result) => {
+                // Register output digests in the locality map so the server
+                // can proxy blob reads back to the worker immediately, even
+                // before the BlobsAvailableNotification arrives.
+                if let Some(ref locality_map) = self.locality_map {
+                    if !self.cas_endpoint.is_empty() {
+                        Self::register_action_result_digests(
+                            locality_map,
+                            &self.cas_endpoint,
+                            &finished_result,
+                        );
+                    }
+                }
                 let action_stage = finished_result
                     .try_into()
                     .err_tip(|| "Failed to convert ExecuteResponse into an ActionStage")?;
@@ -369,7 +474,176 @@ impl WorkerConnection {
         Ok(())
     }
 
+    async fn handle_blobs_available(
+        &self,
+        notification: nativelink_proto::com::github::trace_machina::nativelink::remote_execution::BlobsAvailableNotification,
+    ) -> Result<(), Error> {
+        let cpu_load_pct = notification.cpu_load_pct;
+        if cpu_load_pct > 0 {
+            debug!(worker_id=?self.worker_id, cpu_load_pct, "BlobsAvailable received with CPU load");
+            if let Err(err) = self.scheduler.update_worker_load(&self.worker_id, cpu_load_pct).await {
+                warn!(worker_id=?self.worker_id, ?err, cpu_load_pct, "Failed to update worker load");
+            }
+        }
+
+        // Update the worker's cached directory digests if any were reported (legacy path).
+        if !notification.cached_directory_digests.is_empty() && !notification.is_full_subtree_snapshot {
+            let cached_dirs: std::collections::HashSet<DigestInfo> = notification
+                .cached_directory_digests
+                .iter()
+                .filter_map(|d| DigestInfo::try_from(d.clone()).ok())
+                .collect();
+            let count = cached_dirs.len();
+            debug!(worker_id=?self.worker_id, count, "BlobsAvailable received with cached directory digests");
+            if let Err(err) = self.scheduler.update_cached_directories(&self.worker_id, cached_dirs).await {
+                warn!(worker_id=?self.worker_id, ?err, count, "Failed to update cached directory digests");
+            }
+        }
+
+        // Handle delta-encoded subtree digest updates.
+        let has_subtree_update = notification.is_full_subtree_snapshot
+            || !notification.added_subtree_digests.is_empty()
+            || !notification.removed_subtree_digests.is_empty();
+        if has_subtree_update {
+            let is_full = notification.is_full_subtree_snapshot;
+            let full_set: Vec<DigestInfo> = if is_full {
+                notification
+                    .cached_directory_digests
+                    .iter()
+                    .filter_map(|d| DigestInfo::try_from(d.clone()).ok())
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let added: Vec<DigestInfo> = notification
+                .added_subtree_digests
+                .iter()
+                .filter_map(|d| DigestInfo::try_from(d.clone()).ok())
+                .collect();
+            let removed: Vec<DigestInfo> = notification
+                .removed_subtree_digests
+                .iter()
+                .filter_map(|d| DigestInfo::try_from(d.clone()).ok())
+                .collect();
+            let full_count = full_set.len();
+            let added_count = added.len();
+            let removed_count = removed.len();
+            debug!(
+                worker_id=?self.worker_id,
+                is_full,
+                full_count,
+                added_count,
+                removed_count,
+                "BlobsAvailable received with subtree digest updates"
+            );
+            if let Err(err) = self
+                .scheduler
+                .update_cached_subtrees(
+                    &self.worker_id,
+                    is_full,
+                    full_set,
+                    added,
+                    removed,
+                )
+                .await
+            {
+                warn!(
+                    worker_id=?self.worker_id,
+                    ?err,
+                    is_full,
+                    full_count,
+                    added_count,
+                    removed_count,
+                    "Failed to update cached subtree digests"
+                );
+            }
+        }
+
+        let Some(ref locality_map) = self.locality_map else {
+            return Ok(());
+        };
+        let endpoint = if notification.worker_cas_endpoint.is_empty() {
+            &self.cas_endpoint
+        } else {
+            &notification.worker_cas_endpoint
+        };
+        if endpoint.is_empty() {
+            return Ok(());
+        }
+
+        let is_full_snapshot = notification.is_full_snapshot;
+
+        // Process evicted digests (incremental updates report evictions here).
+        let evicted: Vec<DigestInfo> = notification
+            .evicted_digests
+            .into_iter()
+            .filter_map(|d| d.try_into().ok())
+            .collect();
+
+        // Collect digests with timestamps from digest_infos (preferred).
+        let mut digests_with_ts: Vec<(DigestInfo, SystemTime)> = notification
+            .digest_infos
+            .into_iter()
+            .filter_map(|info| {
+                let digest = info.digest.and_then(|d| DigestInfo::try_from(d).ok())?;
+                let ts = if info.last_access_timestamp > 0 {
+                    UNIX_EPOCH + Duration::from_secs(info.last_access_timestamp as u64)
+                } else {
+                    SystemTime::now()
+                };
+                Some((digest, ts))
+            })
+            .collect();
+        // Also include plain digests for backward compatibility / simple notifications.
+        let now = SystemTime::now();
+        digests_with_ts.extend(
+            notification
+                .digests
+                .into_iter()
+                .filter_map(|d| DigestInfo::try_from(d).ok())
+                .map(|d| (d, now)),
+        );
+
+        // Acquire the write lock once for all mutations to avoid repeated
+        // lock acquisition and eliminate inconsistency windows.
+        let mut map = locality_map.write();
+
+        if is_full_snapshot {
+            // Remove all existing entries for this endpoint first.
+            map.remove_endpoint(endpoint);
+        }
+
+        if !evicted.is_empty() {
+            debug!(
+                worker_id=?self.worker_id,
+                endpoint,
+                count=evicted.len(),
+                "Processing evicted digests from BlobsAvailable"
+            );
+            map.evict_blobs(endpoint, &evicted);
+        }
+
+        if !digests_with_ts.is_empty() {
+            debug!(
+                worker_id=?self.worker_id,
+                endpoint,
+                count=digests_with_ts.len(),
+                is_full_snapshot,
+                "Registering blobs available from worker"
+            );
+            map.register_blobs_with_timestamps(endpoint, &digests_with_ts);
+        }
+        Ok(())
+    }
+
     async fn execution_complete(&self, execute_complete: ExecuteComplete) -> Result<(), Error> {
+        let cpu_load_pct = execute_complete.cpu_load_pct;
+        if cpu_load_pct > 0 {
+            debug!(worker_id=?self.worker_id, cpu_load_pct, "ExecuteComplete received with CPU load");
+            if let Err(err) = self.scheduler.update_worker_load(&self.worker_id, cpu_load_pct).await {
+                warn!(worker_id=?self.worker_id, ?err, cpu_load_pct, "Failed to update worker load");
+            }
+        }
         let operation_id = OperationId::from(execute_complete.operation_id);
         self.scheduler
             .update_action(

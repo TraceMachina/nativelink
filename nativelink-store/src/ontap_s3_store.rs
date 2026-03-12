@@ -47,7 +47,7 @@ use nativelink_util::buf_channel::{
 use nativelink_util::health_utils::{HealthStatus, HealthStatusIndicator};
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::retry::{Retrier, RetryResult};
-use nativelink_util::store_trait::{RemoveItemCallback, StoreDriver, StoreKey, UploadSizeInfo};
+use nativelink_util::store_trait::{ItemCallback, StoreDriver, StoreKey, UploadSizeInfo};
 use parking_lot::Mutex;
 use rustls::{ClientConfig, RootCertStore};
 use rustls_pki_types::CertificateDer;
@@ -74,7 +74,7 @@ const DEFAULT_MAX_RETRY_BUFFER_PER_REQUEST: usize = 20 * 1024 * 1024; // 20MB
 // Default limit for concurrent part uploads per multipart upload
 const DEFAULT_MULTIPART_MAX_CONCURRENT_UPLOADS: usize = 10;
 
-type RemoveCallback = Arc<dyn RemoveItemCallback>;
+type ItemCb = Arc<dyn ItemCallback>;
 
 #[derive(Debug, MetricsComponent)]
 pub struct OntapS3Store<NowFn> {
@@ -92,7 +92,7 @@ pub struct OntapS3Store<NowFn> {
     #[metric(help = "The number of concurrent uploads allowed for multipart uploads")]
     multipart_max_concurrent_uploads: usize,
 
-    remove_callbacks: Mutex<Vec<RemoveCallback>>,
+    item_callbacks: Mutex<Vec<ItemCb>>,
 }
 
 pub fn load_custom_certs(cert_path: &str) -> Result<Arc<ClientConfig>, Error> {
@@ -167,7 +167,7 @@ where
             .app_name(aws_config::AppName::new("nativelink").expect("valid app name"))
             .http_client(http_client)
             .force_path_style(true)
-            .behavior_version(BehaviorVersion::v2025_08_07())
+            .behavior_version(BehaviorVersion::v2026_01_12())
             .timeout_config(
                 aws_config::timeout::TimeoutConfig::builder()
                     .connect_timeout(Duration::from_secs(30))
@@ -216,7 +216,7 @@ where
                 .common
                 .multipart_max_concurrent_uploads
                 .unwrap_or(DEFAULT_MULTIPART_MAX_CONCURRENT_UPLOADS),
-            remove_callbacks: Mutex::new(vec![]),
+            item_callbacks: Mutex::new(vec![]),
         }))
     }
 
@@ -245,8 +245,8 @@ where
                                     let now_s = (self.now_fn)().unix_timestamp() as i64;
                                     if last_modified.secs() + self.consider_expired_after_s <= now_s
                                     {
-                                        let remove_callbacks = self.remove_callbacks.lock().clone();
-                                        let mut callbacks: FuturesUnordered<_> = remove_callbacks
+                                        let item_callbacks = self.item_callbacks.lock().clone();
+                                        let mut callbacks: FuturesUnordered<_> = item_callbacks
                                             .into_iter()
                                             .map(|callback| {
                                                 let store_key = local_digest.borrow();
@@ -767,11 +767,11 @@ where
         self
     }
 
-    fn register_remove_callback(
+    fn register_item_callback(
         self: Arc<Self>,
-        callback: Arc<dyn RemoveItemCallback>,
+        callback: Arc<dyn ItemCallback>,
     ) -> Result<(), Error> {
-        self.remove_callbacks.lock().push(callback);
+        self.item_callbacks.lock().push(callback);
         Ok(())
     }
 }

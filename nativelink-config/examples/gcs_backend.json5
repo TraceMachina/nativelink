@@ -119,6 +119,8 @@
           docker_image: "priority",
           "lre-rs": "priority",
         },
+        // Enable locality-aware scheduling.
+        cas_store: "CAS_MAIN_STORE",
       },
     },
   ],

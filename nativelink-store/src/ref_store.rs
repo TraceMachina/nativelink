@@ -23,7 +23,7 @@ use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::store_trait::{
-    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+    ItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };
 use parking_lot::Mutex;
 use tracing::error;
@@ -48,7 +48,7 @@ pub struct RefStore {
     name: String,
     store_manager: Weak<StoreManager>,
     inner: StoreReference,
-    remove_callbacks: Mutex<Vec<Arc<dyn RemoveItemCallback>>>,
+    item_callbacks: Mutex<Vec<Arc<dyn ItemCallback>>>,
 }
 
 impl RefStore {
@@ -60,7 +60,7 @@ impl RefStore {
                 mux: Mutex::new(()),
                 cell: AlignedStoreCell(UnsafeCell::new(None)),
             },
-            remove_callbacks: Mutex::new(vec![]),
+            item_callbacks: Mutex::new(vec![]),
         })
     }
 
@@ -87,9 +87,9 @@ impl RefStore {
             .upgrade()
             .err_tip(|| "Store manager is gone")?;
         if let Some(store) = store_manager.get_store(&self.name) {
-            let remove_callbacks = self.remove_callbacks.lock().clone();
-            for callback in remove_callbacks {
-                store.register_remove_callback(callback)?;
+            let item_callbacks = self.item_callbacks.lock().clone();
+            for callback in item_callbacks {
+                store.register_item_callback(callback)?;
             }
             unsafe {
                 *ref_store = Some(store);
@@ -152,15 +152,15 @@ impl StoreDriver for RefStore {
         self
     }
 
-    fn register_remove_callback(
+    fn register_item_callback(
         self: Arc<Self>,
-        callback: Arc<dyn RemoveItemCallback>,
+        callback: Arc<dyn ItemCallback>,
     ) -> Result<(), Error> {
-        self.remove_callbacks.lock().push(callback.clone());
+        self.item_callbacks.lock().push(callback.clone());
         let ref_store = self.inner.cell.0.get();
         unsafe {
             if let Some(ref store) = *ref_store {
-                store.register_remove_callback(callback)?;
+                store.register_item_callback(callback)?;
             }
         }
         Ok(())

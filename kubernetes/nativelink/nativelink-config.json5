@@ -117,6 +117,8 @@
           "lre-rs": "priority",
           ISA: "exact",
         },
+        // Enable locality-aware scheduling.
+        cas_store: "CAS_MAIN_STORE",
       },
     },
   ],
