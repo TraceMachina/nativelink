@@ -126,12 +126,12 @@ pub fn endpoint_from(
     let endpoint_transport = endpoint_transport.tcp_nodelay(true);
 
     // Set HTTP/2 flow-control windows to match the server defaults (16 MiB
-    // stream, 32 MiB connection).  Tonic/h2 defaults to 64 KiB for both,
+    // stream, 128 MiB connection).  Tonic/h2 defaults to 64 KiB for both,
     // which caps aggregate throughput per connection to ~128 MB/s at 0.5 ms
     // RTT — far below 10 GbE capacity when many streams share a connection.
     let endpoint_transport = endpoint_transport
         .initial_stream_window_size(16 * 1024 * 1024)
-        .initial_connection_window_size(32 * 1024 * 1024);
+        .initial_connection_window_size(128 * 1024 * 1024);
 
     Ok(endpoint_transport)
 }
@@ -180,11 +180,11 @@ pub fn endpoint(endpoint_config: &GrpcEndpoint) -> Result<tonic::transport::Endp
         .http2_keep_alive_interval(http2_keepalive_interval)
         .keep_alive_timeout(http2_keepalive_timeout)
         .keep_alive_while_idle(true)
-        // Default to 16 MiB stream window and 32 MiB connection window
+        // Default to 16 MiB stream window and 128 MiB connection window
         // to avoid capping per-stream throughput at ~64 MB/s with 1ms RTT
         // (hyper's default of 64 KiB is too small for high-bandwidth links).
         .initial_stream_window_size(16 * 1024 * 1024)
-        .initial_connection_window_size(32 * 1024 * 1024);
+        .initial_connection_window_size(128 * 1024 * 1024);
 
     if let Some(concurrency_limit) = endpoint_config.concurrency_limit {
         endpoint = endpoint.concurrency_limit(concurrency_limit);
@@ -287,8 +287,8 @@ pub fn h3_channel(endpoint_config: &GrpcEndpoint) -> Result<QuicChannel, Error> 
     // handle bursts and concurrent streams without flow-control stalls.
     let mut transport = quinn::TransportConfig::default();
     transport.stream_receive_window((16 * 1024 * 1024u32).into()); // 16 MiB per stream (vs 1 MiB)
-    transport.receive_window((64 * 1024 * 1024u32).into()); // 64 MiB connection (vs 24 MiB)
-    transport.send_window(64 * 1024 * 1024); // 64 MiB (vs 24 MiB)
+    transport.receive_window((128 * 1024 * 1024u32).into()); // 128 MiB connection (vs 24 MiB)
+    transport.send_window(128 * 1024 * 1024); // 128 MiB (vs 24 MiB)
     transport.max_concurrent_bidi_streams(1024u32.into()); // vs 256
     transport.max_concurrent_uni_streams(1024u32.into());
     transport.initial_rtt(Duration::from_micros(500)); // 0.5ms LAN RTT (vs 333ms default)
