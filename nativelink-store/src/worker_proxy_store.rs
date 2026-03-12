@@ -169,9 +169,7 @@ impl WorkerProxyStore {
                 http2_keepalive_interval_s: 30,
                 http2_keepalive_timeout_s: 20,
                 tcp_nodelay: true,
-                // Workers' CAS listeners (port 40081) are plain HTTP2,
-                // not QUIC — they have no TLS certificates configured.
-                use_http3: false,
+                use_http3: cfg!(feature = "quic"),
             }],
             store_type: StoreType::Cas,
             retry: Retry::default(),
