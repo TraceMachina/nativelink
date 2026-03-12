@@ -1257,7 +1257,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         // The same blobs are frequently read by multiple workers within
         // seconds of each other — keeping them in page cache avoids
         // redundant disk I/O (measured: 76% of read I/O is re-reads).
-        fs::read_file_to_channel(temp_file, writer, read_limit, self.read_buffer_size)
+        fs::read_file_to_channel(temp_file, writer, read_limit, self.read_buffer_size, offset)
             .await
             .err_tip(|| "Failed to read data in filesystem store")?;
         writer

@@ -91,8 +91,48 @@ impl FileSlot {
         }
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    pub fn advise_sequential(&self) {
+        // F_RDADVISE hints that we'll read a range soon — use a 4MB initial
+        // window to kick off readahead similar to Linux POSIX_FADV_SEQUENTIAL.
+        self.advise_willneed(0, 4 * 1024 * 1024);
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     pub const fn advise_sequential(&self) {}
+
+    /// Advise the kernel that we will soon need data at [offset, offset+len).
+    /// Best-effort: errors are silently ignored.
+    #[cfg(target_os = "linux")]
+    pub fn advise_willneed(&self, offset: u64, len: usize) {
+        use std::os::unix::io::AsRawFd;
+        let fd = self.inner.as_raw_fd();
+        unsafe {
+            libc::posix_fadvise(fd, offset as i64, len as i64, libc::POSIX_FADV_WILLNEED);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn advise_willneed(&self, offset: u64, len: usize) {
+        use std::os::unix::io::AsRawFd;
+        const F_RDADVISE: libc::c_int = 44;
+        #[repr(C)]
+        struct radvisory {
+            ra_offset: libc::off_t,  // i64
+            ra_count: libc::c_int,   // i32
+        }
+        let ra = radvisory {
+            ra_offset: offset as libc::off_t,
+            ra_count: len.min(i32::MAX as usize) as libc::c_int,
+        };
+        let fd = self.inner.as_raw_fd();
+        unsafe {
+            libc::fcntl(fd, F_RDADVISE, &ra);
+        }
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    pub const fn advise_willneed(&self, _offset: u64, _len: usize) {}
 }
 
 // Note: If the default changes make sure you update the documentation in
@@ -239,20 +279,23 @@ pub async fn create_file(path: impl AsRef<Path>) -> Result<FileSlot, Error> {
 }
 
 /// Read from `file` in a blocking thread, sending chunks to `writer`.
-/// Reads up to `limit` bytes starting from the current file position.
+/// Reads up to `limit` bytes starting from `start_offset`.
 /// `read_buffer_size` controls the chunk size (typically 256 KiB).
+/// After each read, prefetches the next 2 chunks via `advise_willneed`.
 /// Returns the `FileSlot` so the caller can reuse or drop it.
 pub async fn read_file_to_channel(
     file: FileSlot,
     writer: &mut DropCloserWriteHalf,
     limit: u64,
     read_buffer_size: usize,
+    start_offset: u64,
 ) -> Result<FileSlot, Error> {
     let (sync_tx, mut async_rx) = tokio::sync::mpsc::channel::<Result<Bytes, Error>>(4);
 
     let read_task = spawn_blocking!("fs_read_file", move || {
         let mut f = file;
         let mut remaining = limit;
+        let mut current_offset = start_offset;
         loop {
             let to_read = read_buffer_size.min(remaining as usize);
             if to_read == 0 {
@@ -263,7 +306,10 @@ pub async fn read_file_to_channel(
                 Ok(0) => break,
                 Ok(n) => {
                     buf.truncate(n);
+                    current_offset += n as u64;
                     remaining -= n as u64;
+                    // Prefetch next 2 chunks while this one travels over the network.
+                    f.advise_willneed(current_offset, read_buffer_size * 2);
                     if sync_tx.blocking_send(Ok(buf.freeze())).is_err() {
                         break; // reader dropped
                     }
