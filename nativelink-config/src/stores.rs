@@ -1248,6 +1248,14 @@ const fn default_connections_per_endpoint() -> usize {
     32
 }
 
+fn default_parallel_chunk_read_threshold() -> u64 {
+    8 * 1024 * 1024
+}
+
+fn default_parallel_chunk_count() -> u64 {
+    8
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
@@ -1319,6 +1327,33 @@ pub struct GrpcSpec {
         deserialize_with = "convert_numeric_with_shellexpand"
     )]
     pub batch_coalesce_delay_ms: u64,
+
+    /// Minimum blob size (in bytes) to trigger parallel chunked
+    /// ByteStream reads. Blobs at or above this size are split into
+    /// `parallel_chunk_count` concurrent Read RPCs, each fetching a
+    /// different byte range, then reassembled in order. This bypasses
+    /// per-stream flow control limits and saturates high-bandwidth links.
+    ///
+    /// Set to 0 to disable parallel reads entirely.
+    ///
+    /// Default: 8388608 (8 MiB)
+    #[serde(
+        default = "default_parallel_chunk_read_threshold",
+        deserialize_with = "convert_numeric_with_shellexpand"
+    )]
+    pub parallel_chunk_read_threshold: u64,
+
+    /// Number of parallel ByteStream Read RPCs to issue when a blob
+    /// exceeds `parallel_chunk_read_threshold`. Each chunk fetches
+    /// `ceil(remaining / parallel_chunk_count)` bytes. More chunks
+    /// increase parallelism but also RPC overhead.
+    ///
+    /// Default: 8
+    #[serde(
+        default = "default_parallel_chunk_count",
+        deserialize_with = "convert_numeric_with_shellexpand"
+    )]
+    pub parallel_chunk_count: u64,
 }
 
 /// The possible error codes that might occur on an upstream request.

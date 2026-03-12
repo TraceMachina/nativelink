@@ -178,6 +178,8 @@ impl WorkerProxyStore {
             rpc_timeout_s: 120,
             batch_update_threshold_bytes: 0, // Not uploading via this store
             batch_coalesce_delay_ms: 0,
+            parallel_chunk_read_threshold: 8 * 1024 * 1024,
+            parallel_chunk_count: 8,
         };
         let store = GrpcStore::new(&spec)
             .await
