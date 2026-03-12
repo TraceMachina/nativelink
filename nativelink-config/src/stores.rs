@@ -1253,7 +1253,7 @@ fn default_parallel_chunk_read_threshold() -> u64 {
 }
 
 fn default_parallel_chunk_count() -> u64 {
-    8
+    64
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
