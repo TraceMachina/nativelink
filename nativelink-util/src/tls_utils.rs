@@ -197,36 +197,21 @@ pub fn endpoint(endpoint_config: &GrpcEndpoint) -> Result<tonic::transport::Endp
 ///
 /// `tonic_h3::H3Channel` wraps a `BoxService` internally and doesn't
 /// implement `Clone`, but tonic generated clients require `T: Clone`.
-/// This wrapper lazily creates an `H3Channel` on first use and reuses
-/// it for all subsequent RPCs — h3-util's `RequestSender` maintains
-/// the underlying QUIC connection and handles reconnection via
-/// `poll_ready()`. Clones start disconnected and lazily connect.
+/// All clones share the same underlying `H3Channel` (and thus the same
+/// QUIC connection) via `Arc<Mutex<>>`. This is critical for streaming
+/// RPCs: if each clone had its own connection, dropping the tonic client
+/// would close the connection while the response stream is still being
+/// consumed.
 #[cfg(feature = "quic")]
+#[derive(Clone)]
 pub struct QuicChannel {
-    connector: tonic_h3::quinn::H3QuinnConnector,
-    uri: Uri,
-    inner: Option<tonic_h3::H3Channel<tonic_h3::quinn::H3QuinnConnector>>,
-}
-
-#[cfg(feature = "quic")]
-impl Clone for QuicChannel {
-    fn clone(&self) -> Self {
-        // Clones share the same connector (Arc-based quinn::Endpoint)
-        // but get their own lazy connection.
-        Self {
-            connector: self.connector.clone(),
-            uri: self.uri.clone(),
-            inner: None,
-        }
-    }
+    inner: std::sync::Arc<parking_lot::Mutex<tonic_h3::H3Channel<tonic_h3::quinn::H3QuinnConnector>>>,
 }
 
 #[cfg(feature = "quic")]
 impl std::fmt::Debug for QuicChannel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("QuicChannel")
-            .field("uri", &self.uri)
-            .field("connected", &self.inner.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -247,17 +232,13 @@ impl tower::Service<hyper::Request<tonic::body::Body>> for QuicChannel {
         &mut self,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Result<(), Self::Error>> {
-        let inner = self.inner.get_or_insert_with(|| {
-            tonic_h3::H3Channel::new(self.connector.clone(), self.uri.clone())
-        });
-        tower::Service::poll_ready(inner, cx)
+        let mut guard = self.inner.lock();
+        tower::Service::poll_ready(&mut *guard, cx)
     }
 
     fn call(&mut self, req: hyper::Request<tonic::body::Body>) -> Self::Future {
-        let inner = self.inner.get_or_insert_with(|| {
-            tonic_h3::H3Channel::new(self.connector.clone(), self.uri.clone())
-        });
-        tower::Service::call(inner, req)
+        let mut guard = self.inner.lock();
+        tower::Service::call(&mut *guard, req)
     }
 }
 
@@ -348,7 +329,10 @@ pub fn h3_channel(endpoint_config: &GrpcEndpoint) -> Result<QuicChannel, Error> 
         "tls_utils::h3_channel: creating QUIC/HTTP3 channel",
     );
 
-    Ok(QuicChannel { connector, uri, inner: None })
+    let h3_channel = tonic_h3::H3Channel::new(connector, uri);
+    Ok(QuicChannel {
+        inner: Arc::new(parking_lot::Mutex::new(h3_channel)),
+    })
 }
 
 /// Certificate verifier that accepts any server certificate.
