@@ -24,7 +24,7 @@ use tokio::fs;
 ///
 /// # Arguments
 /// * `src_dir` - Source directory path (must exist)
-/// * `dst_dir` - Destination directory path (will be created)
+/// * `dst_dir` - Destination directory path (will be created if it doesn't exist)
 ///
 /// # Returns
 /// * `Ok(())` on success
@@ -37,7 +37,6 @@ use tokio::fs;
 ///
 /// # Errors
 /// - Source directory doesn't exist
-/// - Destination already exists
 /// - Cross-filesystem hardlinking attempted
 /// - Filesystem doesn't support hardlinks
 /// - Permission denied
@@ -48,13 +47,7 @@ pub async fn hardlink_directory_tree(src_dir: &Path, dst_dir: &Path) -> Result<(
         src_dir.display()
     );
 
-    error_if!(
-        dst_dir.exists(),
-        "Destination directory already exists: {}",
-        dst_dir.display()
-    );
-
-    // Create the root destination directory
+    // Create the root destination directory (idempotent — ok if it already exists)
     fs::create_dir_all(dst_dir).await.err_tip(|| {
         format!(
             "Failed to create destination directory: {}",
@@ -163,9 +156,16 @@ fn set_readonly_recursive_impl<'a>(
     path: &'a Path,
 ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
     Box::pin(async move {
-        let metadata = fs::metadata(path)
+        // Use symlink_metadata to avoid following symlinks (security: prevents
+        // changing permissions on external paths via crafted symlinks).
+        let metadata = fs::symlink_metadata(path)
             .await
             .err_tip(|| format!("Failed to get metadata for: {}", path.display()))?;
+
+        // Skip symlinks — do not follow them or change their target's permissions.
+        if metadata.is_symlink() {
+            return Ok(());
+        }
 
         if metadata.is_dir() {
             let mut entries = fs::read_dir(path)
@@ -187,9 +187,11 @@ fn set_readonly_recursive_impl<'a>(
             use std::os::unix::fs::PermissionsExt;
             let mut perms = metadata.permissions();
 
-            // If it's a directory, set to r-xr-xr-x (555)
-            // If it's a file, set to r--r--r-- (444)
-            let mode = if metadata.is_dir() { 0o555 } else { 0o444 };
+            // Strip write bits but preserve execute bits.
+            // Files marked is_executable (e.g., shell scripts) are 0o555;
+            // stripping write keeps them at 0o555. Non-executable files
+            // at 0o644 become 0o444. Directories at 0o755 become 0o555.
+            let mode = perms.mode() & !0o222;
             perms.set_mode(mode);
 
             fs::set_permissions(path, perms)
@@ -229,9 +231,16 @@ fn calculate_directory_size_impl<'a>(
     path: &'a Path,
 ) -> Pin<Box<dyn Future<Output = Result<u64, Error>> + Send + 'a>> {
     Box::pin(async move {
-        let metadata = fs::metadata(path)
+        // Use symlink_metadata to avoid following symlinks (security: prevents
+        // counting external files reachable via crafted symlinks).
+        let metadata = fs::symlink_metadata(path)
             .await
             .err_tip(|| format!("Failed to get metadata for: {}", path.display()))?;
+
+        // Symlinks count as 0 bytes — do not follow them.
+        if metadata.is_symlink() {
+            return Ok(0);
+        }
 
         if metadata.is_file() {
             return Ok(metadata.len());
@@ -370,14 +379,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_hardlink_existing_destination() -> Result<(), Error> {
-        let (_temp_dir, src_dir) = create_test_directory().await?;
-        let dst_dir = _temp_dir.path().join("existing");
+    async fn test_hardlink_into_existing_destination() -> Result<(), Error> {
+        let (temp_dir, src_dir) = create_test_directory().await?;
+        let dst_dir = temp_dir.path().join("existing");
 
+        // Pre-create the destination directory (simulates work_directory already existing)
         fs::create_dir(&dst_dir).await?;
 
-        let result = hardlink_directory_tree(&src_dir, &dst_dir).await;
-        assert!(result.is_err());
+        // Should succeed — hardlink contents into existing directory
+        hardlink_directory_tree(&src_dir, &dst_dir).await?;
+
+        // Verify structure
+        assert!(dst_dir.join("file1.txt").exists());
+        assert!(dst_dir.join("subdir").is_dir());
+        assert!(dst_dir.join("subdir/file2.txt").exists());
+
+        // Verify contents
+        let content1 = fs::read_to_string(dst_dir.join("file1.txt")).await?;
+        assert_eq!(content1, "Hello, World!");
 
         Ok(())
     }
