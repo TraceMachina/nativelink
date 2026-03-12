@@ -141,11 +141,23 @@ impl GrpcStore {
         );
 
         let mut request = grpc_request.into_inner();
+
+        // Some builds (Chromium for example) do lots of empty requests for some reason, so shortcut them
+        if request.blob_digests.is_empty() {
+            return Ok(Response::new(FindMissingBlobsResponse {
+                missing_blob_digests: vec![],
+            }));
+        }
+
         request.instance_name.clone_from(&self.instance_name);
         self.perform_request(request, |request| async move {
             let channel = self
                 .connection_manager
-                .connection(format!("find_missing_blobs: {:?}", request.blob_digests))
+                .connection(format!(
+                    "find_missing_blobs: ({}) {:?}",
+                    request.blob_digests.len(),
+                    request.blob_digests
+                ))
                 .await
                 .err_tip(|| "in find_missing_blobs")?;
             ContentAddressableStorageClient::new(channel)
