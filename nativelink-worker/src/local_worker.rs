@@ -1107,9 +1107,9 @@ pub struct LocalWorker<T: WorkerApiClientTrait + 'static, U: RunningActionsManag
     metrics: Arc<Metrics>,
     /// State for periodic BlobsAvailable reporting.
     blobs_available_state: Option<BlobsAvailableState>,
-    /// Guard for the worker CAS server task. Keeps the task alive as long as
-    /// the `LocalWorker` is alive. When dropped, the CAS server is aborted.
-    _cas_server_guard: Option<JoinHandleDropGuard<Result<(), Error>>>,
+    /// Guards for the worker CAS server tasks (TCP + QUIC). Keeps the tasks
+    /// alive as long as the `LocalWorker` is alive. When dropped, servers abort.
+    _cas_server_guards: Vec<JoinHandleDropGuard<Result<(), Error>>>,
 }
 
 impl<
@@ -1403,9 +1403,14 @@ pub async fn new_local_worker(
             }
         };
 
-        Some(tcp_guard)
+        let mut guards = vec![tcp_guard];
+        #[cfg(feature = "quic")]
+        if let Some(quic_guard) = _quic_guard {
+            guards.push(quic_guard);
+        }
+        guards
     } else {
-        None
+        Vec::new()
     };
 
     let local_worker = LocalWorker::new_with_connection_factory_and_actions_manager(
@@ -1478,7 +1483,7 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
         connection_factory: ConnectionFactory<T>,
         sleep_fn: Box<dyn Fn(Duration) -> BoxFuture<'static, ()> + Send + Sync>,
         blobs_available_state: Option<BlobsAvailableState>,
-        cas_server_guard: Option<JoinHandleDropGuard<Result<(), Error>>>,
+        cas_server_guards: Vec<JoinHandleDropGuard<Result<(), Error>>>,
     ) -> Self {
         let metrics = Arc::new(Metrics::new(Arc::downgrade(
             running_actions_manager.metrics(),
@@ -1490,7 +1495,7 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
             sleep_fn: Some(sleep_fn),
             metrics,
             blobs_available_state,
-            _cas_server_guard: cas_server_guard,
+            _cas_server_guards: cas_server_guards,
         }
     }
 
