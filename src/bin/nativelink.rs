@@ -597,7 +597,7 @@ async fn inner_main(
                     || "Could not convert experimental_http2_max_pending_accept_reset_streams",
                 )?);
         }
-        // Default to 16 MiB stream window and 32 MiB connection window
+        // Default to 16 MiB stream window and 128 MiB connection window
         // to avoid capping per-stream throughput at ~64 MB/s with 1ms RTT
         // (hyper's default of 64 KiB is too small for high-bandwidth links).
         http.http2().initial_stream_window_size(
@@ -608,7 +608,7 @@ async fn inner_main(
         http.http2().initial_connection_window_size(
             http_config
                 .experimental_http2_initial_connection_window_size
-                .unwrap_or(32 * 1024 * 1024),
+                .unwrap_or(128 * 1024 * 1024),
         );
         if let Some(value) = http_config.experimental_http2_adaptive_window {
             http.http2().adaptive_window(value);
@@ -787,8 +787,8 @@ async fn inner_main(
             // handle bursts and multiple concurrent streams.
             let mut transport = quinn::TransportConfig::default();
             transport.stream_receive_window((16 * 1024 * 1024u32).into()); // 16 MiB per stream (vs 1 MiB)
-            transport.receive_window((64 * 1024 * 1024u32).into()); // 64 MiB connection (vs 24 MiB)
-            transport.send_window(64 * 1024 * 1024); // 64 MiB (vs 24 MiB)
+            transport.receive_window((128 * 1024 * 1024u32).into()); // 128 MiB connection (vs 24 MiB)
+            transport.send_window(128 * 1024 * 1024); // 128 MiB (vs 24 MiB)
             transport.max_concurrent_bidi_streams(1024u32.into()); // vs 256
             transport.max_concurrent_uni_streams(1024u32.into());
             transport.initial_rtt(Duration::from_micros(500)); // 0.5ms LAN RTT (vs 333ms)
