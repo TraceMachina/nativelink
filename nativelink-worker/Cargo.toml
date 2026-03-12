@@ -8,6 +8,7 @@ version = "1.0.0-rc2"
 
 [features]
 nix = []
+quic = ["dep:tonic-h3", "dep:quinn", "dep:h3-quinn", "dep:rcgen", "dep:rustls", "dep:socket2", "nativelink-util/quic", "nativelink-store/quic"]
 
 [dependencies]
 nativelink-config = { path = "../nativelink-config" }
@@ -57,6 +58,12 @@ uuid = { version = "1.16.0", default-features = false, features = [
   "serde",
   "v4",
 ] }
+tonic-h3 = { version = "0.0.5", default-features = false, features = ["quinn"], optional = true }
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-aws-lc-rs"], optional = true }
+h3-quinn = { version = "0.0.10", default-features = false, optional = true }
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "aws_lc_rs", "pem"], optional = true }
+rustls = { version = "0.23", default-features = false, features = ["std", "aws_lc_rs"], optional = true }
+socket2 = { version = "0.5", default-features = false, optional = true }
 
 [dev-dependencies]
 nativelink-macro = { path = "../nativelink-macro" }

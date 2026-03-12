@@ -61,9 +61,30 @@ pub trait WorkerApiClientTrait: Clone + Sync + Send + Sized + Unpin {
     ) -> impl Future<Output = Result<(), Error>> + Send;
 }
 
+/// Inner transport: either TCP/HTTP2 or QUIC/HTTP3.
+#[derive(Debug, Clone)]
+enum WorkerApiTransport {
+    Tcp(WorkerApiClient<Channel>),
+    #[cfg(feature = "quic")]
+    Quic(WorkerApiClient<nativelink_util::tls_utils::QuicChannel>),
+}
+
+impl WorkerApiTransport {
+    async fn connect_worker(
+        &mut self,
+        request: impl tonic::IntoStreamingRequest<Message = UpdateForScheduler>,
+    ) -> Result<Response<Streaming<UpdateForWorker>>, Status> {
+        match self {
+            Self::Tcp(client) => client.connect_worker(request).await,
+            #[cfg(feature = "quic")]
+            Self::Quic(client) => client.connect_worker(request).await,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct WorkerApiClientWrapper {
-    inner: WorkerApiClient<Channel>,
+    inner: WorkerApiTransport,
     channel: Option<Sender<Update>>,
 }
 
@@ -90,7 +111,17 @@ impl WorkerApiClientWrapper {
 impl From<WorkerApiClient<Channel>> for WorkerApiClientWrapper {
     fn from(other: WorkerApiClient<Channel>) -> Self {
         Self {
-            inner: other,
+            inner: WorkerApiTransport::Tcp(other),
+            channel: None,
+        }
+    }
+}
+
+#[cfg(feature = "quic")]
+impl From<WorkerApiClient<nativelink_util::tls_utils::QuicChannel>> for WorkerApiClientWrapper {
+    fn from(other: WorkerApiClient<nativelink_util::tls_utils::QuicChannel>) -> Self {
+        Self {
+            inner: WorkerApiTransport::Quic(other),
             channel: None,
         }
     }

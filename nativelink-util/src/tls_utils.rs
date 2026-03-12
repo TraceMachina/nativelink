@@ -197,15 +197,29 @@ pub fn endpoint(endpoint_config: &GrpcEndpoint) -> Result<tonic::transport::Endp
 ///
 /// `tonic_h3::H3Channel` wraps a `BoxService` internally and doesn't
 /// implement `Clone`, but tonic generated clients require `T: Clone`.
-/// All clones share the same underlying `H3Channel` (and thus the same
-/// QUIC connection) via `Arc<Mutex<>>`. This is critical for streaming
-/// RPCs: if each clone had its own connection, dropping the tonic client
-/// would close the connection while the response stream is still being
-/// consumed.
+/// We use `tower::buffer::Buffer` which correctly serializes
+/// `poll_ready`/`call` pairs through a background worker task,
+/// properly routing wakers so concurrent callers don't deadlock.
+///
+/// All clones share the same underlying QUIC connection via the
+/// buffered service — the `H3Channel`'s `RequestSender` establishes
+/// one QUIC connection and clones `h3::client::SendRequest` for each
+/// RPC, achieving true stream multiplexing.
 #[cfg(feature = "quic")]
 #[derive(Clone)]
 pub struct QuicChannel {
-    inner: std::sync::Arc<parking_lot::Mutex<tonic_h3::H3Channel<tonic_h3::quinn::H3QuinnConnector>>>,
+    inner: tower::buffer::Buffer<
+        hyper::Request<tonic::body::Body>,
+        futures::future::BoxFuture<
+            'static,
+            Result<
+                hyper::Response<
+                    h3_util::client_body::H3IncomingClient<h3_quinn::RecvStream, bytes::Bytes>,
+                >,
+                tonic_h3::Error,
+            >,
+        >,
+    >,
 }
 
 #[cfg(feature = "quic")]
@@ -218,27 +232,32 @@ impl std::fmt::Debug for QuicChannel {
 
 #[cfg(feature = "quic")]
 impl tower::Service<hyper::Request<tonic::body::Body>> for QuicChannel {
-    type Response = <tonic_h3::H3Channel<tonic_h3::quinn::H3QuinnConnector> as tower::Service<
+    type Response = hyper::Response<
+        h3_util::client_body::H3IncomingClient<h3_quinn::RecvStream, bytes::Bytes>,
+    >;
+    type Error = tower::BoxError;
+    type Future = <tower::buffer::Buffer<
         hyper::Request<tonic::body::Body>,
-    >>::Response;
-    type Error = <tonic_h3::H3Channel<tonic_h3::quinn::H3QuinnConnector> as tower::Service<
-        hyper::Request<tonic::body::Body>,
-    >>::Error;
-    type Future = <tonic_h3::H3Channel<tonic_h3::quinn::H3QuinnConnector> as tower::Service<
-        hyper::Request<tonic::body::Body>,
-    >>::Future;
+        futures::future::BoxFuture<
+            'static,
+            Result<
+                hyper::Response<
+                    h3_util::client_body::H3IncomingClient<h3_quinn::RecvStream, bytes::Bytes>,
+                >,
+                tonic_h3::Error,
+            >,
+        >,
+    > as tower::Service<hyper::Request<tonic::body::Body>>>::Future;
 
     fn poll_ready(
         &mut self,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Result<(), Self::Error>> {
-        let mut guard = self.inner.lock();
-        tower::Service::poll_ready(&mut *guard, cx)
+        tower::Service::poll_ready(&mut self.inner, cx)
     }
 
     fn call(&mut self, req: hyper::Request<tonic::body::Body>) -> Self::Future {
-        let mut guard = self.inner.lock();
-        tower::Service::call(&mut *guard, req)
+        tower::Service::call(&mut self.inner, req)
     }
 }
 
@@ -330,9 +349,13 @@ pub fn h3_channel(endpoint_config: &GrpcEndpoint) -> Result<QuicChannel, Error> 
     );
 
     let h3_channel = tonic_h3::H3Channel::new(connector, uri);
-    Ok(QuicChannel {
-        inner: Arc::new(parking_lot::Mutex::new(h3_channel)),
-    })
+
+    // Buffer serializes poll_ready/call through a background worker,
+    // properly handling waker routing for concurrent callers. 1024
+    // outstanding requests matches our max_concurrent_bidi_streams.
+    let buffered = tower::buffer::Buffer::new(h3_channel, 1024);
+
+    Ok(QuicChannel { inner: buffered })
 }
 
 /// Certificate verifier that accepts any server certificate.
