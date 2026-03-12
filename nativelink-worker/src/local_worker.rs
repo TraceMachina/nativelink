@@ -291,6 +291,9 @@ fn start_worker_quic_server(
     transport.max_concurrent_bidi_streams(1024u32.into());
     transport.max_concurrent_uni_streams(1024u32.into());
     transport.initial_rtt(Duration::from_micros(500));
+    // Send QUIC keepalives every 5s to detect dead connections and
+    // prevent NAT/firewall timeouts on the server→worker path.
+    transport.keep_alive_interval(Some(Duration::from_secs(5)));
     server_config.transport_config(Arc::new(transport));
 
     // Bind UDP socket with large buffers.
@@ -691,17 +694,25 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                 let ram = self.running_actions_manager.clone();
                 futures.push(
                     async move {
-                        let mut is_first = true;
+                        // Send full snapshot immediately on connect so the
+                        // server has an accurate locality map right away,
+                        // without waiting for the first interval tick.
+                        Self::send_periodic_blobs_available(
+                            &mut grpc_client,
+                            &state,
+                            &ram,
+                            true,
+                        )
+                        .await;
                         loop {
                             sleep(state.interval).await;
                             Self::send_periodic_blobs_available(
                                 &mut grpc_client,
                                 &state,
                                 &ram,
-                                is_first,
+                                false,
                             )
                             .await;
-                            is_first = false;
                         }
                     }
                     .boxed(),
