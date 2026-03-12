@@ -16,17 +16,168 @@ use std::path::Path;
 
 use nativelink_error::{Error, make_err};
 
-/// Hardlinks an entire directory tree from source to destination.
+/// Copies an entire directory tree from source to destination using the
+/// fastest available method:
 ///
-/// Uses a single `spawn_blocking` call with synchronous `std::fs` to avoid
-/// the overhead of thousands of individual async task schedules. For a tree
-/// with 4,424 files and 1,126 directories, this reduces time from ~40s to ~2s.
+/// - **macOS (APFS)**: Uses `clonefile(2)` for a CoW clone of the entire tree
+///   in a single syscall (~1ms regardless of tree size). Falls back to hardlink
+///   if clonefile fails (cross-device, non-APFS, etc.).
+/// - **Other platforms**: Hardlinks each file individually via `std::fs::hard_link`.
+///
+/// After a successful clonefile, directories are made writable (0o755) since the
+/// clone inherits the cache's read-only permissions and actions need to create
+/// output files.
 pub async fn hardlink_directory_tree(src_dir: &Path, dst_dir: &Path) -> Result<(), Error> {
     let src = src_dir.to_path_buf();
     let dst = dst_dir.to_path_buf();
-    tokio::task::spawn_blocking(move || hardlink_directory_tree_sync(&src, &dst))
-        .await
-        .map_err(|e| make_err!(nativelink_error::Code::Internal, "spawn_blocking join error: {e}"))?
+    tokio::task::spawn_blocking(move || {
+        #[cfg(target_os = "macos")]
+        {
+            match try_clonefile(&src, &dst) {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    tracing::debug!(
+                        src = %src.display(),
+                        dst = %dst.display(),
+                        "clonefile failed, falling back to hardlink: {e}",
+                    );
+                }
+            }
+        }
+        hardlink_directory_tree_sync(&src, &dst)
+    })
+    .await
+    .map_err(|e| make_err!(nativelink_error::Code::Internal, "spawn_blocking join error: {e}"))?
+}
+
+/// Uses macOS `clonefile(2)` to CoW-clone an entire directory tree in one syscall.
+/// Handles pre-existing (empty) destination by removing it first.
+/// After cloning, makes all directories writable (0o755) since the clone
+/// inherits the cache's read-only (0o555) permissions.
+#[cfg(target_os = "macos")]
+fn try_clonefile(src: &std::path::Path, dst: &std::path::Path) -> Result<(), Error> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::PermissionsExt;
+
+    extern "C" {
+        fn clonefile(
+            src: *const std::ffi::c_char,
+            dst: *const std::ffi::c_char,
+            flags: std::ffi::c_int,
+        ) -> std::ffi::c_int;
+    }
+
+    if !src.exists() {
+        return Err(make_err!(
+            nativelink_error::Code::InvalidArgument,
+            "Source directory does not exist: {}",
+            src.display()
+        ));
+    }
+
+    let src_c = CString::new(src.as_os_str().as_bytes()).map_err(|e| {
+        make_err!(
+            nativelink_error::Code::Internal,
+            "Invalid src path for clonefile: {e}"
+        )
+    })?;
+    let dst_c = CString::new(dst.as_os_str().as_bytes()).map_err(|e| {
+        make_err!(
+            nativelink_error::Code::Internal,
+            "Invalid dst path for clonefile: {e}"
+        )
+    })?;
+
+    // clonefile(2) requires the destination to not exist.
+    // The work directory may have been pre-created — remove it first.
+    if dst.exists() {
+        std::fs::remove_dir(dst).map_err(|e| {
+            make_err!(
+                nativelink_error::Code::Internal,
+                "Failed to remove existing dst for clonefile {}: {e}",
+                dst.display()
+            )
+        })?;
+    }
+
+    // SAFETY: src_c and dst_c are valid CStrings with nul terminators.
+    let ret = unsafe { clonefile(src_c.as_ptr(), dst_c.as_ptr(), 0) };
+    if ret != 0 {
+        let err = std::io::Error::last_os_error();
+        return Err(make_err!(
+            nativelink_error::Code::Internal,
+            "clonefile {} → {}: {err}",
+            src.display(),
+            dst.display()
+        ));
+    }
+
+    // The clone inherits the cache's read-only directory permissions (0o555).
+    // Actions need writable directories to create output files, so walk the
+    // cloned tree and make all directories writable.
+    make_dirs_writable_sync(dst)?;
+
+    Ok(())
+}
+
+/// Recursively makes all directories in a tree writable (0o755).
+/// Only touches directories — files keep their existing permissions.
+#[cfg(target_os = "macos")]
+fn make_dirs_writable_sync(path: &std::path::Path) -> Result<(), Error> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let metadata = std::fs::symlink_metadata(path).map_err(|e| {
+        make_err!(
+            nativelink_error::Code::Internal,
+            "Failed to get metadata for {}: {e}",
+            path.display()
+        )
+    })?;
+
+    if !metadata.is_dir() {
+        return Ok(());
+    }
+
+    // Make this directory writable
+    let mut perms = metadata.permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(path, perms).map_err(|e| {
+        make_err!(
+            nativelink_error::Code::Internal,
+            "Failed to chmod directory {}: {e}",
+            path.display()
+        )
+    })?;
+
+    // Recurse into subdirectories only (skip files and symlinks)
+    for entry in std::fs::read_dir(path).map_err(|e| {
+        make_err!(
+            nativelink_error::Code::Internal,
+            "Failed to read directory {}: {e}",
+            path.display()
+        )
+    })? {
+        let entry = entry.map_err(|e| {
+            make_err!(
+                nativelink_error::Code::Internal,
+                "Failed to read entry in {}: {e}",
+                path.display()
+            )
+        })?;
+        let ft = entry.file_type().map_err(|e| {
+            make_err!(
+                nativelink_error::Code::Internal,
+                "Failed to get file type for {:?}: {e}",
+                entry.path()
+            )
+        })?;
+        if ft.is_dir() {
+            make_dirs_writable_sync(&entry.path())?;
+        }
+    }
+
+    Ok(())
 }
 
 /// Synchronous recursive hardlink — runs inside `spawn_blocking`.
