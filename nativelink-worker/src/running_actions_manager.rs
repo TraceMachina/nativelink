@@ -1474,39 +1474,80 @@ pub fn download_to_directory<'a>(
 ///
 /// This provides a significant performance improvement for repeated builds
 /// with the same input directories.
+///
+/// # Returns
+/// * `Ok(None)` - Normal mode (hardlink or download). Caller should clean up
+///   the work directory normally.
+/// * `Ok(Some(digest))` - Direct-use mode. The work directory is a symlink to
+///   the cache. Caller MUST call `release_direct_use(digest)` on cleanup and
+///   only remove the symlink, not the target directory.
 pub async fn prepare_action_inputs(
     directory_cache: &Option<Arc<crate::directory_cache::DirectoryCache>>,
     cas_store: &FastSlowStore,
     filesystem_store: Pin<&FilesystemStore>,
     digest: &DigestInfo,
     work_directory: &str,
-) -> Result<(), Error> {
+) -> Result<Option<DigestInfo>, Error> {
     // Try cache first if available
     if let Some(cache) = directory_cache {
-        match cache
-            .get_or_create(*digest, Path::new(work_directory))
-            .await
-        {
-            Ok(cache_hit) => {
-                trace!(
-                    ?digest,
-                    work_directory, cache_hit, "Successfully prepared inputs via directory cache"
-                );
-                return Ok(());
+        if cache.is_direct_use_mode() {
+            // Direct-use mode: symlink work_directory -> cache_path.
+            // The work directory must NOT exist yet (it becomes the symlink).
+            match cache
+                .get_or_create_direct(*digest, Path::new(work_directory))
+                .await
+            {
+                Ok((_cache_path, _was_hit)) => {
+                    info!(
+                        ?digest,
+                        work_directory,
+                        was_hit = _was_hit,
+                        cache_path = %_cache_path.display(),
+                        "Successfully prepared inputs via directory cache (direct-use mode)",
+                    );
+                    return Ok(Some(*digest));
+                }
+                Err(e) => {
+                    warn!(
+                        ?digest,
+                        ?e,
+                        "Directory cache direct-use failed, falling back to traditional download"
+                    );
+                    // Fall through to traditional path.
+                    // Create the work directory since direct-use didn't create it.
+                    fs::create_dir_all(work_directory)
+                        .await
+                        .err_tip(|| format!("Error creating work directory {work_directory} after direct-use fallback"))?;
+                }
             }
-            Err(e) => {
-                warn!(
-                    ?digest,
-                    ?e,
-                    "Directory cache failed, falling back to traditional download"
-                );
-                // Fall through to traditional path
+        } else {
+            // Normal hardlink mode
+            match cache
+                .get_or_create(*digest, Path::new(work_directory))
+                .await
+            {
+                Ok(cache_hit) => {
+                    trace!(
+                        ?digest,
+                        work_directory, cache_hit, "Successfully prepared inputs via directory cache"
+                    );
+                    return Ok(None);
+                }
+                Err(e) => {
+                    warn!(
+                        ?digest,
+                        ?e,
+                        "Directory cache failed, falling back to traditional download"
+                    );
+                    // Fall through to traditional path
+                }
             }
         }
     }
 
     // Traditional path (cache disabled or failed)
-    download_to_directory(cas_store, filesystem_store, digest, work_directory).await
+    download_to_directory(cas_store, filesystem_store, digest, work_directory).await?;
+    Ok(None)
 }
 
 #[cfg(target_family = "windows")]
@@ -1887,6 +1928,7 @@ async fn do_cleanup(
     running_actions_manager: &Arc<RunningActionsManagerImpl>,
     operation_id: &OperationId,
     action_directory: &str,
+    direct_use_digest: Option<DigestInfo>,
 ) -> Result<(), Error> {
     // Mark this operation as being cleaned up
     let Some(_cleaning_guard) = running_actions_manager.perform_cleanup(operation_id.clone())
@@ -1896,18 +1938,60 @@ async fn do_cleanup(
     };
 
     debug!("Worker cleaning up");
-    // Note: We need to be careful to keep trying to cleanup even if one of the steps fails.
-    let remove_dir_result = match fs::remove_dir_all(action_directory).await {
-        Ok(()) => Ok(()),
-        Err(_) => {
-            // On macOS, Spotlight/Finder can momentarily recreate files
-            // (e.g. .DS_Store) during deletion, causing ENOTEMPTY. A
-            // short delay and single retry is sufficient.
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            fs::remove_dir_all(action_directory).await
+
+    // Release the directory cache ref_count if direct-use mode was active.
+    if let Some(digest) = &direct_use_digest {
+        if let Some(cache) = &running_actions_manager.directory_cache {
+            cache.release_direct_use(digest).await;
         }
     }
-    .err_tip(|| format!("Could not remove working directory {action_directory}"));
+
+    // Note: We need to be careful to keep trying to cleanup even if one of the steps fails.
+    //
+    // In direct-use mode, the work directory (action_directory/work) is a
+    // symlink to the cache. We must NOT follow that symlink when deleting.
+    // `remove_dir_all` would follow the symlink and destroy the cache entry.
+    //
+    // Strategy: if direct-use is active, first remove the work symlink, then
+    // remove the action directory normally (which now only contains non-symlink
+    // artifacts like stdout/stderr files).
+    let remove_dir_result = if direct_use_digest.is_some() {
+        let work_symlink = PathBuf::from(action_directory).join("work");
+        // Remove the symlink itself (not its target). On unix, symlinks to
+        // directories are removed with `remove_file`, not `remove_dir`.
+        let symlink_result = fs::remove_file(&work_symlink).await;
+        if let Err(ref e) = symlink_result {
+            // The work symlink may not exist if prepare_action failed before
+            // creating it, or may have already been cleaned up. Not fatal.
+            debug!(
+                %operation_id,
+                path = %work_symlink.display(),
+                ?e,
+                "do_cleanup: could not remove direct-use work symlink (may not exist)",
+            );
+        }
+        // Now remove the rest of the action directory normally.
+        match fs::remove_dir_all(action_directory).await {
+            Ok(()) => Ok(()),
+            Err(_) => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                fs::remove_dir_all(action_directory).await
+            }
+        }
+        .err_tip(|| format!("Could not remove working directory {action_directory}"))
+    } else {
+        match fs::remove_dir_all(action_directory).await {
+            Ok(()) => Ok(()),
+            Err(_) => {
+                // On macOS, Spotlight/Finder can momentarily recreate files
+                // (e.g. .DS_Store) during deletion, causing ENOTEMPTY. A
+                // short delay and single retry is sufficient.
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                fs::remove_dir_all(action_directory).await
+            }
+        }
+        .err_tip(|| format!("Could not remove working directory {action_directory}"))
+    };
 
     if let Err(err) = running_actions_manager.cleanup_action(operation_id) {
         error!(%operation_id, ?err, "Error cleaning up action");
@@ -1970,6 +2054,9 @@ struct RunningActionImplState {
     // that prevented the action from running, upload failures, timeouts, exc...
     // but we have (or could have) the action results (like stderr/stdout).
     error: Option<Error>,
+    /// When direct-use mode is active, stores the input root digest so the
+    /// cache ref_count can be released during cleanup. None means normal mode.
+    direct_use_digest: Option<DigestInfo>,
 }
 
 #[derive(Debug)]
@@ -2011,6 +2098,7 @@ impl RunningActionImpl {
                 action_result: None,
                 execution_metadata,
                 error: None,
+                direct_use_digest: None,
             }),
             // Always need to ensure that we're removed from the manager on Drop.
             has_manager_entry: AtomicBool::new(true),
@@ -2052,11 +2140,17 @@ impl RunningActionImpl {
             });
             let filesystem_store_pin =
                 Pin::new(self.running_actions_manager.filesystem_store.as_ref());
-            let (command, ()) = try_join(command_fut, async {
-                fs::create_dir(&self.work_directory)
-                    .await
-                    .err_tip(|| format!("Error creating work directory {}", self.work_directory))?;
-                // Now the work directory has been created, we have to clean up.
+            let is_direct_use = self.running_actions_manager.directory_cache
+                .as_ref()
+                .map_or(false, |c| c.is_direct_use_mode());
+            let (command, direct_use_digest) = try_join(command_fut, async {
+                if !is_direct_use {
+                    // Normal mode: create work directory first, then populate it.
+                    fs::create_dir(&self.work_directory)
+                        .await
+                        .err_tip(|| format!("Error creating work directory {}", self.work_directory))?;
+                }
+                // Now the work directory has been created (or will be via symlink).
                 self.did_cleanup.store(false, Ordering::Release);
                 // Download the input files/folder and place them into the temp directory.
                 // Use directory cache if available for better performance.
@@ -2072,6 +2166,11 @@ impl RunningActionImpl {
                     .await
             })
             .await?;
+            // Store direct-use digest if active, for cleanup ref-count release.
+            if let Some(digest) = direct_use_digest {
+                let mut state = self.state.lock();
+                state.direct_use_digest = Some(digest);
+            }
             command
         };
         {
@@ -2937,9 +3036,11 @@ impl Drop for RunningActionImpl {
         );
         let running_actions_manager = self.running_actions_manager.clone();
         let action_directory = self.action_directory.clone();
+        // Take the direct_use_digest from state so we can release the ref_count.
+        let direct_use_digest = self.state.lock().direct_use_digest.take();
         background_spawn!("running_action_impl_drop", async move {
             let Err(err) =
-                do_cleanup(&running_actions_manager, &operation_id, &action_directory).await
+                do_cleanup(&running_actions_manager, &operation_id, &action_directory, direct_use_digest).await
             else {
                 return;
             };
@@ -3053,10 +3154,12 @@ impl RunningAction for RunningActionImpl {
             .clone()
             .cleanup
             .wrap(async move {
+                let direct_use_digest = self.state.lock().direct_use_digest.take();
                 let result = do_cleanup(
                     &self.running_actions_manager,
                     &self.operation_id,
                     &self.action_directory,
+                    direct_use_digest,
                 )
                 .await;
                 self.has_manager_entry.store(false, Ordering::Release);
@@ -3853,6 +3956,20 @@ impl RunningActionsManagerImpl {
                     dir_path.display()
                 );
                 self.metrics.stale_removals.inc();
+
+                // Before remove_dir_all, check if there's a "work" symlink
+                // inside (from direct-use mode). If so, remove the symlink
+                // first to avoid following it into the cache directory.
+                let work_path = dir_path.join("work");
+                if let Ok(meta) = fs::symlink_metadata(&work_path).await {
+                    if meta.is_symlink() {
+                        debug!(
+                            "Removing direct-use work symlink before stale cleanup: {}",
+                            work_path.display()
+                        );
+                        drop(fs::remove_file(&work_path).await);
+                    }
+                }
 
                 // Try to remove the directory, with one retry on failure
                 let remove_result = fs::remove_dir_all(&dir_path).await;

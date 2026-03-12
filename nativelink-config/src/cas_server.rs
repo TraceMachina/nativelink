@@ -906,6 +906,27 @@ pub struct DirectoryCacheConfig {
     /// Default: `{work_directory}/../directory_cache`
     #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
     pub cache_root: String,
+
+    /// When enabled, the action's work directory is symlinked directly to the
+    /// cache directory instead of hardlinking/cloning files into it.
+    /// This eliminates all copy/hardlink overhead but requires that actions
+    /// do not modify their input tree (Bazel actions satisfy this).
+    ///
+    /// Subtree reuse is preserved: when a new root shares subtrees with
+    /// already-cached roots, the new cache entry uses symlinks to point at
+    /// the cached subtree directories.
+    ///
+    /// The existing `prepare_output_directories` logic handles read-only
+    /// directories by replacing blocking symlinks with writable shallow-copy
+    /// directories that preserve access to original content.
+    ///
+    /// Default: true
+    #[serde(default = "default_direct_use_mode")]
+    pub direct_use_mode: bool,
+}
+
+const fn default_direct_use_mode() -> bool {
+    true
 }
 
 const fn default_directory_cache_max_entries() -> usize {

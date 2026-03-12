@@ -1012,6 +1012,7 @@ pub async fn new_local_worker(
             max_entries: cache_config.max_entries,
             max_size_bytes: cache_config.max_size_bytes,
             cache_root,
+            direct_use_mode: cache_config.direct_use_mode,
         };
 
         match DirectoryCache::new(
