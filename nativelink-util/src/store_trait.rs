@@ -15,6 +15,7 @@
 use core::borrow::{Borrow, BorrowMut};
 use core::convert::Into;
 use core::fmt::{self, Debug, Display};
+use core::future;
 use core::hash::{Hash, Hasher};
 use core::ops::{Bound, RangeBounds};
 use core::pin::Pin;
@@ -455,6 +456,9 @@ pub trait StoreLike: Send + Sync + Sized + Unpin + 'static {
         &'a self,
         digests: &'a [StoreKey<'a>],
     ) -> impl Future<Output = Result<Vec<Option<u64>>, Error>> + Send + 'a {
+        if digests.is_empty() {
+            return future::ready(Ok(vec![])).boxed();
+        }
         self.as_store_driver_pin().has_many(digests)
     }
 
@@ -466,6 +470,9 @@ pub trait StoreLike: Send + Sync + Sized + Unpin + 'static {
         digests: &'a [StoreKey<'a>],
         results: &'a mut [Option<u64>],
     ) -> impl Future<Output = Result<(), Error>> + Send + 'a {
+        if digests.is_empty() {
+            return future::ready(Ok(())).boxed();
+        }
         self.as_store_driver_pin()
             .has_with_results(digests, results)
     }
