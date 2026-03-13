@@ -748,6 +748,13 @@ impl GrpcStore {
                             // No stream error, handle the original result
                             match result {
                                 Ok(response) => RetryResult::Ok(response),
+                                Err(ref err)
+                                    if err.code == Code::AlreadyExists =>
+                                {
+                                    RetryResult::Ok(Response::new(WriteResponse {
+                                        committed_size: 0,
+                                    }))
+                                }
                                 Err(ref err) => {
                                     warn!(
                                         instance_name = %instance_name,

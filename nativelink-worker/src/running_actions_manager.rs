@@ -3945,6 +3945,7 @@ impl RunningActionsManagerImpl {
                     };
                     match result {
                         Ok(()) => true,
+                        Err(e) if e.code == Code::AlreadyExists => true,
                         Err(e) => {
                             warn!(
                                 ?digest,
