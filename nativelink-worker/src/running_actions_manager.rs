@@ -3941,7 +3941,14 @@ impl RunningActionsManagerImpl {
                             UploadSizeInfo::ExactSize(digest.size_bytes()),
                         );
                         let (read_res, write_res) = tokio::join!(read_fut, write_fut);
-                        read_res.merge(write_res)
+                        // If the write succeeded, the upload is done even if
+                        // the read side got a "receiver disconnected" error
+                        // (e.g. server already had the blob and closed early).
+                        if write_res.is_ok() {
+                            Ok(())
+                        } else {
+                            read_res.merge(write_res)
+                        }
                     };
                     match result {
                         Ok(()) => true,

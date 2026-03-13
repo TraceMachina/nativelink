@@ -1282,7 +1282,7 @@ impl ByteStream for ByteStreamServer {
         // Skip the upload if the server already has this blob. This avoids
         // streaming large blobs over ByteStream when they already exist.
         if store.has(digest).await?.is_some() {
-            debug!(
+            info!(
                 %digest,
                 expected_size,
                 "ByteStream::write: blob already exists, skipping upload",
