@@ -62,7 +62,7 @@ All notable changes to this project will be documented in this file.
 - Update curl version in Dockerfiles ([#2189](https://github.com/TraceMachina/nativelink/issues/2189)) - ([c161433](https://github.com/TraceMachina/nativelink/commit/c161433702cd6b6a29a169e7516c06a60c1341f9))
 - Update grafana/grafana Docker tag to v12 ([#2182](https://github.com/TraceMachina/nativelink/issues/2182)) - ([658dd53](https://github.com/TraceMachina/nativelink/commit/658dd532c2275c888cfc03c2149fa805de8ecbc5))
 
-## [1.0.0-rc2](https://github.com/TraceMachina/nativelink/compare/v0.7.10..v1.0.0-rc2) - 2026-02-16
+## [1.0.0-rc2](https://github.com/TraceMachina/nativelink/compare/v1.0.0-rc1..v1.0.0-rc2) - 2026-02-16
 
 
 
@@ -76,48 +76,45 @@ All notable changes to this project will be documented in this file.
 - Allows setting environment variables from the environment ([#2143](https://github.com/TraceMachina/nativelink/issues/2143)) - ([a57c771](https://github.com/TraceMachina/nativelink/commit/a57c7714b868e5b22bdcb7736e370ea454f5c843))
 - Add Max Upload timeout to CAS ([#2150](https://github.com/TraceMachina/nativelink/issues/2150)) - ([24cc324](https://github.com/TraceMachina/nativelink/commit/24cc324b21de72d8079fc7e54e5dc4abf678c0bd))
 - Add tracing to hyper-util ([#2132](https://github.com/TraceMachina/nativelink/issues/2132)) - ([bc773dc](https://github.com/TraceMachina/nativelink/commit/bc773dc3d43ff208e996e97547528c5b111abd14))
-- Add worker config option to limit maximum inflight tasks ([#2125](https://github.com/TraceMachina/nativelink/issues/2125)) - ([1821bec](https://github.com/TraceMachina/nativelink/commit/1821bec1cd888b4440368504678be64aa43d37e3))
-- Add additional logging around worker property matching ([#2118](https://github.com/TraceMachina/nativelink/issues/2118)) - ([24c637a](https://github.com/TraceMachina/nativelink/commit/24c637ab86b44864787bf7b789d6bf29b98df87f))
 
 ### 🐛 Bug Fixes
 
-- *(deps)* update module github.com/go-git/go-git/v5 to v5.16.5 [security] ([#2138](https://github.com/TraceMachina/nativelink/issues/2138)) - ([dc25843](https://github.com/TraceMachina/nativelink/commit/dc258438336ba6ab5e63c0a48e71987bb88b4621))
 - Fix integer overflow in compression_store.rs data retrieval logic ([#2151](https://github.com/TraceMachina/nativelink/issues/2151)) - ([f996507](https://github.com/TraceMachina/nativelink/commit/f996507b152a7a5e79367475e7854680cce3eb2c))
-- Fix Max Inflight Workers job acceptance ([#2142](https://github.com/TraceMachina/nativelink/issues/2142)) - ([6ffab5f](https://github.com/TraceMachina/nativelink/commit/6ffab5f049666158b14e277653d8ce6b487c2ff6))
-- Fix Redis index creation race ([#2111](https://github.com/TraceMachina/nativelink/issues/2111)) - ([c3a497d](https://github.com/TraceMachina/nativelink/commit/c3a497d36df49d3a1caadede02c4cc6d5af87492))
-
-### 📚 Documentation
-
-- Add docs for configuring Worker Match Logging Interval ([#2103](https://github.com/TraceMachina/nativelink/issues/2103)) - ([ae963be](https://github.com/TraceMachina/nativelink/commit/ae963be97178284a1aa53b526a3fa3292ca12e2a))
-
-### 🧪 Testing & CI
-
-- Every bytestream_read had a debug log, which we don't need ([#2117](https://github.com/TraceMachina/nativelink/issues/2117)) - ([18360ad](https://github.com/TraceMachina/nativelink/commit/18360ada6e5e3ecc04a7f6f96fbae09cf919111b))
 
 ### ⚙️ Miscellaneous
 
 - *(deps)* update rust crate toml to v1 ([#2147](https://github.com/TraceMachina/nativelink/issues/2147)) - ([85e9ecf](https://github.com/TraceMachina/nativelink/commit/85e9ecf05e1e6646513f4b32a8ce1fba609ebcf7))
-- *(deps)* update rust crate bytes to v1.11.1 [security] ([#2134](https://github.com/TraceMachina/nativelink/issues/2134)) - ([5d32d18](https://github.com/TraceMachina/nativelink/commit/5d32d181fe68d29bf354a2a5f41e634d8faaec37))
 - Log NotFound as info, not error ([#2171](https://github.com/TraceMachina/nativelink/issues/2171)) - ([4ca9d7b](https://github.com/TraceMachina/nativelink/commit/4ca9d7b3d3e29e392d7b39b2ff509cb1b75cf5aa))
 - Dummy streams should be pending, not empty ([#2154](https://github.com/TraceMachina/nativelink/issues/2154)) - ([e72b5a0](https://github.com/TraceMachina/nativelink/commit/e72b5a0feaace00ee9960886d3c2715eeb76c361))
 - fix metrics ([#2097](https://github.com/TraceMachina/nativelink/issues/2097)) - ([e6c7097](https://github.com/TraceMachina/nativelink/commit/e6c70977a879d552b98ebc2cb23717ab51658a2a))
 - Advise the kernel to drop page cache ([#2149](https://github.com/TraceMachina/nativelink/issues/2149)) - ([727760d](https://github.com/TraceMachina/nativelink/commit/727760d1e208ca8be7bc134f432baf5dc5bf5928))
+
+### ⬆️ Bumps & Version Updates
+
+- Update jsonwebtoken ([#2135](https://github.com/TraceMachina/nativelink/issues/2135)) - ([56a8955](https://github.com/TraceMachina/nativelink/commit/56a89557ee14130ca10b44f1688d5e9b6e4691d5))
+
+
+
+## [1.0.0-rc1](https://github.com/TraceMachina/nativelink/compare/v0.8.0..v1.0.0-rc1) - 2026-02-12
+
+
+
+### 🐛 Bug Fixes
+
+- *(deps)* update module github.com/go-git/go-git/v5 to v5.16.5 [security] ([#2138](https://github.com/TraceMachina/nativelink/issues/2138)) - ([dc25843](https://github.com/TraceMachina/nativelink/commit/dc258438336ba6ab5e63c0a48e71987bb88b4621))
+- Fix Max Inflight Workers job acceptance ([#2142](https://github.com/TraceMachina/nativelink/issues/2142)) - ([6ffab5f](https://github.com/TraceMachina/nativelink/commit/6ffab5f049666158b14e277653d8ce6b487c2ff6))
+
+### ⚙️ Miscellaneous
+
+- *(deps)* update rust crate bytes to v1.11.1 [security] ([#2134](https://github.com/TraceMachina/nativelink/issues/2134)) - ([5d32d18](https://github.com/TraceMachina/nativelink/commit/5d32d181fe68d29bf354a2a5f41e634d8faaec37))
 - Replace Fred with redis-rs ([#2076](https://github.com/TraceMachina/nativelink/issues/2076)) - ([4956889](https://github.com/TraceMachina/nativelink/commit/4956889cd258a98f0e8720b5b7ef028ca0ed4d99))
 - No workers logging ([#2137](https://github.com/TraceMachina/nativelink/issues/2137)) - ([12c63f5](https://github.com/TraceMachina/nativelink/commit/12c63f50fef02bf36624ac0770fc8f5dac407a9c))
 - Make update_with_whole_file logging default to trace ([#2131](https://github.com/TraceMachina/nativelink/issues/2131)) - ([ecd2903](https://github.com/TraceMachina/nativelink/commit/ecd2903f8ca5086e10f74290533a9fc75c580a7c))
 - Be clearer about what property values workers are missing ([#2121](https://github.com/TraceMachina/nativelink/issues/2121)) - ([85385e6](https://github.com/TraceMachina/nativelink/commit/85385e68271d78b2b72a24098202aade157a5553))
-- Correct ignore handling for PlatformProperties ([#2126](https://github.com/TraceMachina/nativelink/issues/2126)) - ([8c3bacb](https://github.com/TraceMachina/nativelink/commit/8c3bacb0e95525c68e2ec7c2e90208fa383bd81d))
-- output_files can be very noisy, drop from debug ([#2123](https://github.com/TraceMachina/nativelink/issues/2123)) - ([3ed406f](https://github.com/TraceMachina/nativelink/commit/3ed406faa9c116485218f1c5aa6340d5b9e312c4))
-- Support ignorable platform properties ([#2120](https://github.com/TraceMachina/nativelink/issues/2120)) - ([1b45027](https://github.com/TraceMachina/nativelink/commit/1b450275c8d826c8124be121b62e61c67a2cad38))
-- Reduce logging level for "Dropping file to update_file" ([#2116](https://github.com/TraceMachina/nativelink/issues/2116)) - ([95a8a34](https://github.com/TraceMachina/nativelink/commit/95a8a3438968ab082a38c343d708dd2a70ee74ed))
-- Pull MAX_COUNT_PER_CURSOR into redis config, not hardcoding ([#2112](https://github.com/TraceMachina/nativelink/issues/2112)) - ([5b043eb](https://github.com/TraceMachina/nativelink/commit/5b043eb08ec46518db7784c6cfd9c47ae7fcc93d))
-- Test redis improvements with client drop and higher max count per cursor ([#2110](https://github.com/TraceMachina/nativelink/issues/2110)) - ([bed6f9a](https://github.com/TraceMachina/nativelink/commit/bed6f9a8acf45da17fbd56d12202413360204218))
 
 ### ⬆️ Bumps & Version Updates
 
-- *(deps)* update rust crate lru to 0.16.0 [security] ([#2106](https://github.com/TraceMachina/nativelink/issues/2106)) - ([c127bba](https://github.com/TraceMachina/nativelink/commit/c127bba823ca4e5df56da9eaa65df58787b74e3a))
 - Update jsonwebtoken ([#2135](https://github.com/TraceMachina/nativelink/issues/2135)) - ([56a8955](https://github.com/TraceMachina/nativelink/commit/56a89557ee14130ca10b44f1688d5e9b6e4691d5))
-
 ## [0.7.10](https://github.com/TraceMachina/nativelink/compare/v0.7.9..v0.7.10) - 2025-12-30
 
 
