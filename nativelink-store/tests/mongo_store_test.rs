@@ -72,6 +72,7 @@ fn create_test_spec_with_key_prefix(
         write_concern_w: Some("majority".to_string()),
         write_concern_j: Some(true),
         write_concern_timeout_ms: Some(10000), // Longer timeout for remote DB
+        max_requests: None,
     }
 }
 
@@ -967,25 +968,55 @@ async fn test_scheduler_store_operations() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn test_non_w_config() -> Result<(), Error> {
+    let (mut spec, mongo_process) = TestMongoHelper::new_spec(None).await?;
+    spec.write_concern_w = None;
+    spec.write_concern_j = Some(true);
+    spec.write_concern_timeout_ms = Some(1);
+
     assert_eq!(
         Error::new(Code::InvalidArgument, "write_concern_w not set, but j and/or timeout set. Please set 'write_concern_w' to a non-default value. See https://www.mongodb.com/docs/manual/reference/write-concern/#w-option for options.".to_string()),
-        ExperimentalMongoStore::new(ExperimentalMongoSpec {
-            connection_string: "mongodb://dummy".to_string(),
-            database: "dummy".to_string(),
-            cas_collection: "test_cas".to_string(),
-            scheduler_collection: "test_scheduler".to_string(),
-            key_prefix: None,
-            read_chunk_size: 1024,
-            max_concurrent_uploads: 10,
-            connection_timeout_ms: 10000,
-            command_timeout_ms: 15000,
-            enable_change_streams: false,
-            write_concern_w: None,
-            write_concern_j: Some(true),
-            write_concern_timeout_ms: Some(1),
-        })
-        .await
+        TestMongoHelper::new_with_spec_and_process(spec, mongo_process).await
         .unwrap_err()
     );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn empty_request_permit() -> Result<(), Error> {
+    let (mut spec, mongo_process) = TestMongoHelper::new_spec(None).await?;
+    spec.max_requests = Some(0);
+
+    assert_eq!(
+        Error::new(
+            Code::InvalidArgument,
+            "max_request_permits was set to zero, which will block mongo_store from working at all"
+                .to_string()
+        ),
+        TestMongoHelper::new_with_spec_and_process(spec, mongo_process)
+            .await
+            .unwrap_err()
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn single_request_permit() -> Result<(), Error> {
+    let (mut spec, mongo_process) = TestMongoHelper::new_spec(None).await?;
+    spec.max_requests = Some(1);
+    let helper = TestMongoHelper::new_with_spec_and_process(spec, mongo_process).await?;
+
+    let data = Bytes::from_static(b"14");
+    let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
+    helper.store.update_oneshot(digest, data.clone()).await?;
+    let result = helper.store.has(digest).await?;
+    assert!(
+        result.is_some(),
+        "Expected mongo store to have hash: {VALID_HASH1}",
+    );
+
+    assert!(logs_contain(
+        "Number of waiting permits for Mongo waiting=0"
+    ));
+
     Ok(())
 }
