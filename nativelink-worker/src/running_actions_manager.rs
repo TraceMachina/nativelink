@@ -929,7 +929,19 @@ impl RunningActionImpl {
         //                    De-bloat the `debug` level by using the `trace`
         //                    level more effectively and adjust this.
         info!(?args, "Executing command",);
-        let mut command_builder = process::Command::new(args[0]);
+
+        let program = PathBuf::from(&self.work_directory)
+            .join(&command_proto.working_directory)
+            .join(&args[0])
+            .canonicalize()
+            .err_tip(|| {
+                format!(
+                    "Could not canonicalize path for command root {}.",
+                    args[0].to_string_lossy()
+                )
+            })?;
+
+        let mut command_builder = process::Command::new(program);
         command_builder
             .args(&args[1..])
             .kill_on_drop(true)
