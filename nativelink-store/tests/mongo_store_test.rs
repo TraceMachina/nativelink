@@ -36,15 +36,18 @@ use nativelink_util::store_trait::{
 use pretty_assertions::assert_eq;
 use uuid::Uuid;
 
+mod mongo_runner;
+use mongo_runner::process::MongoProcess;
+
+use crate::mongo_runner::MongoEmbedded;
+
 const VALID_HASH1: &str = "3031323334353637383961626364656630303030303030303030303030303030";
 
 /// Creates a test `MongoDB` specification.
-/// Note: These tests are designed to work with a real `MongoDB` instance.
-/// For CI/local development, ensure `MongoDB` is available or skip these tests.
-fn create_test_spec_with_key_prefix(key_prefix: Option<String>) -> ExperimentalMongoSpec {
-    // Default connection string for CI - empty string will require env var
-    let default_connection = String::new();
-
+fn create_test_spec_with_key_prefix(
+    key_prefix: Option<String>,
+    connection_string: String,
+) -> ExperimentalMongoSpec {
     // Create database name with timestamp for uniqueness
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -52,7 +55,7 @@ fn create_test_spec_with_key_prefix(key_prefix: Option<String>) -> ExperimentalM
         .as_millis();
 
     ExperimentalMongoSpec {
-        connection_string: std::env::var("NATIVELINK_TEST_MONGO_URL").unwrap_or(default_connection),
+        connection_string,
         database: format!(
             "nltest_{}_{}",
             timestamp,
@@ -72,81 +75,67 @@ fn create_test_spec_with_key_prefix(key_prefix: Option<String>) -> ExperimentalM
     }
 }
 
-fn create_test_spec() -> ExperimentalMongoSpec {
-    create_test_spec_with_key_prefix(Some("test:".to_string()))
+// Helper to keep hold of Mongo process parts so we don't accidentally drop them!
+#[derive(Debug)]
+pub(crate) struct MongoParts {
+    pub process: MongoProcess,
+    #[allow(dead_code)]
+    pub embedded: MongoEmbedded,
 }
 
 /// Test helper that manages `MongoDB` database lifecycle
 #[derive(Debug)]
-pub struct TestMongoHelper {
+pub(crate) struct TestMongoHelper {
     pub store: Arc<ExperimentalMongoStore>,
     pub database_name: String,
-}
-
-fn non_ci_test_store_access() {
-    // Check if this is a local development environment without credentials
-    let is_ci = std::env::var("CI").is_ok() || std::env::var("GITHUB_ACTIONS").is_ok();
-
-    if !is_ci {
-        eprintln!("\n🔒 MongoDB tests require access to the NativeLink test database.");
-        eprintln!("   For local development access, please email: marcus@tracemachina.com");
-        eprintln!("   ");
-        eprintln!("   Alternatively, you can set NATIVELINK_TEST_MONGO_URL environment variable");
-        eprintln!("   with your own MongoDB connection string.");
-        eprintln!("   ");
-        eprintln!("   Skipping MongoDB tests for now...\n");
-    }
+    pub mongo_local: Option<MongoParts>,
+    pub spec: ExperimentalMongoSpec,
 }
 
 impl TestMongoHelper {
     /// Creates a new test store and database
-    async fn new(key_prefix: Option<String>) -> Result<Self, Error> {
-        let spec = create_test_spec_with_key_prefix(key_prefix);
+    async fn new_spec(
+        key_prefix: Option<String>,
+    ) -> Result<(ExperimentalMongoSpec, Option<MongoParts>), Error> {
+        let mut mongo_local: Option<MongoParts> = None;
+        let test_mongo_url = if let Ok(url) = std::env::var("NATIVELINK_TEST_MONGO_URL") {
+            url
+        } else {
+            let port = redis_test::utils::get_random_available_port();
+            let mongo_runner = MongoEmbedded::new("7.0.11").set_port(port);
+            let process = mongo_runner.start().await.expect("Failed to start MongoDB");
+            mongo_local.replace(MongoParts {
+                process,
+                embedded: mongo_runner,
+            });
+            format!("mongodb://127.0.0.1:{port}/")
+        };
 
-        // Check if we have a connection string
-        if spec.connection_string.is_empty() {
-            return Err(Error::new(
-                Code::Unavailable,
-                "MongoDB connection string not provided for local testing".to_string(),
-            ));
-        }
+        let spec = create_test_spec_with_key_prefix(key_prefix, test_mongo_url);
+        Ok((spec, mongo_local))
+    }
 
+    async fn new_with_spec_and_process(
+        spec: ExperimentalMongoSpec,
+        mongo_local: Option<MongoParts>,
+    ) -> Result<Self, Error> {
         let database_name = spec.database.clone();
 
-        let store = ExperimentalMongoStore::new(spec).await?;
+        let store = ExperimentalMongoStore::new(spec.clone()).await?;
 
         Ok(Self {
             store,
             database_name,
+            mongo_local,
+            spec,
         })
     }
 
-    /// Creates a test helper, skipping if `MongoDB` is not available
-    async fn new_or_skip_with_key_prefix(key_prefix: Option<String>) -> Result<Self, Error> {
-        match Self::new(key_prefix).await {
-            Ok(helper) => Ok(helper),
-            Err(e) => {
-                if e.code == Code::Unavailable
-                    && e.messages[0].contains("connection string not provided")
-                {
-                    non_ci_test_store_access();
-                }
-
-                // Convert to a test skip-friendly error
-                if e.code == Code::InvalidArgument || e.code == Code::Unavailable {
-                    Err(Error::new(
-                        Code::Unavailable,
-                        "MongoDB not available for testing - skipping test".to_string(),
-                    ))
-                } else {
-                    Err(e)
-                }
-            }
-        }
-    }
-
-    async fn new_or_skip() -> Result<Self, Error> {
-        Self::new_or_skip_with_key_prefix(Some("test:".to_string())).await
+    async fn new(key_prefix: Option<String>) -> Result<Self, Error> {
+        // Split out like this because various tests want to edit the spec before launching the store
+        // But they need new_spec to make the test process
+        let (spec, mongo_process) = Self::new_spec(key_prefix).await?;
+        Self::new_with_spec_and_process(spec, mongo_process).await
     }
 }
 
@@ -157,39 +146,16 @@ impl Drop for TestMongoHelper {
             "Test database '{}' retained for inspection",
             self.database_name
         );
+        if let Some(mut parts) = self.mongo_local.take() {
+            parts.process.kill().expect("Failed to kill mongo process");
+        }
     }
-}
-
-/// Creates a test `MongoDB` store with a unique database name to avoid conflicts.
-async fn create_test_store() -> Result<Arc<ExperimentalMongoStore>, Error> {
-    let spec = create_test_spec();
-
-    // Check if we have a connection string
-    if spec.connection_string.is_empty() {
-        non_ci_test_store_access();
-
-        return Err(Error::new(
-            Code::Unavailable,
-            "MongoDB connection string not provided for local testing".to_string(),
-        ));
-    }
-
-    ExperimentalMongoStore::new(spec).await
-}
-
-/// Utility to check if `MongoDB` is available for testing.
-/// Returns an error that can be used to skip tests when `MongoDB` is not available.
-async fn check_mongodb_available() -> Result<(), Error> {
-    TestMongoHelper::new_or_skip().await.map(|_| ())
 }
 
 #[nativelink_test]
 async fn upload_and_get_data() -> Result<(), Error> {
     // Create test helper with automatic cleanup
-    let Ok(helper) = TestMongoHelper::new_or_skip().await else {
-        eprintln!("Skipping MongoDB test - MongoDB not available");
-        return Ok(());
-    };
+    let helper = TestMongoHelper::new(None).await?;
 
     // Construct the data we want to send.
     let data = Bytes::from_static(b"14");
@@ -222,10 +188,7 @@ async fn upload_and_get_data() -> Result<(), Error> {
 #[nativelink_test]
 async fn upload_and_get_data_without_prefix() -> Result<(), Error> {
     // Create test helper with automatic cleanup
-    let Ok(helper) = TestMongoHelper::new_or_skip_with_key_prefix(None).await else {
-        eprintln!("Skipping MongoDB test - MongoDB not available");
-        return Ok(());
-    };
+    let helper = TestMongoHelper::new(None).await?;
 
     let data = Bytes::from_static(b"14");
     let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
@@ -251,20 +214,13 @@ async fn upload_and_get_data_without_prefix() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn upload_empty_data() -> Result<(), Error> {
-    // Skip test if MongoDB is not available
-    if check_mongodb_available().await.is_err() {
-        eprintln!("Skipping MongoDB test - MongoDB not available");
-        return Ok(());
-    }
-
     let data = Bytes::from_static(b"");
     let digest = ZERO_BYTE_DIGESTS[0];
+    let helper = TestMongoHelper::new(None).await?;
 
-    let store = create_test_store().await?;
+    helper.store.update_oneshot(digest, data).await?;
 
-    store.update_oneshot(digest, data).await?;
-
-    let result = store.has(digest).await?;
+    let result = helper.store.has(digest).await?;
     assert!(
         result.is_some(),
         "Expected mongo store to have zero-byte hash",
@@ -276,21 +232,16 @@ async fn upload_empty_data() -> Result<(), Error> {
 #[nativelink_test]
 #[allow(clippy::items_after_statements)]
 async fn test_large_downloads_are_chunked() -> Result<(), Error> {
-    // Skip test if MongoDB is not available
-    if check_mongodb_available().await.is_err() {
-        eprintln!("Skipping MongoDB test - MongoDB not available");
-        return Ok(());
-    }
-
     const READ_CHUNK_SIZE: usize = 1024;
     let data = Bytes::from(vec![0u8; READ_CHUNK_SIZE + 128]);
 
     let digest = DigestInfo::try_new(VALID_HASH1, data.len())?;
 
-    let mut spec = create_test_spec();
+    let (mut spec, mongo_process) = TestMongoHelper::new_spec(None).await?;
     spec.read_chunk_size = READ_CHUNK_SIZE;
 
-    let store = ExperimentalMongoStore::new(spec).await?;
+    let helper = TestMongoHelper::new_with_spec_and_process(spec, mongo_process).await?;
+    let store = helper.store.clone();
 
     store.update_oneshot(digest, data.clone()).await?;
 
@@ -315,12 +266,6 @@ async fn test_large_downloads_are_chunked() -> Result<(), Error> {
 #[nativelink_test]
 #[allow(clippy::items_after_statements)]
 async fn yield_between_sending_packets_in_update() -> Result<(), Error> {
-    // Skip test if MongoDB is not available
-    if check_mongodb_available().await.is_err() {
-        eprintln!("Skipping MongoDB test - MongoDB not available");
-        return Ok(());
-    }
-
     const READ_CHUNK_SIZE: usize = 1024;
     let data_p1 = Bytes::from(vec![b'A'; READ_CHUNK_SIZE + 512]);
     let data_p2 = Bytes::from(vec![b'B'; READ_CHUNK_SIZE]);
@@ -332,10 +277,10 @@ async fn yield_between_sending_packets_in_update() -> Result<(), Error> {
 
     let digest = DigestInfo::try_new(VALID_HASH1, data.len())?;
 
-    let mut spec = create_test_spec();
+    let (mut spec, mongo_process) = TestMongoHelper::new_spec(None).await?;
     spec.read_chunk_size = READ_CHUNK_SIZE;
-
-    let store = ExperimentalMongoStore::new(spec).await?;
+    let helper = TestMongoHelper::new_with_spec_and_process(spec, mongo_process).await?;
+    let store = helper.store.clone();
 
     let (mut tx, rx) = make_buf_channel_pair();
 
@@ -371,28 +316,20 @@ async fn yield_between_sending_packets_in_update() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn zero_len_items_exist_check() -> Result<(), Error> {
-    // Skip test if MongoDB is not available
-    if check_mongodb_available().await.is_err() {
-        eprintln!("Skipping MongoDB test - MongoDB not available");
-        return Ok(());
-    }
-
     let digest = DigestInfo::try_new(VALID_HASH1, 0)?;
-
-    let store = create_test_store().await?;
+    let helper = TestMongoHelper::new(None).await?;
 
     // Try to get a zero-length item that doesn't exist
-    let result = store.get_part_unchunked(digest, 0, None).await;
-    assert_eq!(result.unwrap_err().code, Code::NotFound);
+    let result = helper.store.get_part_unchunked(digest, 0, None).await;
+    let err = result.unwrap_err();
+    assert_eq!(err.code, Code::NotFound, "{:?}", err);
 
     Ok(())
 }
 
 #[nativelink_test]
 async fn test_invalid_connection_string() -> Result<(), Error> {
-    let mut spec = create_test_spec();
-    spec.connection_string = "invalid://connection_string".to_string();
-
+    let spec = create_test_spec_with_key_prefix(None, "invalid://connection_string".to_string());
     let result = ExperimentalMongoStore::new(spec).await;
     assert!(
         result.is_err(),
@@ -408,8 +345,7 @@ async fn test_invalid_connection_string() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn test_empty_connection_string() -> Result<(), Error> {
-    let mut spec = create_test_spec();
-    spec.connection_string = String::new();
+    let spec = create_test_spec_with_key_prefix(None, String::new());
 
     let result = ExperimentalMongoStore::new(spec).await;
     assert!(
@@ -426,13 +362,7 @@ async fn test_empty_connection_string() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn test_default_values() -> Result<(), Error> {
-    // Skip test if MongoDB is not available
-    if check_mongodb_available().await.is_err() {
-        eprintln!("Skipping MongoDB test - MongoDB not available");
-        return Ok(());
-    }
-
-    let mut spec = create_test_spec();
+    let (mut spec, mongo_process) = TestMongoHelper::new_spec(None).await?;
     // Clear all optional fields to test defaults
     spec.database = String::new();
     spec.cas_collection = String::new();
@@ -444,7 +374,8 @@ async fn test_default_values() -> Result<(), Error> {
     spec.max_concurrent_uploads = 0;
 
     // This should succeed and use default values
-    let store = ExperimentalMongoStore::new(spec).await?;
+    let helper = TestMongoHelper::new_with_spec_and_process(spec, mongo_process).await?;
+    let store = helper.store.clone();
 
     // Test that the store is functional with defaults
     let data = Bytes::from_static(b"test_data");
@@ -463,13 +394,7 @@ async fn test_default_values() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn dont_loop_forever_on_empty() -> Result<(), Error> {
-    // Skip test if MongoDB is not available
-    if check_mongodb_available().await.is_err() {
-        eprintln!("Skipping MongoDB test - MongoDB not available");
-        return Ok(());
-    }
-
-    let store = create_test_store().await?;
+    let helper = TestMongoHelper::new(None).await?;
     let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
     let (tx, rx) = make_buf_channel_pair();
 
@@ -477,7 +402,8 @@ async fn dont_loop_forever_on_empty() -> Result<(), Error> {
     let result = tokio::time::timeout(core::time::Duration::from_secs(5), async {
         tokio::join!(
             async {
-                store
+                helper
+                    .store
                     .update(digest, rx, UploadSizeInfo::MaxSize(0))
                     .await
                     .unwrap_err();
@@ -502,10 +428,7 @@ async fn dont_loop_forever_on_empty() -> Result<(), Error> {
 #[nativelink_test]
 async fn test_partial_reads() -> Result<(), Error> {
     // Create test helper with automatic cleanup
-    let Ok(helper) = TestMongoHelper::new_or_skip().await else {
-        eprintln!("Skipping MongoDB test - MongoDB not available");
-        return Ok(());
-    };
+    let helper = TestMongoHelper::new(None).await?;
 
     let data = Bytes::from_static(b"Hello, MongoDB World!");
     let digest = DigestInfo::try_new(VALID_HASH1, data.len())?;
@@ -534,20 +457,10 @@ async fn test_partial_reads() -> Result<(), Error> {
 /// Test that verifies database creation (cleanup disabled for inspection)
 #[nativelink_test]
 async fn test_database_lifecycle() -> Result<(), Error> {
-    let spec = create_test_spec();
-    let connection_string = spec.connection_string.clone();
+    let (spec, mongo_process) = TestMongoHelper::new_spec(None).await?;
     let database_name = spec.database.clone();
 
-    // Skip if MongoDB is not available
-    let Ok(client_options) = ClientOptions::parse(&connection_string).await else {
-        eprintln!("Skipping MongoDB test - MongoDB not available");
-        return Ok(());
-    };
-
-    let Ok(client) = MongoClient::with_options(client_options) else {
-        eprintln!("Skipping MongoDB test - MongoDB not available");
-        return Ok(());
-    };
+    let client = MongoClient::with_uri_str(&spec.connection_string).await?;
 
     // Verify database doesn't exist initially
     let db_names = client
@@ -560,13 +473,8 @@ async fn test_database_lifecycle() -> Result<(), Error> {
     );
 
     // Create test helper (which creates the database)
+    let helper = TestMongoHelper::new_with_spec_and_process(spec, mongo_process).await?;
     {
-        let store = ExperimentalMongoStore::new(spec.clone()).await?;
-        let helper = TestMongoHelper {
-            store,
-            database_name: database_name.clone(),
-        };
-
         // Upload some data to ensure database is created
         let data = Bytes::from_static(b"test_database_lifecycle");
         let digest = DigestInfo::try_new(VALID_HASH1, data.len())?;
@@ -598,10 +506,10 @@ async fn test_database_lifecycle() -> Result<(), Error> {
             "Data should be accessible in the database"
         );
 
-        // helper goes out of scope here, but NO cleanup happens anymore
+        // NO cleanup happens anymore, but we keep the helper to keep the Mongo process and temp folders around
     }
 
-    // Database should still exist after helper is dropped
+    // Database should still exist
     let db_names = client
         .list_database_names()
         .await
@@ -620,10 +528,7 @@ async fn test_database_lifecycle() -> Result<(), Error> {
 #[allow(clippy::use_debug)]
 async fn create_ten_cas_entries() -> Result<(), Error> {
     // Create test helper with automatic cleanup
-    let Ok(helper) = TestMongoHelper::new_or_skip().await else {
-        eprintln!("Skipping MongoDB test - MongoDB not available");
-        return Ok(());
-    };
+    let helper = TestMongoHelper::new(None).await?;
 
     eprintln!(
         "Creating 10 CAS entries in database: {}",
@@ -677,8 +582,8 @@ async fn create_ten_cas_entries() -> Result<(), Error> {
     }
 
     // Query MongoDB directly to verify entries were written
-    let spec = create_test_spec();
-    let client_options = ClientOptions::parse(&spec.connection_string)
+    let helper = TestMongoHelper::new(None).await?;
+    let client_options = ClientOptions::parse(&helper.spec.connection_string)
         .await
         .map_err(|e| make_err!(Code::Internal, "Failed to parse connection string: {e}"))?;
 
@@ -848,10 +753,7 @@ impl SchedulerStoreDecodeTo for TestSchedulerKey {
 #[nativelink_test]
 async fn test_scheduler_store_operations() -> Result<(), Error> {
     // Create test helper
-    let Ok(helper) = TestMongoHelper::new_or_skip().await else {
-        eprintln!("Skipping MongoDB test - MongoDB not available");
-        return Ok(());
-    };
+    let helper = TestMongoHelper::new(None).await?;
 
     eprintln!(
         "Testing scheduler store operations in database: {}",
@@ -968,7 +870,8 @@ async fn test_scheduler_store_operations() -> Result<(), Error> {
                 version: 0,
             };
 
-            helper.store.update_data(data).await?;
+            let version = helper.store.update_data(data).await?;
+            assert_eq!(Some(1), version);
         }
 
         // Search by index prefix
@@ -984,10 +887,10 @@ async fn test_scheduler_store_operations() -> Result<(), Error> {
             .try_collect()
             .await?;
 
-        eprintln!("Found {} entries matching search", search_results.len());
         assert!(
             search_results.len() >= 5,
-            "Should find at least 5 matching entries"
+            "Should find at least 5 matching entries, got {}",
+            search_results.len()
         );
 
         // Verify search results

@@ -15,9 +15,11 @@ rust_library(
     deps = [
         "//nativelink-metric",
         "//nativelink-proto",
+        "@crates//:mongodb",
         "@crates//:prost",
         "@crates//:prost-types",
         "@crates//:redis",
+        "@crates//:reqwest",
         "@crates//:rustls-pki-types",
         "@crates//:serde",
         "@crates//:serde_json5",
@@ -26,6 +28,7 @@ rust_library(
         "@crates//:url",
         "@crates//:uuid",
         "@crates//:walkdir",
+        "@crates//:zip",
     ],
 )
 

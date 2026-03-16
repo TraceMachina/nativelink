@@ -14,9 +14,11 @@ version = "1.0.0-rc4"
 nativelink-metric = { path = "../nativelink-metric" }
 nativelink-proto = { path = "../nativelink-proto" }
 
+mongodb = { version = "3", default-features = false }
 prost = { version = "0.13.5", default-features = false }
 prost-types = { version = "0.13.5", default-features = false }
 redis = { version = "1.0.0", default-features = false }
+reqwest = { version = "0.12", default-features = false }
 rustls-pki-types = { version = "1.13.1", default-features = false }
 serde = { version = "1.0.219", default-features = false }
 serde_json5 = { version = "0.2.1", default-features = false }
@@ -33,3 +35,4 @@ tonic = { version = "0.13.0", features = [
 url = { version = "2.5.7", default-features = false }
 uuid = { version = "1.16.0", default-features = false }
 walkdir = { version = "2.5.0", default-features = false }
+zip = { version = "7.2.0", default-features = false }
