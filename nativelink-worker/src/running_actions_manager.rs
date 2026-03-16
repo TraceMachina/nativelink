@@ -930,9 +930,8 @@ impl RunningActionImpl {
         //                    level more effectively and adjust this.
         info!(?args, "Executing command",);
 
-        
         // If the program contains a slash, we treat it as a path and resolve it relative to the work directory.
-        let program = if Path::new(&args[0]).components().count() > 1  {            
+        let program = if Path::new(&args[0]).components().count() > 1 {
             PathBuf::from(&self.work_directory)
                 .join(&command_proto.working_directory)
                 .join(&args[0])
@@ -945,7 +944,7 @@ impl RunningActionImpl {
                 })?
         } else {
             PathBuf::from(&args[0])
-        };                
+        };
 
         let mut command_builder = process::Command::new(program);
         command_builder
