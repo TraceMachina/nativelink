@@ -5,7 +5,6 @@ lints.workspace = true
 autobenches = false
 autobins = false
 autoexamples = false
-autotests = false
 edition = "2024"
 name = "nativelink-error"
 version = "1.0.0-rc4"
@@ -15,7 +14,9 @@ nativelink-metric = { path = "../nativelink-metric" }
 nativelink-proto = { path = "../nativelink-proto" }
 
 prost = { version = "0.13.5", default-features = false }
-prost-types = { version = "0.13.5", default-features = false }
+prost-types = { version = "0.13.5", default-features = false, features = [
+  "std",
+] }
 redis = { version = "1.0.0", default-features = false }
 rustls-pki-types = { version = "1.13.1", default-features = false }
 serde = { version = "1.0.219", default-features = false }
@@ -31,5 +32,5 @@ tonic = { version = "0.13.0", features = [
   "transport",
 ], default-features = false }
 url = { version = "2.5.7", default-features = false }
-uuid = { version = "1.16.0", default-features = false }
+uuid = { version = "1.16.0", default-features = false, features = ["std"] }
 walkdir = { version = "2.5.0", default-features = false }
