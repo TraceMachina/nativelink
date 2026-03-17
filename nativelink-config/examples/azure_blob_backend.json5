@@ -19,8 +19,8 @@
                 slow: {
                   experimental_cloud_object_store: {
                     provider: "azure",
-                    account_name: "storageaccamannativelink",
-                    container: "storageacctaman",
+                    account_name: "rbetestnativelink",
+                    container: "storageacctcontainer",
                     key_prefix: "test-prefix-index/",
                     retry: {
                       max_retries: 6,
@@ -51,8 +51,8 @@
                     slow: {
                       experimental_cloud_object_store: {
                         provider: "azure",
-                        account_name: "storageaccamannativelink",
-                        container: "storageacctaman",
+                        account_name: "rbetestnativelink",
+                        container: "storageacctcontainer",
                         key_prefix: "test-prefix-dedup-cas/",
                         retry: {
                           max_retries: 6,
@@ -86,8 +86,8 @@
         slow: {
           experimental_cloud_object_store: {
             provider: "azure",
-            account_name: "storageaccamannativelink",
-            container: "storageacctaman",
+            account_name: "rbetestnativelink",
+            container: "storageacctcontainer",
             key_prefix: "test-prefix-ac/",
             retry: {
               max_retries: 6,
@@ -160,11 +160,12 @@
             },
           },
         ],
-        bytestream: {
-          cas_stores: {
-            main: "CAS_MAIN_STORE",
+        bytestream: [
+          {
+            instance_name: "main",
+            cas_store: "CAS_MAIN_STORE",
           },
-        },
+        ],
         health: {},
       },
     },

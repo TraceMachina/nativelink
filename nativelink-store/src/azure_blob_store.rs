@@ -443,7 +443,7 @@ where
         let account_key = std::env::var(ACCOUNT_KEY_ENV_VAR).map_err(|e| {
             make_err!(
                 Code::FailedPrecondition,
-                "Failed to read AZURE_STORAGE_ACCOUNT_KEY environment variable: {e}"
+                "Failed to read {ACCOUNT_KEY_ENV_VAR} environment variable: {e}"
             )
         })?;
 
@@ -589,7 +589,7 @@ where
     ) -> Result<(), Error> {
         let blob_path = self.make_blob_path(&digest);
         // Handling zero-sized content check
-        if let UploadSizeInfo::ExactSize(0) = upload_size {
+        if upload_size == UploadSizeInfo::ExactSize(0) {
             return Ok(());
         }
 
@@ -619,7 +619,7 @@ where
                             let reader_ref = &mut reader;
                             let (upload_res, bind_res) = tokio::join!(
                             async {
-                                let mut buffer = Vec::with_capacity(sz as usize);
+                                let mut buffer = Vec::with_capacity(usize::try_from(sz).expect("size must be non-negative and fit in usize"));
                                 while let Ok(Some(chunk)) = rx.try_next().await {
                                     buffer.extend_from_slice(&chunk);
                                 }
@@ -852,10 +852,9 @@ where
                                 }
                                 Err(e) => {
                                     return match e {
-                                        e if e
-                                            .as_http_error()
-                                            .map(|e| e.status() == StatusCode::NotFound)
-                                            .unwrap_or_default() =>
+                                        e if e.as_http_error().is_some_and(|e| {
+                                            e.status() == StatusCode::NotFound
+                                        }) =>
                                         {
                                             Err(make_err!(
                                                 Code::NotFound,

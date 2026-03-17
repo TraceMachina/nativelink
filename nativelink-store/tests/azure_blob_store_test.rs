@@ -29,7 +29,6 @@ use nativelink_store::azure_blob_store::AzureBlobStore;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
-use nativelink_util::origin_context::OriginContext;
 use nativelink_util::store_trait::{StoreKey, StoreLike, UploadSizeInfo};
 use sha2::{Digest, Sha256};
 
@@ -387,7 +386,7 @@ async fn test_update_small_file() -> Result<(), Error> {
     const CONTENT_LENGTH: usize = 1024; // Small enough for single block upload (<5MB).
     let mut send_data = BytesMut::new();
     for i in 0..CONTENT_LENGTH {
-        send_data.put_u8(((i % 93) + 33) as u8);
+        send_data.put_u8(u8::try_from((i % 93) + 33).unwrap());
     }
     let send_data = send_data.freeze();
 
@@ -454,7 +453,7 @@ async fn test_update_with_retries() -> Result<(), Error> {
 
     let mut send_data = BytesMut::new();
     for i in 0..CONTENT_LENGTH {
-        send_data.put_u8(((i % 93) + 33) as u8);
+        send_data.put_u8(u8::try_from((i % 93) + 33).unwrap());
     }
     let send_data = send_data.freeze();
 
@@ -505,7 +504,7 @@ async fn test_multipart_upload_large_file() -> Result<(), Error> {
 
     let mut send_data = Vec::with_capacity(TOTAL_SIZE);
     for i in 0..TOTAL_SIZE {
-        send_data.push(((i * 3) % 256) as u8);
+        send_data.push(u8::try_from((i * 3) % 256).unwrap());
     }
 
     // Generate and manually URL-encode Base64-encoded block IDs
@@ -555,8 +554,6 @@ async fn test_multipart_upload_large_file() -> Result<(), Error> {
     let store = create_test_store(client.clone(), None, None)?;
     let digest = DigestInfo::try_new(DIGEST_STR, TOTAL_SIZE)?;
 
-    let _origin_guard = OriginContext::new();
-
     let store_key: StoreKey = StoreKey::from(&digest);
     store.update_oneshot(store_key, send_data.into()).await?;
     assert_eq!(client.request_count(), 4);
@@ -569,9 +566,6 @@ async fn test_get_part_zero_digest() -> Result<(), Error> {
     let client = MockAzureClient::new(vec![]);
     let store = Arc::new(create_test_store(client.clone(), None, None)?);
     let (mut writer, mut reader) = make_buf_channel_pair();
-
-    let _origin_guard = OriginContext::new();
-    tokio::task::yield_now().await;
 
     let (get_result, file_data) = tokio::join!(
         store.get_part(digest, &mut writer, 0, None),
@@ -599,9 +593,6 @@ async fn test_has_with_results_zero_digests() -> Result<(), Error> {
     let client = MockAzureClient::new(vec![]); // Should make no requests
     let store = create_test_store(client.clone(), None, None)?;
 
-    let origin_guard = OriginContext::new();
-    tokio::task::yield_now().await;
-
     store.has_with_results(&keys, &mut results).await?;
 
     assert_eq!(results, vec![Some(0)]);
@@ -610,7 +601,6 @@ async fn test_has_with_results_zero_digests() -> Result<(), Error> {
         0,
         "Expected no requests for zero digest"
     );
-    drop(origin_guard);
     Ok(())
 }
 
