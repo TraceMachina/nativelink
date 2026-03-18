@@ -503,13 +503,19 @@ impl ApiWorkerSchedulerImpl {
             platform_properties.is_satisfied_by(&w.platform_properties, false)
         };
 
+        // Workers above this load score are excluded from cache-affinity
+        // tiers — the CPU cost outweighs the I/O savings from cache hits.
+        const CACHE_AFFINITY_LOAD_CUTOFF: u64 = 150;
+
         // ── Tier 1: Exact root match ──
         // If a viable worker has the action's input_root_digest in its directory
         // cache (either as a root or as a subtree of a previously cached tree),
         // it can hardlink the entire input tree in milliseconds instead of
-        // reconstructing it from CAS.
+        // reconstructing it from CAS. Workers above the load cutoff are
+        // excluded; among the rest, pick the lightest-loaded.
         let dir_cache_winner: Option<WorkerId> = {
             let mut best: Option<(WorkerId, u64)> = None; // (id, load_score)
+            let mut best_overloaded: Option<(WorkerId, u64)> = None; // least-loaded among overloaded
             for wid in &candidates {
                 if let Some(w) = self.workers.0.peek(wid) {
                     let has_root_match = w.cached_directory_digests.contains(&input_root_digest);
@@ -518,6 +524,13 @@ impl ApiWorkerSchedulerImpl {
                         && worker_is_viable(wid)
                     {
                         let score = effective_load_score(w.p_core_load_pct, w.e_core_load_pct, w.cpu_load_pct);
+                        if score > CACHE_AFFINITY_LOAD_CUTOFF {
+                            let dominated = best_overloaded.as_ref().is_some_and(|(_, s)| score >= *s);
+                            if !dominated {
+                                best_overloaded = Some((wid.clone(), score));
+                            }
+                            continue;
+                        }
                         let dominated = best.as_ref().is_some_and(|(_, best_score)| {
                             score >= *best_score
                         });
@@ -527,13 +540,30 @@ impl ApiWorkerSchedulerImpl {
                     }
                 }
             }
+            // If no candidate is under the cutoff, pick the least-loaded
+            // among overloaded cache matches — still better than a cache-cold
+            // worker from the LRU fallback.
+            if best.is_none() {
+                if let Some((ref wid, score)) = best_overloaded {
+                    warn!(
+                        ?wid,
+                        load_score = score,
+                        cutoff = CACHE_AFFINITY_LOAD_CUTOFF,
+                        %input_root_digest,
+                        "Directory cache hit -- all matches overloaded, picking least-loaded"
+                    );
+                }
+                best = best_overloaded;
+            }
             if let Some((ref wid, score)) = best {
-                info!(
-                    ?wid,
-                    load_score = score,
-                    %input_root_digest,
-                    "Directory cache hit -- worker has input_root_digest cached (root or subtree), giving scheduling priority"
-                );
+                if score <= CACHE_AFFINITY_LOAD_CUTOFF {
+                    info!(
+                        ?wid,
+                        load_score = score,
+                        %input_root_digest,
+                        "Directory cache hit -- worker has input_root_digest cached (root or subtree), giving scheduling priority"
+                    );
+                }
             }
             best.map(|(wid, _)| wid)
         };
@@ -556,6 +586,7 @@ impl ApiWorkerSchedulerImpl {
             } else {
                 // (id, cached_score, cached_bytes, cached_files, load_score)
                 let mut best: Option<(WorkerId, u64, u64, u64, u64)> = None;
+                let mut best_overloaded: Option<(WorkerId, u64, u64, u64, u64)> = None;
                 for wid in &candidates {
                     if let Some(w) = self.workers.0.peek(wid) {
                         if !worker_is_viable(wid) {
@@ -576,6 +607,17 @@ impl ApiWorkerSchedulerImpl {
                             continue;
                         }
                         let load_score = effective_load_score(w.p_core_load_pct, w.e_core_load_pct, w.cpu_load_pct);
+                        if load_score > CACHE_AFFINITY_LOAD_CUTOFF {
+                            // Track best among overloaded for soft fallback.
+                            let dominated = best_overloaded.as_ref().is_some_and(|(_, bs, _, _, bl)| {
+                                if cached_score != *bs { return cached_score < *bs; }
+                                load_score >= *bl
+                            });
+                            if !dominated {
+                                best_overloaded = Some((wid.clone(), cached_score, cached_bytes, cached_files, load_score));
+                            }
+                            continue;
+                        }
                         let dominated = best.as_ref().is_some_and(|(_, best_score, _, _, best_load)| {
                             if cached_score != *best_score {
                                 return cached_score < *best_score;
@@ -588,22 +630,41 @@ impl ApiWorkerSchedulerImpl {
                         }
                     }
                 }
+                // If no candidate is under the cutoff, pick the least-loaded
+                // among overloaded cache matches — still better than a
+                // cache-cold worker from the LRU fallback.
+                let used_overloaded = best.is_none() && best_overloaded.is_some();
+                if best.is_none() {
+                    best = best_overloaded;
+                }
                 if let Some((ref wid, cached_score, cached_bytes, cached_files, load_score)) = best {
                     let pct = if total_score > 0 { cached_score * 100 / total_score } else { 0 };
-                    info!(
-                        ?wid,
-                        cached_bytes,
-                        cached_files,
-                        total_bytes,
-                        total_files,
-                        cached_score,
-                        total_score,
-                        load_score,
-                        coverage_pct = pct,
-                        %input_root_digest,
-                        "Subtree coverage winner -- worker has {}% of input tree (bytes+files) cached",
-                        pct,
-                    );
+                    if used_overloaded {
+                        warn!(
+                            ?wid,
+                            load_score,
+                            cutoff = CACHE_AFFINITY_LOAD_CUTOFF,
+                            cached_score,
+                            coverage_pct = pct,
+                            %input_root_digest,
+                            "Subtree coverage -- all candidates overloaded, picking least-loaded cache match"
+                        );
+                    } else {
+                        info!(
+                            ?wid,
+                            cached_bytes,
+                            cached_files,
+                            total_bytes,
+                            total_files,
+                            cached_score,
+                            total_score,
+                            load_score,
+                            coverage_pct = pct,
+                            %input_root_digest,
+                            "Subtree coverage winner -- worker has {}% of input tree (bytes+files) cached",
+                            pct,
+                        );
+                    }
                 }
                 best.map(|(wid, _, _, _, _)| wid)
             }
