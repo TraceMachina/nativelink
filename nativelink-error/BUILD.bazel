@@ -4,6 +4,7 @@ load(
     "rust_doc_test",
     "rust_library",
     "rust_test",
+    "rust_test_suite",
 )
 
 rust_library(
@@ -25,6 +26,18 @@ rust_library(
         "@crates//:tonic",
         "@crates//:url",
         "@crates//:uuid",
+        "@crates//:walkdir",
+    ],
+)
+
+rust_test_suite(
+    name = "integration",
+    timeout = "short",
+    srcs = [
+        "tests/error_tests.rs",
+    ],
+    deps = [
+        "//nativelink-error",
         "@crates//:walkdir",
     ],
 )
