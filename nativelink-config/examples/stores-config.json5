@@ -42,6 +42,21 @@
     {
       name: "3",
       "experimental_cloud_object_store": {
+         "provider": "azure",
+         "account_name": "cloudshell1393657559",
+         "container": "simple-test-container",
+         "key_prefix": "folder/",
+         "retry": {
+             "max_retries": 6,
+             "delay": 0.3,
+             "jitter": 0.5
+         },
+         "multipart_max_concurrent_uploads": 10
+       }
+    },
+    {
+      name: "4",
+      "experimental_cloud_object_store": {
           "provider": "ontap",
           "endpoint": "https://ontap-s3-endpoint:443",
           "vserver_name": "your-vserver",
@@ -57,7 +72,7 @@
         }
     },
     {
-      name: "4",
+      name: "5",
       "ontap_s3_existence_cache": {
        "index_path": "/path/to/cache/index.json",
        "sync_interval_seconds": 300,
@@ -70,7 +85,7 @@
      }
     },
     {
-      name: "5",
+      name: "6",
       "verify": {
        "backend": {
          "memory": {
@@ -84,7 +99,7 @@
      }
     },
     {
-      name: "6",
+      name: "7",
       "completeness_checking": {
        "backend": {
          "filesystem": {
@@ -103,7 +118,7 @@
      }
     },
     {
-      name: "7",
+      name: "8",
       "compression": {
        "compression_algorithm": {
          "lz4": {}
@@ -120,7 +135,7 @@
      }
     },
     {
-      name: "8",
+      name: "9",
       "dedup": {
        "index_store": {
          "memory": {
@@ -159,7 +174,7 @@
      }
     },
     {
-      name: "9",
+      name: "10",
       "existence_cache": {
        "backend": {
          "memory": {
@@ -175,7 +190,7 @@
      }
     },
     {
-      name: "10",
+      name: "11",
       "fast_slow": {
        "fast": {
          "filesystem": {
@@ -198,7 +213,7 @@
      }
     },
     {
-      name: "11",
+      name: "12",
       "shard": {
        "stores": [
         {
@@ -214,7 +229,7 @@
      }
     },
     {
-      name: "12",
+      name: "13",
       "filesystem": {
        "content_path": "/tmp/nativelink/data-worker-test/content_path-cas",
        "temp_path": "/tmp/nativelink/data-worker-test/tmp_path-cas",
@@ -224,13 +239,13 @@
      }
     },
     {
-      name: "13",
+      name: "14",
       "ref_store": {
        "name": "FS_CONTENT_STORE"
      }
     },
     {
-      name: "14",
+      name: "15",
       "size_partitioning": {
        "size": "128mib",
        "lower_store": {
@@ -247,7 +262,7 @@
      }
     },
     {
-      name: "15",
+      name: "16",
       "grpc": {
        "instance_name": "main",
        "endpoints": [
@@ -259,7 +274,7 @@
      }
     },
     {
-      name: "16",
+      name: "17",
       "redis_store": {
        "addresses": [
          "redis://127.0.0.1:6379/",
@@ -268,11 +283,11 @@
      }
     },
     {
-      name: "17",
+      name: "18",
       "noop": {}
     },
     {
-      name: "18",
+      name: "19",
       "experimental_mongo": {
          "connection_string": "mongodb://localhost:27017",
          "database": "nativelink",
