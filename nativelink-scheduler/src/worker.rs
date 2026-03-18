@@ -122,6 +122,15 @@ pub struct Worker {
     #[metric(help = "CPU load percentage reported by the worker.")]
     pub cpu_load_pct: u32,
 
+    /// Performance-core CPU utilization (0-100). 0 means unknown.
+    #[metric(help = "P-core load percentage reported by the worker.")]
+    pub p_core_load_pct: u32,
+
+    /// Efficiency-core CPU utilization (0-100). 0 means unknown.
+    /// 100 on CPUs without E-cores.
+    #[metric(help = "E-core load percentage reported by the worker.")]
+    pub e_core_load_pct: u32,
+
     /// Digests of input root directories cached in the worker's directory cache.
     /// The scheduler gives routing preference to workers that already have the
     /// action's input_root_digest cached.
@@ -199,6 +208,8 @@ impl Worker {
             quarantined_at: None,
             cas_endpoint,
             cpu_load_pct: 0,
+            p_core_load_pct: 0,
+            e_core_load_pct: 0,
             cached_directory_digests: HashSet::new(),
             cached_subtree_digests: HashSet::new(),
             metrics: Arc::new(Metrics {

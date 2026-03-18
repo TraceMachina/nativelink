@@ -47,6 +47,12 @@ message KeepAliveRequest {
     /// CPU utilization percentage (0-100), sampled every 100ms.
     /// 0 means unknown (old workers that don't report load).
     uint32 cpu_load_pct = 2;
+    /// Performance-core CPU utilization percentage (0-100).
+    /// 0 means unknown (Linux or non-heterogeneous CPU).
+    uint32 p_core_load_pct = 3;
+    /// Efficiency-core CPU utilization percentage (0-100).
+    /// 0 means unknown. 100 when no E-cores exist (P-core-only CPU).
+    uint32 e_core_load_pct = 4;
 }
 
 /// Request object for going away requests.
@@ -136,6 +142,12 @@ message BlobsAvailableNotification {
     /// In this case, cached_directory_digests (field 7) contains the full set
     /// of all subtree digests.
     bool is_full_subtree_snapshot = 10;
+    /// Performance-core CPU utilization percentage (0-100).
+    /// 0 means unknown (Linux or non-heterogeneous CPU).
+    uint32 p_core_load_pct = 11;
+    /// Efficiency-core CPU utilization percentage (0-100).
+    /// 0 means unknown. 100 when no E-cores exist (P-core-only CPU).
+    uint32 e_core_load_pct = 12;
 }
 
 /// Notification that blobs have been evicted from a worker.
@@ -191,6 +203,12 @@ message ExecuteComplete {
     /// CPU utilization percentage (0-100), sampled every 100ms.
     /// 0 means unknown (old workers that don't report load).
     uint32 cpu_load_pct = 2;
+    /// Performance-core CPU utilization percentage (0-100).
+    /// 0 means unknown (Linux or non-heterogeneous CPU).
+    uint32 p_core_load_pct = 3;
+    /// Efficiency-core CPU utilization percentage (0-100).
+    /// 0 means unknown. 100 when no E-cores exist (P-core-only CPU).
+    uint32 e_core_load_pct = 4;
 }
 
 /// Result sent back from the server when a node connects.

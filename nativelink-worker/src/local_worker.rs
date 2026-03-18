@@ -94,28 +94,24 @@ mod cpu_impl {
 
 #[cfg(target_os = "macos")]
 mod cpu_impl {
-    use std::mem::MaybeUninit;
-
     const CPU_STATE_USER: usize = 0;
     const CPU_STATE_SYSTEM: usize = 1;
     const CPU_STATE_IDLE: usize = 2;
     const CPU_STATE_NICE: usize = 3;
-    const HOST_CPU_LOAD_INFO: i32 = 3;
-    const HOST_CPU_LOAD_INFO_COUNT: u32 = 4;
-
-    #[repr(C)]
-    struct HostCpuLoadInfo {
-        cpu_ticks: [u32; 4],
-    }
+    const CPU_STATE_MAX: usize = 4;
+    const PROCESSOR_CPU_LOAD_INFO: i32 = 2;
 
     unsafe extern "C" {
         fn mach_host_self() -> u32;
-        fn host_statistics(
+        fn mach_task_self() -> u32;
+        fn host_processor_info(
             host: u32,
             flavor: i32,
-            host_info: *mut HostCpuLoadInfo,
-            count: *mut u32,
+            out_processor_count: *mut u32,
+            out_processor_info: *mut *mut i32,
+            out_processor_info_cnt: *mut u32,
         ) -> i32;
+        fn vm_deallocate(target_task: u32, address: usize, size: usize) -> i32;
     }
 
     pub(super) struct CpuTimes {
@@ -123,31 +119,129 @@ mod cpu_impl {
         pub(super) total: u64,
     }
 
-    pub(super) fn read_cpu_times() -> Option<CpuTimes> {
+    pub(super) struct PerTypeCpuTimes {
+        pub(super) aggregate: CpuTimes,
+        pub(super) p_core: CpuTimes,
+        pub(super) e_core: CpuTimes,
+        pub(super) has_e_cores: bool,
+    }
+
+    /// Returns the number of P-cores on Apple Silicon via sysctl.
+    /// Returns 0 on Intel Macs (sysctl key doesn't exist).
+    fn p_core_count() -> u32 {
         use std::sync::OnceLock;
-        // Cache the host port to avoid leaking a Mach port send right
-        // on every call (mach_host_self() increments the send-right refcount).
+        static COUNT: OnceLock<u32> = OnceLock::new();
+        *COUNT.get_or_init(|| sysctl_u32("hw.perflevel0.logicalcpu").unwrap_or(0))
+    }
+
+    /// Returns the number of E-cores on Apple Silicon via sysctl.
+    /// Returns 0 on Intel Macs or P-core-only Apple Silicon.
+    fn e_core_count() -> u32 {
+        use std::sync::OnceLock;
+        static COUNT: OnceLock<u32> = OnceLock::new();
+        *COUNT.get_or_init(|| sysctl_u32("hw.perflevel1.logicalcpu").unwrap_or(0))
+    }
+
+    fn sysctl_u32(name: &str) -> Option<u32> {
+        use std::ffi::CString;
+        let cname = CString::new(name).ok()?;
+        let mut val: u32 = 0;
+        let mut len = core::mem::size_of::<u32>();
+        // SAFETY: sysctlbyname is a stable POSIX API on macOS.
+        let ret = unsafe {
+            libc::sysctlbyname(
+                cname.as_ptr(),
+                &raw mut val as *mut _,
+                &mut len,
+                core::ptr::null_mut(),
+                0,
+            )
+        };
+        if ret == 0 { Some(val) } else { None }
+    }
+
+    /// Reads per-logical-CPU tick data via host_processor_info and splits
+    /// into aggregate, P-core, and E-core buckets.
+    pub(super) fn read_per_type_cpu_times() -> Option<PerTypeCpuTimes> {
+        use std::sync::OnceLock;
         static HOST_PORT: OnceLock<u32> = OnceLock::new();
 
-        // SAFETY: mach_host_self() and host_statistics() are stable macOS kernel APIs.
-        // We pass a correctly-sized buffer and check the return code.
+        let p_count = p_core_count();
+        let e_count = e_core_count();
+
+        // SAFETY: host_processor_info is a stable macOS kernel API.
+        // We check the return code and deallocate the kernel-allocated buffer.
         unsafe {
             let host = *HOST_PORT.get_or_init(|| mach_host_self());
-            let mut info = MaybeUninit::<HostCpuLoadInfo>::uninit();
-            let mut count = HOST_CPU_LOAD_INFO_COUNT;
-            let ret = host_statistics(host, HOST_CPU_LOAD_INFO, info.as_mut_ptr(), &mut count);
-            if ret != 0 {
+            let mut cpu_count: u32 = 0;
+            let mut info_array: *mut i32 = core::ptr::null_mut();
+            let mut info_count: u32 = 0;
+            let ret = host_processor_info(
+                host,
+                PROCESSOR_CPU_LOAD_INFO,
+                &mut cpu_count,
+                &mut info_array,
+                &mut info_count,
+            );
+            if ret != 0 || info_array.is_null() {
                 return None;
             }
-            let info = info.assume_init();
-            let user = info.cpu_ticks[CPU_STATE_USER] as u64;
-            let system = info.cpu_ticks[CPU_STATE_SYSTEM] as u64;
-            let idle = info.cpu_ticks[CPU_STATE_IDLE] as u64;
-            let nice = info.cpu_ticks[CPU_STATE_NICE] as u64;
-            let busy = user + system + nice;
-            let total = busy + idle;
-            Some(CpuTimes { busy, total })
+
+            // On Intel Macs, perflevel sysctl doesn't exist → p_count == 0.
+            // Also guard against future chips where the counts don't add up
+            // (e.g. a third core type) — fall back to treating all as P-cores.
+            let is_heterogeneous = p_count > 0 && (p_count + e_count == cpu_count);
+
+            let mut agg_busy = 0u64;
+            let mut agg_total = 0u64;
+            let mut p_busy = 0u64;
+            let mut p_total = 0u64;
+            let mut e_busy = 0u64;
+            let mut e_total = 0u64;
+
+            for i in 0..cpu_count {
+                let base = (i as usize) * CPU_STATE_MAX;
+                let user = *info_array.add(base + CPU_STATE_USER) as u64;
+                let system = *info_array.add(base + CPU_STATE_SYSTEM) as u64;
+                let idle = *info_array.add(base + CPU_STATE_IDLE) as u64;
+                let nice = *info_array.add(base + CPU_STATE_NICE) as u64;
+                let busy = user + system + nice;
+                let total = busy + idle;
+                agg_busy += busy;
+                agg_total += total;
+                if is_heterogeneous && i < p_count {
+                    p_busy += busy;
+                    p_total += total;
+                } else if is_heterogeneous {
+                    e_busy += busy;
+                    e_total += total;
+                }
+            }
+
+            // If not heterogeneous, all cores are P-cores.
+            if !is_heterogeneous {
+                p_busy = agg_busy;
+                p_total = agg_total;
+            }
+
+            let kr = vm_deallocate(
+                mach_task_self(),
+                info_array as usize,
+                (info_count as usize) * core::mem::size_of::<i32>(),
+            );
+            debug_assert_eq!(kr, 0, "vm_deallocate failed: {kr}");
+
+            Some(PerTypeCpuTimes {
+                aggregate: CpuTimes { busy: agg_busy, total: agg_total },
+                p_core: CpuTimes { busy: p_busy, total: p_total },
+                e_core: CpuTimes { busy: e_busy, total: e_total },
+                has_e_cores: e_count > 0,
+            })
         }
+    }
+
+    pub(super) fn read_cpu_times() -> Option<CpuTimes> {
+        read_per_type_cpu_times().map(|t| t.aggregate)
     }
 }
 
@@ -164,6 +258,8 @@ mod cpu_impl {
 }
 
 static CPU_PCT: AtomicU32 = AtomicU32::new(0);
+static P_CORE_PCT: AtomicU32 = AtomicU32::new(0);
+static E_CORE_PCT: AtomicU32 = AtomicU32::new(0);
 static SAMPLER_STARTED: AtomicBool = AtomicBool::new(false);
 
 /// Starts a dedicated OS thread that samples system-wide CPU utilization
@@ -182,23 +278,61 @@ fn start_cpu_sampler() -> Result<(), Error> {
     Ok(())
 }
 
+fn compute_pct(prev: &cpu_impl::CpuTimes, curr: &cpu_impl::CpuTimes) -> u32 {
+    let total_delta = curr.total.wrapping_sub(prev.total);
+    let busy_delta = curr.busy.wrapping_sub(prev.busy);
+    if total_delta > 0 {
+        ((busy_delta as f64 / total_delta as f64) * 100.0).round() as u32
+    } else {
+        0
+    }
+}
+
 fn cpu_sample_loop() {
+    // Try per-type sampling first (macOS with host_processor_info).
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(initial) = cpu_impl::read_per_type_cpu_times() {
+            per_type_sample_loop(initial);
+            return; // unreachable — loop is infinite
+        }
+    }
+
+    // Fallback: aggregate-only sampling (Linux, non-macOS, or Intel Mac
+    // where host_processor_info failed).
     let mut prev = cpu_impl::read_cpu_times();
     loop {
         std::thread::sleep(Duration::from_millis(100));
         let curr = cpu_impl::read_cpu_times();
         match (&prev, &curr) {
             (Some(p), Some(c)) => {
-                let total_delta = c.total.wrapping_sub(p.total);
-                let busy_delta = c.busy.wrapping_sub(p.busy);
-                let pct = if total_delta > 0 {
-                    ((busy_delta as f64 / total_delta as f64) * 100.0).round() as u32
-                } else {
-                    0
-                };
-                CPU_PCT.store(pct.min(100), Ordering::Relaxed);
+                CPU_PCT.store(compute_pct(p, c).min(100), Ordering::Relaxed);
             }
             _ => CPU_PCT.store(0, Ordering::Relaxed),
+        }
+        prev = curr;
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn per_type_sample_loop(initial: cpu_impl::PerTypeCpuTimes) {
+    let mut prev = initial;
+    loop {
+        std::thread::sleep(Duration::from_millis(100));
+        let Some(curr) = cpu_impl::read_per_type_cpu_times() else {
+            CPU_PCT.store(0, Ordering::Relaxed);
+            P_CORE_PCT.store(0, Ordering::Relaxed);
+            E_CORE_PCT.store(0, Ordering::Relaxed);
+            continue;
+        };
+        CPU_PCT.store(compute_pct(&prev.aggregate, &curr.aggregate).min(100), Ordering::Relaxed);
+        P_CORE_PCT.store(compute_pct(&prev.p_core, &curr.p_core).min(100), Ordering::Relaxed);
+        if curr.has_e_cores {
+            E_CORE_PCT.store(compute_pct(&prev.e_core, &curr.e_core).min(100), Ordering::Relaxed);
+        } else {
+            // No E-cores → report as fully saturated so scheduler
+            // doesn't think idle E-cores are available.
+            E_CORE_PCT.store(100, Ordering::Relaxed);
         }
         prev = curr;
     }
@@ -208,6 +342,18 @@ fn cpu_sample_loop() {
 /// sampled every 100ms by a dedicated OS thread.
 fn get_cpu_load_pct() -> u32 {
     CPU_PCT.load(Ordering::Relaxed)
+}
+
+/// Returns the P-core CPU utilization (0-100). 0 means unknown (Linux or
+/// non-heterogeneous CPU where per-core-type data is unavailable).
+fn get_p_core_load_pct() -> u32 {
+    P_CORE_PCT.load(Ordering::Relaxed)
+}
+
+/// Returns the E-core CPU utilization (0-100). 0 means unknown.
+/// 100 on CPUs without E-cores (all cores are P-cores).
+fn get_e_core_load_pct() -> u32 {
+    E_CORE_PCT.load(Ordering::Relaxed)
 }
 
 /// Build the advertised gRPC endpoint for peer blob sharing.
@@ -535,9 +681,13 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
             // timeout issues, this is a secondary check to ensure we can still send data.
             sleep(Duration::from_secs_f32(timeout / 2.)).await;
             let load = get_cpu_load_pct();
-            debug!("KeepAlive cpu_load_pct={load}");
+            let p_load = get_p_core_load_pct();
+            let e_load = get_e_core_load_pct();
+            debug!("KeepAlive cpu_load_pct={load} p_core={p_load} e_core={e_load}");
             if let Err(e) = grpc_client.keep_alive(KeepAliveRequest {
                 cpu_load_pct: load,
+                p_core_load_pct: p_load,
+                e_core_load_pct: e_load,
             }).await {
                 return Err(make_err!(
                     Code::Internal,
@@ -629,7 +779,9 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
         }
 
         let load = get_cpu_load_pct();
-        debug!("BlobsAvailable cpu_load_pct={load}");
+        let p_load = get_p_core_load_pct();
+        let e_load = get_e_core_load_pct();
+        debug!("BlobsAvailable cpu_load_pct={load} p_core={p_load} e_core={e_load}");
         let notification = BlobsAvailableNotification {
             worker_cas_endpoint: state.cas_endpoint.clone(),
             digests: Vec::new(),
@@ -641,6 +793,8 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
             added_subtree_digests,
             removed_subtree_digests,
             is_full_subtree_snapshot,
+            p_core_load_pct: p_load,
+            e_core_load_pct: e_load,
         };
 
         if let Err(err) = grpc_client.blobs_available(notification).await {
@@ -900,10 +1054,14 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                 move |res: Result<ActionResult, Error>| async move {
                                     // Sample CPU at completion time, not action start time.
                                     let exec_load = get_cpu_load_pct();
-                                    debug!("ExecuteComplete cpu_load_pct={exec_load}");
+                                    let exec_p_load = get_p_core_load_pct();
+                                    let exec_e_load = get_e_core_load_pct();
+                                    debug!("ExecuteComplete cpu_load_pct={exec_load} p_core={exec_p_load} e_core={exec_e_load}");
                                     let complete = ExecuteComplete {
                                         operation_id: operation_id.clone(),
                                         cpu_load_pct: exec_load,
+                                        p_core_load_pct: exec_p_load,
+                                        e_core_load_pct: exec_e_load,
                                     };
                                     let instance_name = maybe_instance_name
                                         .err_tip(|| "`instance_name` could not be resolved; this is likely an internal error in local_worker.")?;
@@ -944,7 +1102,9 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                             let blobs_fut = async {
                                                 if !output_digests.is_empty() {
                                                     let load = get_cpu_load_pct();
-                                                    debug!("BlobsAvailable cpu_load_pct={load}");
+                                                    let p_load = get_p_core_load_pct();
+                                                    let e_load = get_e_core_load_pct();
+                                                    debug!("BlobsAvailable cpu_load_pct={load} p_core={p_load} e_core={e_load}");
                                                     if let Err(err) = grpc_client.blobs_available(
                                                         BlobsAvailableNotification {
                                                             worker_cas_endpoint: cas_endpoint_for_notify.clone(),
@@ -957,6 +1117,8 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                                             added_subtree_digests: Vec::new(),
                                                             removed_subtree_digests: Vec::new(),
                                                             is_full_subtree_snapshot: false,
+                                                            p_core_load_pct: p_load,
+                                                            e_core_load_pct: e_load,
                                                         }
                                                     ).await {
                                                         warn!(?err, "Failed to send blobs_available notification");

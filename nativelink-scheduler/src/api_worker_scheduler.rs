@@ -79,6 +79,29 @@ use crate::worker_capability_index::WorkerCapabilityIndex;
 use crate::worker_registry::SharedWorkerRegistry;
 use crate::worker_scheduler::WorkerScheduler;
 
+/// Computes an effective load score for worker selection. Lower is better.
+/// Workers with idle P-cores always beat workers with only idle E-cores,
+/// creating a two-tier preference. Workers reporting only aggregate load
+/// (Linux, old workers) compete in the P-core tier.
+fn effective_load_score(p_load: u32, e_load: u32, aggregate_load: u32) -> u64 {
+    if p_load > 0 || e_load > 0 {
+        // Has per-core-type data.
+        if p_load < 100 {
+            // P-cores available: score in [0, 99].
+            p_load as u64
+        } else {
+            // P-cores saturated, only E-cores left: score in [100, 199].
+            100 + e_load as u64
+        }
+    } else if aggregate_load > 0 {
+        // Aggregate only (Linux / old worker): treat as P-core tier.
+        aggregate_load as u64
+    } else {
+        // Unknown: sort last.
+        u64::MAX
+    }
+}
+
 #[derive(Debug)]
 struct Workers(LruCache<WorkerId, Worker>);
 
@@ -361,33 +384,32 @@ impl ApiWorkerSchedulerImpl {
         // multiple consecutive actions all matching the same "least recently used" worker.
         let workers_iter = self.workers.iter();
 
-        // Collect viable candidates with their load info for load-aware selection.
+        // Collect viable candidates with their effective load score for selection.
+        // effective_load_score produces a two-tier ranking: idle P-cores beat
+        // idle E-cores, and aggregate-only workers compete in the P-core tier.
         let viable: Vec<_> = match self.allocation_strategy {
             WorkerAllocationStrategy::LeastRecentlyUsed => workers_iter
                 .rev()
                 .filter(|(worker_id, _)| candidates.contains(worker_id))
                 .filter(|pair| worker_matches(pair))
-                .map(|(_, w)| (w.id.clone(), w.cpu_load_pct))
+                .map(|(_, w)| (w.id.clone(), effective_load_score(w.p_core_load_pct, w.e_core_load_pct, w.cpu_load_pct)))
                 .collect(),
             WorkerAllocationStrategy::MostRecentlyUsed => workers_iter
                 .filter(|(worker_id, _)| candidates.contains(worker_id))
                 .filter(|pair| worker_matches(pair))
-                .map(|(_, w)| (w.id.clone(), w.cpu_load_pct))
+                .map(|(_, w)| (w.id.clone(), effective_load_score(w.p_core_load_pct, w.e_core_load_pct, w.cpu_load_pct)))
                 .collect(),
         };
 
         // Pick the lightest-loaded worker among viable candidates.
-        // Workers with cpu_load_pct == 0 (unknown) are sorted last among
-        // workers that have reported load. Falls back to LRU/MRU order
-        // (first in the vec) when no workers have reported load.
-        let worker_id = if viable.iter().any(|(_, load)| *load > 0) {
-            // At least one worker has reported load — pick lightest.
+        // Workers with score == u64::MAX (unknown) are sorted last.
+        // Falls back to LRU/MRU order when no workers have reported load.
+        let worker_id = if viable.iter().any(|(_, score)| *score < u64::MAX) {
             viable
                 .iter()
-                .min_by_key(|(_, load)| if *load == 0 { u32::MAX } else { *load })
+                .min_by_key(|(_, score)| *score)
                 .map(|(id, _)| id.clone())
         } else {
-            // No load data — use first viable (LRU/MRU order).
             viable.first().map(|(id, _)| id.clone())
         };
 
@@ -395,20 +417,20 @@ impl ApiWorkerSchedulerImpl {
         if let Some(ref wid) = worker_id {
             let viable_loads: Vec<_> = viable
                 .iter()
-                .map(|(id, load)| {
+                .map(|(id, score)| {
                     let short_id = id.0.chars().take(12).collect::<String>();
-                    (short_id, *load)
+                    (short_id, *score)
                 })
                 .collect();
-            let winner_load = viable
+            let winner_score = viable
                 .iter()
                 .find(|(id, _)| id == wid)
-                .map(|(_, l)| *l)
+                .map(|(_, s)| *s)
                 .unwrap_or(0);
             info!(
                 candidates = viable.len(),
                 worker_id = %wid,
-                winner_load_pct = winner_load,
+                winner_load_score = winner_score,
                 ?viable_loads,
                 "Load-aware worker selection"
             );
@@ -487,7 +509,7 @@ impl ApiWorkerSchedulerImpl {
         // it can hardlink the entire input tree in milliseconds instead of
         // reconstructing it from CAS.
         let dir_cache_winner: Option<WorkerId> = {
-            let mut best: Option<(WorkerId, u32)> = None; // (id, cpu_load)
+            let mut best: Option<(WorkerId, u64)> = None; // (id, load_score)
             for wid in &candidates {
                 if let Some(w) = self.workers.0.peek(wid) {
                     let has_root_match = w.cached_directory_digests.contains(&input_root_digest);
@@ -495,22 +517,20 @@ impl ApiWorkerSchedulerImpl {
                     if (has_root_match || has_subtree_match)
                         && worker_is_viable(wid)
                     {
-                        let load = w.cpu_load_pct;
-                        let dominated = best.as_ref().is_some_and(|(_, best_load)| {
-                            let effective_best = if *best_load == 0 { u32::MAX } else { *best_load };
-                            let effective_this = if load == 0 { u32::MAX } else { load };
-                            effective_this >= effective_best
+                        let score = effective_load_score(w.p_core_load_pct, w.e_core_load_pct, w.cpu_load_pct);
+                        let dominated = best.as_ref().is_some_and(|(_, best_score)| {
+                            score >= *best_score
                         });
                         if !dominated {
-                            best = Some((wid.clone(), load));
+                            best = Some((wid.clone(), score));
                         }
                     }
                 }
             }
-            if let Some((ref wid, load)) = best {
+            if let Some((ref wid, score)) = best {
                 info!(
                     ?wid,
-                    cpu_load_pct = load,
+                    load_score = score,
                     %input_root_digest,
                     "Directory cache hit -- worker has input_root_digest cached (root or subtree), giving scheduling priority"
                 );
@@ -534,8 +554,8 @@ impl ApiWorkerSchedulerImpl {
             if tree.dir_digests.len() <= 1 || total_score == 0 {
                 None // only root (or empty), no subtrees to match
             } else {
-                // (id, cached_score, cached_bytes, cached_files, cpu_load)
-                let mut best: Option<(WorkerId, u64, u64, u64, u32)> = None;
+                // (id, cached_score, cached_bytes, cached_files, load_score)
+                let mut best: Option<(WorkerId, u64, u64, u64, u64)> = None;
                 for wid in &candidates {
                     if let Some(w) = self.workers.0.peek(wid) {
                         if !worker_is_viable(wid) {
@@ -555,22 +575,20 @@ impl ApiWorkerSchedulerImpl {
                         if cached_score == 0 {
                             continue;
                         }
-                        let load = w.cpu_load_pct;
+                        let load_score = effective_load_score(w.p_core_load_pct, w.e_core_load_pct, w.cpu_load_pct);
                         let dominated = best.as_ref().is_some_and(|(_, best_score, _, _, best_load)| {
                             if cached_score != *best_score {
                                 return cached_score < *best_score;
                             }
-                            // Same score — prefer lower CPU load.
-                            let effective_best = if *best_load == 0 { u32::MAX } else { *best_load };
-                            let effective_this = if load == 0 { u32::MAX } else { load };
-                            effective_this >= effective_best
+                            // Same cache score — prefer lower load score.
+                            load_score >= *best_load
                         });
                         if !dominated {
-                            best = Some((wid.clone(), cached_score, cached_bytes, cached_files, load));
+                            best = Some((wid.clone(), cached_score, cached_bytes, cached_files, load_score));
                         }
                     }
                 }
-                if let Some((ref wid, cached_score, cached_bytes, cached_files, load)) = best {
+                if let Some((ref wid, cached_score, cached_bytes, cached_files, load_score)) = best {
                     let pct = if total_score > 0 { cached_score * 100 / total_score } else { 0 };
                     info!(
                         ?wid,
@@ -580,7 +598,7 @@ impl ApiWorkerSchedulerImpl {
                         total_files,
                         cached_score,
                         total_score,
-                        cpu_load_pct = load,
+                        load_score,
                         coverage_pct = pct,
                         %input_root_digest,
                         "Subtree coverage winner -- worker has {}% of input tree (bytes+files) cached",
@@ -608,27 +626,24 @@ impl ApiWorkerSchedulerImpl {
                 // top score are considered tied and the most recently
                 // refreshed one wins.
                 let mut sorted: Vec<_> = scores.into_iter().collect();
-                // Look up cpu_load_pct for tiebreaking within 10% score range.
-                let load_for_worker = |wid: &WorkerId| -> u32 {
+                // Look up effective load score for tiebreaking within 10% score range.
+                let load_score_for_worker = |wid: &WorkerId| -> u64 {
                     self.workers.0.peek(wid)
-                        .map(|w| w.cpu_load_pct)
-                        .unwrap_or(0)
+                        .map(|w| effective_load_score(w.p_core_load_pct, w.e_core_load_pct, w.cpu_load_pct))
+                        .unwrap_or(u64::MAX)
                 };
                 sorted.sort_by(|a, b| {
                     let (score_a, ts_a) = a.1;
                     let (score_b, ts_b) = b.1;
                     let max_score = score_a.max(score_b);
-                    // Within 10% of each other? Use CPU load, then timestamp.
+                    // Within 10% of each other? Use load score, then timestamp.
                     let threshold = max_score / 10; // 10% of the larger score
                     if score_a.abs_diff(score_b) <= threshold {
-                        // Scores are similar — prefer lower CPU load.
-                        let load_a = load_for_worker(&a.0);
-                        let load_b = load_for_worker(&b.0);
-                        if load_a != load_b && (load_a > 0 || load_b > 0) {
-                            // Sort unknown (0) after known loads.
-                            let effective_a = if load_a == 0 { u32::MAX } else { load_a };
-                            let effective_b = if load_b == 0 { u32::MAX } else { load_b };
-                            effective_a.cmp(&effective_b)
+                        // Scores are similar — prefer lower load score.
+                        let load_a = load_score_for_worker(&a.0);
+                        let load_b = load_score_for_worker(&b.0);
+                        if load_a != load_b {
+                            load_a.cmp(&load_b)
                         } else {
                             // Same load or both unknown — prefer more recent timestamp.
                             ts_b.cmp(&ts_a)
@@ -1749,7 +1764,13 @@ impl WorkerScheduler for ApiWorkerScheduler {
         inner.set_drain_worker(worker_id, is_draining).await
     }
 
-    async fn update_worker_load(&self, worker_id: &WorkerId, cpu_load_pct: u32) -> Result<(), Error> {
+    async fn update_worker_load(
+        &self,
+        worker_id: &WorkerId,
+        cpu_load_pct: u32,
+        p_core_load_pct: u32,
+        e_core_load_pct: u32,
+    ) -> Result<(), Error> {
         // Use peek_mut to avoid promoting the worker in the LRU cache —
         // load updates should not affect scheduling order.
         let mut inner = self.inner.write().await;
@@ -1760,7 +1781,9 @@ impl WorkerScheduler for ApiWorkerScheduler {
             )
         })?;
         worker.cpu_load_pct = cpu_load_pct;
-        debug!(%worker_id, cpu_load_pct, "Worker load updated");
+        worker.p_core_load_pct = p_core_load_pct;
+        worker.e_core_load_pct = e_core_load_pct;
+        debug!(%worker_id, cpu_load_pct, p_core_load_pct, e_core_load_pct, "Worker load updated");
         Ok(())
     }
 
@@ -1837,6 +1860,65 @@ mod tests {
     use nativelink_store::memory_store::MemoryStore;
     use nativelink_util::blob_locality_map::new_shared_blob_locality_map;
     use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
+
+    #[test]
+    fn test_effective_load_score_per_type_p_cores_available() {
+        // P-cores not saturated: score equals p_load.
+        assert_eq!(effective_load_score(50, 30, 70), 50);
+        assert_eq!(effective_load_score(1, 100, 80), 1);
+        assert_eq!(effective_load_score(99, 0, 50), 99);
+    }
+
+    #[test]
+    fn test_effective_load_score_per_type_p_cores_saturated() {
+        // P-cores at 100%: score = 100 + e_load, always worse than any
+        // worker with available P-cores.
+        assert_eq!(effective_load_score(100, 50, 95), 150);
+        assert_eq!(effective_load_score(100, 0, 100), 100);
+        assert_eq!(effective_load_score(100, 100, 100), 200);
+    }
+
+    #[test]
+    fn test_effective_load_score_aggregate_only() {
+        // Old worker or Linux: p=0, e=0, aggregate>0 → use aggregate.
+        assert_eq!(effective_load_score(0, 0, 60), 60);
+        assert_eq!(effective_load_score(0, 0, 1), 1);
+        assert_eq!(effective_load_score(0, 0, 100), 100);
+    }
+
+    #[test]
+    fn test_effective_load_score_unknown() {
+        // All zeros: unknown → sort last.
+        assert_eq!(effective_load_score(0, 0, 0), u64::MAX);
+    }
+
+    #[test]
+    fn test_effective_load_score_p_core_only_idle() {
+        // P-core-only Apple Silicon (no E-cores): reports p=0, e=100.
+        // Machine is idle → score should be 0 (best).
+        assert_eq!(effective_load_score(0, 100, 0), 0);
+    }
+
+    #[test]
+    fn test_effective_load_score_p_core_only_saturated() {
+        // P-core-only fully loaded: p=100, e=100.
+        // Score = 100 + 100 = 200 (worst among per-type reporters).
+        assert_eq!(effective_load_score(100, 100, 100), 200);
+    }
+
+    #[test]
+    fn test_effective_load_score_ordering() {
+        // Verify the two-tier preference: idle P-cores always beat
+        // workers with only idle E-cores.
+        let idle_p = effective_load_score(30, 80, 50);
+        let saturated_p = effective_load_score(100, 20, 90);
+        let aggregate = effective_load_score(0, 0, 40);
+        let unknown = effective_load_score(0, 0, 0);
+
+        assert!(idle_p < saturated_p, "idle P-cores should beat saturated P-cores");
+        assert!(aggregate < saturated_p, "aggregate-only in P-tier should beat E-core-only");
+        assert!(saturated_p < unknown, "known load should beat unknown");
+    }
 
     /// Helper: encode a Directory proto and compute its DigestInfo (SHA256).
     fn encode_directory(dir: &Directory) -> (Vec<u8>, DigestInfo) {

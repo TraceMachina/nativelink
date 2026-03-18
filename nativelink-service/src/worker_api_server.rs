@@ -366,10 +366,12 @@ impl WorkerConnection {
             .await
             .err_tip(|| "Could not process keep_alive from worker in inner_keep_alive()")?;
         let cpu_load_pct = keep_alive_request.cpu_load_pct;
-        if cpu_load_pct > 0 {
-            debug!(worker_id=?self.worker_id, cpu_load_pct, "KeepAlive received with CPU load");
-            if let Err(err) = self.scheduler.update_worker_load(&self.worker_id, cpu_load_pct).await {
-                warn!(worker_id=?self.worker_id, ?err, cpu_load_pct, "Failed to update worker load");
+        let p_core_load_pct = keep_alive_request.p_core_load_pct;
+        let e_core_load_pct = keep_alive_request.e_core_load_pct;
+        if cpu_load_pct > 0 || p_core_load_pct > 0 || e_core_load_pct > 0 {
+            debug!(worker_id=?self.worker_id, cpu_load_pct, p_core_load_pct, e_core_load_pct, "KeepAlive received with CPU load");
+            if let Err(err) = self.scheduler.update_worker_load(&self.worker_id, cpu_load_pct, p_core_load_pct, e_core_load_pct).await {
+                warn!(worker_id=?self.worker_id, ?err, cpu_load_pct, p_core_load_pct, e_core_load_pct, "Failed to update worker load");
             }
         }
         Ok(())
@@ -479,10 +481,12 @@ impl WorkerConnection {
         notification: nativelink_proto::com::github::trace_machina::nativelink::remote_execution::BlobsAvailableNotification,
     ) -> Result<(), Error> {
         let cpu_load_pct = notification.cpu_load_pct;
-        if cpu_load_pct > 0 {
-            debug!(worker_id=?self.worker_id, cpu_load_pct, "BlobsAvailable received with CPU load");
-            if let Err(err) = self.scheduler.update_worker_load(&self.worker_id, cpu_load_pct).await {
-                warn!(worker_id=?self.worker_id, ?err, cpu_load_pct, "Failed to update worker load");
+        let p_core_load_pct = notification.p_core_load_pct;
+        let e_core_load_pct = notification.e_core_load_pct;
+        if cpu_load_pct > 0 || p_core_load_pct > 0 || e_core_load_pct > 0 {
+            debug!(worker_id=?self.worker_id, cpu_load_pct, p_core_load_pct, e_core_load_pct, "BlobsAvailable received with CPU load");
+            if let Err(err) = self.scheduler.update_worker_load(&self.worker_id, cpu_load_pct, p_core_load_pct, e_core_load_pct).await {
+                warn!(worker_id=?self.worker_id, ?err, cpu_load_pct, p_core_load_pct, e_core_load_pct, "Failed to update worker load");
             }
         }
 
@@ -638,10 +642,12 @@ impl WorkerConnection {
 
     async fn execution_complete(&self, execute_complete: ExecuteComplete) -> Result<(), Error> {
         let cpu_load_pct = execute_complete.cpu_load_pct;
-        if cpu_load_pct > 0 {
-            debug!(worker_id=?self.worker_id, cpu_load_pct, "ExecuteComplete received with CPU load");
-            if let Err(err) = self.scheduler.update_worker_load(&self.worker_id, cpu_load_pct).await {
-                warn!(worker_id=?self.worker_id, ?err, cpu_load_pct, "Failed to update worker load");
+        let p_core_load_pct = execute_complete.p_core_load_pct;
+        let e_core_load_pct = execute_complete.e_core_load_pct;
+        if cpu_load_pct > 0 || p_core_load_pct > 0 || e_core_load_pct > 0 {
+            debug!(worker_id=?self.worker_id, cpu_load_pct, p_core_load_pct, e_core_load_pct, "ExecuteComplete received with CPU load");
+            if let Err(err) = self.scheduler.update_worker_load(&self.worker_id, cpu_load_pct, p_core_load_pct, e_core_load_pct).await {
+                warn!(worker_id=?self.worker_id, ?err, cpu_load_pct, p_core_load_pct, e_core_load_pct, "Failed to update worker load");
             }
         }
         let operation_id = OperationId::from(execute_complete.operation_id);

@@ -967,9 +967,15 @@ impl WorkerScheduler for SimpleScheduler {
             .await
     }
 
-    async fn update_worker_load(&self, worker_id: &WorkerId, cpu_load_pct: u32) -> Result<(), Error> {
+    async fn update_worker_load(
+        &self,
+        worker_id: &WorkerId,
+        cpu_load_pct: u32,
+        p_core_load_pct: u32,
+        e_core_load_pct: u32,
+    ) -> Result<(), Error> {
         self.worker_scheduler
-            .update_worker_load(worker_id, cpu_load_pct)
+            .update_worker_load(worker_id, cpu_load_pct, p_core_load_pct, e_core_load_pct)
             .await
     }
 

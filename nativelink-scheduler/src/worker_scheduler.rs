@@ -64,8 +64,16 @@ pub trait WorkerScheduler: Sync + Send + Unpin + RootMetricsComponent + 'static 
     async fn set_drain_worker(&self, worker_id: &WorkerId, is_draining: bool) -> Result<(), Error>;
 
     /// Updates the CPU load reported by a worker.
-    /// `cpu_load_pct` is load_avg_1m / num_cpus * 100. 0 means unknown.
-    async fn update_worker_load(&self, worker_id: &WorkerId, cpu_load_pct: u32) -> Result<(), Error>;
+    /// `cpu_load_pct` is aggregate load (0-100). 0 means unknown.
+    /// `p_core_load_pct` and `e_core_load_pct` are per-core-type loads
+    /// on heterogeneous CPUs (Apple Silicon). 0 means unknown.
+    async fn update_worker_load(
+        &self,
+        worker_id: &WorkerId,
+        cpu_load_pct: u32,
+        p_core_load_pct: u32,
+        e_core_load_pct: u32,
+    ) -> Result<(), Error>;
 
     /// Updates the set of cached directory digests for a worker.
     /// The scheduler uses this to give routing preference to workers that

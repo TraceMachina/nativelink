@@ -337,7 +337,7 @@ pub async fn server_does_not_timeout_if_keep_alive_test() -> Result<(), Box<dyn 
         // Now send keep alive.
         test_context
             .worker_stream
-            .send(Update::KeepAliveRequest(KeepAliveRequest { cpu_load_pct: 0 }))
+            .send(Update::KeepAliveRequest(KeepAliveRequest { cpu_load_pct: 0, p_core_load_pct: 0, e_core_load_pct: 0 }))
             .await
             .map_err(|e| make_err!(tonic::Code::Internal, "Error sending keep alive {e}"))?;
         // Wait for a moment to allow it to be processed.
@@ -773,6 +773,8 @@ pub async fn handle_blobs_available_populates_locality_map_test()
             added_subtree_digests: vec![],
             removed_subtree_digests: vec![],
             is_full_subtree_snapshot: false,
+            p_core_load_pct: 0,
+            e_core_load_pct: 0,
         }))
         .await
         .map_err(|e| make_err!(tonic::Code::Internal, "Error sending blobs available: {e}"))?;
@@ -828,6 +830,8 @@ pub async fn full_snapshot_replaces_endpoint_view_test()
             added_subtree_digests: vec![],
             removed_subtree_digests: vec![],
             is_full_subtree_snapshot: false,
+            p_core_load_pct: 0,
+            e_core_load_pct: 0,
         }))
         .await
         .map_err(|e| make_err!(tonic::Code::Internal, "Error sending: {e}"))?;
@@ -856,6 +860,8 @@ pub async fn full_snapshot_replaces_endpoint_view_test()
             added_subtree_digests: vec![],
             removed_subtree_digests: vec![],
             is_full_subtree_snapshot: false,
+            p_core_load_pct: 0,
+            e_core_load_pct: 0,
         }))
         .await
         .map_err(|e| make_err!(tonic::Code::Internal, "Error sending: {e}"))?;
@@ -907,6 +913,8 @@ pub async fn incremental_update_preserves_existing_blobs_test()
             added_subtree_digests: vec![],
             removed_subtree_digests: vec![],
             is_full_subtree_snapshot: false,
+            p_core_load_pct: 0,
+            e_core_load_pct: 0,
         }))
         .await
         .map_err(|e| make_err!(tonic::Code::Internal, "Error sending: {e}"))?;
@@ -926,6 +934,8 @@ pub async fn incremental_update_preserves_existing_blobs_test()
             added_subtree_digests: vec![],
             removed_subtree_digests: vec![],
             is_full_subtree_snapshot: false,
+            p_core_load_pct: 0,
+            e_core_load_pct: 0,
         }))
         .await
         .map_err(|e| make_err!(tonic::Code::Internal, "Error sending: {e}"))?;
@@ -969,6 +979,8 @@ pub async fn eviction_removes_digests_from_locality_map_test()
             added_subtree_digests: vec![],
             removed_subtree_digests: vec![],
             is_full_subtree_snapshot: false,
+            p_core_load_pct: 0,
+            e_core_load_pct: 0,
         }))
         .await
         .map_err(|e| make_err!(tonic::Code::Internal, "Error sending: {e}"))?;
@@ -988,6 +1000,8 @@ pub async fn eviction_removes_digests_from_locality_map_test()
             added_subtree_digests: vec![],
             removed_subtree_digests: vec![],
             is_full_subtree_snapshot: false,
+            p_core_load_pct: 0,
+            e_core_load_pct: 0,
         }))
         .await
         .map_err(|e| make_err!(tonic::Code::Internal, "Error sending: {e}"))?;
@@ -1036,6 +1050,8 @@ pub async fn worker_disconnect_cleans_up_locality_map_test()
             added_subtree_digests: vec![],
             removed_subtree_digests: vec![],
             is_full_subtree_snapshot: false,
+            p_core_load_pct: 0,
+            e_core_load_pct: 0,
         }))
         .await
         .map_err(|e| make_err!(tonic::Code::Internal, "Error sending: {e}"))?;
@@ -1114,6 +1130,8 @@ pub async fn blobs_available_with_malformed_digests_test()
             added_subtree_digests: vec![],
             removed_subtree_digests: vec![],
             is_full_subtree_snapshot: false,
+            p_core_load_pct: 0,
+            e_core_load_pct: 0,
         }))
         .await
         .map_err(|e| make_err!(tonic::Code::Internal, "Error sending: {e}"))?;
@@ -1161,6 +1179,8 @@ pub async fn blobs_evicted_is_noop_for_wire_compat_test()
             added_subtree_digests: vec![],
             removed_subtree_digests: vec![],
             is_full_subtree_snapshot: false,
+            p_core_load_pct: 0,
+            e_core_load_pct: 0,
         }))
         .await
         .map_err(|e| make_err!(tonic::Code::Internal, "Error sending: {e}"))?;

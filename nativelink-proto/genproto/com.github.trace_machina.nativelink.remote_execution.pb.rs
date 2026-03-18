@@ -20,6 +20,14 @@ pub struct KeepAliveRequest {
     /// / 0 means unknown (old workers that don't report load).
     #[prost(uint32, tag = "2")]
     pub cpu_load_pct: u32,
+    /// / Performance-core CPU utilization percentage (0-100).
+    /// / 0 means unknown (Linux or non-heterogeneous CPU).
+    #[prost(uint32, tag = "3")]
+    pub p_core_load_pct: u32,
+    /// / Efficiency-core CPU utilization percentage (0-100).
+    /// / 0 means unknown. 100 when no E-cores exist (P-core-only CPU).
+    #[prost(uint32, tag = "4")]
+    pub e_core_load_pct: u32,
 }
 /// / Request object for going away requests.
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
@@ -129,6 +137,14 @@ pub struct BlobsAvailableNotification {
     /// / of all subtree digests.
     #[prost(bool, tag = "10")]
     pub is_full_subtree_snapshot: bool,
+    /// / Performance-core CPU utilization percentage (0-100).
+    /// / 0 means unknown (Linux or non-heterogeneous CPU).
+    #[prost(uint32, tag = "11")]
+    pub p_core_load_pct: u32,
+    /// / Efficiency-core CPU utilization percentage (0-100).
+    /// / 0 means unknown. 100 when no E-cores exist (P-core-only CPU).
+    #[prost(uint32, tag = "12")]
+    pub e_core_load_pct: u32,
 }
 /// / Notification that blobs have been evicted from a worker.
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -205,6 +221,14 @@ pub struct ExecuteComplete {
     /// / 0 means unknown (old workers that don't report load).
     #[prost(uint32, tag = "2")]
     pub cpu_load_pct: u32,
+    /// / Performance-core CPU utilization percentage (0-100).
+    /// / 0 means unknown (Linux or non-heterogeneous CPU).
+    #[prost(uint32, tag = "3")]
+    pub p_core_load_pct: u32,
+    /// / Efficiency-core CPU utilization percentage (0-100).
+    /// / 0 means unknown. 100 when no E-cores exist (P-core-only CPU).
+    #[prost(uint32, tag = "4")]
+    pub e_core_load_pct: u32,
 }
 /// / Result sent back from the server when a node connects.
 #[derive(Clone, PartialEq, ::prost::Message)]

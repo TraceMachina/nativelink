@@ -3393,7 +3393,7 @@ async fn cpu_load_update_worker_load_stores_correctly() -> Result<(), Error> {
     .await?;
 
     // Update the worker's CPU load.
-    scheduler.update_worker_load(&worker_id, 42).await?;
+    scheduler.update_worker_load(&worker_id, 42, 0, 0).await?;
 
     // Submit an action — the single worker should still be selected.
     let action_digest = DigestInfo::new([10u8; 32], 256);
@@ -3458,9 +3458,9 @@ async fn cpu_load_lightest_loaded_worker_gets_picked() -> Result<(), Error> {
     .await?;
 
     // Set CPU loads: A=80, B=20, C=50.
-    scheduler.update_worker_load(&worker_id_a, 80).await?;
-    scheduler.update_worker_load(&worker_id_b, 20).await?;
-    scheduler.update_worker_load(&worker_id_c, 50).await?;
+    scheduler.update_worker_load(&worker_id_a, 80, 0, 0).await?;
+    scheduler.update_worker_load(&worker_id_b, 20, 0, 0).await?;
+    scheduler.update_worker_load(&worker_id_c, 50, 0, 0).await?;
 
     // Submit an action.
     let action_digest = DigestInfo::new([20u8; 32], 512);
@@ -3544,7 +3544,7 @@ async fn cpu_load_unknown_zero_sorted_last() -> Result<(), Error> {
     .await?;
 
     // Set only one worker's load; the other stays at default 0 (unknown).
-    scheduler.update_worker_load(&worker_id_known, 60).await?;
+    scheduler.update_worker_load(&worker_id_known, 60, 0, 0).await?;
     // worker_unknown stays at cpu_load_pct=0.
 
     // Submit an action.
