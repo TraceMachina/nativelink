@@ -109,7 +109,28 @@ pub enum StoreSpec {
     ///   }
     ///   ```
     ///
-    /// 3. **`NetApp` ONTAP S3**
+    /// 3. **Azure Blob Store:**
+    ///    Azure Blob store will use Microsoft's Azure Blob service as a
+    ///    backend to store the files. This configuration can be used to
+    ///    share files across multiple instances.
+    ///
+    ///   **Example JSON Config:**
+    ///   ```json
+    ///   "experimental_cloud_object_store": {
+    ///     "provider": "azure",
+    ///     "account_name": "cloudshell1393657559",
+    ///     "container": "simple-test-container",
+    ///     "key_prefix": "folder/",
+    ///     "retry": {
+    ///         "max_retries": 6,
+    ///         "delay": 0.3,
+    ///         "jitter": 0.5
+    ///     },
+    ///     "multipart_max_concurrent_uploads": 10
+    ///   }
+    ///   ```
+    ///
+    /// 4. **`NetApp` ONTAP S3**
     ///    `NetApp` ONTAP S3 store will use ONTAP's S3-compatible storage as a backend
     ///    to store files. This store is specifically configured for ONTAP's S3 requirements
     ///    including custom TLS configuration, credentials management, and proper vserver
@@ -922,6 +943,7 @@ pub struct EvictionPolicy {
 pub enum ExperimentalCloudObjectSpec {
     Aws(ExperimentalAwsSpec),
     Gcs(ExperimentalGcsSpec),
+    Azure(ExperimentalAzureSpec),
     Ontap(ExperimentalOntapS3Spec),
 }
 
@@ -972,6 +994,33 @@ pub struct ExperimentalGcsSpec {
     /// Error if authentication was not found.
     #[serde(default, deserialize_with = "convert_boolean_with_shellexpand")]
     pub authentication_required: bool,
+
+    /// Connection timeout in milliseconds.
+    /// Default: 3000
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub connection_timeout_s: u64,
+
+    /// Read timeout in milliseconds.
+    /// Default: 3000
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub read_timeout_s: u64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct ExperimentalAzureSpec {
+    /// The Azure Storage account name.
+    #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
+    pub account_name: String,
+
+    /// The container name to use as the backend.
+    #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
+    pub container: String,
+
+    /// Common retry and upload configuration.
+    #[serde(flatten)]
+    pub common: CommonObjectSpec,
 
     /// Connection timeout in milliseconds.
     /// Default: 3000
