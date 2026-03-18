@@ -335,6 +335,24 @@ impl From<url::ParseError> for Error {
     }
 }
 
+impl From<mongodb::error::Error> for Error {
+    fn from(err: mongodb::error::Error) -> Self {
+        Self::from_std_err(Code::Internal, &err)
+    }
+}
+
+impl From<reqwest::Error> for Error {
+    fn from(err: reqwest::Error) -> Self {
+        Self::from_std_err(Code::Internal, &err)
+    }
+}
+
+impl From<zip::result::ZipError> for Error {
+    fn from(err: zip::result::ZipError) -> Self {
+        Self::from_std_err(Code::Internal, &err)
+    }
+}
+
 pub trait ResultExt<T> {
     /// # Errors
     ///
