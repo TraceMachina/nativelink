@@ -83,6 +83,17 @@ impl Error {
         }
     }
 
+    #[must_use]
+    pub fn from_std_err(code: Code, mut err: &dyn core::error::Error) -> Self {
+        let mut messages = vec![format!("{err}")];
+        while let Some(src) = err.source() {
+            messages.push(format!("{src}"));
+            err = src;
+        }
+        messages.reverse();
+        Self::new_with_messages(code, messages)
+    }
+
     #[inline]
     #[must_use]
     pub fn append<S: Into<String>>(mut self, msg: S) -> Self {
@@ -162,37 +173,37 @@ impl core::fmt::Display for Error {
 
 impl From<prost::DecodeError> for Error {
     fn from(err: prost::DecodeError) -> Self {
-        make_err!(Code::Internal, "{}", err.to_string())
+        Self::from_std_err(Code::Internal, &err)
     }
 }
 
 impl From<prost::EncodeError> for Error {
     fn from(err: prost::EncodeError) -> Self {
-        make_err!(Code::Internal, "{}", err.to_string())
+        Self::from_std_err(Code::Internal, &err)
     }
 }
 
 impl From<prost::UnknownEnumValue> for Error {
     fn from(err: prost::UnknownEnumValue) -> Self {
-        make_err!(Code::Internal, "{}", err.to_string())
+        Self::from_std_err(Code::Internal, &err)
     }
 }
 
 impl From<core::num::TryFromIntError> for Error {
     fn from(err: core::num::TryFromIntError) -> Self {
-        make_err!(Code::InvalidArgument, "{}", err.to_string())
+        Self::from_std_err(Code::InvalidArgument, &err)
     }
 }
 
 impl From<tokio::task::JoinError> for Error {
     fn from(err: tokio::task::JoinError) -> Self {
-        make_err!(Code::Internal, "{}", err.to_string())
+        Self::from_std_err(Code::Internal, &err)
     }
 }
 
 impl<T> From<PoisonError<MutexGuard<'_, T>>> for Error {
     fn from(err: PoisonError<MutexGuard<'_, T>>) -> Self {
-        make_err!(Code::Internal, "{}", err.to_string())
+        Self::from_std_err(Code::Internal, &err)
     }
 }
 
@@ -209,7 +220,7 @@ impl From<serde_json5::Error> for Error {
                         msg
                     )
                 } else {
-                    make_err!(Code::Internal, "{}", msg)
+                    Self::new(Code::Internal, msg)
                 }
             }
         }
@@ -218,7 +229,7 @@ impl From<serde_json5::Error> for Error {
 
 impl From<core::num::ParseIntError> for Error {
     fn from(err: core::num::ParseIntError) -> Self {
-        make_err!(Code::InvalidArgument, "{}", err.to_string())
+        Self::from_std_err(Code::InvalidArgument, &err)
     }
 }
 
@@ -231,19 +242,19 @@ impl From<core::convert::Infallible> for Error {
 
 impl From<TimestampError> for Error {
     fn from(err: TimestampError) -> Self {
-        make_err!(Code::InvalidArgument, "{}", err)
+        Self::from_std_err(Code::InvalidArgument, &err)
     }
 }
 
 impl From<AcquireError> for Error {
     fn from(err: AcquireError) -> Self {
-        make_err!(Code::Internal, "{}", err)
+        Self::from_std_err(Code::Internal, &err)
     }
 }
 
 impl From<Utf8Error> for Error {
     fn from(err: Utf8Error) -> Self {
-        make_err!(Code::Internal, "{}", err)
+        Self::from_std_err(Code::Internal, &err)
     }
 }
 
@@ -284,7 +295,7 @@ impl From<redis::RedisError> for Error {
 
 impl From<tonic::Status> for Error {
     fn from(status: tonic::Status) -> Self {
-        make_err!(status.code(), "{}", status.to_string())
+        Self::new(status.code(), status.to_string())
     }
 }
 
@@ -295,32 +306,50 @@ impl From<Error> for tonic::Status {
 }
 
 impl From<walkdir::Error> for Error {
-    fn from(value: walkdir::Error) -> Self {
-        Self::new(Code::Internal, value.to_string())
+    fn from(err: walkdir::Error) -> Self {
+        Self::from_std_err(Code::Internal, &err)
     }
 }
 
 impl From<uuid::Error> for Error {
-    fn from(value: uuid::Error) -> Self {
-        Self::new(Code::Internal, value.to_string())
+    fn from(err: uuid::Error) -> Self {
+        Self::from_std_err(Code::Internal, &err)
     }
 }
 
 impl From<rustls_pki_types::pem::Error> for Error {
-    fn from(value: rustls_pki_types::pem::Error) -> Self {
-        Self::new(Code::Internal, value.to_string())
+    fn from(err: rustls_pki_types::pem::Error) -> Self {
+        Self::from_std_err(Code::Internal, &err)
     }
 }
 
 impl From<tokio::time::error::Elapsed> for Error {
-    fn from(value: tokio::time::error::Elapsed) -> Self {
-        Self::new(Code::DeadlineExceeded, value.to_string())
+    fn from(err: tokio::time::error::Elapsed) -> Self {
+        Self::from_std_err(Code::DeadlineExceeded, &err)
     }
 }
 
 impl From<url::ParseError> for Error {
-    fn from(value: url::ParseError) -> Self {
-        Self::new(Code::Internal, value.to_string())
+    fn from(err: url::ParseError) -> Self {
+        Self::from_std_err(Code::Internal, &err)
+    }
+}
+
+impl From<mongodb::error::Error> for Error {
+    fn from(err: mongodb::error::Error) -> Self {
+        Self::from_std_err(Code::Internal, &err)
+    }
+}
+
+impl From<reqwest::Error> for Error {
+    fn from(err: reqwest::Error) -> Self {
+        Self::from_std_err(Code::Internal, &err)
+    }
+}
+
+impl From<zip::result::ZipError> for Error {
+    fn from(err: zip::result::ZipError) -> Self {
+        Self::from_std_err(Code::Internal, &err)
     }
 }
 

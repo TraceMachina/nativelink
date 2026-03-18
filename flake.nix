@@ -297,6 +297,26 @@
           (nightlyCraneLibFor p).cargoLlvmCov (coverageArgs
             // {
               cargoArtifacts = nightlyCargoArtifactsFor p;
+              preConfigurePhases = ["tempHome"];
+              tempHome = ''
+                # Default home at this point is /homeless-shelter, which doesn't exist and so breaks things like
+                # the Mongo downloader
+                echo "HOME was ''${HOME}"
+                export HOME=$(mktemp -d fake-homeXXXX --tmpdir)
+                echo "HOME is now ''${HOME}"
+
+                # FIXME: This is a giant pile of hacks, as what we should be doing is downloading mongodb and patching it to work with
+                # Nix. Several hours of patchelf rummaging later, hitting issues like "_Unwind_GetRegionStart: symbol not found" we
+                # instead have this hacky workaround. It adds a symlink to a Nix mongod where the extractor code expects to find it,
+                # which will work. This is the wrong version (7.0.16 v.s. 7.0.11 currently, so not so bad) but TBH our codebase is mostly
+                # fairly version agnostic so far and 7.0.11 is picked out of the air as the one we've used elsewhere.
+
+                mkdir -p $HOME/.cache/mongo/extracted/7.0.11/mongodb-linux-x86_64-ubuntu2204-7.0.11/bin
+                touch $HOME/.cache/mongo/extracted/7.0.11/extracted.marker # As needed by nativelink-store/tests/mongo_runner/mod.rs
+                export MONGOD=$HOME/.cache/mongo/extracted/7.0.11/mongodb-linux-x86_64-ubuntu2204-7.0.11/bin/mongod
+                ln -s ${p.mongodb}/bin/mongod ''${MONGOD}
+                ''${MONGOD} --version
+              '';
               cargoExtraArgs = builtins.concatStringsSep " " [
                 "--all"
                 "--locked"
