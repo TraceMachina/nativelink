@@ -946,9 +946,31 @@ fn dump_thread_stacks() {
     nativelink_util::stall_detector::dump_thread_stacks("runtime-watchdog");
 }
 
+/// Sets the current thread's QoS class to USER_INITIATED on macOS so the
+/// kernel prefers scheduling on performance cores instead of efficiency cores.
+#[cfg(target_os = "macos")]
+fn set_qos_user_initiated() {
+    const QOS_CLASS_USER_INITIATED: u32 = 0x19;
+    unsafe extern "C" {
+        fn pthread_set_qos_class_self_np(qos_class: u32, relative_priority: i32) -> i32;
+    }
+    let ret = unsafe { pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0) };
+    if ret != 0 {
+        eprintln!("warning: failed to set QoS to USER_INITIATED: {ret}");
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn set_qos_user_initiated() {}
+
 fn main() -> Result<(), Box<dyn core::error::Error>> {
+    // Set QoS before runtime creation so tokio worker threads inherit
+    // P-core scheduling preference via pthread_create QoS inheritance.
+    set_qos_user_initiated();
+
     #[expect(clippy::disallowed_methods, reason = "starting main runtime")]
     let runtime = tokio::runtime::Builder::new_multi_thread()
+        .on_thread_start(set_qos_user_initiated)
         .enable_all()
         .build()?;
 

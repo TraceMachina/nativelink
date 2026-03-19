@@ -289,6 +289,17 @@ fn compute_pct(prev: &cpu_impl::CpuTimes, curr: &cpu_impl::CpuTimes) -> u32 {
 }
 
 fn cpu_sample_loop() {
+    // Monitoring thread — downgrade to UTILITY QoS so it doesn't
+    // compete with real work for P-cores.
+    #[cfg(target_os = "macos")]
+    {
+        const QOS_CLASS_UTILITY: u32 = 0x11;
+        unsafe extern "C" {
+            fn pthread_set_qos_class_self_np(qos_class: u32, relative_priority: i32) -> i32;
+        }
+        unsafe { pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0) };
+    }
+
     // Try per-type sampling first (macOS with host_processor_info).
     #[cfg(target_os = "macos")]
     {
@@ -355,6 +366,7 @@ fn get_p_core_load_pct() -> u32 {
 fn get_e_core_load_pct() -> u32 {
     E_CORE_PCT.load(Ordering::Relaxed)
 }
+
 
 /// Build the advertised gRPC endpoint for peer blob sharing.
 /// Uses the machine's hostname so a single config works across all workers.
