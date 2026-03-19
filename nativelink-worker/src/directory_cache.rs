@@ -685,11 +685,12 @@ impl DirectoryCache {
                         &temp_path,
                     )
                     .await;
-                    // Validate symlink targets still exist — they could have been
-                    // evicted between the existence check and now.
+                    // Validate symlinked subtrees contain all expected files.
+                    // A cached subtree directory can exist but be incomplete if the
+                    // cache entry was written during an interrupted construction.
                     let valid = if subtree_result.is_ok() {
                         let mut all_ok = true;
-                        for cached_path in subtree_hits.values() {
+                        'outer: for (subtree_digest, cached_path) in &subtree_hits {
                             if !cached_path.exists() {
                                 warn!(
                                     path = %cached_path.display(),
@@ -697,6 +698,32 @@ impl DirectoryCache {
                                 );
                                 all_ok = false;
                                 break;
+                            }
+                            // Walk the subtree proto and verify every file exists.
+                            let mut check_queue = std::collections::VecDeque::new();
+                            check_queue.push_back((*subtree_digest, cached_path.clone()));
+                            while let Some((dd, dp)) = check_queue.pop_front() {
+                                if let Some(dir) = tree.get(&dd) {
+                                    for f in &dir.files {
+                                        let fp = dp.join(&f.name);
+                                        if !fp.exists() {
+                                            warn!(
+                                                path = %fp.display(),
+                                                subtree = %cached_path.display(),
+                                                "Subtree symlink target missing file"
+                                            );
+                                            all_ok = false;
+                                            break 'outer;
+                                        }
+                                    }
+                                    for sd in &dir.directories {
+                                        if let Some(ref d) = sd.digest {
+                                            if let Ok(di) = DigestInfo::try_from(d.clone()) {
+                                                check_queue.push_back((di, dp.join(&sd.name)));
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                         all_ok
