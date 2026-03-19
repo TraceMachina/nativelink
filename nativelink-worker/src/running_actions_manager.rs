@@ -647,14 +647,19 @@ async fn process_side_channel_file(
         .map_err(Error::from)
         .err_tip(|| "Could not convert contents of side channel file (json) to SideChannelInfo")?;
     Ok(side_channel_info.failure.map(|failure| match failure {
-        SideChannelFailureReason::Timeout => Error::new(
-            Code::DeadlineExceeded,
-            format!(
-                "Command '{}' timed out after {} seconds",
-                args.join(OsStr::new(" ")).to_string_lossy(),
-                timeout.as_secs_f32()
-            ),
-        ),
+        SideChannelFailureReason::Timeout => {
+            let join_args = args.join(OsStr::new(" "));
+            let command = join_args.to_string_lossy();
+            warn!(%command, timeout=timeout.as_secs_f32(), "Side channel timeout for command");
+            Error::new(
+                Code::DeadlineExceeded,
+                format!(
+                    "Command '{}' timed out after {} seconds",
+                    command,
+                    timeout.as_secs_f32()
+                ),
+            )
+        }
     }))
 }
 
@@ -1612,6 +1617,7 @@ impl RunningAction for RunningActionImpl {
         })
         .await
         .map_err(|err| {
+            warn!(%operation_id, timeout=upload_timeout.as_secs(), "Upload results timeout");
             Error::from_std_err(Code::DeadlineExceeded, &err).append(format!(
                 "Upload results timed out after {}s for operation {:?}",
                 upload_timeout.as_secs(),
@@ -2158,6 +2164,7 @@ impl RunningActionsManagerImpl {
 
             if start.elapsed() > Self::MAX_WAIT {
                 self.metrics.cleanup_wait_timeouts.inc();
+                warn!(%operation_id, waited=?start.elapsed(), "Timeout waiting for previous operation cleanup");
                 return Err(make_err!(
                     Code::DeadlineExceeded,
                     "Timeout waiting for previous operation cleanup: {} (waited {:?})",
