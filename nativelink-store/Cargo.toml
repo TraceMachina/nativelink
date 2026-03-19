@@ -157,7 +157,7 @@ tempfile = { version = "3.8.1", default-features = false }
 tracing-test = { version = "0.2.5", default-features = false, features = [
   "no-env-filter",
 ] }
-zip = { version = "7.2.0", default-features = false, features = [
+zip = { version = "8.0.0", default-features = false, features = [
   "deflate-flate2-zlib-rs",
 ] }
 

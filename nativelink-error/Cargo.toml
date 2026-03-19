@@ -39,4 +39,4 @@ tonic = { version = "0.13.0", features = [
 url = { version = "2.5.7", default-features = false }
 uuid = { version = "1.16.0", default-features = false, features = ["std"] }
 walkdir = { version = "2.5.0", default-features = false }
-zip = { version = "7.2.0", default-features = false }
+zip = { version = "8.0.0", default-features = false }
