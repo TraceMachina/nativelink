@@ -176,6 +176,25 @@ impl GcsClient {
         })
     }
 
+    /// Create a mock GCS client for testing
+    pub fn new_mock(spec: &ExperimentalGcsSpec, endpoint: String) -> Result<Self, Error> {
+        let mut client_config = ClientConfig::anonymous(Self::create_client_config(spec)?);
+        client_config.storage_endpoint = endpoint;
+
+        let client = Client::new(client_config);
+        let resumable_chunk_size = spec.resumable_chunk_size.unwrap_or(CHUNK_SIZE);
+        let max_connections = spec
+            .common
+            .multipart_max_concurrent_uploads
+            .unwrap_or(DEFAULT_CONCURRENT_UPLOADS);
+
+        Ok(Self {
+            client,
+            resumable_chunk_size,
+            semaphore: Arc::new(Semaphore::new(max_connections)),
+        })
+    }
+
     /// Generic method to execute operations with connection limiting
     async fn with_connection<F, Fut, T>(&self, operation: F) -> Result<T, Error>
     where
@@ -218,6 +237,17 @@ impl GcsClient {
                 401 | 403 => Code::PermissionDenied,
                 408 | 429 => Code::ResourceExhausted,
                 500..=599 => Code::Unavailable,
+                _ => Code::Unknown,
+            },
+            GcsError::HttpClient(resp) => match resp.status() {
+                Some(http::StatusCode::NOT_FOUND) => Code::NotFound,
+                Some(http::StatusCode::UNAUTHORIZED | http::StatusCode::FORBIDDEN) => {
+                    Code::PermissionDenied
+                }
+                Some(http::StatusCode::REQUEST_TIMEOUT | http::StatusCode::TOO_MANY_REQUESTS) => {
+                    Code::ResourceExhausted
+                }
+                Some(code) if code.is_server_error() => Code::Unavailable,
                 _ => Code::Unknown,
             },
             _ => Code::Internal,
