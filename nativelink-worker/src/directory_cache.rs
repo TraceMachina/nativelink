@@ -678,70 +678,14 @@ impl DirectoryCache {
             // as a template, patching in only the differences.
             if let Some(tree) = &resolved_tree {
                 if !subtree_hits.is_empty() {
-                    let subtree_result = self.construct_with_subtrees_direct(
+                    self.construct_with_subtrees_direct(
                         &digest,
                         tree,
                         &subtree_hits,
                         &temp_path,
                     )
-                    .await;
-                    // Validate symlinked subtrees contain all expected files.
-                    // A cached subtree directory can exist but be incomplete if the
-                    // cache entry was written during an interrupted construction.
-                    let valid = if subtree_result.is_ok() {
-                        let mut all_ok = true;
-                        'outer: for (subtree_digest, cached_path) in &subtree_hits {
-                            if !cached_path.exists() {
-                                warn!(
-                                    path = %cached_path.display(),
-                                    "Subtree symlink target evicted during construction"
-                                );
-                                all_ok = false;
-                                break;
-                            }
-                            // Walk the subtree proto and verify every file exists.
-                            let mut check_queue = std::collections::VecDeque::new();
-                            check_queue.push_back((*subtree_digest, cached_path.clone()));
-                            while let Some((dd, dp)) = check_queue.pop_front() {
-                                if let Some(dir) = tree.get(&dd) {
-                                    for f in &dir.files {
-                                        let fp = dp.join(&f.name);
-                                        if !fp.exists() {
-                                            warn!(
-                                                path = %fp.display(),
-                                                subtree = %cached_path.display(),
-                                                "Subtree symlink target missing file"
-                                            );
-                                            all_ok = false;
-                                            break 'outer;
-                                        }
-                                    }
-                                    for sd in &dir.directories {
-                                        if let Some(ref d) = sd.digest {
-                                            if let Ok(di) = DigestInfo::try_from(d.clone()) {
-                                                check_queue.push_back((di, dp.join(&sd.name)));
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        all_ok
-                    } else {
-                        false
-                    };
-                    if !valid {
-                        // Clean up partial construction and fall back to full download.
-                        warn!(
-                            hash = %&digest.packed_hash().to_string()[..12],
-                            "DirectoryCache direct-use: subtree symlink(s) broken, falling back to full construction"
-                        );
-                        let _ = fs::remove_dir_all(&temp_path).await;
-                        fs::create_dir_all(&temp_path).await
-                            .err_tip(|| "Recreating temp dir after broken symlink fallback")?;
-                        self.construct_full(&digest, &temp_path).await
-                            .err_tip(|| "Failed full construction after broken symlink fallback")?;
-                    }
+                    .await
+                    .err_tip(|| "Failed subtree-aware direct-use construction")?;
                 } else {
                     // No direct subtree hits -- try fuzzy matching.
                     let tree_digests: HashSet<DigestInfo> = tree.keys().copied().collect();
