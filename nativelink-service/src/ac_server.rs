@@ -122,10 +122,15 @@ impl AcServer {
                 Ok(Response::new(action_result))
             }
             Err(mut e) => {
+                let elapsed = get_start.elapsed();
                 if e.code == Code::NotFound {
                     // `get_action_result` is frequent to get NotFound errors, so remove all
                     // messages to save space.
                     e.messages.clear();
+                    info!(
+                        elapsed_us = elapsed.as_micros() as u64,
+                        "AC read NotFound",
+                    );
                 }
                 Err(e)
             }

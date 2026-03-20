@@ -2350,7 +2350,13 @@ impl RunningActionImpl {
                 ))
                 .await?;
         }
-        debug!(?command, "Worker received command");
+        // Log command args but NOT environment_variables — they may contain secrets.
+        debug!(
+            args = ?command.arguments,
+            output_paths = ?command.output_paths,
+            working_directory = ?command.working_directory,
+            "Worker received command"
+        );
         {
             let mut state = self.state.lock();
             state.command_proto = Some(command);
