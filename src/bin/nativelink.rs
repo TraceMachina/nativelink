@@ -565,7 +565,11 @@ async fn inner_main(
             } else {
                 WebPkiClientVerifier::no_client_auth()
             };
-            let mut config = TlsServerConfig::builder()
+            let mut config = TlsServerConfig::builder_with_provider(
+                    tokio_rustls::rustls::crypto::aws_lc_rs::default_provider().into(),
+                )
+                .with_safe_default_protocol_versions()
+                .map_err(|e| make_err!(Code::Internal, "TLS version error: {e:?}"))?
                 .with_client_cert_verifier(verifier)
                 .with_single_cert(certs, key)
                 .map_err(|e| {
