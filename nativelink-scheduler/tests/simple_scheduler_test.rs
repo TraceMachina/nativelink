@@ -3662,3 +3662,311 @@ async fn cpu_load_falls_back_to_lru_when_no_load_data() -> Result<(), Error> {
 
     Ok(())
 }
+
+// ---------------------------------------------------------------
+// P/E core scheduling preference tests
+// ---------------------------------------------------------------
+
+#[nativelink_test]
+async fn p_core_preference_test() -> Result<(), Error> {
+    // Two workers with per-core-type load data.
+    // Worker A: p=30, e=80, aggregate=50 -> effective_load_score = 30 (P-cores available, score = p_load)
+    // Worker B: p=80, e=10, aggregate=40 -> effective_load_score = 80 (P-cores available, score = p_load)
+    // Despite Worker B having lower aggregate load (40 < 50), Worker A should be
+    // preferred because its P-core load is lower (30 < 80).
+    let worker_id_a = WorkerId("worker_pcore_a".to_string());
+    let worker_id_b = WorkerId("worker_pcore_b".to_string());
+
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec::default(),
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+        None, // cas_store
+        None, // locality_map
+    );
+
+    let mut rx_a = setup_new_worker(
+        &scheduler,
+        worker_id_a.clone(),
+        PlatformProperties::default(),
+    )
+    .await?;
+    let mut rx_b = setup_new_worker(
+        &scheduler,
+        worker_id_b.clone(),
+        PlatformProperties::default(),
+    )
+    .await?;
+
+    // Set per-core-type loads: (cpu_load_pct, p_core_load_pct, e_core_load_pct)
+    // Worker A: aggregate=50, p=30, e=80 -> effective_load_score = 30
+    scheduler
+        .update_worker_load(&worker_id_a, 50, 30, 80)
+        .await?;
+    // Worker B: aggregate=40, p=80, e=10 -> effective_load_score = 80
+    scheduler
+        .update_worker_load(&worker_id_b, 40, 80, 10)
+        .await?;
+
+    // Submit an action.
+    let action_digest = DigestInfo::new([40u8; 32], 512);
+    let insert_timestamp = make_system_time(1);
+    let mut action_listener =
+        setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp).await?;
+
+    // Determine which worker received the action.
+    let (selected_worker_id, _se) = tokio::select! {
+        msg = rx_a.recv() => {
+            let se = match msg.unwrap().update {
+                Some(update_for_worker::Update::StartAction(se)) => se,
+                v => panic!("Expected StartAction on worker_a, got: {v:?}"),
+            };
+            (worker_id_a.clone(), se)
+        }
+        msg = rx_b.recv() => {
+            let se = match msg.unwrap().update {
+                Some(update_for_worker::Update::StartAction(se)) => se,
+                v => panic!("Expected StartAction on worker_b, got: {v:?}"),
+            };
+            (worker_id_b.clone(), se)
+        }
+    };
+
+    assert_eq!(
+        selected_worker_id, worker_id_a,
+        "Worker A (p_core_load=30, effective=30) should be preferred over Worker B (p_core_load=80, effective=80) despite B having lower aggregate load"
+    );
+
+    assert_eq!(
+        action_listener.changed().await.unwrap().0.stage,
+        ActionStage::Executing
+    );
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------
+// Cache affinity load cutoff tests
+// ---------------------------------------------------------------
+
+#[nativelink_test]
+async fn cache_affinity_load_cutoff_test() -> Result<(), Error> {
+    // Worker A: has the action's input_root_digest cached but is overloaded
+    //           (P-cores saturated, effective_load_score > 99).
+    // Worker B: no cache hit, low load (effective_load_score = 20).
+    //
+    // Worker A's effective_load_score(100, 20, 95) = 100 + 20 = 120 which
+    // exceeds the CACHE_AFFINITY_LOAD_CUTOFF of 99. Since A is the only
+    // cache match, the soft fallback picks A (an overloaded cache-hot worker
+    // is still preferred over a completely cache-cold worker). This validates
+    // that the soft-fallback path is exercised when all cache matches are
+    // above the cutoff.
+    let worker_id_a = WorkerId("worker_cache_a".to_string());
+    let worker_id_b = WorkerId("worker_cache_b".to_string());
+
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec::default(),
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+        None, // cas_store
+        None, // locality_map
+    );
+
+    let mut rx_a = setup_new_worker(
+        &scheduler,
+        worker_id_a.clone(),
+        PlatformProperties::default(),
+    )
+    .await?;
+    let mut rx_b = setup_new_worker(
+        &scheduler,
+        worker_id_b.clone(),
+        PlatformProperties::default(),
+    )
+    .await?;
+
+    // The action's input_root_digest.
+    let input_root = DigestInfo::new([50u8; 32], 1024);
+
+    // Worker A: cache hit for input_root, but P-cores saturated.
+    // effective_load_score(100, 20, 95) = 100 + 20 = 120 (> 99 cutoff)
+    scheduler
+        .update_worker_load(&worker_id_a, 95, 100, 20)
+        .await?;
+    scheduler
+        .update_cached_subtrees(&worker_id_a, true, vec![input_root], vec![], vec![])
+        .await?;
+
+    // Worker B: no cache hit, low load.
+    // effective_load_score(0, 0, 20) = 20 (aggregate only, P-core tier)
+    scheduler
+        .update_worker_load(&worker_id_b, 20, 0, 0)
+        .await?;
+
+    // Submit an action whose input_root_digest matches Worker A's cache.
+    let action_digest = DigestInfo::new([51u8; 32], 512);
+    let insert_timestamp = make_system_time(2);
+    let mut action_info = make_base_action_info(insert_timestamp, action_digest);
+    Arc::make_mut(&mut action_info).input_root_digest = input_root;
+    let client_id = OperationId::default();
+    let mut action_listener = scheduler.add_action(client_id, action_info).await?;
+    tokio::task::yield_now().await;
+
+    // Determine which worker received the action.
+    let (selected_worker_id, _se) = tokio::select! {
+        msg = rx_a.recv() => {
+            let se = match msg.unwrap().update {
+                Some(update_for_worker::Update::StartAction(se)) => se,
+                v => panic!("Expected StartAction on worker_a, got: {v:?}"),
+            };
+            (worker_id_a.clone(), se)
+        }
+        msg = rx_b.recv() => {
+            let se = match msg.unwrap().update {
+                Some(update_for_worker::Update::StartAction(se)) => se,
+                v => panic!("Expected StartAction on worker_b, got: {v:?}"),
+            };
+            (worker_id_b.clone(), se)
+        }
+    };
+
+    // Worker A has a cache hit but is overloaded (score 120 > cutoff 99).
+    // The soft fallback picks A anyway because a cache-hot overloaded worker
+    // is still preferred over a completely cache-cold worker in the current
+    // implementation. This validates the soft-fallback path: overloaded
+    // cache matches are used when no under-cutoff cache match exists.
+    assert_eq!(
+        selected_worker_id, worker_id_a,
+        "Worker A (overloaded but cache-hot) should still be selected via soft fallback over cache-cold Worker B"
+    );
+
+    assert_eq!(
+        action_listener.changed().await.unwrap().0.stage,
+        ActionStage::Executing
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn cache_affinity_soft_fallback_test() -> Result<(), Error> {
+    // Two workers, BOTH have cache hits for the action's input_root_digest,
+    // and BOTH have effective_load_score > 99 (overloaded).
+    // The soft fallback should pick the one with the lower load score
+    // (least-loaded among overloaded cache matches).
+    //
+    // Worker A: cache hit, p=100, e=50, agg=95 -> score = 100+50 = 150
+    // Worker B: cache hit, p=100, e=20, agg=90 -> score = 100+20 = 120
+    // Both > 99, so both go into best_overloaded tracking.
+    // Worker B (score 120) should win as the least-loaded overloaded match.
+    let worker_id_a = WorkerId("worker_fallback_a".to_string());
+    let worker_id_b = WorkerId("worker_fallback_b".to_string());
+
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec::default(),
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+        None, // cas_store
+        None, // locality_map
+    );
+
+    let mut rx_a = setup_new_worker(
+        &scheduler,
+        worker_id_a.clone(),
+        PlatformProperties::default(),
+    )
+    .await?;
+    let mut rx_b = setup_new_worker(
+        &scheduler,
+        worker_id_b.clone(),
+        PlatformProperties::default(),
+    )
+    .await?;
+
+    // The action's input_root_digest.
+    let input_root = DigestInfo::new([60u8; 32], 2048);
+
+    // Worker A: cache hit, heavily overloaded.
+    // effective_load_score(100, 50, 95) = 100 + 50 = 150
+    scheduler
+        .update_worker_load(&worker_id_a, 95, 100, 50)
+        .await?;
+    scheduler
+        .update_cached_subtrees(&worker_id_a, true, vec![input_root], vec![], vec![])
+        .await?;
+
+    // Worker B: cache hit, moderately overloaded (still > 99).
+    // effective_load_score(100, 20, 90) = 100 + 20 = 120
+    scheduler
+        .update_worker_load(&worker_id_b, 90, 100, 20)
+        .await?;
+    scheduler
+        .update_cached_subtrees(&worker_id_b, true, vec![input_root], vec![], vec![])
+        .await?;
+
+    // Submit an action whose input_root_digest matches both workers' caches.
+    let action_digest = DigestInfo::new([61u8; 32], 512);
+    let insert_timestamp = make_system_time(3);
+    let mut action_info = make_base_action_info(insert_timestamp, action_digest);
+    Arc::make_mut(&mut action_info).input_root_digest = input_root;
+    let client_id = OperationId::default();
+    let mut action_listener = scheduler.add_action(client_id, action_info).await?;
+    tokio::task::yield_now().await;
+
+    // Determine which worker received the action.
+    let (selected_worker_id, _se) = tokio::select! {
+        msg = rx_a.recv() => {
+            let se = match msg.unwrap().update {
+                Some(update_for_worker::Update::StartAction(se)) => se,
+                v => panic!("Expected StartAction on worker_a, got: {v:?}"),
+            };
+            (worker_id_a.clone(), se)
+        }
+        msg = rx_b.recv() => {
+            let se = match msg.unwrap().update {
+                Some(update_for_worker::Update::StartAction(se)) => se,
+                v => panic!("Expected StartAction on worker_b, got: {v:?}"),
+            };
+            (worker_id_b.clone(), se)
+        }
+    };
+
+    // Both workers are overloaded (score > 99), so neither enters `best`.
+    // Both enter `best_overloaded` tracking. The soft fallback picks the
+    // least-loaded: Worker B (score 120) beats Worker A (score 150).
+    assert_eq!(
+        selected_worker_id, worker_id_b,
+        "Worker B (score=120) should be preferred over Worker A (score=150) among overloaded cache matches (soft fallback picks least-loaded)"
+    );
+
+    assert_eq!(
+        action_listener.changed().await.unwrap().0.stage,
+        ActionStage::Executing
+    );
+
+    Ok(())
+}

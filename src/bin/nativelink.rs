@@ -792,6 +792,8 @@ async fn inner_main(
                 Ok(certs)
             }
 
+            // WebPkiClientVerifier::builder() needs a process-level crypto provider.
+            let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
             let verifier = if let Some(client_ca_file) = &h3_config.client_ca_file {
                 let mut client_auth_roots = RootCertStore::empty();
                 for cert in read_cert_quic(client_ca_file)? {
@@ -1009,6 +1011,10 @@ fn set_qos_user_initiated() {
 fn set_qos_user_initiated() {}
 
 fn main() -> Result<(), Box<dyn core::error::Error>> {
+    // Install the rustls crypto provider early so WebPkiClientVerifier::builder()
+    // and other rustls APIs that need a process-level provider can find it.
+    let _ = tokio_rustls::rustls::crypto::aws_lc_rs::default_provider().install_default();
+
     // Set QoS before runtime creation so tokio worker threads inherit
     // P-core scheduling preference via pthread_create QoS inheritance.
     set_qos_user_initiated();
