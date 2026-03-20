@@ -549,6 +549,12 @@ pub struct Http3Listener {
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub key_file: String,
 
+    /// Path to client CA certificate file for mTLS verification.
+    /// When set, the QUIC server will require clients to present a
+    /// certificate signed by this CA.
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub client_ca_file: Option<String>,
+
     /// Maximum number of bytes to decode on each inbound gRPC message.
     /// Default: 4 MiB
     #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
@@ -595,6 +601,18 @@ pub struct HttpListener {
     /// Default: None
     #[serde(default)]
     pub tls: Option<TlsConfig>,
+
+    /// If true, the server will refuse to start unless TLS is configured
+    /// on this listener. Use this to prevent accidental plaintext exposure
+    /// when TLS is expected (e.g., production deployments).
+    ///
+    /// When TLS is configured, plaintext connections are already rejected
+    /// at the TLS handshake layer -- this option adds a startup-time check
+    /// to catch configuration mistakes early.
+    ///
+    /// Default: false
+    #[serde(default)]
+    pub require_tls: bool,
 }
 
 #[derive(Deserialize, Serialize, Debug)]

@@ -497,6 +497,16 @@ async fn inner_main(
             warn!("No route for {uri}");
             (StatusCode::NOT_FOUND, format!("No route for {uri}"))
         });
+        // Reject startup if require_tls is set but no TLS config is provided.
+        if http_config.require_tls && http_config.tls.is_none() {
+            return Err(make_input_err!(
+                "Listener '{}' on {} has require_tls=true but no TLS configuration. \
+                 Either add a tls block or set require_tls to false",
+                server_cfg.name,
+                http_config.socket_address
+            ));
+        }
+
         // Configure our TLS acceptor if we have TLS configured.
         let maybe_tls_acceptor = http_config.tls.map_or(Ok(None), |tls_config| {
             fn read_cert(cert_file: &str) -> Result<Vec<CertificateDer<'static>>, Error> {
@@ -770,12 +780,43 @@ async fn inner_main(
                 .err_tip(|| "Could not parse PEM key for QUIC")?;
 
             use tokio_rustls::rustls as rustls;
+
+            fn read_cert_quic(cert_file: &str) -> Result<Vec<CertificateDer<'static>>, Error> {
+                let mut cert_reader = std::io::BufReader::new(
+                    std::fs::File::open(cert_file)
+                        .err_tip(|| format!("Could not open cert file {cert_file}"))?,
+                );
+                let certs = CertificateDer::pem_reader_iter(&mut cert_reader)
+                    .collect::<Result<Vec<CertificateDer<'_>>, _>>()
+                    .err_tip(|| format!("Could not extract certs from file {cert_file}"))?;
+                Ok(certs)
+            }
+
+            let verifier = if let Some(client_ca_file) = &h3_config.client_ca_file {
+                let mut client_auth_roots = RootCertStore::empty();
+                for cert in read_cert_quic(client_ca_file)? {
+                    client_auth_roots.add(cert).map_err(|e| {
+                        make_err!(Code::Internal, "Could not read QUIC client CA: {e:?}")
+                    })?;
+                }
+                WebPkiClientVerifier::builder(Arc::new(client_auth_roots))
+                    .build()
+                    .map_err(|e| {
+                        make_err!(
+                            Code::Internal,
+                            "Could not create QUIC WebPkiClientVerifier: {e:?}"
+                        )
+                    })?
+            } else {
+                WebPkiClientVerifier::no_client_auth()
+            };
+
             let mut tls_config = rustls::ServerConfig::builder_with_provider(
                 rustls::crypto::aws_lc_rs::default_provider().into(),
             )
             .with_safe_default_protocol_versions()
             .map_err(|e| make_err!(Code::Internal, "QUIC TLS version error: {e:?}"))?
-            .with_no_client_auth()
+            .with_client_cert_verifier(verifier)
             .with_single_cert(certs, key)
             .map_err(|e| make_err!(Code::Internal, "QUIC TLS config error: {e:?}"))?;
             tls_config.alpn_protocols = vec![b"h3".to_vec()];

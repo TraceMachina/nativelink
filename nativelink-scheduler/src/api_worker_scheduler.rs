@@ -505,7 +505,7 @@ impl ApiWorkerSchedulerImpl {
 
         // Workers above this load score are excluded from cache-affinity
         // tiers — the CPU cost outweighs the I/O savings from cache hits.
-        const CACHE_AFFINITY_LOAD_CUTOFF: u64 = 100;
+        const CACHE_AFFINITY_LOAD_CUTOFF: u64 = 99;
 
         // ── Tier 1: Exact root match ──
         // If a viable worker has the action's input_root_digest in its directory

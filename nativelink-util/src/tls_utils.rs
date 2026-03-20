@@ -28,11 +28,32 @@ pub fn load_client_config(
 
     if config.use_native_roots == Some(true) {
         if config.ca_file.is_some() {
-            warn!("Native root certificates are being used, all certificate files will be ignored");
+            warn!("native root certificates are being used, ca_file will be ignored");
         }
-        return Ok(Some(
-            tonic::transport::ClientTlsConfig::new().with_native_roots(),
-        ));
+        let tls = tonic::transport::ClientTlsConfig::new().with_native_roots();
+        // Apply client identity for mTLS even when using native roots
+        let tls = if let Some(client_certificate) = &config.cert_file {
+            let Some(client_key) = &config.key_file else {
+                return Err(make_err!(
+                    Code::Internal,
+                    "Client certificate specified, but no key"
+                ));
+            };
+            info!("loading client certificate for mTLS with native roots");
+            tls.identity(tonic::transport::Identity::from_pem(
+                std::fs::read_to_string(client_certificate)?,
+                std::fs::read_to_string(client_key)?,
+            ))
+        } else {
+            if config.key_file.is_some() {
+                return Err(make_err!(
+                    Code::Internal,
+                    "Client key specified, but no certificate"
+                ));
+            }
+            tls
+        };
+        return Ok(Some(tls));
     }
 
     let Some(ca_file) = &config.ca_file else {
@@ -309,8 +330,10 @@ pub fn h3_channel(endpoint_config: &GrpcEndpoint) -> Result<QuicChannel, Error> 
             .map_err(|e| make_input_err!("Failed to parse resolved QUIC URI: {e:?}"))?
     };
 
-    // Build rustls ClientConfig with no cert verification (internal network).
-    let mut tls_config = rustls::ClientConfig::builder_with_provider(
+    // Build rustls ClientConfig with no server cert verification (internal network,
+    // self-signed certs). If the endpoint has a client cert+key in tls_config,
+    // present them for mTLS authentication.
+    let tls_builder = rustls::ClientConfig::builder_with_provider(
         rustls::crypto::aws_lc_rs::default_provider().into(),
     )
     .with_safe_default_protocol_versions()
@@ -318,8 +341,47 @@ pub fn h3_channel(endpoint_config: &GrpcEndpoint) -> Result<QuicChannel, Error> 
     .dangerous()
     .with_custom_certificate_verifier(Arc::new(NoCertVerification(
         rustls::crypto::aws_lc_rs::default_provider(),
-    )))
-    .with_no_client_auth();
+    )));
+
+    let mut tls_config = if let Some(tls_cfg) = &endpoint_config.tls_config {
+        if let Some(cert_file) = &tls_cfg.cert_file {
+            let key_file = tls_cfg.key_file.as_ref().ok_or_else(|| {
+                make_err!(
+                    Code::Internal,
+                    "QUIC client certificate specified but no key file"
+                )
+            })?;
+            use rustls::pki_types::pem::PemObject;
+            let cert_pem = std::fs::read(cert_file)
+                .map_err(|e| make_err!(Code::Internal, "Could not read QUIC client cert {cert_file}: {e:?}"))?;
+            let key_pem = std::fs::read(key_file)
+                .map_err(|e| make_err!(Code::Internal, "Could not read QUIC client key {key_file}: {e:?}"))?;
+            let certs: Vec<rustls::pki_types::CertificateDer<'static>> =
+                rustls::pki_types::CertificateDer::pem_reader_iter(&mut &cert_pem[..])
+                    .collect::<Result<_, _>>()
+                    .map_err(|e| make_err!(Code::Internal, "Could not parse QUIC client certs: {e:?}"))?;
+            let key = rustls::pki_types::PrivateKeyDer::from_pem_reader(&mut &key_pem[..])
+                .map_err(|e| make_err!(Code::Internal, "Could not parse QUIC client key: {e:?}"))?;
+            info!(
+                %cert_file,
+                %key_file,
+                "QUIC: loading client certificate for mTLS",
+            );
+            tls_builder
+                .with_client_auth_cert(certs, key)
+                .map_err(|e| make_err!(Code::Internal, "QUIC client auth cert error: {e:?}"))?
+        } else {
+            if tls_cfg.key_file.is_some() {
+                return Err(make_err!(
+                    Code::InvalidArgument,
+                    "QUIC client key_file specified without cert_file"
+                ));
+            }
+            tls_builder.with_no_client_auth()
+        }
+    } else {
+        tls_builder.with_no_client_auth()
+    };
 
     tls_config.enable_early_data = true;
     tls_config.alpn_protocols = vec![b"h3".to_vec()];
