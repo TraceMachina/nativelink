@@ -3,71 +3,16 @@
 
 All notable changes to this project will be documented in this file.
 
-## [1.0.0-rc4](https://github.com/TraceMachina/nativelink/compare/v1.0.0-rc3..v1.0.0-rc4) - 2026-03-13
+## [1.0.0](https://github.com/TraceMachina/nativelink/compare/v0.8.0..v1.0.0) - 2026-03-23
 
 
 
 ### ⛰️  Features
 
+- Implement Azure Blob Store ([#1554](https://github.com/TraceMachina/nativelink/issues/1554)) - ([5d625c2](https://github.com/TraceMachina/nativelink/commit/5d625c228b6a44df6df1ffbf3934763710ab21cb))
+- Add sources to auto error conversion ([#2225](https://github.com/TraceMachina/nativelink/issues/2225)) - ([6cb8d11](https://github.com/TraceMachina/nativelink/commit/6cb8d118953684db53fc5d11d6d41f2b850ac743))
 - Add debug info to connection manager queues ([#2188](https://github.com/TraceMachina/nativelink/issues/2188)) - ([6b6efcf](https://github.com/TraceMachina/nativelink/commit/6b6efcfdfd0488ebb927910e6ee4ef14790f7716))
-
-### 🐛 Bug Fixes
-
-- Handle correctly subscription messages ([#2201](https://github.com/TraceMachina/nativelink/issues/2201)) - ([2ea428b](https://github.com/TraceMachina/nativelink/commit/2ea428bfc66e9f7303108141e3a5ee9a6e84dc0d))
-
-### ⚙️ Miscellaneous
-
-- empty find_missing_blobs can return immediately ([#2217](https://github.com/TraceMachina/nativelink/issues/2217)) - ([dad870a](https://github.com/TraceMachina/nativelink/commit/dad870a41d70208b88b395d6f4121f3d4e1b8828))
-- remove free cloud user ([#2199](https://github.com/TraceMachina/nativelink/issues/2199)) - ([c7109f6](https://github.com/TraceMachina/nativelink/commit/c7109f6d70e049a011c367dfe4018b5cea675b9e))
-
-### ⬆️ Bumps & Version Updates
-
-- Upgrade curl to 8.5.0-2ubuntu10.8 ([#2204](https://github.com/TraceMachina/nativelink/issues/2204)) - ([36a8238](https://github.com/TraceMachina/nativelink/commit/36a823836a8c679bcf751ec64e830f272e4c2e28))
-
-## [1.0.0-rc3](https://github.com/TraceMachina/nativelink/compare/v1.0.0-rc2..v1.0.0-rc3) - 2026-03-06
-
-
-
-### ⛰️  Features
-
 - Add json schema ([#2193](https://github.com/TraceMachina/nativelink/issues/2193)) - ([d926c47](https://github.com/TraceMachina/nativelink/commit/d926c4756a830e38c9b162c388e6fafcba091da7))
-
-### 🐛 Bug Fixes
-
-- Fix Redis to reconnect in Sentinel (Chris Staite) ([#2190](https://github.com/TraceMachina/nativelink/issues/2190)) - ([8783134](https://github.com/TraceMachina/nativelink/commit/87831340af3cfcb3cffbc4f43bc3da9ecf8c8467))
-- Fix worker inflight tasks heading ([#2177](https://github.com/TraceMachina/nativelink/issues/2177)) - ([8ae17ba](https://github.com/TraceMachina/nativelink/commit/8ae17bae0603d66102d171554f331e10a3e9ac9e))
-- Fix all the current clippy lints ([#2174](https://github.com/TraceMachina/nativelink/issues/2174)) - ([23611ca](https://github.com/TraceMachina/nativelink/commit/23611caa3966a1934d6a3a7da0007083bbc75d8b))
-
-### 📚 Documentation
-
-- Document max concurrent writes ([#2169](https://github.com/TraceMachina/nativelink/issues/2169)) - ([cedba0e](https://github.com/TraceMachina/nativelink/commit/cedba0e829daeb6affa601324ca7eacdcd4e7fea))
-- Document RPC timeouts in Redis config ([#2168](https://github.com/TraceMachina/nativelink/issues/2168)) - ([f0d12ff](https://github.com/TraceMachina/nativelink/commit/f0d12ffce777662eb23f898042393a2fac8f2952))
-- Document max inflight tasks ([#2167](https://github.com/TraceMachina/nativelink/issues/2167)) - ([2650680](https://github.com/TraceMachina/nativelink/commit/26506800e0bddfe9dd35008dfda279a2b19604df))
-
-### 🧪 Testing & CI
-
-- Fix Fast slow store Not Found error by returning failed precondition ([#2194](https://github.com/TraceMachina/nativelink/issues/2194)) - ([3354945](https://github.com/TraceMachina/nativelink/commit/3354945b1f0cb9aba7041ad6ffad0bb67def8d4f))
-- Flake update fixes ([#2192](https://github.com/TraceMachina/nativelink/issues/2192)) - ([a7d873a](https://github.com/TraceMachina/nativelink/commit/a7d873aca54ae62f0ce13fbbf3dc7817f9f82efa))
-- pre-commit rustfmt all files ([#2176](https://github.com/TraceMachina/nativelink/issues/2176)) - ([27fa965](https://github.com/TraceMachina/nativelink/commit/27fa9652baf9ed7cdbc248fd6591bf813a790f65))
-
-### ⚙️ Miscellaneous
-
-- Only display Baggage enduser.id when identity is present ([#2197](https://github.com/TraceMachina/nativelink/issues/2197)) - ([86b86e1](https://github.com/TraceMachina/nativelink/commit/86b86e15e8dcc3936a07d22feb10d088dc9ad4ae))
-- Prevent retry loop large uploads ([#2195](https://github.com/TraceMachina/nativelink/issues/2195)) - ([2a2ca64](https://github.com/TraceMachina/nativelink/commit/2a2ca6496af559a91207de3e384e338111138fd1))
-- If all workers are fully allocated, shortcut find workers ([#2130](https://github.com/TraceMachina/nativelink/issues/2130)) - ([faad8bb](https://github.com/TraceMachina/nativelink/commit/faad8bb038fefc439daca73978138b821084648c))
-
-### ⬆️ Bumps & Version Updates
-
-- Update module github.com/cloudflare/circl to v1.6.3 [SECURITY] ([#2191](https://github.com/TraceMachina/nativelink/issues/2191)) - ([77b13f0](https://github.com/TraceMachina/nativelink/commit/77b13f053a40e3f67cb202ff086ca0a9185907fb))
-- Update curl version in Dockerfiles ([#2189](https://github.com/TraceMachina/nativelink/issues/2189)) - ([c161433](https://github.com/TraceMachina/nativelink/commit/c161433702cd6b6a29a169e7516c06a60c1341f9))
-- Update grafana/grafana Docker tag to v12 ([#2182](https://github.com/TraceMachina/nativelink/issues/2182)) - ([658dd53](https://github.com/TraceMachina/nativelink/commit/658dd532c2275c888cfc03c2149fa805de8ecbc5))
-
-## [1.0.0-rc2](https://github.com/TraceMachina/nativelink/compare/v1.0.0-rc1..v1.0.0-rc2) - 2026-02-16
-
-
-
-### ⛰️  Features
-
 - Add boolean and optional data size shellexpands ([#2172](https://github.com/TraceMachina/nativelink/issues/2172)) - ([e54a0c3](https://github.com/TraceMachina/nativelink/commit/e54a0c3e55b54f4b5c51fd67db5541ba01081224))
 - Add Max Concurrent Writes ([#2156](https://github.com/TraceMachina/nativelink/issues/2156)) - ([3a90838](https://github.com/TraceMachina/nativelink/commit/3a90838081e3e6a14d13ee231075492256753d22))
 - Add logs for stall detection ([#2155](https://github.com/TraceMachina/nativelink/issues/2155)) - ([94e7e3f](https://github.com/TraceMachina/nativelink/commit/94e7e3f134f2586aa89384e6088544a83dba2694))
@@ -79,34 +24,45 @@ All notable changes to this project will be documented in this file.
 
 ### 🐛 Bug Fixes
 
+- *(deps)* update module github.com/go-git/go-git/v5 to v5.16.5 [security] ([#2138](https://github.com/TraceMachina/nativelink/issues/2138)) - ([dc25843](https://github.com/TraceMachina/nativelink/commit/dc258438336ba6ab5e63c0a48e71987bb88b4621))
+- Fix old Apple SDK refs ([#2224](https://github.com/TraceMachina/nativelink/issues/2224)) - ([edeef58](https://github.com/TraceMachina/nativelink/commit/edeef58de43fc8c2e7f73ec45240e4e9c2f5c9a1))
+- Handle correctly subscription messages ([#2201](https://github.com/TraceMachina/nativelink/issues/2201)) - ([2ea428b](https://github.com/TraceMachina/nativelink/commit/2ea428bfc66e9f7303108141e3a5ee9a6e84dc0d))
+- Fix Redis to reconnect in Sentinel (Chris Staite) ([#2190](https://github.com/TraceMachina/nativelink/issues/2190)) - ([8783134](https://github.com/TraceMachina/nativelink/commit/87831340af3cfcb3cffbc4f43bc3da9ecf8c8467))
+- Fix worker inflight tasks heading ([#2177](https://github.com/TraceMachina/nativelink/issues/2177)) - ([8ae17ba](https://github.com/TraceMachina/nativelink/commit/8ae17bae0603d66102d171554f331e10a3e9ac9e))
+- Fix all the current clippy lints ([#2174](https://github.com/TraceMachina/nativelink/issues/2174)) - ([23611ca](https://github.com/TraceMachina/nativelink/commit/23611caa3966a1934d6a3a7da0007083bbc75d8b))
 - Fix integer overflow in compression_store.rs data retrieval logic ([#2151](https://github.com/TraceMachina/nativelink/issues/2151)) - ([f996507](https://github.com/TraceMachina/nativelink/commit/f996507b152a7a5e79367475e7854680cce3eb2c))
+- Fix Max Inflight Workers job acceptance ([#2142](https://github.com/TraceMachina/nativelink/issues/2142)) - ([6ffab5f](https://github.com/TraceMachina/nativelink/commit/6ffab5f049666158b14e277653d8ce6b487c2ff6))
+
+### 📚 Documentation
+
+- Document max concurrent writes ([#2169](https://github.com/TraceMachina/nativelink/issues/2169)) - ([cedba0e](https://github.com/TraceMachina/nativelink/commit/cedba0e829daeb6affa601324ca7eacdcd4e7fea))
+- Document RPC timeouts in Redis config ([#2168](https://github.com/TraceMachina/nativelink/issues/2168)) - ([f0d12ff](https://github.com/TraceMachina/nativelink/commit/f0d12ffce777662eb23f898042393a2fac8f2952))
+- Document max inflight tasks ([#2167](https://github.com/TraceMachina/nativelink/issues/2167)) - ([2650680](https://github.com/TraceMachina/nativelink/commit/26506800e0bddfe9dd35008dfda279a2b19604df))
+
+### 🧪 Testing & CI
+
+- GCS error codes ([#2228](https://github.com/TraceMachina/nativelink/issues/2228)) - ([61a35d1](https://github.com/TraceMachina/nativelink/commit/61a35d1a1ea408ab64052ce9edac9b537cd09531))
+- Fix Fast slow store Not Found error by returning failed precondition ([#2194](https://github.com/TraceMachina/nativelink/issues/2194)) - ([3354945](https://github.com/TraceMachina/nativelink/commit/3354945b1f0cb9aba7041ad6ffad0bb67def8d4f))
+- Flake update fixes ([#2192](https://github.com/TraceMachina/nativelink/issues/2192)) - ([a7d873a](https://github.com/TraceMachina/nativelink/commit/a7d873aca54ae62f0ce13fbbf3dc7817f9f82efa))
+- pre-commit rustfmt all files ([#2176](https://github.com/TraceMachina/nativelink/issues/2176)) - ([27fa965](https://github.com/TraceMachina/nativelink/commit/27fa9652baf9ed7cdbc248fd6591bf813a790f65))
 
 ### ⚙️ Miscellaneous
 
 - *(deps)* update rust crate toml to v1 ([#2147](https://github.com/TraceMachina/nativelink/issues/2147)) - ([85e9ecf](https://github.com/TraceMachina/nativelink/commit/85e9ecf05e1e6646513f4b32a8ce1fba609ebcf7))
+- *(deps)* update rust crate bytes to v1.11.1 [security] ([#2134](https://github.com/TraceMachina/nativelink/issues/2134)) - ([5d32d18](https://github.com/TraceMachina/nativelink/commit/5d32d181fe68d29bf354a2a5f41e634d8faaec37))
+- Implement Operations server ([#2233](https://github.com/TraceMachina/nativelink/issues/2233)) - ([b15154c](https://github.com/TraceMachina/nativelink/commit/b15154c78bdd0f11d304e7fa2e73bbca22d615bb))
+- Permit access times for files after FilesystemStore startup ([#2178](https://github.com/TraceMachina/nativelink/issues/2178)) - ([373e1b5](https://github.com/TraceMachina/nativelink/commit/373e1b53e7ea5b084530b8bd55db453ba457e5a4))
+- Reduce debug on all Batch* structs ([#2231](https://github.com/TraceMachina/nativelink/issues/2231)) - ([a5609d8](https://github.com/TraceMachina/nativelink/commit/a5609d81adac95da0ba876afff162365e2c7cca2))
+- Test Mongo against an embedded MongoDB instance, not external ([#2222](https://github.com/TraceMachina/nativelink/issues/2222)) - ([e71d738](https://github.com/TraceMachina/nativelink/commit/e71d738397961ddf3bf1c061085bcf479ced25d3))
+- empty find_missing_blobs can return immediately ([#2217](https://github.com/TraceMachina/nativelink/issues/2217)) - ([dad870a](https://github.com/TraceMachina/nativelink/commit/dad870a41d70208b88b395d6f4121f3d4e1b8828))
+- remove free cloud user ([#2199](https://github.com/TraceMachina/nativelink/issues/2199)) - ([c7109f6](https://github.com/TraceMachina/nativelink/commit/c7109f6d70e049a011c367dfe4018b5cea675b9e))
+- Only display Baggage enduser.id when identity is present ([#2197](https://github.com/TraceMachina/nativelink/issues/2197)) - ([86b86e1](https://github.com/TraceMachina/nativelink/commit/86b86e15e8dcc3936a07d22feb10d088dc9ad4ae))
+- Prevent retry loop large uploads ([#2195](https://github.com/TraceMachina/nativelink/issues/2195)) - ([2a2ca64](https://github.com/TraceMachina/nativelink/commit/2a2ca6496af559a91207de3e384e338111138fd1))
+- If all workers are fully allocated, shortcut find workers ([#2130](https://github.com/TraceMachina/nativelink/issues/2130)) - ([faad8bb](https://github.com/TraceMachina/nativelink/commit/faad8bb038fefc439daca73978138b821084648c))
 - Log NotFound as info, not error ([#2171](https://github.com/TraceMachina/nativelink/issues/2171)) - ([4ca9d7b](https://github.com/TraceMachina/nativelink/commit/4ca9d7b3d3e29e392d7b39b2ff509cb1b75cf5aa))
 - Dummy streams should be pending, not empty ([#2154](https://github.com/TraceMachina/nativelink/issues/2154)) - ([e72b5a0](https://github.com/TraceMachina/nativelink/commit/e72b5a0feaace00ee9960886d3c2715eeb76c361))
 - fix metrics ([#2097](https://github.com/TraceMachina/nativelink/issues/2097)) - ([e6c7097](https://github.com/TraceMachina/nativelink/commit/e6c70977a879d552b98ebc2cb23717ab51658a2a))
 - Advise the kernel to drop page cache ([#2149](https://github.com/TraceMachina/nativelink/issues/2149)) - ([727760d](https://github.com/TraceMachina/nativelink/commit/727760d1e208ca8be7bc134f432baf5dc5bf5928))
-
-### ⬆️ Bumps & Version Updates
-
-- Update jsonwebtoken ([#2135](https://github.com/TraceMachina/nativelink/issues/2135)) - ([56a8955](https://github.com/TraceMachina/nativelink/commit/56a89557ee14130ca10b44f1688d5e9b6e4691d5))
-
-
-
-## [1.0.0-rc1](https://github.com/TraceMachina/nativelink/compare/v0.8.0..v1.0.0-rc1) - 2026-02-12
-
-
-
-### 🐛 Bug Fixes
-
-- *(deps)* update module github.com/go-git/go-git/v5 to v5.16.5 [security] ([#2138](https://github.com/TraceMachina/nativelink/issues/2138)) - ([dc25843](https://github.com/TraceMachina/nativelink/commit/dc258438336ba6ab5e63c0a48e71987bb88b4621))
-- Fix Max Inflight Workers job acceptance ([#2142](https://github.com/TraceMachina/nativelink/issues/2142)) - ([6ffab5f](https://github.com/TraceMachina/nativelink/commit/6ffab5f049666158b14e277653d8ce6b487c2ff6))
-
-### ⚙️ Miscellaneous
-
-- *(deps)* update rust crate bytes to v1.11.1 [security] ([#2134](https://github.com/TraceMachina/nativelink/issues/2134)) - ([5d32d18](https://github.com/TraceMachina/nativelink/commit/5d32d181fe68d29bf354a2a5f41e634d8faaec37))
 - Replace Fred with redis-rs ([#2076](https://github.com/TraceMachina/nativelink/issues/2076)) - ([4956889](https://github.com/TraceMachina/nativelink/commit/4956889cd258a98f0e8720b5b7ef028ca0ed4d99))
 - No workers logging ([#2137](https://github.com/TraceMachina/nativelink/issues/2137)) - ([12c63f5](https://github.com/TraceMachina/nativelink/commit/12c63f50fef02bf36624ac0770fc8f5dac407a9c))
 - Make update_with_whole_file logging default to trace ([#2131](https://github.com/TraceMachina/nativelink/issues/2131)) - ([ecd2903](https://github.com/TraceMachina/nativelink/commit/ecd2903f8ca5086e10f74290533a9fc75c580a7c))
@@ -114,6 +70,12 @@ All notable changes to this project will be documented in this file.
 
 ### ⬆️ Bumps & Version Updates
 
+- Update module google.golang.org/grpc to v1.79.3 [SECURITY] ([#2227](https://github.com/TraceMachina/nativelink/issues/2227)) - ([3f6ab07](https://github.com/TraceMachina/nativelink/commit/3f6ab075ad0ee50ee1c710ee970a1bd74020ab0d))
+- Update Rust crate lz4_flex to v0.11.6 [SECURITY] ([#2223](https://github.com/TraceMachina/nativelink/issues/2223)) - ([244a1c7](https://github.com/TraceMachina/nativelink/commit/244a1c77ed75d1ba5d2e27d3ad0ea22dedff48b9))
+- Upgrade curl to 8.5.0-2ubuntu10.8 ([#2204](https://github.com/TraceMachina/nativelink/issues/2204)) - ([36a8238](https://github.com/TraceMachina/nativelink/commit/36a823836a8c679bcf751ec64e830f272e4c2e28))
+- Update module github.com/cloudflare/circl to v1.6.3 [SECURITY] ([#2191](https://github.com/TraceMachina/nativelink/issues/2191)) - ([77b13f0](https://github.com/TraceMachina/nativelink/commit/77b13f053a40e3f67cb202ff086ca0a9185907fb))
+- Update curl version in Dockerfiles ([#2189](https://github.com/TraceMachina/nativelink/issues/2189)) - ([c161433](https://github.com/TraceMachina/nativelink/commit/c161433702cd6b6a29a169e7516c06a60c1341f9))
+- Update grafana/grafana Docker tag to v12 ([#2182](https://github.com/TraceMachina/nativelink/issues/2182)) - ([658dd53](https://github.com/TraceMachina/nativelink/commit/658dd532c2275c888cfc03c2149fa805de8ecbc5))
 - Update jsonwebtoken ([#2135](https://github.com/TraceMachina/nativelink/issues/2135)) - ([56a8955](https://github.com/TraceMachina/nativelink/commit/56a89557ee14130ca10b44f1688d5e9b6e4691d5))
 ## [0.7.10](https://github.com/TraceMachina/nativelink/compare/v0.7.9..v0.7.10) - 2025-12-30
 
