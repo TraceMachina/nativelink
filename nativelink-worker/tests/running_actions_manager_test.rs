@@ -66,6 +66,8 @@ mod tests {
     use nativelink_util::common::{DigestInfo, fs};
     use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
     use nativelink_util::store_trait::{Store, StoreLike};
+    #[cfg(target_os = "linux")]
+    use nativelink_worker::namespace_utils;
     use nativelink_worker::running_actions_manager::{
         Callbacks, ExecutionConfiguration, RunningAction, RunningActionImpl, RunningActionsManager,
         RunningActionsManagerArgs, RunningActionsManagerImpl, download_to_directory,
@@ -462,6 +464,8 @@ mod tests {
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: namespace_utils::namespaces_supported(),
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -584,6 +588,8 @@ mod tests {
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: namespace_utils::namespaces_supported(),
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -708,6 +714,8 @@ mod tests {
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: namespace_utils::namespaces_supported(),
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -888,6 +896,8 @@ mod tests {
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: namespace_utils::namespaces_supported(),
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -1069,6 +1079,8 @@ mod tests {
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: namespace_utils::namespaces_supported(),
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -1276,6 +1288,8 @@ mod tests {
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: namespace_utils::namespaces_supported(),
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -1410,6 +1424,8 @@ mod tests {
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: namespace_utils::namespaces_supported(),
             })?);
 
         #[cfg(target_family = "unix")]
@@ -1612,6 +1628,8 @@ exit 0
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: namespace_utils::namespaces_supported(),
             })?);
         #[cfg(target_family = "unix")]
         let arguments = vec!["printf".to_string(), EXPECTED_STDOUT.to_string()];
@@ -1787,6 +1805,8 @@ exit 0
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: namespace_utils::namespaces_supported(),
             })?);
         #[cfg(target_family = "unix")]
         let arguments = vec!["printf".to_string(), EXPECTED_STDOUT.to_string()];
@@ -1956,6 +1976,8 @@ exit 1
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: namespace_utils::namespaces_supported(),
             })?);
         let arguments = vec!["true".to_string()];
         let command = Command {
@@ -2039,6 +2061,8 @@ exit 1
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: namespace_utils::namespaces_supported(),
             })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
@@ -2113,6 +2137,8 @@ exit 1
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: namespace_utils::namespaces_supported(),
             })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
@@ -2194,6 +2220,8 @@ exit 1
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: namespace_utils::namespaces_supported(),
             })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
@@ -2296,6 +2324,8 @@ exit 1
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: namespace_utils::namespaces_supported(),
             })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
@@ -2342,6 +2372,8 @@ exit 1
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: namespace_utils::namespaces_supported(),
             })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
@@ -2409,6 +2441,8 @@ exit 1
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: namespace_utils::namespaces_supported(),
             })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
@@ -2527,6 +2561,8 @@ exit 1
                     max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                     timeout_handled_externally: false,
                     directory_cache: None,
+                    #[cfg(target_os = "linux")]
+                    use_namespaces: namespace_utils::namespaces_supported(),
                 },
                 Callbacks {
                     now_fn: test_monotonic_clock,
@@ -2613,6 +2649,8 @@ exit 1
                     max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                     timeout_handled_externally: false,
                     directory_cache: None,
+                    #[cfg(target_os = "linux")]
+                    use_namespaces: namespace_utils::namespaces_supported(),
                 },
                 Callbacks {
                     now_fn: test_monotonic_clock,
@@ -2699,6 +2737,8 @@ exit 1
                     max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                     timeout_handled_externally: false,
                     directory_cache: None,
+                    #[cfg(target_os = "linux")]
+                    use_namespaces: namespace_utils::namespaces_supported(),
                 },
                 Callbacks {
                     now_fn: test_monotonic_clock,
@@ -2782,6 +2822,8 @@ exit 1
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: namespace_utils::namespaces_supported(),
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -2933,6 +2975,8 @@ exit 1
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: namespace_utils::namespaces_supported(),
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -3101,6 +3145,8 @@ exit 1
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: namespace_utils::namespaces_supported(),
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -3200,6 +3246,8 @@ exit 1
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: namespace_utils::namespaces_supported(),
             })?);
         let queued_timestamp = make_system_time(1000);
 
@@ -3313,6 +3361,8 @@ exit 1
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: namespace_utils::namespaces_supported(),
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -3492,6 +3542,8 @@ exit 1
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: namespace_utils::namespaces_supported(),
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -3611,6 +3663,8 @@ exit 1
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: namespace_utils::namespaces_supported(),
             })?);
 
         // Create a simple action
@@ -3751,6 +3805,8 @@ exit 1
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: namespace_utils::namespaces_supported(),
             })?);
 
         // Create a simple action
@@ -3858,6 +3914,8 @@ exit 1
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: namespace_utils::namespaces_supported(),
             })?);
         let operation_id = OperationId::default().to_string();
         let file_content_digest = DigestInfo::new([2u8; 32], 32);
