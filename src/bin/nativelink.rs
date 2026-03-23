@@ -467,7 +467,7 @@ async fn inner_main(
                 let mut client_auth_roots = RootCertStore::empty();
                 for cert in read_cert(client_ca_file)? {
                     client_auth_roots.add(cert).map_err(|e| {
-                        make_err!(Code::Internal, "Could not read client CA: {e:?}")
+                        Error::from_std_err(Code::Internal, &e).append("Could not read client CA")
                     })?;
                 }
                 let crls = if let Some(client_crl_file) = &tls_config.client_crl_file {
@@ -485,10 +485,8 @@ async fn inner_main(
                     .with_crls(crls)
                     .build()
                     .map_err(|e| {
-                        make_err!(
-                            Code::Internal,
-                            "Could not create WebPkiClientVerifier: {e:?}"
-                        )
+                        Error::from_std_err(Code::Internal, &e)
+                            .append("Could not create WebPkiClientVerifier")
                     })?
             } else {
                 WebPkiClientVerifier::no_client_auth()
@@ -497,7 +495,8 @@ async fn inner_main(
                 .with_client_cert_verifier(verifier)
                 .with_single_cert(certs, key)
                 .map_err(|e| {
-                    make_err!(Code::Internal, "Could not create TlsServerConfig : {e:?}")
+                    Error::from_std_err(Code::Internal, &e)
+                        .append("Could not create TlsServerConfig")
                 })?;
 
             config.alpn_protocols.push("h2".into());
@@ -508,7 +507,8 @@ async fn inner_main(
             .socket_address
             .parse::<SocketAddr>()
             .map_err(|e| {
-                make_input_err!("Invalid address '{}' - {e:?}", http_config.socket_address)
+                Error::from_std_err(Code::InvalidArgument, &e)
+                    .append(format!("Invalid address '{}'", http_config.socket_address))
             })?;
         let tcp_listener = TcpListener::bind(&socket_addr).await?;
         let mut http = auto::Builder::new(TaskExecutor::default());

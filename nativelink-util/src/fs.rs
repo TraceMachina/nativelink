@@ -163,7 +163,9 @@ where
     let permit = get_permit().await?;
     spawn_blocking!("fs_call_with_permit", move || f(permit))
         .await
-        .unwrap_or_else(|e| Err(make_err!(Code::Internal, "background task failed: {e:?}")))
+        .unwrap_or_else(|e| {
+            Err(Error::from_std_err(Code::Internal, &e).append("background task failed"))
+        })
 }
 
 /// Sets the soft nofile limit to `desired_open_file_limit` and adjusts

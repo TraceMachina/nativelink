@@ -737,7 +737,10 @@ where
                             .await
                     })
                     .await
-                    .map_err(|_| make_err!(Code::Internal, "Failed to send block to channel"))?;
+                    .map_err(|err| {
+                        Error::from_std_err(Code::Internal, &err)
+                            .append("Failed to send block to channel")
+                    })?;
                 }
                 Ok::<_, Error>(())
             }
@@ -784,10 +787,10 @@ where
                             .await
                             .map_or_else(
                                 |e| {
-                                    RetryResult::Retry(make_err!(
-                                        Code::Aborted,
-                                        "Failed to commit block list in Azure store: {e:?}"
-                                    ))
+                                    RetryResult::Retry(
+                                        Error::from_std_err(Code::Aborted, &e)
+                                            .append("Failed to commit block list in Azure store:"),
+                                    )
                                 },
                                 |_| RetryResult::Ok(()),
                             ),
