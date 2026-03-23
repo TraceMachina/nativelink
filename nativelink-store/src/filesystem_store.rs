@@ -815,20 +815,14 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         let batch_results = self.evicting_map.get_many(store_keys.iter()).await;
 
         // Reassemble results, inserting zero-digest entries where needed.
+        // Zero-digest files have no backing file on disk, so we return None
+        // to let the caller fall back to creating an empty file directly.
         let mut batch_iter = batch_results.into_iter();
         digests
             .iter()
             .map(|digest| {
                 if is_zero_digest(*digest) {
-                    Some(Arc::new(Fe::create(
-                        0,
-                        0,
-                        RwLock::new(EncodedFilePath {
-                            shared_context: self.shared_context.clone(),
-                            path_type: PathType::Content,
-                            key: (*digest).into(),
-                        }),
-                    )))
+                    None
                 } else {
                     batch_iter.next().flatten()
                 }

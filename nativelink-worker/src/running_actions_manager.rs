@@ -725,9 +725,11 @@ async fn populate_and_hardlink(
 ) -> Result<(), Error> {
     if is_zero_digest(digest) {
         cas_store.populate_fast_store(digest.into()).await?;
-        let mut file_slot = fs::create_file(dest).await?;
+        let mut file_slot = fs::create_file(dest)
+            .await
+            .err_tip(|| format!("Could not create zero-digest file at {dest}"))?;
         std::io::Write::write_all(file_slot.as_std_mut(), &[])
-            .err_tip(|| "Could not write to file")?;
+            .err_tip(|| format!("Could not write zero-digest file at {dest}"))?;
         return Ok(());
     }
 
