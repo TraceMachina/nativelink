@@ -4,7 +4,7 @@ lints.workspace = true
 [package]
 edition = "2024"
 name = "nativelink-worker"
-version = "1.0.0-rc4"
+version = "1.0.0"
 
 [features]
 nix = []
