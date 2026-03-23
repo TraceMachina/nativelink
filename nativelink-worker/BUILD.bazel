@@ -16,7 +16,10 @@ rust_library(
         "src/running_actions_manager.rs",
         "src/worker_api_client_wrapper.rs",
         "src/worker_utils.rs",
-    ],
+    ] + select({
+        "@platforms//os:linux": ["src/namespace_utils.rs"],
+        "//conditions:default": [],
+    }),
     proc_macro_deps = [
         "@crates//:async-trait",
     ],
@@ -45,7 +48,10 @@ rust_library(
         "@crates//:tonic",
         "@crates//:tracing",
         "@crates//:uuid",
-    ],
+    ] + select({
+        "@platforms//os:linux": ["@crates//:libc"],
+        "//conditions:default": [],
+    }),
 )
 
 rust_test_suite(
@@ -53,6 +59,7 @@ rust_test_suite(
     timeout = "short",
     srcs = [
         "tests/local_worker_test.rs",
+        "tests/namespace_utils_test.rs",
         "tests/running_actions_manager_test.rs",
         "tests/worker_utils_test.rs",
     ],
@@ -85,7 +92,10 @@ rust_test_suite(
         "@crates//:tonic",
         "@crates//:tracing",
         "@crates//:tracing-test",
-    ],
+    ] + select({
+        "@platforms//os:linux": ["@crates//:libc"],
+        "//conditions:default": [],
+    }),
 )
 
 rust_test(

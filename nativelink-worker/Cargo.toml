@@ -54,6 +54,9 @@ uuid = { version = "1.16.0", default-features = false, features = [
   "v4",
 ] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = { version = "0.2.183", default-features = false }
+
 [dev-dependencies]
 nativelink-macro = { path = "../nativelink-macro" }
 
