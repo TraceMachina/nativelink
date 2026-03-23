@@ -295,7 +295,8 @@
          "key_prefix": "cas:",
          "read_chunk_size": 65536,
          "max_concurrent_uploads": 10,
-         "enable_change_streams": false
+         "enable_change_streams": false,
+         "max_requests": "100"
      }
     },
 ]}

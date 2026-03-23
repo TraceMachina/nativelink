@@ -551,7 +551,8 @@ pub enum StoreSpec {
     ///     "key_prefix": "cas:",
     ///     "read_chunk_size": 65536,
     ///     "max_concurrent_uploads": 10,
-    ///     "enable_change_streams": false
+    ///     "enable_change_streams": false,
+    ///     "max_requests": "100"
     /// }
     /// ```
     ///
@@ -1490,6 +1491,7 @@ pub struct ExperimentalMongoSpec {
     #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub read_chunk_size: usize,
 
+    /// Deprecated, unused
     /// Maximum number of concurrent uploads allowed.
     /// Default: 10
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
@@ -1529,6 +1531,14 @@ pub struct ExperimentalMongoSpec {
         deserialize_with = "convert_optional_numeric_with_shellexpand"
     )]
     pub write_concern_timeout_ms: Option<u32>,
+
+    /// Limits the number of requests at any one time
+    /// Default: Unlimited
+    #[serde(
+        default,
+        deserialize_with = "convert_optional_numeric_with_shellexpand"
+    )]
+    pub max_requests: Option<usize>,
 }
 
 impl Retry {
