@@ -25,6 +25,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
     Directory as ProtoDirectory, DirectoryNode, FileNode, SymlinkNode,
 };
 use nativelink_store::ac_utils::get_and_decode_digest;
+use nativelink_store::cas_utils::is_zero_digest;
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::{FileEntry, FilesystemStore};
 use nativelink_util::common::DigestInfo;
@@ -2135,14 +2136,20 @@ impl DirectoryCache {
             } else {
                 // Serial fallback: fetch each file from CAS individually.
                 for (file_digest, file_path, _is_executable) in &files_to_download {
-                    let data = self
-                        .cas_store
-                        .get_part_unchunked(StoreKey::Digest(*file_digest), 0, None)
-                        .await
-                        .err_tip(|| format!("Failed to fetch file: {}", file_path.display()))?;
-                    fs::write(&file_path, data.as_ref())
-                        .await
-                        .err_tip(|| format!("Failed to write file: {}", file_path.display()))?;
+                    if is_zero_digest(*file_digest) {
+                        fs::write(&file_path, b"")
+                            .await
+                            .err_tip(|| format!("Failed to create zero-digest file: {}", file_path.display()))?;
+                    } else {
+                        let data = self
+                            .cas_store
+                            .get_part_unchunked(StoreKey::Digest(*file_digest), 0, None)
+                            .await
+                            .err_tip(|| format!("Failed to fetch file: {}", file_path.display()))?;
+                        fs::write(&file_path, data.as_ref())
+                            .await
+                            .err_tip(|| format!("Failed to write file: {}", file_path.display()))?;
+                    }
 
                     #[cfg(unix)]
                     {
@@ -2196,14 +2203,20 @@ impl DirectoryCache {
                             .try_into()
                             .err_tip(|| "Invalid file digest in failed subtree walk")?;
                         let fp = p.join(&file_node.name);
-                        let data = self
-                            .cas_store
-                            .get_part_unchunked(StoreKey::Digest(fd), 0, None)
-                            .await
-                            .err_tip(|| format!("Failed to fetch file for failed subtree: {}", fp.display()))?;
-                        fs::write(&fp, data.as_ref())
-                            .await
-                            .err_tip(|| format!("Failed to write file: {}", fp.display()))?;
+                        if is_zero_digest(fd) {
+                            fs::write(&fp, b"")
+                                .await
+                                .err_tip(|| format!("Failed to create zero-digest file: {}", fp.display()))?;
+                        } else {
+                            let data = self
+                                .cas_store
+                                .get_part_unchunked(StoreKey::Digest(fd), 0, None)
+                                .await
+                                .err_tip(|| format!("Failed to fetch file for failed subtree: {}", fp.display()))?;
+                            fs::write(&fp, data.as_ref())
+                                .await
+                                .err_tip(|| format!("Failed to write file: {}", fp.display()))?;
+                        }
                         #[cfg(unix)]
                         {
                             use std::os::unix::fs::PermissionsExt;
@@ -2476,14 +2489,20 @@ impl DirectoryCache {
             } else {
                 // Serial fallback: fetch each file from CAS individually.
                 for (file_digest, file_path, _is_executable) in &files_to_download {
-                    let data = self
-                        .cas_store
-                        .get_part_unchunked(StoreKey::Digest(*file_digest), 0, None)
-                        .await
-                        .err_tip(|| format!("Failed to fetch file: {}", file_path.display()))?;
-                    fs::write(&file_path, data.as_ref())
-                        .await
-                        .err_tip(|| format!("Failed to write file: {}", file_path.display()))?;
+                    if is_zero_digest(*file_digest) {
+                        fs::write(&file_path, b"")
+                            .await
+                            .err_tip(|| format!("Failed to create zero-digest file: {}", file_path.display()))?;
+                    } else {
+                        let data = self
+                            .cas_store
+                            .get_part_unchunked(StoreKey::Digest(*file_digest), 0, None)
+                            .await
+                            .err_tip(|| format!("Failed to fetch file: {}", file_path.display()))?;
+                        fs::write(&file_path, data.as_ref())
+                            .await
+                            .err_tip(|| format!("Failed to write file: {}", file_path.display()))?;
+                    }
 
                     #[cfg(unix)]
                     {
@@ -2644,17 +2663,23 @@ impl DirectoryCache {
 
         trace!(?file_path, ?digest, "Creating file");
 
-        // Fetch file content from CAS
-        let data = self
-            .cas_store
-            .get_part_unchunked(StoreKey::Digest(digest), 0, None)
-            .await
-            .err_tip(|| format!("Failed to fetch file: {}", file_path.display()))?;
+        if is_zero_digest(digest) {
+            fs::write(&file_path, b"")
+                .await
+                .err_tip(|| format!("Failed to create zero-digest file: {}", file_path.display()))?;
+        } else {
+            // Fetch file content from CAS
+            let data = self
+                .cas_store
+                .get_part_unchunked(StoreKey::Digest(digest), 0, None)
+                .await
+                .err_tip(|| format!("Failed to fetch file: {}", file_path.display()))?;
 
-        // Write to disk
-        fs::write(&file_path, data.as_ref())
-            .await
-            .err_tip(|| format!("Failed to write file: {}", file_path.display()))?;
+            // Write to disk
+            fs::write(&file_path, data.as_ref())
+                .await
+                .err_tip(|| format!("Failed to write file: {}", file_path.display()))?;
+        }
 
         // Always set 0o555 to match CAS store defaults. Some build tools
         // (rules_cc, rules_rust) set is_executable=false on shell scripts
@@ -3837,6 +3862,201 @@ mod tests {
         // Cleanup symlinks
         fs::remove_file(&dest_a).await.unwrap();
         fs::remove_file(&dest_b).await.unwrap();
+
+        Ok(())
+    }
+
+    /// Helper to create a store containing a directory with a zero-digest file.
+    /// Returns (store, dir_digest) where the directory has one normal file and
+    /// one zero-length file (blake3 zero-digest).
+    async fn setup_zero_digest_store() -> (Store, DigestInfo) {
+        use nativelink_store::cas_utils::ZERO_BYTE_DIGESTS;
+
+        let store = Store::new(MemoryStore::new(&MemorySpec::default()));
+
+        // Upload a normal file
+        let file_content = b"Hello, World!";
+        let file_digest = DigestInfo::try_new(
+            "dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f",
+            13,
+        )
+        .unwrap();
+        store
+            .as_store_driver_pin()
+            .update_oneshot(file_digest.into(), file_content.to_vec().into())
+            .await
+            .unwrap();
+
+        // The blake3 zero-digest (size 0, no data needed in store)
+        let zero_digest = ZERO_BYTE_DIGESTS[1];
+
+        // Create a directory containing both a normal file and a zero-digest file
+        let directory = ProtoDirectory {
+            files: vec![
+                FileNode {
+                    name: "test.txt".to_string(),
+                    digest: Some(file_digest.into()),
+                    is_executable: false,
+                    ..Default::default()
+                },
+                FileNode {
+                    name: "_bs.linksearchpaths".to_string(),
+                    digest: Some(zero_digest.into()),
+                    is_executable: false,
+                    ..Default::default()
+                },
+            ],
+            directories: vec![],
+            symlinks: vec![],
+            ..Default::default()
+        };
+
+        let mut dir_data = Vec::new();
+        directory.encode(&mut dir_data).unwrap();
+        let dir_digest = DigestInfo::try_new(
+            "aabb567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+            dir_data.len() as i64,
+        )
+        .unwrap();
+
+        store
+            .as_store_driver_pin()
+            .update_oneshot(dir_digest.into(), dir_data.into())
+            .await
+            .unwrap();
+
+        (store, dir_digest)
+    }
+
+    #[nativelink_test]
+    async fn test_directory_cache_zero_digest_files() -> Result<(), Error> {
+        let temp_dir = TempDir::new().unwrap();
+        let cache_root = temp_dir.path().join("cache");
+        let (store, dir_digest) = setup_zero_digest_store().await;
+
+        let config = DirectoryCacheConfig {
+            max_entries: 10,
+            max_size_bytes: 1024 * 1024,
+            cache_root,
+            direct_use_mode: false,
+        };
+
+        let cache = DirectoryCache::new(config, store, None).await?;
+
+        // First access - cache miss, should materialize both files
+        let dest = temp_dir.path().join("dest");
+        let hit = cache.get_or_create(dir_digest, &dest).await?;
+        assert!(!hit, "First access should be cache miss");
+
+        // Normal file should exist with correct content
+        assert!(dest.join("test.txt").exists(), "Normal file should exist");
+        let content = fs::read_to_string(dest.join("test.txt")).await.unwrap();
+        assert_eq!(content, "Hello, World!");
+
+        // Zero-digest file should exist with 0 bytes
+        let zero_file_path = dest.join("_bs.linksearchpaths");
+        let zero_meta = fs::metadata(&zero_file_path)
+            .await
+            .expect("Zero-digest file should exist on disk");
+        assert_eq!(
+            zero_meta.len(),
+            0,
+            "Zero-digest file should have 0 bytes"
+        );
+
+        // Second access - cache hit, should also produce the zero-digest file
+        let dest2 = temp_dir.path().join("dest2");
+        let hit = cache.get_or_create(dir_digest, &dest2).await?;
+        assert!(hit, "Second access should be cache hit");
+
+        let zero_file_path2 = dest2.join("_bs.linksearchpaths");
+        let zero_meta2 = fs::metadata(&zero_file_path2)
+            .await
+            .expect("Zero-digest file should exist after cache hit");
+        assert_eq!(
+            zero_meta2.len(),
+            0,
+            "Zero-digest file should have 0 bytes after cache hit"
+        );
+
+        Ok(())
+    }
+
+    #[nativelink_test]
+    async fn test_directory_cache_direct_use_zero_digest() -> Result<(), Error> {
+        let temp_dir = TempDir::new().unwrap();
+        let cache_root = temp_dir.path().join("cache");
+        let (store, dir_digest) = setup_zero_digest_store().await;
+
+        let config = DirectoryCacheConfig {
+            max_entries: 10,
+            max_size_bytes: 1024 * 1024,
+            cache_root: cache_root.clone(),
+            direct_use_mode: true,
+        };
+
+        let cache = DirectoryCache::new(config, store, None).await?;
+        assert!(cache.is_direct_use_mode());
+
+        // First access - cache miss
+        let dest = temp_dir.path().join("dest");
+        let (cache_path, was_hit) = cache.get_or_create_direct(dir_digest, &dest).await?;
+        assert!(!was_hit, "First access should be cache miss");
+
+        // dest should be a symlink to the cache path
+        let dest_meta = fs::symlink_metadata(&dest).await.unwrap();
+        assert!(dest_meta.is_symlink(), "dest should be a symlink");
+
+        // Normal file should be accessible through the symlink
+        assert!(
+            dest.join("test.txt").exists(),
+            "Normal file should be accessible through symlink"
+        );
+
+        // Zero-digest file should exist with 0 bytes through the symlink
+        let zero_file_path = dest.join("_bs.linksearchpaths");
+        let zero_meta = fs::metadata(&zero_file_path)
+            .await
+            .expect("Zero-digest file should exist through symlink");
+        assert_eq!(
+            zero_meta.len(),
+            0,
+            "Zero-digest file should have 0 bytes"
+        );
+
+        // Also verify the file exists directly in the cache path
+        let cache_zero = cache_path.join("_bs.linksearchpaths");
+        let cache_zero_meta = fs::metadata(&cache_zero)
+            .await
+            .expect("Zero-digest file should exist in cache directory");
+        assert_eq!(
+            cache_zero_meta.len(),
+            0,
+            "Zero-digest file in cache should have 0 bytes"
+        );
+
+        // Second access - cache hit
+        let dest2 = temp_dir.path().join("dest2");
+        let (_cache_path2, was_hit) = cache.get_or_create_direct(dir_digest, &dest2).await?;
+        assert!(was_hit, "Second access should be cache hit");
+
+        let zero_file_path2 = dest2.join("_bs.linksearchpaths");
+        let zero_meta2 = fs::metadata(&zero_file_path2)
+            .await
+            .expect("Zero-digest file should exist after cache hit");
+        assert_eq!(
+            zero_meta2.len(),
+            0,
+            "Zero-digest file should have 0 bytes after cache hit"
+        );
+
+        // Release refs
+        cache.release_direct_use(&dir_digest).await;
+        cache.release_direct_use(&dir_digest).await;
+
+        // Cleanup symlinks
+        fs::remove_file(&dest).await.unwrap();
+        fs::remove_file(&dest2).await.unwrap();
 
         Ok(())
     }

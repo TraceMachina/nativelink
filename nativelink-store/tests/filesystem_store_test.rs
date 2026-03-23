@@ -28,6 +28,7 @@ use futures::executor::block_on;
 use futures::task::Poll;
 use futures::{Future, FutureExt, poll};
 use nativelink_config::stores::{EvictionPolicy, FilesystemSpec};
+use nativelink_store::cas_utils::ZERO_BYTE_DIGESTS;
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_store::filesystem_store::{
@@ -1528,6 +1529,65 @@ async fn add_too_early_files() -> Result<(), Error> {
     assert!(logs_contain(
         "File access time newer than FilesystemStore start time file_name=foo atime=20"
     ));
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn test_get_file_entries_batch_zero_digest_returns_none() -> Result<(), Error> {
+    let content_path = make_temp_path("content_path");
+    let temp_path = make_temp_path("temp_path");
+
+    let store = FilesystemStore::<FileEntryImpl>::new_with_timeout_and_rename_fn(
+        &FilesystemSpec {
+            content_path: content_path.clone(),
+            temp_path: temp_path.clone(),
+            read_buffer_size: 1,
+            ..Default::default()
+        },
+        |from, to| std::fs::rename(from, to),
+    )
+    .await?;
+
+    // Upload a normal file so we have something real in the store
+    let normal_digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
+    store
+        .update_oneshot(normal_digest, VALUE1.into())
+        .await?;
+
+    // Both sha256 and blake3 zero digests
+    let sha256_zero = ZERO_BYTE_DIGESTS[0];
+    let blake3_zero = ZERO_BYTE_DIGESTS[1];
+
+    // Batch with: normal digest, sha256 zero, blake3 zero, normal digest again
+    let digests = vec![normal_digest, sha256_zero, blake3_zero, normal_digest];
+    let results = store.get_file_entries_batch(&digests).await;
+
+    assert_eq!(results.len(), 4, "Should return one result per input digest");
+
+    // Normal digest should return Some (it exists in the store)
+    assert!(
+        results[0].is_some(),
+        "Normal digest should return Some from get_file_entries_batch"
+    );
+
+    // SHA256 zero digest should return None (not a synthetic FileEntry)
+    assert!(
+        results[1].is_none(),
+        "SHA256 zero digest should return None from get_file_entries_batch"
+    );
+
+    // Blake3 zero digest should return None (not a synthetic FileEntry)
+    assert!(
+        results[2].is_none(),
+        "Blake3 zero digest should return None from get_file_entries_batch"
+    );
+
+    // Second normal digest should also return Some
+    assert!(
+        results[3].is_some(),
+        "Duplicate normal digest should return Some from get_file_entries_batch"
+    );
 
     Ok(())
 }
