@@ -15,7 +15,6 @@
 use core::fmt::{Debug, Formatter};
 use core::pin::Pin;
 use core::sync::atomic::{AtomicU64, Ordering};
-use core::time::Duration;
 use std::borrow::Cow;
 use std::ffi::{OsStr, OsString};
 use std::sync::{Arc, Weak};
@@ -853,7 +852,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             None
         };
 
-        drop(_permit);
+        drop(permit);
 
         trace!(?temp_file, "Dropping file to update_file");
         drop(temp_file);

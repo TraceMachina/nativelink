@@ -1,6 +1,6 @@
 use std::env;
 
-use nativelink_error::{Error, ResultExt, make_input_err};
+use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 
 #[derive(Debug, Clone)]
 pub(crate) enum Os {
@@ -122,7 +122,9 @@ where
     use std::fs::File;
     use std::io::Write;
 
-    let response = reqwest::get(url).await?;
+    let response = reqwest::get(url)
+        .await
+        .map_err(|e| make_err!(Code::Internal, "Failed to download {url}: {e}"))?;
     let total = response.content_length();
 
     let mut part_path = destination.to_path_buf();
@@ -133,7 +135,11 @@ where
     let mut downloaded: u64 = 0;
 
     let mut stream = response;
-    while let Some(chunk) = stream.chunk().await? {
+    while let Some(chunk) = stream
+        .chunk()
+        .await
+        .map_err(|e| make_err!(Code::Internal, "Failed to read download chunk: {e}"))?
+    {
         file.write_all(&chunk)?;
         downloaded += chunk.len() as u64;
 

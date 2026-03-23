@@ -621,7 +621,7 @@ async fn test_blobs_available_three_workers() {
     );
 
     // --- Phase 11: Verify the starting CAS server logs ---
-    let cas_server_logs = process.grep_logs("Starting worker CAS server for peer blob sharing");
+    let cas_server_logs = process.grep_logs("Starting worker CAS TCP server for peer blob sharing");
     assert_eq!(
         cas_server_logs.len(),
         3,

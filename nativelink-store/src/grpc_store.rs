@@ -415,7 +415,7 @@ impl GrpcStore {
         self.perform_request(request, |request| async move {
             match &self.transport {
                 Transport::Tcp(cm) => {
-                    let channel = cm.connection().await.err_tip(|| "in find_missing_blobs")?;
+                    let channel = cm.connection("find_missing_blobs".into()).await.err_tip(|| "in find_missing_blobs")?;
                     ContentAddressableStorageClient::new(channel)
                         .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
                         .find_missing_blobs(Request::new(request))
@@ -449,7 +449,7 @@ impl GrpcStore {
         self.perform_request(request, |request| async move {
             match &self.transport {
                 Transport::Tcp(cm) => {
-                    let channel = cm.connection().await.err_tip(|| "in batch_update_blobs")?;
+                    let channel = cm.connection("batch_update_blobs".into()).await.err_tip(|| "in batch_update_blobs")?;
                     ContentAddressableStorageClient::new(channel)
                         .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
                         .batch_update_blobs(Request::new(request))
@@ -491,7 +491,7 @@ impl GrpcStore {
             }
             match &self.transport {
                 Transport::Tcp(cm) => {
-                    let channel = cm.connection().await.err_tip(|| "in batch_read_blobs")?;
+                    let channel = cm.connection("batch_read_blobs".into()).await.err_tip(|| "in batch_read_blobs")?;
                     ContentAddressableStorageClient::new(channel)
                         .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
                         .batch_read_blobs(grpc_request)
@@ -525,7 +525,7 @@ impl GrpcStore {
         self.perform_request(request, |request| async move {
             match &self.transport {
                 Transport::Tcp(cm) => {
-                    let channel = cm.connection().await.err_tip(|| "in get_tree")?;
+                    let channel = cm.connection("get_tree".into()).await.err_tip(|| "in get_tree")?;
                     ContentAddressableStorageClient::new(channel)
                         .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
                         .get_tree(Request::new(request))
@@ -568,7 +568,7 @@ impl GrpcStore {
         }
         let mut response = match &self.transport {
             Transport::Tcp(cm) => {
-                let channel = cm.connection().await.err_tip(|| "in read_internal")?;
+                let channel = cm.connection("bytestream_read".into()).await.err_tip(|| "in read_internal")?;
                 ByteStreamClient::new(channel)
                     .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
                     .read(grpc_request)
@@ -662,7 +662,7 @@ impl GrpcStore {
                         match &self.transport {
                             Transport::Tcp(cm) => {
                                 let channel = cm
-                                    .connection()
+                                    .connection("bytestream_write".into())
                                     .await
                                     .err_tip(|| "in GrpcStore::write")?;
                                 let conn_elapsed_ms = u64::try_from(
@@ -812,7 +812,7 @@ impl GrpcStore {
         self.perform_request(request, |request| async move {
             match &self.transport {
                 Transport::Tcp(cm) => {
-                    let channel = cm.connection().await.err_tip(|| "in query_write_status")?;
+                    let channel = cm.connection("query_write_status".into()).await.err_tip(|| "in query_write_status")?;
                     ByteStreamClient::new(channel)
                         .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
                         .query_write_status(Request::new(request))
@@ -841,7 +841,7 @@ impl GrpcStore {
         self.perform_request(request, |request| async move {
             match &self.transport {
                 Transport::Tcp(cm) => {
-                    let channel = cm.connection().await.err_tip(|| "in get_action_result")?;
+                    let channel = cm.connection("get_action_result".into()).await.err_tip(|| "in get_action_result")?;
                     ActionCacheClient::new(channel)
                         .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
                         .get_action_result(Request::new(request))
@@ -870,7 +870,7 @@ impl GrpcStore {
         self.perform_request(request, |request| async move {
             match &self.transport {
                 Transport::Tcp(cm) => {
-                    let channel = cm.connection().await.err_tip(|| "in update_action_result")?;
+                    let channel = cm.connection("update_action_result".into()).await.err_tip(|| "in update_action_result")?;
                     ActionCacheClient::new(channel)
                         .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
                         .update_action_result(Request::new(request))

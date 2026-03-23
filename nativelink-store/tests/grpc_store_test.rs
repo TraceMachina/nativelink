@@ -22,12 +22,18 @@ async fn fast_find_missing_blobs() -> Result<(), Error> {
             tcp_keepalive_s: 0,
             http2_keepalive_interval_s: 0,
             http2_keepalive_timeout_s: 0,
+            tcp_nodelay: true,
+            use_http3: false,
         }],
         store_type: StoreType::Cas,
         retry: Retry::default(),
         max_concurrent_requests: 0,
         connections_per_endpoint: 0,
         rpc_timeout_s: 1,
+        batch_update_threshold_bytes: 0,
+        batch_coalesce_delay_ms: 0,
+        parallel_chunk_read_threshold: 0,
+        parallel_chunk_count: 0,
     };
     let store = GrpcStore::new(&spec).await?;
     let request = Request::new(FindMissingBlobsRequest {

@@ -814,6 +814,7 @@ async fn cas_not_found_returns_failed_precondition_test() -> Result<(), Error> {
                         queued_timestamp: None,
                         platform: Some(Platform::default()),
                         worker_id: expected_worker_id.clone(),
+                        peer_hints: Vec::new(),
                     })),
                 })
                 .unwrap(),
@@ -924,6 +925,7 @@ async fn non_cas_not_found_returns_internal_error_test() -> Result<(), Error> {
                         queued_timestamp: None,
                         platform: Some(Platform::default()),
                         worker_id: expected_worker_id.clone(),
+                        peer_hints: Vec::new(),
                     })),
                 })
                 .unwrap(),

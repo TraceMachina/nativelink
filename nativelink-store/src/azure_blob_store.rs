@@ -46,7 +46,7 @@ use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthS
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::store_trait::{
-    RemoveItemCallback, StoreDriver, StoreKey, StoreOptimizations, UploadSizeInfo,
+    ItemCallback, StoreDriver, StoreKey, StoreOptimizations, UploadSizeInfo,
 };
 use tokio::sync::mpsc;
 use tokio::time::sleep;
@@ -347,7 +347,7 @@ impl AzureClient {
     }
 
     fn build_connector(config: &ExperimentalAzureSpec) -> HttpsConnector<LegacyHttpConnector> {
-        let builder = HttpsConnectorBuilder::new().with_webpki_roots();
+        let builder = HttpsConnectorBuilder::new().with_platform_verifier();
 
         let builder_with_schemes = if config.common.insecure_allow_http {
             builder.https_or_http()
@@ -910,9 +910,9 @@ where
         registry.register_indicator(self);
     }
 
-    fn register_remove_callback(
+    fn register_item_callback(
         self: Arc<Self>,
-        _callback: Arc<dyn RemoveItemCallback>,
+        _callback: Arc<dyn ItemCallback>,
     ) -> Result<(), Error> {
         // Azure Blob Storage manages object lifecycle externally,
         // so we can safely ignore remove callbacks.

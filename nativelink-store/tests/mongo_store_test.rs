@@ -463,7 +463,9 @@ async fn test_database_lifecycle() -> Result<(), Error> {
     let (spec, mongo_process) = TestMongoHelper::new_spec(None).await?;
     let database_name = spec.database.clone();
 
-    let client = MongoClient::with_uri_str(&spec.connection_string).await?;
+    let client = MongoClient::with_uri_str(&spec.connection_string)
+        .await
+        .map_err(|e| make_err!(Code::Internal, "Failed to connect to MongoDB: {e}"))?;
 
     // Verify database doesn't exist initially
     let db_names = client
