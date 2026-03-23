@@ -888,6 +888,33 @@ impl RunningActionImpl {
         Ok(self)
     }
 
+    pub fn canonicalise_path(
+        self: &Arc<Self>,
+        arg: &OsStr,
+        working_directory: &String,
+    ) -> Result<PathBuf, Error> {
+        // If the program contains a slash, we treat it as a path and resolve it relative to the work directory.
+        Ok(if Path::new(arg).components().count() > 1 {
+            let canonical_path = PathBuf::from(&self.work_directory)
+                .join(working_directory)
+                .join(arg);
+            if cfg!(target_os = "windows") {
+                // Workaround for https://github.com/rust-lang/rust/issues/42869 using a windows-specific crate
+                dunce::canonicalize(canonical_path)
+            } else {
+                canonical_path.canonicalize()
+            }
+            .err_tip(|| {
+                format!(
+                    "Could not canonicalize path for command root {}.",
+                    arg.to_string_lossy()
+                )
+            })?
+        } else {
+            PathBuf::from(arg)
+        })
+    }
+
     async fn inner_execute(self: Arc<Self>) -> Result<Arc<Self>, Error> {
         let (command_proto, mut kill_channel_rx) = {
             let mut state = self.state.lock();
@@ -925,23 +952,9 @@ impl RunningActionImpl {
         //                    figure out toolchain misconfiguration issues.
         //                    De-bloat the `debug` level by using the `trace`
         //                    level more effectively and adjust this.
-        info!(?args, "Executing command",);
+        info!(?args, "Executing command");
 
-        // If the program contains a slash, we treat it as a path and resolve it relative to the work directory.
-        let program = if Path::new(&args[0]).components().count() > 1 {
-            PathBuf::from(&self.work_directory)
-                .join(&command_proto.working_directory)
-                .join(&args[0])
-                .canonicalize()
-                .err_tip(|| {
-                    format!(
-                        "Could not canonicalize path for command root {}.",
-                        args[0].to_string_lossy()
-                    )
-                })?
-        } else {
-            PathBuf::from(&args[0])
-        };
+        let program = self.canonicalise_path(args[0], &command_proto.working_directory)?;
 
         let mut command_builder = process::Command::new(program);
         command_builder
