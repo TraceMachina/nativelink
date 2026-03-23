@@ -1255,10 +1255,10 @@ impl SchedulerSubscription for RedisSubscription {
             .receiver
             .as_mut()
             .ok_or_else(|| make_err!(Code::Internal, "In RedisSubscription::changed::as_mut"))?;
-        receiver
-            .changed()
-            .await
-            .map_err(|_| make_err!(Code::Internal, "In RedisSubscription::changed::changed"))
+        receiver.changed().await.map_err(|err| {
+            Error::from_std_err(Code::Internal, &err)
+                .append("In RedisSubscription::changed::changed")
+        })
     }
 }
 

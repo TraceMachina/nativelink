@@ -671,11 +671,9 @@ impl SchedulerSubscription for ExperimentalMongoSubscription {
                 "In ExperimentalMongoSubscription::changed::as_mut"
             )
         })?;
-        receiver.changed().await.map_err(|_| {
-            make_err!(
-                Code::Internal,
-                "In ExperimentalMongoSubscription::changed::changed"
-            )
+        receiver.changed().await.map_err(|err| {
+            Error::from_std_err(Code::Internal, &err)
+                .append("In ExperimentalMongoSubscription::changed::changed")
         })
     }
 }

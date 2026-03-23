@@ -768,11 +768,9 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         }
 
         let permit = if let Some(sem) = &self.write_semaphore {
-            Some(
-                sem.acquire()
-                    .await
-                    .map_err(|_| make_err!(Code::Internal, "Write semaphore closed"))?,
-            )
+            Some(sem.acquire().await.map_err(|err| {
+                Error::from_std_err(Code::Internal, &err).append("Write semaphore closed")
+            })?)
         } else {
             None
         };
@@ -983,11 +981,9 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         }
 
         let _permit = if let Some(sem) = &self.write_semaphore {
-            Some(
-                sem.acquire()
-                    .await
-                    .map_err(|_| make_err!(Code::Internal, "Write semaphore closed"))?,
-            )
+            Some(sem.acquire().await.map_err(|err| {
+                Error::from_std_err(Code::Internal, &err).append("Write semaphore closed")
+            })?)
         } else {
             None
         };

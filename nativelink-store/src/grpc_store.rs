@@ -22,7 +22,7 @@ use bytes::BytesMut;
 use futures::stream::{FuturesUnordered, unfold};
 use futures::{Future, Stream, StreamExt, TryFutureExt, TryStreamExt, future};
 use nativelink_config::stores::GrpcSpec;
-use nativelink_error::{Error, ResultExt, error_if, make_input_err};
+use nativelink_error::{Error, ResultExt, error_if};
 use nativelink_metric::MetricsComponent;
 use nativelink_proto::build::bazel::remote::execution::v2::action_cache_client::ActionCacheClient;
 use nativelink_proto::build::bazel::remote::execution::v2::content_addressable_storage_client::ContentAddressableStorageClient;
@@ -85,8 +85,10 @@ impl GrpcStore {
         );
         let mut endpoints = Vec::with_capacity(spec.endpoints.len());
         for endpoint_config in &spec.endpoints {
-            let endpoint = tls_utils::endpoint(endpoint_config)
-                .map_err(|e| make_input_err!("Invalid URI for GrpcStore endpoint : {e:?}"))?;
+            let endpoint = tls_utils::endpoint(endpoint_config).map_err(|e| {
+                Error::from_std_err(Code::InvalidArgument, &e)
+                    .append("Invalid URI for GrpcStore endpoint")
+            })?;
             endpoints.push(endpoint);
         }
 

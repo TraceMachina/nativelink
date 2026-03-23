@@ -124,7 +124,9 @@ impl GcsClient {
             .connect_timeout(connect_timeout)
             .read_timeout(read_timeout)
             .build()
-            .map_err(|e| make_err!(Code::Internal, "Unable to create GCS client: {e:?}"))?;
+            .map_err(|e| {
+                Error::from_std_err(Code::Internal, &e).append("Unable to create GCS client")
+            })?;
         let mid_client = reqwest_middleware::ClientBuilder::new(client).build();
         client_config.http = Some(mid_client);
         Ok(client_config)
@@ -145,10 +147,8 @@ impl GcsClient {
             Err(_) => Self::create_client_config(spec)?.with_auth().await,
         }
         .map_err(|e| {
-            make_err!(
-                Code::Internal,
-                "Failed to create client config with credentials: {e:?}"
-            )
+            Error::from_std_err(Code::Internal, &e)
+                .append("Failed to create client config with credentials")
         });
 
         // If authentication is required then error, otherwise use anonymous.
@@ -201,10 +201,9 @@ impl GcsClient {
         F: FnOnce() -> Fut + Send,
         Fut: Future<Output = Result<T, Error>> + Send,
     {
-        let permit =
-            self.semaphore.acquire().await.map_err(|e| {
-                make_err!(Code::Internal, "Failed to acquire connection permit: {}", e)
-            })?;
+        let permit = self.semaphore.acquire().await.map_err(|e| {
+            Error::from_std_err(Code::Internal, &e).append("Failed to acquire connection permit")
+        })?;
 
         let result = operation().await;
         drop(permit);
@@ -253,7 +252,7 @@ impl GcsClient {
             _ => Code::Internal,
         };
 
-        make_err!(code, "GCS operation failed: {}", err)
+        Error::from_std_err(code, &err).append("GCS operation failed")
     }
 
     /// Reading data from reader and upload in a single operation
@@ -454,10 +453,9 @@ impl GcsOperations for GcsClient {
             }
         }
 
-        let permit =
-            self.semaphore.clone().acquire_owned().await.map_err(|e| {
-                make_err!(Code::Internal, "Failed to acquire connection permit: {}", e)
-            })?;
+        let permit = self.semaphore.clone().acquire_owned().await.map_err(|e| {
+            Error::from_std_err(Code::Internal, &e).append("Failed to acquire connection permit")
+        })?;
         let request = GetObjectRequest {
             bucket: object_path.bucket.clone(),
             object: object_path.path.clone(),

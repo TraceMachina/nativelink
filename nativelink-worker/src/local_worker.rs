@@ -433,7 +433,9 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                                 actions_notify.notify_one();
                                                 core::future::ready(res)
                                             }).boxed())
-                                            .map_err(|_| make_err!(Code::Internal, "LocalWorker could not send future"))?;
+                                            .map_err(|err|
+                                                Error::from_std_err(Code::Internal, &err).append("LocalWorker could not send future")
+                                                )?;
                                         Ok(())
                                     })
                                     .or_else(move |err| {
@@ -456,7 +458,8 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                 complete_msg = shutdown_rx.recv().fuse() => {
                     warn!("Worker loop received shutdown signal. Shutting down worker...",);
                     let mut grpc_client = self.grpc_client.clone();
-                    let shutdown_guard = complete_msg.map_err(|e| make_err!(Code::Internal, "Failed to receive shutdown message: {e:?}"))?;
+                    let shutdown_guard = complete_msg.map_err(|e|
+                        Error::from_std_err(Code::Internal, &e).append("Failed to receive shutdown message"))?;
                     let actions_in_flight = actions_in_flight.clone();
                     let actions_notify = actions_notify.clone();
                     let shutdown_future = async move {
@@ -627,16 +630,18 @@ pub async fn new_local_worker(
                         .err_tip(|| "Parsing local worker TLS configuration")?;
                 let endpoint =
                     tls_utils::endpoint_from(&config.worker_api_endpoint.uri, tls_config)
-                        .map_err(|e| make_input_err!("Invalid URI for worker endpoint : {e:?}"))?
+                        .map_err(|e| {
+                            Error::from_std_err(Code::InvalidArgument, &e)
+                                .append("Invalid URI for worker endpoint")
+                        })?
                         .connect_timeout(timeout_duration)
                         .timeout(timeout_duration);
 
                 let transport = endpoint.connect().await.map_err(|e| {
-                    make_err!(
-                        Code::Internal,
-                        "Could not connect to endpoint {}: {e:?}",
+                    Error::from_std_err(Code::Internal, &e).append(format!(
+                        "Could not connect to endpoint {}",
                         config.worker_api_endpoint.uri
-                    )
+                    ))
                 })?;
                 Ok(WorkerApiClient::new(transport).into())
             })

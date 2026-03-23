@@ -1410,7 +1410,7 @@ async fn file_slot_taken_when_ready() -> Result<(), Error> {
         tokio::join!(update_1_fut, update_2_fut, writer_1_fut, writer_2_fut)
     })
     .await
-    .map_err(|_| make_err!(Code::Internal, "Deadlock detected"))?;
+    .map_err(|err| Error::from_std_err(Code::Internal, &err).append("Deadlock detected"))?;
     res_1.merge(res_2).merge(res_3).merge(res_4)
 }
 
