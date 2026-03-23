@@ -45,7 +45,10 @@ rust_library(
         "@crates//:tonic",
         "@crates//:tracing",
         "@crates//:uuid",
-    ],
+    ] + select({
+        "@platforms//os:linux": ["@crates//:libc"],
+        "//conditions:default": [],
+    }),
 )
 
 rust_test_suite(

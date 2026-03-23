@@ -20,6 +20,8 @@ use core::time::Duration;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::env;
+#[cfg(target_os = "linux")]
+use std::io::Write;
 use std::process::Stdio;
 use std::sync::{Arc, Weak};
 
@@ -510,6 +512,45 @@ impl<
     }
 }
 
+#[cfg(target_os = "linux")]
+pub fn namespaces_supported() -> bool {
+    // SAFETY: Simply calling fork and waitpid with return values strictly checked.
+    // There is no use of memory or allocations to cause issues.
+    unsafe {
+        let uid = libc::geteuid();
+        let pid = libc::fork();
+        match pid {
+            0 => {
+                if libc::unshare(
+                    libc::CLONE_NEWPID
+                        | libc::CLONE_NEWUSER
+                        | libc::CLONE_NEWIPC
+                        | libc::CLONE_NEWUTS,
+                ) == 0
+                    && std::fs::OpenOptions::new()
+                        .write(true)
+                        .open("/proc/self/uid_map")
+                        .and_then(|mut f| f.write_all(format!("{uid} {uid} 1\n").as_bytes()))
+                        .is_ok()
+                {
+                    libc::_exit(0);
+                }
+                libc::_exit(1);
+            }
+            pid if pid > 0 => {
+                let mut status = 0;
+                while libc::waitpid(pid, &raw mut status, 0) == -1 {
+                    if std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+                        return false;
+                    }
+                }
+                libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0
+            }
+            _ => false,
+        }
+    }
+}
+
 /// Creates a new `LocalWorker`. The `cas_store` must be an instance of
 /// `FastSlowStore` and will be checked at runtime.
 pub async fn new_local_worker(
@@ -598,6 +639,21 @@ pub async fn new_local_worker(
         None
     };
 
+    #[cfg(target_os = "linux")]
+    let use_namespaces = if let Some(use_namespaces) = &config.use_namespaces {
+        if *use_namespaces && !namespaces_supported() {
+            return Err(make_err!(Code::Unavailable, "Namespaces not supported"));
+        }
+        *use_namespaces
+    } else {
+        namespaces_supported()
+    };
+
+    #[cfg(not(target_os = "linux"))]
+    if config.use_namespaces.is_some() {
+        return Err(make_err!(Code::Unavailable, "Namespaces not supported"));
+    }
+
     let running_actions_manager =
         Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
             root_action_directory: config.work_directory.clone(),
@@ -613,6 +669,8 @@ pub async fn new_local_worker(
             max_upload_timeout,
             timeout_handled_externally: config.timeout_handled_externally,
             directory_cache,
+            #[cfg(target_os = "linux")]
+            use_namespaces,
         })?);
     let local_worker = LocalWorker::new_with_connection_factory_and_actions_manager(
         config.clone(),

@@ -25,6 +25,8 @@ use std::env;
 use std::ffi::{OsStr, OsString};
 #[cfg(target_family = "unix")]
 use std::fs::Permissions;
+#[cfg(target_os = "linux")]
+use std::io::Write;
 #[cfg(target_family = "unix")]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -752,6 +754,105 @@ pub struct RunningActionImpl {
     did_cleanup: AtomicBool,
 }
 
+#[cfg(target_os = "linux")]
+fn configure_namespace() -> std::io::Result<()> {
+    unsafe {
+        let uid = libc::geteuid();
+        let gid = libc::getegid();
+
+        // Create a new User, IPC, UTS and PID namespace.
+        // CLONE_NEWUSER is required for unprivileged users.
+        // CLONE_NEWIPC isolates System V IPC objects and POSIX message queues.
+        // CLONE_NEWUTS isolates hostname and domain name.
+        // CLONE_NEWPID isolates the process ID number space.
+        if libc::unshare(
+            libc::CLONE_NEWPID | libc::CLONE_NEWUSER | libc::CLONE_NEWIPC | libc::CLONE_NEWUTS,
+        ) != 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+
+        // Map the current user to the same user in the new namespace.
+        // This is required to be able to write to files and directories
+        // that are owned by the current user.
+        // We must write "deny" to /proc/self/setgroups before writing to gid_map
+        // if we don't have CAP_SETGID in the parent namespace (which we don't if unprivileged).
+        {
+            if let Err(e) = std::fs::OpenOptions::new()
+                .write(true)
+                .open("/proc/self/setgroups")
+                .and_then(|mut f| f.write_all(b"deny"))
+            {
+                if e.kind() != std::io::ErrorKind::NotFound
+                    && e.raw_os_error() != Some(libc::EPERM)
+                    && e.raw_os_error() != Some(libc::EACCES)
+                {
+                    return Err(e);
+                }
+            }
+            // We use OpenOptions to avoid O_CREAT which can cause PermissionDenied on /proc
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open("/proc/self/uid_map")?
+                .write_all(format!("{uid} {uid} 1\n").as_bytes())?;
+            // If we can't write to gid_map, we just ignore it. This usually happens if
+            // setgroups was not written to (because of permissions) or if we are in a
+            // restricted environment.
+            if let Err(e) = std::fs::OpenOptions::new()
+                .write(true)
+                .open("/proc/self/gid_map")
+                .and_then(|mut f| f.write_all(format!("{gid} {gid} 1\n").as_bytes()))
+            {
+                if e.raw_os_error() != Some(libc::EPERM) && e.raw_os_error() != Some(libc::EACCES) {
+                    return Err(e);
+                }
+            }
+        }
+
+        // Set hostname to "nativelink" to ensure reproducibility.
+        let hostname = b"nativelink";
+        if libc::sethostname(hostname.as_ptr().cast(), hostname.len()) != 0 {
+            let err = std::io::Error::last_os_error();
+            if err.raw_os_error() != Some(libc::EPERM) && err.raw_os_error() != Some(libc::EACCES) {
+                return Err(err);
+            }
+        }
+
+        // Fork again to create a shim process.
+        match libc::fork() {
+            // This is the child process.
+            0 => {
+                // Ensure we are killed if our parent (the intermediate shim) dies.
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                    libc::_exit(1);
+                }
+
+                // We continue with execution.
+                Ok(())
+            }
+            // This is the parent process (intermediate shim).
+            // We wait for the child to exit and propagate the exit status.
+            pid if pid > 0 => loop {
+                let mut status = 0;
+                let wpid = libc::waitpid(-1, &raw mut status, 0);
+                if wpid == -1
+                    && std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
+                {
+                    libc::_exit(1);
+                } else if wpid != pid {
+                    // Caught a zombie, braains.
+                } else if libc::WIFEXITED(status) {
+                    libc::_exit(libc::WEXITSTATUS(status));
+                } else if libc::WIFSIGNALED(status) {
+                    libc::_exit(128 + libc::WTERMSIG(status));
+                }
+            },
+            // Fork failed.
+            _ => Err(std::io::Error::last_os_error()),
+        }
+    }
+}
+
 impl RunningActionImpl {
     pub fn new(
         execution_metadata: ExecutionMetadata,
@@ -1006,6 +1107,18 @@ impl RunningActionImpl {
         };
         for environment_variable in envs {
             command_builder.env(&environment_variable.name, &environment_variable.value);
+        }
+
+        // Sandboxing of the command if we are running on Linux, this resolves issues where
+        // children can spawn children and also provides better reproducibility.
+        #[cfg(target_os = "linux")]
+        if self.running_actions_manager.use_namespaces {
+            // SAFETY: No external variables are used inside the closure so there are no
+            // deadlocking concerns.  The use use of libc functions have no raw memory
+            // use and are simply wrappers around forks and waitpids.
+            unsafe {
+                command_builder.pre_exec(configure_namespace);
+            }
         }
 
         let mut child_process = command_builder
@@ -1930,6 +2043,8 @@ pub struct RunningActionsManagerArgs<'a> {
     pub max_upload_timeout: Duration,
     pub timeout_handled_externally: bool,
     pub directory_cache: Option<Arc<crate::directory_cache::DirectoryCache>>,
+    #[cfg(target_os = "linux")]
+    pub use_namespaces: bool,
 }
 
 struct CleanupGuard {
@@ -1960,6 +2075,8 @@ pub struct RunningActionsManagerImpl {
     max_action_timeout: Duration,
     max_upload_timeout: Duration,
     timeout_handled_externally: bool,
+    #[cfg(target_os = "linux")]
+    use_namespaces: bool,
     running_actions: Mutex<HashMap<OperationId, Weak<RunningActionImpl>>>,
     // Note: We don't use Notify because we need to support a .wait_for()-like function, which
     // Notify does not support.
@@ -2021,6 +2138,8 @@ impl RunningActionsManagerImpl {
             cleaning_up_operations: Mutex::new(HashSet::new()),
             cleanup_complete_notify: Arc::new(Notify::new()),
             directory_cache: args.directory_cache,
+            #[cfg(target_os = "linux")]
+            use_namespaces: args.use_namespaces,
         })
     }
 

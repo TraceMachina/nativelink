@@ -853,6 +853,13 @@ pub struct LocalWorkerConfig {
     /// them from CAS for every action.
     /// Default: None (directory cache disabled)
     pub directory_cache: Option<DirectoryCacheConfig>,
+
+    /// Whether to use namespaces to isolate the execution.  This is only available
+    /// on Linux.  It is highly recommended as it avoids a number of issues with
+    /// zombie processes and also provides additional hermeticity.  If explicitly set
+    /// to true and it is not supported the worker will exit with an error.
+    /// Default: True on Linux and supported, False otherwise.
+    pub use_namespaces: Option<bool>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
