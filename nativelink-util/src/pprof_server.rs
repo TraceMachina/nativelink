@@ -208,10 +208,11 @@ fn get_cpu_usage() -> f64 {
         };
         // SAFETY: getrusage with RUSAGE_SELF is always safe.
         unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage_val); }
-        let cpu_time = Duration::new(
-            (usage_val.ru_utime.tv_sec + usage_val.ru_stime.tv_sec) as u64,
-            ((usage_val.ru_utime.tv_usec + usage_val.ru_stime.tv_usec) * 1000) as u32,
-        );
+        let total_usec = (usage_val.ru_utime.tv_sec as u64) * 1_000_000
+            + (usage_val.ru_utime.tv_usec as u64)
+            + (usage_val.ru_stime.tv_sec as u64) * 1_000_000
+            + (usage_val.ru_stime.tv_usec as u64);
+        let cpu_time = Duration::from_micros(total_usec);
         let now = std::time::Instant::now();
         let num_cpus = std::thread::available_parallelism()
             .map(|n| n.get() as f64)
