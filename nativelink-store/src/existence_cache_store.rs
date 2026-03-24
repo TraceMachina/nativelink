@@ -32,7 +32,7 @@ use nativelink_util::store_trait::{
     ItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };
 use parking_lot::Mutex;
-use tracing::{debug, info, trace};
+use tracing::{debug, info, trace, warn};
 
 #[derive(Clone, Debug)]
 struct ExistenceItem(u64);
@@ -171,6 +171,26 @@ impl<I: InstantWrapper> ExistenceCacheStore<I> {
             .has_with_results(&not_cached_keys, &mut inner_results)
             .await
             .err_tip(|| "In ExistenceCacheStore::inner_has_with_results")?;
+
+        // Diagnostic: log small blobs that the inner store says are missing.
+        for (key, result) in not_cached_keys.iter().zip(inner_results.iter()) {
+            if result.is_none() {
+                let key_str = key.as_str();
+                if let Some(size_str) = key_str.rsplit('-').next() {
+                    if let Ok(size) = size_str.parse::<u64>() {
+                        if size < 1024 {
+                            warn!(
+                                key = %key_str,
+                                cached_count = keys.len() - not_cached_keys.len(),
+                                not_cached_count = not_cached_keys.len(),
+                                "ExistenceCacheStore::has: small blob not in cache \
+                                 AND not found by inner store",
+                            );
+                        }
+                    }
+                }
+            }
+        }
 
         // Insert found from previous query into our cache.
         {
