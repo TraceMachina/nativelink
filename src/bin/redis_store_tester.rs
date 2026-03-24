@@ -305,7 +305,7 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
         .unwrap()
         .block_on(async {
             // The OTLP exporters need to run in a Tokio context.
-            spawn!("init tracing", async { init_tracing() })
+            spawn!("init tracing", async { init_tracing(true) })
                 .await?
                 .expect("Init tracing should work");
 

@@ -99,15 +99,40 @@ fn tracing_stdout_layer() -> impl Layer<Registry> {
 
 /// Initialize tracing with OpenTelemetry support.
 ///
+/// When `disable_otlp` is `true`, only the stdout fmt layer is registered
+/// and no OTLP exporters are created. This avoids synchronous overhead on
+/// every span enter/exit when no collector is running.
+///
+/// The `NL_DISABLE_OTLP` environment variable can also be set to `1` or
+/// `true` as a fallback to disable OTLP independently of the config.
+///
 /// # Errors
 ///
 /// Returns `Err` if logging was already initialized or if the exporters can't
 /// be initialized.
-pub fn init_tracing() -> Result<(), nativelink_error::Error> {
+pub fn init_tracing(disable_otlp: bool) -> Result<(), nativelink_error::Error> {
     static INITIALIZED: OnceLock<()> = OnceLock::new();
 
     if INITIALIZED.get().is_some() {
         return Err(make_err!(Code::Internal, "Logging already initialized"));
+    }
+
+    // Environment variable override: if set, it takes precedence.
+    let disable_otlp = match env::var("NL_DISABLE_OTLP") {
+        Ok(val) if val == "1" || val.eq_ignore_ascii_case("true") => true,
+        Ok(val) if val == "0" || val.eq_ignore_ascii_case("false") => false,
+        _ => disable_otlp,
+    };
+
+    if disable_otlp {
+        registry().with(tracing_stdout_layer()).init();
+
+        INITIALIZED.set(()).unwrap_or(());
+
+        // Log after the subscriber is installed so the message is visible.
+        tracing::info!("OTLP exporters disabled, stdout-only logging active");
+
+        return Ok(());
     }
 
     // We currently use a UUIDv4 for "service.instance.id" as per:
@@ -187,6 +212,8 @@ pub fn init_tracing() -> Result<(), nativelink_error::Error> {
         .init();
 
     INITIALIZED.set(()).unwrap_or(());
+
+    tracing::info!("OTLP exporters enabled");
 
     Ok(())
 }

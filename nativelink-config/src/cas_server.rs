@@ -1055,6 +1055,18 @@ pub struct GlobalConfig {
     /// Default: 0 (disabled)
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub pprof_port: u16,
+
+    /// Disable OpenTelemetry OTLP exporters (logs, traces, metrics).
+    /// When true (the default), only stdout logging is active.
+    /// Set to false to enable OTLP export to a collector.
+    ///
+    /// Default: true (OTLP disabled)
+    #[serde(default = "default_disable_otlp")]
+    pub disable_otlp: bool,
+}
+
+fn default_disable_otlp() -> bool {
+    true
 }
 
 pub type StoreConfig = NamedConfig<StoreSpec>;

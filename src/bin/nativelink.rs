@@ -1034,11 +1034,7 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
         .enable_all()
         .build()?;
 
-    // The OTLP exporters need to run in a Tokio context
-    // Do this first so all the other logging works
-    #[expect(clippy::disallowed_methods, reason = "tracing init on main runtime")]
-    runtime.block_on(async { tokio::spawn(async { init_tracing() }).await? })?;
-
+    // Parse config before tracing init so we can read disable_otlp.
     let mut cfg = get_config()?;
 
     let global_cfg = if let Some(global_cfg) = &mut cfg.global {
@@ -1056,8 +1052,15 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
             default_digest_hash_function: None,
             default_digest_size_health_check: DEFAULT_DIGEST_SIZE_HEALTH_CHECK_CFG,
             pprof_port: 0,
+            disable_otlp: true,
         }
     };
+
+    // The OTLP exporters need to run in a Tokio context
+    // Do this first so all the other logging works
+    let disable_otlp = global_cfg.disable_otlp;
+    #[expect(clippy::disallowed_methods, reason = "tracing init on main runtime")]
+    runtime.block_on(async { tokio::spawn(async move { init_tracing(disable_otlp) }).await? })?;
     set_open_file_limit(global_cfg.max_open_files);
     set_default_digest_hasher_func(DigestHasherFunc::from(
         global_cfg
