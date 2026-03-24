@@ -218,10 +218,10 @@ where
                         Err(sdk_error) => match sdk_error.into_service_error() {
                             HeadObjectError::NotFound(_) => Some((RetryResult::Ok(None), state)),
                             other => Some((
-                                RetryResult::Retry(make_err!(
-                                    Code::Unavailable,
-                                    "Unhandled HeadObjectError in S3: {other:?}"
-                                )),
+                                RetryResult::Retry(
+                                    Error::from_std_err(Code::Unavailable, &other)
+                                        .append("Unhandled HeadObjectError in S3"),
+                                ),
                                 state,
                             )),
                         },
@@ -312,7 +312,7 @@ where
                                     size: sz,
                                 }))
                                 .send()
-                                .map_ok_or_else(|e| Err(make_err!(Code::Aborted, "{e:?}")), |_| Ok(())),
+                                .map_ok_or_else(|e| Err(Error::from_std_err(Code::Aborted, &e)), |_| Ok(())),
                             // Stream all data from the reader channel to the writer channel.
                             tx.bind_buffered(reader_ref)
                         );
@@ -361,10 +361,10 @@ where
                     .await
                     .map_or_else(
                         |e| {
-                            RetryResult::Retry(make_err!(
-                                Code::Aborted,
-                                "Failed to create multipart upload to s3: {e:?}"
-                            ))
+                            RetryResult::Retry(
+                                Error::from_std_err(Code::Aborted, &e)
+                                    .append("Failed to create multipart upload to s3"),
+                            )
                         },
                         |CreateMultipartUploadOutput { upload_id, .. }| {
                             upload_id.map_or_else(
@@ -420,10 +420,11 @@ where
                                 .await
                                 .map_or_else(
                                     |e| {
-                                        RetryResult::Retry(make_err!(
-                                            Code::Aborted,
-                                            "Failed to upload part {part_number} in S3 store: {e:?}"
-                                        ))
+                                        RetryResult::Retry(
+                                            Error::from_std_err(Code::Aborted, &e).append(format!(
+                                                "Failed to upload part {part_number} in S3 store"
+                                            )),
+                                        )
                                     },
                                     |mut response| {
                                         RetryResult::Ok(
@@ -441,8 +442,9 @@ where
                         }
                     })))
                     .await
-                    .map_err(|_| {
-                        make_err!(Code::Internal, "Failed to send part to channel in s3_store")
+                    .map_err(|err| {
+                        Error::from_std_err(Code::Internal, &err)
+                            .append("Failed to send part to channel in s3_store")
                     })?;
                 }
                 Result::<_, Error>::Ok(())
@@ -491,10 +493,11 @@ where
                             .await
                             .map_or_else(
                                 |e| {
-                                    RetryResult::Retry(make_err!(
-                                        Code::Aborted,
-                                        "Failed to complete multipart upload in S3 store: {e:?}"
-                                    ))
+                                    RetryResult::Retry(
+                                        Error::from_std_err(Code::Aborted, &e).append(
+                                            "Failed to complete multipart upload in S3 store",
+                                        ),
+                                    )
                                 },
                                 |_| RetryResult::Ok(()),
                             ),
@@ -518,10 +521,8 @@ where
                         .await
                         .map_or_else(
                             |e| {
-                                let err = make_err!(
-                                    Code::Aborted,
-                                    "Failed to abort multipart upload in S3 store : {e:?}"
-                                );
+                                let err = Error::from_std_err(Code::Aborted, &e)
+                                    .append("Failed to abort multipart upload in S3 store");
                                 info!(?err, "Multipart upload error");
                                 Err(err)
                             },
@@ -571,19 +572,19 @@ where
                     Err(sdk_error) => match sdk_error.into_service_error() {
                         GetObjectError::NoSuchKey(e) => {
                             return Some((
-                                RetryResult::Err(make_err!(
-                                    Code::NotFound,
-                                    "No such key in S3: {e}"
-                                )),
+                                RetryResult::Err(
+                                    Error::from_std_err(Code::NotFound, &e)
+                                        .append("No such key in S3"),
+                                ),
                                 writer,
                             ));
                         }
                         other => {
                             return Some((
-                                RetryResult::Retry(make_err!(
-                                    Code::Unavailable,
-                                    "Unhandled GetObjectError in S3: {other:?}",
-                                )),
+                                RetryResult::Retry(
+                                    Error::from_std_err(Code::Unavailable, &other)
+                                        .append("Unhandled GetObjectError in S3"),
+                                ),
                                 writer,
                             ));
                         }
@@ -601,20 +602,20 @@ where
                             }
                             if let Err(e) = writer.send(bytes).await {
                                 return Some((
-                                    RetryResult::Err(make_err!(
-                                        Code::Aborted,
-                                        "Error sending bytes to consumer in S3: {e}"
-                                    )),
+                                    RetryResult::Err(
+                                        Error::from_std_err(Code::Aborted, &e)
+                                            .append("Error sending bytes to consumer in S3"),
+                                    ),
                                     writer,
                                 ));
                             }
                         }
                         Err(e) => {
                             return Some((
-                                RetryResult::Retry(make_err!(
-                                    Code::Aborted,
-                                    "Bad bytestream element in S3: {e}"
-                                )),
+                                RetryResult::Retry(
+                                    Error::from_std_err(Code::Aborted, &e)
+                                        .append("Bad bytestream element in S3"),
+                                ),
                                 writer,
                             ));
                         }
@@ -622,10 +623,10 @@ where
                 }
                 if let Err(e) = writer.send_eof() {
                     return Some((
-                        RetryResult::Err(make_err!(
-                            Code::Aborted,
-                            "Failed to send EOF to consumer in S3: {e}"
-                        )),
+                        RetryResult::Err(
+                            Error::from_std_err(Code::Aborted, &e)
+                                .append("Failed to send EOF to consumer in S3"),
+                        ),
                         writer,
                     ));
                 }

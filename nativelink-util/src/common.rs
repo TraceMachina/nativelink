@@ -29,6 +29,7 @@ use prost::Message;
 use serde::de::Visitor;
 use serde::ser::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use tonic::Code;
 use tracing::error;
 
 pub use crate::fs;
@@ -146,10 +147,10 @@ impl<'a> DigestStackStringifier<'a> {
         let len = {
             let mut cursor = Cursor::new(&mut self.buf[..]);
             let hex = self.digest.packed_hash.to_hex().map_err(|e| {
-                make_input_err!(
-                    "Could not convert PackedHash to hex - {e:?} - {:?}",
+                Error::from_std_err(Code::InvalidArgument, &e).append(format!(
+                    "Could not convert PackedHash to hex - {:?}",
                     self.digest
-                )
+                ))
             })?;
             cursor
                 .write_all(&hex)
@@ -160,19 +161,17 @@ impl<'a> DigestStackStringifier<'a> {
             cursor
                 .write_fmt(format_args!("{}", self.digest.size_bytes()))
                 .err_tip(|| format!("Could not write size_bytes to buffer - {hex:?}",))?;
-            cursor
-                .position()
-                .try_into()
-                .map_err(|e| make_input_err!("Cursor position exceeds usize bounds: {e}"))?
+            cursor.position().try_into().map_err(|e| {
+                Error::from_std_err(Code::InvalidArgument, &e)
+                    .append("Cursor position exceeds usize bounds")
+            })?
         };
         // Convert the buffer into utf8 string.
         core::str::from_utf8(&self.buf[..len]).map_err(|e| {
-            make_input_err!(
-                "Could not convert [u8] to string - {} - {:?} - {:?}",
-                self.digest,
-                self.buf,
-                e,
-            )
+            Error::from_std_err(Code::InvalidArgument, &e).append(format!(
+                "Could not convert [u8] to string - {} - {:?}",
+                self.digest, self.buf
+            ))
         })
     }
 }
@@ -277,10 +276,10 @@ impl TryFrom<Digest> for DigestInfo {
     fn try_from(digest: Digest) -> Result<Self, Self::Error> {
         let packed_hash = PackedHash::from_hex(&digest.hash)
             .err_tip(|| format!("Invalid sha256 hash: {}", digest.hash))?;
-        let size_bytes = digest
-            .size_bytes
-            .try_into()
-            .map_err(|_| make_input_err!("Could not convert {} into u64", digest.size_bytes))?;
+        let size_bytes = digest.size_bytes.try_into().map_err(|e| {
+            Error::from_std_err(Code::InvalidArgument, &e)
+                .append(format!("Could not convert {} into u64", digest.size_bytes))
+        })?;
         Ok(Self {
             packed_hash,
             size_bytes,
@@ -294,10 +293,10 @@ impl TryFrom<&Digest> for DigestInfo {
     fn try_from(digest: &Digest) -> Result<Self, Self::Error> {
         let packed_hash = PackedHash::from_hex(&digest.hash)
             .err_tip(|| format!("Invalid sha256 hash: {}", digest.hash))?;
-        let size_bytes = digest
-            .size_bytes
-            .try_into()
-            .map_err(|_| make_input_err!("Could not convert {} into u64", digest.size_bytes))?;
+        let size_bytes = digest.size_bytes.try_into().map_err(|e| {
+            Error::from_std_err(Code::InvalidArgument, &e)
+                .append(format!("Could not convert {} into u64", digest.size_bytes))
+        })?;
         Ok(Self {
             packed_hash,
             size_bytes,
@@ -346,8 +345,10 @@ impl PackedHash {
 
     fn from_hex(hash: &str) -> Result<Self, Error> {
         let mut packed_hash = [0u8; 32];
-        hex::decode_to_slice(hash, &mut packed_hash)
-            .map_err(|e| make_input_err!("Invalid sha256 hash: {hash} - {e:?}"))?;
+        hex::decode_to_slice(hash, &mut packed_hash).map_err(|e| {
+            Error::from_std_err(Code::InvalidArgument, &e)
+                .append(format!("Invalid sha256 hash: {hash}"))
+        })?;
         Ok(Self(packed_hash))
     }
 
@@ -471,5 +472,5 @@ pub fn encode_stream_proto<T: Message>(proto: &T) -> Result<Bytes, Box<dyn core:
 pub fn reseed_rng_for_test() -> Result<(), Error> {
     rand::rng()
         .reseed()
-        .map_err(|e| make_input_err!("Could not reseed RNG - {e:?}"))
+        .map_err(|e| Error::from_std_err(Code::InvalidArgument, &e).append("Could not reseed RNG"))
 }

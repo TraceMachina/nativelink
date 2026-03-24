@@ -167,9 +167,9 @@ pub fn download_to_directory<'a>(
                                 .await
                                 .map_err(|e| {
                                     if e.code == Code::NotFound {
-                                        make_err!(
-                                            Code::Internal,
-                                            "Could not make hardlink, file was likely evicted from cache. {e:?} : {dest}\n\
+                                        e.append(
+                                            format!(
+                                            "Could not make hardlink to {dest}, file was likely evicted from cache.\n\
                                             This error often occurs when the filesystem store's max_bytes is too small for your workload.\n\
                                             To fix this issue:\n\
                                             1. Increase the 'max_bytes' value in your filesystem store configuration\n\
@@ -180,9 +180,9 @@ pub fn download_to_directory<'a>(
                                             If this error persists after increasing max_bytes several times, please report at:\n\
                                             https://github.com/TraceMachina/nativelink/issues\n\
                                             Include your config file and both server and client logs to help us assist you."
-                                        )
+                                        ))
                                     } else {
-                                        make_err!(Code::Internal, "Could not make hardlink, {e:?} : {dest}")
+                                        e.append(format!("Could not make hardlink to {dest}"))
                                     }
                                 })?;
                             }
@@ -643,12 +643,9 @@ async fn process_side_channel_file(
             .err_tip(|| "Error reading side channel file")?;
     }
 
-    let side_channel_info: SideChannelInfo =
-        serde_json5::from_str(&json_contents).map_err(|e| {
-            make_input_err!(
-                "Could not convert contents of side channel file (json) to SideChannelInfo : {e:?}"
-            )
-        })?;
+    let side_channel_info: SideChannelInfo = serde_json5::from_str(&json_contents)
+        .map_err(Error::from)
+        .err_tip(|| "Could not convert contents of side channel file (json) to SideChannelInfo")?;
     Ok(side_channel_info.failure.map(|failure| match failure {
         SideChannelFailureReason::Timeout => Error::new(
             Code::DeadlineExceeded,
@@ -1565,13 +1562,12 @@ impl RunningAction for RunningActionImpl {
             }
         })
         .await
-        .map_err(|_| {
-            make_err!(
-                Code::DeadlineExceeded,
+        .map_err(|err| {
+            Error::from_std_err(Code::DeadlineExceeded, &err).append(format!(
                 "Upload results timed out after {}s for operation {:?}",
                 upload_timeout.as_secs(),
                 operation_id,
-            )
+            ))
         })?;
         if let Err(ref e) = res {
             warn!(?operation_id, ?e, "Error during upload_results");
@@ -1714,18 +1710,18 @@ impl UploadActionResults {
             historical_store,
             success_message_template: Template::new(&config.success_message_template).map_err(
                 |e| {
-                    make_input_err!(
-                        "Could not convert success_message_template to rust template: {} : {e:?}",
+                    Error::from_std_err(Code::InvalidArgument, &e).append(format!(
+                        "Could not convert success_message_template to rust template: {}",
                         config.success_message_template
-                    )
+                    ))
                 },
             )?,
             failure_message_template: Template::new(&config.failure_message_template).map_err(
                 |e| {
-                    make_input_err!(
-                        "Could not convert failure_message_template to rust template: {} : {e:?}",
+                    Error::from_std_err(Code::InvalidArgument, &e).append(format!(
+                        "Could not convert failure_message_template to rust template: {}",
                         config.success_message_template
-                    )
+                    ))
                 },
             )?,
         })
@@ -1779,9 +1775,10 @@ impl UploadActionResults {
             template_str.replace("historical_results_hash", "");
             template_str.replace("historical_results_size", "");
         }
-        template_str
-            .text()
-            .map_err(|e| make_input_err!("Could not convert template to text: {e:?}"))
+        template_str.text().map_err(|e| {
+            Error::from_std_err(Code::InvalidArgument, &e)
+                .append("Could not convert template to text")
+        })
     }
 
     async fn upload_ac_results(

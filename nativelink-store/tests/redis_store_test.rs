@@ -40,9 +40,9 @@ use nativelink_util::store_trait::{
     StoreLike, TrueValue, UploadSizeInfo,
 };
 use pretty_assertions::assert_eq;
-use redis::{RedisError, Value};
+use redis::{PushInfo, RedisError, Value};
 use redis_test::{MockCmd, MockRedisConnection};
-use tokio::time::sleep;
+use tokio::time::{sleep, timeout};
 use tracing::{Instrument, info, info_span};
 
 const VALID_HASH1: &str = "3031323334353637383961626364656630303030303030303030303030303030";
@@ -936,7 +936,7 @@ impl SchedulerStoreKeyProvider for TestSchedulerDataUnversioned {
 
 impl SchedulerStoreDataProvider for TestSchedulerDataUnversioned {
     fn try_into_bytes(self) -> Result<Bytes, Error> {
-        Ok(Bytes::from(self.content.into_bytes()))
+        Ok(Bytes::from(self.content))
     }
 
     fn get_indexes(&self) -> Result<Vec<(&'static str, Bytes)>, Error> {
@@ -1332,6 +1332,52 @@ async fn no_items_from_none_subscription_channel() -> Result<(), Error> {
         "Error receiving message in RedisSubscriptionManager from subscriber_channel"
     ));
     assert!(!logs_contain("ERROR"));
+
+    // Because otherwise it gets dropped immediately, and we need it to live to do things
+    drop(subscription_manager);
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn send_messages_to_subscription_channel() -> Result<(), Error> {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let subscription_manager = RedisSubscriptionManager::new(rx);
+
+    tx.send(PushInfo {
+        kind: redis::PushKind::PSubscribe,
+        data: vec![
+            // Pattern
+            Value::BulkString("scheduler_key_change".into()),
+            // Subscribe count
+            Value::Int(1),
+        ],
+    })
+    .unwrap();
+    tx.send(PushInfo {
+        kind: redis::PushKind::PMessage,
+        data: vec![
+            // First is the pattern
+            Value::BulkString("scheduler_key_change".into()),
+            // Second is the matching channel. Which in this case is the same as the pattern.
+            Value::BulkString("scheduler_key_change".into()),
+            // And then the actual message
+            Value::BulkString("demo-key".into()),
+        ],
+    })
+    .unwrap();
+
+    timeout(Duration::from_secs(5), async {
+        loop {
+            assert!(!logs_contain("ERROR"));
+            if logs_contain("New subscription manager key key=\"demo-key\"") {
+                break;
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap();
 
     // Because otherwise it gets dropped immediately, and we need it to live to do things
     drop(subscription_manager);

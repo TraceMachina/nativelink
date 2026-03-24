@@ -10,7 +10,7 @@ resolver = "2"
 edition = "2024"
 name = "nativelink"
 rust-version = "1.93.1"
-version = "1.0.0-rc3"
+version = "1.0.0"
 
 [profile.release]
 lto = true
@@ -32,6 +32,7 @@ nix = ["nativelink-worker/nix"]
 [dependencies]
 nativelink-config = { path = "nativelink-config" }
 nativelink-error = { path = "nativelink-error" }
+nativelink-proto = { path = "nativelink-proto" }
 nativelink-scheduler = { path = "nativelink-scheduler" }
 nativelink-service = { path = "nativelink-service" }
 nativelink-store = { path = "nativelink-store" }
@@ -51,6 +52,7 @@ clap = { version = "4.5.35", features = [
   "usage",
 ], default-features = false }
 futures = { version = "0.3.31", default-features = false }
+hex = { version = "0.4.3", default-features = false }
 hyper = { version = "1.6.0", default-features = false }
 hyper-util = { version = "0.1.11", default-features = false, features = [
   "tracing",
@@ -62,6 +64,7 @@ rand = { version = "0.9.0", default-features = false, features = [
 rustls-pki-types = { version = "1.13.1", features = [
   "std",
 ], default-features = false }
+sha2 = { version = "0.10.8", default-features = false }
 tokio = { version = "1.44.1", features = [
   "fs",
   "io-util",

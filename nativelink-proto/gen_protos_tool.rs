@@ -31,8 +31,10 @@ fn main() -> std::io::Result<()> {
     config.bytes(["."]);
 
     let mut structs_with_data_to_ignore = HashMap::new();
-    structs_with_data_to_ignore.insert("BatchReadBlobsResponse.Response", vec!["data"]);
-    structs_with_data_to_ignore.insert("BatchUpdateBlobsRequest.Request", vec!["data"]);
+    structs_with_data_to_ignore.insert("BatchReadBlobsRequest", vec!["digests"]);
+    structs_with_data_to_ignore.insert("BatchReadBlobsResponse", vec!["responses"]);
+    structs_with_data_to_ignore.insert("BatchUpdateBlobsRequest", vec!["requests"]);
+    structs_with_data_to_ignore.insert("BatchUpdateBlobsResponse", vec!["responses"]);
     structs_with_data_to_ignore.insert("ReadResponse", vec!["data"]);
     structs_with_data_to_ignore.insert("WriteRequest", vec!["data"]);
     structs_with_data_to_ignore.insert("ActionResult", vec!["output_files"]);

@@ -148,8 +148,8 @@ impl RoutesExt for Routes {
 const DEFAULT_MAX_DECODING_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
 
 macro_rules! service_setup {
-    ($v: tt, $http_config: tt) => {{
-        let mut service = $v.into_service();
+    ($service: expr, $http_config: ident) => {{
+        let mut service = $service;
         let max_decoding_message_size = if $http_config.max_decoding_message_size == 0 {
             DEFAULT_MAX_DECODING_MESSAGE_SIZE
         } else {
@@ -254,6 +254,13 @@ async fn inner_main(
         // Currently we only support http as our socket type.
         let ListenerConfig::Http(http_config) = server_cfg.listener;
 
+        let execution_server = services
+            .execution
+            .as_ref()
+            .map(|cfg| ExecutionServer::new(cfg, &action_schedulers, &store_manager))
+            .transpose()
+            .err_tip(|| "Could not create Execution service")?;
+
         let tonic_services = Routes::builder()
             .routes()
             .add_optional_service(
@@ -261,7 +268,7 @@ async fn inner_main(
                     .ac
                     .map_or(Ok(None), |cfg| {
                         AcServer::new(&cfg, &store_manager)
-                            .map(|v| Some(service_setup!(v, http_config)))
+                            .map(|v| Some(service_setup!(v.into_service(), http_config)))
                     })
                     .err_tip(|| "Could not create AC service")?,
             )
@@ -270,25 +277,24 @@ async fn inner_main(
                     .cas
                     .map_or(Ok(None), |cfg| {
                         CasServer::new(&cfg, &store_manager)
-                            .map(|v| Some(service_setup!(v, http_config)))
+                            .map(|v| Some(service_setup!(v.into_service(), http_config)))
                     })
                     .err_tip(|| "Could not create CAS service")?,
             )
             .add_optional_service(
-                services
-                    .execution
-                    .map_or(Ok(None), |cfg| {
-                        ExecutionServer::new(&cfg, &action_schedulers, &store_manager)
-                            .map(|v| Some(service_setup!(v, http_config)))
-                    })
-                    .err_tip(|| "Could not create Execution service")?,
+                execution_server
+                    .clone()
+                    .map(|v| service_setup!(v.into_service(), http_config)),
+            )
+            .add_optional_service(
+                execution_server.map(|v| service_setup!(v.into_operations_service(), http_config)),
             )
             .add_optional_service(
                 services
                     .fetch
                     .map_or(Ok(None), |cfg| {
                         FetchServer::new(&cfg, &store_manager)
-                            .map(|v| Some(service_setup!(v, http_config)))
+                            .map(|v| Some(service_setup!(v.into_service(), http_config)))
                     })
                     .err_tip(|| "Could not create Fetch service")?,
             )
@@ -297,7 +303,7 @@ async fn inner_main(
                     .push
                     .map_or(Ok(None), |cfg| {
                         PushServer::new(&cfg, &store_manager)
-                            .map(|v| Some(service_setup!(v, http_config)))
+                            .map(|v| Some(service_setup!(v.into_service(), http_config)))
                     })
                     .err_tip(|| "Could not create Push service")?,
             )
@@ -306,7 +312,7 @@ async fn inner_main(
                     .bytestream
                     .map_or(Ok(None), |cfg| {
                         ByteStreamServer::new(&cfg, &store_manager)
-                            .map(|v| Some(service_setup!(v, http_config)))
+                            .map(|v| Some(service_setup!(v.into_service(), http_config)))
                     })
                     .err_tip(|| "Could not create ByteStream service")?,
             )
@@ -322,14 +328,14 @@ async fn inner_main(
                     Ok(Some(server?))
                 })
                 .err_tip(|| "Could not create Capabilities service")?
-                .map(|v| service_setup!(v, http_config)),
+                .map(|v| service_setup!(v.into_service(), http_config)),
             )
             .add_optional_service(
                 services
                     .worker_api
                     .map_or(Ok(None), |cfg| {
                         WorkerApiServer::new(&cfg, &worker_schedulers)
-                            .map(|v| Some(service_setup!(v, http_config)))
+                            .map(|v| Some(service_setup!(v.into_service(), http_config)))
                     })
                     .err_tip(|| "Could not create WorkerApi service")?,
             )
@@ -338,7 +344,7 @@ async fn inner_main(
                     .experimental_bep
                     .map_or(Ok(None), |cfg| {
                         BepServer::new(&cfg, &store_manager)
-                            .map(|v| Some(service_setup!(v, http_config)))
+                            .map(|v| Some(service_setup!(v.into_service(), http_config)))
                     })
                     .err_tip(|| "Could not create BEP service")?,
             );
@@ -461,7 +467,7 @@ async fn inner_main(
                 let mut client_auth_roots = RootCertStore::empty();
                 for cert in read_cert(client_ca_file)? {
                     client_auth_roots.add(cert).map_err(|e| {
-                        make_err!(Code::Internal, "Could not read client CA: {e:?}")
+                        Error::from_std_err(Code::Internal, &e).append("Could not read client CA")
                     })?;
                 }
                 let crls = if let Some(client_crl_file) = &tls_config.client_crl_file {
@@ -479,10 +485,8 @@ async fn inner_main(
                     .with_crls(crls)
                     .build()
                     .map_err(|e| {
-                        make_err!(
-                            Code::Internal,
-                            "Could not create WebPkiClientVerifier: {e:?}"
-                        )
+                        Error::from_std_err(Code::Internal, &e)
+                            .append("Could not create WebPkiClientVerifier")
                     })?
             } else {
                 WebPkiClientVerifier::no_client_auth()
@@ -491,7 +495,8 @@ async fn inner_main(
                 .with_client_cert_verifier(verifier)
                 .with_single_cert(certs, key)
                 .map_err(|e| {
-                    make_err!(Code::Internal, "Could not create TlsServerConfig : {e:?}")
+                    Error::from_std_err(Code::Internal, &e)
+                        .append("Could not create TlsServerConfig")
                 })?;
 
             config.alpn_protocols.push("h2".into());
@@ -502,7 +507,8 @@ async fn inner_main(
             .socket_address
             .parse::<SocketAddr>()
             .map_err(|e| {
-                make_input_err!("Invalid address '{}' - {e:?}", http_config.socket_address)
+                Error::from_std_err(Code::InvalidArgument, &e)
+                    .append(format!("Invalid address '{}'", http_config.socket_address))
             })?;
         let tcp_listener = TcpListener::bind(&socket_addr).await?;
         let mut http = auto::Builder::new(TaskExecutor::default());

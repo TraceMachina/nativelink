@@ -17,7 +17,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use nativelink_error::{Code, Error, ResultExt, make_err};
+use nativelink_error::{Code, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     ConnectionResult, StartExecute, UpdateForWorker, update_for_worker,
@@ -109,7 +109,7 @@ fn send_msg_to_worker(
     msg: update_for_worker::Update,
 ) -> Result<(), Error> {
     tx.send(UpdateForWorker { update: Some(msg) })
-        .map_err(|_| make_err!(Code::Internal, "Worker disconnected"))
+        .map_err(|err| Error::from_std_err(Code::Internal, &err).append("Worker disconnected"))
 }
 
 /// Reduces the platform properties available on the worker based on the platform properties provided.

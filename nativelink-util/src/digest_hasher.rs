@@ -289,7 +289,8 @@ impl DigestHasher for DigestHasherImpl {
             DigestHasherFuncImpl::Blake3(mut hasher) => {
                 spawn_blocking!("digest_for_file", move || {
                     hasher.update_mmap(file_path).map_err(|e| {
-                        make_err!(Code::Internal, "Error in blake3's update_mmap: {e:?}")
+                        Error::from_std_err(Code::Internal, &e)
+                            .append("Error in blake3's update_mmap")
                     })?;
                     Result::<_, Error>::Ok((
                         DigestInfo::new(hasher.finalize().into(), hasher.count()),

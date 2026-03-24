@@ -528,3 +528,101 @@ async fn test_clear_objects() -> Result<(), Error> {
 
     Ok(())
 }
+
+#[nativelink_test]
+async fn test_gcs_client_error_mapping() -> Result<(), Error> {
+    use nativelink_config::stores::ExperimentalGcsSpec;
+    use nativelink_store::gcs_client::GcsClient;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let test_cases = vec![
+        // (status_code, status_line, is_json, expected_code)
+        // Non-JSON bodies will trigger `GcsError::HttpClient(reqwest_err)` paths
+        (404, "404 Not Found", false, Code::NotFound),
+        (401, "401 Unauthorized", false, Code::PermissionDenied),
+        (403, "403 Forbidden", false, Code::PermissionDenied),
+        (408, "408 Request Timeout", false, Code::ResourceExhausted),
+        (429, "429 Too Many Requests", false, Code::ResourceExhausted),
+        (500, "500 Internal Server Error", false, Code::Unavailable),
+        (502, "502 Bad Gateway", false, Code::Unavailable),
+        (503, "503 Service Unavailable", false, Code::Unavailable),
+        (
+            599,
+            "599 Network Connect Timeout Error",
+            false,
+            Code::Unavailable,
+        ),
+        (400, "400 Bad Request", false, Code::Unknown),
+        // JSON bodies to trigger `GcsError::Response` parsing path
+        (404, "404 Not Found", true, Code::NotFound),
+        (401, "401 Unauthorized", true, Code::PermissionDenied),
+        (403, "403 Forbidden", true, Code::PermissionDenied),
+        (408, "408 Request Timeout", true, Code::ResourceExhausted),
+        (429, "429 Too Many Requests", true, Code::ResourceExhausted),
+        (500, "500 Internal Server Error", true, Code::Unavailable),
+        (502, "502 Bad Gateway", true, Code::Unavailable),
+        (503, "503 Service Unavailable", true, Code::Unavailable),
+        (
+            599,
+            "599 Network Connect Timeout Error",
+            true,
+            Code::Unavailable,
+        ),
+        (400, "400 Bad Request", true, Code::Unknown),
+    ];
+
+    for (status_code, status_line, is_json, expected_code) in test_cases {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let url = format!("http://127.0.0.1:{port}");
+
+        tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0; 1024];
+                drop(socket.read(&mut buf).await);
+                let response = if is_json {
+                    let body = format!(
+                        r#"{{"error": {{"code": {status_code}, "message": "Error"}}, "code": {status_code}, "message": "Error", "errors": []}}"#
+                    );
+                    format!(
+                        "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        status_line,
+                        body.len(),
+                        body
+                    )
+                } else {
+                    format!("HTTP/1.1 {status_line}\r\nContent-Length: 7\r\n\r\nGARBAGE")
+                };
+                drop(socket.write_all(response.as_bytes()).await);
+            }
+        });
+
+        let spec = ExperimentalGcsSpec::default();
+        let client = GcsClient::new_mock(&spec, url).unwrap();
+        let object_path = ObjectPath::new("test-bucket".to_string(), "test-path");
+
+        let result = client.read_object_metadata(&object_path).await;
+
+        let err = result.unwrap_err();
+        assert_eq!(
+            err.code, expected_code,
+            "Expected code {:?} for {} (JSON: {}), got {:?}",
+            expected_code, status_line, is_json, err.code
+        );
+    }
+
+    // Connection error case where no HTTP status code is available at all
+    let unused_port = {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        listener.local_addr().unwrap().port()
+    };
+    let spec = ExperimentalGcsSpec::default();
+    let client = GcsClient::new_mock(&spec, format!("http://127.0.0.1:{unused_port}")).unwrap();
+    let object_path = ObjectPath::new("test-bucket".to_string(), "test-path");
+
+    let err = client.read_object_metadata(&object_path).await.unwrap_err();
+    assert_eq!(err.code, Code::Unknown);
+
+    Ok(())
+}
