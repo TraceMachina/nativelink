@@ -35,8 +35,9 @@ const DEFAULT_PROFILE_SECONDS: u64 = 10;
 /// Default sampling frequency in Hz.
 const DEFAULT_FREQUENCY: i32 = 99;
 
-/// CPU usage threshold (0.0-1.0) for auto-capture.
-const AUTO_CAPTURE_CPU_THRESHOLD: f64 = 0.50;
+/// CPU usage threshold (fraction of total cores) for auto-capture.
+/// On a 64-core machine, 0.05 = 320% CPU (3.2 cores busy).
+const AUTO_CAPTURE_CPU_THRESHOLD: f64 = 0.05;
 
 /// How long to sample when auto-capturing.
 const AUTO_CAPTURE_DURATION_SECS: u64 = 10;
