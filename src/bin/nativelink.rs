@@ -1058,8 +1058,10 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
     set_default_digest_size_health_check(global_cfg.default_digest_size_health_check)?;
 
     // Start pprof HTTP server if configured and the feature is enabled.
+    // Must enter the runtime context since start_pprof_server spawns a tokio task.
     #[cfg(feature = "pprof")]
     if global_cfg.pprof_port != 0 {
+        let _guard = runtime.enter();
         match nativelink_util::pprof_server::start_pprof_server(global_cfg.pprof_port) {
             Ok(guard) => {
                 // Leak the guard so the server lives for the process lifetime.
