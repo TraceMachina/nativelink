@@ -486,10 +486,14 @@ impl StoreDriver for FastSlowStore {
         let key_debug = format!("{key:?}");
         let update_start = std::time::Instant::now();
 
-        // Read from upstream, forward to fast store, accumulate for slow store.
+        // Read from upstream, forward to fast store, build combined buffer
+        // for background slow store write in a single pass (no second copy).
+        let initial_cap = match size_info {
+            UploadSizeInfo::ExactSize(s) => s as usize,
+            UploadSizeInfo::MaxSize(s) => (s as usize).min(64 * 1024 * 1024),
+        };
         let data_stream_fut = async move {
-            let mut accumulated: Vec<Bytes> = Vec::new();
-            let mut bytes_sent: u64 = 0;
+            let mut combined = BytesMut::with_capacity(initial_cap);
             loop {
                 let buffer = reader
                     .recv()
@@ -499,10 +503,9 @@ impl StoreDriver for FastSlowStore {
                     fast_tx.send_eof().err_tip(
                         || "Failed to write eof to fast store in fast_slow store update",
                     )?;
-                    return Result::<(Vec<Bytes>, u64), Error>::Ok((accumulated, bytes_sent));
+                    return Result::<Bytes, Error>::Ok(combined.freeze());
                 }
-                bytes_sent += u64::try_from(buffer.len()).unwrap_or(u64::MAX);
-                accumulated.push(buffer.clone());
+                combined.extend_from_slice(&buffer);
                 fast_tx.send(buffer).await.map_err(|e| {
                     make_err!(
                         Code::Internal,
@@ -515,9 +518,10 @@ impl StoreDriver for FastSlowStore {
 
         let fast_store_fut = self.fast_store.update(key.borrow(), fast_rx, size_info);
         let (data_res, fast_res) = join!(data_stream_fut, fast_store_fut);
-        let (accumulated, bytes_sent) = data_res?;
+        let data = data_res?;
         fast_res?;
 
+        let bytes_sent = data.len() as u64;
         let fast_elapsed = update_start.elapsed();
         debug!(
             key = %key_debug,
@@ -525,14 +529,6 @@ impl StoreDriver for FastSlowStore {
             total_bytes = bytes_sent,
             "FastSlowStore::update: fast store complete, spawning background slow write",
         );
-
-        // Reassemble accumulated chunks into a single Bytes for slow store.
-        let total_len: usize = accumulated.iter().map(|b| b.len()).sum();
-        let mut combined = BytesMut::with_capacity(total_len);
-        for chunk in accumulated {
-            combined.extend_from_slice(&chunk);
-        }
-        let data = combined.freeze();
 
         // Insert into in-flight map so get_part can serve this blob even if
         // the fast store evicts it before the slow write completes.
