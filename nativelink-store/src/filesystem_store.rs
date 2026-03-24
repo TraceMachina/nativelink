@@ -49,7 +49,11 @@ use crate::cas_utils::is_zero_digest;
 // 256 KiB reduces syscalls by 4x compared to 64 KiB. At 10Gbps, 64 KiB reads
 // cause ~19,500 syscalls/sec/stream; 256 KiB brings this down to ~4,900.
 // Modern NVMe SSDs perform significantly better with larger read sizes.
-const DEFAULT_BUFF_SIZE: usize = 256 * 1024;
+/// Default read buffer size. Matches the default ByteStream
+/// `max_bytes_per_stream` (3 MiB) so that each disk read produces
+/// exactly one chunk, avoiding BytesMut concatenation copies in
+/// `buf_channel::consume()`.
+const DEFAULT_BUFF_SIZE: usize = 3 * 1024 * 1024;
 // Default block size of all major filesystems is 4KB
 const DEFAULT_BLOCK_SIZE: u64 = 4 * 1024;
 
