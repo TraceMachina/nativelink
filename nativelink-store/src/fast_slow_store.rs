@@ -489,7 +489,7 @@ impl StoreDriver for FastSlowStore {
         // Read from upstream, forward to fast store, build combined buffer
         // for background slow store write in a single pass (no second copy).
         let initial_cap = match size_info {
-            UploadSizeInfo::ExactSize(s) => s as usize,
+            UploadSizeInfo::ExactSize(s) => (s as usize).min(256 * 1024 * 1024),
             UploadSizeInfo::MaxSize(s) => (s as usize).min(64 * 1024 * 1024),
         };
         let data_stream_fut = async move {

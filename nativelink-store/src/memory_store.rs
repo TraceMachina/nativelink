@@ -155,6 +155,15 @@ impl StoreDriver for MemoryStore {
     }
 
     async fn update_oneshot(self: Pin<&Self>, key: StoreKey<'_>, data: Bytes) -> Result<(), Error> {
+        // Small blobs may be slices of a much larger tonic receive buffer.
+        // Copy them to avoid pinning the entire backing allocation in the
+        // EvictingMap (e.g., 100-byte blob pinning a 16KiB h2 frame).
+        // Large blobs are typically standalone allocations and safe to keep.
+        let data = if !data.is_empty() && data.len() < 4096 {
+            Bytes::copy_from_slice(&data)
+        } else {
+            data
+        };
         self.evicting_map
             .insert(key.into_owned().into(), BytesWrapper(data))
             .await;
