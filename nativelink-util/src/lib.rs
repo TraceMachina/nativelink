@@ -34,6 +34,8 @@ pub mod operation_state_manager;
 pub mod origin_event;
 pub mod origin_event_publisher;
 pub mod platform_properties;
+#[cfg(feature = "pprof")]
+pub mod pprof_server;
 pub mod proto_stream_utils;
 pub mod resource_info;
 pub mod retry;

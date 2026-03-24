@@ -7,6 +7,7 @@ name = "nativelink-util"
 version = "1.0.0"
 
 [features]
+pprof = ["dep:pprof", "dep:axum"]
 quic = ["dep:tonic-h3", "dep:h3-util", "dep:quinn", "dep:h3-quinn", "dep:rustls", "dep:socket2"]
 
 [dependencies]
@@ -103,6 +104,8 @@ quinn = { version = "0.11", default-features = false, features = ["runtime-tokio
 h3-quinn = { version = "0.0.10", default-features = false, optional = true }
 rustls = { version = "0.23", default-features = false, features = ["std", "aws_lc_rs"], optional = true }
 socket2 = { version = "0.5", default-features = false, optional = true }
+axum = { version = "0.8.3", default-features = false, features = ["http1", "query", "tokio"], optional = true }
+pprof = { version = "0.15.0", default-features = false, features = ["flamegraph", "prost-codec"], optional = true }
 
 [dev-dependencies]
 nativelink-macro = { path = "../nativelink-macro" }

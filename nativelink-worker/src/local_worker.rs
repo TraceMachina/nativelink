@@ -1607,6 +1607,23 @@ pub async fn new_local_worker(
         Vec::new()
     };
 
+    // Start pprof HTTP server if configured and the feature is enabled.
+    #[cfg(feature = "pprof")]
+    if config.pprof_port != 0 {
+        match nativelink_util::pprof_server::start_pprof_server(config.pprof_port) {
+            Ok(guard) => {
+                // Leak the guard so the server lives for the process lifetime.
+                // The pprof server is a diagnostic tool that should outlive any
+                // individual worker reconnection cycle.
+                std::mem::forget(guard);
+                info!(port = config.pprof_port, "pprof HTTP server started");
+            }
+            Err(e) => {
+                warn!(?e, port = config.pprof_port, "failed to start pprof HTTP server");
+            }
+        }
+    }
+
     let local_worker = LocalWorker::new_with_connection_factory_and_actions_manager(
         config.clone(),
         running_actions_manager,

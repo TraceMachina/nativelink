@@ -936,6 +936,19 @@ pub struct LocalWorkerConfig {
     /// Default: 0
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub blobs_available_interval_ms: u64,
+
+    /// Port for the pprof HTTP debug server. When non-zero and the `pprof`
+    /// feature is enabled, an HTTP server is started on `0.0.0.0:<port>`
+    /// serving CPU profiling endpoints:
+    ///   - `GET /debug/pprof/profile` — CPU profile (SVG flamegraph by
+    ///     default, protobuf with `?format=pb`)
+    ///   - `GET /debug/pprof/flamegraph` — SVG flamegraph directly
+    ///
+    /// Query parameter `?seconds=N` controls sampling duration (default 10).
+    ///
+    /// Default: 0 (disabled)
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub pprof_port: u16,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -1030,6 +1043,18 @@ pub struct GlobalConfig {
     /// Default: 1024*1024 (1MiB)
     #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub default_digest_size_health_check: usize,
+
+    /// Port to bind the pprof CPU profiling HTTP server on.
+    /// Endpoints: `/debug/pprof/profile` (SVG or protobuf) and
+    /// `/debug/pprof/flamegraph` (SVG).
+    ///
+    /// Query parameter `?seconds=N` controls sampling duration (default 10).
+    ///
+    /// Requires the `pprof` feature to be enabled at compile time.
+    ///
+    /// Default: 0 (disabled)
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub pprof_port: u16,
 }
 
 pub type StoreConfig = NamedConfig<StoreSpec>;

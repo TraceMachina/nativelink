@@ -8,6 +8,7 @@ version = "1.0.0"
 
 [features]
 nix = []
+pprof = ["nativelink-util/pprof"]
 quic = ["dep:tonic-h3", "dep:quinn", "dep:h3-quinn", "dep:rcgen", "dep:rustls", "dep:socket2", "nativelink-util/quic", "nativelink-store/quic"]
 
 [dependencies]

@@ -29,6 +29,7 @@ name = "nativelink"
 
 [features]
 nix = ["nativelink-worker/nix"]
+pprof = ["nativelink-util/pprof", "nativelink-worker/pprof"]
 quic = ["dep:tonic-h3", "dep:quinn", "dep:h3-quinn", "dep:rcgen", "nativelink-util/quic", "nativelink-store/quic", "nativelink-worker/quic"]
 
 [dependencies]

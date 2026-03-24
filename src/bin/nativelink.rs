@@ -1046,6 +1046,7 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
             max_open_files: fs::DEFAULT_OPEN_FILE_LIMIT,
             default_digest_hash_function: None,
             default_digest_size_health_check: DEFAULT_DIGEST_SIZE_HEALTH_CHECK_CFG,
+            pprof_port: 0,
         }
     };
     set_open_file_limit(global_cfg.max_open_files);
@@ -1055,6 +1056,21 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
             .unwrap_or(ConfigDigestHashFunction::Sha256),
     ))?;
     set_default_digest_size_health_check(global_cfg.default_digest_size_health_check)?;
+
+    // Start pprof HTTP server if configured and the feature is enabled.
+    #[cfg(feature = "pprof")]
+    if global_cfg.pprof_port != 0 {
+        match nativelink_util::pprof_server::start_pprof_server(global_cfg.pprof_port) {
+            Ok(guard) => {
+                // Leak the guard so the server lives for the process lifetime.
+                std::mem::forget(guard);
+                info!(port = global_cfg.pprof_port, "pprof HTTP server started");
+            }
+            Err(e) => {
+                warn!(?e, port = global_cfg.pprof_port, "failed to start pprof HTTP server");
+            }
+        }
+    }
 
     // Initiates the shutdown process by broadcasting the shutdown signal via the `oneshot::Sender` to all listeners.
     // Each listener will perform its cleanup and then drop its `oneshot::Sender`, signaling completion.
