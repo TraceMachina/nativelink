@@ -36,6 +36,7 @@ use opentelemetry_semantic_conventions::attribute::ENDUSER_ID;
 use prost::Message;
 use tracing::debug;
 use tracing::metadata::LevelFilter;
+use tracing_appender::non_blocking::WorkerGuard;
 use tracing_opentelemetry::{MetricsLayer, layer};
 use tracing_subscriber::filter::Directive;
 use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
@@ -69,31 +70,66 @@ fn otlp_filter() -> EnvFilter {
         .add_directive(expect_parse("tower=off"))
 }
 
+/// Static storage for the non-blocking log writer guard.
+/// Dropping this guard would cause remaining buffered logs to be flushed
+/// and the writer thread to shut down, so we keep it alive for the
+/// lifetime of the process.
+static LOG_GUARD: OnceLock<WorkerGuard> = OnceLock::new();
+
 // Create a tracing layer intended for stdout printing.
 //
 // The output of this layer is configurable via the `NL_LOG` environment
 // variable.
-fn tracing_stdout_layer() -> impl Layer<Registry> {
+//
+// When `nonblocking` is true, stdout writes go through a dedicated
+// background thread so they never block tokio worker threads.
+fn tracing_stdout_layer(nonblocking: bool) -> impl Layer<Registry> {
     let nl_log_fmt = env::var("NL_LOG").unwrap_or_else(|_| "pretty".to_string());
 
     let stdout_filter = otlp_filter();
 
-    match nl_log_fmt.as_str() {
-        "compact" => fmt::layer()
-            .compact()
-            .with_timer(fmt::time::time())
-            .with_filter(stdout_filter)
-            .boxed(),
-        "json" => fmt::layer()
-            .json()
-            .with_timer(fmt::time::time())
-            .with_filter(stdout_filter)
-            .boxed(),
-        _ => fmt::layer()
-            .pretty()
-            .with_timer(fmt::time::time())
-            .with_filter(stdout_filter)
-            .boxed(),
+    if nonblocking {
+        let (non_blocking, guard) = tracing_appender::non_blocking(std::io::stdout());
+        LOG_GUARD.set(guard).ok();
+
+        match nl_log_fmt.as_str() {
+            "compact" => fmt::layer()
+                .with_writer(non_blocking)
+                .compact()
+                .with_timer(fmt::time::time())
+                .with_filter(stdout_filter)
+                .boxed(),
+            "json" => fmt::layer()
+                .with_writer(non_blocking)
+                .json()
+                .with_timer(fmt::time::time())
+                .with_filter(stdout_filter)
+                .boxed(),
+            _ => fmt::layer()
+                .with_writer(non_blocking)
+                .pretty()
+                .with_timer(fmt::time::time())
+                .with_filter(stdout_filter)
+                .boxed(),
+        }
+    } else {
+        match nl_log_fmt.as_str() {
+            "compact" => fmt::layer()
+                .compact()
+                .with_timer(fmt::time::time())
+                .with_filter(stdout_filter)
+                .boxed(),
+            "json" => fmt::layer()
+                .json()
+                .with_timer(fmt::time::time())
+                .with_filter(stdout_filter)
+                .boxed(),
+            _ => fmt::layer()
+                .pretty()
+                .with_timer(fmt::time::time())
+                .with_filter(stdout_filter)
+                .boxed(),
+        }
     }
 }
 
@@ -103,6 +139,10 @@ fn tracing_stdout_layer() -> impl Layer<Registry> {
 /// and no OTLP exporters are created. This avoids synchronous overhead on
 /// every span enter/exit when no collector is running.
 ///
+/// When `nonblocking_log` is `true`, stdout writes go through a dedicated
+/// background thread via `tracing_appender::non_blocking` so they never
+/// block tokio worker threads.
+///
 /// The `NL_DISABLE_OTLP` environment variable can also be set to `1` or
 /// `true` as a fallback to disable OTLP independently of the config.
 ///
@@ -110,7 +150,7 @@ fn tracing_stdout_layer() -> impl Layer<Registry> {
 ///
 /// Returns `Err` if logging was already initialized or if the exporters can't
 /// be initialized.
-pub fn init_tracing(disable_otlp: bool) -> Result<(), nativelink_error::Error> {
+pub fn init_tracing(disable_otlp: bool, nonblocking_log: bool) -> Result<(), nativelink_error::Error> {
     static INITIALIZED: OnceLock<()> = OnceLock::new();
 
     if INITIALIZED.get().is_some() {
@@ -125,12 +165,15 @@ pub fn init_tracing(disable_otlp: bool) -> Result<(), nativelink_error::Error> {
     };
 
     if disable_otlp {
-        registry().with(tracing_stdout_layer()).init();
+        registry().with(tracing_stdout_layer(nonblocking_log)).init();
 
         INITIALIZED.set(()).unwrap_or(());
 
         // Log after the subscriber is installed so the message is visible.
-        tracing::info!("OTLP exporters disabled, stdout-only logging active");
+        tracing::info!(
+            nonblocking = nonblocking_log,
+            "OTLP exporters disabled, stdout-only logging active"
+        );
 
         return Ok(());
     }
@@ -205,7 +248,7 @@ pub fn init_tracing(disable_otlp: bool) -> Result<(), nativelink_error::Error> {
     let otlp_metrics_layer = MetricsLayer::new(meter_provider).with_filter(otlp_filter());
 
     registry()
-        .with(tracing_stdout_layer())
+        .with(tracing_stdout_layer(nonblocking_log))
         .with(otlp_log_layer)
         .with(otlp_trace_layer)
         .with(otlp_metrics_layer)
@@ -213,7 +256,7 @@ pub fn init_tracing(disable_otlp: bool) -> Result<(), nativelink_error::Error> {
 
     INITIALIZED.set(()).unwrap_or(());
 
-    tracing::info!("OTLP exporters enabled");
+    tracing::info!(nonblocking = nonblocking_log, "OTLP exporters enabled");
 
     Ok(())
 }

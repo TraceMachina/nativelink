@@ -1063,9 +1063,21 @@ pub struct GlobalConfig {
     /// Default: true (OTLP disabled)
     #[serde(default = "default_disable_otlp")]
     pub disable_otlp: bool,
+
+    /// Use non-blocking async stdout writer for logging.
+    /// When true (the default), log writes don't block tokio threads.
+    /// Logs may be dropped under extreme load (>128K buffered lines).
+    ///
+    /// Default: true
+    #[serde(default = "default_nonblocking_log")]
+    pub nonblocking_log: bool,
 }
 
 fn default_disable_otlp() -> bool {
+    true
+}
+
+fn default_nonblocking_log() -> bool {
     true
 }
 

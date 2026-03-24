@@ -82,6 +82,7 @@ tonic = { version = "0.14.5", features = [
 ], default-features = false }
 tower = { version = "0.5.2", default-features = false, features = ["buffer"] }
 tracing = { version = "0.1.41", default-features = false }
+tracing-appender = { version = "0.2", default-features = false }
 tracing-opentelemetry = { version = "0.32.1", default-features = false, features = [
   "metrics",
 ] }

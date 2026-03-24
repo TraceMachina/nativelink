@@ -39,7 +39,7 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
         .build()
         .unwrap()
         .block_on(async {
-            init_tracing(true)?;
+            init_tracing(true, true)?;
             let timings = Arc::new(Mutex::new(Vec::new()));
             let spawns: Vec<_> = (0..200)
                 .map(|_| {

@@ -1053,14 +1053,16 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
             default_digest_size_health_check: DEFAULT_DIGEST_SIZE_HEALTH_CHECK_CFG,
             pprof_port: 0,
             disable_otlp: true,
+            nonblocking_log: true,
         }
     };
 
     // The OTLP exporters need to run in a Tokio context
     // Do this first so all the other logging works
     let disable_otlp = global_cfg.disable_otlp;
+    let nonblocking_log = global_cfg.nonblocking_log;
     #[expect(clippy::disallowed_methods, reason = "tracing init on main runtime")]
-    runtime.block_on(async { tokio::spawn(async move { init_tracing(disable_otlp) }).await? })?;
+    runtime.block_on(async { tokio::spawn(async move { init_tracing(disable_otlp, nonblocking_log) }).await? })?;
     set_open_file_limit(global_cfg.max_open_files);
     set_default_digest_hasher_func(DigestHasherFunc::from(
         global_cfg
