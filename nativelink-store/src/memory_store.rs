@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use nativelink_config::stores::MemorySpec;
 use nativelink_error::{Code, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
@@ -155,18 +155,8 @@ impl StoreDriver for MemoryStore {
     }
 
     async fn update_oneshot(self: Pin<&Self>, key: StoreKey<'_>, data: Bytes) -> Result<(), Error> {
-        // Fast path: Direct insertion without channel overhead.
-        // We still need to copy the data to prevent holding references to larger buffers.
-        let final_buffer = if data.is_empty() {
-            data
-        } else {
-            let mut new_buffer = BytesMut::with_capacity(data.len());
-            new_buffer.extend_from_slice(&data[..]);
-            new_buffer.freeze()
-        };
-
         self.evicting_map
-            .insert(key.into_owned().into(), BytesWrapper(final_buffer))
+            .insert(key.into_owned().into(), BytesWrapper(data))
             .await;
         Ok(())
     }

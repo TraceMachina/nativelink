@@ -23,7 +23,7 @@ use std::collections::hash_map::Entry;
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use futures::future::pending;
 use futures::stream::unfold;
 use futures::{Future, Stream, TryFutureExt, try_join};
@@ -963,11 +963,12 @@ impl ByteStreamServer {
     ) -> Result<Response<WriteResponse>, Error> {
         let expected_size = stream.resource_info.expected_size as u64;
 
-        // Pre-allocate buffer for expected size (capped at reasonable limit to prevent DoS)
-        let capacity =
-            usize::try_from(expected_size.min(64 * 1024 * 1024)).unwrap_or(64 * 1024 * 1024);
-        let mut buffer = BytesMut::with_capacity(capacity);
         let mut bytes_received: u64 = 0;
+        // Accumulate data. Use Option<Bytes> for the single-chunk fast path
+        // (avoids BytesMut allocation + copy when the entire blob arrives in
+        // one WriteRequest, which is the common case for small blobs).
+        let mut single_chunk: Option<Bytes> = None;
+        let mut buffer: Option<BytesMut> = None;
 
         // Collect all data from client stream
         loop {
@@ -1018,8 +1019,25 @@ impl ByteStreamServer {
             };
 
             if !data.is_empty() {
-                buffer.extend_from_slice(&data);
                 bytes_received += data.len() as u64;
+                if single_chunk.is_none() && buffer.is_none() {
+                    // First chunk — hold zero-copy reference.
+                    single_chunk = Some(data);
+                } else {
+                    // Second+ chunk — spill into BytesMut.
+                    let buf = buffer.get_or_insert_with(|| {
+                        let capacity = usize::try_from(
+                            expected_size.min(64 * 1024 * 1024),
+                        )
+                        .unwrap_or(64 * 1024 * 1024);
+                        let mut b = BytesMut::with_capacity(capacity);
+                        if let Some(first) = single_chunk.take() {
+                            b.extend_from_slice(&first);
+                        }
+                        b
+                    });
+                    buf.extend_from_slice(&data);
+                }
             }
 
             if expected_size < bytes_received {
@@ -1040,10 +1058,17 @@ impl ByteStreamServer {
             }
         }
 
+        // Use the zero-copy single chunk if possible, otherwise the assembled buffer.
+        let final_data = if let Some(buf) = buffer {
+            buf.freeze()
+        } else {
+            single_chunk.unwrap_or_default()
+        };
+
         // Direct update without channel overhead
         let store = instance_info.store.clone();
         store
-            .update_oneshot(digest, buffer.freeze())
+            .update_oneshot(digest, final_data)
             .await
             .err_tip(|| "Error in update_oneshot")?;
 
