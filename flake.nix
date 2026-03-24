@@ -231,7 +231,7 @@
         createWorker = pkgs.nativelink-tools.lib.createWorker self;
 
         buck2-toolchain = let
-          buck2-nightly-rust-version = "2024-04-28";
+          buck2-nightly-rust-version = "2026-03-24";
           buck2-nightly-rust = pkgs.rust-bin.nightly.${buck2-nightly-rust-version};
           buck2-rust = buck2-nightly-rust.default.override {extensions = ["rust-src"];};
         in
