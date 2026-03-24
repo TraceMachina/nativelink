@@ -27,9 +27,9 @@ use tracing::warn;
 
 const ZERO_DATA: Bytes = Bytes::new();
 
-/// Default channel capacity: 64 slots. At 256KiB chunks this gives 16MiB of
-/// buffered data, which is sufficient for most workloads.
-const DEFAULT_BUF_CHANNEL_CAPACITY: usize = 64;
+/// Default channel capacity: 256 slots. At 256KiB chunks this gives 64MiB of
+/// buffered data, reducing backpressure wakeups on high-throughput paths.
+const DEFAULT_BUF_CHANNEL_CAPACITY: usize = 256;
 
 /// Create a channel pair that can be used to transport buffer objects around to
 /// different components. This wrapper is used because the streams give some
@@ -37,8 +37,8 @@ const DEFAULT_BUF_CHANNEL_CAPACITY: usize = 64;
 /// it will send an error to the receiver channel before shutting down and count
 /// the number of bytes sent.
 ///
-/// Uses the default capacity of 64 slots. For high-throughput or
-/// latency-sensitive paths, use [`make_buf_channel_pair_with_size`] instead.
+/// Uses the default capacity of 256 slots. For custom sizing, use
+/// [`make_buf_channel_pair_with_size`] instead.
 #[must_use]
 pub fn make_buf_channel_pair() -> (DropCloserWriteHalf, DropCloserReadHalf) {
     make_buf_channel_pair_with_size(DEFAULT_BUF_CHANNEL_CAPACITY)
@@ -50,9 +50,9 @@ pub fn make_buf_channel_pair() -> (DropCloserWriteHalf, DropCloserReadHalf) {
 /// producer is forced to wait. At 256KiB chunks (the default `read_buffer_size`),
 /// each slot represents ~256KiB of buffered data, so:
 ///
-/// -  64 slots = ~16MiB (default, good for most workloads)
+/// -  64 slots = ~16MiB (suitable for low-throughput paths)
 /// - 128 slots = ~32MiB (suitable for dual-store writes in FastSlowStore)
-/// - 256 slots = ~64MiB (suitable for high-throughput streaming at 10Gbps+)
+/// - 256 slots = ~64MiB (default, good for high-throughput streaming)
 #[must_use]
 pub fn make_buf_channel_pair_with_size(
     capacity: usize,
