@@ -90,7 +90,7 @@ quinn = { version = "0.11", default-features = false, features = ["runtime-tokio
 h3-quinn = { version = "0.0.10", default-features = false, optional = true }
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "aws_lc_rs", "pem"], optional = true }
 tower = { version = "0.5.2", default-features = false }
-tracing = { version = "0.1.41", default-features = false }
+tracing = { version = "0.1.41", default-features = false, features = ["release_max_level_info"] }
 
 [dev-dependencies]
 nativelink-proto = { path = "nativelink-proto" }
