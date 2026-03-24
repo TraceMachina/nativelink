@@ -30,42 +30,42 @@ def _lre_rs_impl(_mctx):
     new_local_repository(
         name = "lre-rs-stable-aarch64-darwin",
         build_file = "@local-remote-execution//rust:aarch64-darwin.BUILD.bazel",
-        path = "/nix/store/l9gm7cdq344b3q7lpgq227ayfqyzyg9p-rust-default-1.93.1",
+        path = "/nix/store/hnaxvxm1n6z37n2zfb9vgknq99xr2jha-rust-default-1.93.1",
     )
     new_local_repository(
         name = "lre-rs-nightly-aarch64-darwin",
         build_file = "@local-remote-execution//rust:aarch64-darwin.BUILD.bazel",
-        path = "/nix/store/k84v1hl0gf94dz76di9cx34gvrp7h61v-rust-default-1.95.0-nightly-2026-02-26",
+        path = "/nix/store/f3fkv17h8wlnkm026m09vgxyfjhhxp9c-rust-default-1.96.0-nightly-2026-03-24",
     )
     new_local_repository(
         name = "lre-rs-stable-aarch64-linux",
         build_file = "@local-remote-execution//rust:aarch64-linux.BUILD.bazel",
-        path = "/nix/store/6xybz46zmpn43042j699g18yn5fvr16b-rust-default-1.93.1",
+        path = "/nix/store/5vqbs2b3296x8c82xm5scz29n8y2zm0h-rust-default-1.93.1",
     )
     new_local_repository(
         name = "lre-rs-nightly-aarch64-linux",
         build_file = "@local-remote-execution//rust:aarch64-linux.BUILD.bazel",
-        path = "/nix/store/4s665dj2m56dwmayp6d086ivbrgmphw8-rust-default-1.95.0-nightly-2026-02-26",
+        path = "/nix/store/vji1aridxgaiqrcpagnb6iqf3003b50r-rust-default-1.96.0-nightly-2026-03-24",
     )
     new_local_repository(
         name = "lre-rs-stable-x86_64-darwin",
         build_file = "@local-remote-execution//rust:x86_64-darwin.BUILD.bazel",
-        path = "/nix/store/yp0n1p0gm11bd3ivqpjmvgd98ccvsz4r-rust-default-1.93.1",
+        path = "/nix/store/kj59hbxsrfsgw3qz5lv3drkhfx2md2sf-rust-default-1.93.1",
     )
     new_local_repository(
         name = "lre-rs-nightly-x86_64-darwin",
         build_file = "@local-remote-execution//rust:x86_64-darwin.BUILD.bazel",
-        path = "/nix/store/9kv2h5m0qcdkjcn34l1y77l1my6g4q7k-rust-default-1.95.0-nightly-2026-02-26",
+        path = "/nix/store/hqnbzi9zh1jaf957czfs5li266as95bw-rust-default-1.96.0-nightly-2026-03-24",
     )
     new_local_repository(
         name = "lre-rs-stable-x86_64-linux",
         build_file = "@local-remote-execution//rust:x86_64-linux.BUILD.bazel",
-        path = "/nix/store/s5aar999nn5af25m99x5p4s1x7x8h2v4-rust-default-1.93.1",
+        path = "/nix/store/1sg0jgxw6k6jy8a3wvfacmnrdii236i0-rust-default-1.93.1",
     )
     new_local_repository(
         name = "lre-rs-nightly-x86_64-linux",
         build_file = "@local-remote-execution//rust:x86_64-linux.BUILD.bazel",
-        path = "/nix/store/vflli2r6df7792gvacc01vlv7ksjd4g1-rust-default-1.95.0-nightly-2026-02-26",
+        path = "/nix/store/j7v0r10lpysj1ak70g32rz8rdwbwn5sl-rust-default-1.96.0-nightly-2026-03-24",
     )
 
 lre_rs = module_extension(implementation = _lre_rs_impl)

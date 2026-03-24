@@ -251,8 +251,8 @@
               pkgs.cargo-bloat
               pkgs.mold-wrapped
               pkgs.reindeer
-              pkgs.lld_21
-              pkgs.clang_21
+              pkgs.lld_22
+              pkgs.clang_22
               buck2-rust
             ];
           };

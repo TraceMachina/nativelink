@@ -76,19 +76,19 @@ rust.toolchain(
     edition = "2024",
 
     # These should always follow the versions from LRE.
-    rust_analyzer_version = "nightly/2026-02-26",
-    rustfmt_version = "nightly/2026-02-26",
+    rust_analyzer_version = "nightly/2026-03-24",
+    rustfmt_version = "nightly/2026-03-24",
     sha256s = {
         # Update the shas with update-module-hashes
         # BEGIN SHAS
-        "2026-02-26/cargo-nightly-x86_64-unknown-linux-gnu.tar.xz": "15176b1640c14499b8427b0f52872911832280e425b2ebb27df3a118d1869b9e",
-        "2026-02-26/clippy-nightly-x86_64-unknown-linux-gnu.tar.xz": "d5621f19ec95f3da739b12916687f8146f4da99b1c9967d444fd5d3e3a980eda",
-        "2026-02-26/llvm-tools-nightly-x86_64-unknown-linux-gnu.tar.xz": "f81fe3b00b46a62de7d2a73489ea667954f9c86c2f55ff23424a31e8e4b1005c",
-        "2026-02-26/rust-std-nightly-x86_64-unknown-linux-gnu.tar.xz": "519849ce546c415b56a451f18625ec94aa4585070df01aeaf9790f89fcd5bf6e",
-        "2026-02-26/rustc-nightly-aarch64-apple-darwin.tar.xz": "1b73740e1fbda8b37abe5650dc7f297f58def5afccb330bc5e7801fd7c8d0b44",
-        "2026-02-26/rustc-nightly-x86_64-unknown-linux-gnu.tar.xz": "3e1a0e9f551065f3475c2ac70fb14d724a63427ab90953a8af3781ec09a1ab1d",
-        "2026-02-26/rustfmt-nightly-aarch64-apple-darwin.tar.xz": "d176e10ab2bd9162687307cfe54b11040efe66315dc09313926f61c610f19b3f",
-        "2026-02-26/rustfmt-nightly-x86_64-unknown-linux-gnu.tar.xz": "b2889159f69ccffd1336ef007939b1239b6d35fa826aacdcf69de038179f0542",
+        "2026-03-24/cargo-nightly-x86_64-unknown-linux-gnu.tar.xz": "952622b3830be1cd0cc06544972d9b9cbea361bb1a155e5aacf88102dfc5b9bf",
+        "2026-03-24/clippy-nightly-x86_64-unknown-linux-gnu.tar.xz": "c7e66ea9a6d6a5b9af6f55b24f7709874e06c43a9cacb5d68d30b960ecbab230",
+        "2026-03-24/llvm-tools-nightly-x86_64-unknown-linux-gnu.tar.xz": "50a82652bad87dcae1b08127e888991d514b018851c3378b862752155e29b3ec",
+        "2026-03-24/rust-std-nightly-x86_64-unknown-linux-gnu.tar.xz": "5c0c15c08c9e727d3544c521aa48168bd32b24ef9eec814bae5786b5194f31bf",
+        "2026-03-24/rustc-nightly-aarch64-apple-darwin.tar.xz": "9310535abcfe2b1b86e4e8a1e6455e622ad5435a5281a6133aa7e6aa0bd4aa3d",
+        "2026-03-24/rustc-nightly-x86_64-unknown-linux-gnu.tar.xz": "7183776faefeb29ca430ee91f49a157491e82ce5ef158f082b3876648bba0406",
+        "2026-03-24/rustfmt-nightly-aarch64-apple-darwin.tar.xz": "3f989cd84234158dfe240571ec18441bfb586d9fcc4c06036a766a705ea6a69b",
+        "2026-03-24/rustfmt-nightly-x86_64-unknown-linux-gnu.tar.xz": "0eeef38fe72a1a718b19256cd1e5f92c96ee9d39eb6b9324f2514a674f1e4308",
         "cargo-1.93.1-aarch64-apple-darwin.tar.xz": "ecd50b093656061366c5af1184af10d883f21bddb482a9c2142fe860c0f671b2",
         "cargo-1.93.1-x86_64-unknown-linux-gnu.tar.xz": "dbf12e8fd2a245a6bdd9f6c8df267cb2c25b0c56866ee91d8321337df0a00ddb",
         "clippy-1.93.1-aarch64-apple-darwin.tar.xz": "33d57654b0f19360cc4deecbaf248586f89ce9d345df2d54ee8d5541cf7c9f95",
@@ -103,7 +103,7 @@ rust.toolchain(
     },
     versions = [
         "1.93.1",
-        "nightly/2026-02-26",
+        "nightly/2026-03-24",
     ],
 )
 use_repo(rust, "rust_toolchains")
