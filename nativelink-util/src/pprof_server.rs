@@ -77,9 +77,17 @@ async fn flamegraph_handler(Query(params): Query<ProfileParams>) -> Response {
 /// Run the CPU profiler for `seconds` and return the result in the
 /// requested format.
 fn collect_profile(seconds: u64, format: &str) -> Result<Response, String> {
-    let guard = ProfilerGuardBuilder::default()
-        .frequency(DEFAULT_FREQUENCY)
-        .blocklist(&["libc", "libgcc", "pthread", "vdso"])
+    let mut builder = ProfilerGuardBuilder::default().frequency(DEFAULT_FREQUENCY);
+
+    // On Linux, filter noisy system library frames.
+    // On macOS, "libc"/"pthread" match libsystem_c/libsystem_pthread and
+    // would filter ALL idle samples, producing empty flamegraphs.
+    #[cfg(target_os = "linux")]
+    {
+        builder = builder.blocklist(&["libc", "libgcc", "pthread", "vdso"]);
+    }
+
+    let guard = builder
         .build()
         .map_err(|e| format!("failed to start profiler: {e:?}"))?;
 
