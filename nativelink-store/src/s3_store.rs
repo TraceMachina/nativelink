@@ -168,7 +168,7 @@ where
     }
 
     fn make_s3_path(&self, key: &StoreKey<'_>) -> String {
-        format!("{}{}", self.key_prefix, key.as_str(),)
+        format!("{}{}", self.key_prefix, key.as_str())
     }
 
     async fn has(self: Pin<&Self>, digest: StoreKey<'_>) -> Result<Option<u64>, Error> {
