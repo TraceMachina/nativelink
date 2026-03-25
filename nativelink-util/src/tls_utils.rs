@@ -401,9 +401,10 @@ pub fn h3_channel(endpoint_config: &GrpcEndpoint) -> Result<QuicChannel, Error> 
     transport.max_concurrent_bidi_streams(1024u32.into()); // vs 256
     transport.max_concurrent_uni_streams(1024u32.into());
     transport.initial_rtt(Duration::from_micros(500)); // 0.5ms LAN RTT (vs 333ms default)
-    // Reduce ACK delay from default 25ms to 1ms for low-latency LAN.
+    // Reduce ACK delay from default 25ms to 5ms for LAN.
+    // 1ms caused H3_FRAME_ERROR from BBR pacing instability.
     let mut ack_freq = quinn::AckFrequencyConfig::default();
-    ack_freq.max_ack_delay(Some(Duration::from_millis(1)));
+    ack_freq.max_ack_delay(Some(Duration::from_millis(5)));
     transport.ack_frequency_config(Some(ack_freq));
     // Allow idle connections to persist for 30s before cleanup.
     transport.max_idle_timeout(Some(Duration::from_secs(30).try_into().unwrap()));
