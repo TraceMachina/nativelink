@@ -4091,10 +4091,12 @@ impl RunningActionsManagerImpl {
                 }
             }
 
-            // Unpin all digests now that upload is complete.
-            for digest in &digests {
-                filesystem_store.unpin_digest(digest);
-            }
+            // Blobs remain pinned after upload completes. They will be
+            // unpinned when the server sends BlobsInStableStorage confirming
+            // the blobs have been persisted to stable storage (e.g.
+            // FilesystemStore, not just MemoryStore). This prevents the
+            // worker from evicting blobs that the server hasn't durably
+            // stored yet.
 
             info!(
                 total_digests = total,

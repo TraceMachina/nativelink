@@ -968,8 +968,36 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                 }
                             }
                         }
-                        Update::BlobsInStableStorage(_blobs) => {
-                            // TODO: unpin matching blobs from local CAS
+                        Update::BlobsInStableStorage(blobs) => {
+                            // Server confirms these blobs are persisted to stable storage.
+                            // Unpin them from the local FilesystemStore so they become
+                            // eligible for eviction again.
+                            let digest_count = blobs.digests.len();
+                            if let Some(ref state) = self.blobs_available_state {
+                                let fs_store = &state.fs_store;
+                                let mut unpinned = 0usize;
+                                for proto_digest in &blobs.digests {
+                                    if let Ok(digest) = DigestInfo::try_from(proto_digest.clone()) {
+                                        fs_store.unpin_digest(&digest);
+                                        unpinned += 1;
+                                    } else {
+                                        warn!(
+                                            ?proto_digest,
+                                            "BlobsInStableStorage: invalid digest, skipping unpin"
+                                        );
+                                    }
+                                }
+                                info!(
+                                    unpinned,
+                                    digest_count,
+                                    "BlobsInStableStorage: unpinned digests from local CAS"
+                                );
+                            } else {
+                                trace!(
+                                    digest_count,
+                                    "BlobsInStableStorage: no FilesystemStore available, ignoring"
+                                );
+                            }
                         }
                         Update::StartAction(start_execute) => {
                             // Don't accept any new requests if we're shutting down.

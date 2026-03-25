@@ -22,6 +22,7 @@ use nativelink_config::stores::{GrpcEndpoint, GrpcSpec, Retry, StoreType};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::blob_locality_map::SharedBlobLocalityMap;
+use nativelink_util::common::DigestInfo;
 use nativelink_util::buf_channel::{
     DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
 };
@@ -673,6 +674,10 @@ impl StoreDriver for WorkerProxyStore {
         callback: Arc<dyn ItemCallback>,
     ) -> Result<(), Error> {
         self.inner.register_item_callback(callback)
+    }
+
+    fn drain_stable_digests(&self) -> Vec<DigestInfo> {
+        self.inner.drain_stable_digests()
     }
 }
 

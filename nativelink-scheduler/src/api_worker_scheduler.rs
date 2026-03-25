@@ -28,9 +28,9 @@ use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
     RootMetricsComponent, group,
 };
-use nativelink_proto::build::bazel::remote::execution::v2::Directory;
+use nativelink_proto::build::bazel::remote::execution::v2::{Digest, Directory};
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    PeerHint, StartExecute, UpdateForWorker, update_for_worker,
+    BlobsInStableStorage, PeerHint, StartExecute, UpdateForWorker, update_for_worker,
 };
 use nativelink_util::blob_locality_map::SharedBlobLocalityMap;
 use nativelink_util::action_messages::{OperationId, WorkerId};
@@ -1368,6 +1368,59 @@ impl ApiWorkerScheduler {
             }
         }
     }
+
+    /// Broadcast a `BlobsInStableStorage` message to all connected workers.
+    /// Disconnected workers are silently skipped (they will be reaped by the
+    /// timeout mechanism). Takes a read lock on the worker map briefly to
+    /// clone the sender handles, then sends outside the lock.
+    pub async fn broadcast_blobs_in_stable_storage(&self, digests: Vec<DigestInfo>) {
+        if digests.is_empty() {
+            return;
+        }
+        let proto_digests: Vec<Digest> = digests.iter().map(Digest::from).collect();
+        let msg = update_for_worker::Update::BlobsInStableStorage(BlobsInStableStorage {
+            digests: proto_digests,
+        });
+
+        // Collect sender handles under a brief read lock, then send outside.
+        let senders: Vec<_> = {
+            let inner = self.inner.read().await;
+            inner
+                .workers
+                .iter()
+                .map(|(_, w)| w.tx.clone())
+                .collect()
+        };
+
+        let worker_count = senders.len();
+        let mut send_failures = 0usize;
+        for tx in &senders {
+            if tx
+                .send(UpdateForWorker {
+                    update: Some(msg.clone()),
+                })
+                .is_err()
+            {
+                send_failures += 1;
+            }
+        }
+
+        let digest_count = digests.len();
+        if send_failures > 0 {
+            debug!(
+                digest_count,
+                worker_count,
+                send_failures,
+                "broadcast blobs_in_stable_storage had send failures"
+            );
+        } else {
+            trace!(
+                digest_count,
+                worker_count,
+                "broadcast blobs_in_stable_storage"
+            );
+        }
+    }
 }
 
 /// Resolved input tree containing file digests, directory digests,
@@ -1904,6 +1957,10 @@ impl WorkerScheduler for ApiWorkerScheduler {
             );
         }
         Ok(())
+    }
+
+    async fn broadcast_blobs_in_stable_storage(&self, digests: Vec<DigestInfo>) {
+        self.broadcast_blobs_in_stable_storage(digests).await;
     }
 }
 

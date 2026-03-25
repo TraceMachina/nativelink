@@ -97,4 +97,9 @@ pub trait WorkerScheduler: Sync + Send + Unpin + RootMetricsComponent + 'static 
         added: Vec<DigestInfo>,
         removed: Vec<DigestInfo>,
     ) -> Result<(), Error>;
+
+    /// Broadcast a `BlobsInStableStorage` notification to all connected workers,
+    /// telling them that the given digests are now safe on stable storage and can
+    /// be unpinned from local CAS. Default implementation is a no-op.
+    async fn broadcast_blobs_in_stable_storage(&self, _digests: Vec<DigestInfo>) {}
 }

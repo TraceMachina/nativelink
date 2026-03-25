@@ -401,6 +401,13 @@ impl Store {
     ) -> Result<(), Error> {
         self.inner.clone().register_item_callback(callback)
     }
+
+    /// Drain digests that have completed their write to stable storage.
+    /// Delegates to the inner [`StoreDriver::drain_stable_digests`].
+    #[inline]
+    pub fn drain_stable_digests(&self) -> Vec<DigestInfo> {
+        self.inner.drain_stable_digests()
+    }
 }
 
 impl StoreLike for Store {
@@ -859,6 +866,13 @@ pub trait StoreDriver:
         self: Arc<Self>,
         callback: Arc<dyn ItemCallback>,
     ) -> Result<(), Error>;
+
+    /// Drain digests that have completed their write to stable storage
+    /// (e.g., FilesystemStore in a FastSlowStore). Wrapper stores should
+    /// delegate to their inner store. The default returns an empty Vec.
+    fn drain_stable_digests(&self) -> Vec<DigestInfo> {
+        Vec::new()
+    }
 }
 
 // Callback invoked when a store inserts or deletes an item.

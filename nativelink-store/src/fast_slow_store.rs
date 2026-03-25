@@ -603,8 +603,9 @@ impl StoreDriver for FastSlowStore {
             let slow_ms = slow_start.elapsed().as_millis();
             match result {
                 Ok(()) => {
-                    let digest = key_for_bg.into_digest();
-                    stable_digests_ref.lock().push(digest);
+                    if let StoreKey::Digest(digest) = &key_for_bg {
+                        stable_digests_ref.lock().push(*digest);
+                    }
                     info!(
                         key = %key_debug_bg,
                         schedule_delay_ms,
@@ -718,8 +719,9 @@ impl StoreDriver for FastSlowStore {
             let slow_ms = slow_start.elapsed().as_millis();
             match result {
                 Ok(()) => {
-                    let digest = key_for_bg.into_digest();
-                    stable_digests_ref.lock().push(digest);
+                    if let StoreKey::Digest(digest) = &key_for_bg {
+                        stable_digests_ref.lock().push(*digest);
+                    }
                     info!(
                         key = %key_debug_bg,
                         schedule_delay_ms,
@@ -984,6 +986,11 @@ impl StoreDriver for FastSlowStore {
         self.fast_store.register_item_callback(callback.clone())?;
         self.slow_store.register_item_callback(callback)?;
         Ok(())
+    }
+
+    fn drain_stable_digests(&self) -> Vec<DigestInfo> {
+        let mut guard = self.stable_digests.lock();
+        std::mem::take(&mut *guard)
     }
 }
 

@@ -267,23 +267,23 @@ async fn inner_main(
 
     // Wrap CAS stores with WorkerProxyStore so the server can proxy reads
     // to workers that have the blob (discovered via BlobsAvailable reports).
-    {
-        let mut cas_store_names: HashSet<String> = HashSet::new();
+    let cas_store_names: HashSet<String> = {
+        let mut names: HashSet<String> = HashSet::new();
         for server_cfg in &server_cfgs {
             if let Some(ref services) = server_cfg.services {
                 if let Some(ref cas_cfgs) = services.cas {
                     for c in cas_cfgs {
-                        cas_store_names.insert(c.config.cas_store.clone());
+                        names.insert(c.config.cas_store.clone());
                     }
                 }
                 if let Some(ref bs_cfgs) = services.bytestream {
                     for c in bs_cfgs {
-                        cas_store_names.insert(c.config.cas_store.clone());
+                        names.insert(c.config.cas_store.clone());
                     }
                 }
             }
         }
-        for store_name in &cas_store_names {
+        for store_name in &names {
             if let Some(original_store) = store_manager.get_store(store_name) {
                 let proxy_store = nativelink_util::store_trait::Store::new(
                     nativelink_store::worker_proxy_store::WorkerProxyStore::new(
@@ -297,6 +297,51 @@ async fn inner_main(
                     "Wrapped CAS store with WorkerProxyStore for peer blob sharing"
                 );
             }
+        }
+        names
+    };
+
+    // Spawn the BlobsInStableStorage batching loop. Every 100ms it drains
+    // digests that completed their write to the slow store (FilesystemStore)
+    // in each CAS FastSlowStore and broadcasts them to all connected workers
+    // so they can unpin those blobs from their local CAS.
+    if !worker_schedulers.is_empty() {
+        let cas_stores: Vec<nativelink_util::store_trait::Store> = cas_store_names
+            .iter()
+            .filter_map(|name| store_manager.get_store(name))
+            .collect();
+        let schedulers: Vec<Arc<dyn nativelink_scheduler::worker_scheduler::WorkerScheduler>> =
+            worker_schedulers.values().cloned().collect();
+
+        if !cas_stores.is_empty() {
+            let cas_store_count = cas_stores.len();
+            let scheduler_count = schedulers.len();
+            background_spawn!("blobs_in_stable_storage_loop", async move {
+                let mut interval = tokio::time::interval(Duration::from_millis(100));
+                loop {
+                    interval.tick().await;
+                    let mut all_digests = Vec::new();
+                    for store in &cas_stores {
+                        let mut drained = store.drain_stable_digests();
+                        if !drained.is_empty() {
+                            all_digests.append(&mut drained);
+                        }
+                    }
+                    if all_digests.is_empty() {
+                        continue;
+                    }
+                    for scheduler in &schedulers {
+                        scheduler
+                            .broadcast_blobs_in_stable_storage(all_digests.clone())
+                            .await;
+                    }
+                }
+            });
+            info!(
+                cas_store_count,
+                scheduler_count,
+                "started BlobsInStableStorage batching loop (100ms interval)"
+            );
         }
     }
 

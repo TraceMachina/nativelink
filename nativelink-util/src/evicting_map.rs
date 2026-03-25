@@ -165,10 +165,8 @@ impl<
             btree.remove(key);
         }
         // Remove any stale pin for this key.
-        let was_pinned = self.pinned_keys.len();
-        self.pinned_keys.retain(|k| k.borrow() != key);
-        if self.pinned_keys.len() < was_pinned {
-            self.pin_times.retain(|k, _| k.borrow() != key);
+        if self.pinned_keys.remove(key) {
+            self.pin_times.remove(key);
             self.pinned_bytes = self.pinned_bytes.saturating_sub(eviction_item.data.len());
         }
         self.sum_store_size -= eviction_item.data.len();
@@ -371,10 +369,8 @@ where
     /// Unpin a key, allowing eviction again. Idempotent.
     pub fn unpin_key(&self, key: &Q) {
         let mut state = lock_with_metrics!(self, "unpin_key");
-        let was_pinned = state.pinned_keys.len();
-        state.pinned_keys.retain(|k| k.borrow() != key);
-        if state.pinned_keys.len() < was_pinned {
-            state.pin_times.retain(|k, _| k.borrow() != key);
+        if state.pinned_keys.remove(key) {
+            state.pin_times.remove(key);
             // Subtract the entry size from pinned_bytes if the entry still exists.
             let entry_size = state
                 .lru
@@ -508,8 +504,8 @@ where
                         entry_size,
                         "auto-unpinning expired pin"
                     );
-                    state.pinned_keys.retain(|k| k.borrow() != key.borrow());
-                    state.pin_times.retain(|k, _| k.borrow() != key.borrow());
+                    state.pinned_keys.remove(key.borrow());
+                    state.pin_times.remove(key.borrow());
                     state.pinned_bytes = state.pinned_bytes.saturating_sub(entry_size);
                     // Fall through to normal eviction below.
                 } else {
@@ -540,9 +536,15 @@ where
             };
         }
 
-        // Re-insert pinned items back into LRU
+        // Re-insert pinned items back into LRU at LRU position (not MRU).
+        // Using push() + demote() preserves their original eviction priority
+        // so they don't jump ahead of newer unpinned items when the pin expires.
         for (key, item) in skipped_pinned {
             state.lru.push(key, item);
+        }
+        // Demote all pinned keys to LRU position after re-insertion.
+        for pinned_key in &state.pinned_keys {
+            state.lru.demote(pinned_key.borrow());
         }
 
         (items_to_unref, removal_futures)

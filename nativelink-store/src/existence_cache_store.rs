@@ -397,6 +397,10 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
     ) -> Result<(), Error> {
         self.inner_store.register_item_callback(callback)
     }
+
+    fn drain_stable_digests(&self) -> Vec<DigestInfo> {
+        self.inner_store.drain_stable_digests()
+    }
 }
 
 #[async_trait]

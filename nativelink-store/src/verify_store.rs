@@ -22,7 +22,7 @@ use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{
     DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
 };
-use nativelink_util::common::PackedHash;
+use nativelink_util::common::{DigestInfo, PackedHash};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc, default_digest_hasher_func};
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::metrics_utils::CounterWithTime;
@@ -236,6 +236,10 @@ impl StoreDriver for VerifyStore {
         callback: Arc<dyn ItemCallback>,
     ) -> Result<(), Error> {
         self.inner_store.register_item_callback(callback)
+    }
+
+    fn drain_stable_digests(&self) -> Vec<DigestInfo> {
+        self.inner_store.drain_stable_digests()
     }
 }
 
