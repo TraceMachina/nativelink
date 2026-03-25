@@ -520,10 +520,39 @@ where
 
             let age_secs = elapsed_seconds.saturating_sub(eviction_item.seconds_since_anchor);
             let size = eviction_item.data.len();
-            if age_secs < 120 {
-                warn!(?key, age_secs, size, "EvictingMap: evicting recently-inserted item");
+            let evict_older_than_seconds = elapsed_seconds.saturating_sub(self.max_seconds);
+            let effective_count = state.lru.len() + skipped_pinned.len();
+            let reason = if self.max_seconds != 0
+                && eviction_item.seconds_since_anchor < evict_older_than_seconds
+            {
+                "max_seconds (TTL) expired"
+            } else if self.max_count != 0
+                && u64::try_from(effective_count).unwrap_or(u64::MAX) > self.max_count
+            {
+                "max_count exceeded"
+            } else if max_bytes != 0 && state.sum_store_size > max_bytes {
+                "max_bytes exceeded"
             } else {
-                info!(?key, age_secs, size, "EvictingMap: evicting item");
+                "evict_bytes headroom"
+            };
+            if age_secs < 120 {
+                warn!(
+                    ?key, age_secs, size, reason,
+                    current_count = effective_count,
+                    max_count = self.max_count,
+                    current_bytes = state.sum_store_size,
+                    max_bytes,
+                    "EvictingMap: evicting recently-inserted item",
+                );
+            } else {
+                info!(
+                    ?key, age_secs, size, reason,
+                    current_count = effective_count,
+                    max_count = self.max_count,
+                    current_bytes = state.sum_store_size,
+                    max_bytes,
+                    "EvictingMap: evicting item",
+                );
             }
             let (data, futures) = state.remove(key.borrow(), &eviction_item, false);
             items_to_unref.push(data);
@@ -601,9 +630,19 @@ where
                                 let age_secs = elapsed_seconds.saturating_sub(eviction_item.seconds_since_anchor);
                                 let size = eviction_item.data.len();
                                 if age_secs < 120 {
-                                    warn!(?key, age_secs, size, "Expired recently-inserted item");
+                                    warn!(
+                                        ?key, age_secs, size,
+                                        reason = "max_seconds (TTL) expired",
+                                        max_seconds = self.max_seconds,
+                                        "EvictingMap: expired recently-inserted item on lookup",
+                                    );
                                 } else {
-                                    debug!(?key, age_secs, size, "Item expired, evicting");
+                                    debug!(
+                                        ?key, age_secs, size,
+                                        reason = "max_seconds (TTL) expired",
+                                        max_seconds = self.max_seconds,
+                                        "EvictingMap: item expired on lookup, evicting",
+                                    );
                                 }
                                 let (data, futures) =
                                     state.remove(key.borrow(), &eviction_item, false);
