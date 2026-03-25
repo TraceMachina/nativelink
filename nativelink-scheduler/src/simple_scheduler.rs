@@ -1001,6 +1001,12 @@ impl WorkerScheduler for SimpleScheduler {
             .update_cached_subtrees(worker_id, is_full_snapshot, full_set, added, removed)
             .await
     }
+
+    async fn broadcast_blobs_in_stable_storage(&self, digests: Vec<DigestInfo>) {
+        self.worker_scheduler
+            .broadcast_blobs_in_stable_storage(digests)
+            .await;
+    }
 }
 
 impl RootMetricsComponent for SimpleScheduler {}

@@ -13,11 +13,13 @@
 // limitations under the License.
 
 use core::pin::Pin;
+use core::sync::atomic::{AtomicU64, Ordering};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use nativelink_config::stores::{GrpcEndpoint, GrpcSpec, Retry, StoreType};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
@@ -445,6 +447,57 @@ impl WorkerProxyStore {
             .await
             .map_err(|e| make_err!(Code::Internal, "WorkerProxyStore: {winner_name} task join error: {e}"))?
             .err_tip(|| format!("WorkerProxyStore: {winner_name} get_part failed after winning race"))
+    }
+
+    /// Mirror a blob to a random connected worker for OOM redundancy.
+    /// Fire-and-forget: errors are logged but do not propagate.
+    /// The blob data is passed as `Bytes` to avoid re-reading from the store.
+    pub async fn mirror_blob_to_random_worker(
+        &self,
+        digest: DigestInfo,
+        data: Bytes,
+    ) {
+        let endpoints = self.locality_map.read().all_endpoints();
+        if endpoints.is_empty() {
+            return;
+        }
+
+        // Pick a random endpoint using the atomic counter to avoid
+        // pulling in the `rand` crate. Simple round-robin is fine
+        // since the goal is distribution, not cryptographic randomness.
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let idx = COUNTER.fetch_add(1, Ordering::Relaxed) as usize % endpoints.len();
+        let endpoint = &endpoints[idx];
+
+        let Some(store) = self.get_or_create_connection(endpoint).await else {
+            warn!(
+                %digest,
+                endpoint = endpoint.as_ref(),
+                "mirror: failed to connect to worker"
+            );
+            return;
+        };
+
+        let size_bytes = data.len();
+        match store.update_oneshot(digest, data).await {
+            Ok(()) => {
+                info!(
+                    %digest,
+                    size_bytes,
+                    endpoint = endpoint.as_ref(),
+                    "mirror: blob sent to worker"
+                );
+            }
+            Err(e) => {
+                warn!(
+                    %digest,
+                    size_bytes,
+                    endpoint = endpoint.as_ref(),
+                    ?e,
+                    "mirror: failed to send blob to worker"
+                );
+            }
+        }
     }
 }
 

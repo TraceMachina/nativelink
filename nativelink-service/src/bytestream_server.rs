@@ -41,6 +41,7 @@ use nativelink_proto::google::bytestream::{
 };
 use nativelink_store::grpc_store::GrpcStore;
 use nativelink_store::store_manager::StoreManager;
+use nativelink_store::worker_proxy_store::WorkerProxyStore;
 use nativelink_util::buf_channel::{
     DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair_with_size,
 };
@@ -425,6 +426,59 @@ impl IdleStream {
             metrics: instance_info.metrics.clone(),
         }
     }
+}
+
+/// Spawn a background task to mirror a blob to a random connected worker
+/// for OOM redundancy. Fire-and-forget: errors are logged, not propagated.
+/// The blob data is read from the store and sent to the worker's CAS endpoint.
+fn mirror_blob_to_worker(store: &Store, digest: DigestInfo) {
+    // WorkerProxyStore is the outermost wrapper on CAS stores when workers
+    // are configured. inner_store() delegates through, so we use as_any()
+    // on the immediate store driver to find it.
+    let Some(proxy) = store
+        .as_store_driver()
+        .as_any()
+        .downcast_ref::<WorkerProxyStore>()
+    else {
+        return;
+    };
+
+    // Quick check: any workers connected?
+    if proxy.locality_map().read().endpoint_count() == 0 {
+        return;
+    }
+
+    // Skip zero-length blobs — no value in mirroring them.
+    if digest.size_bytes() == 0 {
+        return;
+    }
+
+    let store = store.clone();
+    nativelink_util::background_spawn!("mirror_blob_to_worker", async move {
+        // Read the blob from the store so we have a Bytes copy to send.
+        let data = match store.get_part_unchunked(digest, 0, None).await {
+            Ok(data) => data,
+            Err(e) => {
+                warn!(
+                    %digest,
+                    ?e,
+                    "mirror: failed to read blob for mirroring"
+                );
+                return;
+            }
+        };
+
+        // Re-obtain the proxy reference (store is cloned, driver is Arc'd).
+        let Some(proxy) = store
+            .as_store_driver()
+            .as_any()
+            .downcast_ref::<WorkerProxyStore>()
+        else {
+            return;
+        };
+
+        proxy.mirror_blob_to_random_worker(digest, data).await;
+    });
 }
 
 #[derive(Debug)]
@@ -1415,6 +1469,10 @@ impl ByteStream for ByteStreamServer {
                     .metrics
                     .bytes_written_total
                     .fetch_add(expected_size, Ordering::Relaxed);
+
+                // Mirror the blob to a random worker for OOM redundancy.
+                // Fire-and-forget: don't delay the Bazel ACK.
+                mirror_blob_to_worker(&store, digest);
             }
             Err(e) => {
                 error!(

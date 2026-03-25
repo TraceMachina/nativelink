@@ -34,6 +34,7 @@ use nativelink_proto::google::rpc::Status as GrpcStatus;
 use nativelink_store::ac_utils::get_and_decode_digest;
 use nativelink_store::grpc_store::GrpcStore;
 use nativelink_store::store_manager::StoreManager;
+use nativelink_store::worker_proxy_store::WorkerProxyStore;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::make_ctx_for_hash_func;
 use nativelink_util::log_utils::throughput_mbps;
@@ -43,6 +44,39 @@ use opentelemetry::context::FutureExt;
 use prost::Message;
 use tonic::{Request, Response, Status};
 use tracing::{Instrument, Level, debug, error, error_span, info, instrument, warn};
+
+/// Spawn a background task to mirror a blob (with data already in hand)
+/// to a random connected worker for OOM redundancy. Fire-and-forget.
+fn mirror_blob_to_worker_with_data(store: &Store, digest: DigestInfo, data: Bytes) {
+    let Some(proxy) = store
+        .as_store_driver()
+        .as_any()
+        .downcast_ref::<WorkerProxyStore>()
+    else {
+        return;
+    };
+
+    if proxy.locality_map().read().endpoint_count() == 0 {
+        return;
+    }
+
+    if digest.size_bytes() == 0 {
+        return;
+    }
+
+    // Clone the store so the spawned task can access WorkerProxyStore.
+    let store = store.clone();
+    nativelink_util::background_spawn!("mirror_blob_to_worker", async move {
+        let Some(proxy) = store
+            .as_store_driver()
+            .as_any()
+            .downcast_ref::<WorkerProxyStore>()
+        else {
+            return;
+        };
+        proxy.mirror_blob_to_random_worker(digest, data).await;
+    });
+}
 
 #[derive(Debug)]
 pub struct CasServer {
@@ -157,6 +191,8 @@ impl CasServer {
                     size_bytes,
                     "BatchUpdateBlobs: blob received",
                 );
+                // Clone data for mirroring (Bytes clone is O(1) refcount bump).
+                let mirror_data = request_data.clone();
                 let upload_start = std::time::Instant::now();
                 let result = store_ref
                     .update_oneshot(digest_info, request_data)
@@ -172,6 +208,8 @@ impl CasServer {
                             throughput_mbps = format!("{:.1}", throughput_mbps(size_bytes as u64, elapsed)),
                             "BatchUpdateBlobs: CAS write completed",
                         );
+                        // Mirror to a random worker for OOM redundancy.
+                        mirror_blob_to_worker_with_data(store_ref, digest_info, mirror_data);
                     }
                     Err(e) => {
                         let elapsed = upload_start.elapsed();
