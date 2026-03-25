@@ -15,7 +15,6 @@
 use core::fmt::Debug;
 
 use futures::Stream;
-use nativelink_error::Error;
 use redis::aio::ConnectionLike;
 use redis::{Arg, ErrorKind, RedisError, Value};
 use tracing::error;
@@ -43,7 +42,7 @@ pub(crate) async fn ft_aggregate<C>(
     index: String,
     query: String,
     options: FtAggregateOptions,
-) -> Result<impl Stream<Item = Result<Value, RedisError>> + Send, Error>
+) -> Result<impl Stream<Item = Result<Value, RedisError>> + Send, RedisError>
 where
     C: ConnectionLike + Send,
 {
@@ -96,7 +95,7 @@ where
                 ?all_args,
                 "Error calling ft.aggregate"
             );
-            return Err(e.into());
+            return Err(e);
         }
     };
 
