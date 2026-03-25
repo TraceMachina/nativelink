@@ -1134,6 +1134,9 @@ pub fn download_to_directory<'a>(
                 "fetcher: starting all blob fetches",
             );
 
+            let small_count = small.len();
+            let large_count = large.len();
+
             // Fetch small blobs via BatchReadBlobs (already batches internally).
             let batch_read_fut = async {
                 if small.is_empty() {
@@ -1215,10 +1218,20 @@ pub fn download_to_directory<'a>(
 
             // If either failed, record the error so the producer can see it.
             if let Err(e) = batch_result {
+                error!(
+                    err = %e,
+                    small_count,
+                    "fetcher: BatchReadBlobs fetch failed",
+                );
                 *fetch_error_ref.lock().unwrap() = Some(e);
                 fetched_notify_ref.notify_one();
             }
             if let Err(e) = bs_result {
+                error!(
+                    err = %e,
+                    large_count,
+                    "fetcher: ByteStream fetch failed",
+                );
                 let mut guard = fetch_error_ref.lock().unwrap();
                 if guard.is_none() {
                     *guard = Some(e);
@@ -1268,6 +1281,13 @@ pub fn download_to_directory<'a>(
                         filesystem_store.get_file_entries_batch(&ready_digests).await;
 
                     for (file, entry) in ready_files.iter().zip(entries) {
+                        if entry.is_none() && !is_zero_digest(file.digest) {
+                            warn!(
+                                dest = %file.dest,
+                                digest = ?file.digest,
+                                "producer: no file entry for non-zero digest (ready batch)",
+                            );
+                        }
                         let item: PipelineItem = (
                             FileToMaterialize {
                                 digest: file.digest,
@@ -1321,6 +1341,13 @@ pub fn download_to_directory<'a>(
                                 filesystem_store.get_file_entries_batch(&ready_digests).await;
 
                             for (file, entry) in newly_ready.iter().zip(entries) {
+                                if entry.is_none() && !is_zero_digest(file.digest) {
+                                    warn!(
+                                        dest = %file.dest,
+                                        digest = ?file.digest,
+                                        "producer: no file entry for non-zero digest (deferred batch)",
+                                    );
+                                }
                                 let item: PipelineItem = (
                                     FileToMaterialize {
                                         digest: file.digest,
@@ -1384,12 +1411,19 @@ pub fn download_to_directory<'a>(
                     async move {
                         let digest = file.digest;
                         let dest = file.dest.clone();
+                        let dest_for_err = dest.clone();
                         let link_start = std::time::Instant::now();
                         hardlink_and_set_metadata_prefetched(
                             cas_store, filesystem_store, file, prefetched,
                         )
                         .await
                         .map_err(move |e| {
+                            warn!(
+                                dest = %dest_for_err,
+                                ?digest,
+                                err = %e,
+                                "download_to_directory: failed to materialize input file",
+                            );
                             let mut e = e.append(format!("for digest {digest}"));
                             if e.code == Code::NotFound {
                                 e.details.push(make_precondition_failure_any(digest));
