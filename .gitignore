@@ -26,3 +26,4 @@ nativelink.bazelrc
 buck-out/
 nativelink_config.schema.json
 .cargo/config.toml
+.cargo/config.toml
