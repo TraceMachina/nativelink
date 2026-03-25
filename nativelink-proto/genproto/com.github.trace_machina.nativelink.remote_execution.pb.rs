@@ -237,6 +237,16 @@ pub struct ConnectionResult {
     #[prost(string, tag = "1")]
     pub worker_id: ::prost::alloc::string::String,
 }
+/// / Sent by the server to workers to confirm that blobs have been
+/// / persisted to stable storage (FilesystemStore, not just MemoryStore).
+/// / Workers should unpin matching blobs from their local CAS.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct BlobsInStableStorage {
+    #[prost(message, repeated, tag = "1")]
+    pub digests: ::prost::alloc::vec::Vec<
+        super::super::super::super::super::build::bazel::remote::execution::v2::Digest,
+    >,
+}
 /// / Request to kill a running operation sent from the scheduler to a worker.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct KillOperationRequest {
@@ -247,7 +257,7 @@ pub struct KillOperationRequest {
 /// / Communication from the scheduler to the worker.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UpdateForWorker {
-    #[prost(oneof = "update_for_worker::Update", tags = "1, 2, 3, 4, 5, 7")]
+    #[prost(oneof = "update_for_worker::Update", tags = "1, 2, 3, 4, 5, 7, 8")]
     pub update: ::core::option::Option<update_for_worker::Update>,
 }
 /// Nested message and enum types in `UpdateForWorker`.
@@ -280,6 +290,10 @@ pub mod update_for_worker {
         /// / to prevent premature eviction.
         #[prost(message, tag = "7")]
         TouchBlobs(super::TouchBlobsRequest),
+        /// / Confirms that blobs have been persisted to stable storage.
+        /// / Workers should unpin matching blobs from their local CAS.
+        #[prost(message, tag = "8")]
+        BlobsInStableStorage(super::BlobsInStableStorage),
     }
 }
 /// / Communication from the worker to the scheduler.

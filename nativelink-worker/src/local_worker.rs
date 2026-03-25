@@ -968,6 +968,9 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                 }
                             }
                         }
+                        Update::BlobsInStableStorage(_blobs) => {
+                            // TODO: unpin matching blobs from local CAS
+                        }
                         Update::StartAction(start_execute) => {
                             // Don't accept any new requests if we're shutting down.
                             if shutting_down {

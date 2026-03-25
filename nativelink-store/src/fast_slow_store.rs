@@ -27,6 +27,7 @@ use futures::{FutureExt, join};
 use nativelink_config::stores::{FastSlowSpec, StoreDirection};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
+use nativelink_util::common::DigestInfo;
 use nativelink_util::buf_channel::{
     DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair_with_size,
 };
@@ -69,6 +70,9 @@ pub struct FastSlowStore {
     /// progress. If the fast store evicts the blob before the slow write
     /// completes, `get_part` serves from this map to prevent NotFound gaps.
     in_flight_slow_writes: Arc<Mutex<HashMap<StoreKey<'static>, Bytes>>>,
+    /// Digests that have completed their background slow store write.
+    /// Drained every 100ms by the BlobsInStableStorage batching loop.
+    stable_digests: Arc<Mutex<Vec<DigestInfo>>>,
 }
 
 // This guard ensures that the populating_digests is cleared even if the future
@@ -133,6 +137,7 @@ impl FastSlowStore {
             metrics: FastSlowStoreMetrics::default(),
             populating_digests: Mutex::new(HashMap::new()),
             in_flight_slow_writes: Arc::new(Mutex::new(HashMap::new())),
+            stable_digests: Arc::new(Mutex::new(Vec::new())),
         })
     }
 
@@ -154,6 +159,13 @@ impl FastSlowStore {
 
     pub fn get_arc(&self) -> Option<Arc<Self>> {
         self.weak_self.upgrade()
+    }
+
+    /// Drain all digests that have completed their slow store write since the last drain.
+    /// Called by the BlobsInStableStorage batching loop.
+    pub fn drain_stable_digests(&self) -> Vec<DigestInfo> {
+        let mut guard = self.stable_digests.lock();
+        std::mem::take(&mut *guard)
     }
 
     fn get_loader<'a>(&self, key: StoreKey<'a>) -> LoaderGuard<'a> {
@@ -562,6 +574,7 @@ impl StoreDriver for FastSlowStore {
             .insert(owned_key.clone(), data.clone());
 
         let in_flight = self.in_flight_slow_writes.clone();
+        let stable_digests_ref = self.stable_digests.clone();
         let slow_store = self.slow_store.clone();
         let key_for_bg = owned_key.clone();
         let key_debug_bg = key_debug.clone();
@@ -590,6 +603,8 @@ impl StoreDriver for FastSlowStore {
             let slow_ms = slow_start.elapsed().as_millis();
             match result {
                 Ok(()) => {
+                    let digest = key_for_bg.into_digest();
+                    stable_digests_ref.lock().push(digest);
                     info!(
                         key = %key_debug_bg,
                         schedule_delay_ms,
@@ -674,6 +689,7 @@ impl StoreDriver for FastSlowStore {
             .insert(owned_key.clone(), data.clone());
 
         let in_flight = self.in_flight_slow_writes.clone();
+        let stable_digests_ref = self.stable_digests.clone();
         let slow_store = self.slow_store.clone();
         let key_for_bg = owned_key.clone();
         let key_debug_bg = key_debug.clone();
@@ -702,6 +718,8 @@ impl StoreDriver for FastSlowStore {
             let slow_ms = slow_start.elapsed().as_millis();
             match result {
                 Ok(()) => {
+                    let digest = key_for_bg.into_digest();
+                    stable_digests_ref.lock().push(digest);
                     info!(
                         key = %key_debug_bg,
                         schedule_delay_ms,

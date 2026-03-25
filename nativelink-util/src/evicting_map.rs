@@ -21,7 +21,8 @@ use core::marker::PhantomData;
 use core::ops::RangeBounds;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicU64, Ordering};
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::time::Instant;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -37,6 +38,11 @@ use tracing::{debug, warn};
 use crate::background_spawn;
 use crate::instant_wrapper::InstantWrapper;
 use crate::metrics_utils::{Counter, CounterWithTime};
+
+/// Maximum fraction of max_bytes that can be pinned (25%).
+const PIN_CAP_FRACTION: f64 = 0.25;
+/// Seconds before a pin automatically expires.
+const PIN_TIMEOUT_SECS: u64 = 120;
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, Debug, Clone)]
 pub struct SerializedLRU<K> {
@@ -128,6 +134,10 @@ struct State<
     item_callbacks: Vec<C>,
     /// Keys that are pinned and should not be evicted.
     pinned_keys: HashSet<K>,
+    /// Tracks when each key was pinned, for timeout enforcement.
+    pin_times: HashMap<K, Instant>,
+    /// Total size of pinned entries in bytes.
+    pinned_bytes: u64,
 }
 
 type RemoveFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
@@ -155,7 +165,12 @@ impl<
             btree.remove(key);
         }
         // Remove any stale pin for this key.
+        let was_pinned = self.pinned_keys.len();
         self.pinned_keys.retain(|k| k.borrow() != key);
+        if self.pinned_keys.len() < was_pinned {
+            self.pin_times.retain(|k, _| k.borrow() != key);
+            self.pinned_bytes = self.pinned_bytes.saturating_sub(eviction_item.data.len());
+        }
         self.sum_store_size -= eviction_item.data.len();
         if replaced {
             self.replaced_items.inc();
@@ -304,6 +319,8 @@ where
                 _key_type: PhantomData,
                 item_callbacks: Vec::new(),
                 pinned_keys: HashSet::new(),
+                pin_times: HashMap::new(),
+                pinned_bytes: 0,
             }),
             anchor_time,
             max_bytes: config.max_bytes as u64,
@@ -314,16 +331,63 @@ where
         }
     }
 
-    /// Pin a key to prevent eviction. Idempotent.
-    pub fn pin_key(&self, key: K) {
-        lock_with_metrics!(self, "pin_key").pinned_keys.insert(key);
+    /// Pin a key to prevent eviction. Returns `true` if the key was
+    /// successfully pinned, `false` if pinning would exceed the pin cap
+    /// or the key is not present in the map. Idempotent for already-pinned keys.
+    pub fn pin_key(&self, key: K) -> bool {
+        let mut state = lock_with_metrics!(self, "pin_key");
+
+        // Already pinned — refresh the pin time.
+        if state.pinned_keys.contains(key.borrow()) {
+            state.pin_times.insert(key, Instant::now());
+            return true;
+        }
+
+        // Look up the entry size; refuse to pin a key that isn't in the map.
+        let entry_size = match state.lru.peek(key.borrow()) {
+            Some(item) => item.data.len(),
+            None => return false,
+        };
+
+        // Enforce pin cap.
+        let pin_cap = (self.max_bytes as f64 * PIN_CAP_FRACTION) as u64;
+        if self.max_bytes != 0 && state.pinned_bytes.saturating_add(entry_size) > pin_cap {
+            warn!(
+                pinned_bytes = state.pinned_bytes,
+                entry_size,
+                pin_cap,
+                ?key,
+                "pin cap exceeded, refusing to pin"
+            );
+            return false;
+        }
+
+        state.pinned_keys.insert(key.clone());
+        state.pin_times.insert(key, Instant::now());
+        state.pinned_bytes += entry_size;
+        true
     }
 
     /// Unpin a key, allowing eviction again. Idempotent.
     pub fn unpin_key(&self, key: &Q) {
-        lock_with_metrics!(self, "unpin_key")
-            .pinned_keys
-            .retain(|k| k.borrow() != key);
+        let mut state = lock_with_metrics!(self, "unpin_key");
+        let was_pinned = state.pinned_keys.len();
+        state.pinned_keys.retain(|k| k.borrow() != key);
+        if state.pinned_keys.len() < was_pinned {
+            state.pin_times.retain(|k, _| k.borrow() != key);
+            // Subtract the entry size from pinned_bytes if the entry still exists.
+            let entry_size = state
+                .lru
+                .peek(key)
+                .map(|item| item.data.len())
+                .unwrap_or(0);
+            state.pinned_bytes = state.pinned_bytes.saturating_sub(entry_size);
+        }
+    }
+
+    /// Returns the total bytes currently pinned.
+    pub fn pinned_bytes(&self) -> u64 {
+        lock_with_metrics!(self, "pinned_bytes").pinned_bytes
     }
 
     pub async fn enable_filtering(&self) {
@@ -430,12 +494,32 @@ where
                 .expect("Tried to peek() then pop() but failed");
 
             if state.pinned_keys.contains(key.borrow()) {
-                skipped_pinned.push((key, eviction_item));
-                peek_entry = match state.lru.peek_lru() {
-                    Some((_, entry)) => entry,
-                    None => break,
-                };
-                continue;
+                // Check if the pin has expired.
+                let pin_expired = state
+                    .pin_times
+                    .get(key.borrow())
+                    .map_or(true, |t| t.elapsed().as_secs() >= PIN_TIMEOUT_SECS);
+
+                if pin_expired {
+                    let entry_size = eviction_item.data.len();
+                    warn!(
+                        ?key,
+                        pin_timeout_secs = PIN_TIMEOUT_SECS,
+                        entry_size,
+                        "auto-unpinning expired pin"
+                    );
+                    state.pinned_keys.retain(|k| k.borrow() != key.borrow());
+                    state.pin_times.retain(|k, _| k.borrow() != key.borrow());
+                    state.pinned_bytes = state.pinned_bytes.saturating_sub(entry_size);
+                    // Fall through to normal eviction below.
+                } else {
+                    skipped_pinned.push((key, eviction_item));
+                    peek_entry = match state.lru.peek_lru() {
+                        Some((_, entry)) => entry,
+                        None => break,
+                    };
+                    continue;
+                }
             }
 
             let age_secs = elapsed_seconds.saturating_sub(eviction_item.seconds_since_anchor);

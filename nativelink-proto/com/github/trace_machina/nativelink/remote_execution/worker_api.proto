@@ -219,6 +219,13 @@ message ConnectionResult {
     reserved 2; // NextId.
 }
 
+/// Sent by the server to workers to confirm that blobs have been
+/// persisted to stable storage (FilesystemStore, not just MemoryStore).
+/// Workers should unpin matching blobs from their local CAS.
+message BlobsInStableStorage {
+    repeated build.bazel.remote.execution.v2.Digest digests = 1;
+}
+
 /// Request to kill a running operation sent from the scheduler to a worker.
 message KillOperationRequest {
     /// The the operation id for the operation to be killed.
@@ -253,6 +260,10 @@ message UpdateForWorker {
         /// Instructs the worker to touch (update access time) on blobs
         /// to prevent premature eviction.
         TouchBlobsRequest touch_blobs = 7;
+
+        /// Confirms that blobs have been persisted to stable storage.
+        /// Workers should unpin matching blobs from their local CAS.
+        BlobsInStableStorage blobs_in_stable_storage = 8;
     }
     reserved 6; // Previously NextId, now reserved.
 }
