@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.tracemachina.nativelink</string>
+	<key>AssociatedBundleIdentifiers</key>
+	<string>com.tracemachina.nativelink</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>PLACEHOLDER_HOME/Applications/NativeLink.app/Contents/MacOS/nativelink</string>
+		<string>PLACEHOLDER_HOME/.config/nativelink/config.json5</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>PLACEHOLDER_HOME/Library/Logs/nativelink.log</string>
+	<key>StandardErrorPath</key>
+	<string>PLACEHOLDER_HOME/Library/Logs/nativelink.log</string>
+	<key>ProcessType</key>
+	<string>Background</string>
+</dict>
+</plist>

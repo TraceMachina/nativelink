@@ -70,6 +70,9 @@ pub struct SchedulerMetrics {
     pub worker_timeouts: AtomicU64,
 }
 
+/// Cached result of `score_and_generate_hints`: endpoint scores and peer hints.
+type ScoringResult = (HashMap<Arc<str>, (u64, SystemTime)>, Vec<PeerHint>);
+
 use crate::platform_property_manager::PlatformPropertyManager;
 use crate::worker::{
     ActionInfoWithProps, PendingActionInfoData, Worker, WorkerTimestamp, WorkerUpdate,
@@ -163,7 +166,7 @@ struct ApiWorkerSchedulerImpl {
 
     /// Reverse map: CAS endpoint → WorkerId.
     /// Updated when workers are added/removed.
-    endpoint_to_worker: HashMap<String, WorkerId>,
+    endpoint_to_worker: HashMap<Arc<str>, WorkerId>,
 }
 
 impl core::fmt::Debug for ApiWorkerSchedulerImpl {
@@ -236,7 +239,7 @@ impl ApiWorkerSchedulerImpl {
         // Update endpoint → worker reverse map for locality scoring.
         if !worker.cas_endpoint.is_empty() {
             self.endpoint_to_worker
-                .insert(worker.cas_endpoint.clone(), worker_id.clone());
+                .insert(Arc::from(worker.cas_endpoint.as_str()), worker_id.clone());
         }
 
         self.workers.put(worker_id.clone(), worker);
@@ -275,7 +278,7 @@ impl ApiWorkerSchedulerImpl {
         // Remove from endpoint → worker reverse map.
         if let Some(ref worker) = result {
             if !worker.cas_endpoint.is_empty() {
-                self.endpoint_to_worker.remove(&worker.cas_endpoint);
+                self.endpoint_to_worker.remove(worker.cas_endpoint.as_str());
             }
         }
 
@@ -471,7 +474,7 @@ impl ApiWorkerSchedulerImpl {
         operation_id: &OperationId,
         action_info: &ActionInfoWithProps,
         full_worker_logging: bool,
-        endpoint_scores: Option<&HashMap<String, (u64, SystemTime)>>,
+        endpoint_scores: Option<&HashMap<Arc<str>, (u64, SystemTime)>>,
         peer_hints: Vec<PeerHint>,
         resolved_tree: Option<&ResolvedTree>,
     ) -> Option<(WorkerId, UnboundedSender<UpdateForWorker>, UpdateForWorker)> {
@@ -981,6 +984,11 @@ pub struct ApiWorkerScheduler {
     /// Cached resolved input trees: input_root_digest → ResolvedTree.
     /// Held under a tokio::Mutex briefly for get/put, not during I/O.
     tree_cache: Arc<tokio::sync::Mutex<LruCache<DigestInfo, Arc<ResolvedTree>>>>,
+
+    /// Cache of endpoint scores keyed by input_root_digest.
+    /// Avoids recomputing locality scores for identical input trees.
+    /// Cleared when workers connect or disconnect (scores become stale).
+    scores_cache: Arc<tokio::sync::Mutex<LruCache<DigestInfo, Arc<ScoringResult>>>>,
 }
 
 /// Capacity for the resolved input tree LRU cache.
@@ -1035,6 +1043,9 @@ impl ApiWorkerScheduler {
             locality_map,
             cas_store,
             tree_cache: Arc::new(tokio::sync::Mutex::new(LruCache::new(
+                NonZeroUsize::new(TREE_CACHE_CAPACITY).unwrap(),
+            ))),
+            scores_cache: Arc::new(tokio::sync::Mutex::new(LruCache::new(
                 NonZeroUsize::new(TREE_CACHE_CAPACITY).unwrap(),
             ))),
         })
@@ -1223,10 +1234,24 @@ impl ApiWorkerScheduler {
         // These are O(files × endpoints_per_blob) operations that previously
         // ran inside the write lock, blocking all scheduler operations for
         // 2-5ms on large actions (50K+ inputs).
+        // Results are cached by input_root_digest so identical input trees
+        // skip the recomputation entirely.
+        let input_root_digest = action_info.inner.input_root_digest;
         let (endpoint_scores, peer_hints) = match (&resolved_tree, &self.locality_map) {
             (Some(tree), Some(loc_map)) => {
-                let (scores, hints) = score_and_generate_hints(&tree.file_digests, loc_map);
-                (Some(scores), hints)
+                // Check the scores cache first (lock briefly, no await while held).
+                let cached = self.scores_cache.lock().await.get(&input_root_digest).cloned();
+                if let Some(arc) = cached {
+                    let (ref scores, ref hints) = *arc;
+                    (Some(scores.clone()), hints.clone())
+                } else {
+                    let result = score_and_generate_hints(&tree.file_digests, loc_map);
+                    self.scores_cache.lock().await.put(
+                        input_root_digest,
+                        Arc::new(result.clone()),
+                    );
+                    (Some(result.0), result.1)
+                }
             }
             _ => (None, Vec::new()),
         };
@@ -1564,7 +1589,7 @@ async fn resolve_tree_from_cas(
 /// acquiring the locality map read lock only once.
 ///
 /// Returns:
-/// - `HashMap<String, (u64, SystemTime)>`: endpoint scores (total cached
+/// - `HashMap<Arc<str>, (u64, SystemTime)>`: endpoint scores (total cached
 ///   bytes, most recent blob timestamp)
 /// - `Vec<PeerHint>`: peer hints sorted by file size descending, truncated
 ///   to MAX_PEER_HINTS
@@ -1575,22 +1600,22 @@ async fn resolve_tree_from_cas(
 fn score_and_generate_hints(
     file_digests: &[(DigestInfo, u64)],
     locality_map: &SharedBlobLocalityMap,
-) -> (HashMap<String, (u64, SystemTime)>, Vec<PeerHint>) {
+) -> (HashMap<Arc<str>, (u64, SystemTime)>, Vec<PeerHint>) {
     /// Maximum number of peer hints to include in a StartExecute message
     /// to avoid oversized messages.
     const MAX_PEER_HINTS: usize = 16384;
 
     let map = locality_map.read();
     let blobs = map.blobs_map();
-    let mut scores: HashMap<String, (u64, SystemTime)> = HashMap::new();
-    let mut hint_candidates: Vec<(DigestInfo, u64, Vec<String>)> = Vec::new();
+    let mut scores: HashMap<Arc<str>, (u64, SystemTime)> = HashMap::new();
+    let mut hint_candidates: Vec<(DigestInfo, u64, Vec<Arc<str>>)> = Vec::new();
 
     for &(digest, size) in file_digests {
         if let Some(endpoints) = blobs.get(&digest) {
             // Accumulate endpoint scores.
             for (endpoint, ts) in endpoints {
                 let entry = scores
-                    .entry(endpoint.to_string())
+                    .entry(endpoint.clone())
                     .or_insert((0, UNIX_EPOCH));
                 entry.0 += size;
                 if *ts > entry.1 {
@@ -1599,8 +1624,8 @@ fn score_and_generate_hints(
             }
             // Collect hint candidate if this digest has peer locations.
             if !endpoints.is_empty() {
-                let peer_eps: Vec<String> =
-                    endpoints.keys().map(|e| e.to_string()).collect();
+                let peer_eps: Vec<Arc<str>> =
+                    endpoints.keys().cloned().collect();
                 hint_candidates.push((digest, size, peer_eps));
             }
         }
@@ -1614,7 +1639,7 @@ fn score_and_generate_hints(
         .into_iter()
         .map(|(digest, _size, peer_endpoints)| PeerHint {
             digest: Some(digest.into()),
-            peer_endpoints,
+            peer_endpoints: peer_endpoints.iter().map(|e| e.to_string()).collect(),
         })
         .collect();
 
@@ -1628,8 +1653,8 @@ fn score_and_generate_hints(
 /// (total cached bytes, most recent blob timestamp across all endpoints
 /// belonging to this worker).
 fn endpoint_scores_to_worker_scores(
-    endpoint_scores: &HashMap<String, (u64, SystemTime)>,
-    endpoint_to_worker: &HashMap<String, WorkerId>,
+    endpoint_scores: &HashMap<Arc<str>, (u64, SystemTime)>,
+    endpoint_to_worker: &HashMap<Arc<str>, WorkerId>,
     candidates: &HashSet<WorkerId>,
 ) -> HashMap<WorkerId, (u64, SystemTime)> {
     let mut worker_scores: HashMap<WorkerId, (u64, SystemTime)> = HashMap::new();
@@ -1657,7 +1682,7 @@ fn score_workers(
     candidates: &HashSet<WorkerId>,
     file_digests: &[(DigestInfo, u64)],
     locality_map: &SharedBlobLocalityMap,
-    endpoint_to_worker: &HashMap<String, WorkerId>,
+    endpoint_to_worker: &HashMap<Arc<str>, WorkerId>,
 ) -> HashMap<WorkerId, u64> {
     let (endpoint_scores, _hints) = score_and_generate_hints(file_digests, locality_map);
     let full_scores = endpoint_scores_to_worker_scores(&endpoint_scores, endpoint_to_worker, candidates);
@@ -1691,6 +1716,9 @@ impl WorkerScheduler for ApiWorkerScheduler {
 
         let now = UNIX_EPOCH + Duration::from_secs(worker_timestamp);
         self.worker_registry.register_worker(&worker_id, now).await;
+
+        // Worker endpoints changed — cached scores are stale.
+        self.scores_cache.lock().await.clear();
 
         self.metrics.workers_added.fetch_add(1, Ordering::Relaxed);
         Ok(())
@@ -1726,6 +1754,9 @@ impl WorkerScheduler for ApiWorkerScheduler {
 
     async fn remove_worker(&self, worker_id: &WorkerId) -> Result<(), Error> {
         self.worker_registry.remove_worker(worker_id).await;
+
+        // Worker endpoints changed — cached scores are stale.
+        self.scores_cache.lock().await.clear();
 
         let mut inner = self.inner.write().await;
         inner
@@ -1851,6 +1882,11 @@ impl WorkerScheduler for ApiWorkerScheduler {
         // Notify the matching engine so it skips quarantined workers on next cycle.
         if !workers_to_quarantine.is_empty() {
             inner.worker_change_notify.notify_one();
+        }
+
+        // If any workers are being evicted, cached scores are stale.
+        if !worker_ids_to_remove.is_empty() {
+            self.scores_cache.lock().await.clear();
         }
 
         let mut result = Ok(());
@@ -2079,8 +2115,8 @@ mod tests {
         let worker_b = WorkerId::from("worker-b-id".to_string());
 
         let mut endpoint_to_worker = HashMap::new();
-        endpoint_to_worker.insert("grpc://worker-a:50081".to_string(), worker_a.clone());
-        endpoint_to_worker.insert("grpc://worker-b:50081".to_string(), worker_b.clone());
+        endpoint_to_worker.insert(Arc::from("grpc://worker-a:50081"), worker_a.clone());
+        endpoint_to_worker.insert(Arc::from("grpc://worker-b:50081"), worker_b.clone());
 
         let mut candidates = HashSet::new();
         candidates.insert(worker_a.clone());
@@ -2106,7 +2142,7 @@ mod tests {
 
         let worker_a = WorkerId::from("worker-a-id".to_string());
         let mut endpoint_to_worker = HashMap::new();
-        endpoint_to_worker.insert("grpc://worker-a:50081".to_string(), worker_a.clone());
+        endpoint_to_worker.insert(Arc::from("grpc://worker-a:50081"), worker_a.clone());
 
         // worker_a is NOT in candidates
         let candidates = HashSet::new();
@@ -2411,7 +2447,7 @@ mod tests {
 
         let worker_a = WorkerId::from("worker-a-id".to_string());
         let mut endpoint_to_worker = HashMap::new();
-        endpoint_to_worker.insert("grpc://worker-a:50081".to_string(), worker_a.clone());
+        endpoint_to_worker.insert(Arc::from("grpc://worker-a:50081"), worker_a.clone());
 
         let mut candidates = HashSet::new();
         candidates.insert(worker_a);
