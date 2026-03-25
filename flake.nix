@@ -132,7 +132,7 @@
             buildInputs =
               [p.cacert]
               ++ pkgs.lib.optionals p.stdenv.targetPlatform.isDarwin [
-                p.apple-sdk
+                p.apple-sdk_14
                 p.libiconv
               ];
             nativeBuildInputs =
@@ -143,7 +143,7 @@
                 else [pkgs.llvmPackages_22.lld]
               )
               ++ pkgs.lib.optionals p.stdenv.targetPlatform.isDarwin [
-                p.apple-sdk
+                p.apple-sdk_14
                 p.libiconv
               ];
             CARGO_BUILD_TARGET = targetArch;
@@ -532,7 +532,7 @@
               pkgs.nativelink-tools.create-local-image
             ]
             ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
-              pkgs.apple-sdk
+              pkgs.apple-sdk_14
               pkgs.libiconv
             ]
             ++ pkgs.lib.optionals (pkgs.stdenv.system != "x86_64-darwin") [
