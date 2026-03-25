@@ -63,9 +63,15 @@ fn otlp_filter() -> EnvFilter {
     EnvFilter::builder()
         .with_default_directive(LevelFilter::INFO.into())
         .from_env_lossy()
-        .add_directive(expect_parse("hyper=off"))
-        .add_directive(expect_parse("tonic=off"))
-        .add_directive(expect_parse("h2=off"))
+        // Transport crates at warn level so we see connection errors
+        // and protocol failures without the verbose info/debug noise.
+        // Note: release_max_level_info compiles out debug/trace, but
+        // warn and error are retained in release builds.
+        .add_directive(expect_parse("hyper=warn"))
+        .add_directive(expect_parse("tonic=warn"))
+        .add_directive(expect_parse("h2=warn"))
+        .add_directive(expect_parse("quinn=warn"))
+        .add_directive(expect_parse("quinn_proto=warn"))
         .add_directive(expect_parse("reqwest=off"))
         .add_directive(expect_parse("tower=off"))
 }

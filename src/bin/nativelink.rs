@@ -238,6 +238,32 @@ async fn inner_main(
 
     let server_cfgs: Vec<ServerConfig> = cfg.servers.into_iter().collect();
 
+    // Periodically log tokio runtime metrics to detect thread pool exhaustion.
+    // Only emits warn! when blocking threads are saturated or tasks are queued.
+    {
+        let metrics_handle = tokio::runtime::Handle::current();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(10));
+            loop {
+                interval.tick().await;
+                let metrics = metrics_handle.metrics();
+                let workers = metrics.num_workers();
+                let blocking_threads = metrics.num_blocking_threads();
+                let idle_blocking = metrics.num_idle_blocking_threads();
+                let blocking_depth = metrics.blocking_queue_depth();
+                if blocking_depth > 0 || idle_blocking == 0 {
+                    warn!(
+                        workers,
+                        blocking_threads,
+                        idle_blocking,
+                        blocking_queue_depth = blocking_depth,
+                        "tokio thread pool pressure detected"
+                    );
+                }
+            }
+        });
+    }
+
     // Wrap CAS stores with WorkerProxyStore so the server can proxy reads
     // to workers that have the blob (discovered via BlobsAvailable reports).
     {

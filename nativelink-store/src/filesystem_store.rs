@@ -867,14 +867,14 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         let emplace_ms = emplace_start.elapsed().as_millis();
 
         let total_ms = write_ms + emplace_ms;
-        if total_ms > 50 {
-            debug!(
+        if total_ms > 100 {
+            warn!(
                 key = %final_key.as_str(),
                 total_ms,
                 write_ms,
                 emplace_ms,
                 data_size,
-                "FilesystemStore::update_file: slow phases",
+                "update_file slow phases (>100ms)"
             );
         }
         result
@@ -904,13 +904,18 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         // We need to guarantee that this will get to the end even if the parent future is dropped.
         // See: https://github.com/TraceMachina/nativelink/issues/495
         background_spawn!("filesystem_store_emplace_file", async move {
+            let emplace_timer = std::time::Instant::now();
+
             evicting_map
                 .insert(key.borrow().into_owned().into(), entry.clone())
                 .await;
+            let map_insert_ms = emplace_timer.elapsed().as_millis();
 
             // The insert might have resulted in an eviction/unref so we need to check
             // it still exists in there. But first, get the lock...
             let mut encoded_file_path = entry.get_encoded_file_path().write().await;
+            let lock_acquire_ms = emplace_timer.elapsed().as_millis() - map_insert_ms;
+
             // Check that OUR specific entry is still in the map. A concurrent
             // write for the same key may have replaced our entry (calling
             // unref which deletes our temp file). Checking just the key
@@ -937,45 +942,78 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             // stalling the async runtime with syscalls.
             let from_clone = from_path.clone();
             let to_clone = final_path_owned.clone();
-            let result = tokio::task::spawn_blocking(move || -> Result<(), Error> {
+            let rename_start = std::time::Instant::now();
+            let result = tokio::task::spawn_blocking(move || -> Result<(u128, u128), Error> {
+                let rename_syscall_start = std::time::Instant::now();
                 (rename_fn)(&from_clone, &to_clone)?;
+                let rename_syscall_ms = rename_syscall_start.elapsed().as_millis();
+
                 // Pre-set CAS file permissions to read+execute (0o555) so that
                 // hardlinked copies already have correct permissions without
                 // needing a per-file chmod during input materialization.
+                let chmod_ms;
                 #[cfg(target_family = "unix")]
                 {
                     use std::os::unix::fs::PermissionsExt;
+                    let chmod_start = std::time::Instant::now();
                     let perms = std::fs::Permissions::from_mode(0o555);
                     if let Err(err) = std::fs::set_permissions(&to_clone, perms) {
                         tracing::warn!(?err, path = ?to_clone, "Failed to set CAS file permissions to 0o555");
                     }
+                    chmod_ms = chmod_start.elapsed().as_millis();
                 }
-                Ok(())
+                #[cfg(not(target_family = "unix"))]
+                {
+                    chmod_ms = 0;
+                }
+                Ok((rename_syscall_ms, chmod_ms))
             })
             .await
             .map_err(|e| make_err!(Code::Internal, "Rename task join error: {e:?}"))
             .and_then(|r| r.err_tip(|| "Failed to rename temp file to final path"));
+            let rename_total_ms = rename_start.elapsed().as_millis();
 
-            // In the event our move from temp file to final file fails we need to ensure we remove
-            // the entry from our map.
-            // Remember: At this point it is possible for another thread to have a reference to
-            // `entry`, so we can't delete the file, only drop() should ever delete files.
-            if let Err(err) = result {
-                error!(?err, ?from_path, ?final_path_owned, "Failed to rename file",);
-                // Warning: To prevent deadlock we need to release our lock or during `remove_if()`
-                // it will call `unref()`, which triggers a write-lock on `encoded_file_path`.
-                drop(encoded_file_path);
-                // It is possible that the item in our map is no longer the item we inserted,
-                // So, we need to conditionally remove it only if the pointers are the same.
+            match &result {
+                Ok((rename_syscall_ms, chmod_ms)) => {
+                    let emplace_total_ms = emplace_timer.elapsed().as_millis();
+                    if emplace_total_ms > 100 {
+                        warn!(
+                            %key,
+                            emplace_total_ms,
+                            map_insert_ms,
+                            lock_acquire_ms,
+                            rename_total_ms,
+                            rename_syscall_ms,
+                            chmod_ms,
+                            "emplace_file slow (>100ms)"
+                        );
+                    }
+                    encoded_file_path.path_type = PathType::Content;
+                    encoded_file_path.key = key;
+                    Ok(())
+                }
+                Err(err) => {
+                    // In the event our move from temp file to final file fails we need to ensure
+                    // we remove the entry from our map.
+                    // Remember: At this point it is possible for another thread to have a reference
+                    // to `entry`, so we can't delete the file, only drop() should ever delete files.
+                    error!(?err, ?from_path, ?final_path_owned, "Failed to rename file",);
+                    // Warning: To prevent deadlock we need to release our lock or during
+                    // `remove_if()` it will call `unref()`, which triggers a write-lock on
+                    // `encoded_file_path`.
+                    drop(encoded_file_path);
+                    // It is possible that the item in our map is no longer the item we inserted,
+                    // So, we need to conditionally remove it only if the pointers are the same.
 
-                evicting_map
-                    .remove_if(&key, |map_entry| Arc::<Fe>::ptr_eq(map_entry, &entry))
-                    .await;
-                return Err(err);
+                    evicting_map
+                        .remove_if(&key, |map_entry| Arc::<Fe>::ptr_eq(map_entry, &entry))
+                        .await;
+                    Err(make_err!(
+                        Code::Internal,
+                        "Failed to rename temp file to final path: {err:?}"
+                    ))
+                }
             }
-            encoded_file_path.path_type = PathType::Content;
-            encoded_file_path.key = key;
-            Ok(())
         })
         .await
         .err_tip(|| "Failed to create spawn in filesystem store update_file")?
@@ -1080,13 +1118,13 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
             });
 
         let total_ms = update_total_start.elapsed().as_millis();
-        if total_ms > 50 {
-            debug!(
+        if total_ms > 100 {
+            warn!(
                 key = %key.as_str(),
                 total_ms,
                 temp_create_ms,
                 write_and_emplace_ms = total_ms.saturating_sub(temp_create_ms),
-                "FilesystemStore::update: slow write",
+                "update slow write (>100ms)"
             );
         }
         result
@@ -1175,15 +1213,15 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         let emplace_ms = emplace_start.elapsed().as_millis();
 
         let total_ms = oneshot_total_start.elapsed().as_millis();
-        if total_ms > 50 {
-            debug!(
+        if total_ms > 100 {
+            warn!(
                 key = %key.as_str(),
                 total_ms,
                 temp_create_ms,
                 write_ms,
                 emplace_ms,
                 data_len,
-                "FilesystemStore::update_oneshot: slow write",
+                "update_oneshot slow write (>100ms)"
             );
         }
         result

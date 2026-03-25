@@ -20,6 +20,7 @@ use core::hash::Hash;
 use core::marker::PhantomData;
 use core::ops::RangeBounds;
 use core::pin::Pin;
+use core::sync::atomic::{AtomicU64, Ordering};
 use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
 
@@ -210,6 +211,51 @@ impl<Q> ItemCallback<Q> for NoopCallback {
     fn on_insert(&self, _store_key: &Q, _size: u64) {}
 }
 
+/// Tracks lock contention metrics for EvictingMap.
+#[derive(Debug, Default)]
+pub struct LockMetrics {
+    /// Maximum lock wait time observed, in milliseconds.
+    pub max_lock_wait_ms: AtomicU64,
+    /// Total number of lock contention events (wait > 0ms).
+    pub lock_contention_count: AtomicU64,
+}
+
+/// Acquires `$self.state.lock()` with timing instrumentation.
+/// Records contention metrics on `$self.lock_metrics` and logs a warning
+/// when the wait exceeds 10ms.
+///
+/// Usage: `let mut state = lock_with_metrics!($self, "op_name");`
+macro_rules! lock_with_metrics {
+    ($self:expr, $op:expr) => {{
+        let lock_start = std::time::Instant::now();
+        let guard = $self.state.lock();
+        let lock_wait = lock_start.elapsed();
+        let wait_ms = lock_wait.as_millis() as u64;
+        if wait_ms > 0 {
+            $self
+                .lock_metrics
+                .max_lock_wait_ms
+                .fetch_max(wait_ms, Ordering::Relaxed);
+            $self
+                .lock_metrics
+                .lock_contention_count
+                .fetch_add(1, Ordering::Relaxed);
+            if wait_ms >= 10 {
+                warn!(
+                    lock_wait_ms = wait_ms,
+                    max_lock_wait_ms =
+                        $self.lock_metrics.max_lock_wait_ms.load(Ordering::Relaxed),
+                    total_contentions =
+                        $self.lock_metrics.lock_contention_count.load(Ordering::Relaxed),
+                    op = $op,
+                    "EvictingMap: lock contention",
+                );
+            }
+        }
+        guard
+    }};
+}
+
 #[derive(Debug, MetricsComponent)]
 pub struct EvictingMap<
     K: Ord + Hash + Eq + Clone + Debug + Send + Borrow<Q>,
@@ -229,6 +275,8 @@ pub struct EvictingMap<
     max_seconds: i32,
     #[metric(help = "Maximum number of items to keep in the store")]
     max_count: u64,
+    /// Lock contention metrics (max wait, total contentions).
+    pub lock_metrics: LockMetrics,
 }
 
 impl<K, Q, T, I, C> EvictingMap<K, Q, T, I, C>
@@ -261,21 +309,24 @@ where
             evict_bytes: config.evict_bytes as u64,
             max_seconds: config.max_seconds as i32,
             max_count: config.max_count,
+            lock_metrics: LockMetrics::default(),
         }
     }
 
     /// Pin a key to prevent eviction. Idempotent.
     pub fn pin_key(&self, key: K) {
-        self.state.lock().pinned_keys.insert(key);
+        lock_with_metrics!(self, "pin_key").pinned_keys.insert(key);
     }
 
     /// Unpin a key, allowing eviction again. Idempotent.
     pub fn unpin_key(&self, key: &Q) {
-        self.state.lock().pinned_keys.retain(|k| k.borrow() != key);
+        lock_with_metrics!(self, "unpin_key")
+            .pinned_keys
+            .retain(|k| k.borrow() != key);
     }
 
     pub async fn enable_filtering(&self) {
-        let mut state = self.state.lock();
+        let mut state = lock_with_metrics!(self, "enable_filtering");
         if state.btree.is_none() {
             Self::rebuild_btree_index(&mut state);
         }
@@ -294,7 +345,7 @@ where
         F: FnMut(&K, &T) -> bool + Send,
         K: Ord,
     {
-        let mut state = self.state.lock();
+        let mut state = lock_with_metrics!(self, "range");
         let btree = if let Some(ref btree) = state.btree {
             btree
         } else {
@@ -316,7 +367,7 @@ where
     /// Returns the number of key-value pairs that are currently in the the cache.
     /// Function is not for production code paths.
     pub async fn len_for_test(&self) -> usize {
-        self.state.lock().lru.len()
+        lock_with_metrics!(self, "len_for_test").lru.len()
     }
 
     fn should_evict(
@@ -439,16 +490,7 @@ where
         R: Borrow<Q> + Send,
     {
         let (removal_futures, data_to_unref) = {
-            let lock_start = std::time::Instant::now();
-            let mut state = self.state.lock();
-            let lock_wait = lock_start.elapsed();
-            if lock_wait.as_millis() > 1 {
-                warn!(
-                    lock_wait_ms = lock_wait.as_millis(),
-                    op = "sizes_for_keys",
-                    "EvictingMap: lock contention",
-                );
-            }
+            let mut state = lock_with_metrics!(self, "sizes_for_keys");
 
             let lru_len = state.lru.len();
             let mut data_to_unref = Vec::new();
@@ -510,16 +552,7 @@ where
     }
 
     pub async fn get(&self, key: &Q) -> Option<T> {
-        let lock_start = std::time::Instant::now();
-        let mut state = self.state.lock();
-        let lock_wait = lock_start.elapsed();
-        if lock_wait.as_millis() > 1 {
-            warn!(
-                lock_wait_ms = lock_wait.as_millis(),
-                op = "get",
-                "EvictingMap: lock contention",
-            );
-        }
+        let mut state = lock_with_metrics!(self, "get");
 
         // Perform eviction if needed, collecting items for background cleanup.
         let eviction_cleanup = {
@@ -574,16 +607,7 @@ where
         Iter: IntoIterator<Item = &'b Q>,
         Q: 'b,
     {
-        let lock_start = std::time::Instant::now();
-        let mut state = self.state.lock();
-        let lock_wait = lock_start.elapsed();
-        if lock_wait.as_millis() > 1 {
-            warn!(
-                lock_wait_ms = lock_wait.as_millis(),
-                op = "get_many",
-                "EvictingMap: lock contention",
-            );
-        }
+        let mut state = lock_with_metrics!(self, "get_many");
 
         // Perform eviction if needed, collecting items for background cleanup.
         let eviction_cleanup = {
@@ -651,21 +675,12 @@ where
     /// Returns the replaced item if any.
     pub async fn insert_with_time(&self, key: K, data: T, seconds_since_anchor: i32) -> Option<T> {
         let (replaced_items, evicted_items, removal_futures, insert_notifications) = {
-            let lock_start = std::time::Instant::now();
-            let mut state = self.state.lock();
-            let lock_wait = lock_start.elapsed();
-            if lock_wait.as_millis() > 1 {
-                warn!(
-                    lock_wait_ms = lock_wait.as_millis(),
-                    op = "insert",
-                    "EvictingMap: lock contention",
-                );
-            }
+            let mut state = lock_with_metrics!(self, "insert");
             self.inner_insert_many(&mut state, [(key, data)], seconds_since_anchor)
         };
         // State lock released. Fire insert callbacks outside the critical section.
         if !insert_notifications.is_empty() {
-            let state = self.state.lock();
+            let state = lock_with_metrics!(self, "insert_callbacks");
             for (key, size) in &insert_notifications {
                 for cb in &state.item_callbacks {
                     cb.on_insert(key.borrow(), *size);
@@ -721,16 +736,7 @@ where
         }
 
         let (replaced_items, evicted_items, removal_futures, insert_notifications) = {
-            let lock_start = std::time::Instant::now();
-            let mut state = self.state.lock();
-            let lock_wait = lock_start.elapsed();
-            if lock_wait.as_millis() > 1 {
-                warn!(
-                    lock_wait_ms = lock_wait.as_millis(),
-                    op = "insert_many",
-                    "EvictingMap: lock contention",
-                );
-            }
+            let mut state = lock_with_metrics!(self, "insert_many");
             self.inner_insert_many(
                 &mut state,
                 inserts,
@@ -739,7 +745,7 @@ where
         };
         // State lock released. Fire insert callbacks outside the critical section.
         if !insert_notifications.is_empty() {
-            let state = self.state.lock();
+            let state = lock_with_metrics!(self, "insert_many_callbacks");
             for (key, size) in &insert_notifications {
                 for cb in &state.item_callbacks {
                     cb.on_insert(key.borrow(), *size);
@@ -823,16 +829,7 @@ where
 
     pub async fn remove(&self, key: &Q) -> bool {
         let (evicted_items, removed_item, removal_futures) = {
-            let lock_start = std::time::Instant::now();
-            let mut state = self.state.lock();
-            let lock_wait = lock_start.elapsed();
-            if lock_wait.as_millis() > 1 {
-                warn!(
-                    lock_wait_ms = lock_wait.as_millis(),
-                    op = "remove",
-                    "EvictingMap: lock contention",
-                );
-            }
+            let mut state = lock_with_metrics!(self, "remove");
 
             // First perform eviction
             let (evicted_items, mut removal_futures) = self.evict_items(&mut *state);
@@ -877,7 +874,7 @@ where
         F: FnOnce(&T) -> bool + Send,
     {
         let (evicted_items, removal_futures, removed_item) = {
-            let mut state = self.state.lock();
+            let mut state = lock_with_metrics!(self, "remove_if");
             if let Some(entry) = state.lru.get(key.borrow()) {
                 if !cond(&entry.data) {
                     return false;
@@ -922,7 +919,7 @@ where
     }
 
     pub fn add_item_callback(&self, callback: C) {
-        self.state.lock().add_item_callback(callback);
+        lock_with_metrics!(self, "add_item_callback").add_item_callback(callback);
     }
 
     /// Returns all entries in the cache with their LRU timestamps as absolute
@@ -931,7 +928,7 @@ where
     /// This is a peek-only operation: it does NOT promote entries in the LRU.
     pub fn get_all_entries_with_timestamps(&self) -> Vec<(K, i64)> {
         let anchor_epoch = self.anchor_time.unix_timestamp() as i64;
-        let state = self.state.lock();
+        let state = lock_with_metrics!(self, "get_all_entries_with_timestamps");
         let mut result = Vec::with_capacity(state.lru.len());
         result.extend(state.lru.iter().map(|(k, v)| {
             (k.clone(), anchor_epoch + v.seconds_since_anchor as i64)

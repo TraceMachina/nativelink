@@ -1,5 +1,5 @@
 [build]
-rustflags = ["-C", "target-cpu=native", "-C", "link-arg=-fuse-ld=mold"]
+rustflags = ["-C", "target-cpu=native", "-C", "link-arg=-fuse-ld=mold", "--cfg", "tokio_unstable"]
 
 # Override workspace Cargo.toml release profile for faster local builds.
 # Full LTO + codegen-units=1 is ~10min; thin LTO + 8 CGUs is ~3-4min.

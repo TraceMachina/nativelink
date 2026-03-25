@@ -259,6 +259,7 @@ pub async fn open_file(path: impl AsRef<Path>, start: u64) -> Result<FileSlot, E
 
 pub async fn create_file(path: impl AsRef<Path>) -> Result<FileSlot, Error> {
     let path = path.as_ref().to_owned();
+    let create_start = std::time::Instant::now();
     let (permit, os_file) = call_with_permit(move |permit| {
         Ok((
             permit,
@@ -272,6 +273,13 @@ pub async fn create_file(path: impl AsRef<Path>) -> Result<FileSlot, Error> {
         ))
     })
     .await?;
+    let create_ms = create_start.elapsed().as_millis();
+    if create_ms > 100 {
+        warn!(
+            create_ms,
+            "create_file: slow file creation (>100ms), may indicate semaphore contention or disk latency"
+        );
+    }
     Ok(FileSlot {
         _permit: permit,
         inner: os_file,
@@ -302,9 +310,19 @@ pub async fn read_file_to_channel(
                 break;
             }
             let mut buf = BytesMut::zeroed(to_read);
+            let read_start = std::time::Instant::now();
             match f.as_std_mut().read(&mut buf[..]) {
                 Ok(0) => break,
                 Ok(n) => {
+                    let read_ms = read_start.elapsed().as_millis();
+                    if read_ms > 100 {
+                        warn!(
+                            read_ms,
+                            bytes_read = n,
+                            current_offset,
+                            "read_file_to_channel: slow read syscall (>100ms)"
+                        );
+                    }
                     buf.truncate(n);
                     current_offset += n as u64;
                     remaining -= n as u64;
@@ -348,11 +366,39 @@ pub async fn write_file_from_channel(
     let write_task = spawn_blocking!("fs_write_file", move || {
         let mut f = file;
         let mut total: u64 = 0;
+        let mut max_write_ms: u128 = 0;
+        let mut slow_write_count: u32 = 0;
+        let task_start = std::time::Instant::now();
         while let Some(data) = sync_rx.blocking_recv() {
+            let chunk_len = data.len();
+            let write_start = std::time::Instant::now();
             f.as_std_mut()
                 .write_all(&data)
                 .map_err(|e| Into::<Error>::into(e))?;
-            total += data.len() as u64;
+            let write_ms = write_start.elapsed().as_millis();
+            if write_ms > max_write_ms {
+                max_write_ms = write_ms;
+            }
+            if write_ms > 100 {
+                slow_write_count += 1;
+                warn!(
+                    write_ms,
+                    chunk_len,
+                    total_so_far = total,
+                    "write_file_from_channel: slow write_all syscall (>100ms)"
+                );
+            }
+            total += chunk_len as u64;
+        }
+        let task_total_ms = task_start.elapsed().as_millis();
+        if task_total_ms > 100 {
+            warn!(
+                task_total_ms,
+                total_bytes = total,
+                max_write_ms,
+                slow_write_count,
+                "write_file_from_channel: slow total write (>100ms)"
+            );
         }
         Ok::<_, Error>((total, f))
     });
@@ -461,7 +507,17 @@ pub async fn read_dir(path: impl AsRef<Path>) -> Result<ReadDir, Error> {
 pub async fn rename(from: impl AsRef<Path>, to: impl AsRef<Path>) -> Result<(), Error> {
     let from = from.as_ref().to_owned();
     let to = to.as_ref().to_owned();
-    call_with_permit(move |_| std::fs::rename(from, to).map_err(Into::<Error>::into)).await
+    let rename_start = std::time::Instant::now();
+    let result =
+        call_with_permit(move |_| std::fs::rename(from, to).map_err(Into::<Error>::into)).await;
+    let rename_ms = rename_start.elapsed().as_millis();
+    if rename_ms > 100 {
+        warn!(
+            rename_ms,
+            "fs::rename: slow rename syscall (>100ms)"
+        );
+    }
+    result
 }
 
 pub async fn remove_file(path: impl AsRef<Path>) -> Result<(), Error> {

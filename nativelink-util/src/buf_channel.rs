@@ -17,6 +17,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::Poll;
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::time::Instant;
 
 use bytes::{Bytes, BytesMut};
 use futures::task::Context;
@@ -114,7 +115,17 @@ impl DropCloserWriteHalf {
                 buf,
             ));
         }
-        if let Err(err) = tx.send(buf).await {
+        let send_start = Instant::now();
+        let result = tx.send(buf).await;
+        let send_elapsed = send_start.elapsed();
+        if send_elapsed.as_secs() >= 1 {
+            warn!(
+                send_ms = send_elapsed.as_millis() as u64,
+                buf_len = buf_len,
+                "buf_channel::send: channel backpressure (>1s wait)",
+            );
+        }
+        if let Err(err) = result {
             // Close our channel.
             self.tx = None;
             return Err((
@@ -269,7 +280,15 @@ impl DropCloserReadHalf {
             result
         } else {
             // `None` here indicates EOF, which we represent as Zero data
+            let recv_start = Instant::now();
             let data = self.rx.recv().await.unwrap_or(ZERO_DATA);
+            let recv_elapsed = recv_start.elapsed();
+            if recv_elapsed.as_secs() >= 5 {
+                warn!(
+                    recv_ms = recv_elapsed.as_millis() as u64,
+                    "buf_channel::recv: slow producer (>5s wait)",
+                );
+            }
             self.recv_inner(data)
         }
     }
