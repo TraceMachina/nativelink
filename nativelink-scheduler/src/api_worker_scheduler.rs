@@ -2529,18 +2529,25 @@ mod tests {
             Some(store),
         );
 
-        // First call: cache miss, resolves from CAS.
+        // First call: cache miss, returns None and spawns background resolution.
         let result1 = scheduler.resolve_input_tree(dir_digest).await;
-        assert!(result1.is_some(), "Expected Some from first resolve");
+        assert!(result1.is_none(), "Expected None from first resolve (lazy cache miss)");
 
-        // Second call: cache hit, should return the same Arc.
+        // Wait for the background resolution task to populate the cache.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Second call: cache hit from background resolution.
         let result2 = scheduler.resolve_input_tree(dir_digest).await;
-        assert!(result2.is_some(), "Expected Some from second resolve");
+        assert!(result2.is_some(), "Expected Some from second resolve (cache hit)");
 
-        let arc1 = result1.unwrap();
+        // Third call: should return the same Arc (pointer equality).
+        let result3 = scheduler.resolve_input_tree(dir_digest).await;
+        assert!(result3.is_some(), "Expected Some from third resolve (cache hit)");
+
         let arc2 = result2.unwrap();
+        let arc3 = result3.unwrap();
         assert!(
-            Arc::ptr_eq(&arc1, &arc2),
+            Arc::ptr_eq(&arc2, &arc3),
             "Expected resolve_input_tree to return the same Arc on cache hit (pointer equality)"
         );
     }
