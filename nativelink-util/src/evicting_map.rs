@@ -25,6 +25,7 @@ use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
+use tracing::info;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use lru::LruCache;
@@ -440,9 +441,9 @@ where
             let age_secs = elapsed_seconds.saturating_sub(eviction_item.seconds_since_anchor);
             let size = eviction_item.data.len();
             if age_secs < 120 {
-                warn!(?key, age_secs, size, "Evicting recently-inserted item");
+                warn!(?key, age_secs, size, "EvictingMap: evicting recently-inserted item");
             } else {
-                debug!(?key, age_secs, size, "Evicting");
+                info!(?key, age_secs, size, "EvictingMap: evicting item");
             }
             let (data, futures) = state.remove(key.borrow(), &eviction_item, false);
             items_to_unref.push(data);

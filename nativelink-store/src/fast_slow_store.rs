@@ -38,7 +38,7 @@ use nativelink_util::store_trait::{
 };
 use parking_lot::Mutex;
 use tokio::sync::OnceCell;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 // TODO(palfrey) This store needs to be evaluated for more efficient memory usage,
 // there are many copies happening internally.
@@ -485,6 +485,11 @@ impl StoreDriver for FastSlowStore {
 
         let key_debug = format!("{key:?}");
         let update_start = std::time::Instant::now();
+        info!(
+            key = %key_debug,
+            ?size_info,
+            "FastSlowStore::update: start",
+        );
 
         // Read from upstream, forward to fast store, build combined buffer
         // for background slow store write in a single pass (no second copy).
@@ -518,7 +523,26 @@ impl StoreDriver for FastSlowStore {
 
         let fast_store_fut = self.fast_store.update(key.borrow(), fast_rx, size_info);
         let (data_res, fast_res) = join!(data_stream_fut, fast_store_fut);
-        let data = data_res?;
+        let data = match data_res {
+            Ok(d) => d,
+            Err(err) => {
+                error!(
+                    key = %key_debug,
+                    elapsed_ms = update_start.elapsed().as_millis() as u64,
+                    ?err,
+                    "FastSlowStore::update: data stream failed",
+                );
+                return Err(err);
+            }
+        };
+        if let Err(err) = &fast_res {
+            error!(
+                key = %key_debug,
+                elapsed_ms = update_start.elapsed().as_millis() as u64,
+                ?err,
+                "FastSlowStore::update: fast store write failed",
+            );
+        }
         fast_res?;
 
         let bytes_sent = data.len() as u64;
@@ -542,6 +566,11 @@ impl StoreDriver for FastSlowStore {
         let key_for_bg = owned_key.clone();
         let key_debug_bg = key_debug.clone();
         let spawn_instant = std::time::Instant::now();
+        info!(
+            key = %key_debug,
+            total_bytes = bytes_sent,
+            "FastSlowStore::update: background slow write starting",
+        );
         tokio::spawn(async move {
             let schedule_delay_ms = spawn_instant.elapsed().as_millis();
             if schedule_delay_ms > 100 {
@@ -559,34 +588,23 @@ impl StoreDriver for FastSlowStore {
                 .await;
             in_flight.lock().remove(&key_for_bg);
             let slow_ms = slow_start.elapsed().as_millis();
-            let total_delay_ms = spawn_instant.elapsed().as_millis();
             match result {
                 Ok(()) => {
-                    if total_delay_ms > 1000 {
-                        info!(
-                            key = %key_debug_bg,
-                            schedule_delay_ms,
-                            slow_ms,
-                            total_bytes = bytes_sent,
-                            "FastSlowStore: background slow write completed (SLOW)",
-                        );
-                    } else {
-                        debug!(
-                            key = %key_debug_bg,
-                            schedule_delay_ms,
-                            slow_ms,
-                            total_bytes = bytes_sent,
-                            "FastSlowStore: background slow write completed",
-                        );
-                    }
+                    info!(
+                        key = %key_debug_bg,
+                        schedule_delay_ms,
+                        slow_ms,
+                        total_bytes = bytes_sent,
+                        "FastSlowStore::update: background slow write complete",
+                    );
                 }
-                Err(e) => warn!(
+                Err(e) => error!(
                     key = %key_debug_bg,
                     schedule_delay_ms,
                     slow_ms,
                     total_bytes = bytes_sent,
                     error = ?e,
-                    "FastSlowStore: background slow write FAILED — \
+                    "FastSlowStore::update: background slow write FAILED — \
                      blob may be lost when fast store evicts it",
                 ),
             }
@@ -625,13 +643,29 @@ impl StoreDriver for FastSlowStore {
 
         let key_debug = format!("{key:?}");
         let data_len = data.len();
+        info!(
+            key = %key_debug,
+            data_len,
+            "FastSlowStore::update_oneshot: start",
+        );
 
         // Write to fast store first (blocking — typically MemoryStore, near-instant).
         let fast_start = std::time::Instant::now();
-        self.fast_store
+        let fast_result = self
+            .fast_store
             .update_oneshot(key.borrow(), data.clone())
-            .await?;
+            .await;
         let fast_ms = fast_start.elapsed().as_millis();
+        if let Err(ref err) = fast_result {
+            error!(
+                key = %key_debug,
+                fast_ms,
+                data_len,
+                ?err,
+                "FastSlowStore::update_oneshot: fast store write failed",
+            );
+        }
+        fast_result?;
 
         // Spawn background slow store write.
         let owned_key = key.borrow().into_owned();
@@ -644,6 +678,11 @@ impl StoreDriver for FastSlowStore {
         let key_for_bg = owned_key.clone();
         let key_debug_bg = key_debug.clone();
         let spawn_instant = std::time::Instant::now();
+        info!(
+            key = %key_debug,
+            data_len,
+            "FastSlowStore::update_oneshot: background slow write starting",
+        );
         tokio::spawn(async move {
             let schedule_delay_ms = spawn_instant.elapsed().as_millis();
             if schedule_delay_ms > 100 {
@@ -661,30 +700,17 @@ impl StoreDriver for FastSlowStore {
                 .await;
             in_flight.lock().remove(&key_for_bg);
             let slow_ms = slow_start.elapsed().as_millis();
-            let total_delay_ms = spawn_instant.elapsed().as_millis();
             match result {
                 Ok(()) => {
-                    if total_delay_ms > 1000 {
-                        info!(
-                            key = %key_debug_bg,
-                            schedule_delay_ms,
-                            slow_ms,
-                            data_len,
-                            "FastSlowStore::update_oneshot: background slow write \
-                             completed (SLOW)",
-                        );
-                    } else {
-                        debug!(
-                            key = %key_debug_bg,
-                            schedule_delay_ms,
-                            slow_ms,
-                            data_len,
-                            "FastSlowStore::update_oneshot: background slow write \
-                             completed",
-                        );
-                    }
+                    info!(
+                        key = %key_debug_bg,
+                        schedule_delay_ms,
+                        slow_ms,
+                        data_len,
+                        "FastSlowStore::update_oneshot: background slow write complete",
+                    );
                 }
-                Err(e) => warn!(
+                Err(e) => error!(
                     key = %key_debug_bg,
                     schedule_delay_ms,
                     slow_ms,
@@ -695,12 +721,6 @@ impl StoreDriver for FastSlowStore {
             }
         });
 
-        debug!(
-            key = %key_debug,
-            fast_ms,
-            data_len,
-            "FastSlowStore::update_oneshot: fast store complete, slow write spawned",
-        );
         Ok(())
     }
 

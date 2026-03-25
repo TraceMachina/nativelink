@@ -24,7 +24,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use nativelink_config::stores::MemorySpec;
 use nativelink_error::{Code, Error, ResultExt};
-use tracing::warn;
+use tracing::{info, warn};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
@@ -162,6 +162,8 @@ impl StoreDriver for MemoryStore {
         mut reader: DropCloserReadHalf,
         _size_info: UploadSizeInfo,
     ) -> Result<(), Error> {
+        let update_start = std::time::Instant::now();
+        info!(key = ?key, "MemoryStore::update: start");
         // Collect chunks without concatenation (scatter-gather).
         // Each chunk stays as its own Bytes allocation — no copies.
         let mut chunks = Vec::new();
@@ -192,9 +194,17 @@ impl StoreDriver for MemoryStore {
             }
         }
 
+        let owned_key = key.into_owned();
+        let total_bytes: usize = chunks.iter().map(|c| c.len()).sum();
         self.evicting_map
-            .insert(key.into_owned().into(), BytesWrapper::from_chunks(chunks))
+            .insert(owned_key.clone().into(), BytesWrapper::from_chunks(chunks))
             .await;
+        info!(
+            key = ?owned_key,
+            total_bytes,
+            elapsed_ms = update_start.elapsed().as_millis() as u64,
+            "MemoryStore::update: complete",
+        );
         Ok(())
     }
 
@@ -203,6 +213,9 @@ impl StoreDriver for MemoryStore {
     }
 
     async fn update_oneshot(self: Pin<&Self>, key: StoreKey<'_>, data: Bytes) -> Result<(), Error> {
+        let update_start = std::time::Instant::now();
+        let data_len = data.len();
+        info!(key = ?key, data_len, "MemoryStore::update_oneshot: start");
         // Small blobs may be slices of a much larger tonic receive buffer.
         // Copy them to avoid pinning the entire backing allocation in the
         // EvictingMap (e.g., 100-byte blob pinning a 16KiB h2 frame).
@@ -212,9 +225,16 @@ impl StoreDriver for MemoryStore {
         } else {
             data
         };
+        let owned_key = key.into_owned();
         self.evicting_map
-            .insert(key.into_owned().into(), BytesWrapper::from_single(data))
+            .insert(owned_key.clone().into(), BytesWrapper::from_single(data))
             .await;
+        info!(
+            key = ?owned_key,
+            data_len,
+            elapsed_ms = update_start.elapsed().as_millis() as u64,
+            "MemoryStore::update_oneshot: complete",
+        );
         Ok(())
     }
 

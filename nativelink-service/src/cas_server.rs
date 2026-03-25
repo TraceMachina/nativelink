@@ -132,6 +132,8 @@ impl CasServer {
         }
 
         let store_ref = &store;
+        let blob_count = request.requests.len();
+        let batch_start = std::time::Instant::now();
         let update_futures: FuturesUnordered<_> = request
             .requests
             .into_iter()
@@ -150,10 +152,10 @@ impl CasServer {
                     size_bytes,
                     request_data.len()
                 );
-                debug!(
+                info!(
                     %digest_info,
                     size_bytes,
-                    "BatchUpdateBlobs: starting upload",
+                    "BatchUpdateBlobs: blob received",
                 );
                 let upload_start = std::time::Instant::now();
                 let result = store_ref
@@ -173,12 +175,12 @@ impl CasServer {
                     }
                     Err(e) => {
                         let elapsed = upload_start.elapsed();
-                        error!(
+                        warn!(
                             %digest_info,
                             size_bytes,
                             elapsed_ms = elapsed.as_millis() as u64,
                             ?e,
-                            "BatchUpdateBlobs: upload failed",
+                            "BatchUpdateBlobs: blob upload failed",
                         );
                     }
                 }
@@ -191,6 +193,19 @@ impl CasServer {
         let responses = update_futures
             .try_collect::<Vec<batch_update_blobs_response::Response>>()
             .await?;
+
+        let batch_elapsed = batch_start.elapsed();
+        let total_bytes: usize = responses
+            .iter()
+            .filter_map(|r| r.digest.as_ref())
+            .map(|d| d.size_bytes as usize)
+            .sum();
+        info!(
+            blob_count,
+            total_bytes,
+            elapsed_ms = batch_elapsed.as_millis() as u64,
+            "BatchUpdateBlobs: batch completed",
+        );
 
         Ok(Response::new(BatchUpdateBlobsResponse { responses }))
     }

@@ -32,7 +32,7 @@ use nativelink_util::store_trait::{
     ItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };
 use parking_lot::Mutex;
-use tracing::{debug, info, trace, warn};
+use tracing::{error, info, trace, warn};
 
 #[derive(Clone, Debug)]
 struct ExistenceItem(u64);
@@ -73,12 +73,14 @@ impl<I: InstantWrapper> ItemCallback for ExistenceCacheStore<I> {
         &'a self,
         store_key: StoreKey<'a>,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-        debug!(?store_key, "Removing item from cache due to callback");
+        info!(?store_key, "ExistenceCacheStore: eviction callback received");
         let digest = store_key.borrow().into_digest();
         Box::pin(async move {
             let deleted_key = self.existence_cache.remove(&digest).await;
-            if !deleted_key {
-                info!(?store_key, "Failed to delete key from cache on callback");
+            if deleted_key {
+                info!(?store_key, "ExistenceCacheStore: eviction callback removed key from cache");
+            } else {
+                info!(?store_key, "ExistenceCacheStore: eviction callback key not in cache (already removed or never cached)");
             }
         })
     }
@@ -105,7 +107,7 @@ impl<I: InstantWrapper> ItemCallback for ExistenceCacheCallback<I> {
                 });
             }
         } else {
-            debug!("Cache dropped, so not doing callback");
+            info!("ExistenceCacheStore: eviction callback skipped (cache dropped)");
         }
         Box::pin(async {})
     }
@@ -286,7 +288,23 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
             }
         }
         trace!(?digest, "Inserting into inner cache");
+        let update_start = std::time::Instant::now();
         let result = self.inner_store.update(digest, reader, size_info).await;
+        let elapsed_ms = update_start.elapsed().as_millis() as u64;
+        if let Err(ref err) = result {
+            error!(
+                ?digest,
+                elapsed_ms,
+                ?err,
+                "ExistenceCacheStore::update: inner store write failed",
+            );
+        } else if elapsed_ms > 100 {
+            info!(
+                ?digest,
+                elapsed_ms,
+                "ExistenceCacheStore::update: inner store write slow",
+            );
+        }
         if result.is_ok() {
             trace!(?digest, "Inserting into existence cache");
             // Cache on both ExactSize and MaxSize — the digest carries the
