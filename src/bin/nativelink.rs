@@ -239,7 +239,8 @@ async fn inner_main(
     let server_cfgs: Vec<ServerConfig> = cfg.servers.into_iter().collect();
 
     // Periodically log tokio runtime metrics to detect thread pool exhaustion.
-    // Only emits warn! when blocking threads are saturated or tasks are queued.
+    // Requires tokio_unstable cfg for blocking thread metrics.
+    #[cfg(tokio_unstable)]
     {
         let metrics_handle = tokio::runtime::Handle::current();
         tokio::spawn(async move {
