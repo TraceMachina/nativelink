@@ -168,12 +168,11 @@ impl CasServer {
             .requests
             .into_iter()
             .map(|request| async move {
+                let request_data = request.data;
                 let digest = request
                     .digest
-                    .clone()
                     .err_tip(|| "Digest not found in request")?;
-                let request_data = request.data;
-                let digest_info = DigestInfo::try_from(digest.clone())?;
+                let digest_info = DigestInfo::try_from(digest)?;
                 let size_bytes = usize::try_from(digest_info.size_bytes())
                     .err_tip(|| "Digest size_bytes was not convertible to usize")?;
                 error_if!(
@@ -219,7 +218,7 @@ impl CasServer {
                     }
                 }
                 Ok::<_, Error>(batch_update_blobs_response::Response {
-                    digest: Some(digest),
+                    digest: Some(digest_info.into()),
                     status: Some(result.map_or_else(Into::into, |()| GrpcStatus::default())),
                 })
             })

@@ -495,10 +495,9 @@ impl StoreDriver for FastSlowStore {
         // blocking the fast-store (MemoryStore) write path.
         let (mut fast_tx, fast_rx) = make_buf_channel_pair_with_size(128);
 
-        let key_debug = format!("{key:?}");
         let update_start = std::time::Instant::now();
         info!(
-            key = %key_debug,
+            ?key,
             ?size_info,
             "FastSlowStore::update: start",
         );
@@ -539,7 +538,7 @@ impl StoreDriver for FastSlowStore {
             Ok(d) => d,
             Err(err) => {
                 error!(
-                    key = %key_debug,
+                    ?key,
                     elapsed_ms = update_start.elapsed().as_millis() as u64,
                     ?err,
                     "FastSlowStore::update: data stream failed",
@@ -549,7 +548,7 @@ impl StoreDriver for FastSlowStore {
         };
         if let Err(err) = &fast_res {
             error!(
-                key = %key_debug,
+                ?key,
                 elapsed_ms = update_start.elapsed().as_millis() as u64,
                 ?err,
                 "FastSlowStore::update: fast store write failed",
@@ -560,7 +559,7 @@ impl StoreDriver for FastSlowStore {
         let bytes_sent = data.len() as u64;
         let fast_elapsed = update_start.elapsed();
         debug!(
-            key = %key_debug,
+            ?key,
             fast_ms = fast_elapsed.as_millis(),
             total_bytes = bytes_sent,
             "FastSlowStore::update: fast store complete, spawning background slow write",
@@ -577,10 +576,9 @@ impl StoreDriver for FastSlowStore {
         let stable_digests_ref = self.stable_digests.clone();
         let slow_store = self.slow_store.clone();
         let key_for_bg = owned_key.clone();
-        let key_debug_bg = key_debug.clone();
         let spawn_instant = std::time::Instant::now();
         info!(
-            key = %key_debug,
+            ?key,
             total_bytes = bytes_sent,
             "FastSlowStore::update: background slow write starting",
         );
@@ -588,7 +586,7 @@ impl StoreDriver for FastSlowStore {
             let schedule_delay_ms = spawn_instant.elapsed().as_millis();
             if schedule_delay_ms > 100 {
                 warn!(
-                    key = %key_debug_bg,
+                    key = ?key_for_bg,
                     schedule_delay_ms,
                     total_bytes = bytes_sent,
                     "FastSlowStore: background slow write task was \
@@ -607,7 +605,7 @@ impl StoreDriver for FastSlowStore {
                         stable_digests_ref.lock().push(*digest);
                     }
                     info!(
-                        key = %key_debug_bg,
+                        key = ?key_for_bg,
                         schedule_delay_ms,
                         slow_ms,
                         total_bytes = bytes_sent,
@@ -615,7 +613,7 @@ impl StoreDriver for FastSlowStore {
                     );
                 }
                 Err(e) => error!(
-                    key = %key_debug_bg,
+                    key = ?key_for_bg,
                     schedule_delay_ms,
                     slow_ms,
                     total_bytes = bytes_sent,
@@ -657,10 +655,9 @@ impl StoreDriver for FastSlowStore {
             return self.slow_store.update_oneshot(key, data).await;
         }
 
-        let key_debug = format!("{key:?}");
         let data_len = data.len();
         info!(
-            key = %key_debug,
+            ?key,
             data_len,
             "FastSlowStore::update_oneshot: start",
         );
@@ -674,7 +671,7 @@ impl StoreDriver for FastSlowStore {
         let fast_ms = fast_start.elapsed().as_millis();
         if let Err(ref err) = fast_result {
             error!(
-                key = %key_debug,
+                ?key,
                 fast_ms,
                 data_len,
                 ?err,
@@ -693,10 +690,9 @@ impl StoreDriver for FastSlowStore {
         let stable_digests_ref = self.stable_digests.clone();
         let slow_store = self.slow_store.clone();
         let key_for_bg = owned_key.clone();
-        let key_debug_bg = key_debug.clone();
         let spawn_instant = std::time::Instant::now();
         info!(
-            key = %key_debug,
+            ?key,
             data_len,
             "FastSlowStore::update_oneshot: background slow write starting",
         );
@@ -704,7 +700,7 @@ impl StoreDriver for FastSlowStore {
             let schedule_delay_ms = spawn_instant.elapsed().as_millis();
             if schedule_delay_ms > 100 {
                 warn!(
-                    key = %key_debug_bg,
+                    key = ?key_for_bg,
                     schedule_delay_ms,
                     data_len,
                     "FastSlowStore::update_oneshot: background slow write task \
@@ -723,7 +719,7 @@ impl StoreDriver for FastSlowStore {
                         stable_digests_ref.lock().push(*digest);
                     }
                     info!(
-                        key = %key_debug_bg,
+                        key = ?key_for_bg,
                         schedule_delay_ms,
                         slow_ms,
                         data_len,
@@ -731,7 +727,7 @@ impl StoreDriver for FastSlowStore {
                     );
                 }
                 Err(e) => error!(
-                    key = %key_debug_bg,
+                    key = ?key_for_bg,
                     schedule_delay_ms,
                     slow_ms,
                     data_len,

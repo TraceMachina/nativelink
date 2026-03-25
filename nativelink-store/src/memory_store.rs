@@ -122,12 +122,12 @@ impl StoreDriver for MemoryStore {
         keys: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
-        let own_keys = keys
-            .iter()
-            .map(|sk| sk.borrow().into_owned())
-            .collect::<Vec<_>>();
         self.evicting_map
-            .sizes_for_keys(own_keys.iter(), results, false /* peek */)
+            .sizes_for_keys(
+                keys.iter().map(|sk| sk.borrow().into_owned()),
+                results,
+                false, /* peek */
+            )
             .await;
         // We need to do a special pass to ensure our zero digest exist.
         keys.iter()

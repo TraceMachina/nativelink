@@ -1110,39 +1110,70 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                         .err_tip(|| "`instance_name` could not be resolved; this is likely an internal error in local_worker.")?;
                                     match res {
                                         Ok(mut action_result) => {
-                                            // Collect output digests upfront so both futures
-                                            // can proceed without borrowing action_result.
-                                            let output_digests: Vec<_> = {
-                                                let mut v = Vec::new();
-                                                if !cas_endpoint_for_notify.is_empty() {
-                                                    for file in &action_result.output_files {
-                                                        v.push(file.digest.into());
-                                                    }
-                                                    for folder in &action_result.output_folders {
-                                                        v.push(folder.tree_digest.into());
-                                                    }
-                                                    if action_result.stdout_digest.size_bytes() > 0 {
-                                                        v.push(action_result.stdout_digest.into());
-                                                    }
-                                                    if action_result.stderr_digest.size_bytes() > 0 {
-                                                        v.push(action_result.stderr_digest.into());
-                                                    }
-                                                    // Expand Tree protos to include individual file
-                                                    // digests in the locality map. Without this, the
-                                                    // server can't proxy reads for tree file blobs
-                                                    // until the background upload completes.
-                                                    let tree_file_digests = running_actions_manager
-                                                        .expand_tree_file_digests(&action_result)
-                                                        .await;
-                                                    v.extend(tree_file_digests.into_iter().map(Into::into));
+                                            // 1. Send execution response FIRST to minimize
+                                            //    critical-path latency for Bazel. The
+                                            //    ActionResult is embedded in the
+                                            //    ExecuteResponse proto, so Bazel doesn't
+                                            //    need the AC entry for the current build.
+                                            //    The server's inner_execution_response()
+                                            //    also calls register_action_result_digests
+                                            //    from the response itself, so blob locality
+                                            //    is known even before BlobsAvailable arrives.
+                                            let action_stage = ActionStage::Completed(action_result.clone());
+                                            grpc_client.execution_response(
+                                                ExecuteResult{
+                                                    instance_name,
+                                                    operation_id,
+                                                    result: Some(execute_result::Result::ExecuteResponse(action_stage.into())),
                                                 }
-                                                v
-                                            };
+                                            )
+                                            .await
+                                            .err_tip(|| "Error while calling execution_response")?;
 
-                                            // 1. BlobsAvailableNotif and cache_action_result run
-                                            //    concurrently — they use independent connections
-                                            //    (worker API stream vs AC/historical stores).
-                                            let blobs_fut = async {
+                                            // 2. Free the worker for new actions.
+                                            drop(grpc_client.execution_complete(complete).await);
+
+                                            // 3. AC write — needs &mut action_result so runs
+                                            //    before the tree expansion / BlobsAvailable
+                                            //    that borrow it immutably.
+                                            if let Some(digest_info) = action_digest.clone().and_then(|action_digest| action_digest.try_into().ok()) {
+                                                if let Err(err) = running_actions_manager.cache_action_result(digest_info, &mut action_result, digest_hasher).await {
+                                                    error!(
+                                                        ?err,
+                                                        ?action_digest,
+                                                        "Error saving action in store",
+                                                    );
+                                                }
+                                            }
+
+                                            // 4. Tree expansion + BlobsAvailable are off the
+                                            //    critical path. Tree expansion reads Tree
+                                            //    blobs from local CAS which can be slow, and
+                                            //    is only needed for the locality map
+                                            //    notification, not the ExecuteResponse.
+                                            if !cas_endpoint_for_notify.is_empty() {
+                                                let mut output_digests = Vec::new();
+                                                for file in &action_result.output_files {
+                                                    output_digests.push(file.digest.into());
+                                                }
+                                                for folder in &action_result.output_folders {
+                                                    output_digests.push(folder.tree_digest.into());
+                                                }
+                                                if action_result.stdout_digest.size_bytes() > 0 {
+                                                    output_digests.push(action_result.stdout_digest.into());
+                                                }
+                                                if action_result.stderr_digest.size_bytes() > 0 {
+                                                    output_digests.push(action_result.stderr_digest.into());
+                                                }
+                                                // Expand Tree protos to include individual file
+                                                // digests in the locality map. Without this, the
+                                                // server can't proxy reads for tree file blobs
+                                                // until the background upload completes.
+                                                let tree_file_digests = running_actions_manager
+                                                    .expand_tree_file_digests(&action_result)
+                                                    .await;
+                                                output_digests.extend(tree_file_digests.into_iter().map(Into::into));
+
                                                 if !output_digests.is_empty() {
                                                     let load = get_cpu_load_pct();
                                                     let p_load = get_p_core_load_pct();
@@ -1167,37 +1198,9 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                                         warn!(?err, "Failed to send blobs_available notification");
                                                     }
                                                 }
-                                            };
-                                            let cache_fut = async {
-                                                if let Some(digest_info) = action_digest.clone().and_then(|action_digest| action_digest.try_into().ok()) {
-                                                    if let Err(err) = running_actions_manager.cache_action_result(digest_info, &mut action_result, digest_hasher).await {
-                                                        error!(
-                                                            ?err,
-                                                            ?action_digest,
-                                                            "Error saving action in store",
-                                                        );
-                                                    }
-                                                }
-                                            };
-                                            tokio::join!(blobs_fut, cache_fut);
+                                            }
 
-                                            // 2. Notify scheduler that execution is complete
-                                            //    so it can schedule new work on this worker.
-                                            drop(grpc_client.execution_complete(complete).await);
-
-                                            // 3. Send execution response with the action result.
-                                            let action_stage = ActionStage::Completed(action_result.clone());
-                                            grpc_client.execution_response(
-                                                ExecuteResult{
-                                                    instance_name,
-                                                    operation_id,
-                                                    result: Some(execute_result::Result::ExecuteResponse(action_stage.into())),
-                                                }
-                                            )
-                                            .await
-                                            .err_tip(|| "Error while calling execution_response")?;
-
-                                            // 4. Upload output blobs from local CAS to remote
+                                            // 5. Upload output blobs from local CAS to remote
                                             //    CAS in the background. This is fire-and-forget;
                                             //    peers can already serve the blobs directly.
                                             running_actions_manager.spawn_upload_to_remote(&action_result);

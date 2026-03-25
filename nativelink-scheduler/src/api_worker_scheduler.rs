@@ -1335,16 +1335,18 @@ impl ApiWorkerScheduler {
         worker.keep_alive()
     }
 
-    /// Resolves the full input tree for the given `input_root_digest` by
-    /// reading Directory protos from the CAS store and collecting all file
-    /// digests and sizes. Results are cached in `tree_cache`.
+    /// Resolves the full input tree for the given `input_root_digest`,
+    /// returning a cached result if available. On cache miss, returns
+    /// `None` immediately (falling back to load-based scoring) and
+    /// spawns a background task to resolve the tree from CAS so that
+    /// future actions with the same input root hit the cache.
     ///
-    /// Returns `None` if no CAS store is configured or on any error (errors
-    /// are logged but do not fail scheduling — we just skip locality scoring).
+    /// Returns `None` if no CAS store is configured or on cache miss
+    /// (the background task will warm the cache for next time).
     ///
-    /// Runs *outside* the scheduler write lock, so multiple actions can
-    /// resolve concurrently. The `tokio::Mutex` on `tree_cache` is held
-    /// only briefly for get/put, not during store I/O.
+    /// This keeps CAS I/O off the scheduling critical path — only a
+    /// brief `tokio::Mutex` lock for the cache lookup is performed
+    /// synchronously.
     async fn resolve_input_tree(
         &self,
         input_root_digest: DigestInfo,
@@ -1359,39 +1361,44 @@ impl ApiWorkerScheduler {
                     %input_root_digest,
                     file_count = cached.file_digests.len(),
                     dir_count = cached.dir_digests.len(),
-                    "Tree resolution cache hit"
+                    "tree resolution cache hit"
                 );
                 return Some(cached.clone());
             }
         }
 
-        // Cache miss — resolve the tree by reading Directory protos from CAS.
-        let result = resolve_tree_from_cas(cas_store, input_root_digest).await;
-        match result {
-            Ok(resolved) => {
-                info!(
-                    %input_root_digest,
-                    file_count = resolved.file_digests.len(),
-                    dir_count = resolved.dir_digests.len(),
-                    "Resolved input tree from CAS (cache miss)"
-                );
-                let arc = Arc::new(resolved);
-                // Store in cache (brief lock).
-                {
-                    let mut cache = self.tree_cache.lock().await;
-                    cache.put(input_root_digest, arc.clone());
+        // Cache miss — spawn background resolution to warm cache for
+        // future actions. This action proceeds with load-based scoring.
+        let tree_cache = self.tree_cache.clone();
+        let store = cas_store.clone();
+        let digest = input_root_digest;
+        tokio::spawn(async move {
+            match resolve_tree_from_cas(&store, digest).await {
+                Ok(resolved) => {
+                    info!(
+                        %digest,
+                        file_count = resolved.file_digests.len(),
+                        dir_count = resolved.dir_digests.len(),
+                        "background tree resolution complete, cached for future actions"
+                    );
+                    let mut cache = tree_cache.lock().await;
+                    cache.put(digest, Arc::new(resolved));
                 }
-                Some(arc)
+                Err(err) => {
+                    warn!(
+                        %digest,
+                        ?err,
+                        "background tree resolution failed"
+                    );
+                }
             }
-            Err(err) => {
-                warn!(
-                    %input_root_digest,
-                    ?err,
-                    "Failed to resolve input tree for locality scoring, skipping"
-                );
-                None
-            }
-        }
+        });
+
+        info!(
+            %input_root_digest,
+            "tree cache miss, using load-based scoring (background resolution started)"
+        );
+        None
     }
 
     /// Broadcast a `BlobsInStableStorage` message to all connected workers.
