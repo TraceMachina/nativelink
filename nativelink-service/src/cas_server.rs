@@ -48,17 +48,13 @@ use tracing::{Instrument, Level, debug, error, error_span, info, instrument, war
 /// Spawn a background task to mirror a blob (with data already in hand)
 /// to a random connected worker for OOM redundancy. Fire-and-forget.
 fn mirror_blob_to_worker_with_data(store: &Store, digest: DigestInfo, data: Bytes) {
-    let Some(proxy) = store
+    let Some(_proxy) = store
         .as_store_driver()
         .as_any()
         .downcast_ref::<WorkerProxyStore>()
     else {
         return;
     };
-
-    if proxy.locality_map().read().endpoint_count() == 0 {
-        return;
-    }
 
     if digest.size_bytes() == 0 {
         return;

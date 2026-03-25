@@ -428,23 +428,29 @@ impl IdleStream {
     }
 }
 
+/// Maximum blob size for mirroring via the streaming write path. The streaming
+/// path does not buffer the data, so mirroring requires a re-read from the
+/// store. We only do this for blobs <= 16MB to avoid expensive re-reads of
+/// large blobs. The oneshot path passes the data directly (O(1) Bytes clone).
+const MIRROR_STREAM_MAX_SIZE: u64 = 16 * 1024 * 1024;
+
 /// Spawn a background task to mirror a blob to a random connected worker
 /// for OOM redundancy. Fire-and-forget: errors are logged, not propagated.
-/// The blob data is read from the store and sent to the worker's CAS endpoint.
-fn mirror_blob_to_worker(store: &Store, digest: DigestInfo) {
+///
+/// When `data` is `Some`, the blob data is sent directly (used by the oneshot
+/// and BatchUpdateBlobs paths where data is already in hand). When `None`,
+/// the blob is re-read from the store (used by the streaming write path for
+/// small blobs only).
+fn mirror_blob_to_worker(store: &Store, digest: DigestInfo, data: Option<Bytes>) {
     // WorkerProxyStore is the outermost wrapper on CAS stores when workers
     // are configured. inner_store() delegates through, so we use as_any()
     // on the immediate store driver to find it.
-    let Some(proxy) = store
+    if store
         .as_store_driver()
         .as_any()
         .downcast_ref::<WorkerProxyStore>()
-    else {
-        return;
-    };
-
-    // Quick check: any workers connected?
-    if proxy.locality_map().read().endpoint_count() == 0 {
+        .is_none()
+    {
         return;
     }
 
@@ -455,16 +461,20 @@ fn mirror_blob_to_worker(store: &Store, digest: DigestInfo) {
 
     let store = store.clone();
     nativelink_util::background_spawn!("mirror_blob_to_worker", async move {
-        // Read the blob from the store so we have a Bytes copy to send.
-        let data = match store.get_part_unchunked(digest, 0, None).await {
-            Ok(data) => data,
-            Err(e) => {
-                warn!(
-                    %digest,
-                    ?e,
-                    "mirror: failed to read blob for mirroring"
-                );
-                return;
+        let blob_data = if let Some(d) = data {
+            d
+        } else {
+            // Streaming path: re-read from store since we don't have the data buffered.
+            match store.get_part_unchunked(digest, 0, None).await {
+                Ok(d) => d,
+                Err(e) => {
+                    warn!(
+                        %digest,
+                        ?e,
+                        "mirror: failed to read blob for mirroring"
+                    );
+                    return;
+                }
             }
         };
 
@@ -477,7 +487,7 @@ fn mirror_blob_to_worker(store: &Store, digest: DigestInfo) {
             return;
         };
 
-        proxy.mirror_blob_to_random_worker(digest, data).await;
+        proxy.mirror_blob_to_random_worker(digest, blob_data).await;
     });
 }
 
@@ -1119,12 +1129,18 @@ impl ByteStreamServer {
             single_chunk.unwrap_or_default()
         };
 
+        // Clone data for mirroring before store write (Bytes clone is O(1) refcount bump).
+        let mirror_data = final_data.clone();
+
         // Direct update without channel overhead
         let store = instance_info.store.clone();
         store
             .update_oneshot(digest, final_data)
             .await
             .err_tip(|| "Error in update_oneshot")?;
+
+        // Mirror to a random worker using the cloned data — no re-read needed.
+        mirror_blob_to_worker(&store, digest, Some(mirror_data));
 
         // Note: bytes_written_total is updated in the caller (bytestream_write) based on result
 
@@ -1472,7 +1488,12 @@ impl ByteStream for ByteStreamServer {
 
                 // Mirror the blob to a random worker for OOM redundancy.
                 // Fire-and-forget: don't delay the Bazel ACK.
-                mirror_blob_to_worker(&store, digest);
+                // The oneshot path mirrors inside inner_write_oneshot with
+                // the data already in hand. The streaming path must re-read
+                // from the store, so we only mirror small blobs (<= 16MB).
+                if !use_oneshot && digest.size_bytes() <= MIRROR_STREAM_MAX_SIZE {
+                    mirror_blob_to_worker(&store, digest, None);
+                }
             }
             Err(e) => {
                 error!(

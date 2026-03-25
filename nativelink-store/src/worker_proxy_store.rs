@@ -181,7 +181,7 @@ impl WorkerProxyStore {
             max_concurrent_requests: 0,
             connections_per_endpoint: 64,
             rpc_timeout_s: 120,
-            batch_update_threshold_bytes: 0, // Not uploading via this store
+            batch_update_threshold_bytes: 1_048_576, // 1MB: small blobs use BatchUpdateBlobs
             batch_coalesce_delay_ms: 0,
             parallel_chunk_read_threshold: 8 * 1024 * 1024,
             parallel_chunk_count: 8,
