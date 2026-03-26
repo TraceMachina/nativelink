@@ -86,22 +86,22 @@ impl LenEntry for BytesWrapper {
 #[derive(Debug, MetricsComponent)]
 pub struct MemoryStore {
     #[metric(group = "evicting_map")]
-    evicting_map: EvictingMap<
+    evicting_map: Arc<EvictingMap<
         StoreKeyBorrow,
         StoreKey<'static>,
         BytesWrapper,
         SystemTime,
         ItemCallbackHolder,
-    >,
+    >>,
 }
 
 impl MemoryStore {
     pub fn new(spec: &MemorySpec) -> Arc<Self> {
         let empty_policy = nativelink_config::stores::EvictionPolicy::default();
         let eviction_policy = spec.eviction_policy.as_ref().unwrap_or(&empty_policy);
-        Arc::new(Self {
-            evicting_map: EvictingMap::new(eviction_policy, SystemTime::now()),
-        })
+        let evicting_map = Arc::new(EvictingMap::new(eviction_policy, SystemTime::now()));
+        evicting_map.start_background_eviction();
+        Arc::new(Self { evicting_map })
     }
 
     /// Returns the number of key-value pairs that are currently in the the cache.

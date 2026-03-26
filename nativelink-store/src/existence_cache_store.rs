@@ -53,7 +53,7 @@ impl LenEntry for ExistenceItem {
 pub struct ExistenceCacheStore<I: InstantWrapper> {
     #[metric(group = "inner_store")]
     inner_store: Store,
-    existence_cache: EvictingMap<DigestInfo, DigestInfo, ExistenceItem, I>,
+    existence_cache: Arc<EvictingMap<DigestInfo, DigestInfo, ExistenceItem, I>>,
 
     // We need to pause them temporarily when inserting into the inner store
     // as if it immediately expires them, we should only apply the remove callbacks
@@ -122,9 +122,11 @@ impl<I: InstantWrapper> ExistenceCacheStore<I> {
     ) -> Arc<Self> {
         let empty_policy = EvictionPolicy::default();
         let eviction_policy = spec.eviction_policy.as_ref().unwrap_or(&empty_policy);
+        let existence_cache = Arc::new(EvictingMap::new(eviction_policy, anchor_time));
+        existence_cache.start_background_eviction();
         let existence_cache_store = Arc::new(Self {
             inner_store,
-            existence_cache: EvictingMap::new(eviction_policy, anchor_time),
+            existence_cache,
             pause_item_callbacks: Mutex::new(None),
         });
         let other_ref = Arc::downgrade(&existence_cache_store);

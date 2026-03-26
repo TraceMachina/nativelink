@@ -733,6 +733,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         } else {
             None
         };
+        evicting_map.start_background_eviction();
         Ok(Arc::new_cyclic(|weak_self| Self {
             shared_context,
             evicting_map,

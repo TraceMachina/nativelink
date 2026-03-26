@@ -20,10 +20,12 @@ use core::hash::Hash;
 use core::marker::PhantomData;
 use core::ops::RangeBounds;
 use core::pin::Pin;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::time::Instant;
 use std::sync::Arc;
+
+use tokio::sync::Notify;
 
 use parking_lot::Mutex;
 use tracing::info;
@@ -291,6 +293,10 @@ pub struct EvictingMap<
     max_count: u64,
     /// Lock contention metrics (max wait, total contentions).
     pub lock_metrics: LockMetrics,
+    /// Notify signal for the background eviction loop.
+    eviction_notify: Arc<Notify>,
+    /// Whether the background eviction loop has been started.
+    background_eviction_running: AtomicBool,
 }
 
 impl<K, Q, T, I, C> EvictingMap<K, Q, T, I, C>
@@ -326,6 +332,8 @@ where
             max_seconds: config.max_seconds as i32,
             max_count: config.max_count,
             lock_metrics: LockMetrics::default(),
+            eviction_notify: Arc::new(Notify::new()),
+            background_eviction_running: AtomicBool::new(false),
         }
     }
 
@@ -497,10 +505,41 @@ where
         is_over_size || old_item_exists || is_over_count
     }
 
+    /// Returns `true` if a specific entry has exceeded `max_seconds` TTL.
+    fn is_entry_expired(&self, entry: &EvictionItem<T>) -> bool {
+        if self.max_seconds == 0 {
+            return false;
+        }
+        let elapsed_seconds =
+            i32::try_from(self.anchor_time.elapsed().as_secs()).unwrap_or(i32::MAX);
+        let evict_older_than_seconds = elapsed_seconds.saturating_sub(self.max_seconds);
+        entry.seconds_since_anchor < evict_older_than_seconds
+    }
+
+    /// Check if the state needs eviction based on the LRU peek.
+    /// Returns `true` if eviction is needed, `false` otherwise.
+    fn state_needs_eviction(&self, state: &State<K, Q, T, C>) -> bool {
+        let Some((_, peek_entry)) = state.lru.peek_lru() else {
+            return false;
+        };
+        self.should_evict(
+            state.lru.len(),
+            peek_entry,
+            state.sum_store_size,
+            self.max_bytes,
+        )
+    }
+
+    /// Evict at most `max_items` entries from the cache, returning the evicted
+    /// data, removal callback futures, and whether more eviction is still needed.
     #[must_use]
-    fn evict_items(&self, state: &mut State<K, Q, T, C>) -> (Vec<T>, Vec<RemoveFuture>) {
+    fn evict_items_batch(
+        &self,
+        state: &mut State<K, Q, T, C>,
+        max_items: usize,
+    ) -> (Vec<T>, Vec<RemoveFuture>, bool) {
         let Some((_, mut peek_entry)) = state.lru.peek_lru() else {
-            return (Vec::new(), Vec::new());
+            return (Vec::new(), Vec::new(), false);
         };
 
         let max_bytes = if self.max_bytes != 0
@@ -522,13 +561,16 @@ where
         let mut items_to_unref = Vec::new();
         let mut removal_futures = Vec::new();
         let mut skipped_pinned = Vec::new();
+        let mut evicted_count = 0;
 
-        while self.should_evict(
-            state.lru.len() + skipped_pinned.len(),
-            peek_entry,
-            state.sum_store_size,
-            max_bytes,
-        ) {
+        while evicted_count < max_items
+            && self.should_evict(
+                state.lru.len() + skipped_pinned.len(),
+                peek_entry,
+                state.sum_store_size,
+                max_bytes,
+            )
+        {
             let (key, eviction_item) = state
                 .lru
                 .pop_lru()
@@ -602,6 +644,7 @@ where
             let (data, futures) = state.remove(key.borrow(), &eviction_item, false);
             items_to_unref.push(data);
             removal_futures.extend(futures.into_iter());
+            evicted_count += 1;
 
             peek_entry = if let Some((_, entry)) = state.lru.peek_lru() {
                 entry
@@ -611,8 +654,6 @@ where
         }
 
         // Re-insert pinned items back into LRU at LRU position (not MRU).
-        // Using push() + demote() preserves their original eviction priority
-        // so they don't jump ahead of newer unpinned items when the pin expires.
         for (key, item) in skipped_pinned {
             state.lru.push(key, item);
         }
@@ -621,7 +662,77 @@ where
             state.lru.demote(pinned_key.borrow());
         }
 
-        (items_to_unref, removal_futures)
+        let more_to_evict = self.state_needs_eviction(state);
+        (items_to_unref, removal_futures, more_to_evict)
+    }
+
+    /// Signal the background eviction loop, or perform a small inline safety
+    /// valve eviction if the map has grown beyond 110% of max_bytes.
+    /// Returns evicted items only when inline eviction was needed.
+    fn notify_eviction_with_safety_valve(
+        &self,
+        state: &mut State<K, Q, T, C>,
+    ) -> (Vec<T>, Vec<RemoveFuture>) {
+        if self.background_eviction_running.load(Ordering::Relaxed) {
+            // Check safety valve: if we exceed 110% of max_bytes, do a small
+            // inline eviction to prevent unbounded growth.
+            let safety_threshold = if self.max_bytes != 0 {
+                self.max_bytes + self.max_bytes / 10
+            } else {
+                0
+            };
+            if safety_threshold != 0 && state.sum_store_size > safety_threshold {
+                warn!(
+                    sum_store_size = state.sum_store_size,
+                    max_bytes = self.max_bytes,
+                    safety_threshold,
+                    "EvictingMap: safety valve triggered, inline eviction of up to 10 items"
+                );
+                let (items, futures, _) = self.evict_items_batch(state, 10);
+                // Still signal background loop for remaining work.
+                self.eviction_notify.notify_one();
+                return (items, futures);
+            }
+            self.eviction_notify.notify_one();
+            return (Vec::new(), Vec::new());
+        }
+        // Fallback: no background loop, evict inline (original behavior).
+        let (items, futures, _) = self.evict_items_batch(state, usize::MAX);
+        (items, futures)
+    }
+
+    /// Run the background eviction loop. Call this from a spawned task via
+    /// `start_background_eviction()`. Waits for eviction signals and evicts
+    /// in batches to limit lock hold time per acquisition.
+    async fn eviction_loop(self: &Arc<Self>) {
+        const BATCH_SIZE: usize = 100;
+        loop {
+            self.eviction_notify.notified().await;
+            // Evict in batches to keep lock holds short.
+            loop {
+                let (items_to_unref, removal_futures, more_to_evict) = {
+                    let mut state = lock_with_metrics!(self, "background_evict");
+                    if !self.state_needs_eviction(&state) {
+                        break;
+                    }
+                    self.evict_items_batch(&mut state, BATCH_SIZE)
+                };
+                // Process eviction callbacks and unrefs OUTSIDE the lock.
+                if !removal_futures.is_empty() || !items_to_unref.is_empty() {
+                    let mut futures: FuturesUnordered<_> =
+                        removal_futures.into_iter().collect();
+                    while futures.next().await.is_some() {}
+                    let mut callbacks: FuturesUnordered<_> =
+                        items_to_unref.iter().map(LenEntry::unref).collect();
+                    while callbacks.next().await.is_some() {}
+                }
+                if !more_to_evict {
+                    break;
+                }
+                // Yield between batches to let other operations proceed.
+                tokio::task::yield_now().await;
+            }
+        }
     }
 
     /// Return the size of a `key`, if not found `None` is returned.
@@ -650,7 +761,7 @@ where
         // to be able to borrow a `Q`.
         R: Borrow<Q> + Send,
     {
-        let (removal_futures, data_to_unref) = {
+        let (removal_futures, data_to_unref, needs_eviction) = {
             let mut state = lock_with_metrics!(self, "sizes_for_keys");
 
             let lru_len = state.lru.len();
@@ -666,7 +777,7 @@ where
                     Some(entry) => {
                         // Note: We need to check eviction because the item might be expired
                         // based on the current time. In such case, we remove the item while
-                        // we are here.
+                        // we are here (TTL expiration is per-item and quick).
                         if self.should_evict(lru_len, entry, 0, u64::MAX) {
                             *result = None;
                             if let Some((key, eviction_item)) = state.lru.pop_entry(key.borrow()) {
@@ -707,10 +818,17 @@ where
                     None => *result = None,
                 }
             }
-            (removal_futures, data_to_unref)
+            // Check if size/count-based eviction is needed and signal background.
+            let needs_eviction = self.state_needs_eviction(&state);
+            (removal_futures, data_to_unref, needs_eviction)
         };
 
-        // Fire-and-forget eviction cleanup in background.
+        // Signal background eviction for size/count-based eviction.
+        if needs_eviction {
+            self.eviction_notify.notify_one();
+        }
+
+        // Fire-and-forget TTL eviction cleanup in background.
         if !removal_futures.is_empty() || !data_to_unref.is_empty() {
             drop(background_spawn!("evicting_map_sizes_cleanup", async move {
                 let mut callbacks: FuturesUnordered<_> = removal_futures.into_iter().collect();
@@ -723,49 +841,26 @@ where
     }
 
     pub async fn get(&self, key: &Q) -> Option<T> {
-        let mut state = lock_with_metrics!(self, "get");
+        let (result, needs_eviction) = {
+            let mut state = lock_with_metrics!(self, "get");
+            let needs_eviction = self.state_needs_eviction(&state);
 
-        // Perform eviction if needed, collecting items for background cleanup.
-        let eviction_cleanup = {
-            if let Some((_, peek_entry)) = state.lru.peek_lru() {
-                if self.should_evict(
-                    state.lru.len(),
-                    peek_entry,
-                    state.sum_store_size,
-                    self.max_bytes,
-                ) {
-                    let (items_to_unref, removal_futures) = self.evict_items(&mut *state);
-                    if !removal_futures.is_empty() || !items_to_unref.is_empty() {
-                        Some((items_to_unref, removal_futures))
-                    } else {
-                        None
-                    }
-                } else {
-                    None
+            let result = state.lru.get_mut(key.borrow()).and_then(|entry| {
+                // Check TTL: if the entry is expired, treat it as missing.
+                if self.is_entry_expired(entry) {
+                    return None;
                 }
-            } else {
-                None
-            }
+                entry.seconds_since_anchor =
+                    i32::try_from(self.anchor_time.elapsed().as_secs()).unwrap_or(i32::MAX);
+                Some(entry.data.clone())
+            });
+
+            (result, needs_eviction)
         };
 
-        // Get the item while still holding the lock.
-        let result = state.lru.get_mut(key.borrow()).map(|entry| {
-            entry.seconds_since_anchor =
-                i32::try_from(self.anchor_time.elapsed().as_secs()).unwrap_or(i32::MAX);
-            entry.data.clone()
-        });
-
-        drop(state);
-
-        // Fire-and-forget eviction cleanup in background.
-        if let Some((items_to_unref, removal_futures)) = eviction_cleanup {
-            drop(background_spawn!("evicting_map_get_cleanup", async move {
-                let mut futures: FuturesUnordered<_> = removal_futures.into_iter().collect();
-                while futures.next().await.is_some() {}
-                let mut callbacks: FuturesUnordered<_> =
-                    items_to_unref.iter().map(LenEntry::unref).collect();
-                while callbacks.next().await.is_some() {}
-            }));
+        // Signal background eviction if needed (no inline eviction on read path).
+        if needs_eviction {
+            self.eviction_notify.notify_one();
         }
 
         result
@@ -778,53 +873,31 @@ where
         Iter: IntoIterator<Item = &'b Q>,
         Q: 'b,
     {
-        let mut state = lock_with_metrics!(self, "get_many");
+        let (results, needs_eviction) = {
+            let mut state = lock_with_metrics!(self, "get_many");
+            let needs_eviction = self.state_needs_eviction(&state);
 
-        // Perform eviction if needed, collecting items for background cleanup.
-        let eviction_cleanup = {
-            if let Some((_, peek_entry)) = state.lru.peek_lru() {
-                if self.should_evict(
-                    state.lru.len(),
-                    peek_entry,
-                    state.sum_store_size,
-                    self.max_bytes,
-                ) {
-                    let (items_to_unref, removal_futures) = self.evict_items(&mut *state);
-                    if !removal_futures.is_empty() || !items_to_unref.is_empty() {
-                        Some((items_to_unref, removal_futures))
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
+            let now = i32::try_from(self.anchor_time.elapsed().as_secs()).unwrap_or(i32::MAX);
+            let results: Vec<Option<T>> = keys
+                .into_iter()
+                .map(|key: &'b Q| {
+                    state.lru.get_mut(key.borrow()).and_then(|entry| {
+                        // Check TTL: if the entry is expired, treat it as missing.
+                        if self.is_entry_expired(entry) {
+                            return None;
+                        }
+                        entry.seconds_since_anchor = now;
+                        Some(entry.data.clone())
+                    })
+                })
+                .collect();
+
+            (results, needs_eviction)
         };
 
-        let now = i32::try_from(self.anchor_time.elapsed().as_secs()).unwrap_or(i32::MAX);
-        let results: Vec<Option<T>> = keys
-            .into_iter()
-            .map(|key: &'b Q| {
-                state.lru.get_mut(key.borrow()).map(|entry| {
-                    entry.seconds_since_anchor = now;
-                    entry.data.clone()
-                })
-            })
-            .collect();
-
-        drop(state);
-
-        // Fire-and-forget eviction cleanup in background.
-        if let Some((items_to_unref, removal_futures)) = eviction_cleanup {
-            drop(background_spawn!("evicting_map_get_many_cleanup", async move {
-                let mut futures: FuturesUnordered<_> = removal_futures.into_iter().collect();
-                while futures.next().await.is_some() {}
-                let mut callbacks: FuturesUnordered<_> =
-                    items_to_unref.iter().map(LenEntry::unref).collect();
-                while callbacks.next().await.is_some() {}
-            }));
+        // Signal background eviction if needed (no inline eviction on read path).
+        if needs_eviction {
+            self.eviction_notify.notify_one();
         }
 
         results
@@ -1002,44 +1075,48 @@ where
             insert_notifications.push((key, new_item_size));
         }
 
-        // Perform eviction after all insertions
-        let (evicted_items, futures) = self.evict_items(state);
+        // Signal background eviction or do a small inline safety valve
+        // eviction if the map has grown beyond 110% of max_bytes.
+        let (evicted_items, futures) = self.notify_eviction_with_safety_valve(state);
         removal_futures.extend(futures);
 
         (replaced_items, evicted_items, removal_futures, insert_notifications)
     }
 
     pub async fn remove(&self, key: &Q) -> bool {
-        let (evicted_items, removed_item, removal_futures) = {
+        let (removed_item, removal_futures, needs_eviction, was_expired) = {
             let mut state = lock_with_metrics!(self, "remove");
+            let needs_eviction = self.state_needs_eviction(&state);
 
-            // First perform eviction
-            let (evicted_items, mut removal_futures) = self.evict_items(&mut *state);
+            // Try to remove the requested item.
+            let (removed_item, removal_futures, was_expired) =
+                if let Some(entry) = state.lru.pop(key.borrow()) {
+                    // If the entry was TTL-expired, still remove it but report
+                    // it as "not found" to the caller.
+                    let expired = self.is_entry_expired(&entry);
+                    let (item, futures) = state.remove(key, &entry, false);
+                    (Some(item), futures, expired)
+                } else {
+                    (None, Vec::new(), false)
+                };
 
-            // Then try to remove the requested item
-            let removed = if let Some(entry) = state.lru.pop(key.borrow()) {
-                let (removed_item, more_removal_futures) = state.remove(key, &entry, false);
-                removal_futures.extend(more_removal_futures.into_iter());
-                Some(removed_item)
-            } else {
-                None
-            };
-
-            (evicted_items, removed, removal_futures)
+            (removed_item, removal_futures, needs_eviction, was_expired)
         };
 
-        let was_removed = removed_item.is_some();
+        // Signal background eviction if needed.
+        if needs_eviction {
+            self.eviction_notify.notify_one();
+        }
 
-        // Fire-and-forget all cleanup (evicted + removed + callbacks) in background.
-        let has_cleanup =
-            !removal_futures.is_empty() || !evicted_items.is_empty() || removed_item.is_some();
-        if has_cleanup {
+        let was_removed = removed_item.is_some() && !was_expired;
+
+        // Fire-and-forget cleanup for the removed item and callbacks.
+        if !removal_futures.is_empty() || removed_item.is_some() {
             drop(background_spawn!("evicting_map_remove_cleanup", async move {
                 let mut futures: FuturesUnordered<_> = removal_futures.into_iter().collect();
                 while futures.next().await.is_some() {}
-                let mut callbacks: FuturesUnordered<_> = evicted_items
+                let mut callbacks: FuturesUnordered<_> = removed_item
                     .iter()
-                    .chain(removed_item.iter())
                     .map(LenEntry::unref)
                     .collect();
                 while callbacks.next().await.is_some() {}
@@ -1055,42 +1132,43 @@ where
     where
         F: FnOnce(&T) -> bool + Send,
     {
-        let (evicted_items, removal_futures, removed_item) = {
+        let (removal_futures, removed_item, needs_eviction) = {
             let mut state = lock_with_metrics!(self, "remove_if");
             if let Some(entry) = state.lru.get(key.borrow()) {
                 if !cond(&entry.data) {
                     return false;
                 }
-                // First perform eviction
-                let (evicted_items, mut removal_futures) = self.evict_items(&mut state);
+                let needs_eviction = self.state_needs_eviction(&state);
 
-                // Then try to remove the requested item
-                let removed_item = if let Some(entry) = state.lru.pop(key.borrow()) {
-                    let (item, more_removal_futures) = state.remove(key, &entry, false);
-                    removal_futures.extend(more_removal_futures.into_iter());
-                    Some(item)
-                } else {
-                    None
-                };
+                // Try to remove the requested item.
+                let (removed_item, removal_futures) =
+                    if let Some(entry) = state.lru.pop(key.borrow()) {
+                        let (item, futures) = state.remove(key, &entry, false);
+                        (Some(item), futures)
+                    } else {
+                        (None, Vec::new())
+                    };
 
-                (evicted_items, removal_futures, removed_item)
+                (removal_futures, removed_item, needs_eviction)
             } else {
                 return false;
             }
         };
 
+        // Signal background eviction if needed.
+        if needs_eviction {
+            self.eviction_notify.notify_one();
+        }
+
         let was_removed = removed_item.is_some();
 
-        // Fire-and-forget all cleanup in background.
-        let has_cleanup =
-            !removal_futures.is_empty() || !evicted_items.is_empty() || removed_item.is_some();
-        if has_cleanup {
+        // Fire-and-forget cleanup for the removed item and callbacks.
+        if !removal_futures.is_empty() || removed_item.is_some() {
             drop(background_spawn!("evicting_map_remove_if_cleanup", async move {
                 let mut futures: FuturesUnordered<_> = removal_futures.into_iter().collect();
                 while futures.next().await.is_some() {}
-                let mut callbacks: FuturesUnordered<_> = evicted_items
+                let mut callbacks: FuturesUnordered<_> = removed_item
                     .iter()
-                    .chain(removed_item.iter())
                     .map(LenEntry::unref)
                     .collect();
                 while callbacks.next().await.is_some() {}
@@ -1116,5 +1194,33 @@ where
             (k.clone(), anchor_epoch + v.seconds_since_anchor as i64)
         }));
         result
+    }
+}
+
+/// Separate impl block for `start_background_eviction` which requires
+/// `'static` + `Send` bounds for spawning a background task.
+impl<K, Q, T, I, C> EvictingMap<K, Q, T, I, C>
+where
+    K: Ord + Hash + Eq + Clone + Debug + Send + Sync + Borrow<Q> + 'static,
+    Q: Ord + Hash + Eq + Debug + Send + Sync + 'static,
+    T: LenEntry + Debug + Clone + Send + Sync + 'static,
+    I: InstantWrapper + 'static,
+    C: ItemCallback<Q> + Clone + 'static,
+{
+    /// Start the background eviction loop. Should be called once after
+    /// construction when a tokio runtime is available. Safe to call multiple
+    /// times (only the first call spawns the loop).
+    pub fn start_background_eviction(self: &Arc<Self>) {
+        if self
+            .background_eviction_running
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
+            .is_err()
+        {
+            return; // Already running.
+        }
+        let this = Arc::clone(self);
+        drop(background_spawn!("evicting_map_background_eviction", async move {
+            this.eviction_loop().await;
+        }));
     }
 }
