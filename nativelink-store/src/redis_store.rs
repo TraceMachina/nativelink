@@ -1708,32 +1708,38 @@ where
                 })
             }
             Err(_) => {
-                let connection_manager = match run_ft_create(connection_manager.clone()).await {
-                    Err(err)
-                        if err.kind()
-                            == redis::ErrorKind::Server(redis::ServerErrorKind::ReadOnly) =>
-                    {
-                        let (connection_manager, _connect_id) =
-                            self.connection_manager.reconnect(connect_id).await?;
-                        run_ft_create(connection_manager.clone())
-                            .await
-                            .map(|()| connection_manager)
-                    }
-                    result => result.map(|()| connection_manager),
-                }
-                .err_tip(|| {
+                let (connection_manager, result) =
+                    match run_ft_create(connection_manager.clone()).await {
+                        Err(err)
+                            if err.kind()
+                                == redis::ErrorKind::Server(redis::ServerErrorKind::ReadOnly) =>
+                        {
+                            let (connection_manager, _connect_id) =
+                                self.connection_manager.reconnect(connect_id).await?;
+                            (
+                                connection_manager.clone(),
+                                run_ft_create(connection_manager).await,
+                            )
+                        }
+                        result => (connection_manager, result),
+                    };
+                let create_result = result.err_tip(|| {
                     format!(
                         "Error with ft_create in RedisStore::search_by_index_prefix({})",
                         get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY),
                     )
-                })?;
+                });
 
-                run_ft_aggregate(connection_manager).await.err_tip(|| {
+                let run_result = run_ft_aggregate(connection_manager).await.err_tip(|| {
                     format!(
                         "Error with second ft_aggregate in RedisStore::search_by_index_prefix({})",
                         get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY),
                     )
-                })
+                });
+
+                // Creating the index will race which is ok. If it fails to create, we only
+                // error if the second ft_aggregate call fails and fails to create.
+                run_result.or_else(move |e| create_result.merge(Err(e)))
             }
             Ok(stream) => Ok(stream),
         }?;
