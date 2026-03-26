@@ -430,23 +430,27 @@ impl StoreDriver for FastSlowStore {
                     }
                 }
             }
-            // Diagnostic: log when small blobs are missing from both slow
-            // store and in-flight map — these cause FAILED_PRECONDITION.
-            for (k, result) in key.iter().zip(results.iter()) {
-                if result.is_none() {
-                    let key_str = k.as_str();
-                    if let Some(size_str) = key_str.rsplit('-').next() {
-                        if let Ok(size) = size_str.parse::<u64>() {
-                            if size < 1024 {
-                                warn!(
-                                    key = %key_str,
-                                    in_flight_count = in_flight.len(),
-                                    "has_with_results: small blob NOT FOUND in \
-                                     slow store or in-flight map",
-                                );
-                            }
-                        }
-                    }
+        }
+        // Check fast store for blobs not yet on slow store or in-flight.
+        // This catches blobs in MemoryStore whose background slow write
+        // hasn't started yet (e.g., just inserted, spawn not yet scheduled).
+        let missing_indices: Vec<usize> = results
+            .iter()
+            .enumerate()
+            .filter_map(|(i, r)| if r.is_none() { Some(i) } else { None })
+            .collect();
+        if !missing_indices.is_empty() {
+            let missing_keys: Vec<StoreKey<'_>> = missing_indices
+                .iter()
+                .map(|&i| key[i].borrow())
+                .collect();
+            let mut fast_results = vec![None; missing_keys.len()];
+            self.fast_store
+                .has_with_results(&missing_keys, &mut fast_results)
+                .await?;
+            for (j, &orig_idx) in missing_indices.iter().enumerate() {
+                if fast_results[j].is_some() {
+                    results[orig_idx] = fast_results[j];
                 }
             }
         }

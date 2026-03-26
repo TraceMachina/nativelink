@@ -330,10 +330,11 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
                 .await
             {
                 if verify[0].is_none() {
-                    tracing::error!(
+                    tracing::warn!(
                         ?digest,
-                        "CRITICAL: inner store update() succeeded but has() returns \
-                         None immediately after! Blob was NOT persisted to slow store.",
+                        "inner store update() succeeded but has() returns \
+                         None immediately after — blob may still be in fast \
+                         store awaiting background slow write",
                     );
                 }
             }
