@@ -299,7 +299,7 @@ where
     Q: Ord + Hash + Eq + Debug + Sync,
     T: LenEntry + Debug + Clone + Send + Sync,
     I: InstantWrapper,
-    C: ItemCallback<Q>,
+    C: ItemCallback<Q> + Clone,
 {
     pub fn new(config: &EvictionPolicy, anchor_time: I) -> Self {
         Self {
@@ -845,17 +845,23 @@ where
 
     /// Returns the replaced item if any.
     pub async fn insert_with_time(&self, key: K, data: T, seconds_since_anchor: i32) -> Option<T> {
-        let (replaced_items, evicted_items, removal_futures, insert_notifications) = {
+        let (replaced_items, evicted_items, removal_futures, insert_notifications, callbacks) = {
             let mut state = lock_with_metrics!(self, "insert");
-            self.inner_insert_many(&mut state, [(key, data)], seconds_since_anchor)
+            let result =
+                self.inner_insert_many(&mut state, [(key, data)], seconds_since_anchor);
+            // Clone callback list while we hold the lock so we can fire
+            // them after releasing, avoiding a second lock acquisition.
+            let callbacks = if !result.3.is_empty() {
+                state.item_callbacks.clone()
+            } else {
+                Vec::new()
+            };
+            (result.0, result.1, result.2, result.3, callbacks)
         };
-        // State lock released. Fire insert callbacks outside the critical section.
-        if !insert_notifications.is_empty() {
-            let state = lock_with_metrics!(self, "insert_callbacks");
-            for (key, size) in &insert_notifications {
-                for cb in &state.item_callbacks {
-                    cb.on_insert(key.borrow(), *size);
-                }
+        // Fire insert callbacks without holding the lock.
+        for (key, size) in &insert_notifications {
+            for cb in &callbacks {
+                cb.on_insert(key.borrow(), *size);
             }
         }
 
@@ -906,21 +912,26 @@ where
             return Vec::new();
         }
 
-        let (replaced_items, evicted_items, removal_futures, insert_notifications) = {
+        let (replaced_items, evicted_items, removal_futures, insert_notifications, callbacks) = {
             let mut state = lock_with_metrics!(self, "insert_many");
-            self.inner_insert_many(
+            let result = self.inner_insert_many(
                 &mut state,
                 inserts,
                 i32::try_from(self.anchor_time.elapsed().as_secs()).unwrap_or(i32::MAX),
-            )
+            );
+            // Clone callback list while we hold the lock so we can fire
+            // them after releasing, avoiding a second lock acquisition.
+            let callbacks = if !result.3.is_empty() {
+                state.item_callbacks.clone()
+            } else {
+                Vec::new()
+            };
+            (result.0, result.1, result.2, result.3, callbacks)
         };
-        // State lock released. Fire insert callbacks outside the critical section.
-        if !insert_notifications.is_empty() {
-            let state = lock_with_metrics!(self, "insert_many_callbacks");
-            for (key, size) in &insert_notifications {
-                for cb in &state.item_callbacks {
-                    cb.on_insert(key.borrow(), *size);
-                }
+        // Fire insert callbacks without holding the lock.
+        for (key, size) in &insert_notifications {
+            for cb in &callbacks {
+                cb.on_insert(key.borrow(), *size);
             }
         }
 

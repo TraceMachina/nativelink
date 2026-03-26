@@ -20,7 +20,7 @@ use nativelink_util::evicting_map;
 use nativelink_util::store_trait::{ItemCallback, StoreKey};
 
 // Generic struct to hold an ItemCallback ref for the purposes of an item callback call
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ItemCallbackHolder {
     callback: Arc<dyn ItemCallback>,
 }
