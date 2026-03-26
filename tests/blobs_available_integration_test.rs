@@ -609,16 +609,18 @@ async fn test_blobs_available_three_workers() {
     // --- Phase 10: Verify no-change ticks are skipped (trace level) ---
     // Workers that have no changes since last tick should log
     // "BlobsAvailable: no changes since last tick, skipping" at trace level.
-    // Give a little extra time for ticks with no changes.
+    // This is compiled out in release builds (release_max_level_info), so
+    // only check in debug builds.
     tokio::time::sleep(Duration::from_millis(500)).await;
-    let skip_count = process.count_logs("no changes since last tick, skipping");
-    // We expect at least some skips once the delta has been sent and there
-    // are no further changes.
-    assert!(
-        skip_count > 0,
-        "Expected at least some 'no changes since last tick, skipping' trace logs \
-         (workers should skip sending when there are no new changes).",
-    );
+    #[cfg(debug_assertions)]
+    {
+        let skip_count = process.count_logs("no changes since last tick, skipping");
+        assert!(
+            skip_count > 0,
+            "Expected at least some 'no changes since last tick, skipping' trace logs \
+             (workers should skip sending when there are no new changes).",
+        );
+    }
 
     // --- Phase 11: Verify the starting CAS server logs ---
     let cas_server_logs = process.grep_logs("Starting worker CAS TCP server for peer blob sharing");
