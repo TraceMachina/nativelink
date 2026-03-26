@@ -16,12 +16,13 @@ use core::borrow::Borrow;
 use core::cmp::Eq;
 use core::fmt::Debug;
 use core::future::Future;
-use core::hash::Hash;
+use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
 use core::ops::RangeBounds;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::hash_map::DefaultHasher;
 use std::time::Instant;
 use std::sync::Arc;
 
@@ -1222,5 +1223,349 @@ where
         drop(background_spawn!("evicting_map_background_eviction", async move {
             this.eviction_loop().await;
         }));
+    }
+}
+
+/// Target number of independent shards used by `ShardedEvictingMap`.
+/// Power of 2 for fast modulo via bitmask. The actual count may be
+/// reduced when configured limits are too small for meaningful sharding.
+const TARGET_NUM_SHARDS: usize = 64;
+
+/// Minimum per-shard capacity in bytes (or count) required for sharding
+/// to be meaningful. If the total divided by shards is below this, we
+/// reduce the shard count. These thresholds ensure each shard can hold
+/// enough items to provide useful LRU ordering.
+const MIN_PER_SHARD_BYTES: usize = 256 * 1024; // 256 KiB
+const MIN_PER_SHARD_COUNT: u64 = 64;
+
+/// A sharded wrapper around `EvictingMap` that distributes keys across
+/// multiple independent instances, each with its own lock.
+/// This reduces lock contention proportionally to the shard count compared
+/// to a single `EvictingMap`.
+///
+/// The public API mirrors `EvictingMap` so callers are unaware of sharding.
+#[derive(Debug)]
+pub struct ShardedEvictingMap<
+    K: Ord + Hash + Eq + Clone + Debug + Send + Borrow<Q>,
+    Q: Ord + Hash + Eq + Debug,
+    T: LenEntry + Debug + Send,
+    I: InstantWrapper,
+    C: ItemCallback<Q> = NoopCallback,
+> {
+    shards: Vec<Arc<EvictingMap<K, Q, T, I, C>>>,
+    /// Bitmask for fast shard index computation. Equal to `shards.len() - 1`.
+    shard_mask: usize,
+}
+
+impl<K, Q, T, I, C> MetricsComponent for ShardedEvictingMap<K, Q, T, I, C>
+where
+    K: Ord + Hash + Eq + Clone + Debug + Send + Borrow<Q>,
+    Q: Ord + Hash + Eq + Debug,
+    T: LenEntry + Debug + Send,
+    I: InstantWrapper,
+    C: ItemCallback<Q>,
+{
+    fn publish(
+        &self,
+        kind: nativelink_metric::MetricKind,
+        field_metadata: nativelink_metric::MetricFieldData,
+    ) -> Result<nativelink_metric::MetricPublishKnownKindData, nativelink_metric::Error> {
+        // Delegate to the first shard for representative metrics.
+        self.shards[0].publish(kind, field_metadata)
+    }
+}
+
+impl<K, Q, T, I, C> ShardedEvictingMap<K, Q, T, I, C>
+where
+    K: Ord + Hash + Eq + Clone + Debug + Send + Sync + Borrow<Q>,
+    Q: Ord + Hash + Eq + Debug + Sync,
+    T: LenEntry + Debug + Clone + Send + Sync,
+    I: InstantWrapper + Clone,
+    C: ItemCallback<Q> + Clone,
+{
+    pub fn new(config: &EvictionPolicy, anchor_time: I) -> Self {
+        // Choose shard count: start at TARGET_NUM_SHARDS and reduce (halving)
+        // until each shard has at least MIN_PER_SHARD_BYTES bytes capacity
+        // and MIN_PER_SHARD_COUNT count capacity (when the respective limits
+        // are non-zero). Always at least 1 shard.
+        //
+        // When no eviction limits are configured (all zeros), use a single
+        // shard to avoid spawning unnecessary background eviction tasks.
+        let has_any_limit =
+            config.max_bytes > 0 || config.max_count > 0 || config.max_seconds > 0;
+        let mut num_shards = if has_any_limit {
+            TARGET_NUM_SHARDS
+        } else {
+            1
+        };
+        if config.max_bytes > 0 {
+            while num_shards > 1 && config.max_bytes / num_shards < MIN_PER_SHARD_BYTES {
+                num_shards /= 2;
+            }
+        }
+        if config.max_count > 0 {
+            while num_shards > 1 && config.max_count / num_shards as u64 <= MIN_PER_SHARD_COUNT {
+                num_shards /= 2;
+            }
+        }
+
+        let mut shard_config = config.clone();
+        shard_config.max_bytes /= num_shards;
+        if shard_config.max_count > 0 {
+            shard_config.max_count /= num_shards as u64;
+        }
+        if shard_config.evict_bytes > 0 {
+            shard_config.evict_bytes /= num_shards;
+        }
+        // max_seconds is a per-item TTL — stays the same.
+
+        let shards = (0..num_shards)
+            .map(|_| Arc::new(EvictingMap::new(&shard_config, anchor_time.clone())))
+            .collect();
+        let shard_mask = num_shards - 1;
+        Self { shards, shard_mask }
+    }
+
+    /// Compute the shard index for a given key.
+    #[inline]
+    fn shard_index(&self, key: &Q) -> usize {
+        let mut hasher = DefaultHasher::new();
+        key.hash(&mut hasher);
+        hasher.finish() as usize & self.shard_mask
+    }
+
+    /// Return a reference to the shard for a given key.
+    #[inline]
+    fn shard_for_key(&self, key: &Q) -> &Arc<EvictingMap<K, Q, T, I, C>> {
+        &self.shards[self.shard_index(key)]
+    }
+
+    // --- Single-key operations ---
+
+    pub fn pin_key(&self, key: K) -> bool {
+        self.shard_for_key(key.borrow()).pin_key(key)
+    }
+
+    pub fn pin_keys(&self, keys: &[K]) -> usize {
+        // Group keys by shard to batch pin operations within each shard.
+        let mut groups: Vec<Vec<&K>> = vec![Vec::new(); self.shards.len()];
+        for key in keys {
+            groups[self.shard_index(key.borrow())].push(key);
+        }
+        let mut total = 0;
+        for (idx, group) in groups.iter().enumerate() {
+            if !group.is_empty() {
+                // pin_keys expects &[K], but we have &[&K]. Call pin_key
+                // individually per shard to avoid cloning.
+                for key in group {
+                    if self.shards[idx].pin_key((*key).clone()) {
+                        total += 1;
+                    }
+                }
+            }
+        }
+        total
+    }
+
+    pub fn unpin_key(&self, key: &Q) {
+        self.shard_for_key(key).unpin_key(key);
+    }
+
+    pub fn pinned_bytes(&self) -> u64 {
+        self.shards.iter().map(|s| s.pinned_bytes()).sum()
+    }
+
+    pub async fn enable_filtering(&self) {
+        for shard in &self.shards {
+            shard.enable_filtering().await;
+        }
+    }
+
+    pub async fn range<F>(&self, prefix_range: impl RangeBounds<Q> + Clone + Send, mut handler: F) -> u64
+    where
+        F: FnMut(&K, &T) -> bool + Send,
+        K: Ord,
+    {
+        // Collect all matching (key, value) pairs from all shards, then sort
+        // by key so the caller sees globally-sorted order.
+        let mut all_entries: Vec<(K, T)> = Vec::new();
+        for shard in &self.shards {
+            shard
+                .range(prefix_range.clone(), |k, v| {
+                    all_entries.push((k.clone(), v.clone()));
+                    true
+                })
+                .await;
+        }
+        all_entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+        let mut count = 0;
+        for (key, value) in &all_entries {
+            if !handler(key, value) {
+                break;
+            }
+            count += 1;
+        }
+        count
+    }
+
+    pub async fn len_for_test(&self) -> usize {
+        let mut total = 0;
+        for shard in &self.shards {
+            total += shard.len_for_test().await;
+        }
+        total
+    }
+
+    pub async fn size_for_key(&self, key: &Q) -> Option<u64> {
+        self.shard_for_key(key).size_for_key(key).await
+    }
+
+    pub async fn sizes_for_keys<It, R>(&self, keys: It, results: &mut [Option<u64>], peek: bool)
+    where
+        It: IntoIterator<Item = R> + Send,
+        <It as IntoIterator>::IntoIter: Send,
+        R: Borrow<Q> + Send,
+    {
+        // Group (original_index, key_ref) by shard, then batch-lookup each shard.
+        let keys_vec: Vec<R> = keys.into_iter().collect();
+        let mut shard_groups: Vec<Vec<usize>> = vec![Vec::new(); self.shards.len()];
+        for (i, key) in keys_vec.iter().enumerate() {
+            let shard_idx = self.shard_index(key.borrow());
+            shard_groups[shard_idx].push(i);
+        }
+
+        for (shard_idx, indices) in shard_groups.iter().enumerate() {
+            if indices.is_empty() {
+                continue;
+            }
+            // Build a sub-batch of keys for this shard.
+            let shard_keys: Vec<&Q> = indices.iter().map(|&i| keys_vec[i].borrow()).collect();
+            let mut shard_results = vec![None; shard_keys.len()];
+            self.shards[shard_idx]
+                .sizes_for_keys(shard_keys.into_iter(), &mut shard_results, peek)
+                .await;
+            // Scatter results back to the original positions.
+            for (j, &orig_idx) in indices.iter().enumerate() {
+                results[orig_idx] = shard_results[j];
+            }
+        }
+    }
+
+    pub async fn get(&self, key: &Q) -> Option<T> {
+        self.shard_for_key(key).get(key).await
+    }
+
+    pub async fn get_many<'b, Iter>(&self, keys: Iter) -> Vec<Option<T>>
+    where
+        Iter: IntoIterator<Item = &'b Q>,
+        Q: 'b,
+    {
+        // Group keys by shard, batch-lookup each, scatter results back.
+        let keys_vec: Vec<&'b Q> = keys.into_iter().collect();
+        let mut results = vec![None; keys_vec.len()];
+        let mut shard_groups: Vec<Vec<usize>> = vec![Vec::new(); self.shards.len()];
+        for (i, key) in keys_vec.iter().enumerate() {
+            shard_groups[self.shard_index(*key)].push(i);
+        }
+
+        for (shard_idx, indices) in shard_groups.iter().enumerate() {
+            if indices.is_empty() {
+                continue;
+            }
+            let shard_keys: Vec<&'b Q> = indices.iter().map(|&i| keys_vec[i]).collect();
+            let shard_results = self.shards[shard_idx].get_many(shard_keys).await;
+            for (j, &orig_idx) in indices.iter().enumerate() {
+                results[orig_idx] = shard_results[j].clone();
+            }
+        }
+        results
+    }
+
+    pub async fn insert(&self, key: K, data: T) -> Option<T>
+    where
+        K: 'static,
+    {
+        self.shard_for_key(key.borrow()).insert(key, data).await
+    }
+
+    pub async fn insert_with_time(&self, key: K, data: T, seconds_since_anchor: i32) -> Option<T> {
+        self.shard_for_key(key.borrow())
+            .insert_with_time(key, data, seconds_since_anchor)
+            .await
+    }
+
+    pub async fn insert_many<It>(&self, inserts: It) -> Vec<T>
+    where
+        It: IntoIterator<Item = (K, T)> + Send,
+        <It as IntoIterator>::IntoIter: Send,
+        K: 'static,
+    {
+        // Group inserts by shard, then insert_many each batch.
+        let mut shard_groups: Vec<Vec<(K, T)>> = (0..self.shards.len()).map(|_| Vec::new()).collect();
+        for (key, data) in inserts {
+            let idx = self.shard_index(key.borrow());
+            shard_groups[idx].push((key, data));
+        }
+
+        let mut all_replaced = Vec::new();
+        for (shard_idx, group) in shard_groups.into_iter().enumerate() {
+            if group.is_empty() {
+                continue;
+            }
+            let replaced = self.shards[shard_idx].insert_many(group).await;
+            all_replaced.extend(replaced);
+        }
+        all_replaced
+    }
+
+    pub async fn remove(&self, key: &Q) -> bool {
+        self.shard_for_key(key).remove(key).await
+    }
+
+    pub async fn remove_if<F>(&self, key: &Q, cond: F) -> bool
+    where
+        F: FnOnce(&T) -> bool + Send,
+    {
+        self.shard_for_key(key).remove_if(key, cond).await
+    }
+
+    pub fn add_item_callback(&self, callback: C) {
+        for shard in &self.shards {
+            shard.add_item_callback(callback.clone());
+        }
+    }
+
+    pub fn get_all_entries_with_timestamps(&self) -> Vec<(K, i64)> {
+        let mut all_entries = Vec::new();
+        for shard in &self.shards {
+            all_entries.extend(shard.get_all_entries_with_timestamps());
+        }
+        all_entries
+    }
+
+    /// Provides direct read access to the lock contention metrics from
+    /// all shards. Returns a reference to the underlying shard `LockMetrics`.
+    /// For aggregate reporting, callers should iterate `lock_metrics_all_shards()`.
+    pub fn lock_metrics_all_shards(&self) -> impl Iterator<Item = &LockMetrics> {
+        self.shards.iter().map(|s| &s.lock_metrics)
+    }
+}
+
+/// Separate impl block for `start_background_eviction` which requires
+/// `'static` + `Send` bounds for spawning background tasks.
+impl<K, Q, T, I, C> ShardedEvictingMap<K, Q, T, I, C>
+where
+    K: Ord + Hash + Eq + Clone + Debug + Send + Sync + Borrow<Q> + 'static,
+    Q: Ord + Hash + Eq + Debug + Send + Sync + 'static,
+    T: LenEntry + Debug + Clone + Send + Sync + 'static,
+    I: InstantWrapper + 'static,
+    C: ItemCallback<Q> + Clone + 'static,
+{
+    /// Start the background eviction loop on every shard.
+    pub fn start_background_eviction(&self) {
+        for shard in &self.shards {
+            shard.start_background_eviction();
+        }
     }
 }

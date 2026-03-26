@@ -21,7 +21,7 @@ use mock_instant::thread_local::{Instant as MockInstant, MockClock};
 
 /// Wrapper used to abstract away which underlying Instant impl we are using.
 /// This is needed for testing.
-pub trait InstantWrapper: Send + Sync + Unpin + Debug + 'static {
+pub trait InstantWrapper: Clone + Send + Sync + Unpin + Debug + 'static {
     fn from_secs(secs: u64) -> Self;
     fn unix_timestamp(&self) -> u64;
     fn now(&self) -> SystemTime;
