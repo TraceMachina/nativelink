@@ -145,11 +145,6 @@ impl CompletenessCheckingStore {
             digests_to_check_idxs: Vec<usize>,
             notify: Arc<Notify>,
             done: bool,
-            /// Digests that have been verified to exist in the CAS.
-            /// Collected during existence checks and pinned after
-            /// verification completes to prevent eviction before
-            /// the worker fetches them.
-            verified_digests: Vec<DigestInfo>,
         }
         // Note: In theory Mutex is not needed, but lifetimes are
         // very tricky to get right here. Since we are using parking_lot
@@ -163,7 +158,6 @@ impl CompletenessCheckingStore {
             // modified we must notify the subscriber here.
             notify: Arc::new(Notify::new()),
             done: false,
-            verified_digests: Vec::new(),
         });
 
         let mut futures = action_result_digests
@@ -284,21 +278,30 @@ impl CompletenessCheckingStore {
                     .err_tip(
                         || "Error calling has_with_results() inside CompletenessCheckingStore::has",
                     )?;
+                // Pin verified digests immediately to minimize
+                // the TOCTOU window between existence check and pin.
+                let mut verified_batch = Vec::new();
                 {
                     let mut state = state_mux.lock();
                     for (i, (r, index)) in
                         has_results.iter().zip(indexes).enumerate()
                     {
                         if r.is_some() {
-                            // Digest verified to exist — collect for pinning
                             if let StoreKey::Digest(d) = &digests[i] {
-                                state.verified_digests.push(*d);
+                                verified_batch.push(*d);
                             }
                         } else {
                             // Digest missing — mark the action result as incomplete
                             state.results[index] = None;
                         }
                     }
+                }
+                if !verified_batch.is_empty() {
+                    info!(
+                        count = verified_batch.len(),
+                        "pinning verified CAS digests to prevent eviction"
+                    );
+                    self.cas_store.pin_digests(&verified_batch);
                 }
             }
             Result::<(), Error>::Ok(())
@@ -341,20 +344,6 @@ impl CompletenessCheckingStore {
                             check_existence_fut
                                 .await
                                 .err_tip(|| "CompletenessCheckingStore's check_existence_fut ended unexpectedly on last await")?;
-
-                            // Pin all verified digests to prevent eviction
-                            // before the worker fetches them. The EvictingMap's
-                            // 120s auto-unpin timeout handles cleanup.
-                            let verified = mem::take(
-                                &mut state_mux.lock().verified_digests,
-                            );
-                            if !verified.is_empty() {
-                                info!(
-                                    count = verified.len(),
-                                    "pinning verified CAS digests to prevent eviction"
-                                );
-                                self.cas_store.pin_digests(&verified);
-                            }
                             return Ok(());
                         }
                     }
