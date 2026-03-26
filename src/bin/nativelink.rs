@@ -702,7 +702,7 @@ async fn inner_main(
         http.http2().max_frame_size(
             http_config
                 .experimental_http2_max_frame_size
-                .unwrap_or(64 * 1024),
+                .unwrap_or(4 * 1024 * 1024),
         );
         if let Some(value) = http_config.experimental_http2_max_concurrent_streams {
             http.http2().max_concurrent_streams(value);
@@ -755,7 +755,7 @@ async fn inner_main(
                                 // BDP = 1.25 GB/s × 0.5ms RTT = 625 KB; 4 MiB
                                 // provides headroom for bursts. Linux doubles the
                                 // value internally for bookkeeping.
-                                const SOCKET_BUF_SIZE: usize = 4 * 1024 * 1024;
+                                const SOCKET_BUF_SIZE: usize = 8 * 1024 * 1024;
                                 if let Err(err) = sock_ref.set_send_buffer_size(SOCKET_BUF_SIZE) {
                                     error!(
                                         target: "nativelink::services",
