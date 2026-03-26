@@ -1348,9 +1348,11 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
     }
 
     fn pin_digests(&self, digests: &[DigestInfo]) {
-        for digest in digests {
-            self.pin_digest(digest);
-        }
+        let keys: Vec<StoreKeyBorrow> = digests
+            .iter()
+            .map(|d| StoreKeyBorrow::from(StoreKey::from(*d)))
+            .collect();
+        self.evicting_map.pin_keys(&keys);
     }
 }
 

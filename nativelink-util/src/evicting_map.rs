@@ -366,6 +366,51 @@ where
         true
     }
 
+    /// Pin multiple keys in a single critical section, reducing lock contention.
+    /// Returns the number of keys successfully pinned (including already-pinned
+    /// keys whose pin time was refreshed).
+    pub fn pin_keys(&self, keys: &[K]) -> usize {
+        let mut state = lock_with_metrics!(self, "pin_keys");
+        let pin_cap = (self.max_bytes as f64 * PIN_CAP_FRACTION) as u64;
+        let mut pinned = 0;
+        for key in keys {
+            // Already pinned — refresh the pin time.
+            if state.pinned_keys.contains(key.borrow()) {
+                state.pin_times.insert(key.clone(), Instant::now());
+                pinned += 1;
+                continue;
+            }
+
+            // Look up the entry size; skip keys that aren't in the map.
+            let entry_size = match state.lru.peek(key.borrow()) {
+                Some(item) => item.data.len(),
+                None => continue,
+            };
+
+            // Enforce pin cap.
+            if self.max_bytes != 0
+                && state.pinned_bytes.saturating_add(entry_size) > pin_cap
+            {
+                warn!(
+                    pinned_bytes = state.pinned_bytes,
+                    entry_size,
+                    pin_cap,
+                    ?key,
+                    batch_pinned = pinned,
+                    remaining = keys.len() - pinned,
+                    "pin cap exceeded in batch pin, stopping"
+                );
+                break;
+            }
+
+            state.pinned_keys.insert(key.clone());
+            state.pin_times.insert(key.clone(), Instant::now());
+            state.pinned_bytes += entry_size;
+            pinned += 1;
+        }
+        pinned
+    }
+
     /// Unpin a key, allowing eviction again. Idempotent.
     pub fn unpin_key(&self, key: &Q) {
         let mut state = lock_with_metrics!(self, "unpin_key");
