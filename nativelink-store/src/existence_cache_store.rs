@@ -401,6 +401,10 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
     fn drain_stable_digests(&self) -> Vec<DigestInfo> {
         self.inner_store.drain_stable_digests()
     }
+
+    fn pin_digests(&self, digests: &[DigestInfo]) {
+        self.inner_store.pin_digests(digests);
+    }
 }
 
 #[async_trait]

@@ -732,6 +732,10 @@ impl StoreDriver for WorkerProxyStore {
     fn drain_stable_digests(&self) -> Vec<DigestInfo> {
         self.inner.drain_stable_digests()
     }
+
+    fn pin_digests(&self, digests: &[DigestInfo]) {
+        self.inner.pin_digests(digests);
+    }
 }
 
 #[async_trait]

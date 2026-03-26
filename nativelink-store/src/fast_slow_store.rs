@@ -988,6 +988,11 @@ impl StoreDriver for FastSlowStore {
         let mut guard = self.stable_digests.lock();
         std::mem::take(&mut *guard)
     }
+
+    fn pin_digests(&self, digests: &[DigestInfo]) {
+        self.fast_store.pin_digests(digests);
+        self.slow_store.pin_digests(digests);
+    }
 }
 
 #[derive(Debug, Default, MetricsComponent)]

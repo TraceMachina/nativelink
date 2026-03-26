@@ -1346,6 +1346,12 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
             .add_item_callback(ItemCallbackHolder::new(callback));
         Ok(())
     }
+
+    fn pin_digests(&self, digests: &[DigestInfo]) {
+        for digest in digests {
+            self.pin_digest(digest);
+        }
+    }
 }
 
 #[async_trait]

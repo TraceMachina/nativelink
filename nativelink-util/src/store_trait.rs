@@ -408,6 +408,13 @@ impl Store {
     pub fn drain_stable_digests(&self) -> Vec<DigestInfo> {
         self.inner.drain_stable_digests()
     }
+
+    /// Pin digests to prevent eviction while a worker is fetching them.
+    /// Delegates to the inner [`StoreDriver::pin_digests`].
+    #[inline]
+    pub fn pin_digests(&self, digests: &[DigestInfo]) {
+        self.inner.pin_digests(digests);
+    }
 }
 
 impl StoreLike for Store {
@@ -873,6 +880,12 @@ pub trait StoreDriver:
     fn drain_stable_digests(&self) -> Vec<DigestInfo> {
         Vec::new()
     }
+
+    /// Pin digests to prevent eviction while a worker is fetching them.
+    /// Wrapper stores should delegate to their inner store. Stores that
+    /// support pinning (e.g., `FilesystemStore`) override this to call
+    /// `EvictingMap::pin_key()`. The default is a no-op.
+    fn pin_digests(&self, _digests: &[DigestInfo]) {}
 }
 
 // Callback invoked when a store inserts or deletes an item.

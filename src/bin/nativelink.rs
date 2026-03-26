@@ -252,7 +252,7 @@ async fn inner_main(
                 let blocking_threads = metrics.num_blocking_threads();
                 let idle_blocking = metrics.num_idle_blocking_threads();
                 let blocking_depth = metrics.blocking_queue_depth();
-                if blocking_depth > 0 || idle_blocking == 0 {
+                if blocking_depth > 0 || (blocking_threads > 0 && idle_blocking == 0) {
                     warn!(
                         workers,
                         blocking_threads,
@@ -806,11 +806,40 @@ async fn inner_main(
                                         };
 
                                         if let Err(err) = serve_connection.await {
-                                            error!(
-                                                target: "nativelink::services",
-                                                ?err,
-                                                "Failed running service"
-                                            );
+                                            // Walk the error source chain looking
+                                            // for a std::io::Error so we can
+                                            // downgrade normal connection-close
+                                            // events to info level.
+                                            let is_conn_close = {
+                                                let mut cur: Option<&(dyn std::error::Error + 'static)> = Some(err.as_ref());
+                                                let mut found = false;
+                                                while let Some(e) = cur {
+                                                    if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
+                                                        found = matches!(
+                                                            io_err.kind(),
+                                                            std::io::ErrorKind::BrokenPipe
+                                                            | std::io::ErrorKind::ConnectionReset
+                                                            | std::io::ErrorKind::ConnectionAborted
+                                                        );
+                                                        break;
+                                                    }
+                                                    cur = e.source();
+                                                }
+                                                found
+                                            };
+                                            if is_conn_close {
+                                                info!(
+                                                    target: "nativelink::services",
+                                                    ?err,
+                                                    "client disconnected"
+                                                );
+                                            } else {
+                                                error!(
+                                                    target: "nativelink::services",
+                                                    ?err,
+                                                    "Failed running service"
+                                                );
+                                            }
                                         }
                                     }),
                                     target: "nativelink::services",
