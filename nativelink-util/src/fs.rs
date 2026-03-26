@@ -365,6 +365,7 @@ pub async fn write_file_from_channel(
 
     let write_task = spawn_blocking!("fs_write_file", move || {
         let mut f = file;
+        f.advise_sequential();
         let mut total: u64 = 0;
         let mut max_write_ms: u128 = 0;
         let mut slow_write_count: u32 = 0;

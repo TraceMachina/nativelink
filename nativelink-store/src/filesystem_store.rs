@@ -1338,6 +1338,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
             let temp_full_path_clone = temp_full_path.clone();
             temp_file = nativelink_util::spawn_blocking!("fs_write_oneshot", move || {
                 use std::io::Write;
+                temp_file.advise_sequential();
                 temp_file
                     .as_std_mut()
                     .write_all(&data)
