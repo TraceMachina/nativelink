@@ -1571,7 +1571,7 @@ async fn add_too_early_files() -> Result<(), Error> {
     .err_tip(|| "during FileSystemStore::new")?;
 
     assert!(logs_contain(
-        "File access time newer than FilesystemStore start time file_name=foo atime=20"
+        "file access time newer than FilesystemStore start time file_name=foo"
     ));
 
     Ok(())

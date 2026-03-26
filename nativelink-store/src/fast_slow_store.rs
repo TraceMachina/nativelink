@@ -22,7 +22,7 @@ use std::ffi::OsString;
 use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use futures::{FutureExt, join};
 use nativelink_config::stores::{FastSlowSpec, StoreDirection};
 use nativelink_error::{Code, Error, ResultExt, make_err};
@@ -69,7 +69,7 @@ pub struct FastSlowStore {
     /// Holds data for blobs whose background slow-store write is still in
     /// progress. If the fast store evicts the blob before the slow write
     /// completes, `get_part` serves from this map to prevent NotFound gaps.
-    in_flight_slow_writes: Arc<Mutex<HashMap<StoreKey<'static>, Bytes>>>,
+    in_flight_slow_writes: Arc<Mutex<HashMap<StoreKey<'static>, Vec<Bytes>>>>,
     /// Digests that have completed their background slow store write.
     /// Drained every 100ms by the BlobsInStableStorage batching loop.
     stable_digests: Arc<Mutex<Vec<DigestInfo>>>,
@@ -418,39 +418,18 @@ impl StoreDriver for FastSlowStore {
                 for (k, result) in key.iter().zip(results.iter_mut()) {
                     if result.is_none() {
                         let owned = k.borrow().into_owned();
-                        if let Some(data) = in_flight.get(&owned) {
+                        if let Some(chunks) = in_flight.get(&owned) {
+                            let total_len: u64 =
+                                chunks.iter().map(|c| c.len() as u64).sum();
                             info!(
                                 key = %owned.as_str(),
-                                data_len = data.len(),
+                                data_len = total_len,
                                 "has_with_results: found blob in in-flight map \
                                  (not yet on slow store)",
                             );
-                            *result = Some(data.len() as u64);
+                            *result = Some(total_len);
                         }
                     }
-                }
-            }
-        }
-        // Check fast store for blobs not yet on slow store or in-flight.
-        // This catches blobs in MemoryStore whose background slow write
-        // hasn't started yet (e.g., just inserted, spawn not yet scheduled).
-        let missing_indices: Vec<usize> = results
-            .iter()
-            .enumerate()
-            .filter_map(|(i, r)| if r.is_none() { Some(i) } else { None })
-            .collect();
-        if !missing_indices.is_empty() {
-            let missing_keys: Vec<StoreKey<'_>> = missing_indices
-                .iter()
-                .map(|&i| key[i].borrow())
-                .collect();
-            let mut fast_results = vec![None; missing_keys.len()];
-            self.fast_store
-                .has_with_results(&missing_keys, &mut fast_results)
-                .await?;
-            for (j, &orig_idx) in missing_indices.iter().enumerate() {
-                if fast_results[j].is_some() {
-                    results[orig_idx] = fast_results[j];
                 }
             }
         }
@@ -506,14 +485,11 @@ impl StoreDriver for FastSlowStore {
             "FastSlowStore::update: start",
         );
 
-        // Read from upstream, forward to fast store, build combined buffer
-        // for background slow store write in a single pass (no second copy).
-        let initial_cap = match size_info {
-            UploadSizeInfo::ExactSize(s) => (s as usize).min(256 * 1024 * 1024),
-            UploadSizeInfo::MaxSize(s) => (s as usize).min(64 * 1024 * 1024),
-        };
+        // Read from upstream, forward to fast store, collect chunks as
+        // Vec<Bytes> (O(1) refcount bump per chunk, no copying) for the
+        // background slow store write.
         let data_stream_fut = async move {
-            let mut combined = BytesMut::with_capacity(initial_cap);
+            let mut chunks: Vec<Bytes> = Vec::new();
             loop {
                 let buffer = reader
                     .recv()
@@ -523,9 +499,9 @@ impl StoreDriver for FastSlowStore {
                     fast_tx.send_eof().err_tip(
                         || "Failed to write eof to fast store in fast_slow store update",
                     )?;
-                    return Result::<Bytes, Error>::Ok(combined.freeze());
+                    return Result::<Vec<Bytes>, Error>::Ok(chunks);
                 }
-                combined.extend_from_slice(&buffer);
+                chunks.push(buffer.clone());
                 fast_tx.send(buffer).await.map_err(|e| {
                     make_err!(
                         Code::Internal,
@@ -560,7 +536,7 @@ impl StoreDriver for FastSlowStore {
         }
         fast_res?;
 
-        let bytes_sent = data.len() as u64;
+        let bytes_sent: u64 = data.iter().map(|c| c.len() as u64).sum();
         let fast_elapsed = update_start.elapsed();
         debug!(
             ?key,
@@ -598,11 +574,33 @@ impl StoreDriver for FastSlowStore {
                 );
             }
             let slow_start = std::time::Instant::now();
-            let result = slow_store
-                .update_oneshot(key_for_bg.borrow(), data)
-                .await;
+            // Stream collected chunks to slow store via buf_channel,
+            // avoiding a single large concatenation.
+            let (mut slow_tx, slow_rx) = make_buf_channel_pair_with_size(128);
+            let write_fut = slow_store.update(
+                key_for_bg.borrow(),
+                slow_rx,
+                UploadSizeInfo::ExactSize(bytes_sent),
+            );
+            let send_fut = async {
+                for chunk in data {
+                    slow_tx.send(chunk).await.map_err(|e| {
+                        make_err!(
+                            Code::Internal,
+                            "Failed to send chunk to slow store: {:?}",
+                            e
+                        )
+                    })?;
+                }
+                slow_tx.send_eof().err_tip(
+                    || "Failed to send eof to slow store in background write",
+                )?;
+                Result::<(), Error>::Ok(())
+            };
+            let (write_result, send_result) = tokio::join!(write_fut, send_fut);
             in_flight.lock().remove(&key_for_bg);
             let slow_ms = slow_start.elapsed().as_millis();
+            let result = send_result.and(write_result);
             match result {
                 Ok(()) => {
                     if let StoreKey::Digest(digest) = &key_for_bg {
@@ -688,7 +686,7 @@ impl StoreDriver for FastSlowStore {
         let owned_key = key.borrow().into_owned();
         self.in_flight_slow_writes
             .lock()
-            .insert(owned_key.clone(), data.clone());
+            .insert(owned_key.clone(), vec![data.clone()]);
 
         let in_flight = self.in_flight_slow_writes.clone();
         let stable_digests_ref = self.stable_digests.clone();
@@ -879,27 +877,42 @@ impl StoreDriver for FastSlowStore {
         // fast store while its background slow-store write is still in progress.
         {
             let owned_key = key.borrow().into_owned();
-            let maybe_data = self.in_flight_slow_writes.lock().get(&owned_key).cloned();
-            if let Some(data) = maybe_data {
-                let data_len = data.len();
+            let maybe_chunks = self.in_flight_slow_writes.lock().get(&owned_key).cloned();
+            if let Some(chunks) = maybe_chunks {
+                let total_len: usize = chunks.iter().map(|c| c.len()).sum();
                 let offset_usize = usize::try_from(offset)
                     .err_tip(|| "Could not convert offset to usize")?;
                 let end = length
                     .and_then(|l| usize::try_from(l).ok())
-                    .map(|l| (offset_usize.saturating_add(l)).min(data_len))
-                    .unwrap_or(data_len);
+                    .map(|l| (offset_usize.saturating_add(l)).min(total_len))
+                    .unwrap_or(total_len);
                 if offset_usize < end {
-                    writer
-                        .send(data.slice(offset_usize..end))
-                        .await
-                        .err_tip(|| "Failed to send in-flight data in fast_slow get_part")?;
+                    // Walk the chunk list, skipping/slicing to honor offset and length.
+                    let mut pos: usize = 0;
+                    for chunk in &chunks {
+                        let chunk_end = pos + chunk.len();
+                        if chunk_end <= offset_usize {
+                            pos = chunk_end;
+                            continue;
+                        }
+                        if pos >= end {
+                            break;
+                        }
+                        let start_in_chunk = offset_usize.saturating_sub(pos);
+                        let end_in_chunk = (end - pos).min(chunk.len());
+                        writer
+                            .send(chunk.slice(start_in_chunk..end_in_chunk))
+                            .await
+                            .err_tip(|| "Failed to send in-flight data in fast_slow get_part")?;
+                        pos = chunk_end;
+                    }
                 }
                 writer
                     .send_eof()
                     .err_tip(|| "Failed to send EOF for in-flight data")?;
                 debug!(
                     ?key,
-                    data_len,
+                    data_len = total_len,
                     "Served blob from in-flight slow-write buffer (fast store evicted it)",
                 );
                 return Ok(());

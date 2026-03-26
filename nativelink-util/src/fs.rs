@@ -16,6 +16,8 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use std::fs::{Metadata, Permissions};
 use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
+#[cfg(all(feature = "io-uring", target_os = "linux"))]
+use std::sync::OnceLock;
 
 use bytes::{Bytes, BytesMut};
 use nativelink_error::{Code, Error, ResultExt, make_err};
@@ -33,6 +35,45 @@ use crate::spawn_blocking;
 
 /// Default read buffer size when reading to/from disk.
 pub const DEFAULT_READ_BUFF_SIZE: usize = 64 * 1024;
+
+/// Runtime probe for io_uring availability. On first call, attempts to
+/// launch a `tokio_epoll_uring::System`. If the kernel does not support
+/// io_uring (old kernel, container with seccomp, etc.), the flag is set
+/// to false and all subsequent calls fall back to the spawn_blocking path
+/// for the rest of the process lifetime.
+#[cfg(all(feature = "io-uring", target_os = "linux"))]
+static IO_URING_AVAILABLE: OnceLock<bool> = OnceLock::new();
+
+/// Check whether io_uring is available on this system. On first call,
+/// probes by launching a `tokio_epoll_uring::System`. The result is
+/// cached for the lifetime of the process.
+#[cfg(all(feature = "io-uring", target_os = "linux"))]
+async fn is_io_uring_available() -> bool {
+    if let Some(&available) = IO_URING_AVAILABLE.get() {
+        return available;
+    }
+    // First call — probe by actually launching a System (which calls
+    // io_uring_setup internally). This is the same code path that
+    // thread_local_system() uses, but we handle the error instead
+    // of panicking.
+    let available = match tokio_epoll_uring::System::launch().await {
+        Ok(_handle) => {
+            info!("io_uring runtime probe succeeded, using io_uring for filesystem ops");
+            true
+        }
+        Err(e) => {
+            warn!(
+                error = %e,
+                "io_uring runtime probe failed, falling back to spawn_blocking for all filesystem ops"
+            );
+            false
+        }
+    };
+    // Another thread may have raced us; that's fine, the value is
+    // deterministic (same kernel on both probes).
+    let _ = IO_URING_AVAILABLE.set(available);
+    available
+}
 
 #[derive(Debug)]
 pub struct FileSlot {
@@ -52,6 +93,22 @@ impl FileSlot {
     #[inline]
     pub fn as_std_mut(&mut self) -> &mut std::fs::File {
         &mut self.inner
+    }
+
+    /// Decompose into the semaphore permit and raw `std::fs::File`.
+    /// Used by the io_uring path which needs ownership transfer.
+    #[inline]
+    pub fn into_inner(self) -> (SemaphorePermit<'static>, std::fs::File) {
+        (self._permit, self.inner)
+    }
+
+    /// Reconstitute from a permit and file returned by io_uring.
+    #[inline]
+    pub fn from_parts(permit: SemaphorePermit<'static>, file: std::fs::File) -> Self {
+        Self {
+            _permit: permit,
+            inner: file,
+        }
     }
 
     /// Advise the kernel to drop page cache for this file's contents.
@@ -238,7 +295,38 @@ pub fn get_open_files_for_test() -> usize {
     OPEN_FILE_LIMIT.load(Ordering::Acquire) - OPEN_FILE_SEMAPHORE.available_permits()
 }
 
+/// Open a file for reading.
+///
+/// **Important**: the io_uring path ignores `start` because `read_file_to_channel`
+/// uses pread with explicit offsets. Callers MUST pass the same offset to
+/// `read_file_to_channel`'s `start_offset` parameter. Do NOT use the returned
+/// `FileSlot` for direct sequential reads at a non-zero offset — use pread or
+/// the spawn_blocking fallback instead.
+///
+/// Falls back to spawn_blocking (with seek) if io_uring is unavailable.
+#[cfg(all(feature = "io-uring", target_os = "linux"))]
 pub async fn open_file(path: impl AsRef<Path>, start: u64) -> Result<FileSlot, Error> {
+    if !is_io_uring_available().await {
+        return open_file_std(path, start).await;
+    }
+    let path = path.as_ref().to_owned();
+    let permit = get_permit().await?;
+    let system = tokio_epoll_uring::thread_local_system().await;
+    let mut opts = tokio_epoll_uring::ops::open_at::OpenOptions::new();
+    opts.read(true);
+    let owned_fd = system
+        .open(&path, &opts)
+        .await
+        .map_err(|e| uring_err(e, &format!("open {}", path.display())))?;
+    Ok(FileSlot::from_parts(permit, owned_fd.into()))
+}
+
+#[cfg(not(all(feature = "io-uring", target_os = "linux")))]
+pub async fn open_file(path: impl AsRef<Path>, start: u64) -> Result<FileSlot, Error> {
+    open_file_std(path, start).await
+}
+
+async fn open_file_std(path: impl AsRef<Path>, start: u64) -> Result<FileSlot, Error> {
     let path = path.as_ref().to_owned();
     let (permit, os_file) = call_with_permit(move |permit| {
         let mut os_file =
@@ -257,7 +345,43 @@ pub async fn open_file(path: impl AsRef<Path>, start: u64) -> Result<FileSlot, E
     })
 }
 
+/// Create a file for read+write via io_uring openat with O_CREAT|O_TRUNC.
+/// Falls back to spawn_blocking if io_uring is unavailable at runtime.
+#[cfg(all(feature = "io-uring", target_os = "linux"))]
 pub async fn create_file(path: impl AsRef<Path>) -> Result<FileSlot, Error> {
+    if !is_io_uring_available().await {
+        return create_file_std(path).await;
+    }
+    let path = path.as_ref().to_owned();
+    let create_start = std::time::Instant::now();
+    let permit = get_permit().await?;
+    let system = tokio_epoll_uring::thread_local_system().await;
+    let mut opts = tokio_epoll_uring::ops::open_at::OpenOptions::new();
+    opts.read(true).write(true).create(true).truncate(true);
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let owned_fd = system
+        .open(&path, &opts)
+        .await
+        .map_err(|e| uring_err(e, &format!("create {}", path.display())))?;
+    let create_ms = create_start.elapsed().as_millis();
+    if create_ms > 100 {
+        warn!(
+            create_ms,
+            "create_file: slow io_uring file creation (>100ms)"
+        );
+    }
+    Ok(FileSlot::from_parts(permit, owned_fd.into()))
+}
+
+#[cfg(not(all(feature = "io-uring", target_os = "linux")))]
+pub async fn create_file(path: impl AsRef<Path>) -> Result<FileSlot, Error> {
+    create_file_std(path).await
+}
+
+async fn create_file_std(path: impl AsRef<Path>) -> Result<FileSlot, Error> {
     let path = path.as_ref().to_owned();
     let create_start = std::time::Instant::now();
     let (permit, os_file) = call_with_permit(move |permit| {
@@ -286,12 +410,170 @@ pub async fn create_file(path: impl AsRef<Path>) -> Result<FileSlot, Error> {
     })
 }
 
+/// Convert a `tokio_epoll_uring` operation error into a NativeLink `Error`.
+/// Maps `io::ErrorKind::NotFound` to `Code::NotFound` so upper layers
+/// can distinguish missing files from internal failures.
+#[cfg(all(feature = "io-uring", target_os = "linux"))]
+fn uring_err(e: tokio_epoll_uring::Error<std::io::Error>, ctx: &str) -> Error {
+    match e {
+        tokio_epoll_uring::Error::Op(io_err) => {
+            let code = match io_err.kind() {
+                std::io::ErrorKind::NotFound => Code::NotFound,
+                std::io::ErrorKind::PermissionDenied => Code::PermissionDenied,
+                std::io::ErrorKind::AlreadyExists => Code::AlreadyExists,
+                _ => Code::Internal,
+            };
+            make_err!(code, "io_uring {ctx}: {io_err:?}")
+        }
+        tokio_epoll_uring::Error::System(sys_err) => {
+            make_err!(Code::Internal, "io_uring system error in {ctx}: {sys_err:?}")
+        }
+    }
+}
+
+/// Read from `file` via io_uring pread, sending chunks to `writer`.
+/// Eliminates the spawn_blocking thread pool and mpsc channel bridge —
+/// reads are submitted directly to the kernel via io_uring and awaited
+/// on the current tokio task.
+///
+/// Uses double-buffering to overlap disk I/O with network transmission:
+/// while one chunk is being sent to the writer channel, the next read
+/// is already submitted to io_uring. Buffers are reused across iterations
+/// to avoid per-read allocation and zeroing overhead.
+///
+/// Falls back to spawn_blocking if io_uring is unavailable at runtime.
+#[cfg(all(feature = "io-uring", target_os = "linux"))]
+pub async fn read_file_to_channel(
+    file: FileSlot,
+    writer: &mut DropCloserWriteHalf,
+    limit: u64,
+    read_buffer_size: usize,
+    start_offset: u64,
+) -> Result<FileSlot, Error> {
+    if !is_io_uring_available().await {
+        return read_file_to_channel_std(file, writer, limit, read_buffer_size, start_offset).await;
+    }
+    let system = tokio_epoll_uring::thread_local_system().await;
+    let (permit, std_file) = file.into_inner();
+
+    use std::os::unix::io::AsRawFd;
+    let raw_fd = std_file.as_raw_fd();
+
+    // Advise the kernel we will read sequentially — enables aggressive
+    // readahead (typically 2-4x default window).
+    unsafe {
+        // len=0 means "to end of file" per POSIX, which is correct when
+        // limit is u64::MAX (casting u64::MAX to i64 would produce -1).
+        let fadvise_len = if limit == u64::MAX { 0 } else { limit as i64 };
+        libc::posix_fadvise(raw_fd, start_offset as i64, fadvise_len, libc::POSIX_FADV_SEQUENTIAL);
+    }
+
+    let mut remaining = limit;
+    let mut current_offset = start_offset;
+    let mut fd = std_file;
+
+    // --- First read (priming the pipeline) ---
+    let first_to_read = read_buffer_size.min(remaining as usize);
+    if first_to_read == 0 {
+        return Ok(FileSlot::from_parts(permit, fd));
+    }
+
+    let read_start = std::time::Instant::now();
+    // Safety: IoBufMut for Vec<u8> uses capacity as the writable region.
+    // The kernel fills bytes via pread; set_init(n) is called on completion.
+    // No need to zero-initialize — the kernel overwrites the buffer.
+    let ((returned_fd, returned_buf), result) =
+        system.read(fd, current_offset, Vec::with_capacity(first_to_read)).await;
+    fd = returned_fd;
+
+    let n = match result {
+        Ok(0) => return Ok(FileSlot::from_parts(permit, fd)),
+        Ok(n) => n,
+        Err(e) => return Err(uring_err(e, "read_file_to_channel")),
+    };
+
+    let read_ms = read_start.elapsed().as_millis();
+    if read_ms > 100 {
+        warn!(
+            read_ms,
+            bytes_read = n,
+            current_offset,
+            "read_file_to_channel: slow io_uring read (>100ms)"
+        );
+    }
+
+    // Zero-copy: Vec heap transfers directly to Bytes.
+    let mut vec_buf = returned_buf;
+    vec_buf.truncate(n);
+    let mut pending_chunk = Bytes::from(vec_buf);
+    current_offset += n as u64;
+    remaining = remaining.saturating_sub(n as u64);
+
+    // --- Steady-state loop: overlap channel send with next io_uring read ---
+    // While the previous chunk travels over the network, the next chunk
+    // is being read from disk via io_uring. This hides disk latency
+    // behind network transmission.
+    loop {
+        let to_read = read_buffer_size.min(remaining as usize);
+        if to_read == 0 {
+            // No more data to read — just send the last pending chunk.
+            writer
+                .send(pending_chunk)
+                .await
+                .err_tip(|| "failed to send final chunk from file reader")?;
+            break;
+        }
+
+        // Submit next read and send previous chunk concurrently.
+        // Each iteration allocates a fresh Vec for the read buffer.
+        // Bytes::from(vec) transfers ownership zero-copy, so the Vec
+        // can't be reused — but mimalloc's thread-local free lists
+        // recycle the same pages, making this effectively free.
+        // No zero-init: kernel overwrites via pread, IoBufMut uses capacity.
+        let read_fut = system.read(fd, current_offset, Vec::with_capacity(to_read));
+        let send_fut = writer.send(pending_chunk);
+
+        let (send_result, ((returned_fd, returned_buf), read_result)) =
+            tokio::join!(send_fut, read_fut);
+
+        send_result.err_tip(|| "failed to send chunk from file reader")?;
+
+        fd = returned_fd;
+
+        let n = match read_result {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) => return Err(uring_err(e, "read_file_to_channel")),
+        };
+
+        // Zero-copy: transfer Vec heap to Bytes.
+        let mut vec_buf = returned_buf;
+        vec_buf.truncate(n);
+        pending_chunk = Bytes::from(vec_buf);
+        current_offset += n as u64;
+        remaining = remaining.saturating_sub(n as u64);
+    }
+
+    Ok(FileSlot::from_parts(permit, fd))
+}
+
+#[cfg(not(all(feature = "io-uring", target_os = "linux")))]
+pub async fn read_file_to_channel(
+    file: FileSlot,
+    writer: &mut DropCloserWriteHalf,
+    limit: u64,
+    read_buffer_size: usize,
+    start_offset: u64,
+) -> Result<FileSlot, Error> {
+    read_file_to_channel_std(file, writer, limit, read_buffer_size, start_offset).await
+}
+
 /// Read from `file` in a blocking thread, sending chunks to `writer`.
 /// Reads up to `limit` bytes starting from `start_offset`.
 /// `read_buffer_size` controls the chunk size (typically 256 KiB).
 /// After each read, prefetches the next 2 chunks via `advise_willneed`.
 /// Returns the `FileSlot` so the caller can reuse or drop it.
-pub async fn read_file_to_channel(
+async fn read_file_to_channel_std(
     file: FileSlot,
     writer: &mut DropCloserWriteHalf,
     limit: u64,
@@ -325,7 +607,7 @@ pub async fn read_file_to_channel(
                     }
                     buf.truncate(n);
                     current_offset += n as u64;
-                    remaining -= n as u64;
+                    remaining = remaining.saturating_sub(n as u64);
                     // Prefetch next 2 chunks while this one travels over the network.
                     f.advise_willneed(current_offset, read_buffer_size * 2);
                     if sync_tx.blocking_send(Ok(buf.freeze())).is_err() {
@@ -355,9 +637,110 @@ pub async fn read_file_to_channel(
         .map_err(|e| make_err!(Code::Internal, "read task join failed: {e:?}"))
 }
 
+/// Write to `file` via io_uring pwrite, receiving chunks from `reader`.
+/// Eliminates the spawn_blocking thread pool and mpsc channel bridge —
+/// writes are submitted directly to the kernel via io_uring. `Bytes`
+/// buffers are passed by ownership (zero-copy to kernel).
+///
+/// Falls back to spawn_blocking if io_uring is unavailable at runtime.
+#[cfg(all(feature = "io-uring", target_os = "linux"))]
+pub async fn write_file_from_channel(
+    file: FileSlot,
+    reader: &mut DropCloserReadHalf,
+) -> Result<(u64, FileSlot), Error> {
+    if !is_io_uring_available().await {
+        return write_file_from_channel_std(file, reader).await;
+    }
+    let system = tokio_epoll_uring::thread_local_system().await;
+    let (permit, std_file) = file.into_inner();
+
+    // Set FADV_SEQUENTIAL before the loop while we own the fd.
+    {
+        use std::os::unix::io::AsRawFd;
+        let raw_fd = std_file.as_raw_fd();
+        // Safety: raw_fd is valid, fadvise is best-effort.
+        unsafe {
+            libc::posix_fadvise(raw_fd, 0, 0, libc::POSIX_FADV_SEQUENTIAL);
+        }
+    }
+
+    let mut fd = std_file;
+    let mut total: u64 = 0;
+    let mut max_write_ms: u128 = 0;
+    let mut slow_write_count: u32 = 0;
+    let task_start = std::time::Instant::now();
+
+    loop {
+        let data = reader
+            .recv()
+            .await
+            .err_tip(|| "Failed to recv in write_file_from_channel")?;
+        if data.is_empty() {
+            break; // EOF
+        }
+        let chunk_len = data.len();
+        let write_start = std::time::Instant::now();
+
+        // Pass Bytes directly — avoids the spawn_blocking + mpsc copy.
+        // The kernel reads from the Bytes heap pointer.
+        let ((returned_fd, _), result) = system.write(fd, total, data).await;
+        fd = returned_fd;
+
+        let n = match result {
+            Ok(n) => n,
+            Err(e) => return Err(uring_err(e, "write_file_from_channel")),
+        };
+
+        // For regular files, pwrite writes the full amount unless the
+        // disk is full. Handle partial writes defensively.
+        if n < chunk_len {
+            return Err(make_err!(
+                Code::Internal,
+                "io_uring partial write: {n}/{chunk_len} bytes at offset {total}"
+            ));
+        }
+
+        let write_ms = write_start.elapsed().as_millis();
+        if write_ms > max_write_ms {
+            max_write_ms = write_ms;
+        }
+        if write_ms > 100 {
+            slow_write_count += 1;
+            warn!(
+                write_ms,
+                chunk_len,
+                total_so_far = total,
+                "write_file_from_channel: slow io_uring write (>100ms)"
+            );
+        }
+        total += chunk_len as u64;
+    }
+
+    let task_total_ms = task_start.elapsed().as_millis();
+    if task_total_ms > 100 {
+        warn!(
+            task_total_ms,
+            total_bytes = total,
+            max_write_ms,
+            slow_write_count,
+            "write_file_from_channel: slow total write (>100ms)"
+        );
+    }
+
+    Ok((total, FileSlot::from_parts(permit, fd)))
+}
+
+#[cfg(not(all(feature = "io-uring", target_os = "linux")))]
+pub async fn write_file_from_channel(
+    file: FileSlot,
+    reader: &mut DropCloserReadHalf,
+) -> Result<(u64, FileSlot), Error> {
+    write_file_from_channel_std(file, reader).await
+}
+
 /// Write to `file` from a blocking thread, receiving chunks from `reader`.
 /// Returns total bytes written and the `FileSlot`.
-pub async fn write_file_from_channel(
+async fn write_file_from_channel_std(
     file: FileSlot,
     reader: &mut DropCloserReadHalf,
 ) -> Result<(u64, FileSlot), Error> {
@@ -430,6 +813,53 @@ pub async fn write_file_from_channel(
 
     send_result?;
     Ok((total, file))
+}
+
+/// Write `data` to `file` at offset 0 in a single operation.
+/// On io_uring: zero-copy pwrite (Bytes passed directly to kernel).
+/// On fallback: spawn_blocking + write_all.
+///
+/// Falls back to spawn_blocking if io_uring is unavailable at runtime.
+#[cfg(all(feature = "io-uring", target_os = "linux"))]
+pub async fn write_all_to_file(file: FileSlot, data: Bytes) -> Result<FileSlot, Error> {
+    if data.is_empty() {
+        return Ok(file);
+    }
+    if !is_io_uring_available().await {
+        return write_all_to_file_std(file, data).await;
+    }
+    let expected = data.len();
+    let system = tokio_epoll_uring::thread_local_system().await;
+    let (permit, std_file) = file.into_inner();
+    let ((returned_fd, _), result) = system.write(std_file, 0, data).await;
+    let n = result.map_err(|e| uring_err(e, "write_all_to_file"))?;
+    if n < expected {
+        return Err(make_err!(
+            Code::Internal,
+            "io_uring partial write in write_all_to_file: {n}/{expected} bytes"
+        ));
+    }
+    Ok(FileSlot::from_parts(permit, returned_fd))
+}
+
+#[cfg(not(all(feature = "io-uring", target_os = "linux")))]
+pub async fn write_all_to_file(file: FileSlot, data: Bytes) -> Result<FileSlot, Error> {
+    if data.is_empty() {
+        return Ok(file);
+    }
+    write_all_to_file_std(file, data).await
+}
+
+async fn write_all_to_file_std(mut file: FileSlot, data: Bytes) -> Result<FileSlot, Error> {
+    file = spawn_blocking!("fs_write_all", move || {
+        file.as_std_mut()
+            .write_all(&data)
+            .map_err(|e| Into::<Error>::into(e))?;
+        Ok::<_, Error>(file)
+    })
+    .await
+    .map_err(|e| make_err!(Code::Internal, "write_all join failed: {e:?}"))??;
+    Ok(file)
 }
 
 pub async fn hard_link(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> Result<(), Error> {

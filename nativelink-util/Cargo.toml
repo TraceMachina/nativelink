@@ -7,6 +7,7 @@ name = "nativelink-util"
 version = "1.0.0"
 
 [features]
+io-uring = ["dep:tokio-epoll-uring"]
 pprof = ["dep:pprof", "dep:axum"]
 quic = ["dep:tonic-h3", "dep:h3-util", "dep:quinn", "dep:h3-quinn", "dep:rustls", "dep:socket2"]
 
@@ -112,6 +113,7 @@ pprof = { version = "0.15.0", default-features = false, features = ["flamegraph"
 nativelink-macro = { path = "../nativelink-macro" }
 
 axum = { version = "0.8.3", default-features = false }
+criterion = { version = "0.5", default-features = false, features = ["async_tokio"] }
 http-body-util = { version = "0.1.3", default-features = false }
 pretty_assertions = { version = "1.4.1", features = [
   "std",
@@ -123,6 +125,13 @@ serde_json = { version = "1.0.140", default-features = false }
 tracing-test = { version = "0.2.5", default-features = false, features = [
   "no-env-filter",
 ] }
+
+[[bench]]
+name = "fs_io_bench"
+harness = false
+
+[target.'cfg(target_os = "linux")'.dependencies]
+tokio-epoll-uring = { git = "https://github.com/neondatabase/tokio-epoll-uring.git", branch = "main", optional = true }
 
 [package.metadata.cargo-machete]
 # Used by nativelink_test macro

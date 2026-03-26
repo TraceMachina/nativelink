@@ -45,8 +45,11 @@ use crate::grpc_store::GrpcStore;
 /// Behavior:
 /// - `get_part()`: Try inner store first. If NotFound, consult the locality map
 ///   for workers that have the digest, try reading from a worker.
-/// - `has()` / `has_with_results()`: ONLY check inner store. Never consult the
-///   locality map. (Prevents stale-positive issues with FindMissingBlobs.)
+/// - `has()` / `has_with_results()`: Check inner store first. For any digests
+///   still missing, consult the locality map — if a worker has the blob, report
+///   it as present. This is safe because workers pin blobs until they are
+///   uploaded to the server CAS, so a locality entry implies the blob is
+///   retrievable (either from the worker or already in the server CAS).
 /// - `update()`: Pass through to inner store.
 #[derive(MetricsComponent)]
 pub struct WorkerProxyStore {
@@ -215,8 +218,8 @@ impl WorkerProxyStore {
                 continue;
             };
 
-            match store
-                .get_part(key.borrow(), &mut *writer, offset, length)
+            match self
+                .get_part_and_cache(&store, key.borrow(), &mut *writer, offset, length)
                 .await
             {
                 Ok(()) => {
@@ -247,10 +250,11 @@ impl WorkerProxyStore {
 
     /// Try to read a blob from a worker that has it, according to the locality map.
     ///
-    /// Streams directly from the peer to the caller's writer via `get_part()` —
-    /// no buffering. If a peer fails mid-stream, we resume from the next peer
-    /// at the byte offset where the previous one left off (content-addressed
-    /// blobs are identical across peers).
+    /// Streams from the peer to the caller's writer via `get_part_and_cache()`,
+    /// which tees the data to both the caller and the inner store for caching
+    /// (for full-blob reads within the size limit). If a peer fails mid-stream,
+    /// we resume from the next peer at the byte offset where the previous one
+    /// left off (content-addressed blobs are identical across peers).
     async fn try_read_from_worker(
         &self,
         key: StoreKey<'_>,
@@ -282,11 +286,11 @@ impl WorkerProxyStore {
                 continue;
             };
 
-            // Stream directly from the peer — no buffering.
+            // Stream from the peer, caching in the inner store when possible.
             // On failure, compute how many bytes were written and resume
             // from the next peer at the correct offset.
-            match store
-                .get_part(key.borrow(), &mut *writer, current_offset, remaining_length)
+            match self
+                .get_part_and_cache(&store, key.borrow(), &mut *writer, current_offset, remaining_length)
                 .await
             {
                 Ok(()) => {
@@ -324,6 +328,159 @@ impl WorkerProxyStore {
         }
 
         Ok(false)
+    }
+
+    /// Maximum blob size to buffer and cache in the inner store after a
+    /// successful proxy read. Blobs larger than this are streamed directly
+    /// without caching, to avoid excessive memory usage.
+    const MAX_CACHE_BLOB_SIZE: u64 = 64 * 1024 * 1024; // 64 MiB
+
+    /// Wrapper around a peer's `get_part` that tees the data to both the
+    /// caller's writer and a background write to the inner store.
+    ///
+    /// For full-blob reads (offset=0, length=None) of blobs within the
+    /// size limit, the data is collected during streaming and written to
+    /// `self.inner` in a background task after success. For partial reads
+    /// or oversized blobs, streams directly without caching.
+    async fn get_part_and_cache(
+        &self,
+        peer_store: &Store,
+        key: StoreKey<'_>,
+        writer: &mut DropCloserWriteHalf,
+        offset: u64,
+        length: Option<u64>,
+    ) -> Result<(), Error> {
+        let digest = key.borrow().into_digest();
+
+        // Only cache full-blob reads for blobs within the size limit.
+        let should_cache = offset == 0
+            && length.is_none()
+            && digest.size_bytes() <= Self::MAX_CACHE_BLOB_SIZE;
+
+        if !should_cache {
+            return peer_store
+                .get_part(key, &mut *writer, offset, length)
+                .await;
+        }
+
+        // Create an intermediate channel so we can tee the data to both the
+        // caller's writer and a concurrent inner store write.
+        let (mut proxy_tx, mut proxy_rx) = make_buf_channel_pair();
+        let (mut cache_tx, cache_rx) = make_buf_channel_pair();
+
+        // Run the peer's get_part concurrently with forwarding, because the
+        // buf_channel has limited capacity and the producer will block if
+        // we don't consume data as it arrives.
+        let owned_key = key.borrow().into_owned();
+        let peer = peer_store.clone();
+        let get_part_fut = async move {
+            peer.get_part(owned_key.borrow(), &mut proxy_tx, offset, length)
+                .await
+        };
+
+        // Start the inner store write concurrently. If the blob size is known
+        // from the digest, use ExactSize; otherwise MaxSize.
+        let inner = self.inner.clone();
+        let cache_size = UploadSizeInfo::ExactSize(digest.size_bytes());
+        let cache_key: StoreKey<'static> = digest.into();
+        let cache_write_fut = async move {
+            inner.update(cache_key, cache_rx, cache_size).await
+        };
+
+        let mut total_bytes: u64 = 0;
+        let forward_fut = async {
+            loop {
+                match proxy_rx.recv().await {
+                    Ok(chunk) if chunk.is_empty() => {
+                        writer
+                            .send_eof()
+                            .err_tip(|| "get_part_and_cache: forwarding EOF")?;
+                        cache_tx
+                            .send_eof()
+                            .err_tip(|| "get_part_and_cache: cache EOF")?;
+                        break;
+                    }
+                    Ok(chunk) => {
+                        total_bytes += chunk.len() as u64;
+                        // Send to inner store write (clone is O(1) refcount bump).
+                        if let Err(e) = cache_tx.send(chunk.clone()).await {
+                            // Cache write failed; log but continue serving the caller.
+                            warn!(
+                                %digest,
+                                ?e,
+                                "get_part_and_cache: cache channel send failed, \
+                                 skipping cache"
+                            );
+                            // Drop the cache writer so the cache_write_fut finishes.
+                            drop(cache_tx);
+                            // Forward remaining data without caching.
+                            writer
+                                .send(chunk)
+                                .await
+                                .err_tip(|| "get_part_and_cache: forwarding chunk")?;
+                            loop {
+                                match proxy_rx.recv().await {
+                                    Ok(c) if c.is_empty() => {
+                                        writer.send_eof().err_tip(
+                                            || "get_part_and_cache: forwarding EOF (no cache)",
+                                        )?;
+                                        return Ok::<(), Error>(());
+                                    }
+                                    Ok(c) => {
+                                        writer.send(c).await.err_tip(
+                                            || "get_part_and_cache: forwarding chunk (no cache)",
+                                        )?;
+                                    }
+                                    Err(e) => {
+                                        return Err(e).err_tip(
+                                            || "get_part_and_cache: proxy channel (no cache)",
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        writer
+                            .send(chunk)
+                            .await
+                            .err_tip(|| "get_part_and_cache: forwarding chunk")?;
+                    }
+                    Err(e) => {
+                        return Err(e)
+                            .err_tip(|| "get_part_and_cache: reading from proxy channel");
+                    }
+                }
+            }
+            Ok::<(), Error>(())
+        };
+
+        let (get_part_result, forward_result, cache_result) =
+            tokio::join!(get_part_fut, forward_fut, cache_write_fut);
+
+        // If forwarding failed, propagate that error.
+        forward_result?;
+        // If the peer's get_part failed, propagate that error.
+        get_part_result?;
+
+        // Log cache write result (non-fatal).
+        match cache_result {
+            Ok(()) => {
+                info!(
+                    %digest,
+                    size_bytes = total_bytes,
+                    "proxy_cache: cached proxied blob in inner store"
+                );
+            }
+            Err(e) => {
+                warn!(
+                    %digest,
+                    size_bytes = total_bytes,
+                    ?e,
+                    "proxy_cache: failed to cache proxied blob in inner store"
+                );
+            }
+        }
+
+        Ok(())
     }
 
     /// The original sequential get_part logic: try inner store, then parse
@@ -380,7 +537,24 @@ impl WorkerProxyStore {
             Err(e) => return Err(e),
         }
 
+        let is_worker = IS_WORKER_REQUEST.try_with(|v| *v).unwrap_or(false);
+
         if let Some(endpoints) = redirect_endpoints {
+            // For worker requests, pass the redirect through instead of
+            // following it — workers should fetch from peers directly.
+            if is_worker {
+                let digest = key.borrow().into_digest();
+                let ep_str = endpoints.join(",");
+                info!(
+                    ?digest,
+                    endpoints = ep_str.as_str(),
+                    "WorkerProxyStore: passing redirect through to worker"
+                );
+                return Err(make_err!(
+                    Code::FailedPrecondition,
+                    "{REDIRECT_PREFIX}{ep_str}|"
+                ));
+            }
             if self
                 .try_read_from_endpoints(key.borrow(), writer, offset, length, &endpoints)
                 .await?
@@ -388,8 +562,6 @@ impl WorkerProxyStore {
                 return Ok(());
             }
         }
-
-        let is_worker = IS_WORKER_REQUEST.try_with(|v| *v).unwrap_or(false);
 
         if is_worker {
             let digest = key.borrow().into_digest();
@@ -508,9 +680,36 @@ impl StoreDriver for WorkerProxyStore {
         digests: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
-        // ONLY check inner store. Never consult the locality map for has().
-        // This prevents stale-positive issues with FindMissingBlobs.
-        self.inner.has_with_results(digests, results).await
+        // Check inner store first.
+        self.inner.has_with_results(digests, results).await?;
+
+        // For any digests still missing, check the locality map. If a worker
+        // has the blob pinned, it is retrievable via get_part() so we report
+        // it as present. The size comes from the digest's declared size_bytes
+        // (which is what the caller asked about).
+        let locality = self.locality_map.read();
+        let mut locality_hit_count: u64 = 0;
+        for (i, key) in digests.iter().enumerate() {
+            if results[i].is_some() {
+                continue;
+            }
+            let digest = key.borrow().into_digest();
+            if locality.has_digest(&digest) {
+                // Use the digest's declared size. The blob is on a worker
+                // and will be served by get_part() via the locality map.
+                results[i] = Some(digest.size_bytes());
+                locality_hit_count += 1;
+            }
+        }
+        if locality_hit_count > 0 {
+            info!(
+                locality_hit_count,
+                total_digests = digests.len(),
+                "has_with_results: locality map provided results for digests missing from inner store"
+            );
+        }
+
+        Ok(())
     }
 
     async fn update(
@@ -525,11 +724,9 @@ impl StoreDriver for WorkerProxyStore {
 
     fn optimized_for(&self, optimization: StoreOptimizations) -> bool {
         // Report LazyExistenceOnSync so that FastSlowStore skips the has()
-        // check before get_part(). Our has() only checks the inner store
-        // (to avoid stale-positive FindMissingBlobs), but get_part() also
-        // consults the locality map and peer workers. Without this, blobs
-        // that exist only on peer workers would never be found by
-        // FastSlowStore because has() returns None.
+        // check before get_part(). While has_with_results() now also checks
+        // the locality map, LazyExistenceOnSync is still valuable because
+        // get_part() handles redirect/proxy logic that has() cannot.
         if optimization == StoreOptimizations::LazyExistenceOnSync {
             return true;
         }
@@ -869,10 +1066,10 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
-    // 4. has_with_results passes through to inner store (no proxy).
+    // 4. has_with_results: inner store hit + locality map fallback.
     // ---------------------------------------------------------------
     #[nativelink_test]
-    async fn test_has_with_results_passes_through() -> Result<(), Error> {
+    async fn test_has_with_results_falls_back_to_locality_map() -> Result<(), Error> {
         let (store, locality_map) = make_proxy_store();
 
         let value = b"test data";
@@ -884,8 +1081,7 @@ mod tests {
             .update_oneshot(d1, Bytes::from_static(value))
             .await?;
 
-        // Register d2 on a worker so we can prove has() does NOT
-        // consult the locality map.
+        // Register d2 on a worker — has() should find it via locality map.
         locality_map
             .write()
             .register_blobs("worker-a:50081", &[d2]);
@@ -894,16 +1090,39 @@ mod tests {
         let mut results = vec![None; 2];
         store.has_with_results(&keys, &mut results).await?;
 
-        // d1 should be found with correct size.
+        // d1 should be found with correct size from inner store.
         assert_eq!(
             results[0],
             Some(value.len() as u64),
             "d1 should be present in inner store"
         );
-        // d2 should NOT be found (locality map is never consulted for has).
+        // d2 should be found via locality map with its declared size.
         assert_eq!(
-            results[1], None,
-            "d2 should NOT be found — has() must not consult locality map"
+            results[1],
+            Some(999),
+            "d2 should be found via locality map fallback"
+        );
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // 4b. has_with_results: no locality entry => still None.
+    // ---------------------------------------------------------------
+    #[nativelink_test]
+    async fn test_has_with_results_no_locality_returns_none() -> Result<(), Error> {
+        let (store, _locality_map) = make_proxy_store();
+
+        let d1 = DigestInfo::try_new(VALID_HASH1, 100)?;
+
+        // Neither inner store nor locality map has d1.
+        let keys: Vec<StoreKey<'_>> = vec![d1.into()];
+        let mut results = vec![None; 1];
+        store.has_with_results(&keys, &mut results).await?;
+
+        assert_eq!(
+            results[0], None,
+            "d1 should not be found when absent from both inner store and locality map"
         );
 
         Ok(())

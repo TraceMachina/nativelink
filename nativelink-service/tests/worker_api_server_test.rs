@@ -181,6 +181,7 @@ async fn setup_api_server_with_task_limit(
         now_fn,
         [1u8; 6],
         None,
+        None,
     )
     .err_tip(|| "Error creating WorkerApiServer")?;
 
@@ -693,6 +694,7 @@ async fn setup_api_server_with_locality(
         Box::new(static_now_fn),
         [1u8; 6],
         Some(locality_map.clone()),
+        None,
     )
     .err_tip(|| "Error creating WorkerApiServer")?;
 

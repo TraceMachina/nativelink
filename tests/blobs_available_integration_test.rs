@@ -761,17 +761,10 @@ async fn test_blobs_available_three_workers() {
         "Server did not register BlobsAvailable for redirect test blob.",
     );
 
-    // 14a: Non-worker request → server proxies data back.
-    let data = read_blob_from_cas(ports.public, "main", &rd_hash, rd_size)
-        .await
-        .expect("Non-worker read from server failed");
-    assert_eq!(
-        data.as_deref(),
-        Some(redirect_blob.as_slice()),
-        "Non-worker request should get proxied blob data from the server",
-    );
-
-    // 14b: Worker request → server returns redirect with peer endpoints.
+    // 14a: Worker request → server returns redirect with peer endpoints.
+    // Must run before the non-worker proxy test, because proxying caches
+    // the blob in the server's inner store (get_part_and_cache), which
+    // would make the redirect test succeed with code 0 instead of 9.
     let result = read_blob_from_cas_as_worker(ports.public, "main", &rd_hash, rd_size)
         .await
         .expect("Worker read from server failed at transport level");
@@ -796,6 +789,16 @@ async fn test_blobs_available_three_workers() {
         result.message.contains(&expected_port_suffix),
         "Redirect should contain worker-1's CAS port ({}), got: {:?}",
         expected_port_suffix, result.message,
+    );
+
+    // 14b: Non-worker request → server proxies data back (and caches it).
+    let data = read_blob_from_cas(ports.public, "main", &rd_hash, rd_size)
+        .await
+        .expect("Non-worker read from server failed");
+    assert_eq!(
+        data.as_deref(),
+        Some(redirect_blob.as_slice()),
+        "Non-worker request should get proxied blob data from the server",
     );
 
     // --- Phase 15: Multi-worker redirect lists all endpoints ---

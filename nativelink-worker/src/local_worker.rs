@@ -42,13 +42,14 @@ use nativelink_util::common::{DigestInfo, fs};
 use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime};
 use nativelink_util::shutdown_guard::ShutdownGuard;
-use nativelink_util::store_trait::{ItemCallback, Store, StoreDriver, StoreKey};
+use nativelink_util::buf_channel::make_buf_channel_pair;
+use nativelink_util::store_trait::{ItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
 use nativelink_util::task::JoinHandleDropGuard;
 use nativelink_util::{spawn, tls_utils};
 use opentelemetry::context::Context;
 use parking_lot::Mutex;
 use tokio::process;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{Semaphore, broadcast, mpsc};
 use tokio::time::sleep;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::Streaming;
@@ -678,6 +679,126 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
         }
     }
 
+    /// Upload blobs requested by the server's UploadMissingBlobs message.
+    /// Reads from the local fast store and writes to the slow store (server CAS).
+    async fn handle_upload_missing_blobs(
+        running_actions_manager: &Arc<U>,
+        digests: Vec<DigestInfo>,
+    ) {
+        let Some(cas_store) = running_actions_manager.get_cas_store() else {
+            warn!("UploadMissingBlobs: no CAS store available, ignoring");
+            return;
+        };
+        let fast_store = cas_store.fast_store();
+        let slow_store = cas_store.slow_store();
+        if slow_store
+            .inner_store(None::<StoreKey<'_>>)
+            .optimized_for(nativelink_util::store_trait::StoreOptimizations::NoopUpdates)
+        {
+            return;
+        }
+
+        // Check which blobs we actually have locally before uploading.
+        let keys: Vec<StoreKey<'_>> = digests
+            .iter()
+            .map(|d| StoreKey::from(*d))
+            .collect();
+        let mut results = vec![None; keys.len()];
+        if let Err(err) = fast_store.has_with_results(&keys, &mut results).await {
+            warn!(?err, "UploadMissingBlobs: failed to check local store");
+            return;
+        }
+
+        let present: Vec<DigestInfo> = digests
+            .iter()
+            .zip(results.iter())
+            .filter_map(|(d, r)| if r.is_some() { Some(*d) } else { None })
+            .collect();
+
+        if present.is_empty() {
+            info!(
+                requested = digests.len(),
+                "UploadMissingBlobs: none of the requested blobs found locally"
+            );
+            return;
+        }
+
+        info!(
+            requested = digests.len(),
+            found = present.len(),
+            "UploadMissingBlobs: uploading blobs to server"
+        );
+
+        const MAX_CONCURRENT_UPLOADS: usize = 32;
+        let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_UPLOADS));
+
+        let mut uploads: FuturesUnordered<_> = present
+            .iter()
+            .map(|&digest| {
+                let fast_store = fast_store.clone();
+                let slow_store = slow_store.clone();
+                let semaphore = semaphore.clone();
+                async move {
+                    let _permit = semaphore
+                        .acquire()
+                        .await
+                        .expect("semaphore should not be closed");
+                    // Use in-memory transfer for small blobs, streaming for
+                    // large ones to avoid OOM on multi-GB blobs.
+                    const STREAMING_THRESHOLD: u64 = 1024 * 1024; // 1 MiB
+                    let result = if digest.size_bytes() <= STREAMING_THRESHOLD {
+                        match fast_store.get_part_unchunked(digest, 0, None).await {
+                            Ok(data) => slow_store.update_oneshot(digest, data).await,
+                            Err(err) => Err(err),
+                        }
+                    } else {
+                        let (tx, rx) = make_buf_channel_pair();
+                        let read_fut = fast_store.get(digest, tx);
+                        let write_fut = slow_store.update(
+                            digest,
+                            rx,
+                            UploadSizeInfo::ExactSize(digest.size_bytes()),
+                        );
+                        let (read_res, write_res) = tokio::join!(read_fut, write_fut);
+                        if write_res.is_ok() {
+                            Ok(())
+                        } else {
+                            read_res.merge(write_res)
+                        }
+                    };
+                    match result {
+                        Ok(()) => true,
+                        Err(err) => {
+                            warn!(
+                                ?digest,
+                                ?err,
+                                "UploadMissingBlobs: failed to transfer blob"
+                            );
+                            false
+                        }
+                    }
+                }
+            })
+            .collect();
+
+        let mut uploaded = 0usize;
+        let mut failed = 0usize;
+        while let Some(ok) = uploads.next().await {
+            if ok {
+                uploaded += 1;
+            } else {
+                failed += 1;
+            }
+        }
+
+        info!(
+            uploaded,
+            failed,
+            total = present.len(),
+            "UploadMissingBlobs: backfill complete"
+        );
+    }
+
     /// Starts a background spawn/thread that will send a message to the server every `timeout / 2`.
     async fn start_keep_alive(&self) -> Result<(), Error> {
         // According to tonic's documentation this call should be cheap and is the same stream.
@@ -999,6 +1120,26 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                 );
                             }
                         }
+                        Update::UploadMissingBlobs(request) => {
+                            // Server is requesting we upload blobs it doesn't
+                            // have. Read from local fast store and upload to
+                            // the slow store (server CAS) in the background.
+                            let digest_count = request.digests.len();
+                            let digests: Vec<DigestInfo> = request
+                                .digests
+                                .into_iter()
+                                .filter_map(|d| DigestInfo::try_from(d).ok())
+                                .collect();
+                            info!(
+                                digest_count,
+                                valid_count = digests.len(),
+                                "UploadMissingBlobs: server requests blob backfill"
+                            );
+                            let ram = self.running_actions_manager.clone();
+                            tokio::spawn(async move {
+                                Self::handle_upload_missing_blobs(&ram, digests).await;
+                            });
+                        }
                         Update::StartAction(start_execute) => {
                             // Don't accept any new requests if we're shutting down.
                             if shutting_down {
@@ -1062,15 +1203,18 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                             operation_id = %action.get_operation_id(),
                                             "Received request to run action"
                                         );
-                                        action
-                                            .clone()
-                                            .prepare_action()
-                                            .and_then(RunningAction::execute)
+                                        // Box each phase to heap-allocate its future state
+                                        // separately. Without this, the compiler generates a
+                                        // single monolithic state machine for the entire
+                                        // AndThen chain, which overflows the 8 MiB stack in
+                                        // debug builds.
+                                        Box::pin(action.clone().prepare_action())
+                                            .and_then(|a| Box::pin(RunningAction::execute(a)))
                                             // upload_results now only uploads to the local fast store
                                             // (FilesystemStore). The remote CAS upload is deferred to
                                             // the background after the result is reported.
-                                            .and_then(RunningAction::upload_results)
-                                            .and_then(RunningAction::get_finished_result)
+                                            .and_then(|a| Box::pin(RunningAction::upload_results(a)))
+                                            .and_then(|a| Box::pin(RunningAction::get_finished_result(a)))
                                             .then(|result| async move {
                                                 // Spawn cleanup in the background — it only removes
                                                 // the work directory (files already renamed into CAS).

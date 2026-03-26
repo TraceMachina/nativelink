@@ -15,9 +15,10 @@
 use core::convert::Into;
 use core::pin::Pin;
 use core::time::Duration;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use futures::stream::unfold;
 use futures::{Stream, StreamExt};
@@ -27,9 +28,10 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::worker_api_server::{
     WorkerApi, WorkerApiServer as Server,
 };
+use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_worker;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     execute_result, ExecuteComplete, ExecuteResult, GoingAwayRequest, KeepAliveRequest,
-    UpdateForScheduler, UpdateForWorker,
+    UpdateForScheduler, UpdateForWorker, UploadMissingBlobsRequest,
 };
 use nativelink_util::blob_locality_map::SharedBlobLocalityMap;
 use nativelink_util::common::DigestInfo;
@@ -39,12 +41,15 @@ use nativelink_util::background_spawn;
 use nativelink_util::action_messages::{OperationId, WorkerId};
 use nativelink_util::operation_state_manager::UpdateOperationType;
 use nativelink_util::platform_properties::PlatformProperties;
+use nativelink_util::store_trait::{Store, StoreKey, StoreLike};
 use rand::RngCore;
 use tokio::sync::mpsc;
 use tokio::time::interval;
 use tonic::{Response, Status};
 use tracing::{debug, error, info, warn, instrument, Level};
 use uuid::Uuid;
+
+use nativelink_proto::build::bazel::remote::execution::v2::Digest;
 
 pub type ConnectWorkerStream =
     Pin<Box<dyn Stream<Item = Result<UpdateForWorker, Status>> + Send + Sync + 'static>>;
@@ -56,6 +61,8 @@ pub struct WorkerApiServer {
     now_fn: Arc<NowFn>,
     node_id: [u8; 6],
     locality_map: Option<SharedBlobLocalityMap>,
+    /// CAS store for checking blob existence during backfill requests.
+    cas_store: Option<Store>,
 }
 
 impl core::fmt::Debug for WorkerApiServer {
@@ -71,6 +78,7 @@ impl WorkerApiServer {
         config: &WorkerApiConfig,
         schedulers: &HashMap<String, Arc<dyn WorkerScheduler>>,
         locality_map: Option<SharedBlobLocalityMap>,
+        cas_store: Option<Store>,
     ) -> Result<Self, Error> {
         let node_id = {
             let mut out = [0; 6];
@@ -114,6 +122,7 @@ impl WorkerApiServer {
             }),
             node_id,
             locality_map,
+            cas_store,
         )
     }
 
@@ -125,6 +134,7 @@ impl WorkerApiServer {
         now_fn: NowFn,
         node_id: [u8; 6],
         locality_map: Option<SharedBlobLocalityMap>,
+        cas_store: Option<Store>,
     ) -> Result<Self, Error> {
         let scheduler = schedulers
             .get(&config.scheduler)
@@ -140,6 +150,7 @@ impl WorkerApiServer {
             now_fn: Arc::new(now_fn),
             node_id,
             locality_map,
+            cas_store,
         })
     }
 
@@ -187,6 +198,10 @@ impl WorkerApiServer {
             platform_properties
         };
 
+        // Clone tx so WorkerConnection can send messages back to the worker
+        // (e.g. UploadMissingBlobs requests) independently of the scheduler.
+        let worker_tx = tx.clone();
+
         // Now register the worker with the scheduler.
         let worker_id = {
             let worker_id = WorkerId(format!(
@@ -214,7 +229,9 @@ impl WorkerApiServer {
             self.now_fn.clone(),
             worker_id.clone(),
             self.locality_map.clone(),
+            self.cas_store.clone(),
             worker_cas_endpoint,
+            worker_tx,
             update_stream,
         );
 
@@ -268,12 +285,38 @@ impl WorkerApi for WorkerApiServer {
     }
 }
 
+/// Maximum number of missing digests to request per UploadMissingBlobs message.
+/// Keeps individual requests manageable and avoids overwhelming the worker.
+const BACKFILL_BATCH_SIZE: usize = 1000;
+
+/// Minimum seconds between backfill checks for a single worker.
+/// With 10 workers sending BlobsAvailable every 100ms, this prevents
+/// up to 100 has_with_results calls/sec on the server CAS.
+const BACKFILL_COOLDOWN_SECS: u64 = 5;
+
+/// Seconds after which a backfill request is considered stale and can be
+/// re-requested. If a worker hasn't uploaded the blob within this window,
+/// the request is assumed to have failed silently.
+const BACKFILL_INFLIGHT_TIMEOUT_SECS: u64 = 60;
+
 struct WorkerConnection {
     scheduler: Arc<dyn WorkerScheduler>,
     now_fn: Arc<NowFn>,
     worker_id: WorkerId,
     locality_map: Option<SharedBlobLocalityMap>,
+    /// CAS store for checking blob existence during backfill.
+    cas_store: Option<Store>,
     cas_endpoint: String,
+    /// Channel to send messages back to this worker.
+    worker_tx: mpsc::UnboundedSender<UpdateForWorker>,
+    /// Epoch seconds of the last backfill check for this worker.
+    /// Used to enforce a per-worker cooldown between backfill runs.
+    last_backfill_epoch_secs: AtomicU64,
+    /// Digests currently being backfilled (requested from the worker but not
+    /// yet confirmed in the server CAS). Keyed by digest, value is the time
+    /// the request was sent. Entries older than `BACKFILL_INFLIGHT_TIMEOUT_SECS`
+    /// are considered stale and eligible for re-request.
+    backfill_inflight: Arc<parking_lot::Mutex<HashMap<DigestInfo, Instant>>>,
 }
 
 impl WorkerConnection {
@@ -282,7 +325,9 @@ impl WorkerConnection {
         now_fn: Arc<NowFn>,
         worker_id: WorkerId,
         locality_map: Option<SharedBlobLocalityMap>,
+        cas_store: Option<Store>,
         cas_endpoint: String,
+        worker_tx: mpsc::UnboundedSender<UpdateForWorker>,
         mut connection: impl Stream<Item = Result<UpdateForScheduler, Status>> + Unpin + Send + 'static,
     ) {
         let instance = Self {
@@ -290,7 +335,11 @@ impl WorkerConnection {
             now_fn,
             worker_id,
             locality_map,
+            cas_store,
             cas_endpoint,
+            worker_tx,
+            last_backfill_epoch_secs: AtomicU64::new(0),
+            backfill_inflight: Arc::new(parking_lot::Mutex::new(HashMap::new())),
         };
 
         background_spawn!("worker_api", async move {
@@ -492,7 +541,7 @@ impl WorkerConnection {
 
         // Update the worker's cached directory digests if any were reported (legacy path).
         if !notification.cached_directory_digests.is_empty() && !notification.is_full_subtree_snapshot {
-            let cached_dirs: std::collections::HashSet<DigestInfo> = notification
+            let cached_dirs: HashSet<DigestInfo> = notification
                 .cached_directory_digests
                 .iter()
                 .filter_map(|d| DigestInfo::try_from(d.clone()).ok())
@@ -637,7 +686,171 @@ impl WorkerConnection {
             );
             map.register_blobs_with_timestamps(endpoint, &digests_with_ts);
         }
+
+        // After updating the locality map, check which of the newly reported
+        // blobs are missing from the server's CAS and request the worker to
+        // upload them. This runs asynchronously to avoid blocking the message
+        // processing loop. Only triggers on non-empty digest reports.
+        //
+        // Rate-limited by a per-worker cooldown to avoid excessive
+        // has_with_results calls when many workers report every 100ms.
+        if !digests_with_ts.is_empty() {
+            if let Some(ref cas_store) = self.cas_store {
+                let now_secs = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let last = self.last_backfill_epoch_secs.load(Ordering::Relaxed);
+                if now_secs.saturating_sub(last) >= BACKFILL_COOLDOWN_SECS
+                    && self.last_backfill_epoch_secs.compare_exchange(
+                        last, now_secs, Ordering::Relaxed, Ordering::Relaxed,
+                    ).is_ok()
+                {
+                    let all_digests: Vec<DigestInfo> =
+                        digests_with_ts.iter().map(|(d, _)| *d).collect();
+                    let cas = cas_store.clone();
+                    let tx = self.worker_tx.clone();
+                    let worker_id = self.worker_id.clone();
+                    let inflight = self.backfill_inflight.clone();
+                    // Drop the locality map write lock before spawning.
+                    drop(map);
+                    background_spawn!("backfill_missing_blobs", async move {
+                        Self::request_missing_blob_uploads(
+                            &cas,
+                            &tx,
+                            &worker_id,
+                            &all_digests,
+                            &inflight,
+                        )
+                        .await;
+                    });
+                    return Ok(());
+                }
+            }
+        }
+
         Ok(())
+    }
+
+    /// Check which of `digests` are missing from the server CAS and send
+    /// UploadMissingBlobs requests to the worker for each batch.
+    ///
+    /// Deduplicates against in-flight requests: digests that were requested
+    /// within the last `BACKFILL_INFLIGHT_TIMEOUT_SECS` are skipped to avoid
+    /// redundant uploads. Digests that have since appeared in the CAS (or
+    /// whose requests have timed out) are removed from the in-flight set.
+    async fn request_missing_blob_uploads(
+        cas_store: &Store,
+        worker_tx: &mpsc::UnboundedSender<UpdateForWorker>,
+        worker_id: &WorkerId,
+        digests: &[DigestInfo],
+        inflight: &parking_lot::Mutex<HashMap<DigestInfo, Instant>>,
+    ) {
+        if digests.is_empty() {
+            return;
+        }
+
+        // Check existence on the server CAS.
+        let keys: Vec<StoreKey<'_>> = digests
+            .iter()
+            .map(|d| StoreKey::from(*d))
+            .collect();
+        let mut results = vec![None; keys.len()];
+        if let Err(err) = cas_store.has_with_results(&keys, &mut results).await {
+            warn!(
+                worker_id=?worker_id,
+                ?err,
+                "backfill: failed to check CAS existence"
+            );
+            return;
+        }
+
+        let now = Instant::now();
+        let timeout = Duration::from_secs(BACKFILL_INFLIGHT_TIMEOUT_SECS);
+
+        // Build a set of digests confirmed present in the CAS for O(1) lookup
+        // during the retain loop (avoids O(inflight * digests) linear scan).
+        let present_in_cas: HashSet<DigestInfo> = digests
+            .iter()
+            .zip(results.iter())
+            .filter_map(|(d, r)| r.map(|_| *d))
+            .collect();
+
+        // Collect missing digests, filtering out those already in-flight.
+        let missing: Vec<DigestInfo> = {
+            let mut inflight_guard = inflight.lock();
+
+            // Clean up: remove digests that have appeared in the CAS or
+            // whose requests have timed out.
+            inflight_guard.retain(|digest, requested_at| {
+                // Remove if timed out.
+                if now.duration_since(*requested_at) >= timeout {
+                    return false;
+                }
+                // Remove if the digest is now present in the CAS.
+                if present_in_cas.contains(digest) {
+                    return false;
+                }
+                // Keep if still missing and not timed out.
+                true
+            });
+
+            digests
+                .iter()
+                .zip(results.iter())
+                .filter_map(|(d, r)| {
+                    // Only consider digests missing from the CAS.
+                    if r.is_some() {
+                        return None;
+                    }
+                    // Skip if already in-flight.
+                    if inflight_guard.contains_key(d) {
+                        return None;
+                    }
+                    Some(*d)
+                })
+                .collect()
+        };
+
+        if missing.is_empty() {
+            return;
+        }
+
+        info!(
+            worker_id=?worker_id,
+            total=digests.len(),
+            missing=missing.len(),
+            "backfill: requesting worker upload missing blobs"
+        );
+
+        // Record in-flight digests and send in batches.
+        {
+            let mut inflight_guard = inflight.lock();
+            for d in &missing {
+                inflight_guard.insert(*d, now);
+            }
+        }
+
+        for chunk in missing.chunks(BACKFILL_BATCH_SIZE) {
+            let proto_digests: Vec<Digest> = chunk
+                .iter()
+                .map(|d| Digest::from(*d))
+                .collect();
+            let msg = UpdateForWorker {
+                update: Some(update_for_worker::Update::UploadMissingBlobs(
+                    UploadMissingBlobsRequest {
+                        digests: proto_digests,
+                    },
+                )),
+            };
+            if worker_tx.send(msg).is_err() {
+                warn!(
+                    worker_id=?worker_id,
+                    "backfill: worker channel closed, cannot send upload request"
+                );
+                return;
+            }
+        }
     }
 
     async fn execution_complete(&self, execute_complete: ExecuteComplete) -> Result<(), Error> {

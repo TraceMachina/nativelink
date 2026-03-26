@@ -21,6 +21,7 @@ use nativelink_config::stores::RefSpec;
 use nativelink_error::{Error, ResultExt, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
+use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::store_trait::{
     ItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
@@ -164,6 +165,19 @@ impl StoreDriver for RefStore {
             }
         }
         Ok(())
+    }
+
+    fn drain_stable_digests(&self) -> Vec<DigestInfo> {
+        match self.get_store() {
+            Ok(store) => store.drain_stable_digests(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    fn pin_digests(&self, digests: &[DigestInfo]) {
+        if let Ok(store) = self.get_store() {
+            store.pin_digests(digests);
+        }
     }
 }
 

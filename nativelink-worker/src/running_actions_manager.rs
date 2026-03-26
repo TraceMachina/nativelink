@@ -3348,6 +3348,12 @@ pub trait RunningActionsManager: Sync + Send + Sized + Unpin + 'static {
 
     fn metrics(&self) -> &Arc<Metrics>;
 
+    /// Returns the CAS FastSlowStore if available, used for server-requested
+    /// blob backfill uploads.
+    fn get_cas_store(&self) -> Option<Arc<FastSlowStore>> {
+        None
+    }
+
     /// Returns the digests of input root directories cached in the worker's
     /// directory cache. Returns an empty Vec if no directory cache is configured.
     fn cached_directory_digests(&self) -> impl Future<Output = Vec<DigestInfo>> + Send;
@@ -4031,6 +4037,10 @@ impl RunningActionsManagerImpl {
 
             // Phase 2: Upload all digests to the slow store. Small blobs
             // use pre-read data; large blobs stream from the fast store.
+            const MAX_RETRIES: u32 = 4;
+            const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
+            const MAX_BACKOFF: Duration = Duration::from_secs(30);
+
             let mut success_count = 0u64;
             let mut fail_count = 0u64;
             let mut uploads = FuturesUnordered::new();
@@ -4040,45 +4050,78 @@ impl RunningActionsManagerImpl {
                 // removes the blob before we can read it.
                 let cached_data = preread_data.remove(&digest);
                 uploads.push(async move {
-                    let result = if let Some(data) = cached_data {
-                        // Data was pre-read -- upload directly without
-                        // touching the fast store.
-                        slow_store.update_oneshot(digest, data).await
-                    } else if digest.size_bytes() <= BATCH_THRESHOLD {
-                        // Small blob that wasn't pre-read (e.g. pre-read
-                        // failed). Try reading from the store as fallback.
-                        match fast_store.get_part_unchunked(digest, 0, None).await {
-                            Ok(data) => slow_store.update_oneshot(digest, data).await,
-                            Err(e) => Err(e),
-                        }
-                    } else {
-                        let (tx, rx) = make_buf_channel_pair();
-                        let read_fut = fast_store.get(digest, tx);
-                        let write_fut = slow_store.update(
-                            digest,
-                            rx,
-                            UploadSizeInfo::ExactSize(digest.size_bytes()),
-                        );
-                        let (read_res, write_res) = tokio::join!(read_fut, write_fut);
-                        // If the write succeeded, the upload is done even if
-                        // the read side got a "receiver disconnected" error
-                        // (e.g. server already had the blob and closed early).
-                        if write_res.is_ok() {
-                            Ok(())
+                    let mut attempt = 0u32;
+                    let mut backoff = INITIAL_BACKOFF;
+                    loop {
+                        let result = if let Some(ref data) = cached_data {
+                            // Data was pre-read -- upload directly without
+                            // touching the fast store.
+                            slow_store.update_oneshot(digest, data.clone()).await
+                        } else if digest.size_bytes() <= BATCH_THRESHOLD {
+                            // Small blob that wasn't pre-read (e.g. pre-read
+                            // failed). Try reading from the store as fallback.
+                            match fast_store.get_part_unchunked(digest, 0, None).await {
+                                Ok(data) => slow_store.update_oneshot(digest, data).await,
+                                Err(e) => Err(e),
+                            }
                         } else {
-                            read_res.merge(write_res)
-                        }
-                    };
-                    match result {
-                        Ok(()) => true,
-                        Err(e) if e.code == Code::AlreadyExists => true,
-                        Err(e) => {
-                            warn!(
-                                ?digest,
-                                ?e,
-                                "upload_to_remote: failed to upload digest",
+                            let (tx, rx) = make_buf_channel_pair();
+                            let read_fut = fast_store.get(digest, tx);
+                            let write_fut = slow_store.update(
+                                digest,
+                                rx,
+                                UploadSizeInfo::ExactSize(digest.size_bytes()),
                             );
-                            false
+                            let (read_res, write_res) = tokio::join!(read_fut, write_fut);
+                            // If the write succeeded, the upload is done even if
+                            // the read side got a "receiver disconnected" error
+                            // (e.g. server already had the blob and closed early).
+                            if write_res.is_ok() {
+                                Ok(())
+                            } else {
+                                read_res.merge(write_res)
+                            }
+                        };
+                        match result {
+                            Ok(()) => break true,
+                            Err(e) if e.code == Code::AlreadyExists => break true,
+                            Err(e) if e.code == Code::InvalidArgument
+                                || e.code == Code::PermissionDenied
+                                || e.code == Code::Unauthenticated
+                                || e.code == Code::Unimplemented =>
+                            {
+                                error!(
+                                    ?digest,
+                                    ?e,
+                                    code = ?e.code,
+                                    "upload_to_remote: permanent error uploading digest, not retrying",
+                                );
+                                break false;
+                            }
+                            Err(e) if attempt < MAX_RETRIES => {
+                                attempt += 1;
+                                warn!(
+                                    ?digest,
+                                    ?e,
+                                    code = ?e.code,
+                                    attempt,
+                                    max_retries = MAX_RETRIES,
+                                    backoff_ms = backoff.as_millis() as u64,
+                                    "upload_to_remote: retrying failed upload",
+                                );
+                                tokio::time::sleep(backoff).await;
+                                backoff = min(backoff * 2, MAX_BACKOFF);
+                            }
+                            Err(e) => {
+                                error!(
+                                    ?digest,
+                                    ?e,
+                                    code = ?e.code,
+                                    attempts = attempt + 1,
+                                    "upload_to_remote: all retries exhausted for digest",
+                                );
+                                break false;
+                            }
                         }
                     }
                 });
@@ -4474,6 +4517,10 @@ impl RunningActionsManager for RunningActionsManagerImpl {
 
     fn spawn_upload_to_remote(self: &Arc<Self>, action_result: &ActionResult) {
         RunningActionsManagerImpl::spawn_upload_to_remote(self, action_result);
+    }
+
+    fn get_cas_store(&self) -> Option<Arc<FastSlowStore>> {
+        Some(self.cas_store.clone())
     }
 
     #[inline]

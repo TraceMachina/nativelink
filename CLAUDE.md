@@ -53,5 +53,9 @@
 - `#[cfg(target_os = "...")]` for OS-specific code (Linux vs macOS)
 
 ## Tests
+- **Test-first development**: when implementing any new feature, write tests first
+  (unit, integration, and cross-component interaction tests). Verify they fail before
+  implementing the feature, then make them pass. Include fakes/mocks for
+  hardware-interaction tests where needed.
 - Integration tests in `tests/` directory; minimal inline `#[cfg(test)]` modules
 - Use `nativelink-macro` test harness (`#[nativelink_test]`)

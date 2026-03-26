@@ -164,6 +164,15 @@ message TouchBlobsRequest {
     repeated build.bazel.remote.execution.v2.Digest digests = 1;
 }
 
+/// Sent by the server to a worker requesting upload of blobs that are
+/// present on the worker but missing from the server's CAS. The worker
+/// should read each blob from its local FilesystemStore and upload it
+/// to the server via the existing GrpcStore (slow store) connection.
+message UploadMissingBlobsRequest {
+    /// Digests of blobs the server needs the worker to upload.
+    repeated build.bazel.remote.execution.v2.Digest digests = 1;
+}
+
 /// A hint that a specific digest is available on one or more peer workers.
 message PeerHint {
     /// The digest available on peers.
@@ -264,6 +273,10 @@ message UpdateForWorker {
         /// Confirms that blobs have been persisted to stable storage.
         /// Workers should unpin matching blobs from their local CAS.
         BlobsInStableStorage blobs_in_stable_storage = 8;
+
+        /// Requests the worker to upload specific blobs that the server
+        /// is missing from its CAS. Sent in response to BlobsAvailable.
+        UploadMissingBlobsRequest upload_missing_blobs = 9;
     }
     reserved 6; // Previously NextId, now reserved.
 }

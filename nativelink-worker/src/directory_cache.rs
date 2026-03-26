@@ -3110,11 +3110,17 @@ mod tests {
         let result = cache.get_or_create(bogus_digest, &dest).await;
         assert!(result.is_err(), "Should fail when digest not in store");
 
-        // Bug 2 fix: No orphaned temp directories should remain
+        // Bug 2 fix: No orphaned temp directories should remain.
+        // Exclude .cache_version which is legitimate cache metadata written
+        // by DirectoryCache::new().
         let mut entries = fs::read_dir(&cache_root).await.unwrap();
         let mut leftover = Vec::new();
         while let Some(entry) = entries.next_entry().await.unwrap() {
-            leftover.push(entry.file_name().to_string_lossy().to_string());
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name == ".cache_version" {
+                continue;
+            }
+            leftover.push(name);
         }
         assert!(
             leftover.is_empty(),

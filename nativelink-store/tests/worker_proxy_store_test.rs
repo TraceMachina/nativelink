@@ -129,7 +129,7 @@ async fn has_returns_size_when_inner_has_blob() -> Result<(), Error> {
 //    (locality map is never consulted for has)
 // -------------------------------------------------------------------
 #[nativelink_test]
-async fn has_returns_none_when_inner_missing_even_if_locality_has_peers() -> Result<(), Error> {
+async fn has_falls_back_to_locality_map_when_inner_missing() -> Result<(), Error> {
     let (proxy, _inner, locality_map) = make_proxy_store();
 
     let digest = DigestInfo::try_new(VALID_HASH1, 100)?;
@@ -139,21 +139,23 @@ async fn has_returns_none_when_inner_missing_even_if_locality_has_peers() -> Res
         .write()
         .register_blobs("worker-a:50081", &[digest]);
 
-    // has() must NOT consult the locality map.
+    // has() falls back to locality map for existence checks.
+    // Workers pin blobs until uploaded, so locality entries are reliable.
     let size = proxy.has(digest).await?;
     assert_eq!(
-        size, None,
-        "has() should return None even though locality map has the digest"
+        size,
+        Some(100),
+        "has() should find digest via locality map fallback"
     );
 
     Ok(())
 }
 
 // -------------------------------------------------------------------
-// 5. has_with_results delegates to inner store (pass-through)
+// 5. has_with_results delegates to inner store, falls back to locality map
 // -------------------------------------------------------------------
 #[nativelink_test]
-async fn has_with_results_delegates_to_inner_store() -> Result<(), Error> {
+async fn has_with_results_delegates_to_inner_and_locality_map() -> Result<(), Error> {
     let (proxy, _inner, locality_map) = make_proxy_store();
 
     let value = b"test data";
@@ -166,7 +168,7 @@ async fn has_with_results_delegates_to_inner_store() -> Result<(), Error> {
         .update_oneshot(d1, Bytes::from_static(value))
         .await?;
 
-    // Register d2 and d3 on workers — should NOT affect has_with_results.
+    // Register d2 and d3 on workers — locality fallback should find them.
     {
         let mut map = locality_map.write();
         map.register_blobs("worker-a:50081", &[d2]);
@@ -183,12 +185,14 @@ async fn has_with_results_delegates_to_inner_store() -> Result<(), Error> {
         "d1 should be found in inner store"
     );
     assert_eq!(
-        results[1], None,
-        "d2 should NOT be found — has_with_results must not consult locality map"
+        results[1],
+        Some(999),
+        "d2 should be found via locality map fallback"
     );
     assert_eq!(
-        results[2], None,
-        "d3 should NOT be found — has_with_results must not consult locality map"
+        results[2],
+        Some(50),
+        "d3 should be found via locality map fallback"
     );
 
     Ok(())

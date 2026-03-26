@@ -800,7 +800,7 @@ pub trait StoreDriver:
         let digest_data_len = digest_data.len() as u64;
         let digest_info = StoreKey::from(digest_hasher.finalize_digest());
 
-        let digest_bytes = Bytes::copy_from_slice(&digest_data);
+        let digest_bytes = Bytes::from(digest_data);
 
         if let Err(e) = self
             .update_oneshot(digest_info.borrow(), digest_bytes.clone())

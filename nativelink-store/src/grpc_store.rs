@@ -1163,11 +1163,11 @@ impl GrpcStore {
 
         // Write all chunks to the output writer in order.
         let mut total_bytes: u64 = 0;
-        for (_idx, bufs) in &chunk_results {
+        for (_idx, bufs) in chunk_results {
             for data in bufs {
                 total_bytes += data.len() as u64;
                 writer
-                    .send(data.clone())
+                    .send(data)
                     .await
                     .err_tip(|| "while writing parallel chunk data")?;
             }
@@ -1333,9 +1333,17 @@ impl StoreDriver for GrpcStore {
             let write_offset = local_state.bytes_received;
             local_state.bytes_received += data.len() as i64;
 
+            // Per the RE API spec, only the first WriteRequest needs the
+            // resource_name; subsequent messages use an empty string.
+            let resource_name = if write_offset == 0 {
+                local_state.resource_name.clone()
+            } else {
+                String::new()
+            };
+
             Some((
                 Ok(WriteRequest {
-                    resource_name: local_state.resource_name.clone(),
+                    resource_name,
                     write_offset,
                     finish_write: data.is_empty(), // EOF is when no data was polled.
                     data,

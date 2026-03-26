@@ -220,9 +220,9 @@ impl<'de> Deserialize<'de> for DigestInfo {
                 };
                 let size_bytes = size
                     .parse::<u64>()
-                    .map_err(|e| E::custom(format!("Could not parse size_bytes: {e:?}")))?;
+                    .map_err(|e| E::custom(format!("Could not parse size_bytes: {e}")))?;
                 DigestInfo::try_new(hash, size_bytes)
-                    .map_err(|e| E::custom(format!("Could not create DigestInfo: {e:?}")))
+                    .map_err(|e| E::custom(format!("Could not create DigestInfo: {e}")))
             }
         }
         deserializer.deserialize_str(DigestInfoVisitor)

@@ -504,8 +504,17 @@ async fn add_files_to_cache<Fe: FileEntry>(
                 -(secs as i32)
             }
         } else {
-            // atime is after anchor_time (file touched between capturing
-            // `now` and reading metadata) — treat as most-recently-used.
+            // atime is after anchor_time — anomalous but harmless.
+            // Treat as most-recently-used.
+            let ahead_secs = atime
+                .duration_since(*anchor_time)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            warn!(
+                %file_name,
+                ahead_secs,
+                "file access time newer than FilesystemStore start time"
+            );
             0
         };
         evicting_map
@@ -1188,6 +1197,10 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         keys: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
+        // into_owned() is required because the EvictingMap is keyed by
+        // StoreKey<'static> (via StoreKeyBorrow) and the input keys have a
+        // non-'static lifetime. For Digest keys (the common CAS path) this
+        // is Copy and zero-cost; only Str keys allocate.
         let own_keys = keys
             .iter()
             .map(|sk| sk.borrow().into_owned())
@@ -1335,21 +1348,14 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         let write_ms;
         if !data.is_empty() {
             let write_start = std::time::Instant::now();
-            let temp_full_path_clone = temp_full_path.clone();
-            temp_file = nativelink_util::spawn_blocking!("fs_write_oneshot", move || {
-                use std::io::Write;
-                temp_file.advise_sequential();
-                temp_file
-                    .as_std_mut()
-                    .write_all(&data)
-                    .map_err(|e| Into::<Error>::into(e))
-                    .err_tip(|| {
-                        format!("Failed to write data to {}", temp_full_path_clone.display())
-                    })?;
-                Ok::<_, Error>(temp_file)
-            })
-            .await
-            .map_err(|e| make_err!(Code::Internal, "write oneshot join failed: {e:?}"))??;
+            temp_file = fs::write_all_to_file(temp_file, data)
+                .await
+                .err_tip(|| {
+                    format!(
+                        "Failed to write data to {}",
+                        temp_full_path.display()
+                    )
+                })?;
             write_ms = write_start.elapsed().as_millis();
         } else {
             write_ms = 0;

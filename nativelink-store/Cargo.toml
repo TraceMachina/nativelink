@@ -122,6 +122,7 @@ uuid = { version = "1.16.0", default-features = false, features = [
 ] }
 
 [features]
+io-uring = ["nativelink-util/io-uring"]
 quic = ["nativelink-util/quic"]
 
 [dev-dependencies]

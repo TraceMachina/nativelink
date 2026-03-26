@@ -267,6 +267,11 @@ async fn inner_main(
 
     // Wrap CAS stores with WorkerProxyStore so the server can proxy reads
     // to workers that have the blob (discovered via BlobsAvailable reports).
+    // Save the original (unwrapped) CAS store for backfill existence checks
+    // so that has_with_results goes directly to the real store, not through
+    // WorkerProxyStore which would consider blobs on workers as "present".
+    let mut unwrapped_cas_stores: HashMap<String, nativelink_util::store_trait::Store> =
+        HashMap::new();
     let cas_store_names: HashSet<String> = {
         let mut names: HashSet<String> = HashSet::new();
         for server_cfg in &server_cfgs {
@@ -285,6 +290,9 @@ async fn inner_main(
         }
         for store_name in &names {
             if let Some(original_store) = store_manager.get_store(store_name) {
+                // Save the unwrapped store before replacing it with
+                // the WorkerProxyStore wrapper.
+                unwrapped_cas_stores.insert(store_name.clone(), original_store.clone());
                 let proxy_store = nativelink_util::store_trait::Store::new(
                     nativelink_store::worker_proxy_store::WorkerProxyStore::new(
                         original_store,
@@ -477,7 +485,15 @@ async fn inner_main(
                 services
                     .worker_api
                     .map_or(Ok(None), |cfg| {
-                        WorkerApiServer::new(&cfg, &worker_schedulers, Some(locality_map.clone()))
+                        // Pick the first unwrapped CAS store for backfill existence
+                        // checks. Using the unwrapped store ensures has_with_results
+                        // goes directly to the real store, bypassing WorkerProxyStore
+                        // which would report blobs on other workers as "present".
+                        let backfill_cas = cas_store_names
+                            .iter()
+                            .next()
+                            .and_then(|name| unwrapped_cas_stores.get(name).cloned());
+                        WorkerApiServer::new(&cfg, &worker_schedulers, Some(locality_map.clone()), backfill_cas)
                             .map(|v| Some(svc_setup!(v)))
                     })
                     .err_tip(|| "Could not create WorkerApi service")?,
@@ -1133,6 +1149,9 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
     #[expect(clippy::disallowed_methods, reason = "starting main runtime")]
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .on_thread_start(set_qos_user_initiated)
+        // Large async state machines (especially in debug builds) need more
+        // stack space than the default 2 MiB per worker thread.
+        .thread_stack_size(8 * 1024 * 1024)
         .enable_all()
         .build()?;
 

@@ -167,6 +167,18 @@ pub struct TouchBlobsRequest {
         super::super::super::super::super::build::bazel::remote::execution::v2::Digest,
     >,
 }
+/// / Sent by the server to a worker requesting upload of blobs that are
+/// / present on the worker but missing from the server's CAS. The worker
+/// / should read each blob from its local FilesystemStore and upload it
+/// / to the server via the existing GrpcStore (slow store) connection.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UploadMissingBlobsRequest {
+    /// / Digests of blobs the server needs the worker to upload.
+    #[prost(message, repeated, tag = "1")]
+    pub digests: ::prost::alloc::vec::Vec<
+        super::super::super::super::super::build::bazel::remote::execution::v2::Digest,
+    >,
+}
 /// / A hint that a specific digest is available on one or more peer workers.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PeerHint {
@@ -257,7 +269,7 @@ pub struct KillOperationRequest {
 /// / Communication from the scheduler to the worker.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UpdateForWorker {
-    #[prost(oneof = "update_for_worker::Update", tags = "1, 2, 3, 4, 5, 7, 8")]
+    #[prost(oneof = "update_for_worker::Update", tags = "1, 2, 3, 4, 5, 7, 8, 9")]
     pub update: ::core::option::Option<update_for_worker::Update>,
 }
 /// Nested message and enum types in `UpdateForWorker`.
@@ -294,6 +306,10 @@ pub mod update_for_worker {
         /// / Workers should unpin matching blobs from their local CAS.
         #[prost(message, tag = "8")]
         BlobsInStableStorage(super::BlobsInStableStorage),
+        /// / Requests the worker to upload specific blobs that the server
+        /// / is missing from its CAS. Sent in response to BlobsAvailable.
+        #[prost(message, tag = "9")]
+        UploadMissingBlobs(super::UploadMissingBlobsRequest),
     }
 }
 /// / Communication from the worker to the scheduler.

@@ -109,6 +109,14 @@ impl BlobLocalityMap {
         }
     }
 
+    /// Returns true if any worker endpoint has the given digest.
+    /// This is cheaper than `lookup_workers` because it avoids allocating.
+    pub fn has_digest(&self, digest: &DigestInfo) -> bool {
+        self.blobs
+            .get(digest)
+            .is_some_and(|eps| !eps.is_empty())
+    }
+
     /// Look up which worker endpoints have the given digest.
     /// Returns all endpoints that have registered this digest.
     ///
