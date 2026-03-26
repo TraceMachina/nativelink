@@ -168,21 +168,40 @@ impl Drop for EncodedFilePath {
     }
 }
 
+/// Returns the 2-character hex shard prefix for a digest, derived from
+/// the first byte of the packed hash. This gives 256 subdirectories
+/// (00-ff), reducing per-directory file count from hundreds of thousands
+/// to ~1,500 on typical deployments.
+#[inline]
+fn digest_shard_prefix(digest_info: &DigestInfo) -> [u8; 2] {
+    const HEX_LUT: &[u8; 16] = b"0123456789abcdef";
+    let first_byte = digest_info.packed_hash()[0];
+    [
+        HEX_LUT[(first_byte >> 4) as usize],
+        HEX_LUT[(first_byte & 0x0f) as usize],
+    ]
+}
+
 /// This creates the file path from the [`StoreKey`]. If
 /// it is a string, the string, prefixed with [`STR_PREFIX`]
 /// for backwards compatibility, is stored.
 ///
 /// If it is a [`DigestInfo`], it is prefixed by [`DIGEST_PREFIX`]
-/// followed by the string representation of a digest - the hash in hex,
-/// a hyphen then the size in bytes
+/// followed by a 2-char hex shard directory (first byte of hash),
+/// then the string representation of a digest - the hash in hex,
+/// a hyphen then the size in bytes.
 ///
-/// Previously, only the string representation of the [`DigestInfo`] was
-/// used with no prefix
+/// Layout: `{folder}/d/{hash[0..2]}/{hash}-{size}`
 #[inline]
 fn to_full_path_from_key(folder: &str, key: &StoreKey<'_>) -> OsString {
     match key {
         StoreKey::Str(str) => format!("{folder}/{STR_FOLDER}/{str}"),
-        StoreKey::Digest(digest_info) => format!("{folder}/{DIGEST_FOLDER}/{digest_info}"),
+        StoreKey::Digest(digest_info) => {
+            let shard = digest_shard_prefix(digest_info);
+            // SAFETY: shard is always valid ASCII hex chars.
+            let shard_str = unsafe { core::str::from_utf8_unchecked(&shard) };
+            format!("{folder}/{DIGEST_FOLDER}/{shard_str}/{digest_info}")
+        }
     }
     .into()
 }
@@ -489,23 +508,16 @@ async fn add_files_to_cache<Fe: FileEntry>(
         Ok(())
     }
 
-    async fn read_files(
-        folder: Option<&str>,
-        shared_context: &SharedContext,
+    /// Reads directory entries from a single directory, returning
+    /// (file_name, atime, size, is_file) tuples.
+    async fn read_dir_entries(
+        dir_path: &str,
     ) -> Result<Vec<(String, SystemTime, u64, bool)>, Error> {
-        // Note: In Dec 2024 this is for backwards compatibility with the old
-        // way files were stored on disk. Previously all files were in a single
-        // folder regardless of the StoreKey type. This allows old versions of
-        // nativelink file layout to be upgraded at startup time.
-        // This logic can be removed once more time has passed.
-        let read_dir = folder.map_or_else(
-            || format!("{}/", shared_context.content_path),
-            |folder| format!("{}/{folder}/", shared_context.content_path),
-        );
-
-        let (_permit, dir_handle) = fs::read_dir(read_dir)
+        let (_permit, dir_handle) = fs::read_dir(dir_path)
             .await
-            .err_tip(|| "Failed opening content directory for iterating in filesystem store")?
+            .err_tip(|| {
+                format!("Failed opening directory {dir_path} for iterating in filesystem store")
+            })?
             .into_inner();
 
         let read_dir_stream = ReadDirStream::new(dir_handle);
@@ -517,12 +529,7 @@ async fn add_files_to_cache<Fe: FileEntry>(
                     .metadata()
                     .await
                     .err_tip(|| "Failed to get metadata in filesystem store")?;
-                // We need to filter out folders - we do not want to try to cache the s and d folders.
-                let is_file =
-                    metadata.is_file() || !(file_name == STR_FOLDER || file_name == DIGEST_FOLDER);
-                // Using access time is not perfect, but better than random. We do not update the
-                // atime when a file is actually "touched", we rely on whatever the filesystem does
-                // when we read the file (usually update on read).
+                let is_file = metadata.is_file();
                 let atime = metadata
                     .accessed()
                     .or_else(|_| metadata.modified())
@@ -537,6 +544,59 @@ async fn add_files_to_cache<Fe: FileEntry>(
             .buffer_unordered(SIMULTANEOUS_METADATA_READS)
             .try_collect()
             .await
+    }
+
+    async fn read_files(
+        folder: Option<&str>,
+        shared_context: &SharedContext,
+    ) -> Result<Vec<(String, SystemTime, u64, bool)>, Error> {
+        // Note: In Dec 2024 this is for backwards compatibility with the old
+        // way files were stored on disk. Previously all files were in a single
+        // folder regardless of the StoreKey type. This allows old versions of
+        // nativelink file layout to be upgraded at startup time.
+        // This logic can be removed once more time has passed.
+        let read_dir = folder.map_or_else(
+            || format!("{}/", shared_context.content_path),
+            |folder| format!("{}/{folder}/", shared_context.content_path),
+        );
+
+        read_dir_entries(&read_dir).await
+    }
+
+    /// Reads files from the digest folder, scanning both shard
+    /// subdirectories (d/XX/) and legacy flat files (d/HASH-SIZE).
+    async fn read_digest_files_sharded(
+        shared_context: &SharedContext,
+    ) -> Result<Vec<(String, SystemTime, u64, bool)>, Error> {
+        let digest_dir = format!("{}/{DIGEST_FOLDER}", shared_context.content_path);
+        let top_entries = read_dir_entries(&digest_dir).await?;
+
+        let mut all_files = Vec::new();
+
+        for (name, atime, size, is_file) in top_entries {
+            if is_file {
+                // Legacy flat file directly in d/ — include it.
+                all_files.push((name, atime, size, true));
+            } else if name.len() == 2 {
+                // Shard subdirectory (00-ff) — scan its contents.
+                let shard_path = format!("{digest_dir}/{name}");
+                match read_dir_entries(&shard_path).await {
+                    Ok(shard_entries) => {
+                        for entry in shard_entries {
+                            if entry.3 {
+                                all_files.push(entry);
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        warn!(?err, shard = %name, "failed to read shard directory during startup scan");
+                    }
+                }
+            }
+            // Skip other directories (s/, d/ — shouldn't be here but just in case).
+        }
+
+        Ok(all_files)
     }
 
     /// Note: In Dec 2024 this is for backwards compatibility with the old
@@ -566,18 +626,23 @@ async fn add_files_to_cache<Fe: FileEntry>(
         Ok(())
     }
 
-    async fn add_files_to_cache<Fe: FileEntry>(
+    async fn add_files_for_folder<Fe: FileEntry>(
         evicting_map: &FsEvictingMap<'_, Fe>,
         anchor_time: &SystemTime,
         shared_context: &Arc<SharedContext>,
         block_size: u64,
         folder: &str,
     ) -> Result<(), Error> {
-        let mut file_infos = read_files(Some(folder), shared_context).await?;
         let file_type = match folder {
             STR_FOLDER => FileType::String,
             DIGEST_FOLDER => FileType::Digest,
             _ => panic!("Invalid folder type"),
+        };
+
+        let mut file_infos = if folder == DIGEST_FOLDER {
+            read_digest_files_sharded(shared_context).await?
+        } else {
+            read_files(Some(folder), shared_context).await?
         };
 
         // Sort by atime oldest-first so that the LRU cache ordering matches
@@ -602,8 +667,15 @@ async fn add_files_to_cache<Fe: FileEntry>(
             .await;
             if let Err(err) = result {
                 warn!(?file_name, ?err, "Failed to add file to eviction cache",);
+                // Derive full path: for digests, use shard subdir; for strings, flat.
+                let full_path = if folder == DIGEST_FOLDER && file_name.len() >= 2 {
+                    let shard = &file_name[..2];
+                    format!("{path_root}/{shard}/{file_name}")
+                } else {
+                    format!("{path_root}/{file_name}")
+                };
                 // Ignore result.
-                drop(fs::remove_file(format!("{path_root}/{file_name}")).await);
+                drop(fs::remove_file(full_path).await);
             }
         }
         Ok(())
@@ -611,7 +683,7 @@ async fn add_files_to_cache<Fe: FileEntry>(
 
     move_old_cache(shared_context, rename_fn).await?;
 
-    add_files_to_cache(
+    add_files_for_folder(
         evicting_map,
         anchor_time,
         shared_context,
@@ -620,7 +692,7 @@ async fn add_files_to_cache<Fe: FileEntry>(
     )
     .await?;
 
-    add_files_to_cache(
+    add_files_for_folder(
         evicting_map,
         anchor_time,
         shared_context,
@@ -688,7 +760,19 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
                 .err_tip(|| format!("Failed to create directory {path}/{STR_FOLDER}"))?;
             fs::create_dir_all(format!("{path}/{DIGEST_FOLDER}"))
                 .await
-                .err_tip(|| format!("Failed to create directory {path}/{DIGEST_FOLDER}"))
+                .err_tip(|| format!("Failed to create directory {path}/{DIGEST_FOLDER}"))?;
+            // Create all 256 shard subdirectories (00-ff) under the digest
+            // folder. This avoids create_dir_all on every write and reduces
+            // per-directory file count from hundreds of thousands to ~1,500.
+            for byte in 0u8..=255 {
+                let shard = format!("{byte:02x}");
+                fs::create_dir_all(format!("{path}/{DIGEST_FOLDER}/{shard}"))
+                    .await
+                    .err_tip(|| {
+                        format!("Failed to create shard directory {path}/{DIGEST_FOLDER}/{shard}")
+                    })?;
+            }
+            Ok(())
         }
 
         let now = SystemTime::now();
@@ -907,8 +991,19 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         background_spawn!("filesystem_store_emplace_file", async move {
             let emplace_timer = std::time::Instant::now();
 
+            // CAS optimization: if the key already exists, just promote it in
+            // the LRU (touch) instead of replacing it. Same digest = same content,
+            // so replacing triggers an unnecessary unref (filesystem rename) of
+            // the identical blob followed by re-rename of the new copy.
+            let owned_key = key.borrow().into_owned();
+            if evicting_map.size_for_key(&owned_key).await.is_some() {
+                // Key exists — just promote to MRU. The get() call promotes.
+                let _ = evicting_map.get(&owned_key).await;
+                return Ok(());
+            }
+
             evicting_map
-                .insert(key.borrow().into_owned().into(), entry.clone())
+                .insert(owned_key.into(), entry.clone())
                 .await;
             let map_insert_ms = emplace_timer.elapsed().as_millis();
 
