@@ -1270,7 +1270,10 @@ where
         kind: nativelink_metric::MetricKind,
         field_metadata: nativelink_metric::MetricFieldData,
     ) -> Result<nativelink_metric::MetricPublishKnownKindData, nativelink_metric::Error> {
-        // Delegate to the first shard for representative metrics.
+        // Publish metrics from shard 0 as representative.
+        // Note: counter values (evicted_bytes, etc.) represent 1/num_shards
+        // of the total. Config values (max_bytes) show per-shard limits.
+        // TODO: Aggregate counters across all shards for accurate totals.
         self.shards[0].publish(kind, field_metadata)
     }
 }
@@ -1348,20 +1351,14 @@ where
 
     pub fn pin_keys(&self, keys: &[K]) -> usize {
         // Group keys by shard to batch pin operations within each shard.
-        let mut groups: Vec<Vec<&K>> = vec![Vec::new(); self.shards.len()];
+        let mut groups: Vec<Vec<K>> = (0..self.shards.len()).map(|_| Vec::new()).collect();
         for key in keys {
-            groups[self.shard_index(key.borrow())].push(key);
+            groups[self.shard_index(key.borrow())].push(key.clone());
         }
         let mut total = 0;
         for (idx, group) in groups.iter().enumerate() {
             if !group.is_empty() {
-                // pin_keys expects &[K], but we have &[&K]. Call pin_key
-                // individually per shard to avoid cloning.
-                for key in group {
-                    if self.shards[idx].pin_key((*key).clone()) {
-                        total += 1;
-                    }
-                }
+                total += self.shards[idx].pin_keys(group);
             }
         }
         total
