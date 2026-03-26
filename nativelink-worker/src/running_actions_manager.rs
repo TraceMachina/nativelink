@@ -1038,6 +1038,17 @@ impl RunningActionImpl {
             command_builder.env(&environment_variable.name, &environment_variable.value);
         }
 
+        // Sandboxing of the command if we are running on Linux, this resolves issues where
+        // children can spawn children and also provides better reproducibility.
+        #[cfg(target_os = "linux")]
+        if self.running_actions_manager.use_namespaces {
+            // SAFETY: This function is specifically designed to operate in a async-signal-safe
+            // environment.
+            unsafe {
+                command_builder.pre_exec(crate::namespace_utils::configure_namespace);
+            }
+        }
+
         let mut child_process = command_builder
             .spawn()
             .err_tip(|| format!("Could not execute command {args:?}"))?;
@@ -1049,6 +1060,14 @@ impl RunningActionImpl {
             .stderr
             .take()
             .err_tip(|| "Expected stderr to exist on command this should never happen")?;
+
+        #[cfg(target_os = "linux")]
+        // Wrap the child process to send SIGTERM rather than SIGKILL if namespaced to
+        // prevent zombie processes.
+        let child_process = crate::namespace_utils::MaybeNamespacedChild::new(
+            self.running_actions_manager.use_namespaces,
+            child_process,
+        );
 
         let mut child_process_guard = guard(child_process, |mut child_process| {
             let result: Result<Option<std::process::ExitStatus>, std::io::Error> =
@@ -1063,7 +1082,7 @@ impl RunningActionImpl {
                         "Child process was not cleaned up before dropping the call to execute(), killing in background spawn."
                     );
                     background_spawn!("running_actions_manager_kill_child_process", async move {
-                        child_process.kill().await
+                        drop(child_process.kill().await);
                     });
                 }
             }
@@ -1960,6 +1979,8 @@ pub struct RunningActionsManagerArgs<'a> {
     pub max_upload_timeout: Duration,
     pub timeout_handled_externally: bool,
     pub directory_cache: Option<Arc<crate::directory_cache::DirectoryCache>>,
+    #[cfg(target_os = "linux")]
+    pub use_namespaces: bool,
 }
 
 struct CleanupGuard {
@@ -1990,6 +2011,8 @@ pub struct RunningActionsManagerImpl {
     max_action_timeout: Duration,
     max_upload_timeout: Duration,
     timeout_handled_externally: bool,
+    #[cfg(target_os = "linux")]
+    use_namespaces: bool,
     running_actions: Mutex<HashMap<OperationId, Weak<RunningActionImpl>>>,
     // Note: We don't use Notify because we need to support a .wait_for()-like function, which
     // Notify does not support.
@@ -2051,6 +2074,8 @@ impl RunningActionsManagerImpl {
             cleaning_up_operations: Mutex::new(HashSet::new()),
             cleanup_complete_notify: Arc::new(Notify::new()),
             directory_cache: args.directory_cache,
+            #[cfg(target_os = "linux")]
+            use_namespaces: args.use_namespaces,
         })
     }
 

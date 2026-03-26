@@ -598,6 +598,21 @@ pub async fn new_local_worker(
         None
     };
 
+    #[cfg(target_os = "linux")]
+    let use_namespaces = if let Some(use_namespaces) = &config.use_namespaces {
+        if *use_namespaces && !crate::namespace_utils::namespaces_supported() {
+            return Err(make_err!(Code::Unavailable, "Namespaces not supported"));
+        }
+        *use_namespaces
+    } else {
+        false
+    };
+
+    #[cfg(not(target_os = "linux"))]
+    if config.use_namespaces.is_some_and(core::convert::identity) {
+        return Err(make_err!(Code::Unavailable, "Namespaces not supported"));
+    }
+
     let running_actions_manager =
         Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
             root_action_directory: config.work_directory.clone(),
@@ -613,6 +628,8 @@ pub async fn new_local_worker(
             max_upload_timeout,
             timeout_handled_externally: config.timeout_handled_externally,
             directory_cache,
+            #[cfg(target_os = "linux")]
+            use_namespaces,
         })?);
     let local_worker = LocalWorker::new_with_connection_factory_and_actions_manager(
         config.clone(),
