@@ -661,11 +661,13 @@ async fn test_execute_dependent_actions_with_peer_sharing() {
         "Expected at least 1 cross-worker blob fetch, got {total_proxies}",
     );
 
-    // BlobsAvailable should have been registered multiple times.
+    // BlobsAvailable should have been registered at least twice (once per
+    // worker after initial snapshot). The exact count depends on timing —
+    // additional ticks may or may not have fired by this point.
     let total_registrations = process.count_logs("Registering blobs available from worker");
     assert!(
-        total_registrations >= 4,
-        "Expected at least 4 BlobsAvailable registrations, got {total_registrations}",
+        total_registrations >= 2,
+        "Expected at least 2 BlobsAvailable registrations, got {total_registrations}",
     );
 
     // Process is killed on drop.
