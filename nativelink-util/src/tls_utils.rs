@@ -453,9 +453,10 @@ pub fn h3_channel(endpoint_config: &GrpcEndpoint) -> Result<QuicChannel, Error> 
     let h3_channel = tonic_h3::H3Channel::new(connector, uri);
 
     // Buffer serializes poll_ready/call through a background worker,
-    // properly handling waker routing for concurrent callers. 1024
-    // outstanding requests matches our max_concurrent_bidi_streams.
-    let buffered = tower::buffer::Buffer::new(h3_channel, 1024);
+    // properly handling waker routing for concurrent callers. 8192
+    // outstanding requests accommodates mirror burst peaks (10K+ in
+    // 5 minutes) without saturating the buffer and timing out.
+    let buffered = tower::buffer::Buffer::new(h3_channel, 8192);
 
     Ok(QuicChannel { inner: buffered })
 }
