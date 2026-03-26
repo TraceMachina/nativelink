@@ -29,6 +29,7 @@ rust_library(
         "//nativelink-store",
         "//nativelink-util",
         "@crates//:bytes",
+        "@crates//:dunce",
         "@crates//:filetime",
         "@crates//:formatx",
         "@crates//:futures",
@@ -75,6 +76,7 @@ rust_test_suite(
         "@crates//:bytes",
         "@crates//:futures",
         "@crates//:hyper-1.7.0",
+        "@crates//:pathdiff",
         "@crates//:pin-project-lite",
         "@crates//:pretty_assertions",
         "@crates//:prost",
@@ -85,6 +87,7 @@ rust_test_suite(
         "@crates//:tonic",
         "@crates//:tracing",
         "@crates//:tracing-test",
+        "@crates//:which",
     ],
 )
 

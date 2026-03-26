@@ -888,6 +888,33 @@ impl RunningActionImpl {
         Ok(self)
     }
 
+    pub fn canonicalise_path(
+        self: &Arc<Self>,
+        arg: &OsStr,
+        working_directory: &String,
+    ) -> Result<PathBuf, Error> {
+        // If the program contains a slash, we treat it as a path and resolve it relative to the work directory.
+        Ok(if Path::new(arg).components().count() > 1 {
+            let canonical_path = PathBuf::from(&self.work_directory)
+                .join(working_directory)
+                .join(arg);
+            if cfg!(target_os = "windows") {
+                // Workaround for https://github.com/rust-lang/rust/issues/42869 using a windows-specific crate
+                dunce::canonicalize(canonical_path)
+            } else {
+                canonical_path.canonicalize()
+            }
+            .err_tip(|| {
+                format!(
+                    "Could not canonicalize path for command root {}.",
+                    arg.to_string_lossy()
+                )
+            })?
+        } else {
+            PathBuf::from(arg)
+        })
+    }
+
     async fn inner_execute(self: Arc<Self>) -> Result<Arc<Self>, Error> {
         let (command_proto, mut kill_channel_rx) = {
             let mut state = self.state.lock();
@@ -925,8 +952,11 @@ impl RunningActionImpl {
         //                    figure out toolchain misconfiguration issues.
         //                    De-bloat the `debug` level by using the `trace`
         //                    level more effectively and adjust this.
-        info!(?args, "Executing command",);
-        let mut command_builder = process::Command::new(args[0]);
+        info!(?args, "Executing command");
+
+        let program = self.canonicalise_path(args[0], &command_proto.working_directory)?;
+
+        let mut command_builder = process::Command::new(program);
         command_builder
             .args(&args[1..])
             .kill_on_drop(true)
