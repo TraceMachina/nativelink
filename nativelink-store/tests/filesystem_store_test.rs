@@ -33,7 +33,7 @@ use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_store::filesystem_store::{
     DIGEST_FOLDER, EncodedFilePath, FileEntry, FileEntryImpl, FileType, FilesystemStore,
-    STR_FOLDER, key_from_file,
+    STR_FOLDER, digest_content_path, key_from_file,
 };
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::{DigestInfo, fs};
@@ -231,25 +231,46 @@ async fn wait_for_no_open_files() -> Result<(), Error> {
 }
 
 /// Helper function to ensure there are no temporary or content files left.
+/// Shard subdirectories (00-ff) under d/ are expected and ignored.
 async fn check_storage_dir_empty(storage_path: &str) -> Result<(), Error> {
-    let (_permit, temp_dir_handle) = fs::read_dir(format!("{storage_path}/{DIGEST_FOLDER}"))
+    // Check digest shard subdirectories for stray files.
+    let digest_dir = format!("{storage_path}/{DIGEST_FOLDER}");
+    let (_permit, dir_handle) = fs::read_dir(&digest_dir)
         .await
-        .err_tip(|| "Failed opening temp directory")?
+        .err_tip(|| "Failed opening digest directory")?
         .into_inner();
 
-    let mut read_dir_stream = ReadDirStream::new(temp_dir_handle);
-
-    if let Some(temp_dir_entry) = read_dir_stream.next().await {
-        let path = temp_dir_entry?.path();
-        panic!(
-            "No files should exist in temp directory, found: {}",
-            path.display()
-        );
+    let mut read_dir_stream = ReadDirStream::new(dir_handle);
+    while let Some(entry) = read_dir_stream.next().await {
+        let entry = entry?;
+        let metadata = entry.metadata().await?;
+        if metadata.is_file() {
+            panic!(
+                "No files should exist directly in digest directory, found: {}",
+                entry.path().display()
+            );
+        }
+        // For shard subdirectories, check they are empty of files.
+        if metadata.is_dir() {
+            let shard_path = entry.path();
+            let (_permit2, shard_handle) = fs::read_dir(shard_path.to_str().unwrap())
+                .await
+                .err_tip(|| "Failed opening shard directory")?
+                .into_inner();
+            let mut shard_stream = ReadDirStream::new(shard_handle);
+            if let Some(shard_entry) = shard_stream.next().await {
+                let path = shard_entry?.path();
+                panic!(
+                    "No files should exist in shard directory, found: {}",
+                    path.display()
+                );
+            }
+        }
     }
 
     let (_permit, temp_dir_handle) = fs::read_dir(format!("{storage_path}/{STR_FOLDER}"))
         .await
-        .err_tip(|| "Failed opening temp directory")?
+        .err_tip(|| "Failed opening str directory")?
         .into_inner();
 
     let mut read_dir_stream = ReadDirStream::new(temp_dir_handle);
@@ -257,11 +278,44 @@ async fn check_storage_dir_empty(storage_path: &str) -> Result<(), Error> {
     if let Some(temp_dir_entry) = read_dir_stream.next().await {
         let path = temp_dir_entry?.path();
         panic!(
-            "No files should exist in temp directory, found: {}",
+            "No files should exist in str directory, found: {}",
             path.display()
         );
     }
     Ok(())
+}
+
+/// Collects all files (not directories) under a sharded digest directory.
+/// Scans both flat files in `{base_dir}` and files in shard subdirs `{base_dir}/XX/`.
+async fn collect_digest_dir_files(base_dir: &str) -> Result<Vec<std::path::PathBuf>, Error> {
+    let (_permit, dir_handle) = fs::read_dir(base_dir)
+        .await
+        .err_tip(|| format!("Failed opening directory {base_dir}"))?
+        .into_inner();
+
+    let mut files = Vec::new();
+    let mut read_dir_stream = ReadDirStream::new(dir_handle);
+    while let Some(entry) = read_dir_stream.next().await {
+        let entry = entry?;
+        let metadata = entry.metadata().await?;
+        if metadata.is_file() {
+            files.push(entry.path());
+        } else if metadata.is_dir() {
+            let sub_path = entry.path();
+            let (_permit2, sub_handle) = fs::read_dir(sub_path.to_str().unwrap())
+                .await
+                .err_tip(|| "Failed opening shard subdirectory")?
+                .into_inner();
+            let mut sub_stream = ReadDirStream::new(sub_handle);
+            while let Some(sub_entry) = sub_stream.next().await {
+                let sub_entry = sub_entry?;
+                if sub_entry.metadata().await?.is_file() {
+                    files.push(sub_entry.path());
+                }
+            }
+        }
+    }
+    Ok(files)
 }
 
 const HASH1: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
@@ -346,7 +400,7 @@ async fn temp_files_get_deleted_on_replace_test() -> Result<(), Error> {
 
     store.update_oneshot(digest1, VALUE1.into()).await?;
 
-    let expected_file_name = OsString::from(format!("{content_path}/{DIGEST_FOLDER}/{digest1}"));
+    let expected_file_name = digest_content_path(&content_path, &digest1);
     {
         // Check to ensure our file exists where it should and content matches.
         let data = read_file_contents(&expected_file_name).await?;
@@ -461,25 +515,16 @@ async fn file_continues_to_stream_on_content_replace_test() -> Result<(), Error>
 
     {
         // Now ensure we only have 1 file in our temp path - we know it is a digest.
-        let (_permit, temp_dir_handle) = fs::read_dir(format!("{temp_path}/{DIGEST_FOLDER}"))
-            .await
-            .err_tip(|| "Failed opening temp directory")?
-            .into_inner();
-        let mut read_dir_stream = ReadDirStream::new(temp_dir_handle);
-        let mut num_files = 0;
-        while let Some(temp_dir_entry) = read_dir_stream.next().await {
-            num_files += 1;
-            let path = temp_dir_entry?.path();
-            let data = read_file_contents(path.as_os_str()).await?;
-            assert_eq!(
-                &data[..],
-                large_value1.as_bytes(),
-                "Expected file content to match"
-            );
-        }
+        let temp_files = collect_digest_dir_files(&format!("{temp_path}/{DIGEST_FOLDER}")).await?;
         assert_eq!(
-            num_files, 1,
+            temp_files.len(), 1,
             "There should only be one file in the temp directory"
+        );
+        let data = read_file_contents(temp_files[0].as_os_str()).await?;
+        assert_eq!(
+            &data[..],
+            large_value1.as_bytes(),
+            "Expected file content to match"
         );
     }
 
@@ -584,25 +629,16 @@ async fn file_gets_cleans_up_on_cache_eviction() -> Result<(), Error> {
 
     {
         // Now ensure we only have 1 file in our temp path - we know it is a digest.
-        let (_permit, temp_dir_handle) = fs::read_dir(format!("{temp_path}/{DIGEST_FOLDER}"))
-            .await
-            .err_tip(|| "Failed opening temp directory")?
-            .into_inner();
-        let mut read_dir_stream = ReadDirStream::new(temp_dir_handle);
-        let mut num_files = 0;
-        while let Some(temp_dir_entry) = read_dir_stream.next().await {
-            num_files += 1;
-            let path = temp_dir_entry?.path();
-            let data = read_file_contents(path.as_os_str()).await?;
-            assert_eq!(
-                &data[..],
-                large_value1.as_bytes(),
-                "Expected file content to match"
-            );
-        }
+        let temp_files = collect_digest_dir_files(&format!("{temp_path}/{DIGEST_FOLDER}")).await?;
         assert_eq!(
-            num_files, 1,
+            temp_files.len(), 1,
             "There should only be one file in the temp directory"
+        );
+        let data = read_file_contents(temp_files[0].as_os_str()).await?;
+        assert_eq!(
+            &data[..],
+            large_value1.as_bytes(),
+            "Expected file content to match"
         );
     }
 
@@ -740,32 +776,40 @@ async fn rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens()
     ) -> Result<fs::DirEntry, Error> {
         loop {
             yield_fn().await?;
-            // Now ensure we only have 1 file in our temp path - we know it is a digest.
-            let (_permit, dir_handle) = fs::read_dir(format!("{temp_path}/{DIGEST_FOLDER}"))
-                .await?
-                .into_inner();
-            let mut read_dir_stream = ReadDirStream::new(dir_handle);
-            if let Some(dir_entry) = read_dir_stream.next().await {
-                assert!(
-                    read_dir_stream.next().await.is_none(),
-                    "There should only be one file in temp directory"
-                );
-                let dir_entry = dir_entry?;
+            // Scan all shard subdirectories for exactly one temp file.
+            let temp_files =
+                collect_digest_dir_files(&format!("{temp_path}/{DIGEST_FOLDER}")).await?;
+            if temp_files.len() == 1 {
+                let path = &temp_files[0];
                 {
                     // Some filesystems won't sync automatically, so force it.
-                    let file_handle = fs::open_file(dir_entry.path().into_os_string(), 0)
+                    let file_handle = fs::open_file(path.clone().into_os_string(), 0)
                         .await
                         .err_tip(|| "Failed to open temp file")?;
                     // We don't care if it fails, this is only best attempt.
                     drop(file_handle.as_std().sync_all());
                 }
-                // Ensure we have written to the file too. This ensures we have an open file handle.
-                // Failing to do this may result in the file existing, but the `update_fut` not actually
-                // sending data to it yet.
-                if dir_entry.metadata().await?.len() >= INITIAL_CONTENT.len() as u64 {
-                    return Ok(dir_entry);
+                let metadata = tokio::fs::metadata(path).await?;
+                if metadata.len() >= INITIAL_CONTENT.len() as u64 {
+                    // Re-read the directory entry to return the proper type.
+                    let parent = path.parent().unwrap();
+                    let file_name = path.file_name().unwrap();
+                    let (_permit, dir_handle) =
+                        fs::read_dir(parent.to_str().unwrap()).await?.into_inner();
+                    let mut stream = ReadDirStream::new(dir_handle);
+                    while let Some(entry) = stream.next().await {
+                        let entry = entry?;
+                        if entry.file_name() == file_name {
+                            return Ok(entry);
+                        }
+                    }
                 }
             }
+            assert!(
+                temp_files.len() <= 1,
+                "There should only be one file in temp directory, found: {}",
+                temp_files.len()
+            );
         }
         // Unreachable.
     }
@@ -1144,7 +1188,7 @@ async fn update_file_future_drops_before_rename() -> Result<(), Error> {
         .get_file_path_locked(move |file_path| async move {
             assert_eq!(
                 file_path,
-                OsString::from(format!("{content_path}/{DIGEST_FOLDER}/{digest}"))
+                digest_content_path(&content_path, &digest)
             );
             Ok(())
         })
@@ -1174,7 +1218,7 @@ async fn deleted_file_removed_from_store() -> Result<(), Error> {
 
     store.update_oneshot(digest, VALUE1.into()).await?;
 
-    let stored_file_path = OsString::from(format!("{content_path}/{DIGEST_FOLDER}/{digest}"));
+    let stored_file_path = digest_content_path(&content_path, &digest);
     std::fs::remove_file(stored_file_path)?;
 
     let get_part_res = store.get_part_unchunked(digest, 0, None).await;
@@ -1340,7 +1384,7 @@ async fn update_with_whole_file_uses_same_inode() -> Result<(), Error> {
         original_inode
     };
 
-    let expected_file_name = format!("{content_path}/{DIGEST_FOLDER}/{digest}");
+    let expected_file_name = digest_content_path(&content_path, &digest);
     let new_inode = tokio::fs::metadata(&expected_file_name).await?.ino();
     assert_eq!(
         original_inode, new_inode,

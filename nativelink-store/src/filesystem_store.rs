@@ -60,6 +60,16 @@ const DEFAULT_BLOCK_SIZE: u64 = 4 * 1024;
 pub const STR_FOLDER: &str = "s";
 pub const DIGEST_FOLDER: &str = "d";
 
+/// Returns the expected on-disk path for a digest file under the given
+/// content path. This is useful for tests and external tooling that need
+/// to construct or verify file paths.
+///
+/// The path layout is: `{content_path}/d/{hash[0..2]}/{hash}-{size}`
+pub fn digest_content_path(content_path: &str, digest: &DigestInfo) -> OsString {
+    let key: StoreKey<'_> = (*digest).into();
+    to_full_path_from_key(content_path, &key)
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum FileType {
     Digest,
@@ -602,7 +612,7 @@ async fn add_files_to_cache<Fe: FileEntry>(
     /// Note: In Dec 2024 this is for backwards compatibility with the old
     /// way files were stored on disk. Previously all files were in a single
     /// folder regardless of the [`StoreKey`] type. This moves files from the old cache
-    /// location to the new cache location, under [`DIGEST_FOLDER`].
+    /// location to the new cache location, under [`DIGEST_FOLDER`] with shard prefix.
     async fn move_old_cache(
         shared_context: &Arc<SharedContext>,
         rename_fn: fn(&OsStr, &OsStr) -> Result<(), std::io::Error>,
@@ -611,17 +621,54 @@ async fn add_files_to_cache<Fe: FileEntry>(
 
         let from_path = shared_context.content_path.to_string();
 
-        let to_path = format!("{}/{DIGEST_FOLDER}", shared_context.content_path);
+        let digest_path = format!("{}/{DIGEST_FOLDER}", shared_context.content_path);
 
         for (file_name, _, _, _) in file_infos.into_iter().filter(|x| x.3) {
             let from_file: OsString = format!("{from_path}/{file_name}").into();
-            let to_file: OsString = format!("{to_path}/{file_name}").into();
+            // Place into the shard subdirectory based on first 2 hex chars.
+            let to_file: OsString = if file_name.len() >= 2 {
+                let shard = &file_name[..2];
+                format!("{digest_path}/{shard}/{file_name}").into()
+            } else {
+                format!("{digest_path}/{file_name}").into()
+            };
 
             if let Err(err) = rename_fn(&from_file, &to_file) {
                 warn!(?from_file, ?to_file, ?err, "Failed to rename file",);
             } else {
                 debug!(?from_file, ?to_file, "Renamed file (old cache)",);
             }
+        }
+        Ok(())
+    }
+
+    /// Migrates legacy flat files from `d/HASH-SIZE` to the sharded
+    /// layout `d/XX/HASH-SIZE`. Files already in shard subdirectories
+    /// are left alone.
+    async fn migrate_flat_to_sharded(
+        shared_context: &Arc<SharedContext>,
+        rename_fn: fn(&OsStr, &OsStr) -> Result<(), std::io::Error>,
+    ) -> Result<(), Error> {
+        let digest_dir = format!("{}/{DIGEST_FOLDER}", shared_context.content_path);
+        let top_entries = read_dir_entries(&digest_dir).await?;
+        let mut migrated = 0u64;
+
+        for (file_name, _, _, is_file) in &top_entries {
+            if !is_file || file_name.len() < 2 {
+                continue;
+            }
+            let shard = &file_name[..2];
+            let from_file: OsString = format!("{digest_dir}/{file_name}").into();
+            let to_file: OsString = format!("{digest_dir}/{shard}/{file_name}").into();
+
+            if let Err(err) = rename_fn(&from_file, &to_file) {
+                warn!(?from_file, ?to_file, ?err, "failed to migrate flat file to shard");
+            } else {
+                migrated += 1;
+            }
+        }
+        if migrated > 0 {
+            info!(migrated, "migrated legacy flat CAS files to sharded layout");
         }
         Ok(())
     }
@@ -682,6 +729,7 @@ async fn add_files_to_cache<Fe: FileEntry>(
     }
 
     move_old_cache(shared_context, rename_fn).await?;
+    migrate_flat_to_sharded(shared_context, rename_fn).await?;
 
     add_files_for_folder(
         evicting_map,
@@ -704,8 +752,8 @@ async fn add_files_to_cache<Fe: FileEntry>(
 }
 
 async fn prune_temp_path(temp_path: &str) -> Result<(), Error> {
-    async fn prune_temp_inner(temp_path: &str, subpath: &str) -> Result<(), Error> {
-        let (_permit, dir_handle) = fs::read_dir(format!("{temp_path}/{subpath}"))
+    async fn prune_files_in_dir(dir_path: &str) -> Result<(), Error> {
+        let (_permit, dir_handle) = fs::read_dir(dir_path)
             .await
             .err_tip(
                 || "Failed opening temp directory to prune partial downloads in filesystem store",
@@ -714,16 +762,29 @@ async fn prune_temp_path(temp_path: &str) -> Result<(), Error> {
 
         let mut read_dir_stream = ReadDirStream::new(dir_handle);
         while let Some(dir_entry) = read_dir_stream.next().await {
-            let path = dir_entry?.path();
-            if let Err(err) = fs::remove_file(&path).await {
-                warn!(?path, ?err, "Failed to delete file",);
+            let dir_entry = dir_entry?;
+            let path = dir_entry.path();
+            let metadata = dir_entry.metadata().await.ok();
+            if metadata.as_ref().map_or(true, |m| m.is_file()) {
+                if let Err(err) = fs::remove_file(&path).await {
+                    warn!(?path, ?err, "Failed to delete temp file",);
+                }
             }
         }
         Ok(())
     }
 
-    prune_temp_inner(temp_path, STR_FOLDER).await?;
-    prune_temp_inner(temp_path, DIGEST_FOLDER).await?;
+    prune_files_in_dir(&format!("{temp_path}/{STR_FOLDER}")).await?;
+    // Prune both flat files in d/ and files in d/XX/ shard subdirectories.
+    let digest_dir = format!("{temp_path}/{DIGEST_FOLDER}");
+    prune_files_in_dir(&digest_dir).await?;
+    for byte in 0u8..=255 {
+        let shard_dir = format!("{digest_dir}/{byte:02x}");
+        // Shard dirs may not exist yet (first startup before create_subdirs).
+        if let Ok(()) = prune_files_in_dir(&shard_dir).await {
+            // ok
+        }
+    }
     Ok(())
 }
 
@@ -985,25 +1046,29 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         //    contents until we release the lock.
         let evicting_map = self.evicting_map.clone();
         let rename_fn = self.rename_fn;
+        let content_is_immutable = self.content_is_immutable;
 
         // We need to guarantee that this will get to the end even if the parent future is dropped.
         // See: https://github.com/TraceMachina/nativelink/issues/495
         background_spawn!("filesystem_store_emplace_file", async move {
             let emplace_timer = std::time::Instant::now();
 
-            // CAS optimization: if the key already exists, just promote it in
-            // the LRU (touch) instead of replacing it. Same digest = same content,
-            // so replacing triggers an unnecessary unref (filesystem rename) of
-            // the identical blob followed by re-rename of the new copy.
-            let owned_key = key.borrow().into_owned();
-            if evicting_map.size_for_key(&owned_key).await.is_some() {
-                // Key exists — just promote to MRU. The get() call promotes.
-                let _ = evicting_map.get(&owned_key).await;
-                return Ok(());
+            // CAS optimization: if the key already exists and the store is
+            // content-addressable (immutable), just promote it in the LRU
+            // instead of replacing it. Same digest = same content, so
+            // replacing triggers an unnecessary unref (filesystem rename).
+            // Skip for mutable stores (AC) where the same key can map to
+            // different values.
+            if content_is_immutable {
+                let owned_key = key.borrow().into_owned();
+                if evicting_map.size_for_key(&owned_key).await.is_some() {
+                    // Key exists, content identical — skip insert+unref cycle.
+                    return Ok(());
+                }
             }
 
             evicting_map
-                .insert(owned_key.into(), entry.clone())
+                .insert(key.borrow().into_owned().into(), entry.clone())
                 .await;
             let map_insert_ms = emplace_timer.elapsed().as_millis();
 
