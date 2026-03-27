@@ -885,6 +885,39 @@ async fn hard_link_std(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> Result<(
     call_with_permit(move |_| std::fs::hard_link(src, dst).map_err(Into::<Error>::into)).await
 }
 
+/// Batch hard link: submit all linkat SQEs with a single `io_uring_enter` syscall.
+/// Falls back to sequential `hard_link` calls if io_uring is unavailable.
+#[cfg(all(feature = "io-uring", target_os = "linux"))]
+pub async fn hard_link_batch(entries: &[(&Path, &Path)]) -> Vec<Result<(), Error>> {
+    if entries.is_empty() {
+        return Vec::new();
+    }
+    if !is_io_uring_available().await {
+        let mut results = Vec::with_capacity(entries.len());
+        for (src, dst) in entries {
+            results.push(hard_link_std(src, dst).await);
+        }
+        return results;
+    }
+    let system = tokio_epoll_uring::thread_local_system().await;
+    let batch: Vec<(&Path, &Path, i32)> = entries.iter().map(|(s, d)| (*s, *d, 0)).collect();
+    system
+        .link_at_batch(batch)
+        .await
+        .into_iter()
+        .map(|r| r.map_err(|e| uring_err(e, "hard_link_batch")))
+        .collect()
+}
+
+#[cfg(not(all(feature = "io-uring", target_os = "linux")))]
+pub async fn hard_link_batch(entries: &[(&Path, &Path)]) -> Vec<Result<(), Error>> {
+    let mut results = Vec::with_capacity(entries.len());
+    for (src, dst) in entries {
+        results.push(hard_link_std(src, dst).await);
+    }
+    results
+}
+
 pub async fn set_permissions(src: impl AsRef<Path>, perm: Permissions) -> Result<(), Error> {
     let src = src.as_ref().to_owned();
     call_with_permit(move |_| std::fs::set_permissions(src, perm).map_err(Into::<Error>::into))
@@ -898,7 +931,7 @@ pub async fn create_dir(path: impl AsRef<Path>) -> Result<(), Error> {
     }
     let system = tokio_epoll_uring::thread_local_system().await;
     system
-        .mkdir_at(path.as_ref(), 0o755)
+        .mkdir_at(path.as_ref(), 0o777)
         .await
         .map_err(|e| uring_err(e, "create_dir"))
 }
