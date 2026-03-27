@@ -195,6 +195,9 @@ build:windows --cxxopt=/std:c++14 --host_cxxopt=/std:c++14
 build:windows --enable_runfiles
 build:windows --extra_toolchains=@rust_toolchains//:all  # Doesn't support LRE.
 
+# Configuration options for MacOS builds
+build --macos_sdk_version=10.12 # For clock_gettime in mimalloc
+
 # rustfmt
 # TODO(palfrey): compatibility workaround for https://github.com/bazelbuild/rules_rust/issues/3493
 build:rustfmt --@rules_rust//:extra_rustc_flag=-Aunused_qualifications
