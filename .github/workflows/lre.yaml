@@ -24,10 +24,10 @@
 #     strategy:
 #       fail-fast: false
 #       matrix:
-#         os: [ubuntu-24.04, macos-15]
+#         os: [ubuntu-24.04, macos-26]
 #         toolchain: [lre-cc, lre-rs]
 #         exclude:
-#           - os: macos-15
+#           - os: macos-26
 #             toolchain: lre-cc
 #     name: Local / ${{ matrix.toolchain }} / ${{ matrix.os }}
 #     runs-on: ${{ matrix.os }}
