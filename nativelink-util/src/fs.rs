@@ -862,7 +862,24 @@ async fn write_all_to_file_std(mut file: FileSlot, data: Bytes) -> Result<FileSl
     Ok(file)
 }
 
+#[cfg(all(feature = "io-uring", target_os = "linux"))]
 pub async fn hard_link(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> Result<(), Error> {
+    if !is_io_uring_available().await {
+        return hard_link_std(src, dst).await;
+    }
+    let system = tokio_epoll_uring::thread_local_system().await;
+    system
+        .link_at(src.as_ref(), dst.as_ref(), 0)
+        .await
+        .map_err(|e| uring_err(e, "hard_link"))
+}
+
+#[cfg(not(all(feature = "io-uring", target_os = "linux")))]
+pub async fn hard_link(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> Result<(), Error> {
+    hard_link_std(src, dst).await
+}
+
+async fn hard_link_std(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> Result<(), Error> {
     let src = src.as_ref().to_owned();
     let dst = dst.as_ref().to_owned();
     call_with_permit(move |_| std::fs::hard_link(src, dst).map_err(Into::<Error>::into)).await
@@ -874,7 +891,24 @@ pub async fn set_permissions(src: impl AsRef<Path>, perm: Permissions) -> Result
         .await
 }
 
+#[cfg(all(feature = "io-uring", target_os = "linux"))]
 pub async fn create_dir(path: impl AsRef<Path>) -> Result<(), Error> {
+    if !is_io_uring_available().await {
+        return create_dir_std(path).await;
+    }
+    let system = tokio_epoll_uring::thread_local_system().await;
+    system
+        .mkdir_at(path.as_ref(), 0o755)
+        .await
+        .map_err(|e| uring_err(e, "create_dir"))
+}
+
+#[cfg(not(all(feature = "io-uring", target_os = "linux")))]
+pub async fn create_dir(path: impl AsRef<Path>) -> Result<(), Error> {
+    create_dir_std(path).await
+}
+
+async fn create_dir_std(path: impl AsRef<Path>) -> Result<(), Error> {
     let path = path.as_ref().to_owned();
     call_with_permit(move |_| std::fs::create_dir(path).map_err(Into::<Error>::into)).await
 }
@@ -884,9 +918,25 @@ pub async fn create_dir_all(path: impl AsRef<Path>) -> Result<(), Error> {
     call_with_permit(move |_| std::fs::create_dir_all(path).map_err(Into::<Error>::into)).await
 }
 
-#[cfg(target_family = "unix")]
+#[cfg(all(feature = "io-uring", target_os = "linux"))]
 pub async fn symlink(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> Result<(), Error> {
-    // TODO: add a test for #2051: deadlock with large number of files
+    if !is_io_uring_available().await {
+        return symlink_std(src, dst).await;
+    }
+    let system = tokio_epoll_uring::thread_local_system().await;
+    system
+        .symlink_at(src.as_ref(), dst.as_ref())
+        .await
+        .map_err(|e| uring_err(e, "symlink"))
+}
+
+#[cfg(not(all(feature = "io-uring", target_os = "linux")))]
+pub async fn symlink(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> Result<(), Error> {
+    symlink_std(src, dst).await
+}
+
+#[cfg(target_family = "unix")]
+async fn symlink_std(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> Result<(), Error> {
     let _permit = get_permit().await?;
     tokio::fs::symlink(src, dst).await.map_err(Into::into)
 }
@@ -935,7 +985,30 @@ pub async fn read_dir(path: impl AsRef<Path>) -> Result<ReadDir, Error> {
     Ok(ReadDir { permit, inner })
 }
 
+#[cfg(all(feature = "io-uring", target_os = "linux"))]
 pub async fn rename(from: impl AsRef<Path>, to: impl AsRef<Path>) -> Result<(), Error> {
+    if !is_io_uring_available().await {
+        return rename_std(from, to).await;
+    }
+    let rename_start = std::time::Instant::now();
+    let system = tokio_epoll_uring::thread_local_system().await;
+    let result = system
+        .rename_at(from.as_ref(), to.as_ref(), 0)
+        .await
+        .map_err(|e| uring_err(e, "rename"));
+    let rename_ms = rename_start.elapsed().as_millis();
+    if rename_ms > 100 {
+        warn!(rename_ms, "fs::rename: slow io_uring rename (>100ms)");
+    }
+    result
+}
+
+#[cfg(not(all(feature = "io-uring", target_os = "linux")))]
+pub async fn rename(from: impl AsRef<Path>, to: impl AsRef<Path>) -> Result<(), Error> {
+    rename_std(from, to).await
+}
+
+async fn rename_std(from: impl AsRef<Path>, to: impl AsRef<Path>) -> Result<(), Error> {
     let from = from.as_ref().to_owned();
     let to = to.as_ref().to_owned();
     let rename_start = std::time::Instant::now();
@@ -943,15 +1016,29 @@ pub async fn rename(from: impl AsRef<Path>, to: impl AsRef<Path>) -> Result<(), 
         call_with_permit(move |_| std::fs::rename(from, to).map_err(Into::<Error>::into)).await;
     let rename_ms = rename_start.elapsed().as_millis();
     if rename_ms > 100 {
-        warn!(
-            rename_ms,
-            "fs::rename: slow rename syscall (>100ms)"
-        );
+        warn!(rename_ms, "fs::rename: slow rename syscall (>100ms)");
     }
     result
 }
 
+#[cfg(all(feature = "io-uring", target_os = "linux"))]
 pub async fn remove_file(path: impl AsRef<Path>) -> Result<(), Error> {
+    if !is_io_uring_available().await {
+        return remove_file_std(path).await;
+    }
+    let system = tokio_epoll_uring::thread_local_system().await;
+    system
+        .unlink_at(path.as_ref(), 0)
+        .await
+        .map_err(|e| uring_err(e, "remove_file"))
+}
+
+#[cfg(not(all(feature = "io-uring", target_os = "linux")))]
+pub async fn remove_file(path: impl AsRef<Path>) -> Result<(), Error> {
+    remove_file_std(path).await
+}
+
+async fn remove_file_std(path: impl AsRef<Path>) -> Result<(), Error> {
     let path = path.as_ref().to_owned();
     call_with_permit(move |_| std::fs::remove_file(path).map_err(Into::<Error>::into)).await
 }
