@@ -823,7 +823,8 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             // it still exists in there. But first, get the lock...
             let mut encoded_file_path = entry.get_encoded_file_path().write().await;
             // Then check it's still in there...
-            if evicting_map.get(&key).await.is_none() {
+            // Use size_for_key instead of get() to avoid triggering bulk eviction of other entries.
+            if evicting_map.size_for_key(&key).await.is_none() {
                 info!(%key, "Got eviction while emplacing, dropping");
                 return Ok(());
             }
