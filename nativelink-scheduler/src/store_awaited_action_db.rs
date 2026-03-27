@@ -408,8 +408,7 @@ impl SchedulerStoreDecodeTo for ClientIdToOperationId<'_> {
     fn decode(_version: i64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
         serde_json::from_slice(&data).map_err(|e| {
             Error::from_std_err(Code::InvalidArgument, &e).append(format!(
-                "In ClientIdToOperationId::decode (data: {:02x?})",
-                data
+                "In ClientIdToOperationId::decode (data: {data:02x?})",
             ))
         })
     }

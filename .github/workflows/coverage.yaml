@@ -32,6 +32,11 @@ jobs:
       - name: Prepare Worker
         uses: ./.github/actions/prepare-nix
 
+      # Ubuntu 24.04 restricts unprivileged user namespaces by default, which breaks
+      # the worker tests that use namespaces (e.g. for sandboxing).
+      - name: Disable AppArmor namespace restrictions
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
       - name: Generate coverage
         run: |
           nix build -L .#nativelinkCoverageForHost
