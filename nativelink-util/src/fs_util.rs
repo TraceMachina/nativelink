@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use nativelink_error::{Error, make_err};
 
@@ -25,13 +25,105 @@ pub enum CloneMethod {
     Hardlink,
 }
 
+/// Collected tree operations for batch execution via io_uring.
+struct TreeOps {
+    /// (depth, dest_path) — sorted by depth ascending for parent-before-child creation.
+    dirs: Vec<(u32, PathBuf)>,
+    /// (src, dst) pairs for hardlink.
+    files: Vec<(PathBuf, PathBuf)>,
+    /// (target, linkpath) pairs — target preserved as-is (may be relative).
+    symlinks: Vec<(PathBuf, PathBuf)>,
+}
+
+impl TreeOps {
+    fn total_ops(&self) -> usize {
+        self.dirs.len() + self.files.len() + self.symlinks.len()
+    }
+}
+
+/// Walk `src` recursively, collecting mkdir/hardlink/symlink operations
+/// into `TreeOps` instead of executing them. Runs synchronously inside
+/// `spawn_blocking`.
+fn collect_tree_ops_sync(
+    src: &Path,
+    dst: &Path,
+) -> Result<TreeOps, Error> {
+    let mut ops = TreeOps {
+        dirs: Vec::new(),
+        files: Vec::new(),
+        symlinks: Vec::new(),
+    };
+    collect_tree_ops_recursive(src, dst, dst, &mut ops)?;
+    // Sort directories by depth ascending so parents are created before children.
+    ops.dirs.sort_by_key(|(depth, _)| *depth);
+    Ok(ops)
+}
+
+fn collect_tree_ops_recursive(
+    src: &Path,
+    dst: &Path,
+    root_dst: &Path,
+    ops: &mut TreeOps,
+) -> Result<(), Error> {
+    for entry in std::fs::read_dir(src).map_err(|e| {
+        make_err!(
+            nativelink_error::Code::Internal,
+            "Failed to read directory {}: {e}",
+            src.display()
+        )
+    })? {
+        let entry = entry.map_err(|e| {
+            make_err!(
+                nativelink_error::Code::Internal,
+                "Failed to read entry in {}: {e}",
+                src.display()
+            )
+        })?;
+        let ft = entry.file_type().map_err(|e| {
+            make_err!(
+                nativelink_error::Code::Internal,
+                "Failed to get file type for {:?}: {e}",
+                entry.path()
+            )
+        })?;
+        let dst_path = dst.join(entry.file_name());
+
+        if ft.is_dir() {
+            // Compute depth from the path relative to root_dst.
+            let depth = dst_path
+                .strip_prefix(root_dst)
+                .map(|rel| rel.components().count() as u32)
+                .unwrap_or(0);
+            ops.dirs.push((depth, dst_path.clone()));
+            collect_tree_ops_recursive(&entry.path(), &dst_path, root_dst, ops)?;
+        } else if ft.is_file() {
+            ops.files.push((entry.path(), dst_path));
+        } else if ft.is_symlink() {
+            let target = std::fs::read_link(entry.path()).map_err(|e| {
+                make_err!(
+                    nativelink_error::Code::Internal,
+                    "Failed to read symlink {:?}: {e}",
+                    entry.path()
+                )
+            })?;
+            // Preserve the symlink target as-is (may be relative).
+            ops.symlinks.push((target, dst_path));
+        }
+    }
+    Ok(())
+}
+
 /// Copies an entire directory tree from source to destination using the
 /// fastest available method:
 ///
 /// - **macOS (APFS)**: Uses `clonefile(2)` for a CoW clone of the entire tree
 ///   in a single syscall (~1ms regardless of tree size). Falls back to hardlink
 ///   if clonefile fails (cross-device, non-APFS, etc.).
-/// - **Other platforms**: Hardlinks each file individually via `std::fs::hard_link`.
+/// - **Linux with io_uring**: Collects all operations (mkdir, hardlink, symlink)
+///   in a single readdir walk, then executes them as batched io_uring SQEs for
+///   minimal syscall overhead.
+/// - **Other platforms / small trees**: Hardlinks each file individually via
+///   `std::fs::hard_link` inside `spawn_blocking`.
 ///
 /// After a successful clonefile, directories are made writable (0o755) since the
 /// clone inherits the cache's read-only permissions and actions need to create
@@ -39,25 +131,143 @@ pub enum CloneMethod {
 pub async fn hardlink_directory_tree(src_dir: &Path, dst_dir: &Path) -> Result<CloneMethod, Error> {
     let src = src_dir.to_path_buf();
     let dst = dst_dir.to_path_buf();
-    tokio::task::spawn_blocking(move || {
-        #[cfg(target_os = "macos")]
-        {
-            match try_clonefile(&src, &dst) {
-                Ok(()) => return Ok(CloneMethod::Clonefile),
-                Err(e) => {
-                    tracing::debug!(
-                        src = %src.display(),
-                        dst = %dst.display(),
-                        "clonefile failed, falling back to hardlink: {e}",
-                    );
-                }
+
+    // macOS: try clonefile first.
+    #[cfg(target_os = "macos")]
+    {
+        let src_clone = src.clone();
+        let dst_clone = dst.clone();
+        let clone_result = tokio::task::spawn_blocking(move || {
+            try_clonefile(&src_clone, &dst_clone)
+        })
+        .await
+        .map_err(|e| make_err!(nativelink_error::Code::Internal, "spawn_blocking join error: {e}"))?;
+
+        match clone_result {
+            Ok(()) => return Ok(CloneMethod::Clonefile),
+            Err(e) => {
+                tracing::debug!(
+                    src = %src.display(),
+                    dst = %dst.display(),
+                    "clonefile failed, falling back to hardlink: {e}",
+                );
             }
         }
-        hardlink_directory_tree_sync(&src, &dst)?;
-        Ok(CloneMethod::Hardlink)
+    }
+
+    // Collect tree operations via synchronous readdir walk.
+    let src_collect = src.clone();
+    let dst_collect = dst.clone();
+    let tree_ops_result = tokio::task::spawn_blocking(move || {
+        if !src_collect.exists() {
+            return Err(make_err!(
+                nativelink_error::Code::InvalidArgument,
+                "Source directory does not exist: {}",
+                src_collect.display()
+            ));
+        }
+        collect_tree_ops_sync(&src_collect, &dst_collect)
     })
     .await
-    .map_err(|e| make_err!(nativelink_error::Code::Internal, "spawn_blocking join error: {e}"))?
+    .map_err(|e| make_err!(nativelink_error::Code::Internal, "spawn_blocking join error: {e}"))??;
+
+    // For small trees, fall back to synchronous approach — the overhead of
+    // batching exceeds the benefit.
+    const BATCH_THRESHOLD: usize = 20;
+    if tree_ops_result.total_ops() < BATCH_THRESHOLD {
+        let src_sync = src.clone();
+        let dst_sync = dst.clone();
+        tokio::task::spawn_blocking(move || {
+            hardlink_directory_tree_sync(&src_sync, &dst_sync)
+        })
+        .await
+        .map_err(|e| make_err!(nativelink_error::Code::Internal, "spawn_blocking join error: {e}"))??;
+        return Ok(CloneMethod::Hardlink);
+    }
+
+    // Create root destination directory.
+    crate::fs::create_dir_all(&dst).await.map_err(|e| {
+        make_err!(
+            nativelink_error::Code::Internal,
+            "Failed to create destination directory {}: {e}",
+            dst.display()
+        )
+    })?;
+
+    // Phase 1: Create all directories level by level (depth-sorted).
+    // Group by depth and submit each depth level as a batch to ensure
+    // parents exist before children.
+    let mut current_depth = 0u32;
+    let mut depth_batch_start = 0usize;
+    let dir_paths: Vec<PathBuf> = tree_ops_result.dirs.iter().map(|(_, p)| p.clone()).collect();
+    let dir_depths: Vec<u32> = tree_ops_result.dirs.iter().map(|(d, _)| *d).collect();
+
+    while depth_batch_start < dir_paths.len() {
+        // Find the end of this depth level.
+        let mut depth_batch_end = depth_batch_start;
+        while depth_batch_end < dir_depths.len() && dir_depths[depth_batch_end] == current_depth {
+            depth_batch_end += 1;
+        }
+        if depth_batch_end > depth_batch_start {
+            let batch_refs: Vec<&Path> = dir_paths[depth_batch_start..depth_batch_end]
+                .iter()
+                .map(|p| p.as_path())
+                .collect();
+            let results = crate::fs::create_dir_batch(&batch_refs, 0o777).await;
+            for (i, result) in results.into_iter().enumerate() {
+                result.map_err(|e| {
+                    make_err!(
+                        nativelink_error::Code::Internal,
+                        "Failed to create directory {}: {e}",
+                        batch_refs[i].display()
+                    )
+                })?;
+            }
+            depth_batch_start = depth_batch_end;
+        }
+        current_depth += 1;
+    }
+
+    // Phase 2: Hardlink all files in one batch.
+    if !tree_ops_result.files.is_empty() {
+        let file_refs: Vec<(&Path, &Path)> = tree_ops_result
+            .files
+            .iter()
+            .map(|(s, d)| (s.as_path(), d.as_path()))
+            .collect();
+        let results = crate::fs::hard_link_batch(&file_refs).await;
+        for (i, result) in results.into_iter().enumerate() {
+            result.map_err(|e| {
+                make_err!(
+                    nativelink_error::Code::Internal,
+                    "Failed to hardlink {} to {}: {e}",
+                    tree_ops_result.files[i].0.display(),
+                    tree_ops_result.files[i].1.display()
+                )
+            })?;
+        }
+    }
+
+    // Phase 3: Create all symlinks in one batch.
+    if !tree_ops_result.symlinks.is_empty() {
+        let symlink_refs: Vec<(&Path, &Path)> = tree_ops_result
+            .symlinks
+            .iter()
+            .map(|(t, l)| (t.as_path(), l.as_path()))
+            .collect();
+        let results = crate::fs::symlink_batch(&symlink_refs).await;
+        for (i, result) in results.into_iter().enumerate() {
+            result.map_err(|e| {
+                make_err!(
+                    nativelink_error::Code::Internal,
+                    "Failed to create symlink {}: {e}",
+                    tree_ops_result.symlinks[i].1.display()
+                )
+            })?;
+        }
+    }
+
+    Ok(CloneMethod::Hardlink)
 }
 
 /// Uses macOS `clonefile(2)` to CoW-clone an entire directory tree in one syscall.
