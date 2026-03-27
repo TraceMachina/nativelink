@@ -1,0 +1,3 @@
+[submodule "tokio-epoll-uring"]
+	path = tokio-epoll-uring
+	url = forgejo@optimus.m0n0.space:rejuvenile/tokio-epoll-uring.git

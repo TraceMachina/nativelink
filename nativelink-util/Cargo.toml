@@ -131,7 +131,7 @@ name = "fs_io_bench"
 harness = false
 
 [target.'cfg(target_os = "linux")'.dependencies]
-tokio-epoll-uring = { git = "https://github.com/neondatabase/tokio-epoll-uring.git", branch = "main", optional = true }
+tokio-epoll-uring = { path = "../tokio-epoll-uring/tokio-epoll-uring", optional = true }
 
 [package.metadata.cargo-machete]
 # Used by nativelink_test macro
