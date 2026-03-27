@@ -1330,7 +1330,7 @@ impl ByteStream for ByteStreamServer {
     }
 
     #[instrument(
-        err,
+        err(level = Level::WARN),
         level = Level::ERROR,
         skip_all,
         fields(request = ?grpc_request.get_ref())

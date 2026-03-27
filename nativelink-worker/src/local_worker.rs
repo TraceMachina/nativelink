@@ -1733,10 +1733,22 @@ pub async fn new_local_worker(
 
         let worker_name = config.name.clone();
 
+        // Match the main server's message size limits so that mirror writes
+        // from WorkerProxyStore (which may send BatchUpdateBlobs >4MiB) are
+        // not rejected by tonic's default 4MiB limit.
+        const WORKER_CAS_MAX_DECODING_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
+        const WORKER_CAS_MAX_ENCODING_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
+
         // Build tonic service wrappers first (they wrap in Arc internally
         // and implement Clone), so we can share them between TCP and QUIC.
-        let cas_svc = cas_server.into_service();
-        let bs_svc = bytestream_server.into_service();
+        let cas_svc = cas_server
+            .into_service()
+            .max_decoding_message_size(WORKER_CAS_MAX_DECODING_MESSAGE_SIZE)
+            .max_encoding_message_size(WORKER_CAS_MAX_ENCODING_MESSAGE_SIZE);
+        let bs_svc = bytestream_server
+            .into_service()
+            .max_decoding_message_size(WORKER_CAS_MAX_DECODING_MESSAGE_SIZE)
+            .max_encoding_message_size(WORKER_CAS_MAX_ENCODING_MESSAGE_SIZE);
 
         // Start TCP server.
         let tcp_cas_svc = cas_svc.clone();
