@@ -600,16 +600,41 @@ pub async fn new_local_worker(
 
     #[cfg(target_os = "linux")]
     let use_namespaces = if let Some(use_namespaces) = &config.use_namespaces {
-        if *use_namespaces && !crate::namespace_utils::namespaces_supported() {
+        if *use_namespaces
+            && !crate::namespace_utils::namespaces_supported(
+                config.use_mount_namespace.unwrap_or_default(),
+            )
+        {
             return Err(make_err!(Code::Unavailable, "Namespaces not supported"));
         }
-        *use_namespaces
+        if !*use_namespaces {
+            crate::running_actions_manager::UseNamespaces::No
+        } else if config.use_mount_namespace.unwrap_or_default() {
+            crate::running_actions_manager::UseNamespaces::YesAndMount
+        } else {
+            crate::running_actions_manager::UseNamespaces::Yes
+        }
+    } else if config
+        .use_mount_namespace
+        .is_some_and(core::convert::identity)
+    {
+        return Err(make_err!(
+            Code::Unavailable,
+            "Mount namespaces not supported"
+        ));
     } else {
-        false
+        crate::running_actions_manager::UseNamespaces::No
     };
 
     #[cfg(not(target_os = "linux"))]
     if config.use_namespaces.is_some_and(core::convert::identity) {
+        return Err(make_err!(Code::Unavailable, "Namespaces not supported"));
+    }
+    #[cfg(not(target_os = "linux"))]
+    if config
+        .use_mount_namespace
+        .is_some_and(core::convert::identity)
+    {
         return Err(make_err!(Code::Unavailable, "Namespaces not supported"));
     }
 

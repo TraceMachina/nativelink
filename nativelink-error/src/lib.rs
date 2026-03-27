@@ -353,6 +353,12 @@ impl From<zip::result::ZipError> for Error {
     }
 }
 
+impl From<std::ffi::NulError> for Error {
+    fn from(err: std::ffi::NulError) -> Self {
+        Self::from_std_err(Code::Internal, &err)
+    }
+}
+
 pub trait ResultExt<T> {
     /// # Errors
     ///

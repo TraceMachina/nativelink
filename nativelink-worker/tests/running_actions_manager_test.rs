@@ -101,6 +101,17 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
+    fn use_namespaces() -> nativelink_worker::running_actions_manager::UseNamespaces {
+        if namespace_utils::namespaces_supported(true) {
+            nativelink_worker::running_actions_manager::UseNamespaces::YesAndMount
+        } else if namespace_utils::namespaces_supported(false) {
+            nativelink_worker::running_actions_manager::UseNamespaces::Yes
+        } else {
+            nativelink_worker::running_actions_manager::UseNamespaces::No
+        }
+    }
+
     async fn setup_stores() -> Result<
         (
             Arc<FilesystemStore>,
@@ -465,7 +476,7 @@ mod tests {
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
-                use_namespaces: namespace_utils::namespaces_supported(),
+                use_namespaces: use_namespaces(),
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -589,7 +600,7 @@ mod tests {
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
-                use_namespaces: namespace_utils::namespaces_supported(),
+                use_namespaces: use_namespaces(),
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -715,7 +726,7 @@ mod tests {
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
-                use_namespaces: namespace_utils::namespaces_supported(),
+                use_namespaces: use_namespaces(),
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -897,7 +908,7 @@ mod tests {
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
-                use_namespaces: namespace_utils::namespaces_supported(),
+                use_namespaces: use_namespaces(),
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -1080,7 +1091,7 @@ mod tests {
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
-                use_namespaces: namespace_utils::namespaces_supported(),
+                use_namespaces: use_namespaces(),
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -1289,7 +1300,7 @@ mod tests {
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
-                use_namespaces: namespace_utils::namespaces_supported(),
+                use_namespaces: use_namespaces(),
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -1425,7 +1436,7 @@ mod tests {
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
-                use_namespaces: namespace_utils::namespaces_supported(),
+                use_namespaces: use_namespaces(),
             })?);
 
         #[cfg(target_family = "unix")]
@@ -1629,7 +1640,7 @@ exit 0
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
-                use_namespaces: namespace_utils::namespaces_supported(),
+                use_namespaces: use_namespaces(),
             })?);
         #[cfg(target_family = "unix")]
         let arguments = vec!["printf".to_string(), EXPECTED_STDOUT.to_string()];
@@ -1806,7 +1817,7 @@ exit 0
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
-                use_namespaces: namespace_utils::namespaces_supported(),
+                use_namespaces: use_namespaces(),
             })?);
         #[cfg(target_family = "unix")]
         let arguments = vec!["printf".to_string(), EXPECTED_STDOUT.to_string()];
@@ -1977,7 +1988,7 @@ exit 1
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
-                use_namespaces: namespace_utils::namespaces_supported(),
+                use_namespaces: use_namespaces(),
             })?);
         let arguments = vec!["true".to_string()];
         let command = Command {
@@ -2062,7 +2073,7 @@ exit 1
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
-                use_namespaces: namespace_utils::namespaces_supported(),
+                use_namespaces: use_namespaces(),
             })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
@@ -2138,7 +2149,7 @@ exit 1
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
-                use_namespaces: namespace_utils::namespaces_supported(),
+                use_namespaces: use_namespaces(),
             })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
@@ -2221,7 +2232,7 @@ exit 1
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
-                use_namespaces: namespace_utils::namespaces_supported(),
+                use_namespaces: use_namespaces(),
             })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
@@ -2325,7 +2336,7 @@ exit 1
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
-                use_namespaces: namespace_utils::namespaces_supported(),
+                use_namespaces: use_namespaces(),
             })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
@@ -2373,7 +2384,7 @@ exit 1
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
-                use_namespaces: namespace_utils::namespaces_supported(),
+                use_namespaces: use_namespaces(),
             })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
@@ -2442,7 +2453,7 @@ exit 1
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
-                use_namespaces: namespace_utils::namespaces_supported(),
+                use_namespaces: use_namespaces(),
             })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
@@ -2562,7 +2573,7 @@ exit 1
                     timeout_handled_externally: false,
                     directory_cache: None,
                     #[cfg(target_os = "linux")]
-                    use_namespaces: namespace_utils::namespaces_supported(),
+                    use_namespaces: use_namespaces(),
                 },
                 Callbacks {
                     now_fn: test_monotonic_clock,
@@ -2650,7 +2661,7 @@ exit 1
                     timeout_handled_externally: false,
                     directory_cache: None,
                     #[cfg(target_os = "linux")]
-                    use_namespaces: namespace_utils::namespaces_supported(),
+                    use_namespaces: use_namespaces(),
                 },
                 Callbacks {
                     now_fn: test_monotonic_clock,
@@ -2738,7 +2749,7 @@ exit 1
                     timeout_handled_externally: false,
                     directory_cache: None,
                     #[cfg(target_os = "linux")]
-                    use_namespaces: namespace_utils::namespaces_supported(),
+                    use_namespaces: use_namespaces(),
                 },
                 Callbacks {
                     now_fn: test_monotonic_clock,
@@ -2823,7 +2834,7 @@ exit 1
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
-                use_namespaces: namespace_utils::namespaces_supported(),
+                use_namespaces: use_namespaces(),
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -2976,7 +2987,7 @@ exit 1
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
-                use_namespaces: namespace_utils::namespaces_supported(),
+                use_namespaces: use_namespaces(),
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -3146,7 +3157,7 @@ exit 1
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
-                use_namespaces: namespace_utils::namespaces_supported(),
+                use_namespaces: use_namespaces(),
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -3247,7 +3258,7 @@ exit 1
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
-                use_namespaces: namespace_utils::namespaces_supported(),
+                use_namespaces: use_namespaces(),
             })?);
         let queued_timestamp = make_system_time(1000);
 
@@ -3362,7 +3373,7 @@ exit 1
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
-                use_namespaces: namespace_utils::namespaces_supported(),
+                use_namespaces: use_namespaces(),
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -3543,7 +3554,7 @@ exit 1
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
-                use_namespaces: namespace_utils::namespaces_supported(),
+                use_namespaces: use_namespaces(),
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -3664,7 +3675,7 @@ exit 1
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
-                use_namespaces: namespace_utils::namespaces_supported(),
+                use_namespaces: use_namespaces(),
             })?);
 
         // Create a simple action
@@ -3806,7 +3817,7 @@ exit 1
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
-                use_namespaces: namespace_utils::namespaces_supported(),
+                use_namespaces: use_namespaces(),
             })?);
 
         // Create a simple action
@@ -3915,7 +3926,7 @@ exit 1
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
-                use_namespaces: namespace_utils::namespaces_supported(),
+                use_namespaces: use_namespaces(),
             })?);
         let operation_id = OperationId::default().to_string();
         let file_content_digest = DigestInfo::new([2u8; 32], 32);
