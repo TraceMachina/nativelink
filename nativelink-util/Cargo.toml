@@ -26,6 +26,7 @@ futures = { version = "0.3.31", features = [
   "async-await",
 ], default-features = false }
 hex = { version = "0.4.3", default-features = false, features = ["std"] }
+http-body = { version = "1.0.1", default-features = false }
 humantime = { version = "2.3.0", default-features = false }
 hyper = { version = "1.6.0", default-features = false }
 hyper-util = { version = "0.1.11", default-features = false }

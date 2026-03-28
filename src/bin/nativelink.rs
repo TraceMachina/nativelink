@@ -463,7 +463,21 @@ async fn inner_main(
                     .bytestream
                     .map_or(Ok(None), |cfg| {
                         ByteStreamServer::new(&cfg, &store_manager)
-                            .map(|v| Some(svc_setup!(v)))
+                            .map(|v| {
+                                let mut service = v.into_zero_copy_service(max_decoding, max_encoding);
+                                if let ListenerConfig::Http(ref http_config) = server_cfg.listener {
+                                    let send_algo = &http_config.compression.send_compression_algorithm;
+                                    if let Some(encoding) = into_encoding(send_algo.unwrap_or(HttpCompressionAlgorithm::None)) {
+                                        service = service.send_compressed(encoding);
+                                    }
+                                    for encoding in http_config.compression.accepted_compression_algorithms.iter()
+                                        .filter_map(|from: &HttpCompressionAlgorithm| into_encoding(*from))
+                                    {
+                                        service = service.accept_compressed(encoding);
+                                    }
+                                }
+                                Some(service)
+                            })
                     })
                     .err_tip(|| "Could not create ByteStream service")?,
             )

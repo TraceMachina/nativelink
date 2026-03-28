@@ -56,6 +56,7 @@ use nativelink_util::resource_info::ResourceInfo;
 use nativelink_util::spawn;
 use nativelink_util::store_trait::{IS_WORKER_REQUEST, REDIRECT_PREFIX, Store, StoreLike, StoreOptimizations, UploadSizeInfo};
 use nativelink_util::task::JoinHandleDropGuard;
+use nativelink_util::zero_copy_codec::ZeroCopyWriteStream;
 use opentelemetry::context::FutureExt;
 use parking_lot::Mutex;
 use tokio::time::sleep;
@@ -617,6 +618,25 @@ impl ByteStreamServer {
 
     pub fn into_service(self) -> Server<Self> {
         Server::new(self)
+    }
+
+    /// Wrap this server in a `ZeroCopyByteStreamService` that intercepts Write
+    /// RPCs and decodes `WriteRequest` messages directly from HTTP body frames,
+    /// bypassing tonic's `BytesMut` reassembly buffer.
+    ///
+    /// Read and QueryWriteStatus RPCs delegate to the standard tonic path.
+    pub fn into_zero_copy_service(
+        self,
+        max_decoding_message_size: usize,
+        max_encoding_message_size: usize,
+    ) -> ZeroCopyByteStreamService {
+        let inner = Arc::new(self);
+        ZeroCopyByteStreamService {
+            inner: inner.clone(),
+            tonic_service: Server::from_arc(inner)
+                .max_decoding_message_size(max_decoding_message_size)
+                .max_encoding_message_size(max_encoding_message_size),
+        }
     }
 
     /// Creates or joins an upload stream for the given UUID.
@@ -1224,6 +1244,175 @@ impl ByteStreamServer {
             complete: true,
         }))
     }
+
+    /// Zero-copy write handler called from `ZeroCopyByteStreamService`.
+    ///
+    /// This method is identical to the tonic `write()` handler but accepts
+    /// any `Stream<Item = Result<WriteRequest, Status>>` instead of the
+    /// tonic-specific `Streaming<WriteRequest>`. The zero-copy stream has
+    /// already decoded the gRPC frames without an intermediate copy.
+    async fn zero_copy_write(
+        &self,
+        stream: impl Stream<Item = Result<WriteRequest, Status>> + Send + Unpin + 'static,
+        _metadata: &http::HeaderMap,
+    ) -> Result<Response<WriteResponse>, Status> {
+        let start_time = Instant::now();
+
+        let stream = WriteRequestStreamWrapper::from(stream)
+            .await
+            .err_tip(|| "Could not unwrap first stream message")
+            .map_err(Into::<Status>::into)?;
+
+        let instance_name = stream.resource_info.instance_name.as_ref();
+        let expected_size = stream.resource_info.expected_size as u64;
+        let instance = self
+            .instance_infos
+            .get(instance_name)
+            .err_tip(|| format!("'instance_name' not configured for '{instance_name}'"))?;
+
+        // Track write request
+        instance
+            .metrics
+            .write_requests_total
+            .fetch_add(1, Ordering::Relaxed);
+
+        let store = instance.store.clone();
+
+        let digest = DigestInfo::try_new(
+            &stream.resource_info.hash,
+            stream.resource_info.expected_size,
+        )
+        .err_tip(|| "Invalid digest input in ByteStream::write")?;
+
+        // If we are a GrpcStore we shortcut here, as this is a special store.
+        if let Some(grpc_store) = store.downcast_ref::<GrpcStore>(Some(digest.into())) {
+            let resp = grpc_store.write(stream).await.map_err(Into::into);
+            return resp;
+        }
+
+        // Skip the upload if the server already has this blob.
+        if store.has(digest).await?.is_some() {
+            debug!(
+                %digest,
+                expected_size,
+                "ByteStream::write(zero-copy): blob already exists, skipping upload",
+            );
+            return Ok(Response::new(WriteResponse {
+                committed_size: expected_size as i64,
+            }));
+        }
+
+        let digest_function = stream
+            .resource_info
+            .digest_function
+            .as_deref()
+            .map_or_else(
+                || Ok(default_digest_hasher_func()),
+                DigestHasherFunc::try_from,
+            )?;
+
+        // Oneshot fast-path check (same logic as the tonic write handler).
+        let use_oneshot = if store.optimized_for(StoreOptimizations::SubscribesToUpdateOneshot)
+            && expected_size <= 64 * 1024 * 1024
+            && stream.resource_info.uuid.is_some()
+        {
+            let is_single_shot = stream.is_first_msg_complete();
+            if is_single_shot {
+                let uuid_str = stream.resource_info.uuid.as_ref().unwrap();
+                let uuid_key = parse_uuid_to_key(uuid_str);
+                !instance.active_uploads.lock().contains_key(&uuid_key)
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        let oneshot = use_oneshot;
+        debug!(
+            %digest,
+            expected_size,
+            oneshot,
+            zero_copy = true,
+            "ByteStream::write: starting upload",
+        );
+
+        let _stall_guard = StallGuard::new(
+            nativelink_util::stall_detector::DEFAULT_STALL_THRESHOLD,
+            "ByteStream::write(zero-copy)",
+        );
+        let result = if use_oneshot {
+            self.inner_write_oneshot(instance, digest, stream)
+                .instrument(error_span!("bytestream_write_oneshot_zc"))
+                .with_context(
+                    make_ctx_for_hash_func(digest_function)
+                        .err_tip(|| "In BytestreamServer::write(zero-copy)")?,
+                )
+                .await
+                .err_tip(|| "In ByteStreamServer::write(zero-copy, oneshot)")
+        } else {
+            self.inner_write(instance, digest, stream)
+                .instrument(error_span!("bytestream_write_zc"))
+                .with_context(
+                    make_ctx_for_hash_func(digest_function)
+                        .err_tip(|| "In BytestreamServer::write(zero-copy)")?,
+                )
+                .await
+                .err_tip(|| "In ByteStreamServer::write(zero-copy)")
+        };
+
+        // Track metrics
+        #[allow(clippy::cast_possible_truncation)]
+        let elapsed_ns = start_time.elapsed().as_nanos() as u64;
+        instance
+            .metrics
+            .write_duration_ns
+            .fetch_add(elapsed_ns, Ordering::Relaxed);
+
+        match &result {
+            Ok(_) => {
+                let elapsed = start_time.elapsed();
+                info!(
+                    %digest,
+                    size_bytes = expected_size,
+                    elapsed_ms = elapsed.as_millis() as u64,
+                    throughput_mbps = format!("{:.1}", throughput_mbps(expected_size, elapsed)),
+                    oneshot,
+                    zero_copy = true,
+                    "ByteStream::write: CAS write completed",
+                );
+                instance
+                    .metrics
+                    .write_requests_success
+                    .fetch_add(1, Ordering::Relaxed);
+                instance
+                    .metrics
+                    .bytes_written_total
+                    .fetch_add(expected_size, Ordering::Relaxed);
+
+                if !use_oneshot && digest.size_bytes() <= MIRROR_STREAM_MAX_SIZE {
+                    mirror_blob_to_worker(&store, digest, None);
+                }
+            }
+            Err(e) => {
+                error!(
+                    %digest,
+                    expected_size,
+                    elapsed_ms = start_time.elapsed().as_millis() as u64,
+                    oneshot,
+                    zero_copy = true,
+                    ?e,
+                    "ByteStream::write: upload failed",
+                );
+                instance
+                    .metrics
+                    .write_requests_failure
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        result.map_err(Into::into)
+    }
 }
 
 #[tonic::async_trait]
@@ -1559,5 +1748,147 @@ impl ByteStream for ByteStreamServer {
             .await
             .err_tip(|| "Failed on query_write_status() command")
             .map_err(Into::into)
+    }
+}
+
+/// Tower service wrapper that intercepts ByteStream/Write RPCs and decodes
+/// `WriteRequest` messages directly from raw HTTP body frames, eliminating the
+/// copy into tonic's `BytesMut` reassembly buffer.
+///
+/// Read and QueryWriteStatus RPCs pass through to the inner tonic service
+/// unchanged.
+#[derive(Clone, Debug)]
+pub struct ZeroCopyByteStreamService {
+    inner: Arc<ByteStreamServer>,
+    tonic_service: Server<ByteStreamServer>,
+}
+
+impl ZeroCopyByteStreamService {
+    /// Apply compression settings to the inner tonic service (for non-Write RPCs).
+    pub fn accept_compressed(mut self, encoding: tonic::codec::CompressionEncoding) -> Self {
+        self.tonic_service = self.tonic_service.accept_compressed(encoding);
+        self
+    }
+
+    /// Apply compression settings to the inner tonic service (for non-Write RPCs).
+    pub fn send_compressed(mut self, encoding: tonic::codec::CompressionEncoding) -> Self {
+        self.tonic_service = self.tonic_service.send_compressed(encoding);
+        self
+    }
+}
+
+impl tonic::server::NamedService for ZeroCopyByteStreamService {
+    const NAME: &'static str = "google.bytestream.ByteStream";
+}
+
+impl tower::Service<http::Request<tonic::body::Body>> for ZeroCopyByteStreamService {
+    type Response = http::Response<tonic::body::Body>;
+    type Error = core::convert::Infallible;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, req: http::Request<tonic::body::Body>) -> Self::Future {
+        if req.uri().path() == "/google.bytestream.ByteStream/Write" {
+            let inner = self.inner.clone();
+            Box::pin(async move {
+                let (parts, body) = req.into_parts();
+                let metadata = parts.headers;
+                let stream = ZeroCopyWriteStream::new(body);
+
+                let result = inner.zero_copy_write(stream, &metadata).await;
+
+                match result {
+                    Ok(response) => {
+                        let (resp_metadata, write_response, _extensions) = response.into_parts();
+                        // Encode the WriteResponse as a gRPC frame.
+                        let body_bytes = encode_grpc_response(&write_response);
+                        let body = GrpcUnaryBody::new(body_bytes);
+                        let mut http_response = http::Response::new(
+                            tonic::body::Body::new(body),
+                        );
+                        *http_response.headers_mut() = resp_metadata.into_headers();
+                        http_response.headers_mut().insert(
+                            http::header::CONTENT_TYPE,
+                            tonic::metadata::GRPC_CONTENT_TYPE,
+                        );
+                        Ok(http_response)
+                    }
+                    Err(status) => {
+                        Ok(status.into_http())
+                    }
+                }
+            })
+        } else {
+            // Delegate Read and QueryWriteStatus to the standard tonic path.
+            self.tonic_service.call(req)
+        }
+    }
+}
+
+/// Encode a `WriteResponse` protobuf as a gRPC frame: 5-byte header + encoded message.
+fn encode_grpc_response(response: &WriteResponse) -> Bytes {
+    use prost::Message;
+    let encoded = response.encode_to_vec();
+    let len = encoded.len();
+    let mut buf = BytesMut::with_capacity(5 + len);
+    buf.extend_from_slice(&[0]); // no compression
+    buf.extend_from_slice(&(len as u32).to_be_bytes());
+    buf.extend_from_slice(&encoded);
+    buf.freeze()
+}
+
+/// HTTP body that emits exactly one data frame containing a gRPC-encoded
+/// message, followed by a trailers frame with `grpc-status: 0`.
+///
+/// This is the correct encoding for a successful unary gRPC response.
+/// Unlike `http_body_util::Full`, this properly emits HTTP/2 trailers.
+struct GrpcUnaryBody {
+    data: Option<Bytes>,
+    trailers_sent: bool,
+}
+
+impl GrpcUnaryBody {
+    fn new(data: Bytes) -> Self {
+        Self {
+            data: Some(data),
+            trailers_sent: false,
+        }
+    }
+}
+
+impl http_body::Body for GrpcUnaryBody {
+    type Data = Bytes;
+    type Error = Status;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+        if let Some(data) = self.data.take() {
+            return Poll::Ready(Some(Ok(http_body::Frame::data(data))));
+        }
+
+        if !self.trailers_sent {
+            self.trailers_sent = true;
+            let mut trailers = http::HeaderMap::new();
+            trailers.insert("grpc-status", http::HeaderValue::from_static("0"));
+            return Poll::Ready(Some(Ok(http_body::Frame::trailers(trailers))));
+        }
+
+        Poll::Ready(None)
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.data.is_none() && self.trailers_sent
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        match &self.data {
+            Some(data) => http_body::SizeHint::with_exact(data.len() as u64),
+            None => http_body::SizeHint::with_exact(0),
+        }
     }
 }

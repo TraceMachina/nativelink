@@ -46,6 +46,8 @@ pub mod task;
 pub mod telemetry;
 pub mod tls_utils;
 pub mod write_counter;
+pub mod buf_list;
+pub mod zero_copy_codec;
 
 // Re-export tracing mostly for use in macros.
 pub use tracing as __tracing;
