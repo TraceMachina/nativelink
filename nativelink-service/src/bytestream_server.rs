@@ -578,7 +578,7 @@ impl ByteStreamServer {
                     uploads.retain(|uuid, (_, maybe_idle)| {
                         if let Some(idle_stream) = maybe_idle {
                             if now.duration_since(idle_stream.idle_since) >= idle_stream_timeout {
-                                info!(
+                                debug!(
                                     msg = "Sweeping expired idle stream",
                                     uuid = format!("{:032x}", uuid)
                                 );
@@ -656,7 +656,7 @@ impl ByteStreamServer {
                     if let Some(idle_stream) = maybe_idle_stream.1.take() {
                         // Case 2: Stream exists but is idle, we can resume it
                         let bytes_received = maybe_idle_stream.0.clone();
-                        info!(
+                        debug!(
                             msg = "Joining existing stream",
                             uuid = format!("{:032x}", entry.key())
                         );
@@ -1311,7 +1311,7 @@ impl ByteStream for ByteStreamServer {
 
         match &resp {
             Ok(_) => {
-                info!(
+                debug!(
                     %digest,
                     size_bytes = expected_size,
                     elapsed_ms = start_time.elapsed().as_millis() as u64,
@@ -1392,7 +1392,7 @@ impl ByteStream for ByteStreamServer {
         // Skip the upload if the server already has this blob. This avoids
         // streaming large blobs over ByteStream when they already exist.
         if store.has(digest).await?.is_some() {
-            info!(
+            debug!(
                 %digest,
                 expected_size,
                 "ByteStream::write: blob already exists, skipping upload",

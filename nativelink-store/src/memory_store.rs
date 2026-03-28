@@ -24,7 +24,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use nativelink_config::stores::MemorySpec;
 use nativelink_error::{Code, Error, ResultExt};
-use tracing::{info, warn};
+use tracing::{debug, warn};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::evicting_map::{LenEntry, ShardedEvictingMap};
@@ -163,7 +163,7 @@ impl StoreDriver for MemoryStore {
         _size_info: UploadSizeInfo,
     ) -> Result<(), Error> {
         let update_start = std::time::Instant::now();
-        info!(key = ?key, "MemoryStore::update: start");
+        debug!(key = ?key, "MemoryStore::update: start");
         // Collect chunks without concatenation (scatter-gather).
         // Each chunk stays as its own Bytes allocation — no copies.
         let mut chunks = Vec::new();
@@ -199,7 +199,7 @@ impl StoreDriver for MemoryStore {
         self.evicting_map
             .insert(owned_key.clone().into(), BytesWrapper::from_chunks(chunks))
             .await;
-        info!(
+        debug!(
             key = ?owned_key,
             total_bytes,
             elapsed_ms = update_start.elapsed().as_millis() as u64,
@@ -215,7 +215,7 @@ impl StoreDriver for MemoryStore {
     async fn update_oneshot(self: Pin<&Self>, key: StoreKey<'_>, data: Bytes) -> Result<(), Error> {
         let update_start = std::time::Instant::now();
         let data_len = data.len();
-        info!(key = ?key, data_len, "MemoryStore::update_oneshot: start");
+        debug!(key = ?key, data_len, "MemoryStore::update_oneshot: start");
         // Small blobs may be slices of a much larger tonic receive buffer.
         // Copy them to avoid pinning the entire backing allocation in the
         // EvictingMap (e.g., 100-byte blob pinning a 16KiB h2 frame).
@@ -229,7 +229,7 @@ impl StoreDriver for MemoryStore {
         self.evicting_map
             .insert(owned_key.clone().into(), BytesWrapper::from_single(data))
             .await;
-        info!(
+        debug!(
             key = ?owned_key,
             data_len,
             elapsed_ms = update_start.elapsed().as_millis() as u64,

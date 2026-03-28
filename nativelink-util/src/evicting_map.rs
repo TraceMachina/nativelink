@@ -29,7 +29,6 @@ use std::sync::Arc;
 use tokio::sync::Notify;
 
 use parking_lot::Mutex;
-use tracing::info;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use lru::LruCache;
@@ -633,7 +632,7 @@ where
                     "EvictingMap: evicting recently-inserted item",
                 );
             } else {
-                info!(
+                debug!(
                     ?key, age_secs, size, reason,
                     current_count = effective_count,
                     max_count = self.max_count,
