@@ -180,7 +180,7 @@ where
     type Item = Result<WriteRequest, Status>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = unsafe { self.get_unchecked_mut() };
+        let this = self.get_mut();
 
         loop {
             // First, try to decode a message from already-buffered data.
@@ -230,9 +230,9 @@ where
 // the decoder (owns only Bytes + VecDeque) are Send.
 unsafe impl<B: Send> Send for ZeroCopyWriteStream<B> {}
 
-// The Stream impl uses `get_unchecked_mut` because we need to access both
-// `body` (Pin<Box<B>>) and `decoder` simultaneously. This is safe because
-// we never move the body out of its Pin, and the decoder is Unpin.
+// ZeroCopyWriteStream is Unpin because Pin<Box<B>> is always Unpin
+// (the pin contract is on the heap-allocated B, not the Box pointer).
+// This allows poll_next to use safe self.get_mut() instead of unsafe.
 impl<B> Unpin for ZeroCopyWriteStream<B> {}
 
 #[cfg(test)]
