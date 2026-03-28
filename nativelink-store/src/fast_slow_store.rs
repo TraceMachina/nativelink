@@ -773,6 +773,11 @@ impl StoreDriver for FastSlowStore {
                 && self.slow_direction != StoreDirection::ReadOnly
                 && self.slow_direction != StoreDirection::Get
             {
+                // Intentionally write to slow store (remote CAS) synchronously
+                // before the fast store. This ensures the blob reaches the
+                // remote server before the action result is reported, avoiding
+                // the case where an AC entry references CAS digests that were
+                // never actually uploaded.
                 trace!("FastSlowStore::update_with_whole_file: uploading to slow_store");
                 let slow_start = std::time::Instant::now();
                 file = slow_update_store_with_file(

@@ -478,7 +478,8 @@ fn set_readonly_and_size_sync(path: &Path) -> Result<u64, Error> {
         {
             use std::os::unix::fs::PermissionsExt;
             let mut perms = metadata.permissions();
-            perms.set_mode(0o555);
+            let mode = perms.mode() & !0o222;
+            perms.set_mode(mode);
             std::fs::set_permissions(path, perms).map_err(|e| {
                 make_err!(
                     nativelink_error::Code::Internal,
@@ -509,9 +510,10 @@ fn set_readonly_and_size_sync(path: &Path) -> Result<u64, Error> {
         {
             use std::os::unix::fs::PermissionsExt;
             let current_mode = metadata.permissions().mode() & 0o777;
-            if current_mode != 0o555 {
+            let readonly_mode = current_mode & !0o222;
+            if current_mode != readonly_mode {
                 let mut perms = metadata.permissions();
-                perms.set_mode(0o555);
+                perms.set_mode(readonly_mode);
                 std::fs::set_permissions(path, perms).map_err(|e| {
                     make_err!(
                         nativelink_error::Code::Internal,

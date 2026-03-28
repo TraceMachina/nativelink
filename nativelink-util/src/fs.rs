@@ -385,6 +385,7 @@ async fn create_file_std(path: impl AsRef<Path>) -> Result<FileSlot, Error> {
     let path = path.as_ref().to_owned();
     let create_start = std::time::Instant::now();
     let (permit, os_file) = call_with_permit(move |permit| {
+        use std::os::unix::fs::OpenOptionsExt;
         Ok((
             permit,
             std::fs::File::options()
@@ -392,6 +393,7 @@ async fn create_file_std(path: impl AsRef<Path>) -> Result<FileSlot, Error> {
                 .write(true)
                 .create(true)
                 .truncate(true)
+                .mode(0o600)
                 .open(&path)
                 .err_tip(|| format!("Could not open {}", path.display()))?,
         ))
@@ -924,39 +926,6 @@ pub async fn set_permissions(src: impl AsRef<Path>, perm: Permissions) -> Result
         .await
 }
 
-/// Batch mkdir: submit all mkdirat SQEs with a single `io_uring_enter` syscall.
-/// Falls back to sequential `create_dir` calls if io_uring is unavailable.
-#[cfg(all(feature = "io-uring", target_os = "linux"))]
-pub async fn create_dir_batch(entries: &[&Path], mode: u32) -> Vec<Result<(), Error>> {
-    if entries.is_empty() {
-        return Vec::new();
-    }
-    if !is_io_uring_available().await {
-        let mut results = Vec::with_capacity(entries.len());
-        for path in entries {
-            results.push(create_dir_std(path).await);
-        }
-        return results;
-    }
-    let system = tokio_epoll_uring::thread_local_system().await;
-    let batch: Vec<(&Path, u32)> = entries.iter().map(|p| (*p, mode)).collect();
-    system
-        .mkdir_at_batch(batch)
-        .await
-        .into_iter()
-        .map(|r| r.map_err(|e| uring_err(e, "create_dir_batch")))
-        .collect()
-}
-
-#[cfg(not(all(feature = "io-uring", target_os = "linux")))]
-pub async fn create_dir_batch(entries: &[&Path], _mode: u32) -> Vec<Result<(), Error>> {
-    let mut results = Vec::with_capacity(entries.len());
-    for path in entries {
-        results.push(create_dir_std(path).await);
-    }
-    results
-}
-
 /// Batch symlink: submit all symlinkat SQEs with a single `io_uring_enter` syscall.
 /// Falls back to sequential `symlink` calls if io_uring is unavailable.
 #[cfg(all(feature = "io-uring", target_os = "linux"))]
@@ -1071,16 +1040,10 @@ impl AsMut<tokio::fs::ReadDir> for ReadDir {
 }
 
 pub async fn read_dir(path: impl AsRef<Path>) -> Result<ReadDir, Error> {
-    let path = path.as_ref().to_owned();
-    let (permit, inner) = call_with_permit(move |permit| {
-        Ok((
-            permit,
-            tokio::runtime::Handle::current()
-                .block_on(tokio::fs::read_dir(path))
-                .map_err(Into::<Error>::into)?,
-        ))
-    })
-    .await?;
+    let permit = get_permit().await?;
+    let inner = tokio::fs::read_dir(path)
+        .await
+        .map_err(Into::<Error>::into)?;
     Ok(ReadDir { permit, inner })
 }
 

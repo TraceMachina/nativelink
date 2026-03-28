@@ -1001,7 +1001,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             .err_tip(|| "Failed to write data into filesystem store")?;
         let write_ms = write_start.elapsed().as_millis();
 
-        let permit = if let Some(sem) = &self.write_semaphore {
+        let _permit = if let Some(sem) = &self.write_semaphore {
             Some(
                 sem.acquire()
                     .await
@@ -1010,8 +1010,6 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         } else {
             None
         };
-
-        drop(permit);
 
         trace!(?temp_file, "Dropping file to update_file");
         drop(temp_file);
@@ -1370,8 +1368,6 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         } else {
             None
         };
-
-        drop(_permit);
 
         drop(temp_file);
 
