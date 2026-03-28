@@ -32,7 +32,7 @@ use nativelink_util::store_trait::{
     ItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };
 use parking_lot::Mutex;
-use tracing::{error, info, trace, warn};
+use tracing::{debug, error, info, trace};
 
 #[derive(Clone, Debug)]
 struct ExistenceItem(u64);
@@ -73,14 +73,14 @@ impl<I: InstantWrapper> ItemCallback for ExistenceCacheStore<I> {
         &'a self,
         store_key: StoreKey<'a>,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-        info!(?store_key, "ExistenceCacheStore: eviction callback received");
+        debug!(?store_key, "ExistenceCacheStore: eviction callback received");
         let digest = store_key.borrow().into_digest();
         Box::pin(async move {
             let deleted_key = self.existence_cache.remove(&digest).await;
             if deleted_key {
-                info!(?store_key, "ExistenceCacheStore: eviction callback removed key from cache");
+                debug!(?store_key, "ExistenceCacheStore: eviction callback removed key from cache");
             } else {
-                info!(?store_key, "ExistenceCacheStore: eviction callback key not in cache (already removed or never cached)");
+                debug!(?store_key, "ExistenceCacheStore: eviction callback key not in cache (already removed or never cached)");
             }
         })
     }
@@ -107,7 +107,7 @@ impl<I: InstantWrapper> ItemCallback for ExistenceCacheCallback<I> {
                 });
             }
         } else {
-            info!("ExistenceCacheStore: eviction callback skipped (cache dropped)");
+            debug!("ExistenceCacheStore: eviction callback skipped (cache dropped)");
         }
         Box::pin(async {})
     }
@@ -175,26 +175,6 @@ impl<I: InstantWrapper> ExistenceCacheStore<I> {
             .has_with_results(&not_cached_keys, &mut inner_results)
             .await
             .err_tip(|| "In ExistenceCacheStore::inner_has_with_results")?;
-
-        // Diagnostic: log small blobs that the inner store says are missing.
-        for (key, result) in not_cached_keys.iter().zip(inner_results.iter()) {
-            if result.is_none() {
-                let key_str = key.as_str();
-                if let Some(size_str) = key_str.rsplit('-').next() {
-                    if let Ok(size) = size_str.parse::<u64>() {
-                        if size < 1024 {
-                            warn!(
-                                key = %key_str,
-                                cached_count = keys.len() - not_cached_keys.len(),
-                                not_cached_count = not_cached_keys.len(),
-                                "ExistenceCacheStore::has: small blob not in cache \
-                                 AND not found by inner store",
-                            );
-                        }
-                    }
-                }
-            }
-        }
 
         // Insert found from previous query into our cache.
         {
@@ -320,24 +300,6 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
                 .insert(digest, ExistenceItem(size))
                 .await;
 
-            // Diagnostic: verify the blob actually persisted in the inner store.
-            // If this fires, it means the inner store reported success but the
-            // blob is not findable immediately after write.
-            let mut verify = [None];
-            if let Ok(()) = self
-                .inner_store
-                .has_with_results(&[digest.into()], &mut verify)
-                .await
-            {
-                if verify[0].is_none() {
-                    tracing::warn!(
-                        ?digest,
-                        "inner store update() succeeded but has() returns \
-                         None immediately after — blob may still be in fast \
-                         store awaiting background slow write",
-                    );
-                }
-            }
         }
         {
             let maybe_keys = self.pause_item_callbacks.lock().take();

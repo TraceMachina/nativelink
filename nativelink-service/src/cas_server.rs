@@ -181,7 +181,7 @@ impl CasServer {
                     size_bytes,
                     request_data.len()
                 );
-                info!(
+                debug!(
                     %digest_info,
                     size_bytes,
                     "BatchUpdateBlobs: blob received",
@@ -196,7 +196,7 @@ impl CasServer {
                 match &result {
                     Ok(()) => {
                         let elapsed = upload_start.elapsed();
-                        info!(
+                        debug!(
                             %digest_info,
                             size_bytes,
                             elapsed_ms = elapsed.as_millis() as u64,
@@ -296,7 +296,7 @@ impl CasServer {
                     |v| {
                         let elapsed = read_start.elapsed();
                         let size_bytes = v.len() as u64;
-                        info!(
+                        debug!(
                             %digest_copy,
                             size_bytes,
                             elapsed_ms = elapsed.as_millis() as u64,

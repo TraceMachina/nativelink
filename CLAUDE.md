@@ -59,3 +59,9 @@
   hardware-interaction tests where needed.
 - Integration tests in `tests/` directory; minimal inline `#[cfg(test)]` modules
 - Use `nativelink-macro` test harness (`#[nativelink_test]`)
+
+## Change Process
+- **Chesterton's Fence**: before modifying or removing any behavior, always check
+  `git log`, `git blame`, and `git log -S` to understand *why* the code exists.
+  If a commit message or comment explains the reason, evaluate whether that reason
+  still applies before making the change.

@@ -35,7 +35,7 @@ use nativelink_util::store_trait::{
 };
 use parking_lot::RwLock;
 use tokio::task::JoinHandle;
-use tracing::{info, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 use crate::grpc_store::GrpcStore;
 
@@ -207,7 +207,7 @@ impl WorkerProxyStore {
         endpoints: &[String],
     ) -> Result<bool, Error> {
         let digest = key.borrow().into_digest();
-        info!(
+        debug!(
             ?digest,
             endpoint_count = endpoints.len(),
             "WorkerProxyStore: following redirect to peer endpoints"
@@ -223,7 +223,7 @@ impl WorkerProxyStore {
                 .await
             {
                 Ok(()) => {
-                    info!(
+                    debug!(
                         ?digest,
                         endpoint = endpoint.as_str(),
                         "WorkerProxyStore: successfully read blob from redirected peer"
@@ -269,7 +269,7 @@ impl WorkerProxyStore {
             return Ok(false);
         }
 
-        info!(
+        debug!(
             ?digest,
             worker_count = workers.len(),
             "WorkerProxyStore: attempting to proxy blob from workers"
@@ -464,7 +464,7 @@ impl WorkerProxyStore {
         // Log cache write result (non-fatal).
         match cache_result {
             Ok(()) => {
-                info!(
+                debug!(
                     %digest,
                     size_bytes = total_bytes,
                     "proxy_cache: cached proxied blob in inner store"
@@ -522,7 +522,7 @@ impl WorkerProxyStore {
                         .map(String::from)
                         .collect();
                     if !endpoints.is_empty() {
-                        info!(
+                        debug!(
                             key = ?key.borrow().into_digest(),
                             ?endpoints,
                             "WorkerProxyStore: received redirect from inner store"
@@ -545,7 +545,7 @@ impl WorkerProxyStore {
             if is_worker {
                 let digest = key.borrow().into_digest();
                 let ep_str = endpoints.join(",");
-                info!(
+                debug!(
                     ?digest,
                     endpoints = ep_str.as_str(),
                     "WorkerProxyStore: passing redirect through to worker"
@@ -573,7 +573,7 @@ impl WorkerProxyStore {
                 ));
             }
             let endpoints = workers.join(",");
-            info!(
+            debug!(
                 ?digest,
                 endpoints,
                 "WorkerProxyStore: redirecting worker to peer endpoints"
@@ -804,7 +804,7 @@ impl StoreDriver for WorkerProxyStore {
                     Ok(chunk) if !chunk.is_empty() => {
                         // Server produced data first — it wins.
                         peer_handle.abort();
-                        info!(
+                        debug!(
                             ?digest,
                             "WorkerProxyStore: server won race against peer"
                         );
@@ -815,7 +815,7 @@ impl StoreDriver for WorkerProxyStore {
                     Ok(_empty) => {
                         // Server returned EOF immediately (zero-length blob).
                         peer_handle.abort();
-                        info!(
+                        debug!(
                             ?digest,
                             "WorkerProxyStore: server won race (empty blob)"
                         );
@@ -838,7 +838,7 @@ impl StoreDriver for WorkerProxyStore {
                             return peer_handle.await
                                 .map_err(|e| make_err!(Code::Internal, "peer task join: {e}"))?;
                         }
-                        info!(
+                        debug!(
                             ?digest,
                             endpoint = %peer_endpoint,
                             "WorkerProxyStore: peer won race (server failed)"
@@ -854,7 +854,7 @@ impl StoreDriver for WorkerProxyStore {
                     Ok(chunk) if !chunk.is_empty() => {
                         // Peer produced data first — it wins.
                         server_handle.abort();
-                        info!(
+                        debug!(
                             ?digest,
                             endpoint = %peer_endpoint,
                             "WorkerProxyStore: peer won race against server"
@@ -866,7 +866,7 @@ impl StoreDriver for WorkerProxyStore {
                     Ok(_empty) => {
                         // Peer returned EOF immediately (zero-length blob).
                         server_handle.abort();
-                        info!(
+                        debug!(
                             ?digest,
                             endpoint = %peer_endpoint,
                             "WorkerProxyStore: peer won race (empty blob)"
@@ -891,7 +891,7 @@ impl StoreDriver for WorkerProxyStore {
                             return server_handle.await
                                 .map_err(|e| make_err!(Code::Internal, "server task join: {e}"))?;
                         }
-                        info!(
+                        debug!(
                             ?digest,
                             "WorkerProxyStore: server won race (peer failed)"
                         );

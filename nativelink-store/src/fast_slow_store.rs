@@ -39,7 +39,7 @@ use nativelink_util::store_trait::{
 };
 use parking_lot::Mutex;
 use tokio::sync::OnceCell;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, trace, warn};
 
 // TODO(palfrey) This store needs to be evaluated for more efficient memory usage,
 // there are many copies happening internally.
@@ -421,7 +421,7 @@ impl StoreDriver for FastSlowStore {
                         if let Some(chunks) = in_flight.get(&owned) {
                             let total_len: u64 =
                                 chunks.iter().map(|c| c.len() as u64).sum();
-                            info!(
+                            debug!(
                                 key = %owned.as_str(),
                                 data_len = total_len,
                                 "has_with_results: found blob in in-flight map \
@@ -479,7 +479,7 @@ impl StoreDriver for FastSlowStore {
         let (mut fast_tx, fast_rx) = make_buf_channel_pair_with_size(128);
 
         let update_start = std::time::Instant::now();
-        info!(
+        debug!(
             ?key,
             ?size_info,
             "FastSlowStore::update: start",
@@ -557,7 +557,7 @@ impl StoreDriver for FastSlowStore {
         let slow_store = self.slow_store.clone();
         let key_for_bg = owned_key.clone();
         let spawn_instant = std::time::Instant::now();
-        info!(
+        debug!(
             ?key,
             total_bytes = bytes_sent,
             "FastSlowStore::update: background slow write starting",
@@ -606,7 +606,7 @@ impl StoreDriver for FastSlowStore {
                     if let StoreKey::Digest(digest) = &key_for_bg {
                         stable_digests_ref.lock().push(*digest);
                     }
-                    info!(
+                    debug!(
                         key = ?key_for_bg,
                         schedule_delay_ms,
                         slow_ms,
@@ -658,7 +658,7 @@ impl StoreDriver for FastSlowStore {
         }
 
         let data_len = data.len();
-        info!(
+        debug!(
             ?key,
             data_len,
             "FastSlowStore::update_oneshot: start",
@@ -693,7 +693,7 @@ impl StoreDriver for FastSlowStore {
         let slow_store = self.slow_store.clone();
         let key_for_bg = owned_key.clone();
         let spawn_instant = std::time::Instant::now();
-        info!(
+        debug!(
             ?key,
             data_len,
             "FastSlowStore::update_oneshot: background slow write starting",
@@ -720,7 +720,7 @@ impl StoreDriver for FastSlowStore {
                     if let StoreKey::Digest(digest) = &key_for_bg {
                         stable_digests_ref.lock().push(*digest);
                     }
-                    info!(
+                    debug!(
                         key = ?key_for_bg,
                         schedule_delay_ms,
                         slow_ms,

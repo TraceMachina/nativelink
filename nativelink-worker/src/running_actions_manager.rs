@@ -83,7 +83,7 @@ use tokio::time::Instant;
 use tokio_stream::wrappers::ReadDirStream;
 use opentelemetry::context::Context;
 use tonic::Request;
-use tracing::{debug, error, event, info, trace, warn, Level};
+use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
 
 /// For simplicity we use a fixed exit code for cases when our program is terminated
@@ -1017,7 +1017,7 @@ pub fn download_to_directory<'a>(
         let mut has_results = vec![None; store_keys.len()];
         // Check in chunks to reduce Mutex hold time in the fast store,
         // allowing concurrent operations from other actions to interleave.
-        const HAS_CHECK_CHUNK: usize = 500;
+        const HAS_CHECK_CHUNK: usize = 2000;
         for start in (0..store_keys.len()).step_by(HAS_CHECK_CHUNK) {
             let end = (start + HAS_CHECK_CHUNK).min(store_keys.len());
             Pin::new(cas_store.fast_store())
@@ -2440,68 +2440,6 @@ impl RunningActionImpl {
         //                    De-bloat the `debug` level by using the `trace`
         //                    level more effectively and adjust this.
         info!(?args, "Executing command",);
-
-        // Diagnostic: log permissions of .sh files in the work directory tree
-        // to debug EACCES errors on remote workers.
-        #[cfg(target_family = "unix")]
-        {
-            use std::os::unix::fs::{MetadataExt, PermissionsExt};
-            let work_dir = format!(
-                "{}/{}",
-                self.work_directory, command_proto.working_directory
-            );
-            let mut check_dirs = vec![work_dir.clone()];
-            let mut sh_count = 0u32;
-            let mut bad_count = 0u32;
-            while let Some(dir) = check_dirs.pop() {
-                if let Ok(mut entries) = tokio::fs::read_dir(&dir).await {
-                    while let Ok(Some(entry)) = entries.next_entry().await {
-                        let path = entry.path();
-                        if let Ok(meta) = tokio::fs::symlink_metadata(&path).await {
-                            if meta.is_dir() {
-                                check_dirs.push(path.to_string_lossy().to_string());
-                            } else if path.extension().is_some_and(|e| e == "sh") {
-                                sh_count += 1;
-                                let mode = meta.permissions().mode();
-                                let nlink = meta.nlink();
-                                let is_symlink = meta.file_type().is_symlink();
-                                if mode & 0o111 == 0 {
-                                    bad_count += 1;
-                                    event!(
-                                        target: "nativelink::diag",
-                                        Level::WARN,
-                                        path = %path.display(),
-                                        mode = format!("{mode:04o}"),
-                                        nlink,
-                                        is_symlink,
-                                        "NON-EXEC .sh file in work dir"
-                                    );
-                                } else {
-                                    event!(
-                                        target: "nativelink::diag",
-                                        Level::INFO,
-                                        path = %path.display(),
-                                        mode = format!("{mode:04o}"),
-                                        nlink,
-                                        is_symlink,
-                                        "OK .sh file in work dir"
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            if sh_count > 0 {
-                event!(
-                    target: "nativelink::diag",
-                    Level::INFO,
-                    sh_count,
-                    bad_count,
-                    "sh file permission scan complete"
-                );
-            }
-        }
 
         let mut command_builder = process::Command::new(args[0]);
         command_builder
