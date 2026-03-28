@@ -54,7 +54,7 @@ use nativelink_util::digest_hasher::{
 use nativelink_util::proto_stream_utils::WriteRequestStreamWrapper;
 use nativelink_util::resource_info::ResourceInfo;
 use nativelink_util::spawn;
-use nativelink_util::store_trait::{IS_WORKER_REQUEST, Store, StoreLike, StoreOptimizations, UploadSizeInfo};
+use nativelink_util::store_trait::{IS_WORKER_REQUEST, REDIRECT_PREFIX, Store, StoreLike, StoreOptimizations, UploadSizeInfo};
 use nativelink_util::task::JoinHandleDropGuard;
 use opentelemetry::context::FutureExt;
 use parking_lot::Mutex;
@@ -841,7 +841,22 @@ impl ByteStreamServer {
                                         // message as it will be the most relevant.
                                         e.messages.truncate(1);
                                     }
-                                    error!(response = ?e);
+                                    // Use appropriate log level: redirects and not-found are
+                                    // expected protocol behavior, not errors.
+                                    let is_redirect = e.code == Code::FailedPrecondition
+                                        && e.messages.iter().any(|m| m.contains(REDIRECT_PREFIX));
+                                    if is_redirect {
+                                        // Redirects always produce a "Sender dropped before
+                                        // sending EOF" artifact because get_part returns an
+                                        // error (dropping tx) instead of streaming data. Trim
+                                        // to just the redirect message for a clean response.
+                                        e.messages.truncate(1);
+                                        info!(response = ?e);
+                                    } else if e.code == Code::NotFound {
+                                        info!(response = ?e);
+                                    } else {
+                                        error!(response = ?e);
+                                    }
                                     return Some((Err(e.into()), None))
                                 }
                             }
