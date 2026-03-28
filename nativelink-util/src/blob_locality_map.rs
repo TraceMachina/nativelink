@@ -38,10 +38,12 @@ impl Hasher for DigestHasher {
 
     #[inline]
     fn write(&mut self, bytes: &[u8]) {
-        // Derived Hash for DigestInfo calls write() first with PackedHash's 32
-        // bytes, then write_u64() with size_bytes. We capture the first 8 bytes
-        // of the SHA-256 hash (already uniformly distributed) and mix in the
-        // size via write_u64 below for differentiation on same-hash-prefix.
+        // Derived Hash for DigestInfo calls:
+        //   1. [u8; 32]::hash → write_usize(32) then write(32_bytes)
+        //   2. u64::hash → write_u64(size_bytes)
+        // We capture the first 8 bytes of the SHA-256 hash (already uniformly
+        // distributed) and mix in the size via write_u64 below.
+        // write_usize is a no-op so the length prefix is harmlessly discarded.
         if bytes.len() >= 8 {
             self.0 = u64::from_ne_bytes([
                 bytes[0], bytes[1], bytes[2], bytes[3],
@@ -53,6 +55,12 @@ impl Hasher for DigestHasher {
                 self.0 = self.0.wrapping_mul(31).wrapping_add(b as u64);
             }
         }
+    }
+
+    #[inline]
+    fn write_usize(&mut self, _: usize) {
+        // Ignore length prefixes from [u8; N]::hash — we only care about
+        // the actual hash bytes (from write) and size_bytes (from write_u64).
     }
 
     #[inline]
@@ -92,7 +100,7 @@ impl EndpointList {
     #[inline]
     fn upsert(&mut self, endpoint: &Arc<str>, ts: SystemTime) -> bool {
         for entry in &mut self.entries {
-            if *entry.0 == **endpoint {
+            if Arc::ptr_eq(&entry.0, endpoint) || *entry.0 == **endpoint {
                 entry.1 = ts;
                 return false;
             }
