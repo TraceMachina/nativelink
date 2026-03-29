@@ -813,6 +813,8 @@ pub struct FilesystemStore<Fe: FileEntry = FileEntryImpl> {
     write_semaphore: Option<Semaphore>,
     /// Skip writes when a blob with the same key already exists (CAS dedup).
     content_is_immutable: bool,
+    /// Call POSIX_FADV_DONTNEED after reads/writes to drop page cache pages.
+    fadvise_dontneed: bool,
 }
 
 impl<Fe: FileEntry> FilesystemStore<Fe> {
@@ -897,6 +899,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             rename_fn,
             write_semaphore,
             content_is_immutable: spec.content_is_immutable,
+            fadvise_dontneed: spec.fadvise_dontneed,
         }))
     }
 
@@ -1000,6 +1003,10 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             .await
             .err_tip(|| "Failed to write data into filesystem store")?;
         let write_ms = write_start.elapsed().as_millis();
+
+        if self.fadvise_dontneed {
+            temp_file.advise_dontneed();
+        }
 
         let _permit = if let Some(sem) = &self.write_semaphore {
             Some(
@@ -1359,6 +1366,10 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
             write_ms = 0;
         }
 
+        if self.fadvise_dontneed {
+            temp_file.advise_dontneed();
+        }
+
         let _permit = if let Some(sem) = &self.write_semaphore {
             Some(
                 sem.acquire()
@@ -1472,13 +1483,19 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         // aggressive readahead (typically 2-4x the default 128 KiB).
         temp_file.advise_sequential();
 
-        // NOTE: We intentionally do NOT call advise_dontneed() after reading.
-        // The same blobs are frequently read by multiple workers within
-        // seconds of each other — keeping them in page cache avoids
-        // redundant disk I/O (measured: 76% of read I/O is re-reads).
-        fs::read_file_to_channel(temp_file, writer, read_limit, self.read_buffer_size, offset)
-            .await
-            .err_tip(|| "Failed to read data in filesystem store")?;
+        // By default we do NOT call advise_dontneed() after reading — the same
+        // blobs are frequently read by multiple workers within seconds of each
+        // other and keeping them in page cache avoids redundant disk I/O
+        // (measured: 76% of read I/O is re-reads). On RAM-constrained
+        // deployments, enable fadvise_dontneed to drop pages after each read.
+        let file_slot = fs::read_file_to_channel(
+            temp_file, writer, read_limit, self.read_buffer_size, offset,
+        )
+        .await
+        .err_tip(|| "Failed to read data in filesystem store")?;
+        if self.fadvise_dontneed {
+            file_slot.advise_dontneed();
+        }
         writer
             .send_eof()
             .err_tip(|| "Filed to send EOF in filesystem store get_part")?;

@@ -499,9 +499,16 @@ impl WorkerConnection {
                         );
                     }
                 }
+                let exit_code = finished_result.result.as_ref().map_or(-1, |r| r.exit_code);
                 let action_stage = finished_result
                     .try_into()
                     .err_tip(|| "Failed to convert ExecuteResponse into an ActionStage")?;
+                info!(
+                    worker_id=?self.worker_id,
+                    %operation_id,
+                    exit_code,
+                    "action completed by worker"
+                );
                 self.scheduler
                     .update_action(
                         &self.worker_id,
@@ -512,6 +519,12 @@ impl WorkerConnection {
                     .err_tip(|| format!("Failed to operation {operation_id}"))?;
             }
             execute_result::Result::InternalError(e) => {
+                error!(
+                    worker_id=?self.worker_id,
+                    %operation_id,
+                    ?e,
+                    "action failed with internal error"
+                );
                 self.scheduler
                     .update_action(
                         &self.worker_id,
@@ -864,6 +877,11 @@ impl WorkerConnection {
             }
         }
         let operation_id = OperationId::from(execute_complete.operation_id);
+        info!(
+            worker_id=?self.worker_id,
+            %operation_id,
+            "execution complete, CAS upload finished"
+        );
         self.scheduler
             .update_action(
                 &self.worker_id,

@@ -48,7 +48,7 @@ use nativelink_util::operation_state_manager::{
 use nativelink_util::store_trait::Store;
 use opentelemetry::context::FutureExt;
 use tonic::{Request, Response, Status};
-use tracing::{Instrument, Level, debug, error, error_span, instrument};
+use tracing::{Instrument, Level, debug, error, error_span, info, instrument};
 
 type InstanceInfoName = String;
 
@@ -224,14 +224,20 @@ impl ExecutionServer {
                 let mut action_listener = maybe_action_listener?;
                 match action_listener.changed().await {
                     Ok((action_update, _maybe_origin_metadata)) => {
-                        debug!(?action_update, "Execute Resp Stream");
+                        let is_finished = action_update.stage.is_finished();
+                        debug!(
+                            %client_operation_id,
+                            stage=%action_update.stage.name(),
+                            is_finished,
+                            "execute response stream update"
+                        );
                         Some((
                             Ok(action_update.as_operation(client_operation_id)),
-                            (!action_update.stage.is_finished()).then_some(action_listener),
+                            (!is_finished).then_some(action_listener),
                         ))
                     }
                     Err(err) => {
-                        error!(?err, "Error in action_listener stream");
+                        error!(%client_operation_id, ?err, "error in action_listener stream");
                         Some((Err(err.into()), None))
                     }
                 }
@@ -244,6 +250,7 @@ impl ExecutionServer {
         request: ExecuteRequest,
     ) -> Result<impl Stream<Item = Result<Operation, Status>> + Send + use<>, Error> {
         let instance_name = request.instance_name;
+        let skip_cache_lookup = request.skip_cache_lookup;
 
         let instance_info = self
             .instance_infos
@@ -269,7 +276,7 @@ impl ExecutionServer {
                 digest,
                 action,
                 priority,
-                request.skip_cache_lookup,
+                skip_cache_lookup,
                 request
                     .digest_function
                     .try_into()
@@ -283,17 +290,25 @@ impl ExecutionServer {
             .await
             .err_tip(|| "Failed to schedule task")?;
 
+        let client_operation_id = action_listener
+            .as_state()
+            .await
+            .err_tip(|| "In ExecutionServer::inner_execute")?
+            .0
+            .client_operation_id
+            .clone();
+
+        info!(
+            %client_operation_id,
+            %digest,
+            %instance_name,
+            priority,
+            skip_cache_lookup,
+            "execute request accepted"
+        );
+
         Ok(Box::pin(Self::to_execute_stream(
-            &NativelinkOperationId::new(
-                instance_name,
-                action_listener
-                    .as_state()
-                    .await
-                    .err_tip(|| "In ExecutionServer::inner_execute")?
-                    .0
-                    .client_operation_id
-                    .clone(),
-            ),
+            &NativelinkOperationId::new(instance_name, client_operation_id),
             action_listener,
         )))
     }
@@ -369,6 +384,7 @@ impl Execution for ExecutionServer {
         grpc_request: Request<WaitExecutionRequest>,
     ) -> Result<Response<ExecuteStream>, Status> {
         let request = grpc_request.into_inner();
+        let operation_name = request.name.clone();
 
         let stream_result = self
             .inner_wait_execution(request)
@@ -379,7 +395,7 @@ impl Execution for ExecutionServer {
             Ok(stream) => stream,
             Err(e) => return Err(e),
         };
-        debug!(return = "Ok(<stream>)");
+        info!(%operation_name, "wait_execution stream opened");
         Ok(Response::new(Box::pin(stream)))
     }
 }

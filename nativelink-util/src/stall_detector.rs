@@ -104,12 +104,19 @@ impl Drop for StallGuard {
 /// On Linux, reads `/proc/self/task/` to enumerate threads and collects
 /// thread name, wait channel, state, context switches, and kernel stack.
 ///
-/// On non-Linux platforms, this is a no-op (logs a message).
+/// On macOS, enumerates threads via Mach APIs (`task_threads`,
+/// `thread_info`) and captures the calling thread's Rust backtrace.
+/// Optionally runs the `sample` tool for full userspace stack traces.
+///
+/// On other platforms, this is a no-op (logs a message).
 pub fn dump_thread_stacks(label: &str) {
     #[cfg(target_os = "linux")]
     dump_thread_stacks_linux(label);
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    dump_thread_stacks_macos(label);
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -197,23 +204,337 @@ fn dump_thread_stacks_linux(label: &str) {
     }
 
     // Capture userspace backtraces via eu-stack for full Rust call stacks.
+    // eu-stack can hang indefinitely if the target process is wedged, so
+    // we spawn it as a child and poll with a 30-second timeout.
     let bt_path = format!("/tmp/nativelink-stall-{timestamp_ms}-bt.txt");
     let pid = std::process::id();
     match std::process::Command::new("eu-stack")
         .args(["-p", &pid.to_string(), "-l"])
-        .output()
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
     {
-        Ok(out) => {
-            let combined = [&out.stdout[..], b"\n--- stderr ---\n", &out.stderr[..]].concat();
-            match std::fs::write(&bt_path, &combined) {
-                Ok(()) => eprintln!("Userspace backtrace written to {bt_path}"),
-                Err(err) => eprintln!("Failed to write backtrace to {bt_path}: {err}"),
+        Ok(mut child) => {
+            const EU_STACK_TIMEOUT: Duration = Duration::from_secs(30);
+            const POLL_INTERVAL: Duration = Duration::from_millis(250);
+            let deadline = std::time::Instant::now() + EU_STACK_TIMEOUT;
+            let status = loop {
+                match child.try_wait() {
+                    Ok(Some(status)) => break Some(status),
+                    Ok(None) => {
+                        if std::time::Instant::now() >= deadline {
+                            eprintln!(
+                                "eu-stack timed out after {EU_STACK_TIMEOUT:.0?}, killing child process"
+                            );
+                            drop(child.kill());
+                            // Reap the zombie
+                            drop(child.wait());
+                            break None;
+                        }
+                        std::thread::sleep(POLL_INTERVAL);
+                    }
+                    Err(err) => {
+                        eprintln!("eu-stack wait error: {err}");
+                        drop(child.kill());
+                        drop(child.wait());
+                        break None;
+                    }
+                }
+            };
+            if status.is_some() {
+                let stdout = child
+                    .stdout
+                    .take()
+                    .map(|mut r| {
+                        let mut buf = Vec::new();
+                        std::io::Read::read_to_end(&mut r, &mut buf).ok();
+                        buf
+                    })
+                    .unwrap_or_default();
+                let stderr = child
+                    .stderr
+                    .take()
+                    .map(|mut r| {
+                        let mut buf = Vec::new();
+                        std::io::Read::read_to_end(&mut r, &mut buf).ok();
+                        buf
+                    })
+                    .unwrap_or_default();
+                let combined =
+                    [&stdout[..], b"\n--- stderr ---\n", &stderr[..]].concat();
+                match std::fs::write(&bt_path, &combined) {
+                    Ok(()) => eprintln!("Userspace backtrace written to {bt_path}"),
+                    Err(err) => {
+                        eprintln!("Failed to write backtrace to {bt_path}: {err}");
+                    }
+                }
             }
         }
         Err(err) => eprintln!("Failed to run eu-stack: {err}"),
     }
 
     cleanup_old_stall_dumps();
+}
+
+/// Dump thread info on macOS using Mach APIs and `std::backtrace`.
+///
+/// Enumerates all threads via `task_threads()`, retrieves thread names
+/// via `pthread_from_mach_thread_np` + `pthread_getname_np`, and collects
+/// CPU usage and run state from `thread_info(THREAD_BASIC_INFO)`.
+///
+/// The calling thread's Rust backtrace is captured via
+/// `std::backtrace::Backtrace::force_capture()`. For full userspace
+/// stack traces of all threads, the `sample` command is invoked (the
+/// macOS equivalent of `eu-stack`).
+#[cfg(target_os = "macos")]
+fn dump_thread_stacks_macos(label: &str) {
+    use std::fmt::Write as _;
+
+    let timestamp_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let path = format!("/tmp/nativelink-stall-{timestamp_ms}.txt");
+    let pid = std::process::id();
+    let mut output = String::new();
+
+    let _ = writeln!(output, "=== STORE OPERATION STALL THREAD DUMP (macOS) ===");
+    let _ = writeln!(output, "Trigger: {label}");
+    let _ = writeln!(output, "Timestamp: {timestamp_ms}");
+    let _ = writeln!(output, "PID: {pid}");
+    let _ = writeln!(output);
+
+    // Capture the calling thread's backtrace (typically the runtime-watchdog
+    // or a tokio worker that triggered the stall guard).
+    let bt = std::backtrace::Backtrace::force_capture();
+    let _ = writeln!(output, "=== Calling thread backtrace ===");
+    let _ = writeln!(output, "{bt}");
+    let _ = writeln!(output);
+
+    // Enumerate threads via Mach APIs
+    enumerate_mach_threads(&mut output);
+
+    match std::fs::write(&path, &output) {
+        Ok(()) => eprintln!("Thread dump written to {path}"),
+        Err(err) => eprintln!("Failed to write thread dump to {path}: {err}"),
+    }
+
+    // Capture full userspace backtraces via `sample` (macOS built-in).
+    // `sample <pid> 1` captures a 1-second sampling profile of all threads
+    // including symbolicated call stacks. This is the macOS equivalent of
+    // eu-stack on Linux.
+    let bt_path = format!("/tmp/nativelink-stall-{timestamp_ms}-bt.txt");
+    match std::process::Command::new("sample")
+        .args([&pid.to_string(), "1", "-mayDie"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(mut child) => {
+            const SAMPLE_TIMEOUT: Duration = Duration::from_secs(30);
+            const POLL_INTERVAL: Duration = Duration::from_millis(250);
+            let deadline = std::time::Instant::now() + SAMPLE_TIMEOUT;
+            let status = loop {
+                match child.try_wait() {
+                    Ok(Some(status)) => break Some(status),
+                    Ok(None) => {
+                        if std::time::Instant::now() >= deadline {
+                            eprintln!(
+                                "sample timed out after {SAMPLE_TIMEOUT:.0?}, killing child process"
+                            );
+                            drop(child.kill());
+                            drop(child.wait());
+                            break None;
+                        }
+                        std::thread::sleep(POLL_INTERVAL);
+                    }
+                    Err(err) => {
+                        eprintln!("sample wait error: {err}");
+                        drop(child.kill());
+                        drop(child.wait());
+                        break None;
+                    }
+                }
+            };
+            if status.is_some() {
+                let stdout = child
+                    .stdout
+                    .take()
+                    .map(|mut r| {
+                        let mut buf = Vec::new();
+                        std::io::Read::read_to_end(&mut r, &mut buf).ok();
+                        buf
+                    })
+                    .unwrap_or_default();
+                let stderr = child
+                    .stderr
+                    .take()
+                    .map(|mut r| {
+                        let mut buf = Vec::new();
+                        std::io::Read::read_to_end(&mut r, &mut buf).ok();
+                        buf
+                    })
+                    .unwrap_or_default();
+                let combined = [&stdout[..], b"\n--- stderr ---\n", &stderr[..]].concat();
+                match std::fs::write(&bt_path, &combined) {
+                    Ok(()) => eprintln!("Userspace sample written to {bt_path}"),
+                    Err(err) => eprintln!("Failed to write sample to {bt_path}: {err}"),
+                }
+            }
+        }
+        Err(err) => eprintln!("Failed to run sample: {err}"),
+    }
+
+    cleanup_old_stall_dumps();
+}
+
+/// Enumerate all threads in the current task using Mach APIs and write
+/// their names and basic info to the output buffer.
+#[cfg(target_os = "macos")]
+fn enumerate_mach_threads(output: &mut String) {
+    use std::fmt::Write as _;
+
+    // Mach types and constants
+    type MachPort = u32;
+    type KernReturn = i32;
+    const KERN_SUCCESS: KernReturn = 0;
+    const THREAD_BASIC_INFO: u32 = 3;
+    const THREAD_BASIC_INFO_COUNT: u32 = 10; // sizeof(thread_basic_info) / sizeof(natural_t)
+
+    // Mach thread run states
+    const TH_STATE_RUNNING: i32 = 1;
+    const TH_STATE_STOPPED: i32 = 2;
+    const TH_STATE_WAITING: i32 = 3;
+    const TH_STATE_UNINTERRUPTIBLE: i32 = 4;
+    const TH_STATE_HALTED: i32 = 5;
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct ThreadBasicInfo {
+        user_time_sec: i32,
+        user_time_usec: i32,
+        system_time_sec: i32,
+        system_time_usec: i32,
+        cpu_usage: i32,   // scaled to TH_USAGE_SCALE (1000)
+        policy: i32,
+        run_state: i32,
+        flags: i32,
+        suspend_count: i32,
+        sleep_time: i32,
+    }
+
+    unsafe extern "C" {
+        fn mach_task_self() -> MachPort;
+        fn task_threads(
+            task: MachPort,
+            thread_list: *mut *mut MachPort,
+            thread_count: *mut u32,
+        ) -> KernReturn;
+        fn thread_info(
+            thread: MachPort,
+            flavor: u32,
+            info: *mut i32,
+            count: *mut u32,
+        ) -> KernReturn;
+        // Returns the pthread_t for the given Mach thread port, or 0 if
+        // the port does not correspond to a known pthread.
+        fn pthread_from_mach_thread_np(thread: MachPort) -> libc::pthread_t;
+        fn mach_port_deallocate(task: MachPort, name: MachPort) -> KernReturn;
+        fn vm_deallocate(task: MachPort, address: usize, size: usize) -> KernReturn;
+    }
+
+    let task = unsafe { mach_task_self() };
+    let mut thread_list: *mut MachPort = core::ptr::null_mut();
+    let mut thread_count: u32 = 0;
+
+    let kr = unsafe { task_threads(task, &mut thread_list, &mut thread_count) };
+    if kr != KERN_SUCCESS {
+        let _ = writeln!(output, "Failed to enumerate threads: mach error {kr}");
+        return;
+    }
+
+    let _ = writeln!(output, "Thread count: {thread_count}");
+    let _ = writeln!(output);
+
+    let threads =
+        unsafe { core::slice::from_raw_parts(thread_list, thread_count as usize) };
+
+    for (idx, &thread_port) in threads.iter().enumerate() {
+        let _ = write!(output, "--- Thread {idx} (mach port {thread_port}) ---");
+
+        // Get thread name via pthread. pthread_from_mach_thread_np returns
+        // 0 (null pthread_t) if the Mach thread has no associated pthread.
+        let pthread = unsafe { pthread_from_mach_thread_np(thread_port) };
+        if pthread != 0 {
+            let mut name_buf = [0u8; 64];
+            let ret = unsafe {
+                libc::pthread_getname_np(
+                    pthread,
+                    name_buf.as_mut_ptr().cast(),
+                    name_buf.len(),
+                )
+            };
+            if ret == 0 {
+                let name = std::ffi::CStr::from_bytes_until_nul(&name_buf)
+                    .map(|c| c.to_string_lossy())
+                    .unwrap_or_default();
+                if !name.is_empty() {
+                    let _ = write!(output, "  name: {name}");
+                }
+            }
+        }
+        let _ = writeln!(output);
+
+        // Get thread basic info (CPU time, run state)
+        let mut info = ThreadBasicInfo::default();
+        let mut count = THREAD_BASIC_INFO_COUNT;
+        let kr = unsafe {
+            thread_info(
+                thread_port,
+                THREAD_BASIC_INFO,
+                core::ptr::from_mut(&mut info).cast(),
+                &mut count,
+            )
+        };
+        if kr == KERN_SUCCESS {
+            let user_ms =
+                i64::from(info.user_time_sec) * 1000 + i64::from(info.user_time_usec) / 1000;
+            let sys_ms = i64::from(info.system_time_sec) * 1000
+                + i64::from(info.system_time_usec) / 1000;
+            let state_str = match info.run_state {
+                TH_STATE_RUNNING => "running",
+                TH_STATE_STOPPED => "stopped",
+                TH_STATE_WAITING => "waiting",
+                TH_STATE_UNINTERRUPTIBLE => "uninterruptible",
+                TH_STATE_HALTED => "halted",
+                _ => "unknown",
+            };
+            let _ = writeln!(
+                output,
+                "  state: {state_str}  cpu_usage: {:.1}%  user: {user_ms}ms  sys: {sys_ms}ms  suspend_count: {}",
+                f64::from(info.cpu_usage) / 10.0,
+                info.suspend_count,
+            );
+        }
+
+        // Deallocate the thread port send right
+        unsafe {
+            mach_port_deallocate(task, thread_port);
+        }
+
+        let _ = writeln!(output);
+    }
+
+    // Deallocate the thread list memory (allocated by Mach)
+    if !thread_list.is_null() && thread_count > 0 {
+        unsafe {
+            vm_deallocate(
+                task,
+                thread_list as usize,
+                thread_count as usize * core::mem::size_of::<MachPort>(),
+            );
+        }
+    }
 }
 
 /// Maximum number of stall dump file pairs to retain. Older dumps are

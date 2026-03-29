@@ -56,7 +56,9 @@ use nativelink_util::resource_info::ResourceInfo;
 use nativelink_util::spawn;
 use nativelink_util::store_trait::{IS_WORKER_REQUEST, REDIRECT_PREFIX, Store, StoreLike, StoreOptimizations, UploadSizeInfo};
 use nativelink_util::task::JoinHandleDropGuard;
-use nativelink_util::zero_copy_codec::ZeroCopyWriteStream;
+use nativelink_util::zero_copy_codec::{
+    GrpcUnaryBody, ZeroCopyWriteStream, encode_grpc_unary_response,
+};
 use opentelemetry::context::FutureExt;
 use parking_lot::Mutex;
 use tokio::time::sleep;
@@ -1804,7 +1806,7 @@ impl tower::Service<http::Request<tonic::body::Body>> for ZeroCopyByteStreamServ
                     Ok(response) => {
                         let (resp_metadata, write_response, _extensions) = response.into_parts();
                         // Encode the WriteResponse as a gRPC frame.
-                        let body_bytes = encode_grpc_response(&write_response);
+                        let body_bytes = encode_grpc_unary_response(&write_response);
                         let body = GrpcUnaryBody::new(body_bytes);
                         let mut http_response = http::Response::new(
                             tonic::body::Body::new(body),
@@ -1828,67 +1830,3 @@ impl tower::Service<http::Request<tonic::body::Body>> for ZeroCopyByteStreamServ
     }
 }
 
-/// Encode a `WriteResponse` protobuf as a gRPC frame: 5-byte header + encoded message.
-fn encode_grpc_response(response: &WriteResponse) -> Bytes {
-    use prost::Message;
-    let encoded = response.encode_to_vec();
-    let len = encoded.len();
-    let mut buf = BytesMut::with_capacity(5 + len);
-    buf.extend_from_slice(&[0]); // no compression
-    buf.extend_from_slice(&(len as u32).to_be_bytes());
-    buf.extend_from_slice(&encoded);
-    buf.freeze()
-}
-
-/// HTTP body that emits exactly one data frame containing a gRPC-encoded
-/// message, followed by a trailers frame with `grpc-status: 0`.
-///
-/// This is the correct encoding for a successful unary gRPC response.
-/// Unlike `http_body_util::Full`, this properly emits HTTP/2 trailers.
-struct GrpcUnaryBody {
-    data: Option<Bytes>,
-    trailers_sent: bool,
-}
-
-impl GrpcUnaryBody {
-    fn new(data: Bytes) -> Self {
-        Self {
-            data: Some(data),
-            trailers_sent: false,
-        }
-    }
-}
-
-impl http_body::Body for GrpcUnaryBody {
-    type Data = Bytes;
-    type Error = Status;
-
-    fn poll_frame(
-        mut self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
-        if let Some(data) = self.data.take() {
-            return Poll::Ready(Some(Ok(http_body::Frame::data(data))));
-        }
-
-        if !self.trailers_sent {
-            self.trailers_sent = true;
-            let mut trailers = http::HeaderMap::new();
-            trailers.insert("grpc-status", http::HeaderValue::from_static("0"));
-            return Poll::Ready(Some(Ok(http_body::Frame::trailers(trailers))));
-        }
-
-        Poll::Ready(None)
-    }
-
-    fn is_end_stream(&self) -> bool {
-        self.data.is_none() && self.trailers_sent
-    }
-
-    fn size_hint(&self) -> http_body::SizeHint {
-        match &self.data {
-            Some(data) => http_body::SizeHint::with_exact(data.len() as u64),
-            None => http_body::SizeHint::with_exact(0),
-        }
-    }
-}

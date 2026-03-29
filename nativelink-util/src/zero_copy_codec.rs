@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Zero-copy gRPC frame decoder for ByteStream/Write.
+//! Zero-copy gRPC frame decoder for inbound RPCs.
 //!
 //! Tonic's default codec reassembles every incoming HTTP/2 data frame into a
 //! contiguous `BytesMut` buffer before decoding the protobuf message. On the
@@ -27,6 +27,8 @@
 //! - `ZeroCopyWriteStream`: a `Stream<Item = Result<WriteRequest, Status>>`
 //!   that wraps a raw `http_body::Body` and yields decoded `WriteRequest`
 //!   messages without the intermediate copy.
+//! - `decode_unary_request`: accumulates an HTTP body and decodes a single
+//!   gRPC unary request message with zero-copy `Bytes` fields.
 
 use core::pin::Pin;
 use core::task::{Context, Poll};
@@ -74,13 +76,21 @@ impl ZeroCopyGrpcFrameDecoder {
         self.buf.push(frame);
     }
 
-    /// Try to decode the next gRPC message from buffered data.
+    /// Try to decode the next gRPC message from buffered data as a
+    /// `WriteRequest`. Convenience wrapper around `try_decode_next_message`.
+    pub fn try_decode_next(&mut self) -> Result<Option<WriteRequest>, Status> {
+        self.try_decode_next_message()
+    }
+
+    /// Try to decode the next gRPC message of type `M` from buffered data.
     ///
     /// Returns:
     /// - `Ok(Some(msg))` if a complete message was decoded
     /// - `Ok(None)` if more data is needed
     /// - `Err(status)` on protocol errors
-    pub fn try_decode_next(&mut self) -> Result<Option<WriteRequest>, Status> {
+    pub fn try_decode_next_message<M: Message + Default>(
+        &mut self,
+    ) -> Result<Option<M>, Status> {
         // If we don't have a pending body length, try to read the header.
         if self.pending_body_len.is_none() {
             if self.buf.remaining() < GRPC_HEADER_SIZE {
@@ -127,8 +137,12 @@ impl ZeroCopyGrpcFrameDecoder {
         self.pending_body_len = None;
 
         // Decode the protobuf message.
-        let request = WriteRequest::decode(msg_bytes)
-            .map_err(|e| Status::internal(format!("failed to decode WriteRequest: {e:?}")))?;
+        let request = M::decode(msg_bytes).map_err(|e| {
+            Status::internal(format!(
+                "failed to decode {}: {e:?}",
+                core::any::type_name::<M>()
+            ))
+        })?;
 
         Ok(Some(request))
     }
@@ -234,6 +248,122 @@ unsafe impl<B: Send> Send for ZeroCopyWriteStream<B> {}
 // (the pin contract is on the heap-allocated B, not the Box pointer).
 // This allows poll_next to use safe self.get_mut() instead of unsafe.
 impl<B> Unpin for ZeroCopyWriteStream<B> {}
+
+/// Accumulate an HTTP body and decode the single gRPC unary request message.
+///
+/// For unary RPCs (like `BatchUpdateBlobs`), the client sends exactly one
+/// gRPC frame. This function collects all HTTP/2 DATA frames, then parses the
+/// 5-byte gRPC header and decodes the protobuf message directly from the
+/// accumulated `Bytes` — preserving zero-copy semantics for `Bytes` fields
+/// (e.g. `BatchUpdateBlobsRequest.requests[].data`).
+pub async fn decode_unary_request<M, B>(body: B) -> Result<M, Status>
+where
+    M: Message + Default,
+    B: http_body::Body<Data = Bytes>,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
+    use core::pin::pin;
+
+    let mut pinned = pin!(body);
+    let mut decoder = ZeroCopyGrpcFrameDecoder::new();
+
+    loop {
+        match std::future::poll_fn(|cx| pinned.as_mut().poll_frame(cx)).await {
+            Some(Ok(frame)) => {
+                if let Ok(data) = frame.into_data() {
+                    if !data.is_empty() {
+                        decoder.push_frame(data);
+                    }
+                }
+            }
+            Some(Err(e)) => {
+                return Err(Status::from_error(e.into()));
+            }
+            None => break,
+        }
+    }
+
+    // The body is fully received. Decode the single gRPC message.
+    match decoder.try_decode_next_message::<M>()? {
+        Some(msg) => {
+            if decoder.has_remaining() {
+                return Err(Status::internal(
+                    "unexpected trailing data after unary gRPC message",
+                ));
+            }
+            Ok(msg)
+        }
+        None => Err(Status::internal("empty body: no gRPC message received")),
+    }
+}
+
+/// Encode a protobuf message as a gRPC frame: 5-byte header + encoded message.
+///
+/// The gRPC wire format is:
+/// `[1 byte: 0 (no compression)] [4 bytes: big-endian length] [N bytes: message]`
+pub fn encode_grpc_unary_response<M: Message>(response: &M) -> Bytes {
+    let encoded = response.encode_to_vec();
+    let len = encoded.len();
+    let mut buf = bytes::BytesMut::with_capacity(GRPC_HEADER_SIZE + len);
+    buf.extend_from_slice(&[0]); // no compression
+    buf.extend_from_slice(&(len as u32).to_be_bytes());
+    buf.extend_from_slice(&encoded);
+    buf.freeze()
+}
+
+/// HTTP body that emits exactly one data frame containing a gRPC-encoded
+/// message, followed by a trailers frame with `grpc-status: 0`.
+///
+/// This is the correct encoding for a successful unary gRPC response.
+/// Unlike `http_body_util::Full`, this properly emits HTTP/2 trailers.
+#[derive(Debug)]
+pub struct GrpcUnaryBody {
+    data: Option<Bytes>,
+    trailers_sent: bool,
+}
+
+impl GrpcUnaryBody {
+    pub fn new(data: Bytes) -> Self {
+        Self {
+            data: Some(data),
+            trailers_sent: false,
+        }
+    }
+}
+
+impl http_body::Body for GrpcUnaryBody {
+    type Data = Bytes;
+    type Error = Status;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+        if let Some(data) = self.data.take() {
+            return Poll::Ready(Some(Ok(http_body::Frame::data(data))));
+        }
+
+        if !self.trailers_sent {
+            self.trailers_sent = true;
+            let mut trailers = http::HeaderMap::new();
+            trailers.insert("grpc-status", http::HeaderValue::from_static("0"));
+            return Poll::Ready(Some(Ok(http_body::Frame::trailers(trailers))));
+        }
+
+        Poll::Ready(None)
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.data.is_none() && self.trailers_sent
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        match &self.data {
+            Some(data) => http_body::SizeHint::with_exact(data.len() as u64),
+            None => http_body::SizeHint::with_exact(0),
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

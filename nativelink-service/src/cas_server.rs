@@ -14,7 +14,10 @@
 
 use core::convert::Into;
 use core::pin::Pin;
+use core::task::{Context, Poll};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::future::Future;
+use std::sync::Arc;
 
 use bytes::Bytes;
 use futures::stream::{FuturesUnordered, Stream};
@@ -40,6 +43,9 @@ use nativelink_util::digest_hasher::make_ctx_for_hash_func;
 use nativelink_util::log_utils::throughput_mbps;
 use nativelink_util::stall_detector::StallGuard;
 use nativelink_util::store_trait::{IS_WORKER_REQUEST, Store, StoreLike};
+use nativelink_util::zero_copy_codec::{
+    GrpcUnaryBody, decode_unary_request, encode_grpc_unary_response,
+};
 use opentelemetry::context::FutureExt;
 use prost::Message;
 use tonic::{Request, Response, Status};
@@ -98,6 +104,26 @@ impl CasServer {
 
     pub fn into_service(self) -> Server<Self> {
         Server::new(self)
+    }
+
+    /// Wrap this server in a `ZeroCopyCasService` that intercepts
+    /// `BatchUpdateBlobs` RPCs and decodes the request directly from HTTP
+    /// body frames, bypassing tonic's `BytesMut` reassembly buffer.
+    ///
+    /// All other CAS RPCs (FindMissingBlobs, BatchReadBlobs, GetTree)
+    /// delegate to the standard tonic path.
+    pub fn into_zero_copy_service(
+        self,
+        max_decoding_message_size: usize,
+        max_encoding_message_size: usize,
+    ) -> ZeroCopyCasService {
+        let inner = Arc::new(self);
+        ZeroCopyCasService {
+            inner: inner.clone(),
+            tonic_service: Server::from_arc(inner)
+                .max_decoding_message_size(max_decoding_message_size)
+                .max_encoding_message_size(max_encoding_message_size),
+        }
     }
 
     async fn inner_find_missing_blobs(
@@ -241,6 +267,31 @@ impl CasServer {
         );
 
         Ok(Response::new(BatchUpdateBlobsResponse { responses }))
+    }
+
+    /// Zero-copy BatchUpdateBlobs handler called from `ZeroCopyCasService`.
+    ///
+    /// The request has already been decoded from the raw HTTP body frames
+    /// without copying through tonic's BytesMut reassembly buffer.
+    async fn zero_copy_batch_update_blobs(
+        &self,
+        request: BatchUpdateBlobsRequest,
+    ) -> Result<Response<BatchUpdateBlobsResponse>, Status> {
+        let digest_function = request.digest_function;
+
+        let _stall_guard = StallGuard::new(
+            nativelink_util::stall_detector::DEFAULT_STALL_THRESHOLD,
+            "BatchUpdateBlobs",
+        );
+        self.inner_batch_update_blobs(request)
+            .instrument(error_span!("cas_server_batch_update_blobs"))
+            .with_context(
+                make_ctx_for_hash_func(digest_function)
+                    .err_tip(|| "In CasServer::batch_update_blobs")?,
+            )
+            .await
+            .err_tip(|| "Failed on batch_update_blobs() command")
+            .map_err(Into::into)
     }
 
     async fn inner_batch_read_blobs(
@@ -677,5 +728,97 @@ impl ContentAddressableStorage for CasServer {
             debug!(return = "Ok(<stream>)");
         }
         resp
+    }
+}
+
+/// A tower `Service` wrapper around `CasServer` that intercepts
+/// `BatchUpdateBlobs` RPCs and decodes the `BatchUpdateBlobsRequest`
+/// directly from raw HTTP body frames, bypassing tonic's `BytesMut`
+/// reassembly buffer.
+///
+/// This preserves zero-copy semantics for `Bytes` fields in the request
+/// (specifically `BatchUpdateBlobsRequest.requests[].data`), eliminating
+/// one full copy of every blob byte on the inbound path.
+///
+/// All other CAS RPCs pass through to the inner tonic service unchanged.
+#[derive(Clone, Debug)]
+pub struct ZeroCopyCasService {
+    inner: Arc<CasServer>,
+    tonic_service: Server<CasServer>,
+}
+
+impl ZeroCopyCasService {
+    /// Apply compression settings to the inner tonic service
+    /// (for non-BatchUpdateBlobs RPCs).
+    pub fn accept_compressed(mut self, encoding: tonic::codec::CompressionEncoding) -> Self {
+        self.tonic_service = self.tonic_service.accept_compressed(encoding);
+        self
+    }
+
+    /// Apply compression settings to the inner tonic service
+    /// (for non-BatchUpdateBlobs RPCs).
+    pub fn send_compressed(mut self, encoding: tonic::codec::CompressionEncoding) -> Self {
+        self.tonic_service = self.tonic_service.send_compressed(encoding);
+        self
+    }
+}
+
+impl tonic::server::NamedService for ZeroCopyCasService {
+    const NAME: &'static str =
+        "build.bazel.remote.execution.v2.ContentAddressableStorage";
+}
+
+impl tower::Service<http::Request<tonic::body::Body>> for ZeroCopyCasService {
+    type Response = http::Response<tonic::body::Body>;
+    type Error = core::convert::Infallible;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, req: http::Request<tonic::body::Body>) -> Self::Future {
+        let path = req.uri().path();
+        if path
+            == "/build.bazel.remote.execution.v2.ContentAddressableStorage/BatchUpdateBlobs"
+        {
+            let inner = self.inner.clone();
+            Box::pin(async move {
+                let (_parts, body) = req.into_parts();
+
+                // Decode the unary request directly from body frames.
+                let request: BatchUpdateBlobsRequest =
+                    match decode_unary_request(body).await {
+                        Ok(req) => req,
+                        Err(status) => return Ok(status.into_http()),
+                    };
+
+                let result = inner.zero_copy_batch_update_blobs(request).await;
+
+                match result {
+                    Ok(response) => {
+                        let (resp_metadata, update_response, _extensions) =
+                            response.into_parts();
+                        let body_bytes =
+                            encode_grpc_unary_response(&update_response);
+                        let body = GrpcUnaryBody::new(body_bytes);
+                        let mut http_response = http::Response::new(
+                            tonic::body::Body::new(body),
+                        );
+                        *http_response.headers_mut() =
+                            resp_metadata.into_headers();
+                        http_response.headers_mut().insert(
+                            http::header::CONTENT_TYPE,
+                            tonic::metadata::GRPC_CONTENT_TYPE,
+                        );
+                        Ok(http_response)
+                    }
+                    Err(status) => Ok(status.into_http()),
+                }
+            })
+        } else {
+            // Delegate all other RPCs to the standard tonic path.
+            self.tonic_service.call(req)
+        }
     }
 }
