@@ -212,4 +212,51 @@ fn dump_thread_stacks_linux(label: &str) {
         }
         Err(err) => eprintln!("Failed to run eu-stack: {err}"),
     }
+
+    cleanup_old_stall_dumps();
+}
+
+/// Maximum number of stall dump file pairs to retain. Older dumps are
+/// deleted after each new dump is written.
+const MAX_STALL_DUMPS: usize = 10;
+
+/// Remove old stall dump files, keeping the newest [`MAX_STALL_DUMPS`] pairs.
+/// Each dump produces two files (`-<ts>.txt` and `-<ts>-bt.txt`), so we
+/// keep up to `MAX_STALL_DUMPS * 2` files total.
+fn cleanup_old_stall_dumps() {
+    let tmp = std::path::Path::new("/tmp");
+    let entries = match std::fs::read_dir(tmp) {
+        Ok(e) => e,
+        Err(err) => {
+            eprintln!("stall dump cleanup: failed to read /tmp: {err}");
+            return;
+        }
+    };
+
+    let mut stall_files: Vec<std::path::PathBuf> = entries
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map_or(false, |n| n.starts_with("nativelink-stall-") && n.ends_with(".txt"))
+        })
+        .collect();
+
+    // Each dump pair shares a timestamp, so sorting by filename (which
+    // embeds the millisecond timestamp) gives chronological order.
+    stall_files.sort();
+
+    let max_files = MAX_STALL_DUMPS * 2;
+    if stall_files.len() <= max_files {
+        return;
+    }
+
+    let to_remove = stall_files.len() - max_files;
+    for file in &stall_files[..to_remove] {
+        if let Err(err) = std::fs::remove_file(file) {
+            eprintln!("stall dump cleanup: failed to remove {}: {err}", file.display());
+        }
+    }
+    eprintln!("stall dump cleanup: removed {to_remove} old dump files, kept {MAX_STALL_DUMPS} newest pairs");
 }
