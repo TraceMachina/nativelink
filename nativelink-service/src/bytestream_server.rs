@@ -1247,24 +1247,19 @@ impl ByteStreamServer {
         }))
     }
 
-    /// Zero-copy write handler called from `ZeroCopyByteStreamService`.
-    ///
-    /// This method is identical to the tonic `write()` handler but accepts
-    /// any `Stream<Item = Result<WriteRequest, Status>>` instead of the
-    /// tonic-specific `Streaming<WriteRequest>`. The zero-copy stream has
-    /// already decoded the gRPC frames without an intermediate copy.
-    async fn zero_copy_write(
+    /// Shared write implementation used by both the tonic `write()` handler and
+    /// the zero-copy `zero_copy_write()` handler. All preamble (instance lookup,
+    /// metrics, GrpcStore shortcut, has-check, oneshot decision) and postamble
+    /// (logging, metrics, mirroring) live here so the two entry points are thin
+    /// wrappers.
+    async fn bytestream_write(
         &self,
-        stream: impl Stream<Item = Result<WriteRequest, Status>> + Send + Unpin + 'static,
-        _metadata: &http::HeaderMap,
-    ) -> Result<Response<WriteResponse>, Status> {
-        let start_time = Instant::now();
-
-        let stream = WriteRequestStreamWrapper::from(stream)
-            .await
-            .err_tip(|| "Could not unwrap first stream message")
-            .map_err(Into::<Status>::into)?;
-
+        start_time: Instant,
+        stream: WriteRequestStreamWrapper<
+            impl Stream<Item = Result<WriteRequest, Status>> + Unpin + Send + 'static,
+        >,
+        zero_copy: bool,
+    ) -> Result<Response<WriteResponse>, Error> {
         let instance_name = stream.resource_info.instance_name.as_ref();
         let expected_size = stream.resource_info.expected_size as u64;
         let instance = self
@@ -1288,8 +1283,7 @@ impl ByteStreamServer {
 
         // If we are a GrpcStore we shortcut here, as this is a special store.
         if let Some(grpc_store) = store.downcast_ref::<GrpcStore>(Some(digest.into())) {
-            let resp = grpc_store.write(stream).await.map_err(Into::into);
-            return resp;
+            return grpc_store.write(stream).await.map_err(Into::into);
         }
 
         // Skip the upload if the server already has this blob.
@@ -1297,7 +1291,8 @@ impl ByteStreamServer {
             debug!(
                 %digest,
                 expected_size,
-                "ByteStream::write(zero-copy): blob already exists, skipping upload",
+                zero_copy,
+                "ByteStream::write: blob already exists, skipping upload",
             );
             return Ok(Response::new(WriteResponse {
                 committed_size: expected_size as i64,
@@ -1313,7 +1308,13 @@ impl ByteStreamServer {
                 DigestHasherFunc::try_from,
             )?;
 
-        // Oneshot fast-path check (same logic as the tonic write handler).
+        // Check if store supports direct oneshot updates (bypasses channel overhead).
+        // Use fast-path only when:
+        // 1. Store supports oneshot optimization
+        // 2. UUID is provided
+        // 3. Size is under 64MB (memory safety)
+        // 4. This is a NEW upload (UUID not already in active_uploads)
+        // 5. The first message has finish_write=true (single-shot upload)
         let use_oneshot = if store.optimized_for(StoreOptimizations::SubscribesToUpdateOneshot)
             && expected_size <= 64 * 1024 * 1024
             && stream.resource_info.uuid.is_some()
@@ -1335,32 +1336,48 @@ impl ByteStreamServer {
             %digest,
             expected_size,
             oneshot,
-            zero_copy = true,
+            zero_copy,
             "ByteStream::write: starting upload",
         );
 
+        // Build label strings based on zero_copy flag. These must be
+        // &'static str for tracing / err_tip messages.
+        let (stall_label, tip_label, tip_oneshot_label) = if zero_copy {
+            (
+                "ByteStream::write(zero-copy)",
+                "In ByteStreamServer::write(zero-copy)",
+                "In ByteStreamServer::write(zero-copy, oneshot)",
+            )
+        } else {
+            (
+                "ByteStream::write",
+                "In ByteStreamServer::write",
+                "In ByteStreamServer::write (oneshot)",
+            )
+        };
+
         let _stall_guard = StallGuard::new(
             nativelink_util::stall_detector::DEFAULT_STALL_THRESHOLD,
-            "ByteStream::write(zero-copy)",
+            stall_label,
         );
         let result = if use_oneshot {
             self.inner_write_oneshot(instance, digest, stream)
-                .instrument(error_span!("bytestream_write_oneshot_zc"))
+                .instrument(error_span!("bytestream_write_oneshot", %zero_copy))
                 .with_context(
                     make_ctx_for_hash_func(digest_function)
-                        .err_tip(|| "In BytestreamServer::write(zero-copy)")?,
+                        .err_tip(|| tip_label)?,
                 )
                 .await
-                .err_tip(|| "In ByteStreamServer::write(zero-copy, oneshot)")
+                .err_tip(|| tip_oneshot_label)
         } else {
             self.inner_write(instance, digest, stream)
-                .instrument(error_span!("bytestream_write_zc"))
+                .instrument(error_span!("bytestream_write", %zero_copy))
                 .with_context(
                     make_ctx_for_hash_func(digest_function)
-                        .err_tip(|| "In BytestreamServer::write(zero-copy)")?,
+                        .err_tip(|| tip_label)?,
                 )
                 .await
-                .err_tip(|| "In ByteStreamServer::write(zero-copy)")
+                .err_tip(|| tip_label)
         };
 
         // Track metrics
@@ -1380,7 +1397,7 @@ impl ByteStreamServer {
                     elapsed_ms = elapsed.as_millis() as u64,
                     throughput_mbps = format!("{:.1}", throughput_mbps(expected_size, elapsed)),
                     oneshot,
-                    zero_copy = true,
+                    zero_copy,
                     "ByteStream::write: CAS write completed",
                 );
                 instance
@@ -1392,6 +1409,11 @@ impl ByteStreamServer {
                     .bytes_written_total
                     .fetch_add(expected_size, Ordering::Relaxed);
 
+                // Mirror the blob to a random worker for OOM redundancy.
+                // Fire-and-forget: don't delay the Bazel ACK.
+                // The oneshot path mirrors inside inner_write_oneshot with
+                // the data already in hand. The streaming path must re-read
+                // from the store, so we only mirror small blobs (<= 16MB).
                 if !use_oneshot && digest.size_bytes() <= MIRROR_STREAM_MAX_SIZE {
                     mirror_blob_to_worker(&store, digest, None);
                 }
@@ -1402,7 +1424,7 @@ impl ByteStreamServer {
                     expected_size,
                     elapsed_ms = start_time.elapsed().as_millis() as u64,
                     oneshot,
-                    zero_copy = true,
+                    zero_copy,
                     ?e,
                     "ByteStream::write: upload failed",
                 );
@@ -1413,7 +1435,29 @@ impl ByteStreamServer {
             }
         }
 
-        result.map_err(Into::into)
+        result
+    }
+
+    /// Zero-copy write handler called from `ZeroCopyByteStreamService`.
+    ///
+    /// Accepts any `Stream<Item = Result<WriteRequest, Status>>` instead of
+    /// the tonic-specific `Streaming<WriteRequest>`. The zero-copy stream has
+    /// already decoded the gRPC frames without an intermediate copy.
+    async fn zero_copy_write(
+        &self,
+        stream: impl Stream<Item = Result<WriteRequest, Status>> + Send + Unpin + 'static,
+        _metadata: &http::HeaderMap,
+    ) -> Result<Response<WriteResponse>, Status> {
+        let start_time = Instant::now();
+
+        let stream = WriteRequestStreamWrapper::from(stream)
+            .await
+            .err_tip(|| "Could not unwrap first stream message")
+            .map_err(Into::<Status>::into)?;
+
+        self.bytestream_write(start_time, stream, true)
+            .await
+            .map_err(Into::into)
     }
 }
 
@@ -1536,7 +1580,6 @@ impl ByteStream for ByteStreamServer {
     }
 
     #[instrument(
-        err(level = Level::WARN),
         level = Level::ERROR,
         skip_all,
         fields(request = ?grpc_request.get_ref())
@@ -1553,171 +1596,9 @@ impl ByteStream for ByteStreamServer {
             .err_tip(|| "Could not unwrap first stream message")
             .map_err(Into::<Status>::into)?;
 
-        let instance_name = stream.resource_info.instance_name.as_ref();
-        let expected_size = stream.resource_info.expected_size as u64;
-        let instance = self
-            .instance_infos
-            .get(instance_name)
-            .err_tip(|| format!("'instance_name' not configured for '{instance_name}'"))?;
-
-        // Track write request
-        instance
-            .metrics
-            .write_requests_total
-            .fetch_add(1, Ordering::Relaxed);
-
-        let store = instance.store.clone();
-
-        let digest = DigestInfo::try_new(
-            &stream.resource_info.hash,
-            stream.resource_info.expected_size,
-        )
-        .err_tip(|| "Invalid digest input in ByteStream::write")?;
-
-        // If we are a GrpcStore we shortcut here, as this is a special store.
-        if let Some(grpc_store) = store.downcast_ref::<GrpcStore>(Some(digest.into())) {
-            let resp = grpc_store.write(stream).await.map_err(Into::into);
-            return resp;
-        }
-
-        // Skip the upload if the server already has this blob. This avoids
-        // streaming large blobs over ByteStream when they already exist.
-        if store.has(digest).await?.is_some() {
-            debug!(
-                %digest,
-                expected_size,
-                "ByteStream::write: blob already exists, skipping upload",
-            );
-            return Ok(Response::new(WriteResponse {
-                committed_size: expected_size as i64,
-            }));
-        }
-
-        let digest_function = stream
-            .resource_info
-            .digest_function
-            .as_deref()
-            .map_or_else(
-                || Ok(default_digest_hasher_func()),
-                DigestHasherFunc::try_from,
-            )?;
-
-        // Check if store supports direct oneshot updates (bypasses channel overhead).
-        // Use fast-path only when:
-        // 1. Store supports oneshot optimization
-        // 2. UUID is provided
-        // 3. Size is under 64MB (memory safety)
-        // 4. This is a NEW upload (UUID not already in active_uploads)
-        // 5. The first message has finish_write=true (single-shot upload)
-        //
-        // The oneshot path cannot be used for multi-message streams because:
-        // - QueryWriteStatus won't work (no progress tracking)
-        // - Resumed streams won't work (no partial progress)
-        let use_oneshot = if store.optimized_for(StoreOptimizations::SubscribesToUpdateOneshot)
-            && expected_size <= 64 * 1024 * 1024
-            && stream.resource_info.uuid.is_some()
-        {
-            // Check if first message completes the upload (single-shot)
-            let is_single_shot = stream.is_first_msg_complete();
-
-            if is_single_shot {
-                let uuid_str = stream.resource_info.uuid.as_ref().unwrap();
-                let uuid_key = parse_uuid_to_key(uuid_str);
-                // Only use oneshot if this UUID is not already being tracked
-                !instance.active_uploads.lock().contains_key(&uuid_key)
-            } else {
-                false
-            }
-        } else {
-            false
-        };
-
-        let oneshot = use_oneshot;
-        debug!(
-            %digest,
-            expected_size,
-            oneshot,
-            "ByteStream::write: starting upload",
-        );
-
-        let _stall_guard = StallGuard::new(
-            nativelink_util::stall_detector::DEFAULT_STALL_THRESHOLD,
-            "ByteStream::write",
-        );
-        let result = if use_oneshot {
-            self.inner_write_oneshot(instance, digest, stream)
-                .instrument(error_span!("bytestream_write_oneshot"))
-                .with_context(
-                    make_ctx_for_hash_func(digest_function)
-                        .err_tip(|| "In BytestreamServer::write")?,
-                )
-                .await
-                .err_tip(|| "In ByteStreamServer::write (oneshot)")
-        } else {
-            self.inner_write(instance, digest, stream)
-                .instrument(error_span!("bytestream_write"))
-                .with_context(
-                    make_ctx_for_hash_func(digest_function)
-                        .err_tip(|| "In BytestreamServer::write")?,
-                )
-                .await
-                .err_tip(|| "In ByteStreamServer::write")
-        };
-
-        // Track metrics based on result
-        #[allow(clippy::cast_possible_truncation)]
-        let elapsed_ns = start_time.elapsed().as_nanos() as u64;
-        instance
-            .metrics
-            .write_duration_ns
-            .fetch_add(elapsed_ns, Ordering::Relaxed);
-
-        match &result {
-            Ok(_) => {
-                let elapsed = start_time.elapsed();
-                info!(
-                    %digest,
-                    size_bytes = expected_size,
-                    elapsed_ms = elapsed.as_millis() as u64,
-                    throughput_mbps = format!("{:.1}", throughput_mbps(expected_size, elapsed)),
-                    oneshot,
-                    "ByteStream::write: CAS write completed",
-                );
-                instance
-                    .metrics
-                    .write_requests_success
-                    .fetch_add(1, Ordering::Relaxed);
-                instance
-                    .metrics
-                    .bytes_written_total
-                    .fetch_add(expected_size, Ordering::Relaxed);
-
-                // Mirror the blob to a random worker for OOM redundancy.
-                // Fire-and-forget: don't delay the Bazel ACK.
-                // The oneshot path mirrors inside inner_write_oneshot with
-                // the data already in hand. The streaming path must re-read
-                // from the store, so we only mirror small blobs (<= 16MB).
-                if !use_oneshot && digest.size_bytes() <= MIRROR_STREAM_MAX_SIZE {
-                    mirror_blob_to_worker(&store, digest, None);
-                }
-            }
-            Err(e) => {
-                error!(
-                    %digest,
-                    expected_size,
-                    elapsed_ms = start_time.elapsed().as_millis() as u64,
-                    oneshot,
-                    ?e,
-                    "ByteStream::write: upload failed",
-                );
-                instance
-                    .metrics
-                    .write_requests_failure
-                    .fetch_add(1, Ordering::Relaxed);
-            }
-        }
-
-        result.map_err(Into::into)
+        self.bytestream_write(start_time, stream, false)
+            .await
+            .map_err(Into::into)
     }
 
     #[instrument(
