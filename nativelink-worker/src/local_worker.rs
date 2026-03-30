@@ -49,7 +49,7 @@ use nativelink_util::{spawn, tls_utils};
 use opentelemetry::context::Context;
 use parking_lot::Mutex;
 use tokio::process;
-use tokio::sync::{Semaphore, broadcast, mpsc};
+use tokio::sync::{Notify, Semaphore, broadcast, mpsc};
 use tokio::time::sleep;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::Streaming;
@@ -62,8 +62,11 @@ use crate::running_actions_manager::{
 use crate::worker_api_client_wrapper::{WorkerApiClientTrait, WorkerApiClientWrapper};
 use crate::worker_utils::make_connect_worker_request;
 
-/// Default interval for periodic BlobsAvailable reports (milliseconds).
-const DEFAULT_BLOBS_AVAILABLE_INTERVAL_MS: u64 = 100;
+/// Maximum backstop interval for BlobsAvailable reports (milliseconds).
+/// The send loop normally wakes immediately on blob changes via `Notify`,
+/// but this backstop ensures subtree-only changes (which don't fire the
+/// tracker notify) are still reported within a bounded time.
+const BLOBS_AVAILABLE_MAX_INTERVAL_MS: u64 = 5000;
 
 /// Platform-specific cumulative CPU time reading.
 #[cfg(target_os = "linux")]
@@ -509,15 +512,22 @@ pub struct BlobChanges {
 
 /// Tracks inserts and evictions from the FilesystemStore between ticks.
 /// Registered as a callback on the FilesystemStore's evicting map.
+///
+/// Contains a `Notify` that is signalled on every insert or eviction so
+/// the BlobsAvailable send loop can wake immediately instead of polling
+/// on a fixed interval.
 #[derive(Debug)]
 pub struct BlobChangeTracker {
     pending: Mutex<BlobChanges>,
+    /// Wakes the BlobsAvailable send loop when changes accumulate.
+    notify: Arc<Notify>,
 }
 
 impl BlobChangeTracker {
-    pub fn new() -> Arc<Self> {
+    pub fn new(notify: Arc<Notify>) -> Arc<Self> {
         Arc::new(Self {
             pending: Mutex::new(BlobChanges::default()),
+            notify,
         })
     }
 
@@ -539,6 +549,7 @@ impl ItemCallback for BlobChangeTracker {
             let mut pending = self.pending.lock();
             pending.added.remove(&digest);
             pending.evicted.insert(digest);
+            self.notify.notify_one();
         }
         Box::pin(core::future::ready(()))
     }
@@ -553,6 +564,7 @@ impl ItemCallback for BlobChangeTracker {
             let mut pending = self.pending.lock();
             pending.evicted.remove(&digest);
             pending.added.insert(digest, ts);
+            self.notify.notify_one();
         }
     }
 }
@@ -575,17 +587,21 @@ const DEFAULT_MAX_ACTION_TIMEOUT: Duration = Duration::from_secs(1200); // 20 mi
 const DEFAULT_MAX_UPLOAD_TIMEOUT: Duration = Duration::from_secs(600); // 10 mins.
 
 /// Holds the FilesystemStore reference and change tracker needed for
-/// periodic BlobsAvailable reporting.
+/// BlobsAvailable reporting with drain-then-fire semantics.
 #[derive(Clone, Debug)]
 pub struct BlobsAvailableState {
     /// Reference to the worker's local FilesystemStore (the fast store in FastSlowStore).
     fs_store: Arc<FilesystemStore>,
-    /// Tracks inserted and evicted digests between periodic ticks.
+    /// Tracks inserted and evicted digests between sends.
     tracker: Arc<BlobChangeTracker>,
     /// The worker's CAS endpoint for peer serving (e.g. "grpc://192.168.191.5:50081").
     cas_endpoint: String,
-    /// How often to send periodic BlobsAvailable (0 = disabled).
-    interval: Duration,
+    /// Woken by the tracker on every insert/eviction so the send loop fires
+    /// immediately instead of sleeping for a fixed interval.
+    notify: Arc<Notify>,
+    /// Backstop interval: even without blob changes, wake periodically to
+    /// pick up subtree-only deltas that bypass the tracker notify.
+    max_interval: Duration,
 }
 
 struct LocalWorkerImpl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> {
@@ -974,38 +990,45 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
         let mut futures = FuturesUnordered::new();
         futures.push(self.start_keep_alive().boxed());
 
-        // Start periodic BlobsAvailable reporting if configured.
+        // Start BlobsAvailable reporting with drain-then-fire semantics.
+        // The loop wakes immediately when blob changes are detected (via
+        // Notify) and drains all accumulated changes in one send. Under
+        // high load, changes accumulate while the previous send is in
+        // flight and are picked up by the next iteration.
         if let Some(ref state) = self.blobs_available_state {
-            if !state.interval.is_zero() {
-                let mut grpc_client = self.grpc_client.clone();
-                let state = state.clone();
-                let ram = self.running_actions_manager.clone();
-                futures.push(
-                    async move {
-                        // Send full snapshot immediately on connect so the
-                        // server has an accurate locality map right away,
-                        // without waiting for the first interval tick.
+            let mut grpc_client = self.grpc_client.clone();
+            let state = state.clone();
+            let ram = self.running_actions_manager.clone();
+            futures.push(
+                async move {
+                    // Send full snapshot immediately on connect so the
+                    // server has an accurate locality map right away.
+                    Self::send_periodic_blobs_available(
+                        &mut grpc_client,
+                        &state,
+                        &ram,
+                        true,
+                    )
+                    .await;
+                    loop {
+                        // Wait for either:
+                        // 1. A blob insert/eviction notification (immediate wake), or
+                        // 2. The backstop interval (catches subtree-only changes).
+                        tokio::select! {
+                            () = state.notify.notified() => {}
+                            () = sleep(state.max_interval) => {}
+                        }
                         Self::send_periodic_blobs_available(
                             &mut grpc_client,
                             &state,
                             &ram,
-                            true,
+                            false,
                         )
                         .await;
-                        loop {
-                            sleep(state.interval).await;
-                            Self::send_periodic_blobs_available(
-                                &mut grpc_client,
-                                &state,
-                                &ram,
-                                false,
-                            )
-                            .await;
-                        }
                     }
-                    .boxed(),
-                );
-            }
+                }
+                .boxed(),
+            );
         }
 
         let (add_future_channel, add_future_rx) = mpsc::unbounded_channel();
@@ -1013,7 +1036,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
 
         let mut update_for_worker_stream = update_for_worker_stream.fuse();
         // A notify which is triggered every time actions_in_flight is subtracted.
-        let actions_notify = Arc::new(tokio::sync::Notify::new());
+        let actions_notify = Arc::new(Notify::new());
         // A counter of actions that are in-flight, this is similar to actions_in_transit but
         // includes the AC upload and notification to the scheduler.
         let actions_in_flight = Arc::new(AtomicU64::new(0));
@@ -1653,7 +1676,9 @@ pub async fn new_local_worker(
             peer_locality_map: peer_locality_map.clone(),
         })?);
 
-    // Set up periodic BlobsAvailable reporting if we have a CAS port.
+    // Set up BlobsAvailable reporting with drain-then-fire semantics.
+    // The send loop wakes immediately on blob insert/eviction via Notify,
+    // with a backstop interval to catch subtree-only changes.
     let blobs_available_state = if config.cas_server_port.is_some() {
         // Try to get a reference to the FilesystemStore (the fast store in FastSlowStore).
         let fs_store_opt: Option<Arc<FilesystemStore>> = fast_slow_store
@@ -1662,8 +1687,8 @@ pub async fn new_local_worker(
             .and_then(|fs| fs.get_arc());
 
         if let Some(fs_store) = fs_store_opt {
-            let interval_ms = if config.blobs_available_interval_ms == 0 {
-                DEFAULT_BLOBS_AVAILABLE_INTERVAL_MS
+            let max_interval_ms = if config.blobs_available_interval_ms == 0 {
+                BLOBS_AVAILABLE_MAX_INTERVAL_MS
             } else {
                 config.blobs_available_interval_ms
             };
@@ -1672,8 +1697,12 @@ pub async fn new_local_worker(
                 .map(|port| cas_advertised_endpoint(port))
                 .unwrap_or_default();
 
+            // Shared notify: tracker fires it on insert/eviction, send loop
+            // awaits it to wake immediately.
+            let notify = Arc::new(Notify::new());
+
             // Create change tracker and register it on the FilesystemStore.
-            let tracker = BlobChangeTracker::new();
+            let tracker = BlobChangeTracker::new(notify.clone());
             if let Err(err) = fs_store
                 .clone()
                 .register_item_callback(tracker.clone())
@@ -1681,8 +1710,8 @@ pub async fn new_local_worker(
                 warn!(?err, "Failed to register blob change tracker on FilesystemStore");
             } else {
                 info!(
-                    interval_ms,
-                    "Registered periodic BlobsAvailable reporting with callback-based change tracking"
+                    max_interval_ms,
+                    "Registered BlobsAvailable drain-then-fire reporting with callback-based change tracking"
                 );
             }
 
@@ -1690,10 +1719,11 @@ pub async fn new_local_worker(
                 fs_store,
                 tracker,
                 cas_endpoint,
-                interval: Duration::from_millis(interval_ms),
+                notify,
+                max_interval: Duration::from_millis(max_interval_ms),
             })
         } else {
-            warn!("FastSlowStore's fast store is not a FilesystemStore; periodic BlobsAvailable reporting disabled");
+            warn!("FastSlowStore's fast store is not a FilesystemStore; BlobsAvailable reporting disabled");
             None
         }
     } else {
@@ -2103,7 +2133,7 @@ mod tests {
 
     #[test]
     fn test_blob_change_tracker_eviction_collects_and_swaps() {
-        let tracker = BlobChangeTracker::new();
+        let tracker = BlobChangeTracker::new(Arc::new(Notify::new()));
         let d1 = DigestInfo::new([1u8; 32], 100);
         let d2 = DigestInfo::new([2u8; 32], 200);
 
@@ -2129,7 +2159,7 @@ mod tests {
 
     #[test]
     fn test_blob_change_tracker_ignores_non_digest_keys() {
-        let tracker = BlobChangeTracker::new();
+        let tracker = BlobChangeTracker::new(Arc::new(Notify::new()));
 
         // Evict callback with a string key.
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -2147,7 +2177,7 @@ mod tests {
 
     #[test]
     fn test_blob_change_tracker_insert_callback() {
-        let tracker = BlobChangeTracker::new();
+        let tracker = BlobChangeTracker::new(Arc::new(Notify::new()));
         let d1 = DigestInfo::new([1u8; 32], 100);
         let d2 = DigestInfo::new([2u8; 32], 200);
 
@@ -2171,7 +2201,7 @@ mod tests {
 
     #[test]
     fn test_blob_change_tracker_swap_returns_and_clears() {
-        let tracker = BlobChangeTracker::new();
+        let tracker = BlobChangeTracker::new(Arc::new(Notify::new()));
         let d1 = DigestInfo::new([1u8; 32], 100);
         let d2 = DigestInfo::new([2u8; 32], 200);
 
@@ -2197,7 +2227,7 @@ mod tests {
 
     #[test]
     fn test_blob_change_tracker_insert_then_evict_records_eviction() {
-        let tracker = BlobChangeTracker::new();
+        let tracker = BlobChangeTracker::new(Arc::new(Notify::new()));
         let d1 = DigestInfo::new([1u8; 32], 100);
 
         // Insert then evict the same digest — the eviction must still be
@@ -2224,7 +2254,7 @@ mod tests {
 
     #[test]
     fn test_blob_change_tracker_evict_then_reinsert_cancels_out() {
-        let tracker = BlobChangeTracker::new();
+        let tracker = BlobChangeTracker::new(Arc::new(Notify::new()));
         let d1 = DigestInfo::new([1u8; 32], 100);
 
         // Evict then reinsert the same digest — should show as added only.
@@ -2295,7 +2325,7 @@ mod tests {
             );
 
             // Create a BlobChangeTracker and register it.
-            let tracker = BlobChangeTracker::new();
+            let tracker = BlobChangeTracker::new(Arc::new(Notify::new()));
             let holder = ItemCallbackHolder::new(tracker.clone());
             evicting_map.add_item_callback(holder);
 

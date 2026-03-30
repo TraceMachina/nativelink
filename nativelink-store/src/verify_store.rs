@@ -16,6 +16,9 @@ use core::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use opentelemetry::context::Context;
+use tokio::sync::Notify;
+
 use nativelink_config::stores::VerifySpec;
 use nativelink_error::{Error, ResultExt, make_input_err};
 use nativelink_metric::MetricsComponent;
@@ -29,7 +32,6 @@ use nativelink_util::metrics_utils::CounterWithTime;
 use nativelink_util::store_trait::{
     ItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };
-use opentelemetry::context::Context;
 
 #[derive(Debug, MetricsComponent)]
 pub struct VerifyStore {
@@ -240,6 +242,10 @@ impl StoreDriver for VerifyStore {
 
     fn drain_stable_digests(&self) -> Vec<DigestInfo> {
         self.inner_store.drain_stable_digests()
+    }
+
+    fn stable_notify(&self) -> Arc<Notify> {
+        self.inner_store.stable_notify()
     }
 
     fn pin_digests(&self, digests: &[DigestInfo]) {

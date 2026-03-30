@@ -29,6 +29,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{Future, FutureExt, Stream, join, try_join};
 use nativelink_error::{Code, Error, ResultExt, error_if, make_err};
+use tokio::sync::Notify;
 
 tokio::task_local! {
     /// Set to `true` when the current CAS request originates from a worker
@@ -407,6 +408,14 @@ impl Store {
     #[inline]
     pub fn drain_stable_digests(&self) -> Vec<DigestInfo> {
         self.inner.drain_stable_digests()
+    }
+
+    /// Returns the notify handle that wakes the BlobsInStableStorage loop
+    /// when new digests become available.
+    /// Delegates to the inner [`StoreDriver::stable_notify`].
+    #[inline]
+    pub fn stable_notify(&self) -> Arc<Notify> {
+        self.inner.stable_notify()
     }
 
     /// Pin digests to prevent eviction while a worker is fetching them.
@@ -879,6 +888,16 @@ pub trait StoreDriver:
     /// delegate to their inner store. The default returns an empty Vec.
     fn drain_stable_digests(&self) -> Vec<DigestInfo> {
         Vec::new()
+    }
+
+    /// Returns a [`Notify`] that is woken when new stable digests are
+    /// available. Wrapper stores should delegate to their inner store.
+    /// The default returns a static Notify that is never woken.
+    fn stable_notify(&self) -> Arc<Notify> {
+        static NOOP_NOTIFY: OnceLock<Arc<Notify>> = OnceLock::new();
+        NOOP_NOTIFY
+            .get_or_init(|| Arc::new(Notify::new()))
+            .clone()
     }
 
     /// Pin digests to prevent eviction while a worker is fetching them.

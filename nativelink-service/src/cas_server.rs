@@ -42,7 +42,7 @@ use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::make_ctx_for_hash_func;
 use nativelink_util::log_utils::throughput_mbps;
 use nativelink_util::stall_detector::StallGuard;
-use nativelink_util::store_trait::{IS_WORKER_REQUEST, Store, StoreKey, StoreLike};
+use nativelink_util::store_trait::{IS_WORKER_REQUEST, Store, StoreLike};
 use nativelink_util::zero_copy_codec::{
     GrpcUnaryBody, decode_unary_request, encode_grpc_unary_response,
 };
@@ -212,45 +212,11 @@ impl CasServer {
             parsed.push((digest_info, size_bytes));
         }
 
-        // Single batch existence check for all digests.
-        let store_keys: Vec<StoreKey<'_>> = parsed
-            .iter()
-            .map(|(digest_info, _)| (*digest_info).into())
-            .collect();
-        let mut existence_results = vec![None; blob_count];
-        store_ref
-            .has_with_results(&store_keys, &mut existence_results)
-            .await
-            .err_tip(|| "In BatchUpdateBlobs batch has check")?;
-
-        let already_existed = existence_results.iter().filter(|r| r.is_some()).count();
-        if already_existed > 0 {
-            info!(
-                already_existed,
-                total = blob_count,
-                "BatchUpdateBlobs: skipping already-existing blobs",
-            );
-        }
-
         let update_futures: FuturesUnordered<_> = request
             .requests
             .into_iter()
             .zip(parsed.iter())
-            .zip(existence_results.iter())
-            .map(|((request, &(digest_info, size_bytes)), existence)| async move {
-                // If the blob already exists, return success immediately.
-                if existence.is_some() {
-                    debug!(
-                        %digest_info,
-                        size_bytes,
-                        "BatchUpdateBlobs: blob already exists, skipping write",
-                    );
-                    return Ok::<_, Error>(batch_update_blobs_response::Response {
-                        digest: Some(digest_info.into()),
-                        status: Some(GrpcStatus::default()),
-                    });
-                }
-
+            .map(|(request, &(digest_info, size_bytes))| async move {
                 let request_data = request.data;
                 debug!(
                     %digest_info,

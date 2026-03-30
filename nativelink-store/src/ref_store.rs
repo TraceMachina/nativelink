@@ -17,6 +17,10 @@ use core::pin::Pin;
 use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
+use parking_lot::Mutex;
+use tokio::sync::Notify;
+use tracing::error;
+
 use nativelink_config::stores::RefSpec;
 use nativelink_error::{Error, ResultExt, make_input_err};
 use nativelink_metric::MetricsComponent;
@@ -26,8 +30,6 @@ use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status
 use nativelink_util::store_trait::{
     ItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };
-use parking_lot::Mutex;
-use tracing::error;
 
 use crate::store_manager::StoreManager;
 
@@ -171,6 +173,19 @@ impl StoreDriver for RefStore {
         match self.get_store() {
             Ok(store) => store.drain_stable_digests(),
             Err(_) => Vec::new(),
+        }
+    }
+
+    fn stable_notify(&self) -> Arc<Notify> {
+        match self.get_store() {
+            Ok(store) => store.stable_notify(),
+            Err(_) => {
+                // Fall back to default (never-woken) notify.
+                static NOOP_NOTIFY: std::sync::OnceLock<Arc<Notify>> = std::sync::OnceLock::new();
+                NOOP_NOTIFY
+                    .get_or_init(|| Arc::new(Notify::new()))
+                    .clone()
+            }
         }
     }
 

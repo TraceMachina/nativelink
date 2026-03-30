@@ -71,7 +71,7 @@ use tokio::select;
 #[cfg(target_family = "unix")]
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::oneshot::Sender;
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{Notify, broadcast, mpsc, oneshot};
 use tokio_rustls::TlsAcceptor;
 use tokio_rustls::rustls::pki_types::CertificateDer;
 use tokio_rustls::rustls::server::WebPkiClientVerifier;
@@ -309,10 +309,10 @@ async fn inner_main(
         names
     };
 
-    // Spawn the BlobsInStableStorage batching loop. Every 100ms it drains
-    // digests that completed their write to the slow store (FilesystemStore)
-    // in each CAS FastSlowStore and broadcasts them to all connected workers
-    // so they can unpin those blobs from their local CAS.
+    // Spawn the BlobsInStableStorage drain-then-fire loop. When any CAS
+    // FastSlowStore completes a background slow write it pushes the digest
+    // and notifies us. We drain all queued digests and broadcast immediately,
+    // so workers can unpin blobs with minimal latency.
     if !worker_schedulers.is_empty() {
         let cas_stores: Vec<nativelink_util::store_trait::Store> = cas_store_names
             .iter()
@@ -324,10 +324,28 @@ async fn inner_main(
         if !cas_stores.is_empty() {
             let cas_store_count = cas_stores.len();
             let scheduler_count = schedulers.len();
+
+            // Merge per-store notifies into a single wakeup signal so the
+            // broadcast loop wakes when *any* store has new stable digests.
+            let merged_notify = Arc::new(Notify::new());
+            for store in &cas_stores {
+                let store_notify = store.stable_notify();
+                let merged = merged_notify.clone();
+                tokio::spawn(async move {
+                    loop {
+                        store_notify.notified().await;
+                        merged.notify_one();
+                    }
+                });
+            }
+
             background_spawn!("blobs_in_stable_storage_loop", async move {
-                let mut interval = tokio::time::interval(Duration::from_millis(100));
                 loop {
-                    interval.tick().await;
+                    tokio::select! {
+                        () = merged_notify.notified() => {}
+                        () = tokio::time::sleep(Duration::from_millis(500)) => {}
+                    }
+                    // Drain everything currently queued across all stores.
                     let mut all_digests = Vec::new();
                     for store in &cas_stores {
                         let mut drained = store.drain_stable_digests();
@@ -348,7 +366,7 @@ async fn inner_main(
             info!(
                 cas_store_count,
                 scheduler_count,
-                "started BlobsInStableStorage batching loop (100ms interval)"
+                "started BlobsInStableStorage drain-then-fire loop"
             );
         }
     }

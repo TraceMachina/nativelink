@@ -21,6 +21,10 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
+use parking_lot::Mutex;
+use tokio::sync::Notify;
+use tracing::{debug, error, info, trace};
+
 use nativelink_config::stores::{EvictionPolicy, ExistenceCacheSpec};
 use nativelink_error::{Error, ResultExt, error_if};
 use nativelink_metric::MetricsComponent;
@@ -32,8 +36,6 @@ use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::store_trait::{
     ItemCallback, Store, StoreDriver, StoreKey, StoreLike, StoreOptimizations, UploadSizeInfo,
 };
-use parking_lot::Mutex;
-use tracing::{debug, error, info, trace};
 
 #[derive(Clone, Debug)]
 struct ExistenceItem(u64);
@@ -439,6 +441,10 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
 
     fn drain_stable_digests(&self) -> Vec<DigestInfo> {
         self.inner_store.drain_stable_digests()
+    }
+
+    fn stable_notify(&self) -> Arc<Notify> {
+        self.inner_store.stable_notify()
     }
 
     fn pin_digests(&self, digests: &[DigestInfo]) {

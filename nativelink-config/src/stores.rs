@@ -1270,7 +1270,7 @@ fn default_parallel_chunk_count() -> u64 {
 }
 
 fn default_max_concurrent_batch_rpcs() -> u64 {
-    8
+    32
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -1330,15 +1330,14 @@ pub struct GrpcSpec {
     )]
     pub batch_update_threshold_bytes: u64,
 
-    /// Time window (in milliseconds) to coalesce multiple small blob uploads
-    /// into a single BatchUpdateBlobs RPC. Requires
-    /// `batch_update_threshold_bytes > 0`.
+    /// Deprecated: this field is retained for backward compatibility but is
+    /// now ignored. The batch loop uses a drain-then-fire pattern instead of
+    /// a coalesce delay window: it waits for the first item, drains
+    /// everything currently queued, then fires immediately. Under low load
+    /// each blob gets its own immediate batch; under high load items
+    /// naturally accumulate while RPCs are in flight.
     ///
-    /// When > 0, incoming small uploads are buffered for up to this duration
-    /// before being sent as one batch. When 0, each small upload is sent
-    /// immediately as a single-element BatchUpdateBlobs RPC.
-    ///
-    /// Default: 10 (milliseconds)
+    /// Default: 10 (milliseconds, ignored)
     #[serde(
         default = "default_batch_coalesce_delay_ms",
         deserialize_with = "convert_numeric_with_shellexpand"
@@ -1346,14 +1345,14 @@ pub struct GrpcSpec {
     pub batch_coalesce_delay_ms: u64,
 
     /// Maximum number of BatchUpdateBlobs RPCs that can be in flight
-    /// concurrently from the coalescing loop. Higher values reduce
+    /// concurrently from the batch loop. Higher values reduce
     /// head-of-line blocking when many small blobs are queued, at the
     /// cost of more concurrent server load.
     ///
-    /// Only takes effect when coalescing is enabled
-    /// (`batch_coalesce_delay_ms > 0` and `batch_update_threshold_bytes > 0`).
+    /// Only takes effect when batching is enabled
+    /// (`batch_update_threshold_bytes > 0`).
     ///
-    /// Default: 8
+    /// Default: 32
     #[serde(
         default = "default_max_concurrent_batch_rpcs",
         deserialize_with = "convert_numeric_with_shellexpand"

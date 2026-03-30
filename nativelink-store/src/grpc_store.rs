@@ -106,8 +106,8 @@ pub struct GrpcStore {
     /// Blobs at or below this size use BatchUpdateBlobs instead of
     /// ByteStream.Write. 0 means disabled.
     batch_update_threshold: u64,
-    /// Sender for coalescing batch entries. None when coalescing is
-    /// disabled (delay_ms == 0 or threshold == 0).
+    /// Sender for batching entries. None when batching is disabled
+    /// (threshold == 0).
     batch_tx: Option<tokio::sync::mpsc::UnboundedSender<PendingBatchEntry>>,
     /// Minimum blob size to trigger parallel chunked ByteStream reads.
     /// 0 means disabled.
@@ -173,10 +173,9 @@ impl GrpcStore {
         };
 
         let batch_update_threshold = spec.batch_update_threshold_bytes;
-        let coalesce_delay_ms = spec.batch_coalesce_delay_ms;
 
         let (batch_tx, batch_rx) =
-            if batch_update_threshold > 0 && coalesce_delay_ms > 0 {
+            if batch_update_threshold > 0 {
                 let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
                 (Some(tx), Some(rx))
             } else {
@@ -201,20 +200,13 @@ impl GrpcStore {
 
         if let Some(rx) = batch_rx {
             let weak = Arc::downgrade(&store);
-            let delay = Duration::from_millis(coalesce_delay_ms);
             let max_concurrent = spec.max_concurrent_batch_rpcs.max(1) as usize;
             let semaphore = Arc::new(Semaphore::new(max_concurrent));
-            tokio::spawn(Self::batch_flush_loop(weak, rx, delay, semaphore));
+            tokio::spawn(Self::batch_flush_loop(weak, rx, semaphore));
             info!(
                 batch_update_threshold,
-                coalesce_delay_ms,
                 max_concurrent,
-                "GrpcStore: BatchUpdateBlobs coalescing enabled",
-            );
-        } else if batch_update_threshold > 0 {
-            info!(
-                batch_update_threshold,
-                "GrpcStore: BatchUpdateBlobs enabled (no coalescing)",
+                "GrpcStore: BatchUpdateBlobs drain-and-fire batching enabled",
             );
         }
 
@@ -297,14 +289,19 @@ impl GrpcStore {
         results
     }
 
-    /// Background task that accumulates small blob uploads and flushes
-    /// them as batched RPCs. Multiple batches can be in flight
-    /// concurrently (up to `semaphore` permits), so the loop does not
-    /// block on an RPC before collecting the next batch.
+    /// Background task that batches small blob uploads and flushes them
+    /// as BatchUpdateBlobs RPCs. Uses a drain-then-fire pattern: wait
+    /// for the first item, drain everything else currently queued, then
+    /// fire immediately. Under low load each blob gets its own immediate
+    /// batch. Under high load items naturally accumulate while RPCs are
+    /// in flight, so the next drain picks up everything queued.
+    ///
+    /// Multiple batches can be in flight concurrently (up to `semaphore`
+    /// permits), so the loop does not block on an RPC before collecting
+    /// the next batch.
     async fn batch_flush_loop(
         weak: Weak<GrpcStore>,
         mut rx: tokio::sync::mpsc::UnboundedReceiver<PendingBatchEntry>,
-        delay: Duration,
         semaphore: Arc<Semaphore>,
     ) {
         // An entry that didn't fit in the previous batch, carried forward.
@@ -324,16 +321,10 @@ impl GrpcStore {
             let mut batch = vec![first];
             let mut total_size = batch[0].data.len();
 
-            // Collect more entries within the delay window, up to size limit.
-            let deadline = tokio::time::Instant::now() + delay;
+            // Drain everything currently queued (non-blocking).
             loop {
-                let remaining =
-                    deadline.saturating_duration_since(tokio::time::Instant::now());
-                if remaining.is_zero() {
-                    break;
-                }
-                match tokio::time::timeout(remaining, rx.recv()).await {
-                    Ok(Some(entry)) => {
+                match rx.try_recv() {
+                    Ok(entry) => {
                         let new_total = total_size + entry.data.len();
                         if new_total > Self::MAX_BATCH_TOTAL_SIZE && !batch.is_empty()
                         {
@@ -344,7 +335,8 @@ impl GrpcStore {
                         total_size = new_total;
                         batch.push(entry);
                     }
-                    _ => break, // Timeout or channel closed
+                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
+                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
                 }
             }
 
@@ -367,7 +359,7 @@ impl GrpcStore {
             trace!(
                 count = num,
                 total_size,
-                "GrpcStore: flushing coalesced batch",
+                "GrpcStore: flushing batch",
             );
 
             // Spawn the RPC and result distribution as a separate task
@@ -1403,20 +1395,20 @@ impl StoreDriver for GrpcStore {
             let digest = key.into_digest();
 
             if let Some(tx) = &self.batch_tx {
-                // Approach B: coalescing — queue for the background flush loop.
+                // Queue for the background batch flush loop.
                 let (result_tx, result_rx) = tokio::sync::oneshot::channel();
                 tx.send(PendingBatchEntry {
                     digest,
                     data,
                     result_tx,
                 })
-                .map_err(|_| make_input_err!("Batch coalescer channel closed"))?;
+                .map_err(|_| make_input_err!("Batch flush channel closed"))?;
                 return result_rx
                     .await
-                    .map_err(|_| make_input_err!("Batch coalescer dropped"))?;
+                    .map_err(|_| make_input_err!("Batch flush loop dropped"))?;
             }
 
-            // Approach A: immediate single-element BatchUpdateBlobs.
+            // Fallback: immediate single-element BatchUpdateBlobs (no batch loop).
             let digests = [digest];
             let mut results =
                 self.do_batch_update(&digests, vec![(digest, data)]).await;

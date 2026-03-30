@@ -38,7 +38,7 @@ use nativelink_util::store_trait::{
     UploadSizeInfo, slow_update_store_with_file,
 };
 use parking_lot::Mutex;
-use tokio::sync::OnceCell;
+use tokio::sync::{Notify, OnceCell};
 use tracing::{debug, error, trace, warn};
 
 // TODO(palfrey) This store needs to be evaluated for more efficient memory usage,
@@ -71,8 +71,10 @@ pub struct FastSlowStore {
     /// completes, `get_part` serves from this map to prevent NotFound gaps.
     in_flight_slow_writes: Arc<Mutex<HashMap<StoreKey<'static>, Vec<Bytes>>>>,
     /// Digests that have completed their background slow store write.
-    /// Drained every 100ms by the BlobsInStableStorage batching loop.
+    /// Drained by the BlobsInStableStorage loop when notified.
     stable_digests: Arc<Mutex<Vec<DigestInfo>>>,
+    /// Wakes the BlobsInStableStorage loop when new digests are available.
+    stable_notify: Arc<Notify>,
 }
 
 // This guard ensures that the populating_digests is cleared even if the future
@@ -138,6 +140,7 @@ impl FastSlowStore {
             populating_digests: Mutex::new(HashMap::new()),
             in_flight_slow_writes: Arc::new(Mutex::new(HashMap::new())),
             stable_digests: Arc::new(Mutex::new(Vec::new())),
+            stable_notify: Arc::new(Notify::new()),
         })
     }
 
@@ -554,6 +557,7 @@ impl StoreDriver for FastSlowStore {
 
         let in_flight = self.in_flight_slow_writes.clone();
         let stable_digests_ref = self.stable_digests.clone();
+        let stable_notify_ref = self.stable_notify.clone();
         let slow_store = self.slow_store.clone();
         let key_for_bg = owned_key.clone();
         let spawn_instant = std::time::Instant::now();
@@ -605,6 +609,7 @@ impl StoreDriver for FastSlowStore {
                 Ok(()) => {
                     if let StoreKey::Digest(digest) = &key_for_bg {
                         stable_digests_ref.lock().push(*digest);
+                        stable_notify_ref.notify_one();
                     }
                     debug!(
                         key = ?key_for_bg,
@@ -690,6 +695,7 @@ impl StoreDriver for FastSlowStore {
 
         let in_flight = self.in_flight_slow_writes.clone();
         let stable_digests_ref = self.stable_digests.clone();
+        let stable_notify_ref = self.stable_notify.clone();
         let slow_store = self.slow_store.clone();
         let key_for_bg = owned_key.clone();
         let spawn_instant = std::time::Instant::now();
@@ -719,6 +725,7 @@ impl StoreDriver for FastSlowStore {
                 Ok(()) => {
                     if let StoreKey::Digest(digest) = &key_for_bg {
                         stable_digests_ref.lock().push(*digest);
+                        stable_notify_ref.notify_one();
                     }
                     debug!(
                         key = ?key_for_bg,
@@ -1009,6 +1016,10 @@ impl StoreDriver for FastSlowStore {
     fn drain_stable_digests(&self) -> Vec<DigestInfo> {
         let mut guard = self.stable_digests.lock();
         std::mem::take(&mut *guard)
+    }
+
+    fn stable_notify(&self) -> Arc<Notify> {
+        self.stable_notify.clone()
     }
 
     fn pin_digests(&self, digests: &[DigestInfo]) {

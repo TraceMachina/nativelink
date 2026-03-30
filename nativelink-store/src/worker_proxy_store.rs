@@ -20,22 +20,24 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use parking_lot::RwLock;
+use tokio::sync::Notify;
+use tokio::task::JoinHandle;
+use tracing::{debug, info, trace, warn};
+
 use nativelink_config::stores::{GrpcEndpoint, GrpcSpec, Retry, StoreType};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::blob_locality_map::SharedBlobLocalityMap;
-use nativelink_util::common::DigestInfo;
 use nativelink_util::buf_channel::{
     DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
 };
+use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::{HealthStatus, HealthStatusIndicator};
 use nativelink_util::store_trait::{
     IS_WORKER_REQUEST, ItemCallback, REDIRECT_PREFIX, Store, StoreDriver, StoreKey, StoreLike,
     StoreOptimizations, UploadSizeInfo,
 };
-use parking_lot::RwLock;
-use tokio::task::JoinHandle;
-use tracing::{debug, info, trace, warn};
 
 use crate::grpc_store::GrpcStore;
 
@@ -186,7 +188,7 @@ impl WorkerProxyStore {
             rpc_timeout_s: 120,
             batch_update_threshold_bytes: 1_048_576, // 1MB: small blobs use BatchUpdateBlobs
             batch_coalesce_delay_ms: 0,
-            max_concurrent_batch_rpcs: 8,
+            max_concurrent_batch_rpcs: 32,
             parallel_chunk_read_threshold: 8 * 1024 * 1024,
             parallel_chunk_count: 8,
         };
@@ -916,6 +918,10 @@ impl StoreDriver for WorkerProxyStore {
 
     fn drain_stable_digests(&self) -> Vec<DigestInfo> {
         self.inner.drain_stable_digests()
+    }
+
+    fn stable_notify(&self) -> Arc<Notify> {
+        self.inner.stable_notify()
     }
 
     fn pin_digests(&self, digests: &[DigestInfo]) {
