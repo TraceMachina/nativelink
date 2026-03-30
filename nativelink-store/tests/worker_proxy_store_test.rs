@@ -126,7 +126,7 @@ async fn has_returns_size_when_inner_has_blob() -> Result<(), Error> {
 
 // -------------------------------------------------------------------
 // 4. has returns None when inner does not have blob
-//    (locality map is never consulted for has)
+//    (locality map is NOT consulted for existence checks)
 // -------------------------------------------------------------------
 #[nativelink_test]
 async fn has_falls_back_to_locality_map_when_inner_missing() -> Result<(), Error> {
@@ -139,20 +139,21 @@ async fn has_falls_back_to_locality_map_when_inner_missing() -> Result<(), Error
         .write()
         .register_blobs("worker-a:50081", &[digest]);
 
-    // has() falls back to locality map for existence checks.
-    // Workers pin blobs until uploaded, so locality entries are reliable.
+    // has() must NOT report locality-only blobs as present.
+    // Worker blobs may be evicted at any time; reporting them in
+    // has() causes clients to skip uploads, leading to NotFound later.
     let size = proxy.has(digest).await?;
     assert_eq!(
         size,
-        Some(100),
-        "has() should find digest via locality map fallback"
+        None,
+        "has() should not find digest via locality map (locality map not used in existence checks)"
     );
 
     Ok(())
 }
 
 // -------------------------------------------------------------------
-// 5. has_with_results delegates to inner store, falls back to locality map
+// 5. has_with_results delegates to inner store only, not locality map
 // -------------------------------------------------------------------
 #[nativelink_test]
 async fn has_with_results_delegates_to_inner_and_locality_map() -> Result<(), Error> {
@@ -168,7 +169,9 @@ async fn has_with_results_delegates_to_inner_and_locality_map() -> Result<(), Er
         .update_oneshot(d1, Bytes::from_static(value))
         .await?;
 
-    // Register d2 and d3 on workers — locality fallback should find them.
+    // Register d2 and d3 on workers — has_with_results must NOT report
+    // them as present. Locality map is only for read optimization in
+    // get_part(), not for existence checks that drive upload decisions.
     {
         let mut map = locality_map.write();
         map.register_blobs("worker-a:50081", &[d2]);
@@ -186,13 +189,13 @@ async fn has_with_results_delegates_to_inner_and_locality_map() -> Result<(), Er
     );
     assert_eq!(
         results[1],
-        Some(999),
-        "d2 should be found via locality map fallback"
+        None,
+        "d2 should not be found (locality map not used in has_with_results)"
     );
     assert_eq!(
         results[2],
-        Some(50),
-        "d3 should be found via locality map fallback"
+        None,
+        "d3 should not be found (locality map not used in has_with_results)"
     );
 
     Ok(())

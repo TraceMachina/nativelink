@@ -680,36 +680,24 @@ impl StoreDriver for WorkerProxyStore {
         digests: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
-        // Check inner store first.
-        self.inner.has_with_results(digests, results).await?;
-
-        // For any digests still missing, check the locality map. If a worker
-        // has the blob pinned, it is retrievable via get_part() so we report
-        // it as present. The size comes from the digest's declared size_bytes
-        // (which is what the caller asked about).
-        let locality = self.locality_map.read();
-        let mut locality_hit_count: u64 = 0;
-        for (i, key) in digests.iter().enumerate() {
-            if results[i].is_some() {
-                continue;
-            }
-            let digest = key.borrow().into_digest();
-            if locality.has_digest(&digest) {
-                // Use the digest's declared size. The blob is on a worker
-                // and will be served by get_part() via the locality map.
-                results[i] = Some(digest.size_bytes());
-                locality_hit_count += 1;
-            }
-        }
-        if locality_hit_count > 0 {
-            info!(
-                locality_hit_count,
-                total_digests = digests.len(),
-                "has_with_results: locality map provided results for digests missing from inner store"
-            );
-        }
-
-        Ok(())
+        // Only check the inner store — do NOT consult the locality map.
+        //
+        // The locality map tracks blobs that workers reported via
+        // BlobsAvailable, but those blobs may be evicted from the
+        // worker at any time. Reporting them as "present" here causes
+        // FindMissingBlobs to tell Bazel the blob exists, so Bazel
+        // skips uploading it. When the blob is later needed (GetTree,
+        // BatchReadBlobs, resolve_tree_from_cas), neither the server's
+        // CAS nor the worker has it — causing NotFound errors and
+        // 13-19s fallback to recursive directory fetch.
+        //
+        // The locality map is still used in get_part() for read
+        // optimization: if a blob is missing from the inner store but
+        // a worker has it, get_part() can proxy the read. This is safe
+        // because get_part() handles NotFound gracefully, whereas
+        // has_with_results() drives upload decisions that cannot be
+        // retried.
+        self.inner.has_with_results(digests, results).await
     }
 
     async fn update(
@@ -724,9 +712,8 @@ impl StoreDriver for WorkerProxyStore {
 
     fn optimized_for(&self, optimization: StoreOptimizations) -> bool {
         // Report LazyExistenceOnSync so that FastSlowStore skips the has()
-        // check before get_part(). While has_with_results() now also checks
-        // the locality map, LazyExistenceOnSync is still valuable because
-        // get_part() handles redirect/proxy logic that has() cannot.
+        // check before get_part(). get_part() handles redirect/proxy logic
+        // via the locality map that has_with_results() intentionally skips.
         if optimization == StoreOptimizations::LazyExistenceOnSync {
             return true;
         }
@@ -1066,10 +1053,10 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
-    // 4. has_with_results: inner store hit + locality map fallback.
+    // 4. has_with_results: inner store only, no locality map.
     // ---------------------------------------------------------------
     #[nativelink_test]
-    async fn test_has_with_results_falls_back_to_locality_map() -> Result<(), Error> {
+    async fn test_has_with_results_does_not_use_locality_map() -> Result<(), Error> {
         let (store, locality_map) = make_proxy_store();
 
         let value = b"test data";
@@ -1081,7 +1068,13 @@ mod tests {
             .update_oneshot(d1, Bytes::from_static(value))
             .await?;
 
-        // Register d2 on a worker — has() should find it via locality map.
+        // Register d2 on a worker — has() must NOT report it as present.
+        // The locality map is only for read optimization (get_part), not
+        // for existence checks that drive upload decisions. Reporting
+        // worker-only blobs as "present" in has_with_results causes
+        // FindMissingBlobs to tell clients the blob exists, so they
+        // skip uploading it. When the blob is later needed, neither
+        // the server's CAS nor the worker may have it.
         locality_map
             .write()
             .register_blobs("worker-a:50081", &[d2]);
@@ -1096,11 +1089,11 @@ mod tests {
             Some(value.len() as u64),
             "d1 should be present in inner store"
         );
-        // d2 should be found via locality map with its declared size.
+        // d2 should NOT be found — locality map is not consulted.
         assert_eq!(
             results[1],
-            Some(999),
-            "d2 should be found via locality map fallback"
+            None,
+            "d2 should not be found (locality map not used in has_with_results)"
         );
 
         Ok(())

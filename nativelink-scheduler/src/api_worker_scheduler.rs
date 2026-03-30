@@ -985,6 +985,16 @@ pub struct ApiWorkerScheduler {
     /// Held under a tokio::Mutex briefly for get/put, not during I/O.
     tree_cache: Arc<tokio::sync::Mutex<LruCache<DigestInfo, Arc<ResolvedTree>>>>,
 
+    /// Digests currently being resolved in background tasks. Prevents
+    /// duplicate spawns when many actions share the same input root.
+    tree_resolution_in_progress: Arc<tokio::sync::Mutex<HashSet<DigestInfo>>>,
+
+    /// Negative cache: digests whose tree resolution failed recently.
+    /// Entries are timestamped; stale entries (>60s) are retried.
+    /// Prevents a thundering herd of repeated failures for the same
+    /// missing directory blob.
+    tree_resolution_failures: Arc<tokio::sync::Mutex<HashMap<DigestInfo, Instant>>>,
+
     /// Cache of endpoint scores keyed by input_root_digest.
     /// Avoids recomputing locality scores for identical input trees.
     /// Cleared when workers connect or disconnect (scores become stale).
@@ -1045,6 +1055,8 @@ impl ApiWorkerScheduler {
             tree_cache: Arc::new(tokio::sync::Mutex::new(LruCache::new(
                 NonZeroUsize::new(TREE_CACHE_CAPACITY).unwrap(),
             ))),
+            tree_resolution_in_progress: Arc::new(tokio::sync::Mutex::new(HashSet::new())),
+            tree_resolution_failures: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             scores_cache: Arc::new(tokio::sync::Mutex::new(LruCache::new(
                 NonZeroUsize::new(TREE_CACHE_CAPACITY).unwrap(),
             ))),
@@ -1351,9 +1363,12 @@ impl ApiWorkerScheduler {
         &self,
         input_root_digest: DigestInfo,
     ) -> Option<Arc<ResolvedTree>> {
+        /// How long to suppress retries after a failed tree resolution.
+        const FAILURE_BACKOFF: Duration = Duration::from_secs(60);
+
         let cas_store = self.cas_store.as_ref()?;
 
-        // Check cache first (brief lock).
+        // Check positive cache first (brief lock).
         {
             let mut cache = self.tree_cache.lock().await;
             if let Some(cached) = cache.get(&input_root_digest) {
@@ -1367,9 +1382,35 @@ impl ApiWorkerScheduler {
             }
         }
 
+        // Check negative cache: skip if this digest failed recently.
+        {
+            let failures = self.tree_resolution_failures.lock().await;
+            if let Some(failed_at) = failures.get(&input_root_digest) {
+                if failed_at.elapsed() < FAILURE_BACKOFF {
+                    return None;
+                }
+            }
+        }
+
+        // Check if a background task is already resolving this digest.
+        {
+            let in_progress = self.tree_resolution_in_progress.lock().await;
+            if in_progress.contains(&input_root_digest) {
+                return None;
+            }
+        }
+
+        // Mark as in-progress (brief lock).
+        {
+            let mut in_progress = self.tree_resolution_in_progress.lock().await;
+            in_progress.insert(input_root_digest);
+        }
+
         // Cache miss — spawn background resolution to warm cache for
         // future actions. This action proceeds with load-based scoring.
         let tree_cache = self.tree_cache.clone();
+        let in_progress_ref = self.tree_resolution_in_progress.clone();
+        let failures_ref = self.tree_resolution_failures.clone();
         let store = cas_store.clone();
         let digest = input_root_digest;
         tokio::spawn(async move {
@@ -1383,15 +1424,20 @@ impl ApiWorkerScheduler {
                     );
                     let mut cache = tree_cache.lock().await;
                     cache.put(digest, Arc::new(resolved));
+                    // Clear any stale failure entry.
+                    failures_ref.lock().await.remove(&digest);
                 }
                 Err(err) => {
                     warn!(
                         %digest,
                         ?err,
-                        "background tree resolution failed"
+                        "background tree resolution failed, suppressing retries for 60s"
                     );
+                    failures_ref.lock().await.insert(digest, Instant::now());
                 }
             }
+            // Always remove from in-progress set.
+            in_progress_ref.lock().await.remove(&digest);
         });
 
         info!(
