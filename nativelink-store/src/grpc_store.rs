@@ -55,6 +55,7 @@ use nativelink_util::{default_health_status_indicator, tls_utils};
 use opentelemetry::context::Context;
 use parking_lot::Mutex;
 use prost::Message;
+use tokio::sync::Semaphore;
 use tokio::time::sleep;
 use tonic::{Code, IntoRequest, Request, Response, Status, Streaming};
 use tracing::{error, info, trace, warn};
@@ -201,10 +202,13 @@ impl GrpcStore {
         if let Some(rx) = batch_rx {
             let weak = Arc::downgrade(&store);
             let delay = Duration::from_millis(coalesce_delay_ms);
-            tokio::spawn(Self::batch_flush_loop(weak, rx, delay));
+            let max_concurrent = spec.max_concurrent_batch_rpcs.max(1) as usize;
+            let semaphore = Arc::new(Semaphore::new(max_concurrent));
+            tokio::spawn(Self::batch_flush_loop(weak, rx, delay, semaphore));
             info!(
                 batch_update_threshold,
                 coalesce_delay_ms,
+                max_concurrent,
                 "GrpcStore: BatchUpdateBlobs coalescing enabled",
             );
         } else if batch_update_threshold > 0 {
@@ -294,11 +298,14 @@ impl GrpcStore {
     }
 
     /// Background task that accumulates small blob uploads and flushes
-    /// them as batched RPCs.
+    /// them as batched RPCs. Multiple batches can be in flight
+    /// concurrently (up to `semaphore` permits), so the loop does not
+    /// block on an RPC before collecting the next batch.
     async fn batch_flush_loop(
         weak: Weak<GrpcStore>,
         mut rx: tokio::sync::mpsc::UnboundedReceiver<PendingBatchEntry>,
         delay: Duration,
+        semaphore: Arc<Semaphore>,
     ) {
         // An entry that didn't fit in the previous batch, carried forward.
         let mut held_entry: Option<PendingBatchEntry> = None;
@@ -346,6 +353,16 @@ impl GrpcStore {
                 None => return, // GrpcStore dropped
             };
 
+            // Acquire a permit before spawning the RPC task. This
+            // limits the number of concurrent in-flight batch RPCs.
+            // We acquire here (not inside the spawned task) so that
+            // backpressure is applied to the collection loop: when all
+            // permits are held, the loop blocks until one completes.
+            let permit = match semaphore.clone().acquire_owned().await {
+                Ok(p) => p,
+                Err(_) => return, // Semaphore closed — should not happen
+            };
+
             let num = batch.len();
             trace!(
                 count = num,
@@ -353,23 +370,33 @@ impl GrpcStore {
                 "GrpcStore: flushing coalesced batch",
             );
 
-            let digests: Vec<_> = batch.iter().map(|e| e.digest).collect();
-            let (senders_with_digests, entries): (Vec<_>, Vec<_>) = batch
-                .into_iter()
-                .map(|e| ((e.digest, e.result_tx), (e.digest, e.data)))
-                .unzip();
+            // Spawn the RPC and result distribution as a separate task
+            // so the loop can immediately collect the next batch.
+            tokio::spawn(async move {
+                let digests: Vec<_> = batch.iter().map(|e| e.digest).collect();
+                let (senders_with_digests, entries): (Vec<_>, Vec<_>) = batch
+                    .into_iter()
+                    .map(|e| ((e.digest, e.result_tx), (e.digest, e.data)))
+                    .unzip();
 
-            let results = store.do_batch_update(&digests, entries).await;
+                let results = store.do_batch_update(&digests, entries).await;
 
-            for (digest, sender) in senders_with_digests {
-                // Use .get().cloned() instead of .remove() because multiple
-                // senders may reference the same digest (e.g., stdout and stderr
-                // with identical content in the same batch).
-                let result = results.get(&digest).cloned().unwrap_or_else(|| {
-                    Err(make_input_err!("BatchUpdateBlobs: missing result for {digest:?}"))
-                });
-                drop(sender.send(result));
-            }
+                for (digest, sender) in senders_with_digests {
+                    // Use .get().cloned() instead of .remove() because multiple
+                    // senders may reference the same digest (e.g., stdout and stderr
+                    // with identical content in the same batch).
+                    let result = results.get(&digest).cloned().unwrap_or_else(|| {
+                        Err(make_input_err!(
+                            "BatchUpdateBlobs: missing result for {digest:?}"
+                        ))
+                    });
+                    drop(sender.send(result));
+                }
+
+                // Drop the permit after the RPC completes, freeing a
+                // slot for the next batch.
+                drop(permit);
+            });
         }
     }
 

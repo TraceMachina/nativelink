@@ -186,6 +186,7 @@ impl WorkerProxyStore {
             rpc_timeout_s: 120,
             batch_update_threshold_bytes: 1_048_576, // 1MB: small blobs use BatchUpdateBlobs
             batch_coalesce_delay_ms: 0,
+            max_concurrent_batch_rpcs: 8,
             parallel_chunk_read_threshold: 8 * 1024 * 1024,
             parallel_chunk_count: 8,
         };

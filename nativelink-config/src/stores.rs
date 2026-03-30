@@ -1269,6 +1269,10 @@ fn default_parallel_chunk_count() -> u64 {
     64
 }
 
+fn default_max_concurrent_batch_rpcs() -> u64 {
+    8
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
@@ -1340,6 +1344,21 @@ pub struct GrpcSpec {
         deserialize_with = "convert_numeric_with_shellexpand"
     )]
     pub batch_coalesce_delay_ms: u64,
+
+    /// Maximum number of BatchUpdateBlobs RPCs that can be in flight
+    /// concurrently from the coalescing loop. Higher values reduce
+    /// head-of-line blocking when many small blobs are queued, at the
+    /// cost of more concurrent server load.
+    ///
+    /// Only takes effect when coalescing is enabled
+    /// (`batch_coalesce_delay_ms > 0` and `batch_update_threshold_bytes > 0`).
+    ///
+    /// Default: 8
+    #[serde(
+        default = "default_max_concurrent_batch_rpcs",
+        deserialize_with = "convert_numeric_with_shellexpand"
+    )]
+    pub max_concurrent_batch_rpcs: u64,
 
     /// Minimum blob size (in bytes) to trigger parallel chunked
     /// ByteStream reads. Blobs at or above this size are split into
