@@ -18,6 +18,7 @@ use std::sync::{Arc, Weak};
 use std::time::SystemTime;
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use nativelink_config::stores::{EvictionPolicy, ExistenceCacheSpec};
@@ -29,7 +30,7 @@ use nativelink_util::evicting_map::{LenEntry, ShardedEvictingMap};
 use nativelink_util::health_utils::{HealthStatus, HealthStatusIndicator};
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::store_trait::{
-    ItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+    ItemCallback, Store, StoreDriver, StoreKey, StoreLike, StoreOptimizations, UploadSizeInfo,
 };
 use parking_lot::Mutex;
 use tracing::{debug, error, info, trace};
@@ -300,6 +301,79 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
                 .insert(digest, ExistenceItem(size))
                 .await;
 
+        }
+        {
+            let maybe_keys = self.pause_item_callbacks.lock().take();
+            if let Some(keys) = maybe_keys {
+                let mut callbacks: FuturesUnordered<_> = keys
+                    .into_iter()
+                    .map(|store_key| self.callback(store_key))
+                    .collect();
+                while callbacks.next().await.is_some() {}
+            }
+        }
+        result
+    }
+
+    fn optimized_for(&self, optimization: StoreOptimizations) -> bool {
+        optimization == StoreOptimizations::SubscribesToUpdateOneshot
+    }
+
+    async fn update_oneshot(
+        self: Pin<&Self>,
+        key: StoreKey<'_>,
+        data: Bytes,
+    ) -> Result<(), Error> {
+        let digest = key.into_digest();
+        // Bypass the existence cache and check inner store directly.
+        // Same stale-positive prevention as update().
+        let mut exists = [None];
+        self.inner_store
+            .has_with_results(&[digest.into()], &mut exists)
+            .await
+            .err_tip(|| "In ExistenceCacheStore::update_oneshot")?;
+        if exists[0].is_some() {
+            // Blob genuinely exists in the inner store — safe to skip.
+            let _ = self
+                .existence_cache
+                .insert(digest, ExistenceItem(exists[0].unwrap()))
+                .await;
+            return Ok(());
+        }
+        // If the existence cache had a stale entry, remove it now.
+        self.existence_cache.remove(&digest).await;
+        {
+            let mut locked_callbacks = self.pause_item_callbacks.lock();
+            if locked_callbacks.is_none() {
+                locked_callbacks.replace(vec![]);
+            }
+        }
+        trace!(?digest, "Inserting into inner cache via update_oneshot");
+        let update_start = std::time::Instant::now();
+        let size = u64::try_from(data.len())
+            .err_tip(|| "Could not convert data.len() to u64 in update_oneshot")?;
+        let result = self.inner_store.update_oneshot(digest, data).await;
+        let elapsed_ms = update_start.elapsed().as_millis() as u64;
+        if let Err(ref err) = result {
+            error!(
+                ?digest,
+                elapsed_ms,
+                ?err,
+                "ExistenceCacheStore::update_oneshot: inner store write failed",
+            );
+        } else if elapsed_ms > 100 {
+            info!(
+                ?digest,
+                elapsed_ms,
+                "ExistenceCacheStore::update_oneshot: inner store write slow",
+            );
+        }
+        if result.is_ok() {
+            trace!(?digest, "Inserting into existence cache via update_oneshot");
+            let _ = self
+                .existence_cache
+                .insert(digest, ExistenceItem(size))
+                .await;
         }
         {
             let maybe_keys = self.pause_item_callbacks.lock().take();

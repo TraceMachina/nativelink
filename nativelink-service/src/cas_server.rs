@@ -42,7 +42,7 @@ use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::make_ctx_for_hash_func;
 use nativelink_util::log_utils::throughput_mbps;
 use nativelink_util::stall_detector::StallGuard;
-use nativelink_util::store_trait::{IS_WORKER_REQUEST, Store, StoreLike};
+use nativelink_util::store_trait::{IS_WORKER_REQUEST, Store, StoreKey, StoreLike};
 use nativelink_util::zero_copy_codec::{
     GrpcUnaryBody, decode_unary_request, encode_grpc_unary_response,
 };
@@ -190,23 +190,68 @@ impl CasServer {
         let store_ref = &store;
         let blob_count = request.requests.len();
         let batch_start = std::time::Instant::now();
+
+        // Pre-parse all digests and validate sizes upfront so we can do a
+        // single batch has() check instead of N individual checks inside
+        // ExistenceCacheStore::update().
+        let mut parsed: Vec<(DigestInfo, usize)> = Vec::with_capacity(blob_count);
+        for req in &request.requests {
+            let digest = req
+                .digest
+                .clone()
+                .err_tip(|| "Digest not found in request")?;
+            let digest_info = DigestInfo::try_from(digest)?;
+            let size_bytes = usize::try_from(digest_info.size_bytes())
+                .err_tip(|| "Digest size_bytes was not convertible to usize")?;
+            error_if!(
+                size_bytes != req.data.len(),
+                "Digest for upload had mismatching sizes, digest said {} data  said {}",
+                size_bytes,
+                req.data.len()
+            );
+            parsed.push((digest_info, size_bytes));
+        }
+
+        // Single batch existence check for all digests.
+        let store_keys: Vec<StoreKey<'_>> = parsed
+            .iter()
+            .map(|(digest_info, _)| (*digest_info).into())
+            .collect();
+        let mut existence_results = vec![None; blob_count];
+        store_ref
+            .has_with_results(&store_keys, &mut existence_results)
+            .await
+            .err_tip(|| "In BatchUpdateBlobs batch has check")?;
+
+        let already_existed = existence_results.iter().filter(|r| r.is_some()).count();
+        if already_existed > 0 {
+            info!(
+                already_existed,
+                total = blob_count,
+                "BatchUpdateBlobs: skipping already-existing blobs",
+            );
+        }
+
         let update_futures: FuturesUnordered<_> = request
             .requests
             .into_iter()
-            .map(|request| async move {
+            .zip(parsed.iter())
+            .zip(existence_results.iter())
+            .map(|((request, &(digest_info, size_bytes)), existence)| async move {
+                // If the blob already exists, return success immediately.
+                if existence.is_some() {
+                    debug!(
+                        %digest_info,
+                        size_bytes,
+                        "BatchUpdateBlobs: blob already exists, skipping write",
+                    );
+                    return Ok::<_, Error>(batch_update_blobs_response::Response {
+                        digest: Some(digest_info.into()),
+                        status: Some(GrpcStatus::default()),
+                    });
+                }
+
                 let request_data = request.data;
-                let digest = request
-                    .digest
-                    .err_tip(|| "Digest not found in request")?;
-                let digest_info = DigestInfo::try_from(digest)?;
-                let size_bytes = usize::try_from(digest_info.size_bytes())
-                    .err_tip(|| "Digest size_bytes was not convertible to usize")?;
-                error_if!(
-                    size_bytes != request_data.len(),
-                    "Digest for upload had mismatching sizes, digest said {} data  said {}",
-                    size_bytes,
-                    request_data.len()
-                );
                 debug!(
                     %digest_info,
                     size_bytes,
