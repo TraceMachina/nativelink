@@ -170,10 +170,8 @@ where
         let client_operation_id = {
             let changed_fut = self.awaited_action_rx.changed().map(|r| {
                 r.map_err(|e| {
-                    make_err!(
-                        Code::Internal,
-                        "Failed to wait for awaited action to change {e:?}"
-                    )
+                    Error::from_std_err(Code::Internal, &e)
+                        .append("Failed to wait for awaited action to change")
                 })
             });
             let Some(client_info) = self.client_info.as_mut() else {

@@ -16,9 +16,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-15]
+        os: [ubuntu-24.04, macos-26]
         exclude:
-          - os: macos-15
+          - os: macos-26
     name: Local / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45

@@ -16,6 +16,7 @@ use core::convert::AsRef;
 use std::borrow::Cow;
 
 use nativelink_error::{Error, ResultExt, error_if, make_input_err};
+use tonic::Code;
 
 const ERROR_MSG: &str = concat!(
     "Expected resource_name to be of pattern ",
@@ -261,11 +262,10 @@ fn recursive_parse<'a>(
             }
             State::Size => {
                 output.size = Cow::Borrowed(part);
-                output.expected_size = part.parse::<usize>().map_err(|_| {
-                    make_input_err!(
-                        "Digest size_bytes was not convertible to usize. Got: {}",
-                        part
-                    )
+                output.expected_size = part.parse::<usize>().map_err(|err| {
+                    Error::from_std_err(Code::InvalidArgument, &err).append(format!(
+                        "Digest size_bytes was not convertible to usize. Got: {part}",
+                    ))
                 })?;
                 *bytes_processed += part.len(); // Special case {size}, so it does not count one slash.
                 return Ok(State::OptionalMetadata);

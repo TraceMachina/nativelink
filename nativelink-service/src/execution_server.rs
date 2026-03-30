@@ -30,7 +30,11 @@ use nativelink_proto::build::bazel::remote::execution::v2::execution_server::{
 use nativelink_proto::build::bazel::remote::execution::v2::{
     Action, Command, ExecuteRequest, WaitExecutionRequest,
 };
-use nativelink_proto::google::longrunning::Operation;
+use nativelink_proto::google::longrunning::operations_server::{Operations, OperationsServer};
+use nativelink_proto::google::longrunning::{
+    CancelOperationRequest, DeleteOperationRequest, GetOperationRequest, ListOperationsRequest,
+    ListOperationsResponse, Operation, WaitOperationRequest,
+};
 use nativelink_store::ac_utils::get_and_decode_digest;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::action_messages::{
@@ -78,6 +82,7 @@ impl fmt::Display for NativelinkOperationId {
     }
 }
 
+#[derive(Clone)]
 struct InstanceInfo {
     scheduler: Arc<dyn ClientStateManager>,
     cas_store: Store,
@@ -161,7 +166,7 @@ impl InstanceInfo {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ExecutionServer {
     instance_infos: HashMap<InstanceName, InstanceInfo>,
 }
@@ -202,6 +207,10 @@ impl ExecutionServer {
 
     pub fn into_service(self) -> Server<Self> {
         Server::new(self)
+    }
+
+    pub fn into_operations_service(self) -> OperationsServer<Self> {
+        OperationsServer::new(self)
     }
 
     fn to_execute_stream(
@@ -372,6 +381,107 @@ impl Execution for ExecutionServer {
         };
         debug!(return = "Ok(<stream>)");
         Ok(Response::new(Box::pin(stream)))
+    }
+}
+
+#[tonic::async_trait]
+impl Operations for ExecutionServer {
+    async fn list_operations(
+        &self,
+        _request: Request<ListOperationsRequest>,
+    ) -> Result<Response<ListOperationsResponse>, Status> {
+        Err(Status::unimplemented("list_operations not implemented"))
+    }
+
+    async fn delete_operation(
+        &self,
+        _request: Request<DeleteOperationRequest>,
+    ) -> Result<Response<()>, Status> {
+        Err(Status::unimplemented("delete_operation not implemented"))
+    }
+
+    async fn cancel_operation(
+        &self,
+        _request: Request<CancelOperationRequest>,
+    ) -> Result<Response<()>, Status> {
+        Err(Status::unimplemented("cancel_operation not implemented"))
+    }
+
+    async fn get_operation(
+        &self,
+        request: Request<GetOperationRequest>,
+    ) -> Result<Response<Operation>, Status> {
+        let inner_request = request.into_inner();
+
+        let mut stream = Box::pin(
+            self.inner_wait_execution(WaitExecutionRequest {
+                name: inner_request.name,
+            })
+            .await?,
+        );
+
+        let operation = stream
+            .next()
+            .await
+            .ok_or_else(|| Status::not_found("Operation not found"))??;
+
+        Ok(Response::new(operation))
+    }
+
+    async fn wait_operation(
+        &self,
+        request: Request<WaitOperationRequest>,
+    ) -> Result<Response<Operation>, Status> {
+        let inner_request = request.into_inner();
+        let timeout_opt = inner_request.timeout.map(|d| {
+            let secs = u64::try_from(d.seconds).unwrap_or(0);
+            let nanos = u32::try_from(d.nanos).unwrap_or(0);
+            Duration::new(secs, nanos)
+        });
+
+        let mut stream = Box::pin(
+            self.inner_wait_execution(WaitExecutionRequest {
+                name: inner_request.name,
+            })
+            .await?,
+        );
+
+        let mut last_operation = stream
+            .next()
+            .await
+            .ok_or_else(|| Status::not_found("Operation not found"))??;
+
+        if last_operation.done {
+            return Ok(Response::new(last_operation));
+        }
+
+        let end_time = timeout_opt.map(|t| tokio::time::Instant::now() + t);
+
+        loop {
+            let next_fut = stream.next();
+            let next_res = if let Some(end) = end_time {
+                match tokio::time::timeout_at(end, next_fut).await {
+                    Ok(res) => res,
+                    Err(_) => break,
+                }
+            } else {
+                next_fut.await
+            };
+
+            match next_res {
+                Some(Ok(operation)) => {
+                    let is_done = operation.done;
+                    last_operation = operation;
+                    if is_done {
+                        break;
+                    }
+                }
+                Some(Err(e)) => return Err(e),
+                None => break,
+            }
+        }
+
+        Ok(Response::new(last_operation))
     }
 }
 

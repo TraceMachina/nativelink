@@ -4,7 +4,7 @@ lints.workspace = true
 [package]
 edition = "2024"
 name = "nativelink-worker"
-version = "1.0.0-rc4"
+version = "1.0.0"
 
 [features]
 nix = []
@@ -19,6 +19,7 @@ nativelink-util = { path = "../nativelink-util" }
 
 async-lock = { version = "3.4.0", features = ["std"], default-features = false }
 bytes = { version = "1.10.1", default-features = false }
+dunce = { version = "1.0.5", default-features = false }
 filetime = { version = "0.2.25", default-features = false }
 formatx = { version = "0.2.3", default-features = false }
 futures = { version = "0.3.31", default-features = false }
@@ -54,10 +55,14 @@ uuid = { version = "1.16.0", default-features = false, features = [
   "v4",
 ] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = { version = "0.2.183", default-features = false }
+
 [dev-dependencies]
 nativelink-macro = { path = "../nativelink-macro" }
 
 hyper = { version = "1.6.0", default-features = false }
+pathdiff = { version = "0.2.3", default-features = false }
 pretty_assertions = { version = "1.4.1", features = [
   "std",
 ], default-features = false }
@@ -72,6 +77,7 @@ tempfile = { version = "3.15.0", default-features = false }
 tracing-test = { version = "0.2.5", default-features = false, features = [
   "no-env-filter",
 ] }
+which = { version = "8.0.2", default-features = false, features = ["real-sys"] }
 
 [package.metadata.cargo-machete]
 # Used by nativelink_test macro

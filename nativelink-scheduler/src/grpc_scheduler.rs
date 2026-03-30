@@ -63,11 +63,9 @@ impl ActionStateResult for GrpcActionStateResult {
     }
 
     async fn changed(&mut self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error> {
-        self.rx.changed().await.map_err(|_| {
-            make_err!(
-                Code::Internal,
-                "Channel closed in GrpcActionStateResult::changed"
-            )
+        self.rx.changed().await.map_err(|e| {
+            Error::from_std_err(Code::Internal, &e)
+                .append("Channel closed in GrpcActionStateResult::changed")
         })?;
         let mut action_state = self.rx.borrow().clone();
         Arc::make_mut(&mut action_state).client_operation_id = self.client_operation_id.clone();

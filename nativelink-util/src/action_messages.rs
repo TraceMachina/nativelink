@@ -38,6 +38,7 @@ use prost::bytes::Bytes;
 use prost_types::Any;
 use serde::ser::Error as SerdeError;
 use serde::{Deserialize, Serialize};
+use tonic::Code;
 use uuid::Uuid;
 
 use crate::common::{DigestInfo, HashMapExt, VecExt};
@@ -113,8 +114,8 @@ impl TryFrom<Bytes> for OperationId {
             // for free then convert the Vec<u8> to a String for free too.
             Ok(value) => {
                 let value = String::from_utf8(value.into()).map_err(|e| {
-                    make_input_err!(
-                        "Failed to convert bytes to string in try_from<Bytes> for OperationId : {e:?}"
+                    Error::from_std_err(Code::InvalidArgument, &e).append(
+                        "Failed to convert bytes to string in try_from<Bytes> for OperationId",
                     )
                 })?;
                 Ok(Self::from(value))
@@ -122,8 +123,8 @@ impl TryFrom<Bytes> for OperationId {
             // We could not take ownership of the Bytes, so we may need to copy our data.
             Err(value) => {
                 let value = core::str::from_utf8(&value).map_err(|e| {
-                    make_input_err!(
-                        "Failed to convert bytes to string in try_from<Bytes> for OperationId : {e:?}"
+                    Error::from_std_err(Code::InvalidArgument, &e).append(
+                        "Failed to convert bytes to string in try_from<Bytes> for OperationId",
                     )
                 })?;
                 Ok(Self::from(value))
@@ -356,7 +357,10 @@ impl ActionInfo {
                 .timeout
                 .unwrap_or_default()
                 .try_into()
-                .map_err(|_| make_input_err!("Failed convert proto duration to system duration"))?,
+                .map_err(|err| {
+                    Error::from_std_err(Code::InvalidArgument, &err)
+                        .append("Failed convert proto duration to system duration")
+                })?,
             platform_properties,
             priority: execute_request
                 .execution_policy

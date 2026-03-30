@@ -22,7 +22,7 @@ use std::time::UNIX_EPOCH;
 
 use bytes::Bytes;
 use futures::{Stream, TryStreamExt};
-use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::action_messages::{
     ActionInfo, ActionStage, ActionUniqueQualifier, OperationId,
@@ -363,8 +363,9 @@ where
 }
 
 fn awaited_action_decode(version: i64, data: &Bytes) -> Result<AwaitedAction, Error> {
-    let mut awaited_action: AwaitedAction = serde_json::from_slice(data)
-        .map_err(|e| make_input_err!("In AwaitedAction::decode - {e:?}"))?;
+    let mut awaited_action: AwaitedAction = serde_json::from_slice(data).map_err(|e| {
+        Error::from_std_err(Code::InvalidArgument, &e).append("In AwaitedAction::decode")
+    })?;
     awaited_action.set_version(version);
     Ok(awaited_action)
 }
@@ -411,10 +412,9 @@ impl SchedulerStoreDecodeTo for ClientIdToOperationId<'_> {
     type DecodeOutput = OperationId;
     fn decode(_version: i64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
         serde_json::from_slice(&data).map_err(|e| {
-            make_input_err!(
-                "In ClientIdToOperationId::decode - {e:?} (data: {:02x?})",
-                data
-            )
+            Error::from_std_err(Code::InvalidArgument, &e).append(format!(
+                "In ClientIdToOperationId::decode (data: {data:02x?})",
+            ))
         })
     }
 }
@@ -432,10 +432,14 @@ impl SchedulerStoreKeyProvider for ClientKeepaliveKey<'_> {
 impl SchedulerStoreDecodeTo for ClientKeepaliveKey<'_> {
     type DecodeOutput = u64;
     fn decode(_version: i64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
-        let s = core::str::from_utf8(&data)
-            .map_err(|e| make_input_err!("In ClientKeepaliveKey::decode utf8 - {e:?}"))?;
-        s.parse::<u64>()
-            .map_err(|e| make_input_err!("In ClientKeepaliveKey::decode parse - {e:?}"))
+        let s = core::str::from_utf8(&data).map_err(|e| {
+            Error::from_std_err(Code::InvalidArgument, &e)
+                .append("In ClientKeepaliveKey::decode utf8")
+        })?;
+        s.parse::<u64>().map_err(|e| {
+            Error::from_std_err(Code::InvalidArgument, &e)
+                .append("In ClientKeepaliveKey::decode parse")
+        })
     }
 }
 
@@ -515,7 +519,10 @@ impl SchedulerStoreDataProvider for UpdateOperationIdToAwaitedAction {
     fn try_into_bytes(self) -> Result<Bytes, Error> {
         serde_json::to_string(&self.0)
             .map(Bytes::from)
-            .map_err(|e| make_input_err!("Could not convert AwaitedAction to json - {e:?}"))
+            .map_err(|e| {
+                Error::from_std_err(Code::InvalidArgument, &e)
+                    .append("Could not convert AwaitedAction to json")
+            })
     }
     fn get_indexes(&self) -> Result<Vec<(&'static str, Bytes)>, Error> {
         let unique_qualifier = &self.0.action_info().unique_qualifier;
@@ -559,7 +566,10 @@ impl SchedulerStoreDataProvider for UpdateClientIdToOperationId {
     fn try_into_bytes(self) -> Result<Bytes, Error> {
         serde_json::to_string(&self.operation_id)
             .map(Bytes::from)
-            .map_err(|e| make_input_err!("Could not convert OperationId to json - {e:?}"))
+            .map_err(|e| {
+                Error::from_std_err(Code::InvalidArgument, &e)
+                    .append("Could not convert OperationId to json")
+            })
     }
 }
 

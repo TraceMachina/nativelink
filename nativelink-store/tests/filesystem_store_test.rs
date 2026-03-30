@@ -20,6 +20,7 @@ use std::env;
 use std::ffi::{OsStr, OsString};
 use std::path::Path;
 use std::sync::{Arc, LazyLock};
+use std::time::SystemTime;
 
 use async_lock::RwLock;
 use bytes::Bytes;
@@ -49,7 +50,7 @@ use tokio::sync::{Barrier, Semaphore};
 use tokio::time::sleep;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReadDirStream;
-use tracing::Instrument;
+use tracing::{Instrument, debug};
 
 const VALID_HASH: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
 
@@ -1409,7 +1410,7 @@ async fn file_slot_taken_when_ready() -> Result<(), Error> {
         tokio::join!(update_1_fut, update_2_fut, writer_1_fut, writer_2_fut)
     })
     .await
-    .map_err(|_| make_err!(Code::Internal, "Deadlock detected"))?;
+    .map_err(|err| Error::from_std_err(Code::Internal, &err).append("Deadlock detected"))?;
     res_1.merge(res_2).merge(res_3).merge(res_4)
 }
 
@@ -1462,6 +1463,43 @@ async fn safe_small_safe_eviction() -> Result<(), Error> {
     );
 
     assert!(rx.recv().await.is_err());
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn add_too_early_files() -> Result<(), Error> {
+    let content_path = make_temp_path("content_path");
+    let temp_path = make_temp_path("temp_path");
+
+    let demo_file_folder = format!("{content_path}/s");
+    fs::create_dir_all(&demo_file_folder).await?;
+    let demo_file_path = format!("{demo_file_folder}/foo");
+    std::fs::write(&demo_file_path, "demo text")
+        .err_tip(|| format!("writing to {demo_file_path}"))?;
+    debug!(%demo_file_path, "demo file path");
+
+    // Add 60 seconds to the access time to trigger the logging message about access times
+    fs_set_times::set_atime(
+        &demo_file_path,
+        SystemTime::now()
+            .checked_add(Duration::from_secs(60))
+            .unwrap()
+            .into(),
+    )?;
+
+    FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+        content_path: content_path.clone(),
+        temp_path: temp_path.clone(),
+        read_buffer_size: 1,
+        ..Default::default()
+    })
+    .await
+    .err_tip(|| "during FileSystemStore::new")?;
+
+    assert!(logs_contain(
+        "File access time newer than FilesystemStore start time file_name=foo atime=20"
+    ));
 
     Ok(())
 }

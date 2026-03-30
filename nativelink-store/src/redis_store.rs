@@ -1221,7 +1221,7 @@ macro_rules! get_index_name {
 
 /// Try to sanitize a string to be used as a Redis key.
 /// We don't actually modify the string, just check if it's valid.
-const fn try_sanitize(s: &str) -> Option<&str> {
+const fn try_sanitize(s: &str) -> bool {
     // Note: We cannot use for loops or iterators here because they are not const.
     // Allowing us to use a const function here gives the compiler the ability to
     // optimize this function away entirely in the case where the input is constant.
@@ -1234,11 +1234,11 @@ const fn try_sanitize(s: &str) -> Option<&str> {
         }
         let c = chars[i];
         if !c.is_ascii_alphanumeric() && c != b'_' {
-            return None;
+            return false;
         }
         i += 1;
     }
-    Some(s)
+    true
 }
 
 /// An individual subscription to a key in Redis.
@@ -1255,10 +1255,10 @@ impl SchedulerSubscription for RedisSubscription {
             .receiver
             .as_mut()
             .ok_or_else(|| make_err!(Code::Internal, "In RedisSubscription::changed::as_mut"))?;
-        receiver
-            .changed()
-            .await
-            .map_err(|_| make_err!(Code::Internal, "In RedisSubscription::changed::changed"))
+        receiver.changed().await.map_err(|err| {
+            Error::from_std_err(Code::Internal, &err)
+                .append("In RedisSubscription::changed::changed")
+        })
     }
 }
 
@@ -1639,82 +1639,111 @@ where
         K: SchedulerIndexProvider + SchedulerStoreDecodeTo + Send,
     {
         let index_value = index.index_value();
-        let run_ft_aggregate = || {
-            let sanitized_field = try_sanitize(index_value.as_ref()).err_tip(|| {
+        try_sanitize(index_value.as_ref())
+            .then_some(())
+            .err_tip(|| {
                 format!("In RedisStore::search_by_index_prefix::try_sanitize - {index_value:?}")
             })?;
-            Ok::<_, Error>(async move {
-                ft_aggregate(
-                    self.connection_manager.get_connection().await?.0,
-                    format!(
-                        "{}",
-                        get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY)
-                    ),
-                    if sanitized_field.is_empty() {
-                        "*".to_string()
-                    } else {
-                        format!("@{}:{{ {} }}", K::INDEX_NAME, sanitized_field)
+        let run_ft_aggregate = |connection_manager: C| async {
+            ft_aggregate(
+                connection_manager,
+                format!(
+                    "{}",
+                    get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY)
+                ),
+                if index_value.is_empty() {
+                    "*".to_string()
+                } else {
+                    format!("@{}:{{ {} }}", K::INDEX_NAME, index_value)
+                },
+                FtAggregateOptions {
+                    load: vec![DATA_FIELD_NAME.into(), VERSION_FIELD_NAME.into()],
+                    cursor: FtAggregateCursor {
+                        count: self.max_count_per_cursor,
+                        max_idle: CURSOR_IDLE_MS,
                     },
-                    FtAggregateOptions {
-                        load: vec![DATA_FIELD_NAME.into(), VERSION_FIELD_NAME.into()],
-                        cursor: FtAggregateCursor {
-                            count: self.max_count_per_cursor,
-                            max_idle: CURSOR_IDLE_MS,
-                        },
-                        sort_by: K::MAYBE_SORT_KEY.map_or_else(Vec::new, |v| vec![format!("@{v}")]),
-                    },
-                )
-                .await
-            })
+                    sort_by: K::MAYBE_SORT_KEY.map_or_else(Vec::new, |v| vec![format!("@{v}")]),
+                },
+            )
+            .await
+        };
+        let run_ft_create = |connection_manager: C| async {
+            let mut schema = vec![SearchSchema {
+                field_name: K::INDEX_NAME.into(),
+                sortable: false,
+            }];
+            if let Some(sort_key) = K::MAYBE_SORT_KEY {
+                schema.push(SearchSchema {
+                    field_name: sort_key.into(),
+                    sortable: true,
+                });
+            }
+            let create_options = FtCreateOptions {
+                prefixes: vec![K::KEY_PREFIX.into()],
+                nohl: true,
+                nofields: true,
+                nofreqs: true,
+                nooffsets: true,
+                temporary: Some(INDEX_TTL_S),
+            };
+            let index = format!(
+                "{}",
+                get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY)
+            );
+            ft_create(connection_manager, index, create_options, schema).await
         };
 
-        let stream = run_ft_aggregate()?
-            .or_else(|_| async move {
-                let mut schema = vec![SearchSchema {
-                    field_name: K::INDEX_NAME.into(),
-                    sortable: false,
-                }];
-                if let Some(sort_key) = K::MAYBE_SORT_KEY {
-                    schema.push(SearchSchema {
-                        field_name: sort_key.into(),
-                        sortable: true,
-                    });
-                }
-
-                let create_result = ft_create(
-                    self.connection_manager.get_connection().await?.0,
+        let (connection_manager, connect_id) = self.connection_manager.get_connection().await?;
+        let stream = match run_ft_aggregate(connection_manager.clone()).await {
+            Err(err)
+                if err.kind() == redis::ErrorKind::Server(redis::ServerErrorKind::ReadOnly) =>
+            {
+                let (connection_manager, _connect_id) =
+                    self.connection_manager.reconnect(connect_id).await?;
+                run_ft_aggregate(connection_manager).await.err_tip(|| {
                     format!(
-                        "{}",
-                        get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY)
-                    ),
-                    FtCreateOptions {
-                        prefixes: vec![K::KEY_PREFIX.into()],
-                        nohl: true,
-                        nofields: true,
-                        nofreqs: true,
-                        nooffsets: true,
-                        temporary: Some(INDEX_TTL_S),
-                    },
-                    schema,
-                )
-                .await
-                .err_tip(|| {
+                        "Error with reconnected ft_aggregate in RedisStore::search_by_index_prefix({})",
+                        get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY),
+                    )
+                })
+            }
+            Err(_) => {
+                let (connection_manager, result) =
+                    match run_ft_create(connection_manager.clone()).await {
+                        Err(err)
+                            if err.kind()
+                                == redis::ErrorKind::Server(redis::ServerErrorKind::ReadOnly) =>
+                        {
+                            let (connection_manager, _connect_id) =
+                                self.connection_manager.reconnect(connect_id).await?;
+                            (
+                                connection_manager.clone(),
+                                run_ft_create(connection_manager).await,
+                            )
+                        }
+                        result => (connection_manager, result),
+                    };
+                let create_result = result.err_tip(|| {
                     format!(
                         "Error with ft_create in RedisStore::search_by_index_prefix({})",
                         get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY),
                     )
                 });
-                let run_result = run_ft_aggregate()?.await.err_tip(|| {
+
+                let run_result = run_ft_aggregate(connection_manager).await.err_tip(|| {
                     format!(
                         "Error with second ft_aggregate in RedisStore::search_by_index_prefix({})",
                         get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY),
                     )
                 });
+
                 // Creating the index will race which is ok. If it fails to create, we only
                 // error if the second ft_aggregate call fails and fails to create.
                 run_result.or_else(move |e| create_result.merge(Err(e)))
-            })
-            .await?;
+            }
+            Ok(stream) => Ok(stream),
+        }?;
+
         Ok(stream.filter_map(|result| async move {
             let raw_redis_map = match result {
                 Ok(v) => v,
