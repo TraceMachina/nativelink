@@ -215,12 +215,12 @@ impl MongoEmbedded {
                     debug!("Connection attempt failed: {:?}", e);
                     // If unauthorized error, it means we are connected but need auth, which is fine for readiness check
                     // "Unauthorized" usually is error code 13
-                    if let mongodb::error::ErrorKind::Command(ref cmd_err) = *e.kind {
-                        if cmd_err.code == 51 || cmd_err.code == 13 || cmd_err.code == 18 {
-                            // 51: UserAlreadyExists?, 13: Unauthorized, 18: AuthFailed
-                            connected = true;
-                            break;
-                        }
+                    if let mongodb::error::ErrorKind::Command(ref cmd_err) = *e.kind
+                        && (cmd_err.code == 51 || cmd_err.code == 13 || cmd_err.code == 18)
+                    {
+                        // 51: UserAlreadyExists?, 13: Unauthorized, 18: AuthFailed
+                        connected = true;
+                        break;
                     }
                 }
             }

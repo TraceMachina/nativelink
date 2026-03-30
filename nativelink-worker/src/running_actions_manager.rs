@@ -1591,7 +1591,7 @@ impl RunningAction for RunningActionImpl {
         let stall_warn_fut = async {
             let mut elapsed_secs = 0u64;
             loop {
-                tokio::time::sleep(Duration::from_secs(60)).await;
+                tokio::time::sleep(Duration::from_mins(1)).await;
                 elapsed_secs += 60;
                 warn!(
                     ?operation_id,
@@ -1949,7 +1949,7 @@ impl UploadActionResults {
         };
 
         // Note: Done in this order because we assume most results will succeed and most configs will
-        // either always upload upload historical results or only upload on filure. In which case
+        // either always upload upload historical results or only upload on failure. In which case
         // we can avoid an extra clone of the protos by doing this last with the above assumption.
         let ac_upload_results = if should_upload_ac_results {
             self.upload_ac_results(
@@ -2252,13 +2252,13 @@ impl RunningActionsManagerImpl {
             let mut action_state = action.state.lock();
             action_state.kill_channel_tx.take()
         };
-        if let Some(kill_channel_tx) = kill_channel_tx {
-            if kill_channel_tx.send(()).is_err() {
-                error!(
-                    operation_id = ?action.operation_id,
-                    "Error sending kill to running operation",
-                );
-            }
+        if let Some(kill_channel_tx) = kill_channel_tx
+            && kill_channel_tx.send(()).is_err()
+        {
+            error!(
+                operation_id = ?action.operation_id,
+                "Error sending kill to running operation",
+            );
         }
     }
 
@@ -2334,14 +2334,13 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                 {
                     let mut running_actions = self.running_actions.lock();
                     // Check if action already exists and is still alive
-                    if let Some(existing_weak) = running_actions.get(&operation_id) {
-                        if let Some(_existing_action) = existing_weak.upgrade() {
+                    if let Some(existing_weak) = running_actions.get(&operation_id)
+                        && let Some(_existing_action) = existing_weak.upgrade() {
                             return Err(make_err!(
                                 Code::AlreadyExists,
                                 "Action with operation_id {} is already running",
                                 operation_id
                             ));
-                        }
                     }
                     running_actions.insert(operation_id, Arc::downgrade(&running_action));
                 }

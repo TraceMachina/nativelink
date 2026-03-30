@@ -822,7 +822,7 @@ pub async fn chunked_stream_reads_10mb_of_data() -> Result<(), Box<dyn core::err
 
 /// A bug was found in early development where we could deadlock when reading a stream if the
 /// store backend resulted in an error. This was because we were not shutting down the stream
-/// when on the backend store error which caused the AsyncReader to block forever because the
+/// when on the backend store error which caused the `AsyncReader` to block forever because the
 /// stream was never shutdown.
 #[nativelink_test]
 pub async fn read_with_not_found_does_not_deadlock() -> Result<(), Error> {
@@ -855,9 +855,7 @@ pub async fn read_with_not_found_does_not_deadlock() -> Result<(), Error> {
         let result_fut = read_stream.next();
 
         let result = result_fut.await.err_tip(|| "Expected result to be ready")?;
-        let expected_err_str = concat!(
-            "status: NotFound, message: \"Key Digest(DigestInfo(\\\"0123456789abcdef000000000000000000000000000000000123456789abcdef-55\\\")) not found\", details: [], metadata: MetadataMap { headers: {} }",
-        );
+        let expected_err_str = "status: NotFound, message: \"Key Digest(DigestInfo(\\\"0123456789abcdef000000000000000000000000000000000123456789abcdef-55\\\")) not found\", details: [], metadata: MetadataMap { headers: {} }";
         assert_eq!(
             Error::from(result.unwrap_err()),
             make_err!(Code::NotFound, "{expected_err_str}"),

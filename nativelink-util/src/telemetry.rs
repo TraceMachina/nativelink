@@ -281,17 +281,16 @@ NativeLink instance configured to require this OpenTelemetry Baggage header:
 
         let mut cx = parent_cx.with_span(span);
 
-        if let Some(bazel_header) = req.headers().get(BAZEL_REQUESTMETADATA_HEADER) {
-            if let Ok(decoded) = BASE64_STANDARD_NO_PAD.decode(bazel_header.as_bytes()) {
-                if let Ok(metadata) = RequestMetadata::decode(decoded.as_slice()) {
-                    let metadata_str = format!("{metadata:?}");
-                    debug!("Baggage Bazel request metadata: {metadata_str}");
-                    cx = cx.with_baggage(vec![
-                        KeyValue::new(BAZEL_METADATA_KEY, metadata_str),
-                        KeyValue::new(ENDUSER_ID, identity),
-                    ]);
-                }
-            }
+        if let Some(bazel_header) = req.headers().get(BAZEL_REQUESTMETADATA_HEADER)
+            && let Ok(decoded) = BASE64_STANDARD_NO_PAD.decode(bazel_header.as_bytes())
+            && let Ok(metadata) = RequestMetadata::decode(decoded.as_slice())
+        {
+            let metadata_str = format!("{metadata:?}");
+            debug!("Baggage Bazel request metadata: {metadata_str}");
+            cx = cx.with_baggage(vec![
+                KeyValue::new(BAZEL_METADATA_KEY, metadata_str),
+                KeyValue::new(ENDUSER_ID, identity),
+            ]);
         }
 
         Box::pin(async move { inner.call(req).with_context(cx).await })

@@ -219,7 +219,7 @@ fn resp3_data_parse(
                     return Err(RedisError::from((
                         ErrorKind::Parse,
                         "Expected STRING format",
-                        format.to_string(),
+                        format.clone(),
                     )));
                 }
             }

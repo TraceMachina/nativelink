@@ -618,12 +618,12 @@ async fn create_ten_cas_entries() -> Result<(), Error> {
         .await
         .map_err(|e| make_err!(Code::Internal, "Failed to get next document: {e}"))?
     {
-        if doc_count < 3 {
-            if let Ok(key) = doc.get_str("_id") {
-                eprintln!("  - Key: {key}");
-                if let Ok(size) = doc.get_i64("size") {
-                    eprintln!("    Size: {size} bytes");
-                }
+        if doc_count < 3
+            && let Ok(key) = doc.get_str("_id")
+        {
+            eprintln!("  - Key: {key}");
+            if let Ok(size) = doc.get_i64("size") {
+                eprintln!("    Size: {size} bytes");
             }
         }
         doc_count += 1;
@@ -757,7 +757,7 @@ impl SchedulerStoreDecodeTo for TestSchedulerKey {
 // FIXME(palfrey): Test doesn't work on local Mongo. https://github.com/TraceMachina/nativelink/pull/1843 covers
 // expanding Mongo to be usable as a scheduler backend, and should correct this problem there
 #[nativelink_test]
-#[ignore]
+#[ignore = "Broken with local mongo, only needed when we use this for a scheduler backend"]
 async fn test_scheduler_store_operations() -> Result<(), Error> {
     // Create test helper
     let helper = TestMongoHelper::new(None).await?;

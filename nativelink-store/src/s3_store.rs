@@ -142,7 +142,7 @@ where
         Ok(Arc::new(Self {
             s3_client: Arc::new(s3_client),
             now_fn,
-            bucket: spec.bucket.to_string(),
+            bucket: spec.bucket.clone(),
             key_prefix: spec
                 .common
                 .key_prefix
@@ -168,7 +168,7 @@ where
     }
 
     fn make_s3_path(&self, key: &StoreKey<'_>) -> String {
-        format!("{}{}", self.key_prefix, key.as_str(),)
+        format!("{}{}", self.key_prefix, key.as_str())
     }
 
     async fn has(self: Pin<&Self>, digest: StoreKey<'_>) -> Result<Option<u64>, Error> {
@@ -187,21 +187,18 @@ where
 
                     match result {
                         Ok(head_object_output) => {
-                            if self.consider_expired_after_s != 0 {
-                                if let Some(last_modified) = head_object_output.last_modified {
-                                    let now_s = (self.now_fn)().unix_timestamp() as i64;
-                                    if last_modified.secs() + self.consider_expired_after_s <= now_s
-                                    {
-                                        let remove_callbacks = self.remove_callbacks.lock().clone();
-                                        let mut callbacks: FuturesUnordered<_> = remove_callbacks
-                                            .iter()
-                                            .map(|callback| {
-                                                callback.callback(local_digest.borrow())
-                                            })
-                                            .collect();
-                                        while callbacks.next().await.is_some() {}
-                                        return Some((RetryResult::Ok(None), state));
-                                    }
+                            if self.consider_expired_after_s != 0
+                                && let Some(last_modified) = head_object_output.last_modified
+                            {
+                                let now_s = (self.now_fn)().unix_timestamp() as i64;
+                                if last_modified.secs() + self.consider_expired_after_s <= now_s {
+                                    let remove_callbacks = self.remove_callbacks.lock().clone();
+                                    let mut callbacks: FuturesUnordered<_> = remove_callbacks
+                                        .iter()
+                                        .map(|callback| callback.callback(local_digest.borrow()))
+                                        .collect();
+                                    while callbacks.next().await.is_some() {}
+                                    return Some((RetryResult::Ok(None), state));
                                 }
                             }
                             let Some(length) = head_object_output.content_length else {

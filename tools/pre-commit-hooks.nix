@@ -3,6 +3,7 @@
   nightly-rust,
   generate-bazel-rc,
   generate-stores-config,
+  renovate-patched,
   ...
 }: let
   excludes = ["nativelink-proto/genproto" "native-cli/vendor"];
@@ -77,21 +78,21 @@ in {
 
   # General
   typos = {
-    args = ["--force-exclude"];
     enable = true;
-    inherit excludes;
     settings.configPath = "typos.toml";
   };
 
   # Go
-  gci = {
-    description = "Fix go imports.";
-    enable = true;
-    entry = "${pkgs.gci}/bin/gci write";
-    inherit excludes;
-    name = "gci";
-    types = ["go"];
-  };
+
+  # FIXME(palfrey): Blocked on https://github.com/daixiang0/gci/issues/239
+  # gci = {
+  #   description = "Fix go imports.";
+  #   enable = true;
+  #   entry = "${pkgs.gci}/bin/gci write";
+  #   inherit excludes;
+  #   name = "gci";
+  #   types = ["go"];
+  # };
   gofumpt = {
     description = "Format Go.";
     enable = true;
@@ -100,19 +101,16 @@ in {
     name = "gofumpt";
     types = ["go"];
   };
-  # TODO(palfrey): This linter works in the nix developmen environment, but
+  # TODO(palfrey): This linter works in the nix development environment, but
   #                    not with `nix flake check`. It's unclear how to fix this.
   golangci-lint-in-shell = {
     enable = true;
     entry = let
       script = pkgs.writeShellScript "precommit-golangci-lint" ''
-        # TODO(palfrey): This linter works in the nix development
-        #                    environment, but not with `nix flake check`. It's
-        #                    unclear how to fix this.
         if [ ''${IN_NIX_SHELL} = "impure" ]; then
           export PATH=${pkgs.go}/bin:$PATH
           cd native-cli
-          CC=customClang ${pkgs.golangci-lint}/bin/golangci-lint run --modules-download-mode=readonly
+          ${pkgs.golangci-lint}/bin/golangci-lint run --modules-download-mode=readonly
         fi
       '';
     in
@@ -218,7 +216,7 @@ in {
   renovate = {
     description = "Validate renovate config";
     enable = true;
-    entry = "${pkgs.renovate}/bin/renovate-config-validator";
+    entry = "${renovate-patched}/bin/renovate-config-validator";
     args = ["--strict"];
     files = "renovate.json5";
   };

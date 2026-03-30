@@ -301,10 +301,10 @@ impl StoreDriver for DedupStore {
                         continue;
                     }
                     // If we are not going to read any bytes past the length we are done.
-                    if let Some(length) = length {
-                        if first_byte >= offset + length {
-                            break;
-                        }
+                    if let Some(length) = length
+                        && first_byte >= offset + length
+                    {
+                        break;
                     }
                     entries.push(entry);
                 }

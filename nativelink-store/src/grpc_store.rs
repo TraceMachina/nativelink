@@ -103,7 +103,7 @@ impl GrpcStore {
                 spec.retry.clone(),
             ),
             connection_manager: ConnectionManager::new(
-                endpoints.into_iter(),
+                endpoints,
                 spec.connections_per_endpoint,
                 spec.max_concurrent_requests,
                 spec.retry.clone(),

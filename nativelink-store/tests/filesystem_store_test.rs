@@ -1037,7 +1037,7 @@ async fn get_file_entry_for_zero_digest() -> Result<(), Error> {
     Ok(())
 }
 
-/// Regression test for: https://github.com/TraceMachina/nativelink/issues/495.
+/// Regression test for: <https://github.com/TraceMachina/nativelink/issues/495>.
 #[nativelink_test(flavor = "multi_thread")]
 async fn update_file_future_drops_before_rename() -> Result<(), Error> {
     // Mutex can be used to signal to the rename function to pause execution.

@@ -103,19 +103,19 @@ async fn test_maybe_namespaced_child_kill_reaps_orphans() -> Result<(), Error> {
     // Verify that no processes with our unique_id exist in the system.
     let mut read_dir = tokio::fs::read_dir("/proc").await?;
     while let Some(entry) = read_dir.next_entry().await? {
-        if let Some(s) = entry.file_name().to_str() {
-            if s.chars().all(|c| c.is_ascii_digit()) {
-                let cmdline = tokio::fs::read_to_string(entry.path().join("cmdline"))
-                    .await
-                    .unwrap_or_default();
-                if cmdline.contains(unique_id) {
-                    return Err(nativelink_error::make_err!(
-                        nativelink_error::Code::Internal,
-                        "Process leaked: PID {} with cmdline '{}'",
-                        s,
-                        cmdline
-                    ));
-                }
+        if let Some(s) = entry.file_name().to_str()
+            && s.chars().all(|c| c.is_ascii_digit())
+        {
+            let cmdline = tokio::fs::read_to_string(entry.path().join("cmdline"))
+                .await
+                .unwrap_or_default();
+            if cmdline.contains(unique_id) {
+                return Err(nativelink_error::make_err!(
+                    nativelink_error::Code::Internal,
+                    "Process leaked: PID {} with cmdline '{}'",
+                    s,
+                    cmdline
+                ));
             }
         }
     }
@@ -153,9 +153,9 @@ async fn test_maybe_namespaced_child_namespaced_natural_exit() -> Result<(), Err
         return Ok(());
     }
 
-    const EXPECTED_EXIT_CODE: i32 = 5;
+    let expected_exit_code: i32 = 5;
     let mut command = tokio::process::Command::new("sh");
-    command.args(["-c", &format!("exit {EXPECTED_EXIT_CODE}")]);
+    command.args(["-c", &format!("exit {expected_exit_code}")]);
 
     // SAFETY: configure_namespace is async-signal-safe and intended for pre_exec.
     unsafe {
@@ -169,7 +169,7 @@ async fn test_maybe_namespaced_child_namespaced_natural_exit() -> Result<(), Err
     let status = namespaced_child.wait().await?;
 
     // The stub should reap the child and return its exit code.
-    assert_eq!(status.code(), Some(EXPECTED_EXIT_CODE));
+    assert_eq!(status.code(), Some(expected_exit_code));
 
     Ok(())
 }
@@ -201,9 +201,9 @@ async fn test_maybe_namespaced_child_try_wait() -> Result<(), Error> {
     namespaced_child_running.wait().await?; // Wait for it to actually exit
 
     // Test with an exited process
-    const EXPECTED_EXIT_CODE: i32 = 7;
+    let expected_exit_code: i32 = 7;
     let mut command_exited = tokio::process::Command::new("sh");
-    command_exited.args(["-c", &format!("exit {EXPECTED_EXIT_CODE}")]);
+    command_exited.args(["-c", &format!("exit {expected_exit_code}")]);
     unsafe {
         command_exited.pre_exec(namespace_utils::configure_namespace);
     }
@@ -216,7 +216,7 @@ async fn test_maybe_namespaced_child_try_wait() -> Result<(), Error> {
 
     // try_wait should return Some(status)
     let status = namespaced_child_exited.try_wait()?;
-    assert_eq!(status.and_then(|s| s.code()), Some(EXPECTED_EXIT_CODE));
+    assert_eq!(status.and_then(|s| s.code()), Some(expected_exit_code));
 
     Ok(())
 }

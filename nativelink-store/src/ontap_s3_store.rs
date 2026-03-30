@@ -169,7 +169,7 @@ where
             .timeout_config(
                 aws_config::timeout::TimeoutConfig::builder()
                     .connect_timeout(Duration::from_secs(30))
-                    .operation_timeout(Duration::from_secs(120))
+                    .operation_timeout(Duration::from_mins(2))
                     .build(),
             )
             .build();
@@ -238,22 +238,21 @@ where
 
                     match result {
                         Ok(head_object_output) => {
-                            if self.consider_expired_after_s != 0 {
-                                if let Some(last_modified) = head_object_output.last_modified {
-                                    let now_s = (self.now_fn)().unix_timestamp() as i64;
-                                    if last_modified.secs() + self.consider_expired_after_s <= now_s
-                                    {
-                                        let remove_callbacks = self.remove_callbacks.lock().clone();
-                                        let mut callbacks: FuturesUnordered<_> = remove_callbacks
-                                            .into_iter()
-                                            .map(|callback| {
-                                                let store_key = local_digest.borrow();
-                                                async move { callback.callback(store_key).await }
-                                            })
-                                            .collect();
-                                        while callbacks.next().await.is_some() {}
-                                        return Some((RetryResult::Ok(None), state));
-                                    }
+                            if self.consider_expired_after_s != 0
+                                && let Some(last_modified) = head_object_output.last_modified
+                            {
+                                let now_s = (self.now_fn)().unix_timestamp() as i64;
+                                if last_modified.secs() + self.consider_expired_after_s <= now_s {
+                                    let remove_callbacks = self.remove_callbacks.lock().clone();
+                                    let mut callbacks: FuturesUnordered<_> = remove_callbacks
+                                        .into_iter()
+                                        .map(|callback| {
+                                            let store_key = local_digest.borrow();
+                                            async move { callback.callback(store_key).await }
+                                        })
+                                        .collect();
+                                    while callbacks.next().await.is_some() {}
+                                    return Some((RetryResult::Ok(None), state));
                                 }
                             }
                             let Some(length) = head_object_output.content_length else {
