@@ -467,7 +467,9 @@ impl ApiWorkerSchedulerImpl {
     ///
     /// `endpoint_scores` and `peer_hints` are pre-computed outside the write
     /// lock to avoid holding it during O(files) iterations over the locality
-    /// map.
+    /// map. Both are passed by reference from a shared `Arc<ScoringResult>`
+    /// to avoid cloning per action match — the proto clone is deferred to
+    /// `prepare_worker_run_action` and only happens when a worker is found.
     fn inner_find_and_reserve_worker(
         &mut self,
         platform_properties: &PlatformProperties,
@@ -475,7 +477,7 @@ impl ApiWorkerSchedulerImpl {
         action_info: &ActionInfoWithProps,
         full_worker_logging: bool,
         endpoint_scores: Option<&HashMap<Arc<str>, (u64, SystemTime)>>,
-        peer_hints: Vec<PeerHint>,
+        peer_hints: &[PeerHint],
         resolved_tree: Option<&ResolvedTree>,
     ) -> Option<(WorkerId, UnboundedSender<UpdateForWorker>, UpdateForWorker)> {
         let input_root_digest = action_info.inner.input_root_digest;
@@ -872,10 +874,10 @@ impl ApiWorkerSchedulerImpl {
     /// the write lock.
     ///
     /// `peer_hints` are pre-computed outside the write lock from the resolved
-    /// input tree. When no resolved tree is available the hints will be empty
-    /// -- the old fallback that generated a single hint for `input_root_digest`
-    /// never worked because workers register individual file digests, not
-    /// directory digests.
+    /// input tree and passed as a shared slice reference to avoid cloning
+    /// per action match. The slice is cloned into the protobuf message only
+    /// here, and only when a worker was actually found. When no resolved
+    /// tree is available the hints will be empty.
     ///
     /// Returns `None` if the worker was not found.
     fn prepare_worker_run_action(
@@ -883,7 +885,7 @@ impl ApiWorkerSchedulerImpl {
         worker_id: &WorkerId,
         operation_id: &OperationId,
         action_info: &ActionInfoWithProps,
-        peer_hints: Vec<PeerHint>,
+        peer_hints: &[PeerHint],
     ) -> Option<(UnboundedSender<UpdateForWorker>, UpdateForWorker)> {
         let worker = self.workers.get_mut(worker_id)?;
         // Clone the tx so we can send outside the lock.
@@ -898,13 +900,15 @@ impl ApiWorkerSchedulerImpl {
         }
 
         // Build the protobuf message while we still have access to worker state.
+        // peer_hints is cloned here (the only place) — deferred from the cache
+        // lookup so actions that don't find a worker avoid the clone entirely.
         let start_execute = StartExecute {
             execute_request: Some(action_info.inner.as_ref().into()),
             operation_id: operation_id.to_string(),
             queued_timestamp: Some(action_info.inner.insert_timestamp.into()),
             platform: Some((&action_info.platform_properties).into()),
             worker_id: worker.id.clone().into(),
-            peer_hints,
+            peer_hints: peer_hints.to_vec(),
         };
         let msg = UpdateForWorker {
             update: Some(update_for_worker::Update::StartAction(start_execute)),
@@ -1083,7 +1087,7 @@ impl ApiWorkerScheduler {
         let prepare_result = {
             let mut inner = self.inner.write().await;
             let result =
-                inner.prepare_worker_run_action(&worker_id, &operation_id, &action_info, Vec::new());
+                inner.prepare_worker_run_action(&worker_id, &operation_id, &action_info, &[]);
             if result.is_none() {
                 // Worker not found - handle under the lock since we need worker_state_manager.
                 warn!(
@@ -1248,38 +1252,53 @@ impl ApiWorkerScheduler {
         // 2-5ms on large actions (50K+ inputs).
         // Results are cached by input_root_digest so identical input trees
         // skip the recomputation entirely.
+        //
+        // The result is kept as Arc<ScoringResult> and passed by reference
+        // into the write-lock phase. This eliminates the per-action deep
+        // clone of Vec<PeerHint> (up to 16K entries with Vec<String>
+        // endpoints) and HashMap<Arc<str>, ...> that previously consumed
+        // ~61% of scheduler CPU during active builds.
         let input_root_digest = action_info.inner.input_root_digest;
-        let (endpoint_scores, peer_hints) = match (&resolved_tree, &self.locality_map) {
+        let scoring_result: Option<Arc<ScoringResult>> = match (&resolved_tree, &self.locality_map) {
             (Some(tree), Some(loc_map)) => {
                 // Check the scores cache first (lock briefly, no await while held).
                 let cached = self.scores_cache.lock().await.get(&input_root_digest).cloned();
                 if let Some(arc) = cached {
-                    let (ref scores, ref hints) = *arc;
-                    (Some(scores.clone()), hints.clone())
+                    Some(arc)
                 } else {
                     let result = score_and_generate_hints(&tree.file_digests, loc_map);
+                    let arc = Arc::new(result);
                     self.scores_cache.lock().await.put(
                         input_root_digest,
-                        Arc::new(result.clone()),
+                        Arc::clone(&arc),
                     );
-                    (Some(result.0), result.1)
+                    Some(arc)
                 }
             }
-            _ => (None, Vec::new()),
+            _ => None,
         };
 
         // ── Phase 3: acquire write lock, do selection + reservation ──
         // Inside the lock we only do O(workers) work: candidate filtering,
-        // endpoint→WorkerId mapping, and state mutation.
+        // endpoint→WorkerId mapping, and state mutation. Peer hints are
+        // passed as a slice reference — cloned into the proto only when a
+        // worker is actually found (inside prepare_worker_run_action).
         let mut inner = self.inner.write().await;
         let worker_count = inner.workers.len() as u64;
+        let (endpoint_scores, peer_hints_slice): (
+            Option<&HashMap<Arc<str>, (u64, SystemTime)>>,
+            &[PeerHint],
+        ) = match scoring_result.as_deref() {
+            Some((scores, hints)) => (Some(scores), hints.as_slice()),
+            None => (None, &[]),
+        };
         let result = inner.inner_find_and_reserve_worker(
             platform_properties,
             operation_id,
             action_info,
             full_worker_logging,
-            endpoint_scores.as_ref(),
-            peer_hints,
+            endpoint_scores,
+            peer_hints_slice,
             resolved_tree.as_deref(),
         );
 
