@@ -57,7 +57,8 @@ use nativelink_util::spawn;
 use nativelink_util::store_trait::{IS_WORKER_REQUEST, REDIRECT_PREFIX, Store, StoreLike, StoreOptimizations, UploadSizeInfo};
 use nativelink_util::task::JoinHandleDropGuard;
 use nativelink_util::zero_copy_codec::{
-    GrpcUnaryBody, ZeroCopyWriteStream, encode_grpc_unary_response,
+    GrpcUnaryBody, ZeroCopyReadBody, ZeroCopyWriteStream, decode_unary_request,
+    encode_grpc_unary_response,
 };
 use opentelemetry::context::FutureExt;
 use parking_lot::Mutex;
@@ -1459,6 +1460,142 @@ impl ByteStreamServer {
             .await
             .map_err(Into::into)
     }
+
+    /// Handle a ByteStream/Read RPC with zero-copy response encoding.
+    ///
+    /// This replicates the logic from the tonic `read()` handler but returns a
+    /// `ZeroCopyReadBody` that emits the `Bytes` data payload without copying it
+    /// through prost's encoder.
+    async fn zero_copy_read(
+        &self,
+        read_request: ReadRequest,
+        metadata: &http::HeaderMap,
+    ) -> Result<
+        http::Response<tonic::body::Body>,
+        Status,
+    > {
+        let start_time = Instant::now();
+
+        let is_worker = metadata.contains_key("x-nativelink-worker");
+        let resource_info = ResourceInfo::new(&read_request.resource_name, false)?;
+        let instance_name = resource_info.instance_name.as_ref();
+        let expected_size = resource_info.expected_size as u64;
+        let instance = self
+            .instance_infos
+            .get(instance_name)
+            .err_tip(|| format!("'instance_name' not configured for '{instance_name}'"))
+            .map_err(Into::<Status>::into)?;
+
+        // Track read request.
+        instance
+            .metrics
+            .read_requests_total
+            .fetch_add(1, Ordering::Relaxed);
+
+        let store = instance.store.clone();
+        let digest =
+            DigestInfo::try_new(resource_info.hash.as_ref(), resource_info.expected_size)
+                .map_err(Into::<Status>::into)?;
+
+        // GrpcStore shortcut: proxy the read directly.
+        if let Some(grpc_store) = store.downcast_ref::<GrpcStore>(Some(digest.into())) {
+            let stream = Box::pin(
+                grpc_store
+                    .read(Request::new(read_request))
+                    .await
+                    .map_err(Into::<Status>::into)?,
+            );
+            let body = ZeroCopyReadBody::new(stream);
+            let mut http_response =
+                http::Response::new(tonic::body::Body::new(body));
+            http_response.headers_mut().insert(
+                http::header::CONTENT_TYPE,
+                tonic::metadata::GRPC_CONTENT_TYPE,
+            );
+            return Ok(http_response);
+        }
+
+        let digest_function = resource_info
+            .digest_function
+            .as_deref()
+            .map_or_else(|| Ok(default_digest_hasher_func()), DigestHasherFunc::try_from)
+            .map_err(Into::<Status>::into)?;
+
+        // Covers stream setup only (inner_read returns a Stream).
+        let _stall_guard = StallGuard::new(
+            nativelink_util::stall_detector::DEFAULT_STALL_THRESHOLD,
+            "ByteStream::zero_copy_read",
+        );
+
+        let read_result = self
+            .inner_read(instance, digest, read_request, is_worker)
+            .instrument(error_span!("bytestream_zero_copy_read"))
+            .with_context(
+                make_ctx_for_hash_func(digest_function)
+                    .err_tip(|| "In ByteStreamServer::zero_copy_read")
+                    .map_err(Into::<Status>::into)?,
+            )
+            .await
+            .err_tip(|| "In ByteStreamServer::zero_copy_read");
+
+        // Track metrics.
+        #[allow(clippy::cast_possible_truncation)]
+        let elapsed_ns = start_time.elapsed().as_nanos() as u64;
+        instance
+            .metrics
+            .read_duration_ns
+            .fetch_add(elapsed_ns, Ordering::Relaxed);
+
+        match read_result {
+            Ok(stream) => {
+                debug!(
+                    %digest,
+                    size_bytes = expected_size,
+                    elapsed_ms = start_time.elapsed().as_millis() as u64,
+                    "ByteStream::zero_copy_read: CAS read stream created",
+                );
+                instance
+                    .metrics
+                    .read_requests_success
+                    .fetch_add(1, Ordering::Relaxed);
+                instance
+                    .metrics
+                    .bytes_read_total
+                    .fetch_add(expected_size, Ordering::Relaxed);
+
+                // Wrap in LoggingReadStream to track throughput and log on completion.
+                let logging = LoggingReadStream::new(
+                    Box::pin(stream),
+                    start_time,
+                    digest,
+                    expected_size,
+                );
+
+                let body = ZeroCopyReadBody::new(logging);
+                let mut http_response =
+                    http::Response::new(tonic::body::Body::new(body));
+                http_response.headers_mut().insert(
+                    http::header::CONTENT_TYPE,
+                    tonic::metadata::GRPC_CONTENT_TYPE,
+                );
+                Ok(http_response)
+            }
+            Err(e) => {
+                error!(
+                    %digest,
+                    size_bytes = expected_size,
+                    elapsed_ms = start_time.elapsed().as_millis() as u64,
+                    ?e,
+                    "ByteStream::zero_copy_read: failed",
+                );
+                instance
+                    .metrics
+                    .read_requests_failure
+                    .fetch_add(1, Ordering::Relaxed);
+                Err(e.into())
+            }
+        }
+    }
 }
 
 #[tonic::async_trait]
@@ -1674,7 +1811,9 @@ impl tower::Service<http::Request<tonic::body::Body>> for ZeroCopyByteStreamServ
     }
 
     fn call(&mut self, req: http::Request<tonic::body::Body>) -> Self::Future {
-        if req.uri().path() == "/google.bytestream.ByteStream/Write" {
+        let path = req.uri().path();
+
+        if path == "/google.bytestream.ByteStream/Write" {
             let inner = self.inner.clone();
             Box::pin(async move {
                 let (parts, body) = req.into_parts();
@@ -1704,8 +1843,25 @@ impl tower::Service<http::Request<tonic::body::Body>> for ZeroCopyByteStreamServ
                     }
                 }
             })
+        } else if path == "/google.bytestream.ByteStream/Read" {
+            let inner = self.inner.clone();
+            Box::pin(async move {
+                let (parts, body) = req.into_parts();
+                let metadata = parts.headers;
+
+                // Decode the unary ReadRequest from the HTTP body.
+                let read_request: ReadRequest = match decode_unary_request(body).await {
+                    Ok(req) => req,
+                    Err(status) => return Ok(status.into_http()),
+                };
+
+                match inner.zero_copy_read(read_request, &metadata).await {
+                    Ok(http_response) => Ok(http_response),
+                    Err(status) => Ok(status.into_http()),
+                }
+            })
         } else {
-            // Delegate Read and QueryWriteStatus to the standard tonic path.
+            // Delegate QueryWriteStatus to the standard tonic path.
             self.tonic_service.call(req)
         }
     }

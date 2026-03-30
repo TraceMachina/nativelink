@@ -33,8 +33,9 @@
 use core::pin::Pin;
 use core::task::{Context, Poll};
 
-use bytes::{Buf, Bytes};
-use nativelink_proto::google::bytestream::WriteRequest;
+use bytes::{Buf, Bytes, BytesMut};
+use futures::Stream;
+use nativelink_proto::google::bytestream::{ReadResponse, WriteRequest};
 use prost::Message;
 use tonic::Status;
 
@@ -304,7 +305,7 @@ where
 pub fn encode_grpc_unary_response<M: Message>(response: &M) -> Bytes {
     let encoded = response.encode_to_vec();
     let len = encoded.len();
-    let mut buf = bytes::BytesMut::with_capacity(GRPC_HEADER_SIZE + len);
+    let mut buf = BytesMut::with_capacity(GRPC_HEADER_SIZE + len);
     buf.extend_from_slice(&[0]); // no compression
     buf.extend_from_slice(&(len as u32).to_be_bytes());
     buf.extend_from_slice(&encoded);
@@ -365,12 +366,198 @@ impl http_body::Body for GrpcUnaryBody {
     }
 }
 
+/// Encode a u64 value as a protobuf varint into `buf`, returning the number
+/// of bytes written. Maximum 10 bytes for a 64-bit value.
+#[inline]
+fn encode_varint(mut value: u64, buf: &mut [u8; 10]) -> usize {
+    let mut i = 0;
+    loop {
+        if value < 0x80 {
+            buf[i] = value as u8;
+            return i + 1;
+        }
+        buf[i] = (value as u8 & 0x7F) | 0x80;
+        value >>= 7;
+        i += 1;
+    }
+}
+
+/// Pending data to yield as the next frame, after we already emitted the
+/// gRPC header frame for a `ReadResponse`.
+enum PendingFrame {
+    /// No pending data — poll the stream for the next message.
+    None,
+    /// Yield this `Bytes` payload as a DATA frame, then go back to polling.
+    Data(Bytes),
+}
+
+/// HTTP body that encodes a `Stream<Item = Result<ReadResponse, Status>>` as
+/// gRPC wire format without copying the data payload.
+///
+/// For each `ReadResponse`, this body emits two HTTP/2 DATA frames:
+/// 1. A small (~9 byte) header frame containing the 5-byte gRPC header
+///    (compression flag + message length) plus the protobuf field tag and
+///    varint length prefix for the `data` field.
+/// 2. The original `Bytes` data — passed through with zero copies.
+///
+/// This eliminates the ~3 MiB memcpy per chunk that tonic's `ProstEncoder`
+/// performs when encoding `ReadResponse` messages.
+pub struct ZeroCopyReadBody<S> {
+    /// The inner stream producing `ReadResponse` messages.
+    stream: Option<S>,
+    /// Pending frame to emit before polling the stream again.
+    pending: PendingFrame,
+    /// Whether the body has finished (stream exhausted or error).
+    done: bool,
+}
+
+impl<S> core::fmt::Debug for ZeroCopyReadBody<S> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ZeroCopyReadBody")
+            .field("done", &self.done)
+            .finish()
+    }
+}
+
+impl<S> ZeroCopyReadBody<S>
+where
+    S: Stream<Item = Result<ReadResponse, Status>> + Send + Unpin + 'static,
+{
+    pub fn new(stream: S) -> Self {
+        Self {
+            stream: Some(stream),
+            pending: PendingFrame::None,
+            done: false,
+        }
+    }
+
+    /// Build gRPC trailers from a `Status`, using tonic's own encoding
+    /// (percent-encoded message, base64-encoded details, custom metadata).
+    fn status_trailers(status: &Status) -> http::HeaderMap {
+        let mut trailers = http::HeaderMap::new();
+        // add_header handles percent-encoding of grpc-message and
+        // base64-encoding of grpc-status-details-bin per the gRPC spec.
+        if let Err(fallback) = status.add_header(&mut trailers) {
+            // If header encoding fails, fall back to code-only trailers.
+            let code: i32 = fallback.code().into();
+            trailers.insert("grpc-status", http::HeaderValue::from(code));
+        }
+        trailers
+    }
+}
+
+impl<S> http_body::Body for ZeroCopyReadBody<S>
+where
+    S: Stream<Item = Result<ReadResponse, Status>> + Send + Unpin + 'static,
+{
+    type Data = Bytes;
+    type Error = Status;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+        let this = self.get_mut();
+
+        if this.done {
+            return Poll::Ready(None);
+        }
+
+        // If we have a pending data frame from a previous poll, yield it now.
+        match core::mem::replace(&mut this.pending, PendingFrame::None) {
+            PendingFrame::Data(data) => {
+                return Poll::Ready(Some(Ok(http_body::Frame::data(data))));
+            }
+            PendingFrame::None => {}
+        }
+
+        // Poll the inner stream for the next ReadResponse.
+        let stream = match &mut this.stream {
+            Some(s) => s,
+            None => {
+                this.done = true;
+                return Poll::Ready(None);
+            }
+        };
+
+        match Pin::new(stream).poll_next(cx) {
+            Poll::Ready(Some(Ok(response))) => {
+                let data = response.data;
+                let data_len = data.len();
+
+                // Build the gRPC header frame:
+                // [0u8 compression][u32 BE total_msg_len][0x52 tag][varint data_len]
+                //
+                // ReadResponse only has one field: `bytes data = 10`.
+                // Protobuf tag = (10 << 3) | 2 = 0x52 (field 10, wire type 2).
+                // When data is empty, prost skips the field entirely,
+                // so total_msg_len = 0 and we emit no tag/varint.
+                if data_len == 0 {
+                    // Empty data: gRPC message body is 0 bytes.
+                    let mut header = BytesMut::with_capacity(GRPC_HEADER_SIZE);
+                    header.extend_from_slice(&[0u8]); // no compression
+                    header.extend_from_slice(&0u32.to_be_bytes());
+                    return Poll::Ready(Some(Ok(http_body::Frame::data(header.freeze()))));
+                }
+
+                let mut varint_buf = [0u8; 10];
+                let varint_len = encode_varint(data_len as u64, &mut varint_buf);
+
+                // total_msg_len = 1 (tag byte) + varint_len + data_len
+                let total_msg_len = 1 + varint_len + data_len;
+
+                if total_msg_len > u32::MAX as usize {
+                    this.stream = None;
+                    this.done = true;
+                    let status = Status::internal("gRPC message exceeds 4GiB limit");
+                    let trailers = Self::status_trailers(&status);
+                    return Poll::Ready(Some(Ok(http_body::Frame::trailers(trailers))));
+                }
+
+                let header_size = GRPC_HEADER_SIZE + 1 + varint_len;
+                let mut header = BytesMut::with_capacity(header_size);
+                header.extend_from_slice(&[0u8]); // no compression
+                #[allow(clippy::cast_possible_truncation)]
+                header.extend_from_slice(&(total_msg_len as u32).to_be_bytes());
+                header.extend_from_slice(&[0x52]); // protobuf tag for field 10, wire type 2
+                header.extend_from_slice(&varint_buf[..varint_len]);
+
+                // Stash the data for the next poll_frame call.
+                this.pending = PendingFrame::Data(data);
+
+                Poll::Ready(Some(Ok(http_body::Frame::data(header.freeze()))))
+            }
+            Poll::Ready(Some(Err(status))) => {
+                // Stream error: emit trailers with grpc-status.
+                let trailers = Self::status_trailers(&status);
+                this.stream = None;
+                this.done = true;
+                Poll::Ready(Some(Ok(http_body::Frame::trailers(trailers))))
+            }
+            Poll::Ready(None) => {
+                // Stream finished successfully: emit trailers with grpc-status: 0.
+                this.stream = None;
+                let mut trailers = http::HeaderMap::new();
+                trailers.insert("grpc-status", http::HeaderValue::from_static("0"));
+                this.done = true;
+                Poll::Ready(Some(Ok(http_body::Frame::trailers(trailers))))
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.done
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
 
     use bytes::BufMut;
     use futures::StreamExt;
+    use http_body::Body as HttpBody;
 
     use super::*;
 
@@ -524,5 +711,173 @@ mod tests {
         let decoded = stream.next().await.unwrap().unwrap();
         assert_eq!(decoded.data.len(), 4096);
         // The data should be the same bytes (prost uses Bytes for bytes fields).
+    }
+
+    // --- ZeroCopyReadBody tests ---
+
+    /// Decode all gRPC frames from DATA frames emitted by `ZeroCopyReadBody`,
+    /// returning the decoded `ReadResponse` messages.
+    async fn decode_read_body(
+        body: ZeroCopyReadBody<impl Stream<Item = Result<ReadResponse, Status>> + Send + Unpin + 'static>,
+    ) -> Vec<ReadResponse> {
+        use core::pin::pin;
+
+        let mut pinned = pin!(body);
+        let mut decoder = ZeroCopyGrpcFrameDecoder::new();
+        let mut messages = Vec::new();
+
+        loop {
+            let frame: Option<Result<http_body::Frame<Bytes>, Status>> =
+                std::future::poll_fn(|cx| HttpBody::poll_frame(pinned.as_mut(), cx)).await;
+            match frame {
+                Some(Ok(frame)) => {
+                    if let Ok(data) = frame.into_data() {
+                        decoder.push_frame(data);
+                        // Try to decode messages after each frame.
+                        while let Ok(Some(msg)) = decoder.try_decode_next_message::<ReadResponse>() {
+                            messages.push(msg);
+                        }
+                    }
+                    // Trailers frame: stream is done.
+                }
+                Some(Err(status)) => panic!("unexpected error: {status:?}"),
+                None => break,
+            }
+        }
+
+        messages
+    }
+
+    /// Make a simple stream from a vec of ReadResponse items.
+    fn read_response_stream(
+        items: Vec<Result<ReadResponse, Status>>,
+    ) -> impl Stream<Item = Result<ReadResponse, Status>> + Unpin {
+        futures::stream::iter(items)
+    }
+
+    #[tokio::test]
+    async fn test_zero_copy_read_body_single_chunk() {
+        let data = Bytes::from(vec![42u8; 1024]);
+        let responses = vec![Ok(ReadResponse { data: data.clone() })];
+        let body = ZeroCopyReadBody::new(read_response_stream(responses));
+
+        let decoded = decode_read_body(body).await;
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[0].data, data);
+    }
+
+    #[tokio::test]
+    async fn test_zero_copy_read_body_multiple_chunks() {
+        let data1 = Bytes::from(vec![1u8; 3 * 1024 * 1024]); // 3 MiB
+        let data2 = Bytes::from(vec![2u8; 1024]);
+        let data3 = Bytes::from(vec![3u8; 512]);
+        let responses = vec![
+            Ok(ReadResponse { data: data1.clone() }),
+            Ok(ReadResponse { data: data2.clone() }),
+            Ok(ReadResponse { data: data3.clone() }),
+        ];
+        let body = ZeroCopyReadBody::new(read_response_stream(responses));
+
+        let decoded = decode_read_body(body).await;
+        assert_eq!(decoded.len(), 3);
+        assert_eq!(decoded[0].data, data1);
+        assert_eq!(decoded[1].data, data2);
+        assert_eq!(decoded[2].data, data3);
+    }
+
+    #[tokio::test]
+    async fn test_zero_copy_read_body_empty_data() {
+        // Empty data field: prost skips the field, so gRPC message body = 0 bytes.
+        let responses = vec![Ok(ReadResponse { data: Bytes::new() })];
+        let body = ZeroCopyReadBody::new(read_response_stream(responses));
+
+        let decoded = decode_read_body(body).await;
+        assert_eq!(decoded.len(), 1);
+        assert!(decoded[0].data.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_zero_copy_read_body_empty_stream() {
+        // No responses at all.
+        let responses: Vec<Result<ReadResponse, Status>> = vec![];
+        let body = ZeroCopyReadBody::new(read_response_stream(responses));
+
+        let decoded = decode_read_body(body).await;
+        assert!(decoded.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_zero_copy_read_body_error_produces_trailers() {
+        use core::pin::pin;
+
+        let responses = vec![
+            Ok(ReadResponse { data: Bytes::from_static(b"hello") }),
+            Err(Status::not_found("blob gone")),
+        ];
+        let body = ZeroCopyReadBody::new(read_response_stream(responses));
+        let mut pinned = pin!(body);
+
+        let mut saw_data = false;
+        let mut saw_trailers = false;
+
+        loop {
+            let frame: Option<Result<http_body::Frame<Bytes>, Status>> =
+                std::future::poll_fn(|cx| HttpBody::poll_frame(pinned.as_mut(), cx)).await;
+            match frame {
+                Some(Ok(frame)) => {
+                    if frame.is_data() {
+                        saw_data = true;
+                    } else if frame.is_trailers() {
+                        let trailers = frame.into_trailers().unwrap();
+                        // grpc-status for NOT_FOUND = 5
+                        assert_eq!(
+                            trailers.get("grpc-status").unwrap().to_str().unwrap(),
+                            "5"
+                        );
+                        assert!(trailers.get("grpc-message").is_some());
+                        saw_trailers = true;
+                    }
+                }
+                Some(Err(_)) => panic!("should not get Err from body"),
+                None => break,
+            }
+        }
+
+        assert!(saw_data, "should have emitted data frames");
+        assert!(saw_trailers, "should have emitted error trailers");
+    }
+
+    #[test]
+    fn test_encode_varint_values() {
+        let mut buf = [0u8; 10];
+
+        // 0
+        assert_eq!(encode_varint(0, &mut buf), 1);
+        assert_eq!(buf[0], 0);
+
+        // 1
+        assert_eq!(encode_varint(1, &mut buf), 1);
+        assert_eq!(buf[0], 1);
+
+        // 127 (single byte max)
+        assert_eq!(encode_varint(127, &mut buf), 1);
+        assert_eq!(buf[0], 127);
+
+        // 128 (first two-byte value)
+        assert_eq!(encode_varint(128, &mut buf), 2);
+        assert_eq!(buf[0], 0x80);
+        assert_eq!(buf[1], 0x01);
+
+        // 300
+        assert_eq!(encode_varint(300, &mut buf), 2);
+        assert_eq!(buf[0], 0xAC);
+        assert_eq!(buf[1], 0x02);
+
+        // 3 * 1024 * 1024 = 3145728 (typical chunk size)
+        let len = encode_varint(3 * 1024 * 1024, &mut buf);
+        assert_eq!(len, 4);
+        // Verify round-trip via prost decode
+        let decoded = prost::decode_length_delimiter(&buf[..len]).unwrap();
+        assert_eq!(decoded, 3 * 1024 * 1024);
     }
 }
