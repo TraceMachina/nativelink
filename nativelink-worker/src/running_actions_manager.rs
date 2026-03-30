@@ -3121,27 +3121,43 @@ impl RunningAction for RunningActionImpl {
     }
 
     async fn prepare_action(self: Arc<Self>) -> Result<Arc<Self>, Error> {
+        let operation_id = self.operation_id.clone();
+        let start = std::time::Instant::now();
+        info!(%operation_id, "action: prepare_action starting (input fetch + materialization)");
         let res = self
             .metrics()
             .clone()
             .prepare_action
             .wrap(Self::inner_prepare_action(self))
             .await;
-        if let Err(ref e) = res {
-            warn!(?e, "Error during prepare_action");
+        match &res {
+            Ok(_) => info!(
+                %operation_id,
+                elapsed_ms = start.elapsed().as_millis() as u64,
+                "action: prepare_action complete",
+            ),
+            Err(e) => warn!(%operation_id, ?e, "action: prepare_action failed"),
         }
         res
     }
 
     async fn execute(self: Arc<Self>) -> Result<Arc<Self>, Error> {
+        let operation_id = self.operation_id.clone();
+        let start = std::time::Instant::now();
+        info!(%operation_id, "action: execute starting (command spawn)");
         let res = self
             .metrics()
             .clone()
             .execute
             .wrap(Self::inner_execute(self))
             .await;
-        if let Err(ref e) = res {
-            warn!(?e, "Error during prepare_action");
+        match &res {
+            Ok(_) => info!(
+                %operation_id,
+                elapsed_ms = start.elapsed().as_millis() as u64,
+                "action: execute complete",
+            ),
+            Err(e) => warn!(%operation_id, ?e, "action: execute failed"),
         }
         res
     }
@@ -3197,14 +3213,20 @@ impl RunningAction for RunningActionImpl {
             Ok(_) if stall_warned.load(Ordering::Relaxed) => {
                 info!(
                     ?operation_id,
-                    elapsed_s = upload_start.elapsed().as_secs(),
-                    "upload_results: completed after stall",
+                    elapsed_ms = upload_start.elapsed().as_millis() as u64,
+                    "action: upload_results completed after stall",
+                );
+            }
+            Ok(_) => {
+                info!(
+                    ?operation_id,
+                    elapsed_ms = upload_start.elapsed().as_millis() as u64,
+                    "action: upload_results complete",
                 );
             }
             Err(e) => {
-                warn!(?operation_id, ?e, "Error during upload_results");
+                warn!(?operation_id, ?e, "action: upload_results failed");
             }
-            _ => {}
         }
         res
     }
