@@ -1385,12 +1385,19 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                             // is freed for new work.
                                             drop(grpc_client.execution_complete(complete).await);
 
-                                            if e.code == Code::NotFound {
+                                            // Only convert to FAILED_PRECONDITION if this
+                                            // is a CAS blob miss (from FastSlowStore). Other
+                                            // NotFound errors (e.g., command binary not found,
+                                            // missing output files) should propagate as-is.
+                                            let err_msg = format!("{e:?}");
+                                            if e.code == Code::NotFound
+                                                && err_msg.contains("not found in")
+                                            {
                                                 // Per REAPI spec, missing inputs should return
                                                 // FAILED_PRECONDITION so the client re-uploads.
                                                 warn!(
                                                     ?e,
-                                                    "Missing CAS inputs during prepare_action, returning FAILED_PRECONDITION"
+                                                    "Missing CAS inputs, returning FAILED_PRECONDITION"
                                                 );
                                                 let action_result = ActionResult {
                                                     error: Some(make_err!(

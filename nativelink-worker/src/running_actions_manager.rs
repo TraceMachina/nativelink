@@ -1964,6 +1964,55 @@ async fn process_side_channel_file(
     }))
 }
 
+/// Drop guard that ensures `release_direct_use` is called even if the
+/// enclosing async task is cancelled between taking the digest and
+/// completing the release. On normal completion, call `defuse()` to
+/// prevent the redundant background release.
+struct DirectUseReleaseGuard {
+    cache: Option<Arc<crate::directory_cache::DirectoryCache>>,
+    digest: Option<DigestInfo>,
+}
+
+impl DirectUseReleaseGuard {
+    fn new(
+        cache: Option<&Arc<crate::directory_cache::DirectoryCache>>,
+        digest: Option<DigestInfo>,
+    ) -> Self {
+        Self {
+            cache: digest
+                .as_ref()
+                .and_then(|_| cache.cloned()),
+            digest,
+        }
+    }
+
+    /// Disarm the guard after the release has been performed successfully.
+    fn defuse(&mut self) {
+        self.digest = None;
+    }
+}
+
+impl Drop for DirectUseReleaseGuard {
+    fn drop(&mut self) {
+        let Some(cache) = self.cache.take() else {
+            return;
+        };
+        let Some(digest) = self.digest.take() else {
+            return;
+        };
+        // Task was cancelled before release_direct_use completed.
+        // Spawn a last-resort background release so the ref_count
+        // does not leak permanently.
+        warn!(
+            hash = %&digest.packed_hash().to_string()[..12],
+            "DirectUseReleaseGuard: task cancelled, releasing ref_count in background"
+        );
+        background_spawn!("release_direct_use_guard", async move {
+            cache.release_direct_use(&digest).await;
+        });
+    }
+}
+
 async fn do_cleanup(
     running_actions_manager: &Arc<RunningActionsManagerImpl>,
     operation_id: &OperationId,
@@ -1979,10 +2028,17 @@ async fn do_cleanup(
 
     debug!("Worker cleaning up");
 
+    // Guard ensures release_direct_use fires even if this task is cancelled.
+    let mut release_guard = DirectUseReleaseGuard::new(
+        running_actions_manager.directory_cache.as_ref(),
+        direct_use_digest.clone(),
+    );
+
     // Release the directory cache ref_count if direct-use mode was active.
     if let Some(digest) = &direct_use_digest {
         if let Some(cache) = &running_actions_manager.directory_cache {
             cache.release_direct_use(digest).await;
+            release_guard.defuse();
         }
     }
 

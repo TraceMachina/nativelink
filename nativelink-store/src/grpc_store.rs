@@ -1074,9 +1074,10 @@ impl GrpcStore {
                         if local_state.bytes_received_this_stream == 0 {
                             return Some((
                                 RetryResult::Retry(make_err!(
-                                    Code::DataLoss,
+                                    Code::NotFound,
                                     "GrpcStore: ByteStream returned 0 bytes \
-                                     for non-empty blob (stale worker data?)"
+                                     for non-empty blob (stale worker data?) — \
+                                     not found in remote store"
                                 )),
                                 local_state,
                             ));
