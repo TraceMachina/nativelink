@@ -406,8 +406,8 @@ pub fn h3_channel(endpoint_config: &GrpcEndpoint) -> Result<QuicChannel, Error> 
     let mut ack_freq = quinn::AckFrequencyConfig::default();
     ack_freq.max_ack_delay(Some(Duration::from_millis(5)));
     transport.ack_frequency_config(Some(ack_freq));
-    // Allow idle connections to persist for 30s before cleanup.
-    transport.max_idle_timeout(Some(Duration::from_secs(30).try_into().unwrap()));
+    // Allow idle connections to persist for 60s before cleanup.
+    transport.max_idle_timeout(Some(Duration::from_secs(60).try_into().unwrap()));
     // BBR handles bursty workloads better than Cubic on high-BDP LAN.
     transport.congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
     // Send QUIC keepalives every 5s to detect dead connections and

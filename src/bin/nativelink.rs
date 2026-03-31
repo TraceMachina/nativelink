@@ -1007,7 +1007,10 @@ async fn inner_main(
             let mut ack_freq = quinn::AckFrequencyConfig::default();
             ack_freq.max_ack_delay(Some(Duration::from_millis(5)));
             transport.ack_frequency_config(Some(ack_freq));
-            transport.max_idle_timeout(Some(Duration::from_secs(30).try_into().unwrap()));
+            transport.max_idle_timeout(Some(Duration::from_secs(60).try_into().unwrap()));
+            // Server-side keepalives prevent idle timeout when clients stall
+            // mid-upload (flow control, network congestion, CPU load).
+            transport.keep_alive_interval(Some(Duration::from_secs(5)));
             // BBR handles bursty workloads better than Cubic on high-BDP LAN.
             transport.congestion_controller_factory(Arc::new(
                 quinn::congestion::BbrConfig::default(),
