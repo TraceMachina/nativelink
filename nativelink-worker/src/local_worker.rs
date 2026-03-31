@@ -857,7 +857,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
         state: &BlobsAvailableState,
         running_actions_manager: &Arc<U>,
         is_first: bool,
-    ) {
+    ) -> Result<(), Error> {
         let (digest_infos, evicted_digests) = if is_first {
             // Full snapshot: scan everything once.
             let all = state.fs_store.get_all_digests_with_timestamps();
@@ -924,7 +924,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
             && removed_subtree_count == 0
         {
             trace!("BlobsAvailable: no changes since last tick, skipping");
-            return;
+            return Ok(());
         }
 
         let load = get_cpu_load_pct();
@@ -947,6 +947,15 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
         };
 
         if let Err(err) = grpc_client.blobs_available(notification).await {
+            // If the server rejected us because we're not in the worker map,
+            // propagate the error to trigger a reconnect.
+            let msg = format!("{err:?}");
+            if msg.contains("Worker not found") {
+                return Err(make_err!(
+                    Code::Internal,
+                    "BlobsAvailable rejected: worker not found in scheduler, will reconnect"
+                ));
+            }
             warn!(
                 ?err,
                 new_or_touched_count,
@@ -968,6 +977,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                 "Sent periodic BlobsAvailable"
             );
         }
+        Ok(())
     }
 
     async fn run(
@@ -1009,7 +1019,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                         &ram,
                         true,
                     )
-                    .await;
+                    .await?;
                     loop {
                         // Wait for either:
                         // 1. A blob insert/eviction notification (immediate wake), or
@@ -1024,7 +1034,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                             &ram,
                             false,
                         )
-                        .await;
+                        .await?;
                     }
                 }
                 .boxed(),
@@ -1057,9 +1067,12 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                 "Got ConnectionResult in LocalWorker::run which should never happen"
                             ));
                         }
-                        // TODO(palfrey) We should possibly do something with this notification.
                         Update::Disconnect(()) => {
                             self.metrics.disconnects_received.inc();
+                            return Err(make_err!(
+                                Code::Internal,
+                                "received disconnect from scheduler, will reconnect"
+                            ));
                         }
                         Update::KeepAlive(()) => {
                             self.metrics.keep_alives_received.inc();
