@@ -567,31 +567,59 @@ impl WorkerProxyStore {
         }
 
         if is_worker {
+            // When a worker asks the server for a blob that the server doesn't
+            // have, return NotFound directly. Do NOT generate a redirect to
+            // other workers — that creates a loop: worker → server → redirect
+            // to workers → workers ask server → redirect → ...
+            // Workers handle their own peer fetching via WorkerProxyStore on
+            // the worker side with race_peers enabled.
             let digest = key.borrow().into_digest();
-            let workers = self.locality_map.read().lookup_workers(&digest);
-            if workers.is_empty() {
-                return Err(make_err!(
-                    Code::NotFound,
-                    "Blob {digest:?} not found in inner store or locality map"
-                ));
-            }
-            let endpoints = workers.join(",");
-            debug!(
-                ?digest,
-                endpoints,
-                "WorkerProxyStore: redirecting worker to peer endpoints"
-            );
             return Err(make_err!(
-                Code::FailedPrecondition,
-                "{REDIRECT_PREFIX}{endpoints}|"
+                Code::NotFound,
+                "Blob {digest:?} not found in inner store (worker request, no redirect)"
             ));
         }
 
+        let bytes_before_workers = writer.get_bytes_written();
         if self
             .try_read_from_worker(key.borrow(), writer, offset, length)
             .await?
         {
             return Ok(());
+        }
+
+        // All workers failed. The blob may have arrived in the inner store
+        // while we were trying workers (e.g. another client uploaded it, or
+        // a backfill completed). Re-check before giving up.
+        //
+        // Only safe to retry if no bytes were written to the writer by any
+        // worker — otherwise the consumer would receive overlapping data.
+        let bytes_written_by_workers = writer.get_bytes_written() - bytes_before_workers;
+        if bytes_written_by_workers > 0 {
+            return Err(make_err!(
+                Code::Internal,
+                "Blob {:?} worker transfer wrote {} bytes then failed, \
+                 cannot retry inner store without data corruption",
+                key.borrow().into_digest(),
+                bytes_written_by_workers
+            ));
+        }
+        match self
+            .inner
+            .get_part(key.borrow(), writer, offset, length)
+            .await
+        {
+            Ok(()) => {
+                info!(
+                    digest = ?key.borrow().into_digest(),
+                    "WorkerProxyStore: inner store retry succeeded after all workers failed"
+                );
+                return Ok(());
+            }
+            Err(e) if e.code == Code::NotFound => {
+                // Still not found — fall through to the final error.
+            }
+            Err(e) => return Err(e),
         }
 
         Err(make_err!(
@@ -1265,10 +1293,13 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
-    // 10. IS_WORKER_REQUEST=true gets redirect with peer endpoints.
+    // 10. IS_WORKER_REQUEST=true gets NotFound (no redirect to avoid loops).
+    //     Workers handle peer fetching via their own WorkerProxyStore with
+    //     race_peers enabled. Generating redirects from the server to other
+    //     workers creates a loop: worker → server → redirect → workers → ...
     // ---------------------------------------------------------------
     #[nativelink_test]
-    async fn test_worker_request_gets_redirect() -> Result<(), Error> {
+    async fn test_worker_request_gets_not_found_no_redirect() -> Result<(), Error> {
         let (store, locality_map) = make_proxy_store();
 
         let digest = DigestInfo::try_new(VALID_HASH1, 100)?;
@@ -1282,21 +1313,17 @@ mod tests {
             .scope(true, store.get_part_unchunked(digest, 0, None))
             .await;
 
-        assert!(result.is_err(), "Expected redirect error");
+        assert!(result.is_err(), "Expected NotFound error");
         let err = result.unwrap_err();
         assert_eq!(
             err.code,
-            Code::FailedPrecondition,
-            "Redirect should use FailedPrecondition, got: {err:?}"
+            Code::NotFound,
+            "Worker request should get NotFound (not redirect), got: {err:?}"
         );
         let msg = err.message_string();
         assert!(
-            msg.contains(REDIRECT_PREFIX),
-            "Error should contain redirect prefix: {msg}"
-        );
-        assert!(
-            msg.contains(peer_endpoint),
-            "Error should contain peer endpoint: {msg}"
+            !msg.contains(REDIRECT_PREFIX),
+            "Worker request should NOT contain redirect prefix: {msg}"
         );
 
         Ok(())

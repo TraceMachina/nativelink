@@ -15,7 +15,7 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasher, Hasher};
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use crate::common::DigestInfo;
 use parking_lot::RwLock;
@@ -181,9 +181,16 @@ type DigestSet = HashSet<DigestInfo, DigestBuildHasher>;
 /// - Per-digest endpoint lists use Vec with linear scan instead of HashMap
 ///   (only ~10 workers, so cache-friendly linear scan beats hashing).
 ///
-/// Cleanup relies entirely on explicit eviction notifications and worker
-/// disconnect (no TTL — EvictingMap's `max_seconds_since_last_access` defaults
-/// to unlimited).
+/// Entries older than this without a refresh are considered stale and skipped
+/// during lookup. Workers refresh timestamps on every BlobsAvailable update
+/// (typically every ~500ms), so 120s means the worker has missed ~240 updates
+/// — almost certainly disconnected or the blob was evicted before the
+/// notification reached us.
+const LOCALITY_TTL: Duration = Duration::from_secs(120);
+
+/// Cleanup relies on explicit eviction notifications, worker disconnect,
+/// and a TTL check at lookup time. Entries older than `LOCALITY_TTL` without
+/// a refresh are skipped during `lookup_workers`.
 #[derive(Debug)]
 pub struct BlobLocalityMap {
     /// digest → endpoint list with timestamps
@@ -270,39 +277,57 @@ impl BlobLocalityMap {
         }
     }
 
-    /// Returns true if any worker endpoint has the given digest.
-    /// This is cheaper than `lookup_workers` because it avoids allocating.
+    /// Returns true if any worker endpoint has the given digest with a
+    /// non-stale timestamp (within `LOCALITY_TTL`).
     pub fn has_digest(&self, digest: &DigestInfo) -> bool {
-        self.blobs
-            .get(digest)
-            .is_some_and(|eps| !eps.is_empty())
+        let Some(endpoints) = self.blobs.get(digest) else {
+            return false;
+        };
+        let now = SystemTime::now();
+        endpoints.iter().any(|(_, ts)| {
+            now.duration_since(*ts)
+                .map_or(true, |age| age < LOCALITY_TTL)
+        })
     }
 
     /// Look up which worker endpoints have the given digest.
-    /// Returns all endpoints that have registered this digest.
+    /// Returns endpoints whose timestamp is within `LOCALITY_TTL` of now.
     ///
     /// Workers refresh their timestamps on every BlobsAvailable update
-    /// (typically every ~500ms), so stale entries are only possible if
-    /// a worker disconnects without cleanup. Disconnects are handled
-    /// via `remove_endpoint`, so we can simply return all endpoints.
+    /// (typically every ~500ms). Entries older than 120s without a refresh
+    /// are likely stale (blob evicted before the eviction notification
+    /// reached us) and are filtered out.
     pub fn lookup_workers(&self, digest: &DigestInfo) -> Vec<Arc<str>> {
         let Some(endpoints) = self.blobs.get(digest) else {
             return Vec::new();
         };
 
-        endpoints.keys().cloned().collect()
+        let now = SystemTime::now();
+        endpoints
+            .iter()
+            .filter(|(_, ts)| {
+                now.duration_since(**ts)
+                    .map_or(true, |age| age < LOCALITY_TTL)
+            })
+            .map(|(ep, _)| ep.clone())
+            .collect()
     }
 
     /// Look up which worker endpoints have the given digest, including the
     /// timestamp of when the blob was last registered/refreshed on each endpoint.
-    /// Useful for preferring workers with more recently-refreshed locality data.
+    /// Filters out entries older than `LOCALITY_TTL`, same as `lookup_workers`.
     pub fn lookup_workers_with_timestamps(&self, digest: &DigestInfo) -> Vec<(Arc<str>, SystemTime)> {
         let Some(endpoints) = self.blobs.get(digest) else {
             return Vec::new();
         };
 
+        let now = SystemTime::now();
         endpoints
             .iter()
+            .filter(|(_, ts)| {
+                now.duration_since(**ts)
+                    .map_or(true, |age| age < LOCALITY_TTL)
+            })
             .map(|(endpoint, ts)| (endpoint.clone(), *ts))
             .collect()
     }

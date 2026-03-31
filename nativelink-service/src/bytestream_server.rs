@@ -1500,10 +1500,14 @@ impl ByteStreamServer {
         // GrpcStore shortcut: proxy the read directly.
         if let Some(grpc_store) = store.downcast_ref::<GrpcStore>(Some(digest.into())) {
             let stream = Box::pin(
-                grpc_store
-                    .read(Request::new(read_request))
-                    .await
-                    .map_err(Into::<Status>::into)?,
+                IS_WORKER_REQUEST
+                    .scope(is_worker, async {
+                        grpc_store
+                            .read(Request::new(read_request))
+                            .await
+                            .map_err(Into::<Status>::into)
+                    })
+                    .await?,
             );
             let body = ZeroCopyReadBody::new(stream);
             let mut http_response =

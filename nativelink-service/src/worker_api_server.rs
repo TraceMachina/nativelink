@@ -672,6 +672,11 @@ impl WorkerConnection {
 
         // Acquire the write lock once for all mutations to avoid repeated
         // lock acquisition and eliminate inconsistency windows.
+        //
+        // Order matters: evictions BEFORE registrations. This ensures stale
+        // entries are cleaned up before new ones are added, preventing a
+        // window where a digest appears available on a worker that just
+        // evicted it.
         let mut map = locality_map.write();
 
         if is_full_snapshot {

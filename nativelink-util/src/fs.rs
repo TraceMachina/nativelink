@@ -639,10 +639,18 @@ async fn read_file_to_channel_std(
         .map_err(|e| make_err!(Code::Internal, "read task join failed: {e:?}"))
 }
 
-/// Write to `file` via io_uring pwrite, receiving chunks from `reader`.
-/// Eliminates the spawn_blocking thread pool and mpsc channel bridge —
-/// writes are submitted directly to the kernel via io_uring. `Bytes`
-/// buffers are passed by ownership (zero-copy to kernel).
+/// Write to `file` via pipelined io_uring pwrite, receiving chunks from
+/// `reader`. Up to `WRITE_PIPELINE_DEPTH` writes are kept in-flight
+/// simultaneously, overlapping ZFS/kernel processing of one write with
+/// submission of the next. For an 87 MiB blob with 3 MiB chunks this
+/// reduces ~29 sequential round-trips to ~29/8 ≈ 4 pipeline stalls.
+///
+/// The fd is wrapped in `Arc<std::fs::File>` so each in-flight write
+/// can hold its own `Arc` handle (required by `IoFd` ownership semantics
+/// in `tokio_epoll_uring::SystemHandle::write`). Since all writes use
+/// pwrite with explicit offsets, concurrent writes to the same fd are
+/// safe — the kernel handles per-write positioning independently of the
+/// file cursor.
 ///
 /// Falls back to spawn_blocking if io_uring is unavailable at runtime.
 #[cfg(all(feature = "io-uring", target_os = "linux"))]
@@ -650,6 +658,15 @@ pub async fn write_file_from_channel(
     file: FileSlot,
     reader: &mut DropCloserReadHalf,
 ) -> Result<(u64, FileSlot), Error> {
+    use std::sync::Arc;
+
+    use futures::stream::{FuturesOrdered, StreamExt};
+
+    /// Maximum number of io_uring pwrite SQEs in flight simultaneously.
+    /// Balances pipeline depth against memory pressure (each in-flight
+    /// write holds a Bytes buffer, typically 3 MiB).
+    const WRITE_PIPELINE_DEPTH: usize = 8;
+
     if !is_io_uring_available().await {
         return write_file_from_channel_std(file, reader).await;
     }
@@ -666,13 +683,106 @@ pub async fn write_file_from_channel(
         }
     }
 
-    let mut fd = std_file;
-    let mut total: u64 = 0;
+    // Wrap fd in Arc so multiple in-flight writes can each hold a handle.
+    // IoFd is implemented for Arc<T> where T: IoFd, so this works with
+    // system.write() which takes the fd by ownership.
+    let fd_arc = Arc::new(std_file);
+    let mut write_offset: u64 = 0;
+    let mut completed_bytes: u64 = 0;
     let mut max_write_ms: u128 = 0;
     let mut slow_write_count: u32 = 0;
     let task_start = std::time::Instant::now();
 
+    // Each in-flight entry tracks the write future, its chunk size, offset,
+    // and submission timestamp for slow-write diagnostics.
+    struct InFlightMeta {
+        chunk_len: usize,
+        offset: u64,
+        write_start: std::time::Instant,
+    }
+    let mut in_flight: FuturesOrdered<
+        std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = (
+                            (Arc<std::fs::File>, Bytes),
+                            Result<usize, tokio_epoll_uring::Error<std::io::Error>>,
+                        ),
+                    > + Send,
+            >,
+        >,
+    > = FuturesOrdered::new();
+    let mut metas: std::collections::VecDeque<InFlightMeta> = std::collections::VecDeque::new();
+
+    // Helper closure: drain one completed write from the front of the
+    // pipeline, checking for errors and updating diagnostics.
+    // Returns Err on write failure. Updates completed_bytes, max_write_ms,
+    // slow_write_count in place (passed as mutable refs to avoid capture issues).
+    #[inline]
+    fn process_completion(
+        result: (
+            (Arc<std::fs::File>, Bytes),
+            Result<usize, tokio_epoll_uring::Error<std::io::Error>>,
+        ),
+        meta: InFlightMeta,
+        completed_bytes: &mut u64,
+        max_write_ms: &mut u128,
+        slow_write_count: &mut u32,
+    ) -> Result<(), Error> {
+        let ((_returned_fd, _), write_result) = result;
+        let n = match write_result {
+            Ok(n) => n,
+            Err(e) => return Err(uring_err(e, "write_file_from_channel")),
+        };
+
+        // For regular files, pwrite writes the full amount unless the
+        // disk is full. Handle partial writes defensively.
+        if n < meta.chunk_len {
+            return Err(make_err!(
+                Code::Internal,
+                "io_uring partial write: {n}/{} bytes at offset {}",
+                meta.chunk_len,
+                meta.offset
+            ));
+        }
+
+        let write_ms = meta.write_start.elapsed().as_millis();
+        if write_ms > *max_write_ms {
+            *max_write_ms = write_ms;
+        }
+        if write_ms > 100 {
+            *slow_write_count += 1;
+            warn!(
+                write_ms,
+                chunk_len = meta.chunk_len,
+                total_so_far = *completed_bytes,
+                "write_file_from_channel: slow io_uring write (>100ms)"
+            );
+        }
+        *completed_bytes += meta.chunk_len as u64;
+        Ok(())
+    }
+
     loop {
+        // If pipeline is full, await the oldest completion before
+        // accepting more data from the reader.
+        if in_flight.len() >= WRITE_PIPELINE_DEPTH {
+            let result = in_flight
+                .next()
+                .await
+                .ok_or_else(|| make_err!(Code::Internal, "pipeline unexpectedly empty"))?;
+            let meta = metas
+                .pop_front()
+                .ok_or_else(|| make_err!(Code::Internal, "meta queue out of sync"))?;
+            process_completion(
+                result,
+                meta,
+                &mut completed_bytes,
+                &mut max_write_ms,
+                &mut slow_write_count,
+            )?;
+        }
+
         let data = reader
             .recv()
             .await
@@ -680,56 +790,61 @@ pub async fn write_file_from_channel(
         if data.is_empty() {
             break; // EOF
         }
+
         let chunk_len = data.len();
+        let offset = write_offset;
+        write_offset += chunk_len as u64;
+
         let write_start = std::time::Instant::now();
 
-        // Pass Bytes directly — avoids the spawn_blocking + mpsc copy.
-        // The kernel reads from the Bytes heap pointer.
-        let ((returned_fd, _), result) = system.write(fd, total, data).await;
-        fd = returned_fd;
+        // Submit write with a cloned Arc handle to the fd. The kernel
+        // uses pwrite at the explicit offset — no file cursor dependency.
+        let write_fut = system.write(Arc::clone(&fd_arc), offset, data);
+        in_flight.push_back(Box::pin(write_fut));
+        metas.push_back(InFlightMeta {
+            chunk_len,
+            offset,
+            write_start,
+        });
+    }
 
-        let n = match result {
-            Ok(n) => n,
-            Err(e) => return Err(uring_err(e, "write_file_from_channel")),
-        };
-
-        // For regular files, pwrite writes the full amount unless the
-        // disk is full. Handle partial writes defensively.
-        if n < chunk_len {
-            return Err(make_err!(
-                Code::Internal,
-                "io_uring partial write: {n}/{chunk_len} bytes at offset {total}"
-            ));
-        }
-
-        let write_ms = write_start.elapsed().as_millis();
-        if write_ms > max_write_ms {
-            max_write_ms = write_ms;
-        }
-        if write_ms > 100 {
-            slow_write_count += 1;
-            warn!(
-                write_ms,
-                chunk_len,
-                total_so_far = total,
-                "write_file_from_channel: slow io_uring write (>100ms)"
-            );
-        }
-        total += chunk_len as u64;
+    // Drain all remaining in-flight writes.
+    while let Some(result) = in_flight.next().await {
+        let meta = metas
+            .pop_front()
+            .ok_or_else(|| make_err!(Code::Internal, "meta queue out of sync during drain"))?;
+        process_completion(
+            result,
+            meta,
+            &mut completed_bytes,
+            &mut max_write_ms,
+            &mut slow_write_count,
+        )?;
     }
 
     let task_total_ms = task_start.elapsed().as_millis();
     if task_total_ms > 100 {
         warn!(
             task_total_ms,
-            total_bytes = total,
+            total_bytes = completed_bytes,
             max_write_ms,
             slow_write_count,
             "write_file_from_channel: slow total write (>100ms)"
         );
     }
 
-    Ok((total, FileSlot::from_parts(permit, fd)))
+    // Extract the std::fs::File from the Arc. All in-flight writes
+    // have completed and returned their Arc handles, so we should be
+    // the sole owner.
+    let std_file = Arc::try_unwrap(fd_arc).map_err(|arc| {
+        make_err!(
+            Code::Internal,
+            "fd_arc has {} strong refs after all writes completed, expected 1",
+            Arc::strong_count(&arc)
+        )
+    })?;
+
+    Ok((completed_bytes, FileSlot::from_parts(permit, std_file)))
 }
 
 #[cfg(not(all(feature = "io-uring", target_os = "linux")))]

@@ -241,14 +241,12 @@ where
     }
 }
 
-// SAFETY: ZeroCopyWriteStream is Send because both the body (B: Send) and
-// the decoder (owns only Bytes + VecDeque) are Send.
-unsafe impl<B: Send> Send for ZeroCopyWriteStream<B> {}
-
-// ZeroCopyWriteStream is Unpin because Pin<Box<B>> is always Unpin
-// (the pin contract is on the heap-allocated B, not the Box pointer).
-// This allows poll_next to use safe self.get_mut() instead of unsafe.
-impl<B> Unpin for ZeroCopyWriteStream<B> {}
+// Send: auto-derived — Pin<Box<B>> is Send when B: Send, and
+// ZeroCopyGrpcFrameDecoder (BufList + Option<u32>) is Send.
+//
+// Unpin: auto-derived — Pin<Box<B>> is always Unpin (the pin contract
+// is on the heap-allocated B, not the Box pointer), and all other
+// fields are Unpin.
 
 /// Accumulate an HTTP body and decode the single gRPC unary request message.
 ///
@@ -506,19 +504,24 @@ where
                 // total_msg_len = 1 (tag byte) + varint_len + data_len
                 let total_msg_len = 1 + varint_len + data_len;
 
-                if total_msg_len > u32::MAX as usize {
-                    this.stream = None;
-                    this.done = true;
-                    let status = Status::internal("gRPC message exceeds 4GiB limit");
-                    let trailers = Self::status_trailers(&status);
-                    return Poll::Ready(Some(Ok(http_body::Frame::trailers(trailers))));
-                }
+                let total_msg_len_u32 = match u32::try_from(total_msg_len) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        this.stream = None;
+                        this.done = true;
+                        let status =
+                            Status::internal("gRPC message too large for frame header");
+                        let trailers = Self::status_trailers(&status);
+                        return Poll::Ready(Some(Ok(http_body::Frame::trailers(
+                            trailers,
+                        ))));
+                    }
+                };
 
                 let header_size = GRPC_HEADER_SIZE + 1 + varint_len;
                 let mut header = BytesMut::with_capacity(header_size);
                 header.extend_from_slice(&[0u8]); // no compression
-                #[allow(clippy::cast_possible_truncation)]
-                header.extend_from_slice(&(total_msg_len as u32).to_be_bytes());
+                header.extend_from_slice(&total_msg_len_u32.to_be_bytes());
                 header.extend_from_slice(&[0x52]); // protobuf tag for field 10, wire type 2
                 header.extend_from_slice(&varint_buf[..varint_len]);
 

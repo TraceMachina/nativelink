@@ -993,11 +993,17 @@ pub struct ApiWorkerScheduler {
     /// duplicate spawns when many actions share the same input root.
     tree_resolution_in_progress: Arc<tokio::sync::Mutex<HashSet<DigestInfo>>>,
 
-    /// Negative cache: digests whose tree resolution failed recently.
-    /// Entries are timestamped; stale entries (>60s) are retried.
-    /// Prevents a thundering herd of repeated failures for the same
-    /// missing directory blob.
-    tree_resolution_failures: Arc<tokio::sync::Mutex<HashMap<DigestInfo, Instant>>>,
+    /// Negative cache: root digests whose tree resolution failed recently.
+    /// Entries carry (timestamp, attempt_count) for exponential backoff:
+    /// attempt 1 → 60s, attempt 2 → 300s, attempt 3 → 1500s, attempt 4+ → 1800s (capped).
+    tree_resolution_failures: Arc<tokio::sync::Mutex<HashMap<DigestInfo, (Instant, u32)>>>,
+
+    /// Negative cache for individual directory digests that failed during
+    /// BFS resolution. Keyed by the specific subdirectory that was missing,
+    /// not the root digest. This prevents N different root digests that
+    /// share a common failing subdirectory from each triggering independent
+    /// resolution attempts. Entries expire after 60s.
+    failed_directory_digests: Arc<tokio::sync::Mutex<HashMap<DigestInfo, Instant>>>,
 
     /// Cache of endpoint scores keyed by input_root_digest.
     /// Avoids recomputing locality scores for identical input trees.
@@ -1007,6 +1013,26 @@ pub struct ApiWorkerScheduler {
 
 /// Capacity for the resolved input tree LRU cache.
 const TREE_CACHE_CAPACITY: usize = 1024;
+
+/// Base backoff duration after a failed tree resolution (first attempt).
+const FAILURE_BACKOFF: Duration = Duration::from_secs(60);
+
+/// Maximum backoff duration for repeated tree resolution failures.
+const MAX_FAILURE_BACKOFF: Duration = Duration::from_secs(1800);
+
+/// When a negative cache map exceeds this many entries, sweep expired ones.
+const NEGATIVE_CACHE_SWEEP_THRESHOLD: usize = 1000;
+
+/// Computes exponential backoff for tree resolution failures.
+/// attempt 1 → base (60s), attempt 2 → 300s, attempt 3 → 1500s, attempt 4+ → 1800s (capped).
+fn backoff_for_attempt(base: Duration, attempts: u32) -> Duration {
+    if attempts <= 1 {
+        return base;
+    }
+    let multiplier = 5u64.saturating_pow(attempts - 1);
+    let backoff_secs = base.as_secs().saturating_mul(multiplier);
+    Duration::from_secs(backoff_secs.min(MAX_FAILURE_BACKOFF.as_secs()))
+}
 
 impl ApiWorkerScheduler {
     pub fn new(
@@ -1061,6 +1087,7 @@ impl ApiWorkerScheduler {
             ))),
             tree_resolution_in_progress: Arc::new(tokio::sync::Mutex::new(HashSet::new())),
             tree_resolution_failures: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            failed_directory_digests: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             scores_cache: Arc::new(tokio::sync::Mutex::new(LruCache::new(
                 NonZeroUsize::new(TREE_CACHE_CAPACITY).unwrap(),
             ))),
@@ -1382,9 +1409,6 @@ impl ApiWorkerScheduler {
         &self,
         input_root_digest: DigestInfo,
     ) -> Option<Arc<ResolvedTree>> {
-        /// How long to suppress retries after a failed tree resolution.
-        const FAILURE_BACKOFF: Duration = Duration::from_secs(60);
-
         let cas_store = self.cas_store.as_ref()?;
 
         // Check positive cache first (brief lock).
@@ -1402,26 +1426,29 @@ impl ApiWorkerScheduler {
         }
 
         // Check negative cache: skip if this digest failed recently.
+        // Uses exponential backoff: 60s, 300s, 1500s, 1800s (capped).
         {
-            let failures = self.tree_resolution_failures.lock().await;
-            if let Some(failed_at) = failures.get(&input_root_digest) {
-                if failed_at.elapsed() < FAILURE_BACKOFF {
+            let mut failures = self.tree_resolution_failures.lock().await;
+            // Sweep expired entries to prevent unbounded growth.
+            if failures.len() > NEGATIVE_CACHE_SWEEP_THRESHOLD {
+                failures.retain(|_, &mut (failed_at, attempts)| {
+                    failed_at.elapsed() < backoff_for_attempt(FAILURE_BACKOFF, attempts)
+                });
+            }
+            if let Some(&(failed_at, attempts)) = failures.get(&input_root_digest) {
+                let backoff = backoff_for_attempt(FAILURE_BACKOFF, attempts);
+                if failed_at.elapsed() < backoff {
                     return None;
                 }
             }
         }
 
-        // Check if a background task is already resolving this digest.
+        // Atomically check and mark as in-progress to avoid TOCTOU race.
         {
-            let in_progress = self.tree_resolution_in_progress.lock().await;
+            let mut in_progress = self.tree_resolution_in_progress.lock().await;
             if in_progress.contains(&input_root_digest) {
                 return None;
             }
-        }
-
-        // Mark as in-progress (brief lock).
-        {
-            let mut in_progress = self.tree_resolution_in_progress.lock().await;
             in_progress.insert(input_root_digest);
         }
 
@@ -1430,10 +1457,11 @@ impl ApiWorkerScheduler {
         let tree_cache = self.tree_cache.clone();
         let in_progress_ref = self.tree_resolution_in_progress.clone();
         let failures_ref = self.tree_resolution_failures.clone();
+        let failed_dirs_ref = self.failed_directory_digests.clone();
         let store = cas_store.clone();
         let digest = input_root_digest;
         tokio::spawn(async move {
-            match resolve_tree_from_cas(&store, digest).await {
+            match resolve_tree_from_cas(&store, digest, &failed_dirs_ref).await {
                 Ok(resolved) => {
                     info!(
                         %digest,
@@ -1447,12 +1475,22 @@ impl ApiWorkerScheduler {
                     failures_ref.lock().await.remove(&digest);
                 }
                 Err(err) => {
+                    // Increment attempt counter for exponential backoff.
+                    let mut failures = failures_ref.lock().await;
+                    let attempts = failures
+                        .get(&digest)
+                        .map(|&(_, a)| a)
+                        .unwrap_or(0)
+                        + 1;
+                    let backoff = backoff_for_attempt(FAILURE_BACKOFF, attempts);
                     warn!(
                         %digest,
                         ?err,
-                        "background tree resolution failed, suppressing retries for 60s"
+                        attempts,
+                        backoff_secs = backoff.as_secs(),
+                        "background tree resolution failed, suppressing retries"
                     );
-                    failures_ref.lock().await.insert(digest, Instant::now());
+                    failures.insert(digest, (Instant::now(), attempts));
                 }
             }
             // Always remove from in-progress set.
@@ -1543,12 +1581,21 @@ struct ResolvedTree {
 /// directory digests (for subtree coverage scoring), and per-subtree
 /// file byte totals (for weighted coverage scoring). Deduplicates both
 /// file and directory digests.
+///
+/// `failed_dir_digests` is a shared negative cache for individual directory
+/// digests that failed during BFS. Before fetching each directory, we check
+/// this cache and fail fast if the digest is known-bad. On NotFound errors,
+/// the failing digest is recorded with a 60s expiry.
 async fn resolve_tree_from_cas(
     cas_store: &Store,
     root_digest: DigestInfo,
+    failed_dir_digests: &Arc<tokio::sync::Mutex<HashMap<DigestInfo, Instant>>>,
 ) -> Result<ResolvedTree, Error> {
     use futures::stream::FuturesUnordered;
     use futures::StreamExt;
+
+    /// How long individual directory digest failures are cached.
+    const DIR_FAILURE_TTL: Duration = Duration::from_secs(60);
 
     let mut file_digests: Vec<(DigestInfo, u64)> = Vec::new();
     let mut seen_files: HashSet<DigestInfo> = HashSet::new();
@@ -1564,24 +1611,65 @@ async fn resolve_tree_from_cas(
     let mut bfs_order: Vec<DigestInfo> = vec![root_digest];
 
     while !dirs_to_visit.is_empty() {
+        // Check subdirectory negative cache before fetching this BFS level.
+        {
+            let mut cache = failed_dir_digests.lock().await;
+            // Sweep expired entries to prevent unbounded growth.
+            if cache.len() > NEGATIVE_CACHE_SWEEP_THRESHOLD {
+                cache.retain(|_, failed_at: &mut Instant| {
+                    failed_at.elapsed() < DIR_FAILURE_TTL
+                });
+            }
+            for dir_digest in &dirs_to_visit {
+                if let Some(&failed_at) = cache.get(dir_digest) {
+                    if failed_at.elapsed() < DIR_FAILURE_TTL {
+                        return Err(make_err!(
+                            Code::NotFound,
+                            "directory {dir_digest} is in subdirectory negative cache (failed {:.1}s ago)",
+                            failed_at.elapsed().as_secs_f64()
+                        ));
+                    }
+                    // Entry has expired — remove it inline since we hold the lock.
+                    cache.remove(dir_digest);
+                }
+            }
+        }
+
+        let failed_dir_digests_clone = failed_dir_digests.clone();
         let fetches: FuturesUnordered<_> = dirs_to_visit
             .drain(..)
             .map(|dir_digest| {
                 let cas_store = cas_store.clone();
+                let failed_dirs = failed_dir_digests_clone.clone();
                 async move {
                     let key: StoreKey<'_> = dir_digest.into();
-                    let bytes = cas_store
+                    let result = cas_store
                         .get_part_unchunked(key, 0, None)
                         .await
                         .err_tip(|| {
                             format!(
                                 "Reading directory {dir_digest} from CAS for tree resolution"
                             )
-                        })?;
-                    let directory = Directory::decode(bytes).map_err(|e| {
-                        make_err!(Code::Internal, "Failed to decode Directory proto: {e}")
-                    })?;
-                    Ok::<_, Error>((dir_digest, directory))
+                        });
+                    match result {
+                        Ok(bytes) => {
+                            let directory = Directory::decode(bytes).map_err(|e| {
+                                make_err!(Code::Internal, "Failed to decode Directory proto: {e}")
+                            })?;
+                            Ok::<_, Error>((dir_digest, directory))
+                        }
+                        Err(err) => {
+                            // Record the specific failing subdirectory digest.
+                            if err.code == Code::NotFound {
+                                warn!(
+                                    %dir_digest,
+                                    "directory blob not found in CAS, caching as failed subdirectory"
+                                );
+                                failed_dirs.lock().await.insert(dir_digest, Instant::now());
+                            }
+                            Err(err)
+                        }
+                    }
                 }
             })
             .collect();
@@ -2265,7 +2353,8 @@ mod tests {
             .await
             .expect("store update_oneshot failed");
 
-        let result = resolve_tree_from_cas(&store, dir_digest)
+        let failed_dirs = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let result = resolve_tree_from_cas(&store, dir_digest, &failed_dirs)
             .await
             .expect("resolve_tree_from_cas failed");
 
@@ -2318,7 +2407,8 @@ mod tests {
             .await
             .expect("store sub dir");
 
-        let result = resolve_tree_from_cas(&store, root_dir_digest)
+        let failed_dirs = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let result = resolve_tree_from_cas(&store, root_dir_digest, &failed_dirs)
             .await
             .expect("resolve_tree_from_cas failed");
 
@@ -2374,7 +2464,8 @@ mod tests {
             .await
             .expect("store sub dir");
 
-        let result = resolve_tree_from_cas(&store, root_dir_digest)
+        let failed_dirs = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let result = resolve_tree_from_cas(&store, root_dir_digest, &failed_dirs)
             .await
             .expect("resolve_tree_from_cas failed");
 
@@ -2459,7 +2550,8 @@ mod tests {
                 .expect("store update");
         }
 
-        let result = resolve_tree_from_cas(&store, root_digest)
+        let failed_dirs = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let result = resolve_tree_from_cas(&store, root_digest, &failed_dirs)
             .await
             .expect("resolve_tree_from_cas failed");
 
@@ -2498,11 +2590,19 @@ mod tests {
         let store = Store::new(MemoryStore::new(&MemorySpec::default()));
 
         let missing_digest = DigestInfo::new([0xff; 32], 42);
-        let result = resolve_tree_from_cas(&store, missing_digest).await;
+        let failed_dirs = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let result = resolve_tree_from_cas(&store, missing_digest, &failed_dirs).await;
 
         assert!(
             result.is_err(),
             "Should return an error for a missing directory"
+        );
+
+        // The failing digest should be recorded in the subdirectory negative cache.
+        let cache = failed_dirs.lock().await;
+        assert!(
+            cache.contains_key(&missing_digest),
+            "Missing digest should be in failed_directory_digests cache"
         );
     }
 

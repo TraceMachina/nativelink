@@ -23,7 +23,7 @@ use nativelink_config::stores::VerifySpec;
 use nativelink_error::{Error, ResultExt, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{
-    DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
+    DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair_with_size,
 };
 use nativelink_util::common::{DigestInfo, PackedHash};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc, default_digest_hasher_func};
@@ -195,7 +195,7 @@ impl StoreDriver for VerifyStore {
         } else {
             None
         };
-        let (tx, rx) = make_buf_channel_pair();
+        let (tx, rx) = make_buf_channel_pair_with_size(64);
 
         let update_fut = self.inner_store.update(digest, rx, size_info);
         let check_fut = self.inner_check_update(

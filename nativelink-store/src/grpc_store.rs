@@ -1000,6 +1000,9 @@ impl GrpcStore {
             writer: &'a mut DropCloserWriteHalf,
             read_offset: i64,
             read_limit: i64,
+            /// Bytes received in the current stream attempt, reset on each
+            /// retry. Used to detect empty responses from stale workers.
+            bytes_received_this_stream: i64,
         }
 
         let local_state = LocalState {
@@ -1009,6 +1012,7 @@ impl GrpcStore {
                 .err_tip(|| "Could not convert offset to i64")?,
             read_limit: i64::try_from(length.unwrap_or(0))
                 .err_tip(|| "Could not convert length to i64")?,
+            bytes_received_this_stream: 0,
         };
 
         self.retrier
@@ -1029,6 +1033,10 @@ impl GrpcStore {
                     }
                 };
 
+                // Reset per-stream counter so we detect empty responses even
+                // when retrying at a non-zero read_offset.
+                local_state.bytes_received_this_stream = 0;
+
                 loop {
                     let data = match stream.next().await {
                         None => Bytes::new(),
@@ -1047,6 +1055,32 @@ impl GrpcStore {
                     };
                     let length = data.len() as i64;
                     if length == 0 {
+                        // BUG NOTE: 0-byte successful responses from workers
+                        //
+                        // When a worker's store layer has a digest in its
+                        // existence cache but the actual blob data was evicted,
+                        // get_part() may send EOF without any data. The
+                        // ByteStream server produces a successful empty gRPC
+                        // stream (0 ReadResponse messages). On the client side,
+                        // read_internal() calls message().await which returns
+                        // Ok(None), and FirstStream yields an empty stream.
+                        // We land here having written 0 bytes in this stream
+                        // attempt — a silent data loss.
+                        //
+                        // If no bytes were received in this stream attempt,
+                        // this is almost certainly a stale worker response,
+                        // not a legitimate empty blob. Return a retryable
+                        // error. This correctly handles retries at offset > 0.
+                        if local_state.bytes_received_this_stream == 0 {
+                            return Some((
+                                RetryResult::Retry(make_err!(
+                                    Code::DataLoss,
+                                    "GrpcStore: ByteStream returned 0 bytes \
+                                     for non-empty blob (stale worker data?)"
+                                )),
+                                local_state,
+                            ));
+                        }
                         let eof_result = local_state
                             .writer
                             .send_eof()
@@ -1067,6 +1101,7 @@ impl GrpcStore {
                         return Some((RetryResult::Err(err), local_state));
                     }
                     local_state.read_offset += length;
+                    local_state.bytes_received_this_stream += length;
                 }
             }))
             .await
