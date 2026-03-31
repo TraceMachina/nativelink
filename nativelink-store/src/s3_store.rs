@@ -115,7 +115,7 @@ where
                 .build()
                 .await;
 
-            let config = aws_config::defaults(BehaviorVersion::v2025_08_07())
+            let config = aws_config::defaults(BehaviorVersion::latest())
                 .credentials_provider(credential_provider)
                 .app_name(AppName::new("nativelink").expect("valid app name"))
                 .timeout_config(
