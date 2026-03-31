@@ -81,7 +81,9 @@ pub fn nativelink_test(attr: TokenStream, item: TokenStream) -> TokenStream {
                     let res = #fn_block;
                     logs_assert(|lines: &[&str]| {
                         for line in lines {
-                            if line.contains(" data: b") {
+                            // Most cases of this are us failing to skip something from debug
+                            // But aws_runtime also has this, so ignore that
+                            if line.contains(" data: b") && !line.contains("aws_runtime::content_encoding::body::http_body_1_x") {
                                 return Err(format!("Non-redacted data in \"{line}\""));
                             }
                         }
