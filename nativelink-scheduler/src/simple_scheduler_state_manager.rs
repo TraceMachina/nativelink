@@ -401,6 +401,7 @@ where
             let mut timed_out = true;
             if !awaited_action.state().stage.is_finished() {
                 let mut state = awaited_action.state().as_ref().clone();
+                warn!(operation_id = ?awaited_action.operation_id(), timeout_secs = self.client_action_timeout.as_secs_f32(), "Operation timed out having no more clients listening");
                 state.stage = ActionStage::Completed(ActionResult {
                     error: Some(make_err!(
                         Code::DeadlineExceeded,
@@ -596,7 +597,7 @@ where
             return Ok(());
         }
 
-        debug!(
+        warn!(
             %operation_id,
             worker_id = ?awaited_action.worker_id(),
             registry_alive,
