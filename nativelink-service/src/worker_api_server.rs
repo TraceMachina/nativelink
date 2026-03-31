@@ -386,6 +386,17 @@ impl WorkerConnection {
                     }
                 };
                 if let Err(err) = result {
+                    let msg = format!("{err:?}");
+                    if msg.contains("Worker not found") {
+                        // Worker was evicted from scheduler (timeout or server restart).
+                        // Send Disconnect so the worker knows to reconnect, then close
+                        // the stream.
+                        warn!(worker_id=?instance.worker_id, "worker not in scheduler map, sending disconnect");
+                        let _ = instance.worker_tx.send(UpdateForWorker {
+                            update: Some(update_for_worker::Update::Disconnect(())),
+                        });
+                        break;
+                    }
                     tracing::warn!(worker_id=?instance.worker_id, ?err, "Error processing worker message");
                 }
             }

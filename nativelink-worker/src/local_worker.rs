@@ -947,15 +947,6 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
         };
 
         if let Err(err) = grpc_client.blobs_available(notification).await {
-            // If the server rejected us because we're not in the worker map,
-            // propagate the error to trigger a reconnect.
-            let msg = format!("{err:?}");
-            if msg.contains("Worker not found") {
-                return Err(make_err!(
-                    Code::Internal,
-                    "BlobsAvailable rejected: worker not found in scheduler, will reconnect"
-                ));
-            }
             warn!(
                 ?err,
                 new_or_touched_count,
@@ -966,6 +957,10 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                 is_first,
                 "Failed to send periodic BlobsAvailable"
             );
+            // Channel closed means the server dropped us — propagate to
+            // trigger reconnect. The server also sends Update::Disconnect
+            // when it detects "Worker not found", which is handled in run().
+            return Err(err);
         } else {
             info!(
                 new_or_touched_count,
