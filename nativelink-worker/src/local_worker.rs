@@ -454,6 +454,8 @@ fn start_worker_quic_server(
     transport.max_concurrent_bidi_streams(1024u32.into());
     transport.max_concurrent_uni_streams(1024u32.into());
     transport.initial_rtt(Duration::from_micros(500));
+    // Match server/client idle timeout for consistent behavior.
+    transport.max_idle_timeout(Some(Duration::from_secs(60).try_into().unwrap()));
     // Send QUIC keepalives every 5s to detect dead connections and
     // prevent NAT/firewall timeouts on the server→worker path.
     transport.keep_alive_interval(Some(Duration::from_secs(5)));
