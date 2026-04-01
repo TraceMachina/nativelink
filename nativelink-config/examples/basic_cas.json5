@@ -141,17 +141,30 @@
       services: {
         cas: [
           {
+            instance_name: "",
+            cas_store: "WORKER_FAST_SLOW_STORE",
+          },
+          {
             instance_name: "main",
             cas_store: "WORKER_FAST_SLOW_STORE",
           },
         ],
         ac: [
           {
+            instance_name: "",
+            ac_store: "AC_MAIN_STORE",
+          },
+          {
             instance_name: "main",
             ac_store: "AC_MAIN_STORE",
           },
         ],
         execution: [
+          {
+            instance_name: "",
+            cas_store: "WORKER_FAST_SLOW_STORE",
+            scheduler: "MAIN_SCHEDULER",
+          },
           {
             instance_name: "main",
             cas_store: "WORKER_FAST_SLOW_STORE",
@@ -160,6 +173,12 @@
         ],
         capabilities: [
           {
+            instance_name: "",
+            remote_execution: {
+              scheduler: "MAIN_SCHEDULER",
+            },
+          },
+          {
             instance_name: "main",
             remote_execution: {
               scheduler: "MAIN_SCHEDULER",
@@ -167,6 +186,10 @@
           },
         ],
         bytestream: [
+          {
+            instance_name: "",
+            cas_store: "WORKER_FAST_SLOW_STORE",
+          },
           {
             instance_name: "main",
             cas_store: "WORKER_FAST_SLOW_STORE",
