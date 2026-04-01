@@ -261,7 +261,6 @@ async fn test_maybe_namespaced_child_namespaced_natural_exit() -> Result<(), Err
 
 #[nativelink_test]
 async fn test_maybe_namespaced_child_try_wait() -> Result<(), Error> {
-    const EXPECTED_EXIT_CODE: i32 = 7;
 
     if !namespace_utils::namespaces_supported(false) {
         return Ok(());
