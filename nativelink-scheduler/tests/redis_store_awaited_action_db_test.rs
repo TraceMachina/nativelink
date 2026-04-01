@@ -160,7 +160,7 @@ async fn add_action_smoke_test() -> Result<(), Error> {
         .add_action(
             CLIENT_OPERATION_ID.into(),
             worker_awaited_action.action_info().clone(),
-            Duration::from_secs(60),
+            Duration::from_mins(1),
         )
         .await
         .unwrap();

@@ -534,7 +534,7 @@ async fn add_files_to_cache<Fe: FileEntry>(
     ) -> Result<(), Error> {
         let file_infos = read_files(None, shared_context).await?;
 
-        let from_path = shared_context.content_path.to_string();
+        let from_path = &shared_context.content_path;
 
         let to_path = format!("{}/{DIGEST_FOLDER}", shared_context.content_path);
 

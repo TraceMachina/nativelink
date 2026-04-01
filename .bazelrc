@@ -131,7 +131,7 @@ build --@rules_rust//:clippy_flag=-Dclippy::std_instead_of_core
 build --@rules_rust//:clippy_flag=-Dclippy::string_lit_as_bytes
 build --@rules_rust//:clippy_flag=-Dclippy::todo
 build --@rules_rust//:clippy_flag=-Aclippy::too_long_first_doc_paragraph
-build --@rules_rust//:clippy_flag=-Dclippy::unchecked_duration_subtraction
+build --@rules_rust//:clippy_flag=-Dclippy::unchecked_time_subtraction
 build --@rules_rust//:clippy_flag=-Wclippy::unimplemented
 build --@rules_rust//:clippy_flag=-Dclippy::unnecessary_semicolon
 build --@rules_rust//:clippy_flag=-Aclippy::unwrap_in_result
@@ -194,6 +194,9 @@ startup --windows_enable_symlinks
 build:windows --cxxopt=/std:c++14 --host_cxxopt=/std:c++14
 build:windows --enable_runfiles
 build:windows --extra_toolchains=@rust_toolchains//:all  # Doesn't support LRE.
+
+# Configuration options for MacOS builds
+build --macos_sdk_version=10.12 # For clock_gettime in mimalloc
 
 # rustfmt
 # TODO(palfrey): compatibility workaround for https://github.com/bazelbuild/rules_rust/issues/3493

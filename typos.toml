@@ -16,6 +16,7 @@ extend-exclude = [
   ".git/*",
   ".github/styles/*",
   "kubernetes/vendor/olm/*",
+  "native-cli/go.mod",
   "nativelink-proto/*",
   "web/*",
   # Contains old wrongly spelt data

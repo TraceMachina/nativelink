@@ -1450,7 +1450,7 @@ mod tests {
                 vec![
                     "sh".to_string(),
                     "-c".to_string(),
-                    format!("touch {process_started_file} && sleep infinity"),
+                    format!("touch {process_started_file} && sleep 24h"),
                 ],
                 process_started_file,
             )
@@ -2848,11 +2848,7 @@ exit 1
         )?);
 
         #[cfg(target_family = "unix")]
-        let arguments = vec![
-            "sh".to_string(),
-            "-c".to_string(),
-            "sleep infinity".to_string(),
-        ];
+        let arguments = vec!["sh".to_string(), "-c".to_string(), "sleep 24h".to_string()];
         #[cfg(target_family = "windows")]
         // Windows is weird with timeout, so we use ping. See:
         // https://www.ibm.com/support/pages/timeout-command-run-batch-job-exits-immediately-and-returns-error-input-redirection-not-supported-exiting-process-immediately
@@ -2936,7 +2932,7 @@ exit 1
         assert_eq!(results?.error.unwrap().code, Code::DeadlineExceeded);
 
         #[cfg(target_family = "unix")]
-        let command = "[\"sh\", \"-c\", \"sleep infinity\"]";
+        let command = "[\"sh\", \"-c\", \"sleep 24h\"]";
         #[cfg(target_family = "windows")]
         let command = "[\"cmd\", \"/C\", \"ping -n 99999 127.0.0.1\"]";
 
@@ -2948,7 +2944,7 @@ exit 1
         ));
         #[cfg(target_family = "unix")]
         assert!(logs_contain(
-            "Command timed out seconds=0.0 command=sh -c sleep infinity"
+            "Command timed out seconds=0.0 command=sh -c sleep 24h"
         ));
         #[cfg(target_family = "windows")]
         assert!(logs_contain(
@@ -2996,11 +2992,7 @@ exit 1
         )?);
 
         #[cfg(target_family = "unix")]
-        let arguments = vec![
-            "sh".to_string(),
-            "-c".to_string(),
-            "sleep infinity".to_string(),
-        ];
+        let arguments = vec!["sh".to_string(), "-c".to_string(), "sleep 24h".to_string()];
         #[cfg(target_family = "windows")]
         // Windows is weird with timeout, so we use ping. See:
         // https://www.ibm.com/support/pages/timeout-command-run-batch-job-exits-immediately-and-returns-error-input-redirection-not-supported-exiting-process-immediately

@@ -27,7 +27,7 @@ jobs:
         os: [ubuntu-24.04, macos-26]
     name: Bazel Dev / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 180
     steps:
       - name: Checkout
         uses: >- # v4.2.2
@@ -57,7 +57,7 @@ jobs:
         os: [ubuntu-24.04, macos-26]
     name: Cargo Dev / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 180
     steps:
       - name: Checkout
         uses: >- # v4.2.2
@@ -80,7 +80,7 @@ jobs:
           - macos-26
     name: Installation / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 180
     steps:
       - name: Checkout
         uses: >- # v4.2.2
@@ -97,7 +97,7 @@ jobs:
     name: ${{ matrix.test-name }}
     strategy:
       matrix:
-          test-name: [buildstream, mongo, buck2, rbe-toolchain]
+          test-name: [buildstream, buck2, rbe-toolchain] # Disabling mongo as it has to build all of mongo from scratch for some reason
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:

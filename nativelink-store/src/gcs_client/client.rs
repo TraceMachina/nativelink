@@ -401,10 +401,10 @@ impl GcsOperations for GcsClient {
             match self.client.get_object(&request).await {
                 Ok(obj) => Ok(Some(self.convert_to_gcs_object(obj))),
                 Err(err) => {
-                    if let GcsError::Response(resp) = &err {
-                        if resp.code == 404 {
-                            return Ok(None);
-                        }
+                    if let GcsError::Response(resp) = &err
+                        && resp.code == 404
+                    {
+                        return Ok(None);
                     }
                     Err(Self::handle_gcs_error(&err))
                 }

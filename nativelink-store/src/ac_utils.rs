@@ -60,13 +60,13 @@ pub async fn get_size_and_decode_digest<T: Message + Default + 'static>(
         .as_store_driver_pin()
         .get_part_unchunked(key.borrow(), 0, Some(MAX_ACTION_MSG_SIZE as u64))
         .await;
-    if let Err(err) = &mut store_data_resp {
-        if err.code == Code::NotFound {
-            // Trim the error code. Not Found is quite common and we don't want to send a large
-            // error (debug) message for something that is common. We resize to just the last
-            // message as it will be the most relevant.
-            err.messages.resize_with(1, String::new);
-        }
+    if let Err(err) = &mut store_data_resp
+        && err.code == Code::NotFound
+    {
+        // Trim the error code. Not Found is quite common and we don't want to send a large
+        // error (debug) message for something that is common. We resize to just the last
+        // message as it will be the most relevant.
+        err.messages.resize_with(1, String::new);
     }
     let store_data = store_data_resp?;
     let store_data_len =

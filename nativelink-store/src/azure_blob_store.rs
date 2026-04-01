@@ -81,12 +81,12 @@ const DEFAULT_CONNECTION_TIMEOUT_MS: u64 = 3000;
 // Environment variable name for Azure account key
 const ACCOUNT_KEY_ENV_VAR: &str = "AZURE_STORAGE_KEY";
 
-enum BufferedBodyState {
+pub(crate) enum BufferedBodyState {
     Buffered(Bytes),
     Empty,
 }
 
-struct RequestComponents {
+pub(crate) struct RequestComponents {
     method: Method,
     uri: Uri,
     version: http::Version,
@@ -467,7 +467,7 @@ where
         Ok(Arc::new(Self {
             client: Arc::new(client),
             now_fn,
-            container: spec.container.to_string(),
+            container: spec.container.clone(),
             blob_prefix: spec
                 .common
                 .key_prefix

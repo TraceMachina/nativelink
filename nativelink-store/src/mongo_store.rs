@@ -155,13 +155,13 @@ impl ExperimentalMongoStore {
             );
         }
 
-        if let Some(max_permits) = spec.max_requests {
-            if max_permits == 0 {
-                return Err(make_err!(
-                    Code::InvalidArgument,
-                    "max_request_permits was set to zero, which will block mongo_store from working at all"
-                ));
-            }
+        if let Some(max_permits) = spec.max_requests
+            && max_permits == 0
+        {
+            return Err(make_err!(
+                Code::InvalidArgument,
+                "max_request_permits was set to zero, which will block mongo_store from working at all"
+            ));
         }
 
         // Configure client options
@@ -300,7 +300,7 @@ impl ExperimentalMongoStore {
     async fn acquire_permit(&self) -> Result<SemaphorePermit<'_>, Error> {
         let waiting = self.waiting_permits.fetch_add(1, Ordering::Relaxed);
 
-        if waiting > 0 && waiting % 100 == 0 {
+        if waiting > 0 && waiting.is_multiple_of(100) {
             info!(waiting, "Number of waiting permits for Mongo");
         } else {
             trace!(waiting, "Number of waiting permits for Mongo");
@@ -419,13 +419,13 @@ impl StoreDriver for ExperimentalMongoStore {
             .await
             .map_err(|e| make_err!(Code::Internal, "Failed to get next document in list: {e}"))?
         {
-            if let Ok(key) = doc.get_str(KEY_FIELD) {
-                if let Some(decoded_key) = self.decode_key(key) {
-                    let store_key = StoreKey::new_str(&decoded_key);
-                    count += 1;
-                    if !handler(&store_key) {
-                        break;
-                    }
+            if let Ok(key) = doc.get_str(KEY_FIELD)
+                && let Some(decoded_key) = self.decode_key(key)
+            {
+                let store_key = StoreKey::new_str(&decoded_key);
+                count += 1;
+                if !handler(&store_key) {
+                    break;
                 }
             }
         }
@@ -779,31 +779,30 @@ impl ExperimentalMongoSubscriptionManager {
                                             | OperationType::Update
                                             | OperationType::Replace
                                             | OperationType::Delete => {
-                                                if let Some(doc_key) = event.document_key {
-                                                    if let Ok(key) = doc_key.get_str(KEY_FIELD) {
-                                                        // Remove prefix if present
-                                                        let key = if key_prefix.is_empty() {
-                                                            key
-                                                        } else {
-                                                            key.strip_prefix(&key_prefix)
-                                                                .unwrap_or(key)
-                                                        };
+                                                if let Some(doc_key) = event.document_key
+                                                    && let Ok(key) = doc_key.get_str(KEY_FIELD)
+                                                {
+                                                    // Remove prefix if present
+                                                    let key = if key_prefix.is_empty() {
+                                                        key
+                                                    } else {
+                                                        key.strip_prefix(&key_prefix).unwrap_or(key)
+                                                    };
 
-                                                        let Some(subscribed_keys) =
-                                                            subscribed_keys_weak.upgrade()
-                                                        else {
-                                                            warn!(
-                                                                "Parent dropped, exiting ExperimentalMongoSubscriptionManager"
-                                                            );
-                                                            return;
-                                                        };
+                                                    let Some(subscribed_keys) =
+                                                        subscribed_keys_weak.upgrade()
+                                                    else {
+                                                        warn!(
+                                                            "Parent dropped, exiting ExperimentalMongoSubscriptionManager"
+                                                        );
+                                                        return;
+                                                    };
 
-                                                        let subscribed_keys_mux =
-                                                            subscribed_keys.read();
-                                                        subscribed_keys_mux
+                                                    let subscribed_keys_mux =
+                                                        subscribed_keys.read();
+                                                    subscribed_keys_mux
                                                                 .common_prefix_values(key)
                                                                 .for_each(ExperimentalMongoSubscriptionPublisher::notify);
-                                                    }
                                                 }
                                             }
                                             _ => {}

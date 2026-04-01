@@ -91,15 +91,12 @@ async fn test_read_object_content() -> Result<(), Error> {
         .await?
         .next()
         .await
-        .map_or_else(
-            || {
-                Err(Error::new(
-                    Code::OutOfRange,
-                    "EOF reading result".to_string(),
-                ))
-            },
-            |result| result,
-        )?;
+        .unwrap_or_else(|| {
+            Err(Error::new(
+                Code::OutOfRange,
+                "EOF reading result".to_string(),
+            ))
+        })?;
     assert_eq!(result, test_content);
 
     // Test reading a range of content
@@ -108,15 +105,12 @@ async fn test_read_object_content() -> Result<(), Error> {
         .await?
         .next()
         .await
-        .map_or_else(
-            || {
-                Err(Error::new(
-                    Code::OutOfRange,
-                    "EOF reading result".to_string(),
-                ))
-            },
-            |result| result,
-        )?;
+        .unwrap_or_else(|| {
+            Err(Error::new(
+                Code::OutOfRange,
+                "EOF reading result".to_string(),
+            ))
+        })?;
     assert_eq!(result, Bytes::from_static(b"world"));
 
     // Verify call counts
@@ -144,15 +138,12 @@ async fn test_write_object() -> Result<(), Error> {
         .await?
         .next()
         .await
-        .map_or_else(
-            || {
-                Err(Error::new(
-                    Code::OutOfRange,
-                    "EOF reading result".to_string(),
-                ))
-            },
-            |result| result,
-        )?;
+        .unwrap_or_else(|| {
+            Err(Error::new(
+                Code::OutOfRange,
+                "EOF reading result".to_string(),
+            ))
+        })?;
     assert_eq!(result, test_content);
 
     // Verify call counts
@@ -207,15 +198,12 @@ async fn test_resumable_upload() -> Result<(), Error> {
         .await?
         .next()
         .await
-        .map_or_else(
-            || {
-                Err(Error::new(
-                    Code::OutOfRange,
-                    "EOF reading result".to_string(),
-                ))
-            },
-            |result| result,
-        )?;
+        .unwrap_or_else(|| {
+            Err(Error::new(
+                Code::OutOfRange,
+                "EOF reading result".to_string(),
+            ))
+        })?;
     assert_eq!(result, [&chunk1[..], &chunk2[..]].concat());
 
     // Verify call counts
@@ -425,15 +413,12 @@ async fn test_empty_data_handling() -> Result<(), Error> {
         .await?
         .next()
         .await
-        .map_or_else(
-            || {
-                Err(Error::new(
-                    Code::OutOfRange,
-                    "EOF reading result".to_string(),
-                ))
-            },
-            |result| result,
-        )?;
+        .unwrap_or_else(|| {
+            Err(Error::new(
+                Code::OutOfRange,
+                "EOF reading result".to_string(),
+            ))
+        })?;
     assert_eq!(
         stored_content, expected_content,
         "Content wasn't stored correctly"

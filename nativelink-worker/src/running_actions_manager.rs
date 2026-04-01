@@ -647,14 +647,19 @@ async fn process_side_channel_file(
         .map_err(Error::from)
         .err_tip(|| "Could not convert contents of side channel file (json) to SideChannelInfo")?;
     Ok(side_channel_info.failure.map(|failure| match failure {
-        SideChannelFailureReason::Timeout => Error::new(
-            Code::DeadlineExceeded,
-            format!(
-                "Command '{}' timed out after {} seconds",
-                args.join(OsStr::new(" ")).to_string_lossy(),
-                timeout.as_secs_f32()
-            ),
-        ),
+        SideChannelFailureReason::Timeout => {
+            let join_args = args.join(OsStr::new(" "));
+            let command = join_args.to_string_lossy();
+            warn!(%command, timeout=timeout.as_secs_f32(), "Side channel timeout for command");
+            Error::new(
+                Code::DeadlineExceeded,
+                format!(
+                    "Command '{}' timed out after {} seconds",
+                    command,
+                    timeout.as_secs_f32()
+                ),
+            )
+        }
     }))
 }
 
@@ -1608,7 +1613,7 @@ impl RunningAction for RunningActionImpl {
         let stall_warn_fut = async {
             let mut elapsed_secs = 0u64;
             loop {
-                tokio::time::sleep(Duration::from_secs(60)).await;
+                tokio::time::sleep(Duration::from_mins(1)).await;
                 elapsed_secs += 60;
                 warn!(
                     ?operation_id,
@@ -1629,6 +1634,7 @@ impl RunningAction for RunningActionImpl {
         })
         .await
         .map_err(|err| {
+            warn!(%operation_id, timeout=upload_timeout.as_secs(), "Upload results timeout");
             Error::from_std_err(Code::DeadlineExceeded, &err).append(format!(
                 "Upload results timed out after {}s for operation {:?}",
                 upload_timeout.as_secs(),
@@ -1966,7 +1972,7 @@ impl UploadActionResults {
         };
 
         // Note: Done in this order because we assume most results will succeed and most configs will
-        // either always upload upload historical results or only upload on filure. In which case
+        // either always upload upload historical results or only upload on failure. In which case
         // we can avoid an extra clone of the protos by doing this last with the above assumption.
         let ac_upload_results = if should_upload_ac_results {
             self.upload_ac_results(
@@ -2183,6 +2189,7 @@ impl RunningActionsManagerImpl {
 
             if start.elapsed() > Self::MAX_WAIT {
                 self.metrics.cleanup_wait_timeouts.inc();
+                warn!(%operation_id, waited=?start.elapsed(), "Timeout waiting for previous operation cleanup");
                 return Err(make_err!(
                     Code::DeadlineExceeded,
                     "Timeout waiting for previous operation cleanup: {} (waited {:?})",
@@ -2277,13 +2284,13 @@ impl RunningActionsManagerImpl {
             let mut action_state = action.state.lock();
             action_state.kill_channel_tx.take()
         };
-        if let Some(kill_channel_tx) = kill_channel_tx {
-            if kill_channel_tx.send(()).is_err() {
-                error!(
-                    operation_id = ?action.operation_id,
-                    "Error sending kill to running operation",
-                );
-            }
+        if let Some(kill_channel_tx) = kill_channel_tx
+            && kill_channel_tx.send(()).is_err()
+        {
+            error!(
+                operation_id = ?action.operation_id,
+                "Error sending kill to running operation",
+            );
         }
     }
 
@@ -2359,14 +2366,13 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                 {
                     let mut running_actions = self.running_actions.lock();
                     // Check if action already exists and is still alive
-                    if let Some(existing_weak) = running_actions.get(&operation_id) {
-                        if let Some(_existing_action) = existing_weak.upgrade() {
+                    if let Some(existing_weak) = running_actions.get(&operation_id)
+                        && let Some(_existing_action) = existing_weak.upgrade() {
                             return Err(make_err!(
                                 Code::AlreadyExists,
                                 "Action with operation_id {} is already running",
                                 operation_id
                             ));
-                        }
                     }
                     running_actions.insert(operation_id, Arc::downgrade(&running_action));
                 }
