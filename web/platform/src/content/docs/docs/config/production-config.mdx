@@ -235,7 +235,8 @@ The back-end for the verify store is a `fast_slow` store. Let’s look at the sl
        "stores": [
          {
            "store": {
-             "experimental_s3_store": {
+             "experimental_cloud_object_store": {
+               "provider": "aws",
                "region": "${NATIVE_LINK_AWS_REGION:-us-east-1}",
                "bucket": "${SHARED_cas_BUCKET:-not_set}",
                "key_prefix": "cas/{{ $i }}/",
@@ -362,7 +363,8 @@ Here is the final CAS Config JSON without the 99 extra shards for writing to S3.
                     "stores": [
                       {
                         "store": {
-                          "experimental_s3_store": {
+                          "experimental_cloud_object_store": {
+                            "provider": "aws",
                             "region": "${NATIVE_LINK_AWS_REGION:-us-east-1}",
                             "bucket": "${SHARED_cas_BUCKET:-not_set}",
                             "key_prefix": "cas/0/",
