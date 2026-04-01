@@ -80,6 +80,15 @@ tonic = { version = "0.13.0", features = [
 ], default-features = false }
 tower = { version = "0.5.2", default-features = false }
 tracing = { version = "0.1.41", default-features = false }
+zstd = { version = "0.13.2", default-features = false, features = ["vendored"] }
+
+[patch.crates-io]
+zstd = { git = 'https://github.com/kpcyrd/zstd-rs.git', branch = "vendored" } # FIXME(palfrey): remove once https://github.com/gyscos/zstd-rs/pull/309 is merged
+
+[package.metadata.cargo-machete]
+ignored = [
+  "zstd", # Other packages use this indirectly, but we need to add the vendored feature to make coverage builds build
+]
 
 [workspace.cargo-features-manager.keep]
 async-lock = ["std"]
