@@ -123,6 +123,8 @@ Quickwit
 [Mm]iddleware
 queryable
 gRPC
+kubectl
+[Mm]inikube
 [Mm]itigations
 [Pp]recompute
 attrs
