@@ -37,7 +37,8 @@ jobs:
     steps:
       - name: Check trigger
         id: check
-        uses: actions/github-script@v8
+        uses: >- #v8.0.0
+          actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
         with:
           script: |
             if (context.eventName === 'workflow_dispatch') {
@@ -99,7 +100,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: >- # v6.0.2
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           ref: ${{ needs.check-trigger.outputs.pr_sha }}
 
@@ -130,7 +132,8 @@ jobs:
 
       - name: Comment on PR
         if: github.event_name == 'issue_comment'
-        uses: actions/github-script@v8
+        uses: >- #v8.0.0
+          actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
         with:
           script: |
             await github.rest.issues.createComment({

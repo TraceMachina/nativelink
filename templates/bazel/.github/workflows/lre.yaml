@@ -24,12 +24,14 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Checkout
-        uses: >- # v4.2.2
-          actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: >- # v6.0.2
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Install Nix
-        uses: >- # v17
-          DeterminateSystems/nix-installer-action@21a544727d0c62386e78b4befe52d19ad12692e3
+        uses: >- # https://github.com/DeterminateSystems/nix-installer-action/releases/tag/v22
+          DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25
+        with:
+          source-tag: v3.13.0
 
       - name: Build project
         run: nix develop -c bazel build ...

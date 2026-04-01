@@ -39,7 +39,6 @@ rust_library(
         "src/task.rs",
         "src/telemetry.rs",
         "src/tls_utils.rs",
-        "src/write_counter.rs",
     ],
     proc_macro_deps = [
         "@crates//:async-trait",
