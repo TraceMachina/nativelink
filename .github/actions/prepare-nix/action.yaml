@@ -8,8 +8,8 @@ runs:
       uses: ./.github/actions/free-disk
 
     - name: Install Nix
-      uses: >- # https://github.com/DeterminateSystems/nix-installer-action/releases/tag/v20
-        DeterminateSystems/nix-installer-action@786fff0690178f1234e4e1fe9b536e94f5433196
+      uses: >- # https://github.com/DeterminateSystems/nix-installer-action/releases/tag/v22
+        DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25
       with:
         source-tag: v3.13.0
 
