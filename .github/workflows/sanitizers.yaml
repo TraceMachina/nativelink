@@ -31,20 +31,15 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: >- # v4.2.2
-          actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: >- # v6.0.2
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Free disk space
-        uses: >- # v2.0.0
-          endersonmenezes/free-disk-space@3f9ec39ebae520864ac93467ee395f5237585c21
-        with:
-          remove_android: false # Takes too long.
-          remove_dotnet: true
-          remove_haskell: true
+        uses: ./.github/actions/free-disk
 
       - name: Setup Bazel
-        uses: >- # v0.13.0
-          bazel-contrib/setup-bazel@663f88d97adf17db2523a5b385d9407a562e5551
+        uses: >- # v0.19.0
+          bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86
         with:
           bazelisk-cache: true
           repository-cache: true
