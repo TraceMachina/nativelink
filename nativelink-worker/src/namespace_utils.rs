@@ -126,16 +126,14 @@ fn write_signal_safe(file_name: &core::ffi::CStr, data: &[u8]) -> Result<(), cor
     // known to be valid as we just opened it.
     let bytes_written = unsafe { libc::write(fd.0, data.as_ptr().cast(), data.len()) };
 
-    let result = if bytes_written == -1 {
+    if bytes_written == -1 {
         // SAFETY: We just called a libc function that failed (-1).
         Err(unsafe { *libc::__errno_location() })
     } else if bytes_written as usize != data.len() {
         Err(libc::EIO)
     } else {
         Ok(())
-    };
-
-    result
+    }
 }
 
 /// An async-signal-safe method to close all open file descriptors for the
@@ -458,8 +456,6 @@ pub fn configure_namespace(
                 }
             }
         }
-        _ => {
-            return Err(std::io::Error::last_os_error());
-        }
+        _ => Err(std::io::Error::last_os_error()),
     }
 }

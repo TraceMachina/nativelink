@@ -228,8 +228,6 @@ async fn test_maybe_namespaced_child_non_namespaced_kill() -> Result<(), Error> 
 
 #[nativelink_test]
 async fn test_maybe_namespaced_child_namespaced_natural_exit() -> Result<(), Error> {
-    const EXPECTED_EXIT_CODE: i32 = 5;
-
     if !namespace_utils::namespaces_supported(false) {
         return Ok(());
     }
@@ -261,7 +259,6 @@ async fn test_maybe_namespaced_child_namespaced_natural_exit() -> Result<(), Err
 
 #[nativelink_test]
 async fn test_maybe_namespaced_child_try_wait() -> Result<(), Error> {
-
     if !namespace_utils::namespaces_supported(false) {
         return Ok(());
     }
