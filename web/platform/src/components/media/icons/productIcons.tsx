@@ -1,10 +1,9 @@
-import type { PropsOf } from "@builder.io/qwik";
+import { component$, type PropsOf } from "@qwik.dev/core";
 
-export const CAS = (props: PropsOf<"svg">, key: string) => {
+export const CAS = component$<PropsOf<"svg">>((props) => {
   return (
     <svg
       {...props}
-      key={key}
       preserveAspectRatio="xMidYMid meet"
       data-bbox="0 0 48 48"
       xmlns="http://www.w3.org/2000/svg"
@@ -49,13 +48,12 @@ export const CAS = (props: PropsOf<"svg">, key: string) => {
       </g>
     </svg>
   );
-};
+});
 
-export const Security = (props: PropsOf<"svg">, key: string) => {
+export const Security = component$<PropsOf<"svg">>((props) => {
   return (
     <svg
       {...props}
-      key={key}
       preserveAspectRatio="xMidYMid meet"
       data-bbox="0 0 48 48"
       xmlns="http://www.w3.org/2000/svg"
@@ -100,13 +98,12 @@ export const Security = (props: PropsOf<"svg">, key: string) => {
       </g>
     </svg>
   );
-};
+});
 
-export const RBE = (props: PropsOf<"svg">, key: string) => {
+export const RBE = component$<PropsOf<"svg">>((props) => {
   return (
     <svg
       {...props}
-      key={key}
       preserveAspectRatio="xMidYMid meet"
       data-bbox="0 0 48 48"
       xmlns="http://www.w3.org/2000/svg"
@@ -151,13 +148,12 @@ export const RBE = (props: PropsOf<"svg">, key: string) => {
       </g>
     </svg>
   );
-};
+});
 
-export const FreeCloud = (props: PropsOf<"svg">, key: string) => {
+export const FreeCloud = component$<PropsOf<"svg">>((props) => {
   return (
     <svg
       {...props}
-      key={key}
       preserveAspectRatio="xMidYMid meet"
       data-bbox="0 0 48 48"
       xmlns="http://www.w3.org/2000/svg"
@@ -202,4 +198,4 @@ export const FreeCloud = (props: PropsOf<"svg">, key: string) => {
       </g>
     </svg>
   );
-};
+});

@@ -38,7 +38,7 @@ export default defineConfig({
   },
   integrations: [
     qwik({
-      include: ["**/components/qwik/**/*"],
+      include: ["**/components/qwik/**/*", "**/components/media/icons/**"],
     }),
     react({
       include: ["**/components/react/*"],
