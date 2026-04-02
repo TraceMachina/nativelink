@@ -345,7 +345,16 @@ message StartExecute {
     /// Workers should try these peers first before falling back to server CAS.
     repeated PeerHint peer_hints = 8;
 
-    reserved 9; // NextId.
+    /// Pre-resolved input directory tree from the scheduler.
+    /// The scheduler already resolves the tree for locality scoring; including
+    /// it here lets the worker skip its own GetTree RPC. Parallel arrays:
+    /// resolved_directory_digests[i] is the digest of resolved_directories[i].
+    /// Empty when the scheduler failed to resolve the tree or it exceeded the
+    /// size threshold (worker falls back to its normal GetTree RPC).
+    repeated build.bazel.remote.execution.v2.Directory resolved_directories = 9;
+    repeated build.bazel.remote.execution.v2.Digest resolved_directory_digests = 10;
+
+    reserved 11; // NextId.
 }
 
 /// This is a special message used to save actions into the CAS that can be used

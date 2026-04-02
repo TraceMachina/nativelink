@@ -231,6 +231,7 @@ mod tests {
                 fast_store.as_pin(),
                 &root_directory_digest,
                 &download_dir,
+                None,
             )
             .await?;
             download_dir
@@ -336,6 +337,7 @@ mod tests {
                 fast_store.as_pin(),
                 &root_directory_digest,
                 &download_dir,
+                None,
             )
             .await?;
             download_dir
@@ -410,6 +412,7 @@ mod tests {
                 fast_store.as_pin(),
                 &root_directory_digest,
                 &download_dir,
+                None,
             )
             .await?;
             download_dir
@@ -493,6 +496,7 @@ mod tests {
             fast_store.as_pin(),
             &root_directory_digest,
             &download_dir,
+            None,
         )
         .await?;
 
@@ -562,6 +566,7 @@ mod tests {
             fast_store.as_pin(),
             &root_directory_digest,
             &download_dir,
+            None,
         )
         .await?;
 
@@ -643,6 +648,7 @@ mod tests {
             fast_store.as_pin(),
             &root_directory_digest,
             &download_dir,
+            None,
         )
         .await?;
 
@@ -683,6 +689,7 @@ mod tests {
             fast_store.as_pin(),
             &root_directory_digest,
             &download_dir,
+            None,
         )
         .await?;
 
@@ -755,6 +762,7 @@ mod tests {
             fast_store.as_pin(),
             &root_directory_digest,
             &download_dir,
+            None,
         )
         .await?;
 
@@ -810,6 +818,7 @@ mod tests {
             fast_store.as_pin(),
             &root_directory_digest,
             &download_dir,
+            None,
         )
         .await;
 
@@ -851,6 +860,7 @@ mod tests {
             fast_store.as_pin(),
             &root_directory_digest,
             &download_dir,
+            None,
         )
         .await;
 
@@ -915,6 +925,7 @@ mod tests {
             fast_store.as_pin(),
             &root_directory_digest,
             &download_dir,
+            None,
         )
         .await?;
 
@@ -1032,6 +1043,8 @@ mod tests {
                         platform: action.platform.clone(),
                         worker_id: WORKER_ID.to_string(),
                         peer_hints: Vec::new(),
+                        resolved_directories: Vec::new(),
+                        resolved_directory_digests: Vec::new(),
                     },
                 )
                 .await?;
@@ -1160,6 +1173,8 @@ mod tests {
                         platform: action.platform.clone(),
                         worker_id: WORKER_ID.to_string(),
                         peer_hints: Vec::new(),
+                        resolved_directories: Vec::new(),
+                        resolved_directory_digests: Vec::new(),
                     },
                 )
                 .await?;
@@ -1304,6 +1319,8 @@ mod tests {
                         platform: action.platform.clone(),
                         worker_id: WORKER_ID.to_string(),
                         peer_hints: Vec::new(),
+                        resolved_directories: Vec::new(),
+                        resolved_directory_digests: Vec::new(),
                     },
                 )
                 .await?;
@@ -1487,6 +1504,8 @@ mod tests {
                         platform: action.platform.clone(),
                         worker_id: WORKER_ID.to_string(),
                         peer_hints: Vec::new(),
+                        resolved_directories: Vec::new(),
+                        resolved_directory_digests: Vec::new(),
                     },
                 )
                 .await?;
@@ -1654,6 +1673,8 @@ mod tests {
                         platform: action.platform.clone(),
                         worker_id: WORKER_ID.to_string(),
                         peer_hints: Vec::new(),
+                        resolved_directories: Vec::new(),
+                        resolved_directory_digests: Vec::new(),
                     },
                 )
                 .await?;
@@ -1860,6 +1881,8 @@ mod tests {
                         platform: action.platform.clone(),
                         worker_id: WORKER_ID.to_string(),
                         peer_hints: Vec::new(),
+                        resolved_directories: Vec::new(),
+                        resolved_directory_digests: Vec::new(),
                     },
                 )
                 .await?;
@@ -2012,6 +2035,8 @@ mod tests {
                     platform: action.platform.clone(),
                     worker_id: WORKER_ID.to_string(),
                     peer_hints: Vec::new(),
+                    resolved_directories: Vec::new(),
+                    resolved_directory_digests: Vec::new(),
                 },
             )
             .await?;
@@ -2195,6 +2220,8 @@ exit 0
                     platform: action.platform.clone(),
                     worker_id: WORKER_ID.to_string(),
                     peer_hints: Vec::new(),
+                    resolved_directories: Vec::new(),
+                    resolved_directory_digests: Vec::new(),
                 },
             )
             .await?;
@@ -2384,6 +2411,8 @@ exit 0
                     platform: action.platform.clone(),
                     worker_id: WORKER_ID.to_string(),
                     peer_hints: Vec::new(),
+                    resolved_directories: Vec::new(),
+                    resolved_directory_digests: Vec::new(),
                 },
             )
             .await?;
@@ -2544,6 +2573,8 @@ exit 1
                     platform: action.platform.clone(),
                     worker_id: WORKER_ID.to_string(),
                     peer_hints: Vec::new(),
+                    resolved_directories: Vec::new(),
+                    resolved_directory_digests: Vec::new(),
                 },
             )
             .await?;
@@ -3111,6 +3142,8 @@ exit 1
                         platform: action.platform.clone(),
                         worker_id: WORKER_ID.to_string(),
                         peer_hints: Vec::new(),
+                        resolved_directories: Vec::new(),
+                        resolved_directory_digests: Vec::new(),
                     },
                 )
                 .and_then(|action| {
@@ -3201,6 +3234,8 @@ exit 1
                         platform: action.platform.clone(),
                         worker_id: WORKER_ID.to_string(),
                         peer_hints: Vec::new(),
+                        resolved_directories: Vec::new(),
+                        resolved_directory_digests: Vec::new(),
                     },
                 )
                 .and_then(|action| {
@@ -3291,6 +3326,8 @@ exit 1
                         platform: action.platform.clone(),
                         worker_id: WORKER_ID.to_string(),
                         peer_hints: Vec::new(),
+                        resolved_directories: Vec::new(),
+                        resolved_directory_digests: Vec::new(),
                     },
                 )
                 .and_then(|action| {
@@ -3426,6 +3463,8 @@ exit 1
                     platform: action.platform.clone(),
                     worker_id: WORKER_ID.to_string(),
                     peer_hints: Vec::new(),
+                    resolved_directories: Vec::new(),
+                    resolved_directory_digests: Vec::new(),
                 },
             )
             .and_then(|action| {
@@ -3578,6 +3617,8 @@ exit 1
                     platform: action.platform.clone(),
                     worker_id: WORKER_ID.to_string(),
                     peer_hints: Vec::new(),
+                    resolved_directories: Vec::new(),
+                    resolved_directory_digests: Vec::new(),
                 },
             )
             .await?;
@@ -3836,6 +3877,8 @@ exit 1
                     platform: action.platform.clone(),
                     worker_id: WORKER_ID.to_string(),
                     peer_hints: Vec::new(),
+                    resolved_directories: Vec::new(),
+                    resolved_directory_digests: Vec::new(),
                 },
             )
             .await?;
@@ -3973,6 +4016,8 @@ exit 1
                         platform: action.platform.clone(),
                         worker_id: WORKER_ID.to_string(),
                         peer_hints: Vec::new(),
+                        resolved_directories: Vec::new(),
+                        resolved_directory_digests: Vec::new(),
                     },
                 )
                 .await?;
@@ -4158,6 +4203,8 @@ exit 1
                     platform: action.platform.clone(),
                     worker_id: WORKER_ID.to_string(),
                     peer_hints: Vec::new(),
+                    resolved_directories: Vec::new(),
+                    resolved_directory_digests: Vec::new(),
                 },
             )
             .await?;
@@ -4280,6 +4327,8 @@ exit 1
                     platform: None,
                     worker_id: WORKER_ID.to_string(),
                     peer_hints: Vec::new(),
+                    resolved_directories: Vec::new(),
+                    resolved_directory_digests: Vec::new(),
                 },
             )
             .await;
@@ -4394,6 +4443,8 @@ exit 1
                     platform: None,
                     worker_id: WORKER_ID.to_string(),
                     peer_hints: Vec::new(),
+                    resolved_directories: Vec::new(),
+                    resolved_directory_digests: Vec::new(),
                 },
             )
             .await?;
@@ -4416,6 +4467,8 @@ exit 1
                     platform: None,
                     worker_id: WORKER_ID.to_string(),
                     peer_hints: Vec::new(),
+                    resolved_directories: Vec::new(),
+                    resolved_directory_digests: Vec::new(),
                 },
             )
             .await;
@@ -4559,6 +4612,8 @@ exit 1
                         digest: Some(d1_proto),
                         peer_endpoints: vec!["worker-a:50081".to_string()],
                     }],
+                    resolved_directories: Vec::new(),
+                    resolved_directory_digests: Vec::new(),
                 },
             )
             .await?;
@@ -4596,6 +4651,8 @@ exit 1
                     platform: action.platform.clone(),
                     worker_id: WORKER_ID.to_string(),
                     peer_hints: Vec::new(),
+                    resolved_directories: Vec::new(),
+                    resolved_directory_digests: Vec::new(),
                 },
             )
             .await?;
@@ -4642,6 +4699,8 @@ exit 1
                         digest: Some(d1_proto),
                         peer_endpoints: vec!["worker-x:50081".to_string()],
                     }],
+                    resolved_directories: Vec::new(),
+                    resolved_directory_digests: Vec::new(),
                 },
             )
             .await?;
@@ -4679,6 +4738,8 @@ exit 1
                             "worker-b:50081".to_string(),
                         ],
                     }],
+                    resolved_directories: Vec::new(),
+                    resolved_directory_digests: Vec::new(),
                 },
             )
             .await?;

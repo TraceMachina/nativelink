@@ -387,6 +387,20 @@ pub struct StartExecute {
     /// / Workers should try these peers first before falling back to server CAS.
     #[prost(message, repeated, tag = "8")]
     pub peer_hints: ::prost::alloc::vec::Vec<PeerHint>,
+    /// / Pre-resolved input directory tree from the scheduler.
+    /// / The scheduler already resolves the tree for locality scoring; including
+    /// / it here lets the worker skip its own GetTree RPC. Parallel arrays:
+    /// / resolved_directory_digests\[i\] is the digest of resolved_directories\[i\].
+    /// / Empty when the scheduler failed to resolve the tree or it exceeded the
+    /// / size threshold (worker falls back to its normal GetTree RPC).
+    #[prost(message, repeated, tag = "9")]
+    pub resolved_directories: ::prost::alloc::vec::Vec<
+        super::super::super::super::super::build::bazel::remote::execution::v2::Directory,
+    >,
+    #[prost(message, repeated, tag = "10")]
+    pub resolved_directory_digests: ::prost::alloc::vec::Vec<
+        super::super::super::super::super::build::bazel::remote::execution::v2::Digest,
+    >,
 }
 /// / This is a special message used to save actions into the CAS that can be used
 /// / by programs like bb_browswer to inspect the history of a build.

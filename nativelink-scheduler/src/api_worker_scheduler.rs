@@ -21,8 +21,10 @@ use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use async_lock::RwLock;
+use bytes::Bytes;
 use lru::LruCache;
 use nativelink_config::schedulers::WorkerAllocationStrategy;
+use nativelink_config::stores::{GrpcEndpoint, GrpcSpec, Retry, StoreType};
 use nativelink_error::{Code, Error, ResultExt, error_if, make_err, make_input_err};
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
@@ -32,15 +34,17 @@ use nativelink_proto::build::bazel::remote::execution::v2::{Digest, Directory};
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     BlobsInStableStorage, PeerHint, StartExecute, UpdateForWorker, update_for_worker,
 };
-use nativelink_util::blob_locality_map::SharedBlobLocalityMap;
+use nativelink_store::grpc_store::GrpcStore;
 use nativelink_util::action_messages::{OperationId, WorkerId};
+use nativelink_util::blob_locality_map::SharedBlobLocalityMap;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::operation_state_manager::{UpdateOperationType, WorkerStateManager};
 use nativelink_util::platform_properties::PlatformProperties;
 use nativelink_util::shutdown_guard::ShutdownGuard;
 use nativelink_util::store_trait::{Store, StoreKey, StoreLike};
+use parking_lot::Mutex as ParkingMutex;
 use prost::Message;
-use tokio::sync::Notify;
+use tokio::sync::{Notify, Semaphore};
 use tokio::sync::mpsc::UnboundedSender;
 use tonic::async_trait;
 use tracing::{debug, error, info, trace, warn};
@@ -68,6 +72,18 @@ pub struct SchedulerMetrics {
     pub keep_alive_updates: AtomicU64,
     /// Total number of worker timeouts.
     pub worker_timeouts: AtomicU64,
+    /// Total number of prefetch tasks spawned.
+    pub prefetch_tasks_spawned: AtomicU64,
+    /// Total number of blobs successfully prefetched to workers.
+    pub prefetch_blobs_sent: AtomicU64,
+    /// Total bytes successfully prefetched to workers.
+    pub prefetch_bytes_sent: AtomicU64,
+    /// Total number of blobs that failed to prefetch.
+    pub prefetch_blobs_failed: AtomicU64,
+    /// Total number of blobs skipped because they were already on the worker.
+    pub prefetch_blobs_already_present: AtomicU64,
+    /// Total number of batch RPCs sent to workers during prefetch.
+    pub prefetch_batches_sent: AtomicU64,
 }
 
 /// Cached result of `score_and_generate_hints`: endpoint scores and peer hints.
@@ -479,6 +495,7 @@ impl ApiWorkerSchedulerImpl {
         endpoint_scores: Option<&HashMap<Arc<str>, (u64, SystemTime)>>,
         peer_hints: &[PeerHint],
         resolved_tree: Option<&ResolvedTree>,
+        pre_computed_tree: Option<(Vec<Directory>, Vec<Digest>)>,
     ) -> Option<(WorkerId, UnboundedSender<UpdateForWorker>, UpdateForWorker)> {
         let input_root_digest = action_info.inner.input_root_digest;
 
@@ -768,6 +785,7 @@ impl ApiWorkerSchedulerImpl {
             operation_id,
             action_info,
             peer_hints,
+            pre_computed_tree,
         )?;
 
         Some((worker_id, tx, msg))
@@ -879,6 +897,9 @@ impl ApiWorkerSchedulerImpl {
     /// here, and only when a worker was actually found. When no resolved
     /// tree is available the hints will be empty.
     ///
+    /// `pre_computed_tree` contains directory and digest Vecs that were built
+    /// outside the write lock to avoid cloning Directory protos while holding it.
+    ///
     /// Returns `None` if the worker was not found.
     fn prepare_worker_run_action(
         &mut self,
@@ -886,18 +907,22 @@ impl ApiWorkerSchedulerImpl {
         operation_id: &OperationId,
         action_info: &ActionInfoWithProps,
         peer_hints: &[PeerHint],
+        pre_computed_tree: Option<(Vec<Directory>, Vec<Digest>)>,
     ) -> Option<(UnboundedSender<UpdateForWorker>, UpdateForWorker)> {
         let worker = self.workers.get_mut(worker_id)?;
         // Clone the tx so we can send outside the lock.
         let tx = worker.tx.clone();
 
         if !peer_hints.is_empty() {
-            info!(
+            debug!(
                 ?worker_id,
                 hints = peer_hints.len(),
-                "Generated peer hints for StartExecute"
+                "generated peer hints for StartExecute"
             );
         }
+
+        let (resolved_directories, resolved_directory_digests) =
+            pre_computed_tree.unwrap_or_default();
 
         // Build the protobuf message while we still have access to worker state.
         // peer_hints is cloned here (the only place) — deferred from the cache
@@ -909,10 +934,21 @@ impl ApiWorkerSchedulerImpl {
             platform: Some((&action_info.platform_properties).into()),
             worker_id: worker.id.clone().into(),
             peer_hints: peer_hints.to_vec(),
+            resolved_directories,
+            resolved_directory_digests,
         };
         let msg = UpdateForWorker {
             update: Some(update_for_worker::Update::StartAction(start_execute)),
         };
+
+        // If the operation is already reserved on this worker (a concurrent
+        // do_try_match beat us), skip — otherwise the later unreserve_worker
+        // on the losing match would remove the winning reservation, leaving
+        // the worker's running_action_infos empty and preventing the action
+        // from being re-queued when the worker is removed.
+        if worker.running_action_infos.contains_key(operation_id) {
+            return None;
+        }
 
         // Perform the state mutation that run_action would do:
         // reduce platform properties and record the running action.
@@ -1009,10 +1045,38 @@ pub struct ApiWorkerScheduler {
     /// Avoids recomputing locality scores for identical input trees.
     /// Cleared when workers connect or disconnect (scores become stale).
     scores_cache: Arc<tokio::sync::Mutex<LruCache<DigestInfo, Arc<ScoringResult>>>>,
+
+    /// Cached GrpcStore connections to worker CAS endpoints for prefetch.
+    /// Protected by a sync Mutex since we only hold it briefly to clone a Store.
+    prefetch_connections: ParkingMutex<HashMap<Arc<str>, Store>>,
+
+    /// Per-worker semaphore limiting concurrent prefetch streams.
+    /// Key is the worker CAS endpoint.
+    prefetch_semaphores: ParkingMutex<HashMap<Arc<str>, Arc<Semaphore>>>,
 }
 
 /// Capacity for the resolved input tree LRU cache.
 const TREE_CACHE_CAPACITY: usize = 1024;
+
+/// Maximum size of a single blob eligible for prefetch (1MiB).
+/// Larger blobs are more efficiently handled by the worker's parallel
+/// ByteStream fetch (128-512 concurrent streams). Prefetch targets
+/// small blobs where per-blob RPC overhead dominates.
+const PREFETCH_MAX_SINGLE_BLOB_SIZE: u64 = 1024 * 1024;
+
+/// Maximum number of concurrent prefetch batch RPCs per worker.
+const PREFETCH_MAX_CONCURRENT_PER_WORKER: usize = 8;
+
+/// Maximum total bytes in-flight for prefetch per dispatch (200MB).
+const PREFETCH_MAX_INFLIGHT_BYTES: u64 = 200 * 1024 * 1024;
+
+/// Maximum number of blobs to prefetch per dispatch. High count
+/// because small blobs are cheap to push via BatchUpdateBlobs.
+const PREFETCH_MAX_BLOBS: usize = 1024;
+
+/// Maximum total bytes per BatchUpdateBlobs RPC batch (1MiB).
+/// Matches the GrpcStore batch_update_threshold_bytes default.
+const PREFETCH_BATCH_SIZE_BYTES: u64 = 1024 * 1024;
 
 /// Base backoff duration after a failed tree resolution (first attempt).
 const FAILURE_BACKOFF: Duration = Duration::from_secs(60);
@@ -1091,12 +1155,32 @@ impl ApiWorkerScheduler {
             scores_cache: Arc::new(tokio::sync::Mutex::new(LruCache::new(
                 NonZeroUsize::new(TREE_CACHE_CAPACITY).unwrap(),
             ))),
+            prefetch_connections: ParkingMutex::new(HashMap::new()),
+            prefetch_semaphores: ParkingMutex::new(HashMap::new()),
         })
     }
 
     /// Returns a reference to the worker registry.
     pub const fn worker_registry(&self) -> &SharedWorkerRegistry {
         &self.worker_registry
+    }
+
+    /// Removes cached prefetch connection and semaphore for a specific endpoint.
+    fn remove_prefetch_for_endpoint(&self, endpoint: &str) {
+        self.prefetch_connections.lock().remove(endpoint);
+        self.prefetch_semaphores.lock().remove(endpoint);
+    }
+
+    /// Removes prefetch entries whose endpoint is no longer associated with
+    /// any active worker. Called after bulk worker evictions to prevent
+    /// unbounded growth of the prefetch maps.
+    fn cleanup_stale_prefetch_entries(&self, active_endpoints: &HashSet<Arc<str>>) {
+        self.prefetch_connections
+            .lock()
+            .retain(|ep, _| active_endpoints.contains(ep));
+        self.prefetch_semaphores
+            .lock()
+            .retain(|ep, _| active_endpoints.contains(ep));
     }
 
     pub async fn worker_notify_run_action(
@@ -1114,7 +1198,7 @@ impl ApiWorkerScheduler {
         let prepare_result = {
             let mut inner = self.inner.write().await;
             let result =
-                inner.prepare_worker_run_action(&worker_id, &operation_id, &action_info, &[]);
+                inner.prepare_worker_run_action(&worker_id, &operation_id, &action_info, &[], None);
             if result.is_none() {
                 // Worker not found - handle under the lock since we need worker_state_manager.
                 warn!(
@@ -1305,6 +1389,37 @@ impl ApiWorkerScheduler {
             _ => None,
         };
 
+        // ── Phase 2.5: pre-compute tree proto data (BEFORE write lock) ──
+        // Cloning Directory protos is expensive and should not happen under
+        // the write lock. We size-check and build the Vecs here; the lock
+        // phase just passes them through to the protobuf message.
+        // Worker API listener has max_encoding_message_size=64MiB.
+        const MAX_TREE_PROTO_BYTES: usize = 32 * 1024 * 1024;
+        let pre_computed_tree: Option<(Vec<Directory>, Vec<Digest>)> =
+            resolved_tree.as_deref().and_then(|tree| {
+                let estimated_bytes: usize = tree
+                    .directories
+                    .values()
+                    .map(|d| Message::encoded_len(d))
+                    .sum();
+                if estimated_bytes > MAX_TREE_PROTO_BYTES {
+                    debug!(
+                        estimated_bytes,
+                        max = MAX_TREE_PROTO_BYTES,
+                        dirs = tree.directories.len(),
+                        "pre-resolved tree exceeds size threshold, omitting from StartExecute"
+                    );
+                    None
+                } else {
+                    debug!(
+                        dirs = tree.directories.len(),
+                        estimated_bytes,
+                        "including pre-resolved tree in StartExecute"
+                    );
+                    Some(tree.to_proto_vecs())
+                }
+            });
+
         // ── Phase 3: acquire write lock, do selection + reservation ──
         // Inside the lock we only do O(workers) work: candidate filtering,
         // endpoint→WorkerId mapping, and state mutation. Peer hints are
@@ -1327,7 +1442,18 @@ impl ApiWorkerScheduler {
             endpoint_scores,
             peer_hints_slice,
             resolved_tree.as_deref(),
+            pre_computed_tree,
         );
+
+        // Extract the selected worker's CAS endpoint while we still hold
+        // the lock, for use in the prefetch spawn below.
+        let worker_cas_endpoint: Option<Arc<str>> = result.as_ref().and_then(|(wid, _, _)| {
+            inner
+                .workers
+                .peek(wid)
+                .filter(|w| !w.cas_endpoint.is_empty())
+                .map(|w| Arc::from(w.cas_endpoint.as_str()))
+        });
 
         // Track workers iterated (worst case is all workers)
         self.metrics
@@ -1348,6 +1474,31 @@ impl ApiWorkerScheduler {
         self.metrics
             .find_worker_time_ns
             .fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+        // Drop the write lock before spawning prefetch.
+        drop(inner);
+
+        // ── Phase 4: spawn targeted prefetch (AFTER write lock released) ──
+        // If we have a resolved tree, a locality map, and the selected
+        // worker has a CAS endpoint, compute the set of missing blobs and
+        // push them to the worker concurrently with the StartExecute dispatch.
+        if let (Some(tree), Some(loc_map), Some(endpoint)) =
+            (&resolved_tree, &self.locality_map, worker_cas_endpoint)
+        {
+            let missing = Self::compute_missing_blobs(
+                &tree.file_digests,
+                &endpoint,
+                loc_map,
+            );
+            if !missing.is_empty() {
+                self.spawn_prefetch(
+                    endpoint,
+                    missing,
+                    operation_id.to_string(),
+                );
+            }
+        }
+
         result
     }
 
@@ -1504,6 +1655,331 @@ impl ApiWorkerScheduler {
         None
     }
 
+    /// Returns the per-worker prefetch semaphore, creating it if needed.
+    fn get_prefetch_semaphore(&self, endpoint: &str) -> Arc<Semaphore> {
+        let mut sems = self.prefetch_semaphores.lock();
+        sems.entry(Arc::from(endpoint))
+            .or_insert_with(|| Arc::new(Semaphore::new(PREFETCH_MAX_CONCURRENT_PER_WORKER)))
+            .clone()
+    }
+
+    /// Computes the set of small blobs that the target worker is missing
+    /// from the resolved input tree, using the locality map to determine
+    /// what the worker already has. Returns blobs sorted by size ascending
+    /// (smallest first), capped at `PREFETCH_MAX_BLOBS` and
+    /// `PREFETCH_MAX_INFLIGHT_BYTES`.
+    ///
+    /// Only blobs under `PREFETCH_MAX_SINGLE_BLOB_SIZE` are included —
+    /// large blobs are better handled by the worker's parallel ByteStream
+    /// fetch. The goal is to eliminate per-blob RPC overhead for many
+    /// small blobs by batching them via `BatchUpdateBlobs`.
+    fn compute_missing_blobs(
+        file_digests: &[(DigestInfo, u64)],
+        worker_endpoint: &str,
+        locality_map: &SharedBlobLocalityMap,
+    ) -> Vec<(DigestInfo, u64)> {
+        let map = locality_map.read();
+        let blobs = map.blobs_map();
+
+        // Collect small blobs the worker doesn't have.
+        let mut missing: Vec<(DigestInfo, u64)> = file_digests
+            .iter()
+            .filter(|(_, size)| *size > 0 && *size <= PREFETCH_MAX_SINGLE_BLOB_SIZE)
+            .filter(|(digest, _)| {
+                // Blob is "missing" if the locality map has no entry for this
+                // worker endpoint, or the digest is not in the map at all.
+                blobs
+                    .get(digest)
+                    .map_or(true, |endpoints| endpoints.get(worker_endpoint).is_none())
+            })
+            .copied()
+            .collect();
+
+        // Sort by size ascending -- smallest blobs first maximizes the
+        // number of blobs per BatchUpdateBlobs RPC, eliminating the most
+        // per-blob RPC overhead.
+        missing.sort_by_key(|(_, size)| *size);
+
+        // Cap by count and total bytes.
+        let mut total_bytes: u64 = 0;
+        missing.truncate(PREFETCH_MAX_BLOBS);
+        missing.retain(|(_, size)| {
+            if total_bytes + size > PREFETCH_MAX_INFLIGHT_BYTES {
+                return false;
+            }
+            total_bytes += size;
+            true
+        });
+
+        missing
+    }
+
+    /// Spawns a background task that prefetches missing small blobs from
+    /// the server's CAS to the selected worker's CAS endpoint. Blobs are
+    /// read into memory and pushed via `update_oneshot`, which routes them
+    /// through `BatchUpdateBlobs` on the worker's GrpcStore connection.
+    /// This batches many small blobs into few RPCs, eliminating per-blob
+    /// RPC overhead that dominates the worker's demand fetch path.
+    ///
+    /// This is best-effort: failures are logged but do not affect the
+    /// action dispatch. The worker's normal demand fetch handles anything
+    /// prefetch doesn't deliver.
+    ///
+    /// This method is synchronous (no `.await`) — all I/O including
+    /// connection creation happens inside the spawned task, keeping the
+    /// dispatch path non-blocking.
+    fn spawn_prefetch(
+        &self,
+        worker_endpoint: Arc<str>,
+        missing_blobs: Vec<(DigestInfo, u64)>,
+        operation_id: String,
+    ) {
+        let cas_store = match &self.cas_store {
+            Some(s) => s.clone(),
+            None => return,
+        };
+
+        if missing_blobs.is_empty() {
+            return;
+        }
+
+        let total_bytes: u64 = missing_blobs.iter().map(|(_, s)| *s).sum();
+        let blob_count = missing_blobs.len();
+        let metrics = self.metrics.clone();
+        let endpoint_str = worker_endpoint.clone();
+        let semaphore = self.get_prefetch_semaphore(&worker_endpoint);
+
+        // Snapshot the cached connection under a brief sync lock. The
+        // actual TCP connect (if needed) happens inside the spawned task.
+        let cached_connection = {
+            let conns = self.prefetch_connections.lock();
+            conns.get(&*worker_endpoint).cloned()
+        };
+
+        metrics
+            .prefetch_tasks_spawned
+            .fetch_add(1, Ordering::Relaxed);
+
+        info!(
+            %operation_id,
+            worker_endpoint = %endpoint_str,
+            blob_count,
+            total_bytes,
+            "prefetch: spawning batched push of small blobs to worker"
+        );
+
+        tokio::spawn(async move {
+            let start = Instant::now();
+
+            // Get or create connection to worker. This may do TCP connect
+            // but happens inside the spawned task, not on the dispatch path.
+            let worker_store = if let Some(store) = cached_connection {
+                store
+            } else {
+                match create_worker_cas_connection(&endpoint_str).await {
+                    Ok(store) => store,
+                    Err(e) => {
+                        warn!(
+                            %operation_id,
+                            worker_endpoint = %endpoint_str,
+                            ?e,
+                            "prefetch: failed to connect to worker CAS"
+                        );
+                        return;
+                    }
+                }
+            };
+
+            // Bulk has() check to filter out blobs the worker already has.
+            // This avoids re-reading and re-pushing blobs that arrived via
+            // concurrent actions or peer sharing.
+            let store_keys: Vec<StoreKey<'_>> = missing_blobs
+                .iter()
+                .map(|(digest, _)| (*digest).into())
+                .collect();
+            let mut has_results = vec![None; store_keys.len()];
+            let has_check_ok = worker_store
+                .has_with_results(&store_keys, &mut has_results)
+                .await
+                .is_ok();
+
+            let mut actually_missing: Vec<(DigestInfo, u64)> = Vec::new();
+            let mut blobs_already_present: u64 = 0;
+
+            if has_check_ok {
+                for (i, (digest, size)) in missing_blobs.iter().enumerate() {
+                    if has_results[i].is_some() {
+                        blobs_already_present += 1;
+                    } else {
+                        actually_missing.push((*digest, *size));
+                    }
+                }
+            } else {
+                // has() failed, try pushing everything anyway
+                actually_missing = missing_blobs;
+            }
+
+            if actually_missing.is_empty() {
+                metrics
+                    .prefetch_blobs_already_present
+                    .fetch_add(blobs_already_present, Ordering::Relaxed);
+                info!(
+                    %operation_id,
+                    worker_endpoint = %endpoint_str,
+                    blobs_already_present,
+                    elapsed_ms = start.elapsed().as_millis() as u64,
+                    "prefetch: all blobs already present on worker"
+                );
+                return;
+            }
+
+            // Group blobs into batches of up to PREFETCH_BATCH_SIZE_BYTES.
+            // Each batch will be read from CAS and pushed via update_oneshot,
+            // which routes through BatchUpdateBlobs on the GrpcStore.
+            let mut batches: Vec<Vec<(DigestInfo, u64)>> = Vec::new();
+            let mut current_batch: Vec<(DigestInfo, u64)> = Vec::new();
+            let mut current_batch_bytes: u64 = 0;
+
+            for (digest, size) in &actually_missing {
+                if !current_batch.is_empty()
+                    && current_batch_bytes + size > PREFETCH_BATCH_SIZE_BYTES
+                {
+                    batches.push(core::mem::take(&mut current_batch));
+                    current_batch_bytes = 0;
+                }
+                current_batch.push((*digest, *size));
+                current_batch_bytes += size;
+            }
+            if !current_batch.is_empty() {
+                batches.push(current_batch);
+            }
+
+            let batch_count = batches.len();
+            let mut blobs_sent: u64 = 0;
+            let mut bytes_sent: u64 = 0;
+            let mut blobs_failed: u64 = 0;
+            let mut batches_sent: u64 = 0;
+
+            // Process batches with concurrency limited by the per-worker
+            // semaphore. Each batch task reads blobs from server CAS and
+            // pushes them via update_oneshot (-> BatchUpdateBlobs).
+            let mut join_set = tokio::task::JoinSet::new();
+
+            for batch in batches {
+                let permit = match semaphore.clone().acquire_owned().await {
+                    Ok(p) => p,
+                    Err(_) => break, // semaphore closed
+                };
+
+                let cas = cas_store.clone();
+                let worker = worker_store.clone();
+                let op_id = operation_id.clone();
+                let ep = endpoint_str.clone();
+
+                join_set.spawn(async move {
+                    let _permit = permit; // held until this batch completes
+
+                    let mut batch_blobs_sent: u64 = 0;
+                    let mut batch_bytes_sent: u64 = 0;
+                    let mut batch_blobs_failed: u64 = 0;
+
+                    // Read each blob from server CAS into memory (safe -- all
+                    // blobs are under PREFETCH_MAX_SINGLE_BLOB_SIZE) and push
+                    // via update_oneshot which routes through BatchUpdateBlobs.
+                    for (digest, size) in &batch {
+                        let key: StoreKey<'_> = (*digest).into();
+
+                        let data: Bytes = match cas
+                            .get_part_unchunked(key.borrow(), 0, None)
+                            .await
+                        {
+                            Ok(d) => d,
+                            Err(e) => {
+                                debug!(
+                                    %op_id,
+                                    %digest,
+                                    size,
+                                    ?e,
+                                    "prefetch: failed to read blob from server CAS"
+                                );
+                                batch_blobs_failed += 1;
+                                continue;
+                            }
+                        };
+
+                        match worker.update_oneshot(key.borrow(), data).await {
+                            Ok(()) => {
+                                batch_blobs_sent += 1;
+                                batch_bytes_sent += size;
+                            }
+                            Err(e) => {
+                                debug!(
+                                    %op_id,
+                                    worker_endpoint = %ep,
+                                    %digest,
+                                    size,
+                                    ?e,
+                                    "prefetch: failed to push blob to worker"
+                                );
+                                batch_blobs_failed += 1;
+                            }
+                        }
+                    }
+
+                    (batch_blobs_sent, batch_bytes_sent, batch_blobs_failed)
+                });
+            }
+
+            // Collect results.
+            while let Some(result) = join_set.join_next().await {
+                match result {
+                    Ok((sent, bytes, failed)) => {
+                        blobs_sent += sent;
+                        bytes_sent += bytes;
+                        blobs_failed += failed;
+                        batches_sent += 1;
+                    }
+                    Err(e) => {
+                        warn!(?e, "prefetch: batch task panicked");
+                        blobs_failed += 1;
+                    }
+                }
+            }
+
+            // Update global metrics.
+            metrics
+                .prefetch_blobs_sent
+                .fetch_add(blobs_sent, Ordering::Relaxed);
+            metrics
+                .prefetch_bytes_sent
+                .fetch_add(bytes_sent, Ordering::Relaxed);
+            metrics
+                .prefetch_blobs_failed
+                .fetch_add(blobs_failed, Ordering::Relaxed);
+            metrics
+                .prefetch_blobs_already_present
+                .fetch_add(blobs_already_present, Ordering::Relaxed);
+            metrics
+                .prefetch_batches_sent
+                .fetch_add(batches_sent, Ordering::Relaxed);
+
+            let elapsed = start.elapsed();
+            info!(
+                %operation_id,
+                worker_endpoint = %endpoint_str,
+                blob_count,
+                batch_count,
+                batches_sent,
+                blobs_sent,
+                bytes_sent,
+                blobs_failed,
+                blobs_already_present,
+                elapsed_ms = elapsed.as_millis() as u64,
+                "prefetch: completed batched push to worker"
+            );
+        });
+    }
+
     /// Broadcast a `BlobsInStableStorage` message to all connected workers.
     /// Disconnected workers are silently skipped (they will be reaped by the
     /// timeout mechanism). Takes a read lock on the worker map briefly to
@@ -1559,7 +2035,8 @@ impl ApiWorkerScheduler {
 }
 
 /// Resolved input tree containing file digests, directory digests,
-/// and per-subtree file byte totals for coverage scoring.
+/// per-subtree file byte totals for coverage scoring, and the decoded
+/// Directory protos (for forwarding to workers so they skip GetTree).
 struct ResolvedTree {
     /// (file_digest, file_size) pairs, deduplicated.
     file_digests: Vec<(DigestInfo, u64)>,
@@ -1574,6 +2051,59 @@ struct ResolvedTree {
     /// have higher per-file I/O cost (hardlinks, clonefile) than fewer
     /// large files at the same total byte count.
     subtree_files: HashMap<DigestInfo, u64>,
+    /// Decoded Directory protos keyed by their digest. Forwarded to workers
+    /// in StartExecute so they can skip the redundant GetTree RPC.
+    directories: HashMap<DigestInfo, Directory>,
+}
+
+impl ResolvedTree {
+    /// Converts the directory map into protobuf-ready Vecs. This involves
+    /// cloning each Directory proto and is intentionally called outside the
+    /// scheduler write lock to avoid blocking dispatch.
+    fn to_proto_vecs(&self) -> (Vec<Directory>, Vec<Digest>) {
+        let mut dirs = Vec::with_capacity(self.directories.len());
+        let mut digests = Vec::with_capacity(self.directories.len());
+        for (digest_info, directory) in &self.directories {
+            digests.push((*digest_info).into());
+            dirs.push(directory.clone());
+        }
+        (dirs, digests)
+    }
+}
+
+/// Creates a GrpcStore connection to a worker's CAS endpoint for
+/// prefetching blobs. This is a standalone function so it can be
+/// called from both `get_or_create_prefetch_connection` and from
+/// inside spawned tasks without holding a reference to `self`.
+async fn create_worker_cas_connection(endpoint: &str) -> Result<Store, Error> {
+    let spec = GrpcSpec {
+        instance_name: String::new(),
+        endpoints: vec![GrpcEndpoint {
+            address: endpoint.to_string(),
+            tls_config: None,
+            concurrency_limit: None,
+            connect_timeout_s: 5,
+            tcp_keepalive_s: 30,
+            http2_keepalive_interval_s: 30,
+            http2_keepalive_timeout_s: 20,
+            tcp_nodelay: true,
+            use_http3: false,
+        }],
+        store_type: StoreType::Cas,
+        retry: Retry::default(),
+        max_concurrent_requests: 0,
+        connections_per_endpoint: 16,
+        rpc_timeout_s: 120,
+        batch_update_threshold_bytes: 1_048_576,
+        batch_coalesce_delay_ms: 0,
+        max_concurrent_batch_rpcs: 8,
+        parallel_chunk_read_threshold: 8 * 1024 * 1024,
+        parallel_chunk_count: 4,
+    };
+    let store = GrpcStore::new(&spec)
+        .await
+        .err_tip(|| format!("Creating prefetch connection to worker {endpoint}"))?;
+    Ok(Store::new(store))
 }
 
 /// Resolves a directory tree from the CAS store by recursively reading
@@ -1602,6 +2132,7 @@ async fn resolve_tree_from_cas(
     let mut dirs_to_visit: Vec<DigestInfo> = vec![root_digest];
     let mut seen_dirs: HashSet<DigestInfo> = HashSet::new();
     seen_dirs.insert(root_digest);
+    let mut directories: HashMap<DigestInfo, Directory> = HashMap::new();
 
     // Track tree structure for bottom-up subtree size/file-count computation.
     let mut dir_direct_bytes: HashMap<DigestInfo, u64> = HashMap::new();
@@ -1710,6 +2241,7 @@ async fn resolve_tree_from_cas(
                 }
             }
             dir_children.insert(parent_digest, children);
+            directories.insert(parent_digest, directory);
         }
     }
 
@@ -1741,6 +2273,7 @@ async fn resolve_tree_from_cas(
         dir_digests: seen_dirs,
         subtree_bytes,
         subtree_files,
+        directories,
     })
 }
 
@@ -1918,14 +2451,34 @@ impl WorkerScheduler for ApiWorkerScheduler {
         // Worker endpoints changed — cached scores are stale.
         self.scores_cache.lock().await.clear();
 
-        let mut inner = self.inner.write().await;
-        inner
-            .immediate_evict_worker(
-                worker_id,
-                make_err!(Code::Internal, "Received request to remove worker"),
-                false,
-            )
-            .await
+        // Grab the worker's CAS endpoint before eviction so we can clean
+        // up prefetch state after the lock is released.
+        let cas_endpoint: Option<Arc<str>> = {
+            let inner = self.inner.read().await;
+            inner
+                .workers
+                .peek(worker_id)
+                .filter(|w| !w.cas_endpoint.is_empty())
+                .map(|w| Arc::from(w.cas_endpoint.as_str()))
+        };
+
+        let result = {
+            let mut inner = self.inner.write().await;
+            inner
+                .immediate_evict_worker(
+                    worker_id,
+                    make_err!(Code::Internal, "Received request to remove worker"),
+                    false,
+                )
+                .await
+        };
+
+        // Clean up prefetch connection and semaphore for this endpoint.
+        if let Some(ep) = cas_endpoint {
+            self.remove_prefetch_for_endpoint(&ep);
+        }
+
+        result
     }
 
     async fn shutdown(&self, shutdown_guard: ShutdownGuard) {
@@ -2064,6 +2617,14 @@ impl WorkerScheduler for ApiWorkerScheduler {
                     )
                     .await,
             );
+        }
+
+        // Clean up prefetch maps for endpoints no longer in the worker pool.
+        if !worker_ids_to_remove.is_empty() {
+            let active_endpoints: HashSet<Arc<str>> =
+                inner.endpoint_to_worker.keys().cloned().collect();
+            drop(inner);
+            self.cleanup_stale_prefetch_entries(&active_endpoints);
         }
 
         result

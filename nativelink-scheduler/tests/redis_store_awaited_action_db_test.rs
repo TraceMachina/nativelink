@@ -329,6 +329,8 @@ async fn test_multiple_clients_subscribe_to_same_action() -> Result<(), Error> {
                 platform: Some(Platform::default()),
                 worker_id: worker_id.clone().into(),
                 peer_hints: Vec::new(),
+                resolved_directories: Vec::new(),
+                resolved_directory_digests: Vec::new(),
             })),
         };
         let msg_for_worker = rx_from_worker.recv().await.unwrap();

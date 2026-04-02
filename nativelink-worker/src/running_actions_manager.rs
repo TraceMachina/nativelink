@@ -897,13 +897,25 @@ pub fn download_to_directory<'a>(
     filesystem_store: Pin<&'a FilesystemStore>,
     digest: &'a DigestInfo,
     current_directory: &'a str,
+    pre_resolved_tree: Option<HashMap<DigestInfo, ProtoDirectory>>,
 ) -> BoxFuture<'a, Result<(), Error>> {
     async move {
         let phase_start = std::time::Instant::now();
 
-        // Step 1: Resolve the full directory tree.
-        let tree = resolve_directory_tree(cas_store, digest).await?;
-        let tree_resolve_ms = phase_start.elapsed().as_millis();
+        // Step 1: Resolve the full directory tree. Use pre-resolved tree
+        // from the scheduler if available, otherwise fall back to GetTree RPC.
+        let (tree, tree_resolve_ms) = if let Some(tree) = pre_resolved_tree {
+            info!(
+                root = ?digest,
+                dirs = tree.len(),
+                "download_to_directory: using pre-resolved tree from scheduler (skipping GetTree RPC)"
+            );
+            (tree, 0u128)
+        } else {
+            let tree = resolve_directory_tree(cas_store, digest).await?;
+            let ms = phase_start.elapsed().as_millis();
+            (tree, ms)
+        };
 
         // Step 2: Walk the tree, creating all directories and collecting files.
         let (files, symlinks) = collect_files_from_tree(&tree, digest, current_directory)?;
@@ -1070,8 +1082,16 @@ pub fn download_to_directory<'a>(
         //     concurrency (unchanged from before).
         //
         const HARDLINK_CONCURRENCY: usize = 64;
-        const FETCH_CONCURRENCY: usize = 128;
         const HARDLINK_BATCH: usize = 64;
+
+        // Adaptive fetch concurrency: scale up for large input trees to
+        // keep the network saturated. Small trees use 128 (the previous
+        // fixed default) to avoid over-subscribing connections.
+        let fetch_concurrency: usize = match missing_digests.len() {
+            0..=500 => 128,
+            501..=2000 => 256,
+            _ => 512,
+        };
         // Channel capacity: buffer ahead of the consumer.
         const CHANNEL_CAPACITY: usize = HARDLINK_BATCH * 2;
 
@@ -1092,7 +1112,7 @@ pub fn download_to_directory<'a>(
             cached = cached_set.len(),
             missing = missing_digests.len(),
             missing_bytes,
-            fetch_concurrency = FETCH_CONCURRENCY,
+            fetch_concurrency = fetch_concurrency,
             hardlink_concurrency = HARDLINK_CONCURRENCY,
             "download_to_directory: starting pipelined fetch+hardlink",
         );
@@ -1168,7 +1188,7 @@ pub fn download_to_directory<'a>(
                         "fetcher: BatchReadBlobs fallback via ByteStream",
                     );
                     futures::stream::iter(fallback.into_iter().map(Ok::<_, Error>))
-                        .try_for_each_concurrent(FETCH_CONCURRENCY, |d| async move {
+                        .try_for_each_concurrent(fetch_concurrency, |d| async move {
                             cas_store
                                 .populate_fast_store_unchecked(d.into())
                                 .await
@@ -1188,7 +1208,7 @@ pub fn download_to_directory<'a>(
                     return Ok::<(), Error>(());
                 }
                 futures::stream::iter(large.into_iter().map(Ok::<_, Error>))
-                    .try_for_each_concurrent(FETCH_CONCURRENCY, |d| async move {
+                    .try_for_each_concurrent(fetch_concurrency, |d| async move {
                         let blob_start = std::time::Instant::now();
                         cas_store
                             .populate_fast_store_unchecked(d.into())
@@ -1527,6 +1547,7 @@ pub async fn prepare_action_inputs(
     filesystem_store: Pin<&FilesystemStore>,
     digest: &DigestInfo,
     work_directory: &str,
+    pre_resolved_tree: Option<HashMap<DigestInfo, ProtoDirectory>>,
 ) -> Result<Option<DigestInfo>, Error> {
     // Try cache first if available
     if let Some(cache) = directory_cache {
@@ -1586,7 +1607,7 @@ pub async fn prepare_action_inputs(
     }
 
     // Traditional path (cache disabled or failed)
-    download_to_directory(cas_store, filesystem_store, digest, work_directory).await?;
+    download_to_directory(cas_store, filesystem_store, digest, work_directory, pre_resolved_tree).await?;
     Ok(None)
 }
 
@@ -2166,6 +2187,10 @@ pub struct RunningActionImpl {
     state: Mutex<RunningActionImplState>,
     has_manager_entry: AtomicBool,
     did_cleanup: AtomicBool,
+    /// Pre-resolved directory tree from the scheduler (if provided in
+    /// StartExecute). Used once during prepare_action to skip the GetTree
+    /// RPC, then taken (dropped) to free memory.
+    pre_resolved_tree: Mutex<Option<HashMap<DigestInfo, ProtoDirectory>>>,
 }
 
 impl RunningActionImpl {
@@ -2176,6 +2201,7 @@ impl RunningActionImpl {
         action_info: ActionInfo,
         timeout: Duration,
         running_actions_manager: Arc<RunningActionsManagerImpl>,
+        pre_resolved_tree: Option<HashMap<DigestInfo, ProtoDirectory>>,
     ) -> Self {
         let work_directory = format!("{}/{}", action_directory, "work");
         let (kill_channel_tx, kill_channel_rx) = oneshot::channel();
@@ -2200,6 +2226,7 @@ impl RunningActionImpl {
             has_manager_entry: AtomicBool::new(true),
             // Only needs to be cleaned up after a prepare_action call, set there.
             did_cleanup: AtomicBool::new(true),
+            pre_resolved_tree: Mutex::new(pre_resolved_tree),
         }
     }
 
@@ -2239,6 +2266,8 @@ impl RunningActionImpl {
             let is_direct_use = self.running_actions_manager.directory_cache
                 .as_ref()
                 .map_or(false, |c| c.is_direct_use_mode());
+            // Take the pre-resolved tree (if any) — consumed once during input fetch.
+            let pre_resolved_tree = self.pre_resolved_tree.lock().take();
             let (command, direct_use_digest) = try_join(command_fut, async {
                 if !is_direct_use {
                     // Normal mode: create work directory first, then populate it.
@@ -2258,6 +2287,7 @@ impl RunningActionImpl {
                         filesystem_store_pin,
                         &self.action_info.input_root_digest,
                         &self.work_directory,
+                        pre_resolved_tree,
                     ))
                     .await
             })
@@ -4371,7 +4401,7 @@ impl RunningActionsManager for RunningActionsManagerImpl {
     async fn create_and_add_action(
         self: &Arc<Self>,
         worker_id: String,
-        start_execute: StartExecute,
+        mut start_execute: StartExecute,
     ) -> Result<Arc<RunningActionImpl>, Error> {
         self.metrics
             .create_and_add_action
@@ -4399,6 +4429,34 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                         );
                     }
                 }
+
+                // Extract pre-resolved directory tree from the scheduler
+                // before consuming start_execute. The parallel arrays are
+                // zipped into a HashMap<DigestInfo, Directory>.
+                let pre_resolved_tree = if !start_execute.resolved_directories.is_empty()
+                    && start_execute.resolved_directories.len()
+                        == start_execute.resolved_directory_digests.len()
+                {
+                    let mut tree = HashMap::with_capacity(
+                        start_execute.resolved_directories.len(),
+                    );
+                    for (dir, digest_proto) in start_execute
+                        .resolved_directories
+                        .drain(..)
+                        .zip(start_execute.resolved_directory_digests.drain(..))
+                    {
+                        if let Ok(digest_info) = DigestInfo::try_from(&digest_proto) {
+                            tree.insert(digest_info, dir);
+                        }
+                    }
+                    info!(
+                        dirs = tree.len(),
+                        "Received pre-resolved directory tree from scheduler"
+                    );
+                    Some(tree)
+                } else {
+                    None
+                };
 
                 let queued_timestamp = start_execute
                     .queued_timestamp
@@ -4446,6 +4504,7 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                     action_info,
                     timeout,
                     self.clone(),
+                    pre_resolved_tree,
                 ));
                 {
                     let mut running_actions = self.running_actions.lock();

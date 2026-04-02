@@ -66,7 +66,10 @@ use crate::worker_utils::make_connect_worker_request;
 /// The send loop normally wakes immediately on blob changes via `Notify`,
 /// but this backstop ensures subtree-only changes (which don't fire the
 /// tracker notify) are still reported within a bounded time.
-const BLOBS_AVAILABLE_MAX_INTERVAL_MS: u64 = 5000;
+/// At 100ms with 10 workers the server sees ~100 msgs/s worst case, each
+/// coalesced via drain-then-fire. Empty ticks are skipped (no send when
+/// there are no changes), so idle workers generate zero traffic.
+const BLOBS_AVAILABLE_MAX_INTERVAL_MS: u64 = 100;
 
 /// Platform-specific cumulative CPU time reading.
 #[cfg(target_os = "linux")]
