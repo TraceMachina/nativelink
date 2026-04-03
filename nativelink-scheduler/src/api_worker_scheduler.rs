@@ -820,6 +820,21 @@ impl ApiWorkerSchedulerImpl {
             format!("Worker {worker_id} does not exist in SimpleScheduler::update_action")
         })?;
 
+        // ExecutionComplete is sent by the worker after ExecuteResult to
+        // signal that post-execution I/O (CAS upload, AC write) has
+        // finished and the worker's platform resources can be fully
+        // reclaimed. Because ExecuteResult(Completed) already calls
+        // complete_action() which removes the operation from
+        // running_action_infos, the operation will not be present when
+        // ExecutionComplete arrives. This is expected — not an error.
+        if matches!(update, UpdateOperationType::ExecutionComplete) {
+            if worker.running_action_infos.contains_key(operation_id) {
+                worker.execution_complete(operation_id);
+            }
+            self.worker_change_notify.notify_one();
+            return Ok(());
+        }
+
         // Ensure the worker is supposed to be running the operation.
         if !worker.running_action_infos.contains_key(operation_id) {
             let err = make_err!(
@@ -839,12 +854,8 @@ impl ApiWorkerSchedulerImpl {
                 (true, err.code == Code::ResourceExhausted)
             }
             UpdateOperationType::UpdateWithDisconnect => (true, false),
-            UpdateOperationType::ExecutionComplete => {
-                // No update here, just restoring platform properties.
-                worker.execution_complete(operation_id);
-                self.worker_change_notify.notify_one();
-                return Ok(());
-            }
+            // Handled above before the contains_key check.
+            UpdateOperationType::ExecutionComplete => unreachable!(),
         };
 
         // Update the operation in the worker state manager.

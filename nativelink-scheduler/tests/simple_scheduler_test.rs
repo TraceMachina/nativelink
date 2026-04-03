@@ -3986,3 +3986,100 @@ async fn cache_affinity_soft_fallback_test() -> Result<(), Error> {
 
     Ok(())
 }
+
+/// Regression test: ExecutionComplete arriving after ExecuteResult(Completed)
+/// must not trigger "should not be running on worker" and must not evict the
+/// worker. Previously, the Completed update called complete_action() which
+/// removed the operation from running_action_infos, causing the subsequent
+/// ExecutionComplete to fail the contains_key check and evict the worker,
+/// killing all its other in-flight actions.
+#[nativelink_test]
+async fn execution_complete_after_completed_does_not_evict_worker() -> Result<(), Error> {
+    let worker_id = WorkerId("worker_id".to_string());
+
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec::default(),
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+        None, // cas_store
+        None, // locality_map
+    );
+
+    let action_digest = DigestInfo::new([99u8; 32], 512);
+    let mut rx_from_worker =
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
+    let insert_timestamp = make_system_time(1);
+    let mut action_listener =
+        setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp).await?;
+
+    let operation_id = {
+        match rx_from_worker.recv().await.unwrap().update {
+            Some(update_for_worker::Update::StartAction(start_execute)) => {
+                assert_eq!(
+                    action_listener.changed().await.unwrap().0.stage,
+                    ActionStage::Executing
+                );
+                start_execute.operation_id
+            }
+            v => panic!("Expected StartAction, got : {v:?}"),
+        }
+    };
+
+    let action_result = ActionResult {
+        exit_code: 0,
+        execution_metadata: ExecutionMetadata {
+            worker: worker_id.to_string(),
+            ..ExecutionMetadata::default()
+        },
+        ..ActionResult::default()
+    };
+
+    // Step 1: Worker sends ExecuteResult(Completed) — this removes the
+    // operation from running_action_infos via complete_action().
+    scheduler
+        .update_action(
+            &worker_id,
+            &OperationId::from(operation_id.clone()),
+            UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(
+                action_result.clone(),
+            )),
+        )
+        .await?;
+
+    // Step 2: Worker sends ExecutionComplete. Before the fix, this would
+    // trigger "should not be running on worker" and evict the worker.
+    let execution_complete_result = scheduler
+        .update_action(
+            &worker_id,
+            &OperationId::from(operation_id),
+            UpdateOperationType::ExecutionComplete,
+        )
+        .await;
+
+    assert!(
+        execution_complete_result.is_ok(),
+        "ExecutionComplete after Completed should succeed, got: {:?}",
+        execution_complete_result.unwrap_err()
+    );
+
+    // Verify the worker is still alive by sending a keepalive — this would
+    // fail with "Worker does not exist" if the worker was evicted.
+    let keepalive_result = scheduler
+        .worker_keep_alive_received(&worker_id, NOW_TIME + 1)
+        .await;
+    assert!(
+        keepalive_result.is_ok(),
+        "Worker should still be in the pool after ExecutionComplete, got: {:?}",
+        keepalive_result.unwrap_err()
+    );
+
+    Ok(())
+}
