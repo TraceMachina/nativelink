@@ -2032,8 +2032,15 @@ impl ApiWorkerScheduler {
             return;
         }
 
-        // Sort by size ascending so we warm many small blobs first.
-        let mut sorted: Vec<(DigestInfo, u64)> = file_digests.to_vec();
+        // Only warm blobs under 64KB — the SizePartitioningStore routes
+        // larger blobs to NoopStore, so warming them wastes disk I/O
+        // without populating MemoryStore.
+        const MEMORY_STORE_THRESHOLD: u64 = 65536;
+        let mut sorted: Vec<(DigestInfo, u64)> = file_digests
+            .iter()
+            .filter(|(_, size)| *size > 0 && *size < MEMORY_STORE_THRESHOLD)
+            .copied()
+            .collect();
         sorted.sort_unstable_by_key(|(_, size)| *size);
 
         // Cap at CACHE_WARM_MAX_BLOBS and CACHE_WARM_MAX_BYTES total.
