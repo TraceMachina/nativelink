@@ -1054,7 +1054,8 @@ pub struct ApiWorkerScheduler {
 
     /// Cache of endpoint scores keyed by input_root_digest.
     /// Avoids recomputing locality scores for identical input trees.
-    /// Cleared when workers connect or disconnect (scores become stale).
+    /// Bounded LRU (1024 entries) — stale entries from worker churn are
+    /// naturally evicted rather than cleared wholesale.
     scores_cache: Arc<tokio::sync::Mutex<LruCache<DigestInfo, Arc<ScoringResult>>>>,
 
     /// Cached GrpcStore connections to worker CAS endpoints for prefetch.
@@ -2422,8 +2423,10 @@ impl WorkerScheduler for ApiWorkerScheduler {
         let now = UNIX_EPOCH + Duration::from_secs(worker_timestamp);
         self.worker_registry.register_worker(&worker_id, now).await;
 
-        // Worker endpoints changed — cached scores are stale.
-        self.scores_cache.lock().await.clear();
+        // Scores cache is NOT cleared here. The LRU cache (1024 entries) will
+        // naturally evict stale entries. Slightly stale scores only produce
+        // suboptimal worker selection for one scheduling cycle, which is
+        // acceptable compared to losing the entire cache on every worker churn.
 
         self.metrics.workers_added.fetch_add(1, Ordering::Relaxed);
         Ok(())
@@ -2460,8 +2463,7 @@ impl WorkerScheduler for ApiWorkerScheduler {
     async fn remove_worker(&self, worker_id: &WorkerId) -> Result<(), Error> {
         self.worker_registry.remove_worker(worker_id).await;
 
-        // Worker endpoints changed — cached scores are stale.
-        self.scores_cache.lock().await.clear();
+        // Scores cache is NOT cleared here — see add_worker comment.
 
         // Grab the worker's CAS endpoint before eviction so we can clean
         // up prefetch state after the lock is released.
@@ -2609,10 +2611,7 @@ impl WorkerScheduler for ApiWorkerScheduler {
             inner.worker_change_notify.notify_one();
         }
 
-        // If any workers are being evicted, cached scores are stale.
-        if !worker_ids_to_remove.is_empty() {
-            self.scores_cache.lock().await.clear();
-        }
+        // Scores cache is NOT cleared on worker eviction — see add_worker comment.
 
         let mut result = Ok(());
         for worker_id in &worker_ids_to_remove {

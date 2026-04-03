@@ -1766,6 +1766,23 @@ async fn upload_file(
     })
 }
 
+/// Normalize a relative path in-memory by resolving `.` and `..` components.
+/// The RE API spec requires symlink targets to be relative paths without `..`.
+/// Unlike `Path::canonicalize`, this does not touch the filesystem.
+fn normalize_relative_path(path: &str) -> String {
+    let mut components: Vec<&str> = Vec::new();
+    for part in path.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                components.pop();
+            }
+            _ => components.push(part),
+        }
+    }
+    components.join("/")
+}
+
 async fn upload_symlink(
     full_path: impl AsRef<Path> + Debug,
     full_work_directory_path: impl AsRef<Path>,
@@ -1777,7 +1794,7 @@ async fn upload_symlink(
     // Detect if our symlink is inside our work directory, if it is find the
     // relative path otherwise use the absolute path.
     let target = if full_target_path.starts_with(full_work_directory_path.as_ref()) {
-        full_target_path
+        let raw = full_target_path
             .strip_prefix(full_work_directory_path.as_ref())
             .map_err(|e| make_err!(Code::Internal, "Could not strip work dir prefix: {}", e))?
             .to_str()
@@ -1787,8 +1804,11 @@ async fn upload_symlink(
                     "Could not convert '{:?}' to string",
                     full_target_path
                 )
-            })?
-            .to_string()
+            })?;
+        // strip_prefix does not normalize `..` components, but the RE API
+        // requires symlink targets to be clean relative paths. Normalize
+        // in-memory to resolve any `.` or `..` segments.
+        normalize_relative_path(raw)
     } else {
         full_target_path
             .to_str()

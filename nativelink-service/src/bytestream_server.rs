@@ -1287,18 +1287,12 @@ impl ByteStreamServer {
             return grpc_store.write(stream).await.map_err(Into::into);
         }
 
-        // Skip the upload if the server already has this blob.
-        if store.has(digest).await?.is_some() {
-            debug!(
-                %digest,
-                expected_size,
-                zero_copy,
-                "ByteStream::write: blob already exists, skipping upload",
-            );
-            return Ok(Response::new(WriteResponse {
-                committed_size: expected_size as i64,
-            }));
-        }
+        // NOTE: we intentionally do NOT check has() before writing. A prior
+        // version skipped uploads when the blob already existed, but with
+        // FastSlowStore the blob could be evicted from the fast tier between
+        // the has() check and the client receiving the response — the client
+        // would believe the upload succeeded while the blob is gone. CAS
+        // writes are idempotent so redundant writes are safe and cheap.
 
         let digest_function = stream
             .resource_info
