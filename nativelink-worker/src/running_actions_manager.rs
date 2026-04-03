@@ -1769,13 +1769,23 @@ async fn upload_file(
 /// Normalize a relative path in-memory by resolving `.` and `..` components.
 /// The RE API spec requires symlink targets to be relative paths without `..`.
 /// Unlike `Path::canonicalize`, this does not touch the filesystem.
+/// Normalize a relative path by resolving `.` and `..` components.
+/// Leading `..` that would escape the root are preserved (not silently
+/// dropped) so the caller can detect symlinks pointing outside the
+/// work directory.
 fn normalize_relative_path(path: &str) -> String {
     let mut components: Vec<&str> = Vec::new();
     for part in path.split('/') {
         match part {
             "" | "." => {}
             ".." => {
-                components.pop();
+                if components.last().map_or(true, |c| *c == "..") {
+                    // Can't go above root — preserve the ".." so caller
+                    // sees the escape attempt.
+                    components.push("..");
+                } else {
+                    components.pop();
+                }
             }
             _ => components.push(part),
         }
