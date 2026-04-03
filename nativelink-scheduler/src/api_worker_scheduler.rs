@@ -1072,8 +1072,8 @@ const TREE_CACHE_CAPACITY: usize = 1024;
 /// Maximum size of a single blob eligible for prefetch (1MiB).
 /// Larger blobs are more efficiently handled by the worker's parallel
 /// ByteStream fetch (128-512 concurrent streams). Prefetch targets
-/// small blobs where per-blob RPC overhead dominates.
-const PREFETCH_MAX_SINGLE_BLOB_SIZE: u64 = 1024 * 1024;
+/// small-to-medium blobs where per-blob RPC overhead dominates.
+const PREFETCH_MAX_SINGLE_BLOB_SIZE: u64 = 4 * 1024 * 1024;
 
 /// Maximum number of concurrent prefetch batch RPCs per worker.
 const PREFETCH_MAX_CONCURRENT_PER_WORKER: usize = 8;
@@ -1085,9 +1085,10 @@ const PREFETCH_MAX_INFLIGHT_BYTES: u64 = 200 * 1024 * 1024;
 /// because small blobs are cheap to push via BatchUpdateBlobs.
 const PREFETCH_MAX_BLOBS: usize = 1024;
 
-/// Maximum total bytes per BatchUpdateBlobs RPC batch (1MiB).
-/// Matches the GrpcStore batch_update_threshold_bytes default.
-const PREFETCH_BATCH_SIZE_BYTES: u64 = 1024 * 1024;
+/// Maximum total bytes per BatchUpdateBlobs RPC batch (4MiB).
+/// Matches PREFETCH_MAX_SINGLE_BLOB_SIZE so all prefetched blobs
+/// can go through the efficient batch path.
+const PREFETCH_BATCH_SIZE_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Base backoff duration after a failed tree resolution (first attempt).
 const FAILURE_BACKOFF: Duration = Duration::from_secs(60);
@@ -2105,7 +2106,7 @@ async fn create_worker_cas_connection(endpoint: &str) -> Result<Store, Error> {
         max_concurrent_requests: 0,
         connections_per_endpoint: 16,
         rpc_timeout_s: 120,
-        batch_update_threshold_bytes: 1_048_576,
+        batch_update_threshold_bytes: 4 * 1024 * 1024,
         batch_coalesce_delay_ms: 0,
         max_concurrent_batch_rpcs: 8,
         parallel_chunk_read_threshold: 8 * 1024 * 1024,
