@@ -38,6 +38,7 @@ use nativelink_store::grpc_store::GrpcStore;
 use nativelink_util::action_messages::{OperationId, WorkerId};
 use nativelink_util::blob_locality_map::SharedBlobLocalityMap;
 use nativelink_util::common::DigestInfo;
+use nativelink_util::metrics_utils::CounterWithTime;
 use nativelink_util::operation_state_manager::{UpdateOperationType, WorkerStateManager};
 use nativelink_util::platform_properties::PlatformProperties;
 use nativelink_util::shutdown_guard::ShutdownGuard;
@@ -84,6 +85,8 @@ pub struct SchedulerMetrics {
     pub prefetch_blobs_already_present: AtomicU64,
     /// Total number of batch RPCs sent to workers during prefetch.
     pub prefetch_batches_sent: AtomicU64,
+    /// Total number of server-side cache warm tasks spawned.
+    pub cache_warm_spawned: CounterWithTime,
 }
 
 /// Cached result of `score_and_generate_hints`: endpoint scores and peer hints.
@@ -1091,6 +1094,15 @@ const PREFETCH_MAX_BLOBS: usize = 1024;
 /// can go through the efficient batch path.
 const PREFETCH_BATCH_SIZE_BYTES: u64 = 4 * 1024 * 1024;
 
+/// Maximum concurrent get_part_unchunked calls during server cache warm.
+const CACHE_WARM_CONCURRENCY: usize = 64;
+
+/// Maximum total bytes to warm in a single cache warm pass (256MB).
+const CACHE_WARM_MAX_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Maximum number of blobs to warm in a single cache warm pass.
+const CACHE_WARM_MAX_BLOBS: usize = 4096;
+
 /// Base backoff duration after a failed tree resolution (first attempt).
 const FAILURE_BACKOFF: Duration = Duration::from_secs(60);
 
@@ -1510,6 +1522,13 @@ impl ApiWorkerScheduler {
                     operation_id.to_string(),
                 );
             }
+        }
+
+        // ── Phase 5: spawn server-side cache warm (AFTER write lock released) ──
+        // Read blobs through the full CAS chain so MemoryStore gets populated.
+        // Already-warm blobs are a ~5us no-op; cold blobs get read from disk.
+        if let Some(tree) = &resolved_tree {
+            self.spawn_server_cache_warm(&tree.file_digests, operation_id);
         }
 
         result
@@ -1989,6 +2008,113 @@ impl ApiWorkerScheduler {
                 blobs_already_present,
                 elapsed_ms = elapsed.as_millis() as u64,
                 "prefetch: completed batched push to worker"
+            );
+        });
+    }
+
+    /// Spawns a background task that warms the server-side MemoryStore by
+    /// reading blobs through the full CAS store chain. For blobs already in
+    /// MemoryStore, `FastSlowStore::get_part()` returns from the fast store
+    /// in ~1-5us (near-no-op). For cold blobs, the read populates MemoryStore
+    /// via `populate_and_maybe_stream`. The returned `Bytes` are dropped
+    /// immediately — we only need the warming side effect.
+    fn spawn_server_cache_warm(
+        &self,
+        file_digests: &[(DigestInfo, u64)],
+        operation_id: &OperationId,
+    ) {
+        let cas_store = match &self.cas_store {
+            Some(s) => s.clone(),
+            None => return,
+        };
+
+        if file_digests.is_empty() {
+            return;
+        }
+
+        // Sort by size ascending so we warm many small blobs first.
+        let mut sorted: Vec<(DigestInfo, u64)> = file_digests.to_vec();
+        sorted.sort_unstable_by_key(|(_, size)| *size);
+
+        // Cap at CACHE_WARM_MAX_BLOBS and CACHE_WARM_MAX_BYTES total.
+        let mut total_bytes: u64 = 0;
+        let mut selected: Vec<DigestInfo> = Vec::with_capacity(
+            sorted.len().min(CACHE_WARM_MAX_BLOBS),
+        );
+        for (digest, size) in &sorted {
+            if selected.len() >= CACHE_WARM_MAX_BLOBS {
+                break;
+            }
+            if total_bytes + size > CACHE_WARM_MAX_BYTES && !selected.is_empty() {
+                break;
+            }
+            total_bytes += size;
+            selected.push(*digest);
+        }
+
+        let blob_count = selected.len();
+        let op_id = operation_id.to_string();
+
+        self.metrics.cache_warm_spawned.inc();
+
+        info!(
+            %operation_id,
+            blob_count,
+            total_bytes,
+            "cache_warm: spawning server-side MemoryStore warm"
+        );
+
+        tokio::spawn(async move {
+            let start = Instant::now();
+            let semaphore = Arc::new(Semaphore::new(CACHE_WARM_CONCURRENCY));
+            let mut join_set = tokio::task::JoinSet::new();
+
+            for digest in selected {
+                let permit = match semaphore.clone().acquire_owned().await {
+                    Ok(p) => p,
+                    Err(_) => break,
+                };
+                let store = cas_store.clone();
+
+                join_set.spawn(async move {
+                    let _permit = permit;
+                    let key: StoreKey<'_> = digest.into();
+                    match store.get_part_unchunked(key.borrow(), 0, None).await {
+                        Ok(_bytes) => true,
+                        Err(e) => {
+                            warn!(
+                                %digest,
+                                ?e,
+                                "cache_warm: failed to warm blob"
+                            );
+                            false
+                        }
+                    }
+                });
+            }
+
+            let mut warmed: u64 = 0;
+            let mut failed: u64 = 0;
+            while let Some(result) = join_set.join_next().await {
+                match result {
+                    Ok(true) => warmed += 1,
+                    Ok(false) => failed += 1,
+                    Err(e) => {
+                        warn!(?e, "cache_warm: task panicked");
+                        failed += 1;
+                    }
+                }
+            }
+
+            let elapsed_ms = start.elapsed().as_millis() as u64;
+            info!(
+                op_id = %op_id,
+                blob_count,
+                warmed,
+                failed,
+                total_bytes,
+                elapsed_ms,
+                "cache_warm: completed server-side MemoryStore warm"
             );
         });
     }
