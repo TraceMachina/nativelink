@@ -222,31 +222,46 @@ pub fn endpoint(endpoint_config: &GrpcEndpoint) -> Result<tonic::transport::Endp
 /// `poll_ready`/`call` pairs through a background worker task,
 /// properly routing wakers so concurrent callers don't deadlock.
 ///
-/// All clones share the same underlying QUIC connection via the
-/// buffered service — the `H3Channel`'s `RequestSender` establishes
-/// one QUIC connection and clones `h3::client::SendRequest` for each
-/// RPC, achieving true stream multiplexing.
+/// Type alias for the inner buffered H3 service.
+#[cfg(feature = "quic")]
+type H3BufferedService = tower::buffer::Buffer<
+    hyper::Request<tonic::body::Body>,
+    futures::future::BoxFuture<
+        'static,
+        Result<
+            hyper::Response<
+                h3_util::client_body::H3IncomingClient<h3_quinn::RecvStream, bytes::Bytes>,
+            >,
+            tonic_h3::Error,
+        >,
+    >,
+>;
+
+/// A pool of QUIC/HTTP3 connections that distributes RPCs across
+/// multiple independent quinn connections via round-robin. Each
+/// connection has its own UDP socket, quinn Endpoint, and Connection
+/// mutex, eliminating the single-mutex bottleneck that serializes
+/// all streams on one connection.
+///
+/// `Buffer` is Clone (Arc-backed), so cloning QuicChannel is cheap.
+/// Each clone gets its own `selected` index so concurrent clones
+/// don't interfere with each other's poll_ready/call pairing.
 #[cfg(feature = "quic")]
 #[derive(Clone)]
 pub struct QuicChannel {
-    inner: tower::buffer::Buffer<
-        hyper::Request<tonic::body::Body>,
-        futures::future::BoxFuture<
-            'static,
-            Result<
-                hyper::Response<
-                    h3_util::client_body::H3IncomingClient<h3_quinn::RecvStream, bytes::Bytes>,
-                >,
-                tonic_h3::Error,
-            >,
-        >,
-    >,
+    channels: Vec<H3BufferedService>,
+    /// Global round-robin counter shared across all clones.
+    counter: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// Index selected by the most recent poll_ready on THIS clone.
+    /// Per-clone (not shared) to avoid race between concurrent clones.
+    selected: usize,
 }
 
 #[cfg(feature = "quic")]
 impl std::fmt::Debug for QuicChannel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("QuicChannel")
+            .field("connections", &self.channels.len())
             .finish_non_exhaustive()
     }
 }
@@ -257,38 +272,38 @@ impl tower::Service<hyper::Request<tonic::body::Body>> for QuicChannel {
         h3_util::client_body::H3IncomingClient<h3_quinn::RecvStream, bytes::Bytes>,
     >;
     type Error = tower::BoxError;
-    type Future = <tower::buffer::Buffer<
-        hyper::Request<tonic::body::Body>,
-        futures::future::BoxFuture<
-            'static,
-            Result<
-                hyper::Response<
-                    h3_util::client_body::H3IncomingClient<h3_quinn::RecvStream, bytes::Bytes>,
-                >,
-                tonic_h3::Error,
-            >,
-        >,
-    > as tower::Service<hyper::Request<tonic::body::Body>>>::Future;
+    type Future = <H3BufferedService as tower::Service<hyper::Request<tonic::body::Body>>>::Future;
 
     fn poll_ready(
         &mut self,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Result<(), Self::Error>> {
-        tower::Service::poll_ready(&mut self.inner, cx)
+        // Only select a new channel when we haven't committed to one yet.
+        // On Pending retries, keep polling the same channel to avoid
+        // waker misrouting and counter skew.
+        if self.selected >= self.channels.len() {
+            self.selected = self.counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                % self.channels.len();
+        }
+        tower::Service::poll_ready(&mut self.channels[self.selected], cx)
     }
 
     fn call(&mut self, req: hyper::Request<tonic::body::Body>) -> Self::Future {
-        tower::Service::call(&mut self.inner, req)
+        let idx = self.selected;
+        // Reset so next poll_ready picks a new channel.
+        self.selected = usize::MAX;
+        tower::Service::call(&mut self.channels[idx], req)
     }
 }
 
-/// Create a QUIC/HTTP3 channel for a gRPC endpoint.
+/// Create a pool of QUIC/HTTP3 channels for a gRPC endpoint.
 ///
-/// QUIC mandates TLS 1.3 — we skip server certificate verification for
-/// internal networks (self-signed certs). QUIC multiplexes internally
-/// so a single channel replaces the multi-connection pool used by TCP.
+/// Creates `connections` independent QUIC connections, each with its own
+/// UDP socket, quinn Endpoint, and Connection mutex. RPCs are distributed
+/// across connections via round-robin, eliminating the single-mutex
+/// bottleneck in quinn's Connection state.
 #[cfg(feature = "quic")]
-pub fn h3_channel(endpoint_config: &GrpcEndpoint) -> Result<QuicChannel, Error> {
+pub fn h3_channel(endpoint_config: &GrpcEndpoint, connections: usize) -> Result<QuicChannel, Error> {
     use std::sync::Arc;
     use h3_quinn as _;
 
@@ -415,50 +430,57 @@ pub fn h3_channel(endpoint_config: &GrpcEndpoint) -> Result<QuicChannel, Error> 
     transport.keep_alive_interval(Some(Duration::from_secs(5)));
     client_config.transport_config(Arc::new(transport));
 
-    // Pre-create UDP socket with large buffers for 10 GbE.
-    let udp_socket = std::net::UdpSocket::bind("[::]:0")
-        .map_err(|e| make_err!(Code::Internal, "QUIC client UDP bind: {e:?}"))?;
-    {
-        const QUIC_UDP_BUF: usize = 8 * 1024 * 1024;
-        let sock_ref = socket2::SockRef::from(&udp_socket);
-        if let Err(err) = sock_ref.set_send_buffer_size(QUIC_UDP_BUF) {
-            info!(?err, "Failed to set QUIC client SO_SNDBUF");
+    let connections = connections.max(1);
+    let mut channels = Vec::with_capacity(connections);
+
+    for i in 0..connections {
+        let udp_socket = std::net::UdpSocket::bind("[::]:0")
+            .map_err(|e| make_err!(Code::Internal, "QUIC client UDP bind [{i}]: {e:?}"))?;
+        {
+            const QUIC_UDP_BUF: usize = 8 * 1024 * 1024;
+            let sock_ref = socket2::SockRef::from(&udp_socket);
+            if let Err(err) = sock_ref.set_send_buffer_size(QUIC_UDP_BUF) {
+                info!(?err, i, "Failed to set QUIC client SO_SNDBUF");
+            }
+            if let Err(err) = sock_ref.set_recv_buffer_size(QUIC_UDP_BUF) {
+                info!(?err, i, "Failed to set QUIC client SO_RCVBUF");
+            }
         }
-        if let Err(err) = sock_ref.set_recv_buffer_size(QUIC_UDP_BUF) {
-            info!(?err, "Failed to set QUIC client SO_RCVBUF");
-        }
+
+        let mut client_endpoint = quinn::Endpoint::new(
+            quinn::EndpointConfig::default(),
+            None,
+            udp_socket,
+            quinn::default_runtime()
+                .ok_or_else(|| make_err!(Code::Internal, "No async runtime for QUIC client"))?,
+        )
+        .map_err(|e| make_err!(Code::Internal, "Failed to create QUIC client endpoint [{i}]: {e:?}"))?;
+        client_endpoint.set_default_client_config(client_config.clone());
+
+        let connector = tonic_h3::quinn::H3QuinnConnector::new(
+            uri.clone(),
+            server_name.clone(),
+            client_endpoint,
+        );
+
+        let h3_channel = tonic_h3::H3Channel::new(connector, uri.clone());
+        // 512 slots per connection. With N connections, total capacity
+        // is N×512 (e.g., 32×512 = 16384), sufficient for burst peaks.
+        let buffered = tower::buffer::Buffer::new(h3_channel, 512);
+        channels.push(buffered);
     }
-
-    let mut client_endpoint = quinn::Endpoint::new(
-        quinn::EndpointConfig::default(),
-        None,
-        udp_socket,
-        quinn::default_runtime()
-            .ok_or_else(|| make_err!(Code::Internal, "No async runtime for QUIC client"))?,
-    )
-    .map_err(|e| make_err!(Code::Internal, "Failed to create QUIC client endpoint: {e:?}"))?;
-    client_endpoint.set_default_client_config(client_config);
-
-    let connector = tonic_h3::quinn::H3QuinnConnector::new(
-        uri.clone(),
-        server_name,
-        client_endpoint,
-    );
 
     info!(
         address = %endpoint_config.address,
-        "tls_utils::h3_channel: creating QUIC/HTTP3 channel",
+        connections,
+        "tls_utils::h3_channel: created QUIC/HTTP3 connection pool",
     );
 
-    let h3_channel = tonic_h3::H3Channel::new(connector, uri);
-
-    // Buffer serializes poll_ready/call through a background worker,
-    // properly handling waker routing for concurrent callers. 8192
-    // outstanding requests accommodates mirror burst peaks (10K+ in
-    // 5 minutes) without saturating the buffer and timing out.
-    let buffered = tower::buffer::Buffer::new(h3_channel, 8192);
-
-    Ok(QuicChannel { inner: buffered })
+    Ok(QuicChannel {
+        channels,
+        counter: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        selected: usize::MAX, // sentinel: no channel selected yet
+    })
 }
 
 /// Certificate verifier that accepts any server certificate.

@@ -1017,20 +1017,34 @@ async fn inner_main(
             ));
             quic_server_config.transport_config(Arc::new(transport));
 
-            // Pre-create UDP socket with large buffers for 10 GbE.
-            // quinn-udp defaults to ~2 MiB; we want 8 MiB for burst absorption.
-            let udp_socket = std::net::UdpSocket::bind(socket_addr)
-                .map_err(|e| make_err!(Code::Internal, "QUIC UDP bind on {socket_addr}: {e:?}"))?;
-            {
+            // Pre-create UDP socket with large buffers and SO_REUSEPORT.
+            // SO_REUSEPORT allows multiple sockets on the same port so the
+            // kernel distributes incoming packets across them in parallel.
+            let udp_socket = {
                 const QUIC_UDP_BUF: usize = 8 * 1024 * 1024;
-                let sock_ref = socket2::SockRef::from(&udp_socket);
-                if let Err(err) = sock_ref.set_send_buffer_size(QUIC_UDP_BUF) {
+                let sock = socket2::Socket::new(
+                    match socket_addr {
+                        std::net::SocketAddr::V4(_) => socket2::Domain::IPV4,
+                        std::net::SocketAddr::V6(_) => socket2::Domain::IPV6,
+                    },
+                    socket2::Type::DGRAM,
+                    Some(socket2::Protocol::UDP),
+                )
+                .map_err(|e| make_err!(Code::Internal, "QUIC UDP socket: {e:?}"))?;
+                sock.set_reuse_port(true)
+                    .map_err(|e| make_err!(Code::Internal, "QUIC SO_REUSEPORT: {e:?}"))?;
+                sock.set_nonblocking(true)
+                    .map_err(|e| make_err!(Code::Internal, "QUIC nonblocking: {e:?}"))?;
+                if let Err(err) = sock.set_send_buffer_size(QUIC_UDP_BUF) {
                     warn!(?err, "Failed to set QUIC SO_SNDBUF");
                 }
-                if let Err(err) = sock_ref.set_recv_buffer_size(QUIC_UDP_BUF) {
+                if let Err(err) = sock.set_recv_buffer_size(QUIC_UDP_BUF) {
                     warn!(?err, "Failed to set QUIC SO_RCVBUF");
                 }
-            }
+                sock.bind(&socket_addr.into())
+                    .map_err(|e| make_err!(Code::Internal, "QUIC UDP bind on {socket_addr}: {e:?}"))?;
+                std::net::UdpSocket::from(sock)
+            };
 
             let quinn_endpoint = quinn::Endpoint::new(
                 quinn::EndpointConfig::default(),

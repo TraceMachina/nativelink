@@ -21,7 +21,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bytes::Bytes;
 use parking_lot::RwLock;
-use tokio::sync::Notify;
+use tokio::sync::{Notify, Semaphore};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, trace, warn};
 
@@ -187,7 +187,6 @@ impl WorkerProxyStore {
             connections_per_endpoint: 64,
             rpc_timeout_s: 120,
             batch_update_threshold_bytes: 1_048_576, // 1MB: small blobs use BatchUpdateBlobs
-            batch_coalesce_delay_ms: 0,
             max_concurrent_batch_rpcs: 32,
             parallel_chunk_read_threshold: 8 * 1024 * 1024,
             parallel_chunk_count: 8,
@@ -660,6 +659,16 @@ impl WorkerProxyStore {
         digest: DigestInfo,
         data: Bytes,
     ) {
+        // Limit concurrent mirror operations so a burst of hundreds of
+        // blobs doesn't spawn unbounded tasks against the GrpcStore.
+        // 64 permits keeps the network busy without resource exhaustion.
+        static MIRROR_SEMAPHORE: Semaphore = Semaphore::const_new(64);
+
+        let _permit = match MIRROR_SEMAPHORE.acquire().await {
+            Ok(p) => p,
+            Err(_) => return, // semaphore closed, should not happen
+        };
+
         let endpoints = self.locality_map.read().all_endpoints();
         if endpoints.is_empty() {
             return;

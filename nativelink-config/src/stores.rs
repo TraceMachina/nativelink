@@ -1230,8 +1230,9 @@ pub struct GrpcEndpoint {
 
     /// When true, connect using QUIC/HTTP3 instead of TCP/HTTP2.
     /// Requires the `quic` feature flag and a server listening on an
-    /// `http3` listener. QUIC multiplexes internally so multiple
-    /// `connections_per_endpoint` are not needed.
+    /// `http3` listener. `connections_per_endpoint` controls how many
+    /// independent QUIC connections are opened to distribute streams
+    /// across separate quinn Connection mutexes.
     /// Default: true
     #[serde(default = "default_use_http3")]
     pub use_http3: bool,
@@ -1253,9 +1254,6 @@ fn default_batch_update_threshold_bytes() -> u64 {
     1_048_576
 }
 
-fn default_batch_coalesce_delay_ms() -> u64 {
-    10
-}
 
 const fn default_connections_per_endpoint() -> usize {
     32
@@ -1329,20 +1327,6 @@ pub struct GrpcSpec {
         deserialize_with = "convert_numeric_with_shellexpand"
     )]
     pub batch_update_threshold_bytes: u64,
-
-    /// Deprecated: this field is retained for backward compatibility but is
-    /// now ignored. The batch loop uses a drain-then-fire pattern instead of
-    /// a coalesce delay window: it waits for the first item, drains
-    /// everything currently queued, then fires immediately. Under low load
-    /// each blob gets its own immediate batch; under high load items
-    /// naturally accumulate while RPCs are in flight.
-    ///
-    /// Default: 10 (milliseconds, ignored)
-    #[serde(
-        default = "default_batch_coalesce_delay_ms",
-        deserialize_with = "convert_numeric_with_shellexpand"
-    )]
-    pub batch_coalesce_delay_ms: u64,
 
     /// Maximum number of BatchUpdateBlobs RPCs that can be in flight
     /// concurrently from the batch loop. Higher values reduce

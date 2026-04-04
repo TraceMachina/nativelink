@@ -2429,7 +2429,6 @@ async fn create_worker_cas_connection(endpoint: &str) -> Result<Store, Error> {
         connections_per_endpoint: 16,
         rpc_timeout_s: 120,
         batch_update_threshold_bytes: 4 * 1024 * 1024,
-        batch_coalesce_delay_ms: 0,
         max_concurrent_batch_rpcs: 8,
         parallel_chunk_read_threshold: 8 * 1024 * 1024,
         parallel_chunk_count: 4,

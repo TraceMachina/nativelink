@@ -1884,7 +1884,7 @@ pub async fn new_local_worker(
                         tcp_nodelay: true,
                         use_http3: true,
                     };
-                    let quic_channel = tls_utils::h3_channel(&grpc_endpoint)
+                    let quic_channel = tls_utils::h3_channel(&grpc_endpoint, 1)
                         .map_err(|e| make_err!(
                             Code::Internal,
                             "Failed to create QUIC channel for worker API: {e:?}"

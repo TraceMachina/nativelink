@@ -142,10 +142,12 @@ impl GrpcStore {
             #[cfg(feature = "quic")]
             {
                 let ep = &spec.endpoints[0];
-                let channel = tls_utils::h3_channel(ep)
+                let connections = spec.connections_per_endpoint.max(1);
+                let channel = tls_utils::h3_channel(ep, connections)
                     .map_err(|e| make_input_err!("Failed to create QUIC channel: {e:?}"))?;
                 info!(
                     address = %ep.address,
+                    connections,
                     "GrpcStore: using QUIC/HTTP3 transport",
                 );
                 Transport::Quic(channel)
@@ -206,7 +208,7 @@ impl GrpcStore {
             info!(
                 batch_update_threshold,
                 max_concurrent,
-                "GrpcStore: BatchUpdateBlobs drain-and-fire batching enabled",
+                "GrpcStore: BatchUpdateBlobs opportunistic batching enabled",
             );
         }
 
@@ -290,11 +292,12 @@ impl GrpcStore {
     }
 
     /// Background task that batches small blob uploads and flushes them
-    /// as BatchUpdateBlobs RPCs. Uses a drain-then-fire pattern: wait
-    /// for the first item, drain everything else currently queued, then
-    /// fire immediately. Under low load each blob gets its own immediate
-    /// batch. Under high load items naturally accumulate while RPCs are
-    /// in flight, so the next drain picks up everything queued.
+    /// as BatchUpdateBlobs RPCs. Uses opportunistic batching: wait for
+    /// the first item, yield to let other ready tasks enqueue, then
+    /// drain everything currently queued and fire immediately. Under
+    /// low load each blob gets its own immediate batch. Under high load
+    /// items naturally accumulate while RPCs are in flight, so the next
+    /// drain picks up everything queued.
     ///
     /// Multiple batches can be in flight concurrently (up to `semaphore`
     /// permits), so the loop does not block on an RPC before collecting
@@ -320,6 +323,11 @@ impl GrpcStore {
 
             let mut batch = vec![first];
             let mut total_size = batch[0].data.len();
+
+            // Yield once to let other ready tasks enqueue items.
+            // No artificial delay — just gives concurrent callers a
+            // chance to push to the channel before we drain it.
+            tokio::task::yield_now().await;
 
             // Drain everything currently queued (non-blocking).
             loop {

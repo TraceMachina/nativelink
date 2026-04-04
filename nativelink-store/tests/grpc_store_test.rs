@@ -31,7 +31,6 @@ async fn fast_find_missing_blobs() -> Result<(), Error> {
         connections_per_endpoint: 0,
         rpc_timeout_s: 1,
         batch_update_threshold_bytes: 0,
-        batch_coalesce_delay_ms: 0,
         max_concurrent_batch_rpcs: 8,
         parallel_chunk_read_threshold: 0,
         parallel_chunk_count: 0,
