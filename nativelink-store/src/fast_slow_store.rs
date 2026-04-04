@@ -16,7 +16,8 @@ use core::borrow::BorrowMut;
 use core::cmp::{max, min};
 use core::ops::Range;
 use core::pin::Pin;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::time::Duration;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::sync::{Arc, Weak};
@@ -70,11 +71,17 @@ pub struct FastSlowStore {
     /// progress. If the fast store evicts the blob before the slow write
     /// completes, `get_part` serves from this map to prevent NotFound gaps.
     in_flight_slow_writes: Arc<Mutex<HashMap<StoreKey<'static>, Vec<Bytes>>>>,
+    /// Notified when in_flight_slow_writes becomes empty. Used by
+    /// `flush_slow_writes` to wait for all background writes to complete.
+    in_flight_empty_notify: Arc<Notify>,
     /// Digests that have completed their background slow store write.
     /// Drained by the BlobsInStableStorage loop when notified.
     stable_digests: Arc<Mutex<Vec<DigestInfo>>>,
     /// Wakes the BlobsInStableStorage loop when new digests are available.
     stable_notify: Arc<Notify>,
+    /// Set to true during shutdown to prevent new background slow writes
+    /// from being spawned while we flush existing ones.
+    shutting_down: AtomicBool,
 }
 
 // This guard ensures that the populating_digests is cleared even if the future
@@ -139,9 +146,55 @@ impl FastSlowStore {
             metrics: FastSlowStoreMetrics::default(),
             populating_digests: Mutex::new(HashMap::new()),
             in_flight_slow_writes: Arc::new(Mutex::new(HashMap::new())),
+            in_flight_empty_notify: Arc::new(Notify::new()),
             stable_digests: Arc::new(Mutex::new(Vec::new())),
             stable_notify: Arc::new(Notify::new()),
+            shutting_down: AtomicBool::new(false),
         })
+    }
+
+    pub fn in_flight_slow_write_count(&self) -> usize {
+        self.in_flight_slow_writes.lock().len()
+    }
+
+    /// Fence out new background slow writes and wait for all existing
+    /// ones to complete, with a timeout. Returns the number of writes
+    /// still pending when the timeout expired (0 = all flushed).
+    pub async fn flush_slow_writes(&self, timeout: Duration) -> usize {
+        self.shutting_down.store(true, Ordering::Release);
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            // Register the notified future BEFORE checking the count to
+            // avoid missing a notification between check and await.
+            let notified = self.in_flight_empty_notify.notified();
+            let count = self.in_flight_slow_writes.lock().len();
+            if count == 0 {
+                return 0;
+            }
+            match tokio::time::timeout_at(deadline, notified).await {
+                Ok(()) => continue,
+                Err(_) => {
+                    let guard = self.in_flight_slow_writes.lock();
+                    let remaining = guard.len();
+                    if remaining > 0 {
+                        warn!(
+                            remaining,
+                            "FastSlowStore::flush_slow_writes: timed out waiting \
+                             for background writes to complete"
+                        );
+                        for (key, chunks) in guard.iter() {
+                            let bytes: usize = chunks.iter().map(|b| b.len()).sum();
+                            warn!(
+                                ?key,
+                                bytes,
+                                "FastSlowStore: unflushed write at shutdown"
+                            );
+                        }
+                    }
+                    return remaining;
+                }
+            }
+        }
     }
 
     pub const fn fast_store(&self) -> &Store {
@@ -548,6 +601,25 @@ impl StoreDriver for FastSlowStore {
             "FastSlowStore::update: fast store complete, spawning background slow write",
         );
 
+        // During shutdown, write directly to the slow store (blocking the
+        // caller) instead of spawning a background task that would be killed.
+        if self.shutting_down.load(Ordering::Acquire) {
+            let (mut tx, rx) = make_buf_channel_pair_with_size(128);
+            let write_fut = self.slow_store.update(key.borrow(), rx, size_info);
+            let send_fut = async {
+                for chunk in data {
+                    tx.send(chunk).await.map_err(|e| {
+                        make_err!(Code::Internal, "shutdown flush send: {:?}", e)
+                    })?;
+                }
+                tx.send_eof()
+                    .err_tip(|| "shutdown flush send_eof")?;
+                Result::<(), Error>::Ok(())
+            };
+            let (write_result, send_result) = tokio::join!(write_fut, send_fut);
+            return send_result.and(write_result);
+        }
+
         // Insert into in-flight map so get_part can serve this blob even if
         // the fast store evicts it before the slow write completes.
         let owned_key = key.borrow().into_owned();
@@ -556,6 +628,7 @@ impl StoreDriver for FastSlowStore {
             .insert(owned_key.clone(), data.clone());
 
         let in_flight = self.in_flight_slow_writes.clone();
+        let in_flight_empty = self.in_flight_empty_notify.clone();
         let stable_digests_ref = self.stable_digests.clone();
         let stable_notify_ref = self.stable_notify.clone();
         let slow_store = self.slow_store.clone();
@@ -602,7 +675,13 @@ impl StoreDriver for FastSlowStore {
                 Result::<(), Error>::Ok(())
             };
             let (write_result, send_result) = tokio::join!(write_fut, send_fut);
-            in_flight.lock().remove(&key_for_bg);
+            {
+                let mut guard = in_flight.lock();
+                guard.remove(&key_for_bg);
+                if guard.is_empty() {
+                    in_flight_empty.notify_waiters();
+                }
+            }
             let slow_ms = slow_start.elapsed().as_millis();
             let result = send_result.and(write_result);
             match result {
@@ -687,6 +766,11 @@ impl StoreDriver for FastSlowStore {
         }
         fast_result?;
 
+        // During shutdown, write directly instead of spawning background task.
+        if self.shutting_down.load(Ordering::Acquire) {
+            return self.slow_store.update_oneshot(key, data).await;
+        }
+
         // Spawn background slow store write.
         let owned_key = key.borrow().into_owned();
         self.in_flight_slow_writes
@@ -694,6 +778,7 @@ impl StoreDriver for FastSlowStore {
             .insert(owned_key.clone(), vec![data.clone()]);
 
         let in_flight = self.in_flight_slow_writes.clone();
+        let in_flight_empty = self.in_flight_empty_notify.clone();
         let stable_digests_ref = self.stable_digests.clone();
         let stable_notify_ref = self.stable_notify.clone();
         let slow_store = self.slow_store.clone();
@@ -719,7 +804,13 @@ impl StoreDriver for FastSlowStore {
             let result = slow_store
                 .update_oneshot(key_for_bg.borrow(), data)
                 .await;
-            in_flight.lock().remove(&key_for_bg);
+            {
+                let mut guard = in_flight.lock();
+                guard.remove(&key_for_bg);
+                if guard.is_empty() {
+                    in_flight_empty.notify_waiters();
+                }
+            }
             let slow_ms = slow_start.elapsed().as_millis();
             match result {
                 Ok(()) => {
@@ -1038,6 +1129,24 @@ struct FastSlowStoreMetrics {
     slow_store_hit_count: AtomicU64,
     #[metric(help = "Downloaded bytes from the slow store")]
     slow_store_downloaded_bytes: AtomicU64,
+}
+
+impl Drop for FastSlowStore {
+    fn drop(&mut self) {
+        let guard = self.in_flight_slow_writes.lock();
+        if guard.is_empty() {
+            return;
+        }
+        warn!(
+            count = guard.len(),
+            "FastSlowStore: dropping with in-flight slow writes, \
+             these blobs will NOT be persisted to the slow store"
+        );
+        for (key, chunks) in guard.iter() {
+            let bytes: usize = chunks.iter().map(|b| b.len()).sum();
+            warn!(?key, bytes, "FastSlowStore: unflushed write lost on shutdown");
+        }
+    }
 }
 
 default_health_status_indicator!(FastSlowStore);

@@ -62,6 +62,9 @@ use nativelink_util::store_trait::{
 use nativelink_util::task::TaskExecutor;
 use nativelink_util::telemetry::init_tracing;
 use nativelink_util::{background_spawn, fs, spawn};
+
+/// Global store manager reference for graceful shutdown flush.
+static STORE_MANAGER: std::sync::OnceLock<Arc<StoreManager>> = std::sync::OnceLock::new();
 use nativelink_worker::local_worker::new_local_worker;
 use rustls_pki_types::pem::PemObject;
 use rustls_pki_types::{CertificateRevocationListDer, PrivateKeyDer};
@@ -188,6 +191,7 @@ async fn inner_main(
             store_manager.add_store(&name, store);
         }
     }
+    STORE_MANAGER.set(store_manager.clone()).ok();
 
     let mut root_futures: Vec<BoxFuture<Result<(), Error>>> = Vec::new();
 
@@ -1300,13 +1304,20 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
             .expect("Failed to listen to SIGTERM")
             .recv()
             .await;
-        warn!("Process terminated via SIGTERM",);
+        warn!("Process terminated via SIGTERM");
+        // Flush all in-flight background slow writes before shutting down.
+        // This prevents blob loss from writes that were accepted but not
+        // yet persisted to the slow store (FilesystemStore).
+        if let Some(sm) = STORE_MANAGER.get() {
+            info!("flushing in-flight slow writes before shutdown");
+            sm.flush_slow_writes(Duration::from_secs(30)).await;
+        }
         drop(shutdown_tx_clone.send(shutdown_guard.clone()));
         scheduler_shutdown_rx
             .await
             .expect("Failed to receive scheduler shutdown");
         let () = shutdown_guard.wait_for(Priority::P0).await;
-        warn!("Successfully shut down nativelink.",);
+        warn!("Successfully shut down nativelink.");
         std::process::exit(143);
     });
 

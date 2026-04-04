@@ -1355,24 +1355,47 @@ impl ByteStreamServer {
             nativelink_util::stall_detector::DEFAULT_STALL_THRESHOLD,
             stall_label,
         );
-        let result = if use_oneshot {
-            self.inner_write_oneshot(instance, digest, stream)
-                .instrument(error_span!("bytestream_write_oneshot", %zero_copy))
-                .with_context(
-                    make_ctx_for_hash_func(digest_function)
-                        .err_tip(|| tip_label)?,
-                )
-                .await
-                .err_tip(|| tip_oneshot_label)
-        } else {
-            self.inner_write(instance, digest, stream)
-                .instrument(error_span!("bytestream_write", %zero_copy))
-                .with_context(
-                    make_ctx_for_hash_func(digest_function)
-                        .err_tip(|| tip_label)?,
-                )
-                .await
-                .err_tip(|| tip_label)
+        // Server-side write timeout: abort writes that hang longer than
+        // 5 minutes. Prevents stuck operations from holding resources
+        // indefinitely (e.g., when a QUIC stream wedges during cache
+        // warming bursts).
+        const WRITE_TIMEOUT: Duration = Duration::from_secs(300);
+        let write_fut = async {
+            if use_oneshot {
+                self.inner_write_oneshot(instance, digest, stream)
+                    .instrument(error_span!("bytestream_write_oneshot", %zero_copy))
+                    .with_context(
+                        make_ctx_for_hash_func(digest_function)
+                            .err_tip(|| tip_label)?,
+                    )
+                    .await
+                    .err_tip(|| tip_oneshot_label)
+            } else {
+                self.inner_write(instance, digest, stream)
+                    .instrument(error_span!("bytestream_write", %zero_copy))
+                    .with_context(
+                        make_ctx_for_hash_func(digest_function)
+                            .err_tip(|| tip_label)?,
+                    )
+                    .await
+                    .err_tip(|| tip_label)
+            }
+        };
+        let result = match tokio::time::timeout(WRITE_TIMEOUT, write_fut).await {
+            Ok(r) => r,
+            Err(_) => {
+                warn!(
+                    %digest,
+                    expected_size,
+                    timeout_secs = WRITE_TIMEOUT.as_secs(),
+                    "ByteStream::write: timed out",
+                );
+                Err(make_err!(
+                    Code::DeadlineExceeded,
+                    "ByteStream write timed out after {}s for {digest}",
+                    WRITE_TIMEOUT.as_secs()
+                ))
+            }
         };
 
         // Track metrics
