@@ -118,6 +118,11 @@ impl<I: InstantWrapper> ItemCallback for ExistenceCacheCallback<I> {
 }
 
 impl<I: InstantWrapper> ExistenceCacheStore<I> {
+    /// Returns a reference to the wrapped inner store.
+    pub fn inner_store(&self) -> &Store {
+        &self.inner_store
+    }
+
     pub fn new_with_time(
         spec: &ExistenceCacheSpec,
         inner_store: Store,

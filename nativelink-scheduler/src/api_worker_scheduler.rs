@@ -34,7 +34,11 @@ use nativelink_proto::build::bazel::remote::execution::v2::{Digest, Directory};
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     BlobsInStableStorage, PeerHint, StartExecute, UpdateForWorker, update_for_worker,
 };
+use nativelink_store::existence_cache_store::ExistenceCacheStore;
+use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::grpc_store::GrpcStore;
+use nativelink_store::size_partitioning_store::SizePartitioningStore;
+use nativelink_store::verify_store::VerifyStore;
 use nativelink_util::action_messages::{OperationId, WorkerId};
 use nativelink_util::blob_locality_map::SharedBlobLocalityMap;
 use nativelink_util::common::DigestInfo;
@@ -42,7 +46,7 @@ use nativelink_util::metrics_utils::CounterWithTime;
 use nativelink_util::operation_state_manager::{UpdateOperationType, WorkerStateManager};
 use nativelink_util::platform_properties::PlatformProperties;
 use nativelink_util::shutdown_guard::ShutdownGuard;
-use nativelink_util::store_trait::{Store, StoreKey, StoreLike};
+use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike};
 use parking_lot::Mutex as ParkingMutex;
 use prost::Message;
 use tokio::sync::{Notify, Semaphore};
@@ -1036,8 +1040,10 @@ pub struct ApiWorkerScheduler {
     cas_store: Option<Store>,
 
     /// Cached resolved input trees: input_root_digest → ResolvedTree.
+    /// Bounded by both count (TREE_CACHE_CAPACITY) and total heap bytes
+    /// (TREE_CACHE_MAX_BYTES) to prevent unbounded memory growth.
     /// Held under a tokio::Mutex briefly for get/put, not during I/O.
-    tree_cache: Arc<tokio::sync::Mutex<LruCache<DigestInfo, Arc<ResolvedTree>>>>,
+    tree_cache: Arc<tokio::sync::Mutex<ByteBoundedTreeCache>>,
 
     /// Digests currently being resolved in background tasks. Prevents
     /// duplicate spawns when many actions share the same input root.
@@ -1068,10 +1074,132 @@ pub struct ApiWorkerScheduler {
     /// Per-worker semaphore limiting concurrent prefetch streams.
     /// Key is the worker CAS endpoint.
     prefetch_semaphores: ParkingMutex<HashMap<Arc<str>, Arc<Semaphore>>>,
+
+    /// Size threshold from the SizePartitioningStore in the CAS chain.
+    /// Blobs below this size are routed to MemoryStore and benefit from
+    /// cache warming; blobs at or above are routed to a noop/disk store
+    /// where warming would waste I/O. Probed at construction time from
+    /// the actual store topology. 0 means warming is disabled.
+    #[metric(help = "SizePartitioningStore threshold for cache warming filter")]
+    memory_store_threshold: u64,
 }
 
-/// Capacity for the resolved input tree LRU cache.
+/// Probe a CAS store chain to find the SizePartitioningStore threshold.
+///
+/// Walks the chain ExistenceCacheStore -> VerifyStore -> FastSlowStore ->
+/// SizePartitioningStore by downcasting each layer via `as_any()` and
+/// following the inner/fast store references. Returns the partition size
+/// if found, or 0 if the chain doesn't contain a SizePartitioningStore
+/// (which disables cache warming).
+fn probe_partition_size(store: &Store) -> u64 {
+    let driver: &dyn StoreDriver = store.as_store_driver();
+    probe_partition_size_inner(driver, 0)
+}
+
+fn probe_partition_size_inner(driver: &dyn StoreDriver, depth: u32) -> u64 {
+    // Guard against infinite recursion in unexpected topologies.
+    if depth > 10 {
+        return 0;
+    }
+
+    let any = driver.as_any();
+
+    // Direct hit: this layer is SizePartitioningStore.
+    if let Some(sps) = any.downcast_ref::<SizePartitioningStore>() {
+        return sps.partition_size();
+    }
+
+    // ExistenceCacheStore<SystemTime> — the production instantiation.
+    if let Some(ecs) = any.downcast_ref::<ExistenceCacheStore<SystemTime>>() {
+        return probe_partition_size_inner(ecs.inner_store().as_store_driver(), depth + 1);
+    }
+
+    // VerifyStore.
+    if let Some(vs) = any.downcast_ref::<VerifyStore>() {
+        return probe_partition_size_inner(vs.inner_store().as_store_driver(), depth + 1);
+    }
+
+    // FastSlowStore — recurse into the fast store (where MemoryStore lives).
+    if let Some(fss) = any.downcast_ref::<FastSlowStore>() {
+        return probe_partition_size_inner(fss.fast_store().as_store_driver(), depth + 1);
+    }
+
+    // Unknown store type — threshold not found.
+    0
+}
+
+/// Maximum number of entries in the resolved input tree LRU cache.
 const TREE_CACHE_CAPACITY: usize = 1024;
+
+/// Maximum total estimated heap bytes for the tree cache. Prevents
+/// unbounded memory growth when cached trees are large (e.g., monorepo
+/// input roots with hundreds of thousands of files). When the byte
+/// limit is exceeded, the least-recently-used entries are evicted
+/// until usage drops below.
+const TREE_CACHE_MAX_BYTES: u64 = 512 * 1024 * 1024; // 512 MiB
+
+/// LRU cache for resolved input trees, bounded by both entry count
+/// and total estimated heap bytes.
+#[derive(Debug)]
+struct ByteBoundedTreeCache {
+    lru: LruCache<DigestInfo, Arc<ResolvedTree>>,
+    total_bytes: u64,
+    max_bytes: u64,
+}
+
+impl ByteBoundedTreeCache {
+    fn new(max_count: NonZeroUsize, max_bytes: u64) -> Self {
+        Self {
+            lru: LruCache::new(max_count),
+            total_bytes: 0,
+            max_bytes,
+        }
+    }
+
+    fn get(
+        &mut self,
+        key: &DigestInfo,
+    ) -> Option<&Arc<ResolvedTree>> {
+        self.lru.get(key)
+    }
+
+    fn put(
+        &mut self,
+        key: DigestInfo,
+        value: Arc<ResolvedTree>,
+    ) {
+        let new_bytes = value.estimated_heap_bytes();
+
+        // push() returns the displaced entry: either a same-key
+        // replacement or the LRU entry evicted on capacity overflow.
+        // put() silently drops on overflow, so we must use push().
+        if let Some((_displaced_key, displaced_val)) = self.lru.push(key, value) {
+            self.total_bytes = self
+                .total_bytes
+                .saturating_sub(displaced_val.estimated_heap_bytes());
+        }
+        self.total_bytes += new_bytes;
+
+        // Evict LRU entries until we're within the byte budget.
+        while self.total_bytes > self.max_bytes {
+            if let Some((_evicted_key, evicted_val)) = self.lru.pop_lru() {
+                let evicted_bytes = evicted_val.estimated_heap_bytes();
+                self.total_bytes =
+                    self.total_bytes.saturating_sub(evicted_bytes);
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.lru.len()
+    }
+
+    fn total_bytes(&self) -> u64 {
+        self.total_bytes
+    }
+}
 
 /// Maximum size of a single blob eligible for prefetch (1MiB).
 /// Larger blobs are more efficiently handled by the worker's parallel
@@ -1154,6 +1282,18 @@ impl ApiWorkerScheduler {
         locality_map: Option<SharedBlobLocalityMap>,
         cas_store: Option<Store>,
     ) -> Arc<Self> {
+        let memory_store_threshold = cas_store
+            .as_ref()
+            .map(probe_partition_size)
+            .unwrap_or(0);
+
+        if memory_store_threshold > 0 {
+            info!(
+                memory_store_threshold,
+                "probed SizePartitioningStore threshold for cache warming"
+            );
+        }
+
         Arc::new(Self {
             inner: RwLock::new(ApiWorkerSchedulerImpl {
                 workers: Workers(LruCache::unbounded()),
@@ -1171,8 +1311,9 @@ impl ApiWorkerScheduler {
             metrics: Arc::new(SchedulerMetrics::default()),
             locality_map,
             cas_store,
-            tree_cache: Arc::new(tokio::sync::Mutex::new(LruCache::new(
+            tree_cache: Arc::new(tokio::sync::Mutex::new(ByteBoundedTreeCache::new(
                 NonZeroUsize::new(TREE_CACHE_CAPACITY).unwrap(),
+                TREE_CACHE_MAX_BYTES,
             ))),
             tree_resolution_in_progress: Arc::new(tokio::sync::Mutex::new(HashSet::new())),
             tree_resolution_failures: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
@@ -1182,6 +1323,7 @@ impl ApiWorkerScheduler {
             ))),
             prefetch_connections: ParkingMutex::new(HashMap::new()),
             prefetch_semaphores: ParkingMutex::new(HashMap::new()),
+            memory_store_threshold,
         })
     }
 
@@ -1507,7 +1649,9 @@ impl ApiWorkerScheduler {
         // If we have a resolved tree, a locality map, and the selected
         // worker has a CAS endpoint, compute the set of missing blobs and
         // push them to the worker concurrently with the StartExecute dispatch.
-        if let (Some(tree), Some(loc_map), Some(endpoint)) =
+        // Also reuse the missing set for cache warming (Phase 5) so we only
+        // warm blobs the worker will actually fetch from the server.
+        let missing_blobs = if let (Some(tree), Some(loc_map), Some(endpoint)) =
             (&resolved_tree, &self.locality_map, worker_cas_endpoint)
         {
             let missing = Self::compute_missing_blobs(
@@ -1518,17 +1662,27 @@ impl ApiWorkerScheduler {
             if !missing.is_empty() {
                 self.spawn_prefetch(
                     endpoint,
-                    missing,
+                    missing.clone(),
                     operation_id.to_string(),
                 );
             }
-        }
+            Some(missing)
+        } else {
+            None
+        };
 
         // ── Phase 5: spawn server-side cache warm (AFTER write lock released) ──
         // Read blobs through the full CAS chain so MemoryStore gets populated.
         // Already-warm blobs are a ~5us no-op; cold blobs get read from disk.
+        // When a locality map is available, only warm blobs the worker is
+        // missing (blobs it already has won't be fetched from the server, so
+        // warming them is wasted work). Without a locality map, fall back to
+        // warming all file_digests.
         if let Some(tree) = &resolved_tree {
-            self.spawn_server_cache_warm(&tree.file_digests, operation_id);
+            let blobs_to_warm = missing_blobs
+                .as_deref()
+                .unwrap_or(&tree.file_digests);
+            self.spawn_server_cache_warm(blobs_to_warm, operation_id);
         }
 
         result
@@ -1646,14 +1800,26 @@ impl ApiWorkerScheduler {
         tokio::spawn(async move {
             match resolve_tree_from_cas(&store, digest, &failed_dirs_ref).await {
                 Ok(resolved) => {
+                    let entry_bytes = resolved.estimated_heap_bytes();
                     info!(
                         %digest,
                         file_count = resolved.file_digests.len(),
                         dir_count = resolved.dir_digests.len(),
-                        "background tree resolution complete, cached for future actions"
+                        entry_bytes,
+                        "background tree resolution complete, caching"
                     );
                     let mut cache = tree_cache.lock().await;
+                    let before_count = cache.len();
                     cache.put(digest, Arc::new(resolved));
+                    let evicted = before_count.saturating_sub(cache.len().saturating_sub(1));
+                    if evicted > 0 {
+                        info!(
+                            evicted,
+                            cache_entries = cache.len(),
+                            cache_bytes = cache.total_bytes(),
+                            "tree cache byte-bounded eviction"
+                        );
+                    }
                     // Clear any stale failure entry.
                     failures_ref.lock().await.remove(&digest);
                 }
@@ -2028,17 +2194,17 @@ impl ApiWorkerScheduler {
             None => return,
         };
 
-        if file_digests.is_empty() {
+        if file_digests.is_empty() || self.memory_store_threshold == 0 {
             return;
         }
 
-        // Only warm blobs under 64KB — the SizePartitioningStore routes
-        // larger blobs to NoopStore, so warming them wastes disk I/O
-        // without populating MemoryStore.
-        const MEMORY_STORE_THRESHOLD: u64 = 65536;
+        // Only warm blobs below the SizePartitioningStore threshold —
+        // larger blobs are routed to a noop/disk store, so warming them
+        // wastes I/O without populating MemoryStore.
+        let threshold = self.memory_store_threshold;
         let mut sorted: Vec<(DigestInfo, u64)> = file_digests
             .iter()
-            .filter(|(_, size)| *size > 0 && *size < MEMORY_STORE_THRESHOLD)
+            .filter(|(_, size)| *size > 0 && *size < threshold)
             .copied()
             .collect();
         sorted.sort_unstable_by_key(|(_, size)| *size);
@@ -2203,6 +2369,28 @@ struct ResolvedTree {
 }
 
 impl ResolvedTree {
+    /// Approximate heap bytes consumed by this tree's owned data.
+    /// Used for byte-bounding the tree cache to prevent unbounded
+    /// memory growth.
+    fn estimated_heap_bytes(&self) -> u64 {
+        // Vec<(DigestInfo, u64)>: 48 bytes per entry.
+        let file_bytes = self.file_digests.capacity()
+            * size_of::<(DigestInfo, u64)>();
+        // HashSet<DigestInfo>: ~72 bytes per entry (key + hash bucket).
+        let dir_set_bytes = self.dir_digests.len() * 72;
+        // HashMap<DigestInfo, u64>: ~80 bytes per entry.
+        let subtree_map_bytes =
+            (self.subtree_bytes.len() + self.subtree_files.len()) * 80;
+        // HashMap<DigestInfo, Directory>: key overhead + proto encoded size.
+        let dir_proto_bytes: usize = self
+            .directories
+            .iter()
+            .map(|(_, d)| 80 + Message::encoded_len(d))
+            .sum();
+        (file_bytes + dir_set_bytes + subtree_map_bytes + dir_proto_bytes)
+            as u64
+    }
+
     /// Converts the directory map into protobuf-ready Vecs. This involves
     /// cloning each Directory proto and is intentionally called outside the
     /// scheduler write lock to avoid blocking dispatch.

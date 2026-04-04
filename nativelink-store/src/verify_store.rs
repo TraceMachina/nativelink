@@ -50,6 +50,11 @@ pub struct VerifyStore {
 }
 
 impl VerifyStore {
+    /// Returns a reference to the wrapped inner store.
+    pub fn inner_store(&self) -> &Store {
+        &self.inner_store
+    }
+
     pub fn new(spec: &VerifySpec, inner_store: Store) -> Arc<Self> {
         Arc::new(Self {
             inner_store,

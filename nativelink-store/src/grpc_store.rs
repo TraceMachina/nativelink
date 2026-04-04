@@ -1108,9 +1108,18 @@ impl GrpcStore {
             .await
     }
 
+    /// Per-chunk channel capacity for streaming parallel reads.
+    /// Each slot holds one gRPC ReadResponse frame (~1 MiB max with
+    /// our h2 frame size). 8 slots = ~8 MiB buffered per chunk
+    /// before backpressure stalls the fetcher.
+    const PARALLEL_CHUNK_CHANNEL_SIZE: usize = 8;
+
     /// Parallel chunked ByteStream read. Splits the byte range into
     /// `parallel_chunk_count` sub-ranges, issues concurrent Read RPCs,
-    /// buffers each chunk, then writes them to the output in order.
+    /// and streams data to the writer in order via bounded per-chunk
+    /// channels. Peak memory is bounded to approximately
+    /// `chunk_count × channel_size × frame_size` (~32 MiB for 4 chunks)
+    /// regardless of total blob size.
     async fn get_part_parallel(
         &self,
         resource_name: &str,
@@ -1139,94 +1148,138 @@ impl GrpcStore {
 
         let actual_chunk_count = chunks.len();
 
-        // Issue all chunk reads concurrently. Each future collects its
-        // stream into a Vec<Bytes> buffer.
-        let chunk_futures: FuturesUnordered<_> = chunks
-            .into_iter()
-            .enumerate()
-            .map(|(idx, (chunk_offset, chunk_length))| {
-                let resource_name = resource_name.to_string();
-                async move {
-                    let request = ReadRequest {
-                        resource_name,
-                        read_offset: i64::try_from(chunk_offset)
-                            .err_tip(|| {
-                                "Could not convert chunk offset to i64"
-                            })?,
-                        read_limit: i64::try_from(chunk_length)
-                            .err_tip(|| {
-                                "Could not convert chunk length to i64"
-                            })?,
-                    };
-                    let mut stream = self
-                        .read_internal(request)
-                        .await
-                        .err_tip(|| {
-                            format!(
-                                "in GrpcStore::get_part_parallel chunk {idx}"
-                            )
-                        })?;
+        // Create a bounded channel per chunk. Fetch tasks push data
+        // into their channel as it arrives from the gRPC stream;
+        // the writer drains channels sequentially (ch0 then ch1 …).
+        let (senders, receivers): (Vec<_>, Vec<_>) =
+            (0..actual_chunk_count)
+                .map(|_| {
+                    tokio::sync::mpsc::channel::<Bytes>(
+                        Self::PARALLEL_CHUNK_CHANNEL_SIZE,
+                    )
+                })
+                .unzip();
 
-                    let mut buf: Vec<Bytes> = Vec::new();
-                    let mut bytes_received: u64 = 0;
-                    loop {
-                        match stream.next().await {
-                            None => break,
-                            Some(Ok(message)) => {
-                                if message.data.is_empty() {
-                                    break;
+        // Fetch future: drives all chunk reads concurrently.
+        // Each fetch streams data into its bounded channel.
+        // On error, try_for_each short-circuits and drops remaining
+        // futures (and their senders), which unblocks the writer.
+        let fetch_all = {
+            let fetches: FuturesUnordered<_> = chunks
+                .into_iter()
+                .zip(senders)
+                .enumerate()
+                .map(
+                    |(idx, ((chunk_offset, chunk_length), tx))| {
+                        let resource_name = resource_name.to_string();
+                        async move {
+                            let request = ReadRequest {
+                                resource_name,
+                                read_offset: i64::try_from(
+                                    chunk_offset,
+                                )
+                                .err_tip(|| {
+                                    "Could not convert chunk offset \
+                                     to i64"
+                                })?,
+                                read_limit: i64::try_from(
+                                    chunk_length,
+                                )
+                                .err_tip(|| {
+                                    "Could not convert chunk length \
+                                     to i64"
+                                })?,
+                            };
+                            let mut stream = self
+                                .read_internal(request)
+                                .await
+                                .err_tip(|| {
+                                    format!(
+                                        "in \
+                                         GrpcStore::get_part_parallel \
+                                         chunk {idx}"
+                                    )
+                                })?;
+
+                            let mut bytes_received: u64 = 0;
+                            loop {
+                                match stream.next().await {
+                                    None => break,
+                                    Some(Ok(message)) => {
+                                        if message.data.is_empty() {
+                                            break;
+                                        }
+                                        bytes_received +=
+                                            message.data.len() as u64;
+                                        tx.send(message.data)
+                                            .await
+                                            .map_err(|_| {
+                                                make_err!(
+                                                    Code::Internal,
+                                                    "parallel read \
+                                                     chunk {idx}: \
+                                                     writer dropped \
+                                                     receiver"
+                                                )
+                                            })?;
+                                    }
+                                    Some(Err(status)) => {
+                                        return Err(
+                                            Into::<Error>::into(
+                                                status,
+                                            )
+                                            .append(format!(
+                                                "chunk {idx} at \
+                                                 offset \
+                                                 {chunk_offset}"
+                                            )),
+                                        );
+                                    }
                                 }
-                                bytes_received +=
-                                    message.data.len() as u64;
-                                buf.push(message.data);
                             }
-                            Some(Err(status)) => {
-                                return Err(
-                                    Into::<Error>::into(status).append(
-                                        format!(
-                                            "chunk {idx} at offset \
-                                             {chunk_offset}"
-                                        ),
-                                    ),
-                                );
+
+                            if bytes_received != chunk_length {
+                                return Err(make_err!(
+                                    Code::DataLoss,
+                                    "parallel read chunk {idx}: \
+                                     expected {chunk_length} bytes \
+                                     but got {bytes_received}"
+                                ));
                             }
+
+                            Ok(())
                         }
-                    }
+                    },
+                )
+                .collect();
+            fetches.try_for_each(|()| future::ready(Ok(())))
+        };
 
-                    if bytes_received != chunk_length {
-                        return Err(make_err!(
-                            Code::DataLoss,
-                            "parallel read chunk {idx}: expected \
-                             {chunk_length} bytes but got \
-                             {bytes_received}"
-                        ));
-                    }
-
-                    Ok((idx, buf))
+        // Writer future: drains channels in chunk order → output.
+        // When a sender drops (fetch done or errored), recv()
+        // returns None and we advance to the next channel.
+        let write_all = async {
+            let mut total_bytes: u64 = 0;
+            for mut rx in receivers {
+                while let Some(data) = rx.recv().await {
+                    total_bytes += data.len() as u64;
+                    writer.send(data).await.err_tip(|| {
+                        "while writing parallel chunk data"
+                    })?;
                 }
-            })
-            .collect();
-
-        // Collect all chunk results. If any fail, propagate the error.
-        let mut chunk_results: Vec<(usize, Vec<Bytes>)> = chunk_futures
-            .try_collect()
-            .await
-            .err_tip(|| "in GrpcStore::get_part_parallel")?;
-
-        // Sort by chunk index to reassemble in order.
-        chunk_results.sort_unstable_by_key(|(idx, _)| *idx);
-
-        // Write all chunks to the output writer in order.
-        let mut total_bytes: u64 = 0;
-        for (_idx, bufs) in chunk_results {
-            for data in bufs {
-                total_bytes += data.len() as u64;
-                writer
-                    .send(data)
-                    .await
-                    .err_tip(|| "while writing parallel chunk data")?;
             }
-        }
+            Result::<u64, Error>::Ok(total_bytes)
+        };
+
+        let (fetch_result, write_result) =
+            tokio::join!(fetch_all, write_all);
+        // Check both — fetch errors take priority since they indicate
+        // upstream data issues; write errors indicate downstream
+        // backpressure or client disconnect.
+        fetch_result
+            .err_tip(|| "in GrpcStore::get_part_parallel fetch")?;
+        let total_bytes = write_result
+            .err_tip(|| "in GrpcStore::get_part_parallel write")?;
 
         writer
             .send_eof()

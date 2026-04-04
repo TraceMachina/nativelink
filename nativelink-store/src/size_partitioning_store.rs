@@ -44,6 +44,13 @@ impl SizePartitioningStore {
             upper_store,
         })
     }
+
+    /// Returns the size threshold that partitions blobs between lower and
+    /// upper stores. Blobs with `size_bytes < partition_size` go to the
+    /// lower store; all others go to the upper store.
+    pub fn partition_size(&self) -> u64 {
+        self.partition_size
+    }
 }
 
 #[async_trait]
