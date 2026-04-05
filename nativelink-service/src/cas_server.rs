@@ -212,11 +212,43 @@ impl CasServer {
             parsed.push((digest_info, size_bytes));
         }
 
+        // Batch has() check: skip writes for blobs the store already has.
+        let keys: Vec<nativelink_util::store_trait::StoreKey<'_>> = parsed
+            .iter()
+            .map(|(d, _)| (*d).into())
+            .collect();
+        let mut has_results = vec![None; keys.len()];
+        store_ref
+            .has_with_results(&keys, &mut has_results)
+            .await
+            .err_tip(|| "BatchUpdateBlobs: has_with_results failed")?;
+        let skipped = has_results.iter().filter(|r| r.is_some()).count();
+        if skipped > 0 {
+            info!(
+                blob_count,
+                skipped,
+                "BatchUpdateBlobs: skipping blobs that already exist",
+            );
+        }
+
         let update_futures: FuturesUnordered<_> = request
             .requests
             .into_iter()
             .zip(parsed.iter())
-            .map(|(request, &(digest_info, size_bytes))| async move {
+            .zip(has_results.iter())
+            .map(|((request, &(digest_info, size_bytes)), has_result)| async move {
+                // Skip blobs the store already has.
+                if has_result.is_some() {
+                    return Ok::<batch_update_blobs_response::Response, Error>(
+                        batch_update_blobs_response::Response {
+                            digest: Some(digest_info.into()),
+                            status: Some(GrpcStatus {
+                                code: 0, // OK
+                                ..Default::default()
+                            }),
+                        },
+                    );
+                }
                 let request_data = request.data;
                 debug!(
                     %digest_info,

@@ -277,6 +277,11 @@ impl ConnectionManagerWorker {
         };
         let connection_stream = unfold(endpoint.clone(), move |endpoint| async move {
             let result = endpoint.connect().await.map_err(|err| {
+                warn!(
+                    endpoint = ?endpoint.uri(),
+                    error = ?err,
+                    "connection attempt failed"
+                );
                 make_err!(
                     Code::Unavailable,
                     "Failed to connect to {:?}: {err:?}",

@@ -262,6 +262,10 @@ pub struct InstanceInfo {
     metrics: Arc<ByteStreamMetrics>,
     /// Handle to the global sweeper task. Kept alive for the lifetime of the instance.
     _sweeper_handle: Arc<JoinHandleDropGuard<()>>,
+    /// In-flight CAS writes keyed by digest. When multiple RPCs arrive for
+    /// the same digest concurrently, only the first performs the actual
+    /// write; the rest wait for its `Notify` and return success.
+    in_flight_writes: Arc<Mutex<HashMap<DigestInfo, Arc<tokio::sync::Notify>>>>,
 }
 
 impl Debug for InstanceInfo {
@@ -616,6 +620,7 @@ impl ByteStreamServer {
             idle_stream_timeout,
             metrics,
             _sweeper_handle: Arc::new(sweeper_handle),
+            in_flight_writes: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -1287,12 +1292,50 @@ impl ByteStreamServer {
             return grpc_store.write(stream).await.map_err(Into::into);
         }
 
-        // NOTE: we intentionally do NOT check has() before writing. A prior
-        // version skipped uploads when the blob already existed, but with
-        // FastSlowStore the blob could be evicted from the fast tier between
-        // the has() check and the client receiving the response — the client
-        // would believe the upload succeeded while the blob is gone. CAS
-        // writes are idempotent so redundant writes are safe and cheap.
+        // Fast path: skip the write if the blob already exists.
+        if store.has(digest).await.unwrap_or(None).is_some() {
+            info!(
+                %digest,
+                size_bytes = expected_size,
+                "ByteStream::write: skipped, blob already exists",
+            );
+            instance
+                .metrics
+                .write_requests_success
+                .fetch_add(1, Ordering::Relaxed);
+            return Ok(Response::new(WriteResponse {
+                committed_size: expected_size as i64,
+            }));
+        }
+
+        // Dedup in-flight writes: if another RPC is already writing this
+        // exact digest, wait for it instead of writing again.
+        let existing_notify = {
+            let mut guard = instance.in_flight_writes.lock();
+            if let Some(notify) = guard.get(&digest) {
+                Some(notify.clone())
+            } else {
+                // We're the first writer — register ourselves.
+                guard.insert(digest, Arc::new(tokio::sync::Notify::new()));
+                None
+            }
+        };
+        if let Some(notify) = existing_notify {
+            // Another write is in progress — wait for it to finish.
+            notify.notified().await;
+            info!(
+                %digest,
+                size_bytes = expected_size,
+                "ByteStream::write: coalesced with in-flight write",
+            );
+            instance
+                .metrics
+                .write_requests_success
+                .fetch_add(1, Ordering::Relaxed);
+            return Ok(Response::new(WriteResponse {
+                committed_size: expected_size as i64,
+            }));
+        }
 
         let digest_function = stream
             .resource_info
@@ -1397,6 +1440,12 @@ impl ByteStreamServer {
                 ))
             }
         };
+
+        // Write finished (success or failure) — remove from in-flight map
+        // and wake any waiters that were coalesced on this digest.
+        if let Some(notify) = instance.in_flight_writes.lock().remove(&digest) {
+            notify.notify_waiters();
+        }
 
         // Track metrics
         #[allow(clippy::cast_possible_truncation)]
