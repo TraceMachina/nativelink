@@ -462,6 +462,11 @@ fn start_worker_quic_server(
     // Send QUIC keepalives every 5s to detect dead connections and
     // prevent NAT/firewall timeouts on the server→worker path.
     transport.keep_alive_interval(Some(Duration::from_secs(5)));
+    // Enable QUIC MTU discovery for jumbo frames on LAN.
+    transport.initial_mtu(1200);
+    let mut mtu_config = quinn::MtuDiscoveryConfig::default();
+    mtu_config.upper_bound(8500);
+    transport.mtu_discovery_config(Some(mtu_config));
     server_config.transport_config(Arc::new(transport));
 
     // Bind UDP socket with large buffers.
