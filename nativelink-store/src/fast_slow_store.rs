@@ -244,14 +244,32 @@ impl FastSlowStore {
         }
     }
 
-    /// Share another store's failed_slow_writes set so both instances
-    /// track pending uploads in the same place. Must be called on the
-    /// Arc before any other references exist.
-    pub fn share_failed_slow_writes(self: &mut Arc<Self>, other: &Arc<Self>) {
+    /// Create a new FastSlowStore that shares the failed_slow_writes
+    /// tracking set with another store. Used so the worker CAS server
+    /// store and RunningActionsManager store track pending uploads in
+    /// the same place.
+    pub fn new_with_shared_failed_writes(
+        spec: &FastSlowSpec,
+        fast_store: Store,
+        slow_store: Store,
+        other: &Arc<Self>,
+    ) -> Arc<Self> {
         let shared = other.failed_slow_writes.clone();
-        Arc::get_mut(self)
-            .expect("share_failed_slow_writes must be called before other refs exist")
-            .failed_slow_writes = shared;
+        Arc::new_cyclic(|weak_self| Self {
+            fast_store,
+            fast_direction: spec.fast_direction,
+            slow_store,
+            slow_direction: spec.slow_direction,
+            weak_self: weak_self.clone(),
+            metrics: FastSlowStoreMetrics::default(),
+            populating_digests: Mutex::new(HashMap::new()),
+            in_flight_slow_writes: Arc::new(Mutex::new(HashMap::new())),
+            in_flight_empty_notify: Arc::new(Notify::new()),
+            stable_digests: Arc::new(Mutex::new(Vec::new())),
+            stable_notify: Arc::new(Notify::new()),
+            shutting_down: AtomicBool::new(false),
+            failed_slow_writes: shared,
+        })
     }
 
     fn get_loader<'a>(&self, key: StoreKey<'a>) -> LoaderGuard<'a> {

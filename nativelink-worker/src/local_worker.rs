@@ -1741,9 +1741,9 @@ pub async fn new_local_worker(
             fast_direction: effective_cas_store.fast_direction(),
             slow_direction: nativelink_config::stores::StoreDirection::ReadOnly,
         };
-        let mut cas_fss = FastSlowStore::new(&fss_spec, fast_store, slow_store);
-        cas_fss.share_failed_slow_writes(&effective_cas_store);
-        cas_fss
+        FastSlowStore::new_with_shared_failed_writes(
+            &fss_spec, fast_store, slow_store, &effective_cas_store,
+        )
     };
 
     let running_actions_manager =
