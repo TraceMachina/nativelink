@@ -18,7 +18,7 @@ use core::ops::Range;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::time::Duration;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::sync::{Arc, Weak};
 
@@ -82,6 +82,9 @@ pub struct FastSlowStore {
     /// Set to true during shutdown to prevent new background slow writes
     /// from being spawned while we flush existing ones.
     shutting_down: AtomicBool,
+    /// Digests whose background slow-store write failed. Tracked so the
+    /// worker can retry uploads on reconnect.
+    failed_slow_writes: Arc<Mutex<HashSet<DigestInfo>>>,
 }
 
 // This guard ensures that the populating_digests is cleared even if the future
@@ -150,6 +153,7 @@ impl FastSlowStore {
             stable_digests: Arc::new(Mutex::new(Vec::new())),
             stable_notify: Arc::new(Notify::new()),
             shutting_down: AtomicBool::new(false),
+            failed_slow_writes: Arc::new(Mutex::new(HashSet::new())),
         })
     }
 
@@ -222,6 +226,13 @@ impl FastSlowStore {
     pub fn drain_stable_digests(&self) -> Vec<DigestInfo> {
         let mut guard = self.stable_digests.lock();
         std::mem::take(&mut *guard)
+    }
+
+    /// Drain digests whose background slow-store write failed.
+    /// Called by the worker on reconnect to retry uploads.
+    pub fn drain_failed_digests(&self) -> Vec<DigestInfo> {
+        let mut guard = self.failed_slow_writes.lock();
+        guard.drain().collect()
     }
 
     fn get_loader<'a>(&self, key: StoreKey<'a>) -> LoaderGuard<'a> {
@@ -592,6 +603,12 @@ impl StoreDriver for FastSlowStore {
         }
         fast_res?;
 
+        // Pin the digest in the fast store to prevent eviction until the
+        // server confirms stable storage via BlobsInStableStorage.
+        if let StoreKey::Digest(digest) = &key {
+            self.fast_store.pin_digests(&[*digest]);
+        }
+
         let bytes_sent: u64 = data.iter().map(|c| c.len() as u64).sum();
         let fast_elapsed = update_start.elapsed();
         debug!(
@@ -631,6 +648,8 @@ impl StoreDriver for FastSlowStore {
         let in_flight_empty = self.in_flight_empty_notify.clone();
         let stable_digests_ref = self.stable_digests.clone();
         let stable_notify_ref = self.stable_notify.clone();
+        let failed_writes_ref = self.failed_slow_writes.clone();
+        let fast_store_ref = self.fast_store.clone();
         let slow_store = self.slow_store.clone();
         let key_for_bg = owned_key.clone();
         let spawn_instant = std::time::Instant::now();
@@ -698,15 +717,24 @@ impl StoreDriver for FastSlowStore {
                         "FastSlowStore::update: background slow write complete",
                     );
                 }
-                Err(e) => error!(
-                    key = ?key_for_bg,
-                    schedule_delay_ms,
-                    slow_ms,
-                    total_bytes = bytes_sent,
-                    error = ?e,
-                    "FastSlowStore::update: background slow write FAILED — \
-                     blob may be lost when fast store evicts it",
-                ),
+                Err(e) => {
+                    if let StoreKey::Digest(digest) = &key_for_bg {
+                        failed_writes_ref.lock().insert(*digest);
+                        // Re-pin so the blob survives until reconnect retry.
+                        // Without this, the 120s auto-expire could allow
+                        // eviction before the worker reconnects.
+                        fast_store_ref.pin_digests(&[*digest]);
+                    }
+                    error!(
+                        key = ?key_for_bg,
+                        schedule_delay_ms,
+                        slow_ms,
+                        total_bytes = bytes_sent,
+                        error = ?e,
+                        "FastSlowStore::update: background slow write FAILED — \
+                         blob pinned, will retry on reconnect",
+                    );
+                }
             }
         });
 
@@ -766,6 +794,12 @@ impl StoreDriver for FastSlowStore {
         }
         fast_result?;
 
+        // Pin the digest in the fast store to prevent eviction until the
+        // server confirms stable storage via BlobsInStableStorage.
+        if let StoreKey::Digest(digest) = &key {
+            self.fast_store.pin_digests(&[*digest]);
+        }
+
         // During shutdown, write directly instead of spawning background task.
         if self.shutting_down.load(Ordering::Acquire) {
             return self.slow_store.update_oneshot(key, data).await;
@@ -781,6 +815,8 @@ impl StoreDriver for FastSlowStore {
         let in_flight_empty = self.in_flight_empty_notify.clone();
         let stable_digests_ref = self.stable_digests.clone();
         let stable_notify_ref = self.stable_notify.clone();
+        let failed_writes_ref = self.failed_slow_writes.clone();
+        let fast_store_ref = self.fast_store.clone();
         let slow_store = self.slow_store.clone();
         let key_for_bg = owned_key.clone();
         let spawn_instant = std::time::Instant::now();
@@ -826,14 +862,22 @@ impl StoreDriver for FastSlowStore {
                         "FastSlowStore::update_oneshot: background slow write complete",
                     );
                 }
-                Err(e) => error!(
-                    key = ?key_for_bg,
-                    schedule_delay_ms,
-                    slow_ms,
-                    data_len,
-                    error = ?e,
-                    "FastSlowStore::update_oneshot: background slow write FAILED",
-                ),
+                Err(e) => {
+                    if let StoreKey::Digest(digest) = &key_for_bg {
+                        failed_writes_ref.lock().insert(*digest);
+                        // Re-pin so the blob survives until reconnect retry.
+                        fast_store_ref.pin_digests(&[*digest]);
+                    }
+                    error!(
+                        key = ?key_for_bg,
+                        schedule_delay_ms,
+                        slow_ms,
+                        data_len,
+                        error = ?e,
+                        "FastSlowStore::update_oneshot: background slow write FAILED — \
+                         blob pinned, will retry on reconnect",
+                    );
+                }
             }
         });
 
@@ -1116,6 +1160,11 @@ impl StoreDriver for FastSlowStore {
     fn pin_digests(&self, digests: &[DigestInfo]) {
         self.fast_store.pin_digests(digests);
         self.slow_store.pin_digests(digests);
+    }
+
+    fn drain_failed_digests(&self) -> Vec<DigestInfo> {
+        let mut guard = self.failed_slow_writes.lock();
+        guard.drain().collect()
     }
 }
 

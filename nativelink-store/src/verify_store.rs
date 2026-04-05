@@ -256,6 +256,10 @@ impl StoreDriver for VerifyStore {
     fn pin_digests(&self, digests: &[DigestInfo]) {
         self.inner_store.pin_digests(digests);
     }
+
+    fn drain_failed_digests(&self) -> Vec<DigestInfo> {
+        self.inner_store.drain_failed_digests()
+    }
 }
 
 default_health_status_indicator!(VerifyStore);

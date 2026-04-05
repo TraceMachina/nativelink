@@ -424,6 +424,13 @@ impl Store {
     pub fn pin_digests(&self, digests: &[DigestInfo]) {
         self.inner.pin_digests(digests);
     }
+
+    /// Drain digests whose background slow-store write failed.
+    /// Delegates to the inner [`StoreDriver::drain_failed_digests`].
+    #[inline]
+    pub fn drain_failed_digests(&self) -> Vec<DigestInfo> {
+        self.inner.drain_failed_digests()
+    }
 }
 
 impl StoreLike for Store {
@@ -905,6 +912,13 @@ pub trait StoreDriver:
     /// support pinning (e.g., `FilesystemStore`) override this to call
     /// `EvictingMap::pin_key()`. The default is a no-op.
     fn pin_digests(&self, _digests: &[DigestInfo]) {}
+
+    /// Drain digests whose background slow-store write failed.
+    /// Used by the worker to retry uploads on reconnect. Wrapper stores
+    /// should delegate to their inner store. The default returns an empty Vec.
+    fn drain_failed_digests(&self) -> Vec<DigestInfo> {
+        Vec::new()
+    }
 }
 
 // Callback invoked when a store inserts or deletes an item.

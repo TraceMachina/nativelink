@@ -176,6 +176,13 @@ impl StoreDriver for RefStore {
         }
     }
 
+    fn drain_failed_digests(&self) -> Vec<DigestInfo> {
+        match self.get_store() {
+            Ok(store) => store.drain_failed_digests(),
+            Err(_) => Vec::new(),
+        }
+    }
+
     fn stable_notify(&self) -> Arc<Notify> {
         match self.get_store() {
             Ok(store) => store.stable_notify(),

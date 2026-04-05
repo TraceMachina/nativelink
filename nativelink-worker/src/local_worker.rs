@@ -1048,6 +1048,31 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
             );
         }
 
+        // On (re)connect, retry any failed background slow-store writes
+        // so blobs that couldn't reach the server are re-uploaded.
+        {
+            let ram = self.running_actions_manager.clone();
+            if let Some(cas_store) = ram.get_cas_store() {
+                let failed = cas_store.drain_failed_digests();
+                if !failed.is_empty() {
+                    let count = failed.len();
+                    info!(
+                        count,
+                        "retrying failed slow-store uploads on reconnect"
+                    );
+                    // Re-pin to refresh the pin timeout before uploading.
+                    cas_store.fast_store().pin_digests(&failed);
+                    tokio::spawn(async move {
+                        Self::handle_upload_missing_blobs(&ram, failed).await;
+                        info!(
+                            count,
+                            "reconnect: failed upload retry complete"
+                        );
+                    });
+                }
+            }
+        }
+
         let (add_future_channel, add_future_rx) = mpsc::unbounded_channel();
         let mut add_future_rx = UnboundedReceiverStream::new(add_future_rx).fuse();
 
@@ -1790,7 +1815,7 @@ pub async fn new_local_worker(
             nativelink_service::bytestream_server::ByteStreamServer::new(&bytestream_configs, &store_manager)
                 .err_tip(|| "Failed to create worker ByteStream server")?;
 
-        let addr: std::net::SocketAddr = ([0, 0, 0, 0], cas_port).into();
+        let addr: std::net::SocketAddr = ([0, 0, 0, 0, 0, 0, 0, 0], cas_port).into();
         let advertised = cas_advertised_endpoint(cas_port, use_tls);
 
         let worker_name = config.name.clone();
