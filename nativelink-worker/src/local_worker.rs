@@ -1160,14 +1160,17 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                         Update::BlobsInStableStorage(blobs) => {
                             // Server confirms these blobs are persisted to stable storage.
                             // Unpin them from the local FilesystemStore so they become
-                            // eligible for eviction again.
+                            // eligible for eviction again, and clear them from the
+                            // pending-upload set so they won't be re-uploaded on reconnect.
                             let digest_count = blobs.digests.len();
                             if let Some(ref state) = self.blobs_available_state {
                                 let fs_store = &state.fs_store;
                                 let mut unpinned = 0usize;
+                                let mut acked_digests = Vec::with_capacity(digest_count);
                                 for proto_digest in &blobs.digests {
                                     if let Ok(digest) = DigestInfo::try_from(proto_digest.clone()) {
                                         fs_store.unpin_digest(&digest);
+                                        acked_digests.push(digest);
                                         unpinned += 1;
                                     } else {
                                         warn!(
@@ -1175,6 +1178,12 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                             "BlobsInStableStorage: invalid digest, skipping unpin"
                                         );
                                     }
+                                }
+                                // Clear from pending-upload set on both stores
+                                // (the CAS server store and the action upload store
+                                // may track different digests).
+                                if let Some(cas_store) = self.running_actions_manager.get_cas_store() {
+                                    cas_store.ack_digests(&acked_digests);
                                 }
                                 info!(
                                     unpinned,
@@ -1719,6 +1728,10 @@ pub async fn new_local_worker(
     // the blob is written to the local FilesystemStore only and pinned.
     // The server will ack via BlobsInStableStorage to unpin, or request
     // re-upload via UploadMissingBlobs on reconnect if it lost the blob.
+    //
+    // Both stores share the same failed_slow_writes set so that the
+    // reconnect retry (which drains from the RunningActionsManager's
+    // store) also picks up unacked mirror digests.
     let effective_cas_store_for_cas_server = {
         let fast_store = effective_cas_store.fast_store().clone();
         let slow_store = effective_cas_store.slow_store().clone();
@@ -1728,7 +1741,9 @@ pub async fn new_local_worker(
             fast_direction: effective_cas_store.fast_direction(),
             slow_direction: nativelink_config::stores::StoreDirection::ReadOnly,
         };
-        FastSlowStore::new(&fss_spec, fast_store, slow_store)
+        let mut cas_fss = FastSlowStore::new(&fss_spec, fast_store, slow_store);
+        cas_fss.share_failed_slow_writes(&effective_cas_store);
+        cas_fss
     };
 
     let running_actions_manager =

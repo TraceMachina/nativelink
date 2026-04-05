@@ -235,6 +235,25 @@ impl FastSlowStore {
         guard.drain().collect()
     }
 
+    /// Remove digests from the failed/pending set, e.g. when the server
+    /// confirms stable storage via BlobsInStableStorage.
+    pub fn ack_digests(&self, digests: &[DigestInfo]) {
+        let mut guard = self.failed_slow_writes.lock();
+        for digest in digests {
+            guard.remove(digest);
+        }
+    }
+
+    /// Share another store's failed_slow_writes set so both instances
+    /// track pending uploads in the same place. Must be called on the
+    /// Arc before any other references exist.
+    pub fn share_failed_slow_writes(self: &mut Arc<Self>, other: &Arc<Self>) {
+        let shared = other.failed_slow_writes.clone();
+        Arc::get_mut(self)
+            .expect("share_failed_slow_writes must be called before other refs exist")
+            .failed_slow_writes = shared;
+    }
+
     fn get_loader<'a>(&self, key: StoreKey<'a>) -> LoaderGuard<'a> {
         // Get a single loader instance that's used to populate the fast store
         // for this digest.  If another request comes in then it's de-duplicated.
@@ -533,7 +552,18 @@ impl StoreDriver for FastSlowStore {
             return Ok(());
         }
         if ignore_slow {
-            return self.fast_store.update(key, reader, size_info).await;
+            let result = self.fast_store.update(key.borrow(), reader, size_info).await;
+            if result.is_ok() {
+                if let StoreKey::Digest(digest) = &key {
+                    self.fast_store.pin_digests(&[*digest]);
+                    // Track as needing upload — the slow store was skipped,
+                    // so the blob only exists locally. On reconnect the
+                    // worker will upload it if the server hasn't acked via
+                    // BlobsInStableStorage.
+                    self.failed_slow_writes.lock().insert(*digest);
+                }
+            }
+            return result;
         }
         if ignore_fast {
             return self.slow_store.update(key, reader, size_info).await;
@@ -763,7 +793,14 @@ impl StoreDriver for FastSlowStore {
             return Ok(());
         }
         if ignore_slow {
-            return self.fast_store.update_oneshot(key, data).await;
+            let result = self.fast_store.update_oneshot(key.borrow(), data).await;
+            if result.is_ok() {
+                if let StoreKey::Digest(digest) = &key {
+                    self.fast_store.pin_digests(&[*digest]);
+                    self.failed_slow_writes.lock().insert(*digest);
+                }
+            }
+            return result;
         }
         if ignore_fast {
             return self.slow_store.update_oneshot(key, data).await;

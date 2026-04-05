@@ -264,8 +264,9 @@ pub struct InstanceInfo {
     _sweeper_handle: Arc<JoinHandleDropGuard<()>>,
     /// In-flight CAS writes keyed by digest. When multiple RPCs arrive for
     /// the same digest concurrently, only the first performs the actual
-    /// write; the rest wait for its `Notify` and return success.
-    in_flight_writes: Arc<Mutex<HashMap<DigestInfo, Arc<tokio::sync::Notify>>>>,
+    /// write; the rest subscribe to the watch channel and get the result.
+    /// `None` = in progress, `Some(true)` = succeeded, `Some(false)` = failed.
+    in_flight_writes: Arc<Mutex<HashMap<DigestInfo, tokio::sync::watch::Receiver<Option<bool>>>>>,
 }
 
 impl Debug for InstanceInfo {
@@ -1310,32 +1311,48 @@ impl ByteStreamServer {
 
         // Dedup in-flight writes: if another RPC is already writing this
         // exact digest, wait for it instead of writing again.
-        let existing_notify = {
+        let in_flight_tx = {
             let mut guard = instance.in_flight_writes.lock();
-            if let Some(notify) = guard.get(&digest) {
-                Some(notify.clone())
-            } else {
-                // We're the first writer — register ourselves.
-                guard.insert(digest, Arc::new(tokio::sync::Notify::new()));
+            if let Some(rx) = guard.get(&digest) {
+                let mut rx = rx.clone();
+                drop(guard);
+                // Another write is in progress — wait for the result.
+                let succeeded = loop {
+                    if let Some(ok) = *rx.borrow_and_update() {
+                        break ok;
+                    }
+                    if rx.changed().await.is_err() {
+                        break false; // sender dropped = failure
+                    }
+                };
+                if succeeded {
+                    info!(
+                        %digest,
+                        size_bytes = expected_size,
+                        "ByteStream::write: coalesced with in-flight write",
+                    );
+                    instance
+                        .metrics
+                        .write_requests_success
+                        .fetch_add(1, Ordering::Relaxed);
+                    return Ok(Response::new(WriteResponse {
+                        committed_size: expected_size as i64,
+                    }));
+                }
+                // In-flight write failed — fall through to do our own.
+                warn!(
+                    %digest,
+                    size_bytes = expected_size,
+                    "ByteStream::write: in-flight write failed, retrying",
+                );
                 None
+            } else {
+                // We're the first writer — create a watch channel.
+                let (tx, rx) = tokio::sync::watch::channel(None);
+                guard.insert(digest, rx);
+                Some(tx)
             }
         };
-        if let Some(notify) = existing_notify {
-            // Another write is in progress — wait for it to finish.
-            notify.notified().await;
-            info!(
-                %digest,
-                size_bytes = expected_size,
-                "ByteStream::write: coalesced with in-flight write",
-            );
-            instance
-                .metrics
-                .write_requests_success
-                .fetch_add(1, Ordering::Relaxed);
-            return Ok(Response::new(WriteResponse {
-                committed_size: expected_size as i64,
-            }));
-        }
 
         let digest_function = stream
             .resource_info
@@ -1441,11 +1458,13 @@ impl ByteStreamServer {
             }
         };
 
-        // Write finished (success or failure) — remove from in-flight map
-        // and wake any waiters that were coalesced on this digest.
-        if let Some(notify) = instance.in_flight_writes.lock().remove(&digest) {
-            notify.notify_waiters();
+        // Write finished — signal the result to coalesced waiters BEFORE
+        // removing from the map, so new RPCs arriving in between can still
+        // find and subscribe to the existing entry.
+        if let Some(tx) = in_flight_tx {
+            let _ = tx.send(Some(result.is_ok()));
         }
+        instance.in_flight_writes.lock().remove(&digest);
 
         // Track metrics
         #[allow(clippy::cast_possible_truncation)]
