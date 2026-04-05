@@ -919,13 +919,25 @@ pub struct LocalWorkerConfig {
     pub directory_cache: Option<DirectoryCacheConfig>,
 
     /// If set, the worker will start a CAS + ByteStream gRPC server on
-    /// 0.0.0.0:<port> and advertise grpc://<hostname>:<port> to the
-    /// scheduler and other workers for peer-to-peer blob sharing.
+    /// 0.0.0.0:<port> and advertise the endpoint to the scheduler and
+    /// other workers for peer-to-peer blob sharing and mirror writes.
+    /// When `cas_server_tls` is also set, the server uses TLS and
+    /// advertises `grpcs://<hostname>:<port>`; otherwise it uses plain
+    /// TCP and advertises `grpc://<hostname>:<port>`.
     /// The hostname is resolved at runtime via gethostname().
-    /// Example: 50081
+    /// Example: 40081
     /// Default: None (no peer CAS server)
     #[serde(default)]
     pub cas_server_port: Option<u16>,
+
+    /// Optional TLS configuration for the worker CAS server started on
+    /// `cas_server_port`. When set, the TCP listener uses TLS with the
+    /// specified certificate and key. Requires `cas_server_port` to be
+    /// set.
+    ///
+    /// Default: None (plain TCP, no TLS)
+    #[serde(default)]
+    pub cas_server_tls: Option<TlsConfig>,
 
     /// How often (in milliseconds) the worker should send a periodic
     /// BlobsAvailable snapshot to the scheduler, reporting which blobs
@@ -1012,7 +1024,7 @@ pub enum WorkerConfig {
     Local(LocalWorkerConfig),
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone, Copy)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct GlobalConfig {
@@ -1071,6 +1083,30 @@ pub struct GlobalConfig {
     /// Default: true
     #[serde(default = "default_nonblocking_log")]
     pub nonblocking_log: bool,
+
+    /// Path to the CA certificate file used by the server when connecting
+    /// to worker CAS endpoints (port 40081) for mirror writes and peer
+    /// blob sharing. When set, the server uses TLS (`grpcs://`) to
+    /// connect to worker CAS servers. When not set, connections are
+    /// plain TCP (`grpc://`).
+    ///
+    /// Default: None (plain TCP)
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub worker_proxy_tls_ca_file: Option<String>,
+
+    /// Path to client certificate for mTLS when connecting to worker
+    /// CAS endpoints. Requires `worker_proxy_tls_ca_file` to be set.
+    ///
+    /// Default: None
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub worker_proxy_tls_cert_file: Option<String>,
+
+    /// Path to client private key for mTLS when connecting to worker
+    /// CAS endpoints. Requires `worker_proxy_tls_cert_file` to be set.
+    ///
+    /// Default: None
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub worker_proxy_tls_key_file: Option<String>,
 }
 
 fn default_disable_otlp() -> bool {

@@ -378,7 +378,8 @@ fn get_e_core_load_pct() -> u32 {
 /// Build the advertised gRPC endpoint for peer blob sharing.
 /// Uses the machine's hostname so a single config works across all workers.
 /// The hostname is resolved once and cached for the lifetime of the process.
-fn cas_advertised_endpoint(port: u16) -> String {
+/// When `use_tls` is true, advertises `grpcs://` so the server connects with TLS.
+fn cas_advertised_endpoint(port: u16, use_tls: bool) -> String {
     use std::sync::OnceLock;
     static HOSTNAME: OnceLock<String> = OnceLock::new();
     let hostname = HOSTNAME.get_or_init(|| {
@@ -402,7 +403,8 @@ fn cas_advertised_endpoint(port: u16) -> String {
             }
         }
     });
-    format!("grpc://{hostname}:{port}")
+    let scheme = if use_tls { "grpcs" } else { "grpc" };
+    format!("{scheme}://{hostname}:{port}")
 }
 
 /// Start a QUIC/H3 server for the worker CAS, alongside the TCP server.
@@ -1274,8 +1276,9 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
 
                             let make_publish_future = {
                                 let mut grpc_client = self.grpc_client.clone();
+                                let use_tls = self.config.cas_server_tls.is_some();
                                 let cas_endpoint_for_notify = self.config.cas_server_port
-                                    .map(|port| cas_advertised_endpoint(port))
+                                    .map(|port| cas_advertised_endpoint(port, use_tls))
                                     .unwrap_or_default();
 
                                 let running_actions_manager = self.running_actions_manager.clone();
@@ -1598,6 +1601,10 @@ pub async fn new_local_worker(
         Duration::from_secs(config.max_upload_timeout as u64)
     };
 
+    // Whether the worker CAS server uses TLS (determines grpc:// vs grpcs:// in
+    // the advertised endpoint).
+    let use_tls = config.cas_server_tls.is_some();
+
     // If peer blob sharing is configured (cas_server_port is set), create a
     // worker-local locality map and wrap the slow store with WorkerProxyStore.
     // This enables workers to fetch blobs from peers instead of the central CAS.
@@ -1719,7 +1726,7 @@ pub async fn new_local_worker(
             };
             let cas_endpoint = config
                 .cas_server_port
-                .map(|port| cas_advertised_endpoint(port))
+                .map(|port| cas_advertised_endpoint(port, use_tls))
                 .unwrap_or_default();
 
             // Shared notify: tracker fires it on insert/eviction, send loop
@@ -1784,7 +1791,7 @@ pub async fn new_local_worker(
                 .err_tip(|| "Failed to create worker ByteStream server")?;
 
         let addr: std::net::SocketAddr = ([0, 0, 0, 0], cas_port).into();
-        let advertised = cas_advertised_endpoint(cas_port);
+        let advertised = cas_advertised_endpoint(cas_port, use_tls);
 
         let worker_name = config.name.clone();
 
@@ -1805,18 +1812,40 @@ pub async fn new_local_worker(
             .max_decoding_message_size(WORKER_CAS_MAX_DECODING_MESSAGE_SIZE)
             .max_encoding_message_size(WORKER_CAS_MAX_ENCODING_MESSAGE_SIZE);
 
-        // Start TCP server.
+        // Start TCP server (with TLS if cas_server_tls is configured).
         let tcp_cas_svc = cas_svc.clone();
         let tcp_bs_svc = bs_svc.clone();
         let tcp_worker_name = worker_name.clone();
+        let tls_server_config = if let Some(ref tls_cfg) = config.cas_server_tls {
+            let cert = std::fs::read_to_string(&tls_cfg.cert_file)
+                .err_tip(|| format!("Could not read CAS server cert: {}", tls_cfg.cert_file))?;
+            let key = std::fs::read_to_string(&tls_cfg.key_file)
+                .err_tip(|| format!("Could not read CAS server key: {}", tls_cfg.key_file))?;
+            let identity = tonic::transport::Identity::from_pem(cert, key);
+            let mut tls = tonic::transport::ServerTlsConfig::new().identity(identity);
+            if let Some(ref ca_file) = tls_cfg.client_ca_file {
+                let ca_cert = std::fs::read_to_string(ca_file)
+                    .err_tip(|| format!("Could not read CAS server client CA: {ca_file}"))?;
+                tls = tls.client_ca_root(tonic::transport::Certificate::from_pem(ca_cert));
+            }
+            Some(tls)
+        } else {
+            None
+        };
         let tcp_guard = spawn!("worker_cas_tcp", async move {
             info!(
                 worker_name = %tcp_worker_name,
                 %addr,
                 %advertised,
+                tls = tls_server_config.is_some(),
                 "Starting worker CAS TCP server for peer blob sharing"
             );
-            let result = tonic::transport::Server::builder()
+            let mut builder = tonic::transport::Server::builder();
+            if let Some(tls) = tls_server_config {
+                builder = builder.tls_config(tls)
+                    .map_err(|e| make_err!(Code::Internal, "Worker CAS TCP TLS config failed: {e:?}"))?;
+            }
+            let result = builder
                 .add_service(tcp_cas_svc)
                 .add_service(tcp_bs_svc)
                 .serve(addr)
@@ -1987,10 +2016,11 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
             }
         }
 
+        let use_tls = self.config.cas_server_tls.is_some();
         let cas_endpoint = self
             .config
             .cas_server_port
-            .map_or_else(String::new, |port| cas_advertised_endpoint(port));
+            .map_or_else(String::new, |port| cas_advertised_endpoint(port, use_tls));
         let connect_worker_request = make_connect_worker_request(
             self.config.name.clone(),
             &self.config.platform_properties,
@@ -2412,7 +2442,7 @@ mod tests {
 
     #[test]
     fn test_cas_advertised_endpoint_format() {
-        let endpoint = cas_advertised_endpoint(50081);
+        let endpoint = cas_advertised_endpoint(50081, false);
         assert!(
             endpoint.starts_with("grpc://"),
             "Expected endpoint to start with 'grpc://', got: {endpoint}"
@@ -2428,6 +2458,19 @@ mod tests {
         assert!(
             !hostname.is_empty(),
             "Expected non-empty hostname in endpoint: {endpoint}"
+        );
+    }
+
+    #[test]
+    fn test_cas_advertised_endpoint_tls() {
+        let endpoint = cas_advertised_endpoint(40081, true);
+        assert!(
+            endpoint.starts_with("grpcs://"),
+            "Expected endpoint to start with 'grpcs://', got: {endpoint}"
+        );
+        assert!(
+            endpoint.ends_with(":40081"),
+            "Expected endpoint to end with ':40081', got: {endpoint}"
         );
     }
 }

@@ -274,6 +274,7 @@ async fn test_multiple_clients_subscribe_to_same_action() -> Result<(), Error> {
         None,
         None, // cas_store
         None, // locality_map
+        None, // worker_tls_config
     );
 
     // First client adds the action

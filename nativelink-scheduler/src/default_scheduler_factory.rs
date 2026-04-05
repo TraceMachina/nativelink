@@ -18,7 +18,7 @@ use std::time::SystemTime;
 use nativelink_config::schedulers::{
     ExperimentalSimpleSchedulerBackend, SchedulerSpec, SimpleSpec,
 };
-use nativelink_config::stores::EvictionPolicy;
+use nativelink_config::stores::{ClientTlsConfig, EvictionPolicy};
 use nativelink_error::{Error, ResultExt, make_input_err};
 use nativelink_proto::com::github::trace_machina::nativelink::events::OriginEvent;
 use nativelink_store::redis_store::{RedisStore, StandardRedisManager};
@@ -51,8 +51,9 @@ pub async fn scheduler_factory(
     store_manager: &StoreManager,
     maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
     locality_map: Option<SharedBlobLocalityMap>,
+    worker_tls_config: Option<ClientTlsConfig>,
 ) -> Result<SchedulerFactoryResults, Error> {
-    inner_scheduler_factory(spec, store_manager, maybe_origin_event_tx, locality_map).await
+    inner_scheduler_factory(spec, store_manager, maybe_origin_event_tx, locality_map, worker_tls_config).await
 }
 
 async fn inner_scheduler_factory(
@@ -60,10 +61,11 @@ async fn inner_scheduler_factory(
     store_manager: &StoreManager,
     maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
     locality_map: Option<SharedBlobLocalityMap>,
+    worker_tls_config: Option<ClientTlsConfig>,
 ) -> Result<SchedulerFactoryResults, Error> {
     let scheduler: SchedulerFactoryResults = match spec {
         SchedulerSpec::Simple(spec) => {
-            simple_scheduler_factory(spec, store_manager, SystemTime::now, maybe_origin_event_tx, locality_map)
+            simple_scheduler_factory(spec, store_manager, SystemTime::now, maybe_origin_event_tx, locality_map, worker_tls_config)
                 .await?
         }
         SchedulerSpec::Grpc(spec) => (Some(Arc::new(GrpcScheduler::new(spec)?)), None),
@@ -76,6 +78,7 @@ async fn inner_scheduler_factory(
                 store_manager,
                 maybe_origin_event_tx,
                 locality_map.clone(),
+                worker_tls_config.clone(),
             ))
             .await
             .err_tip(|| "In nested CacheLookupScheduler construction")?;
@@ -91,6 +94,7 @@ async fn inner_scheduler_factory(
                 store_manager,
                 maybe_origin_event_tx,
                 locality_map.clone(),
+                worker_tls_config.clone(),
             ))
             .await
             .err_tip(|| "In nested PropertyModifierScheduler construction")?;
@@ -111,6 +115,7 @@ async fn simple_scheduler_factory(
     now_fn: fn() -> SystemTime,
     maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
     locality_map: Option<SharedBlobLocalityMap>,
+    worker_tls_config: Option<ClientTlsConfig>,
 ) -> Result<SchedulerFactoryResults, Error> {
     // Resolve the CAS store for locality-aware scheduling if configured.
     let cas_store = if let Some(ref cas_store_name) = spec.cas_store {
@@ -142,6 +147,7 @@ async fn simple_scheduler_factory(
                 maybe_origin_event_tx.cloned(),
                 cas_store,
                 locality_map,
+                worker_tls_config,
             );
             Ok((Some(action_scheduler), Some(worker_scheduler)))
         }
@@ -180,6 +186,7 @@ async fn simple_scheduler_factory(
                 maybe_origin_event_tx.cloned(),
                 cas_store,
                 locality_map,
+                worker_tls_config,
             );
             Ok((Some(action_scheduler), Some(worker_scheduler)))
         }

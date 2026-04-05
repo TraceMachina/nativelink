@@ -25,7 +25,7 @@ use tokio::sync::{Notify, Semaphore};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, trace, warn};
 
-use nativelink_config::stores::{GrpcEndpoint, GrpcSpec, Retry, StoreType};
+use nativelink_config::stores::{ClientTlsConfig, GrpcEndpoint, GrpcSpec, Retry, StoreType};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::blob_locality_map::SharedBlobLocalityMap;
@@ -65,6 +65,9 @@ pub struct WorkerProxyStore {
     /// Only workers should enable this — servers should use the sequential
     /// path which generates redirects for workers.
     race_peers: bool,
+    /// Optional TLS config for connecting to worker CAS endpoints.
+    /// When set, connections use `grpcs://` with this TLS config.
+    worker_tls_config: Option<ClientTlsConfig>,
 }
 
 impl core::fmt::Debug for WorkerProxyStore {
@@ -89,6 +92,23 @@ impl WorkerProxyStore {
             locality_map,
             worker_connections: RwLock::new(HashMap::new()),
             race_peers: false,
+            worker_tls_config: None,
+        })
+    }
+
+    /// Create a new WorkerProxyStore with TLS configuration for
+    /// connecting to worker CAS endpoints.
+    pub fn new_with_tls(
+        inner: Store,
+        locality_map: SharedBlobLocalityMap,
+        tls_config: ClientTlsConfig,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            inner,
+            locality_map,
+            worker_connections: RwLock::new(HashMap::new()),
+            race_peers: false,
+            worker_tls_config: Some(tls_config),
         })
     }
 
@@ -149,7 +169,7 @@ impl WorkerProxyStore {
         if let Some(store) = self.get_worker_connection(endpoint) {
             return Some(store);
         }
-        match Self::create_worker_connection(endpoint).await {
+        match self.create_worker_connection(endpoint).await {
             Ok(store) => {
                 self.worker_connections
                     .write()
@@ -165,21 +185,21 @@ impl WorkerProxyStore {
     }
 
     /// Create a minimal GrpcStore connection to a worker endpoint.
-    async fn create_worker_connection(endpoint: &str) -> Result<Store, Error> {
+    async fn create_worker_connection(&self, endpoint: &str) -> Result<Store, Error> {
         let spec = GrpcSpec {
             instance_name: String::new(),
             endpoints: vec![GrpcEndpoint {
                 address: endpoint.to_string(),
-                tls_config: None,
+                tls_config: self.worker_tls_config.clone(),
                 concurrency_limit: None,
                 connect_timeout_s: 5,
                 tcp_keepalive_s: 30,
                 http2_keepalive_interval_s: 30,
                 http2_keepalive_timeout_s: 20,
                 tcp_nodelay: true,
-                // Workers start QUIC CAS servers with self-signed certs
-                // on the same port (40081). Use QUIC when available.
-                use_http3: cfg!(feature = "quic"),
+                // Use TCP (h2) for worker connections. QUIC was previously
+                // used but dominated server CPU (~50%).
+                use_http3: false,
             }],
             store_type: StoreType::Cas,
             retry: Retry::default(),

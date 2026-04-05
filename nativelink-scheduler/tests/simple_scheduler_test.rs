@@ -142,6 +142,7 @@ async fn basic_add_action_with_one_worker_test() -> Result<(), Error> {
         None,
         None, // cas_store
         None, // locality_map
+        None, // worker_tls_config
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -247,6 +248,7 @@ async fn client_does_not_receive_update_timeout() -> Result<(), Error> {
         None,
         None, // cas_store
         None, // locality_map
+        None, // worker_tls_config
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -310,6 +312,7 @@ async fn find_executing_action() -> Result<(), Error> {
         None,
         None, // cas_store
         None, // locality_map
+        None, // worker_tls_config
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -400,6 +403,7 @@ async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Err
         None,
         None, // cas_store
         None, // locality_map
+        None, // worker_tls_config
     );
     let action_digest1 = DigestInfo::new([99u8; 32], 512);
     let action_digest2 = DigestInfo::new([88u8; 32], 512);
@@ -602,6 +606,7 @@ async fn set_drain_worker_pauses_and_resumes_worker_test() -> Result<(), Error> 
         None,
         None, // cas_store
         None, // locality_map
+        None, // worker_tls_config
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -694,6 +699,7 @@ async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), E
         None,
         None, // cas_store
         None, // locality_map
+        None, // worker_tls_config
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
     let mut platform_properties = HashMap::new();
@@ -796,6 +802,7 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
         None,
         None, // cas_store
         None, // locality_map
+        None, // worker_tls_config
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -910,6 +917,7 @@ async fn worker_disconnects_does_not_schedule_for_execution_test() -> Result<(),
         None,
         None, // cas_store
         None, // locality_map
+        None, // worker_tls_config
     );
     let worker_id = WorkerId("worker_id".to_string());
     let action_digest = DigestInfo::new([99u8; 32], 512);
@@ -1070,6 +1078,7 @@ async fn matching_engine_fails_sends_abort() -> Result<(), Error> {
             None,
             None, // cas_store
             None, // locality_map
+            None, // worker_tls_config
         );
         // Initial worker calls do_try_match, so send it no items.
         senders.get_range_of_actions.send(vec![]).unwrap();
@@ -1118,6 +1127,7 @@ async fn matching_engine_fails_sends_abort() -> Result<(), Error> {
             None,
             None, // cas_store
             None, // locality_map
+            None, // worker_tls_config
         );
         // senders.tx_get_awaited_action_by_id.send(Ok(None)).unwrap();
         senders.get_range_of_actions.send(vec![]).unwrap();
@@ -1181,6 +1191,7 @@ async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
         None,
         None, // cas_store
         None, // locality_map
+        None, // worker_tls_config
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -1325,6 +1336,7 @@ async fn update_action_sends_completed_result_to_client_test() -> Result<(), Err
         None,
         None, // cas_store
         None, // locality_map
+        None, // worker_tls_config
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -1430,6 +1442,7 @@ async fn update_action_sends_completed_result_after_disconnect() -> Result<(), E
         None,
         None, // cas_store
         None, // locality_map
+        None, // worker_tls_config
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -1553,6 +1566,7 @@ async fn update_action_with_wrong_worker_id_errors_test() -> Result<(), Error> {
         None,
         None, // cas_store
         None, // locality_map
+        None, // worker_tls_config
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -1665,6 +1679,7 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
         None,
         None, // cas_store
         None, // locality_map
+        None, // worker_tls_config
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -1820,6 +1835,7 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
         None,
         None, // cas_store
         None, // locality_map
+        None, // worker_tls_config
     );
     let action_digest1 = DigestInfo::new([11u8; 32], 512);
     let action_digest2 = DigestInfo::new([99u8; 32], 512);
@@ -1990,6 +2006,7 @@ async fn run_jobs_in_the_order_they_were_queued() -> Result<(), Error> {
         None,
         None, // cas_store
         None, // locality_map
+        None, // worker_tls_config
     );
     let action_digest1 = DigestInfo::new([11u8; 32], 512);
     let action_digest2 = DigestInfo::new([99u8; 32], 512);
@@ -2060,6 +2077,7 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
         None,
         None, // cas_store
         None, // locality_map
+        None, // worker_tls_config
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -2224,6 +2242,7 @@ async fn ensure_scheduler_drops_inner_spawn() -> Result<(), Error> {
         None,
         None, // cas_store
         None, // locality_map
+        None, // worker_tls_config
     );
     assert_eq!(dropped.load(Ordering::Relaxed), false);
 
@@ -2256,6 +2275,7 @@ async fn ensure_task_or_worker_change_notification_received_test() -> Result<(),
         None,
         None, // cas_store
         None, // locality_map
+        None, // worker_tls_config
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -2344,6 +2364,7 @@ async fn client_reconnect_keeps_action_alive() -> Result<(), Error> {
         None,
         None, // cas_store
         None, // locality_map
+        None, // worker_tls_config
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -2425,6 +2446,7 @@ async fn client_timesout_job_then_same_action_requested() -> Result<(), Error> {
         None,
         None, // cas_store
         None, // locality_map
+        None, // worker_tls_config
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -2500,6 +2522,7 @@ async fn logs_when_no_workers_match() -> Result<(), Error> {
         None,
         None, // cas_store
         None, // locality_map
+        None, // worker_tls_config
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -2553,6 +2576,7 @@ async fn worker_fails_precondition_completes_immediately_test() -> Result<(), Er
         None,
         None, // cas_store
         None, // locality_map
+        None, // worker_tls_config
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -2790,6 +2814,7 @@ async fn locality_scoring_selects_best_worker_test() -> Result<(), Error> {
         None,
         Some(cas_store),
         Some(locality_map),
+        None, // worker_tls_config
     );
 
     let action_digest = DigestInfo::new([99u8; 32], 512);
@@ -2885,6 +2910,7 @@ async fn no_peer_hints_without_resolved_tree_test() -> Result<(), Error> {
         None,
         None, // no CAS store -- no resolved tree available
         Some(locality_map),
+        None, // worker_tls_config
     );
 
     let action_digest = DigestInfo::new([88u8; 32], 256);
@@ -2986,6 +3012,7 @@ async fn peer_hints_from_resolved_tree_test() -> Result<(), Error> {
         None,
         Some(cas_store),
         Some(locality_map),
+        None, // worker_tls_config
     );
 
     let action_digest = DigestInfo::new([99u8; 32], 512);
@@ -3117,6 +3144,7 @@ async fn fallback_to_lru_when_no_locality_data_test() -> Result<(), Error> {
         None,
         Some(cas_store),
         Some(locality_map),
+        None, // worker_tls_config
     );
 
     let action_digest = DigestInfo::new([99u8; 32], 512);
@@ -3213,6 +3241,7 @@ async fn locality_scoring_with_empty_map_and_no_cas_store_test() -> Result<(), E
         None,
         None, // No CAS store -- tree resolution returns None
         Some(locality_map),
+        None, // worker_tls_config
     );
 
     let action_digest = DigestInfo::new([55u8; 32], 256);
@@ -3313,6 +3342,7 @@ async fn locality_scoring_partial_data_still_selects_best_worker_test() -> Resul
         None,
         Some(cas_store),
         Some(locality_map),
+        None, // worker_tls_config
     );
 
     let action_digest = DigestInfo::new([99u8; 32], 512);
@@ -3399,6 +3429,7 @@ async fn cpu_load_update_worker_load_stores_correctly() -> Result<(), Error> {
         None,
         None, // cas_store
         None, // locality_map
+        None, // worker_tls_config
     );
 
     let mut rx = setup_new_worker(
@@ -3451,6 +3482,7 @@ async fn cpu_load_lightest_loaded_worker_gets_picked() -> Result<(), Error> {
         None,
         None, // cas_store
         None, // locality_map
+        None, // worker_tls_config
     );
 
     // Add all 3 workers (no queued actions yet, so no matching happens).
@@ -3544,6 +3576,7 @@ async fn cpu_load_unknown_zero_sorted_last() -> Result<(), Error> {
         None,
         None, // cas_store
         None, // locality_map
+        None, // worker_tls_config
     );
 
     let mut rx_known = setup_new_worker(
@@ -3621,6 +3654,7 @@ async fn cpu_load_falls_back_to_lru_when_no_load_data() -> Result<(), Error> {
         None,
         None, // cas_store
         None, // locality_map
+        None, // worker_tls_config
     );
 
     // Add both workers (both have cpu_load_pct=0 by default).
@@ -3707,6 +3741,7 @@ async fn p_core_preference_test() -> Result<(), Error> {
         None,
         None, // cas_store
         None, // locality_map
+        None, // worker_tls_config
     );
 
     let mut rx_a = setup_new_worker(
@@ -3802,6 +3837,7 @@ async fn cache_affinity_load_cutoff_test() -> Result<(), Error> {
         None,
         None, // cas_store
         None, // locality_map
+        None, // worker_tls_config
     );
 
     let mut rx_a = setup_new_worker(
@@ -3908,6 +3944,7 @@ async fn cache_affinity_soft_fallback_test() -> Result<(), Error> {
         None,
         None, // cas_store
         None, // locality_map
+        None, // worker_tls_config
     );
 
     let mut rx_a = setup_new_worker(
@@ -4011,6 +4048,7 @@ async fn execution_complete_after_completed_does_not_evict_worker() -> Result<()
         None,
         None, // cas_store
         None, // locality_map
+        None, // worker_tls_config
     );
 
     let action_digest = DigestInfo::new([99u8; 32], 512);

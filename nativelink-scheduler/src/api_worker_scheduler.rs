@@ -24,7 +24,7 @@ use async_lock::RwLock;
 use bytes::Bytes;
 use lru::LruCache;
 use nativelink_config::schedulers::WorkerAllocationStrategy;
-use nativelink_config::stores::{GrpcEndpoint, GrpcSpec, Retry, StoreType};
+use nativelink_config::stores::{ClientTlsConfig, GrpcEndpoint, GrpcSpec, Retry, StoreType};
 use nativelink_error::{Code, Error, ResultExt, error_if, make_err, make_input_err};
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
@@ -1082,6 +1082,10 @@ pub struct ApiWorkerScheduler {
     /// the actual store topology. 0 means warming is disabled.
     #[metric(help = "SizePartitioningStore threshold for cache warming filter")]
     memory_store_threshold: u64,
+
+    /// Optional TLS config for connecting to worker CAS endpoints.
+    /// When set, prefetch connections use TLS with this config.
+    worker_tls_config: Option<ClientTlsConfig>,
 }
 
 /// Probe a CAS store chain to find the SizePartitioningStore threshold.
@@ -1269,6 +1273,7 @@ impl ApiWorkerScheduler {
             worker_registry,
             None,
             None,
+            None,
         )
     }
 
@@ -1281,6 +1286,7 @@ impl ApiWorkerScheduler {
         worker_registry: SharedWorkerRegistry,
         locality_map: Option<SharedBlobLocalityMap>,
         cas_store: Option<Store>,
+        worker_tls_config: Option<ClientTlsConfig>,
     ) -> Arc<Self> {
         let memory_store_threshold = cas_store
             .as_ref()
@@ -1324,6 +1330,7 @@ impl ApiWorkerScheduler {
             prefetch_connections: ParkingMutex::new(HashMap::new()),
             prefetch_semaphores: ParkingMutex::new(HashMap::new()),
             memory_store_threshold,
+            worker_tls_config,
         })
     }
 
@@ -1946,6 +1953,7 @@ impl ApiWorkerScheduler {
         let metrics = self.metrics.clone();
         let endpoint_str = worker_endpoint.clone();
         let semaphore = self.get_prefetch_semaphore(&worker_endpoint);
+        let worker_tls_config = self.worker_tls_config.clone();
 
         // Snapshot the cached connection under a brief sync lock. The
         // actual TCP connect (if needed) happens inside the spawned task.
@@ -1974,7 +1982,7 @@ impl ApiWorkerScheduler {
             let worker_store = if let Some(store) = cached_connection {
                 store
             } else {
-                match create_worker_cas_connection(&endpoint_str).await {
+                match create_worker_cas_connection(&endpoint_str, worker_tls_config).await {
                     Ok(store) => store,
                     Err(e) => {
                         warn!(
@@ -2409,12 +2417,15 @@ impl ResolvedTree {
 /// prefetching blobs. This is a standalone function so it can be
 /// called from both `get_or_create_prefetch_connection` and from
 /// inside spawned tasks without holding a reference to `self`.
-async fn create_worker_cas_connection(endpoint: &str) -> Result<Store, Error> {
+async fn create_worker_cas_connection(
+    endpoint: &str,
+    tls_config: Option<ClientTlsConfig>,
+) -> Result<Store, Error> {
     let spec = GrpcSpec {
         instance_name: String::new(),
         endpoints: vec![GrpcEndpoint {
             address: endpoint.to_string(),
-            tls_config: None,
+            tls_config,
             concurrency_limit: None,
             connect_timeout_s: 5,
             tcp_keepalive_s: 30,
@@ -3584,6 +3595,7 @@ mod tests {
             Arc::new(WorkerRegistry::new()),
             None,
             Some(store),
+            None,
         );
 
         // First call: cache miss, returns None and spawns background resolution.

@@ -225,11 +225,25 @@ async fn inner_main(
     // BlobsAvailable updates from workers).
     let locality_map = blob_locality_map::new_shared_blob_locality_map();
 
+    // Build TLS config for server-to-worker connections (used by both the
+    // scheduler's prefetch path and WorkerProxyStore).
+    let worker_proxy_tls: Option<nativelink_config::stores::ClientTlsConfig> =
+        cfg.global.as_ref().and_then(|g| {
+            g.worker_proxy_tls_ca_file.as_ref().map(|ca| {
+                nativelink_config::stores::ClientTlsConfig {
+                    ca_file: Some(ca.clone()),
+                    cert_file: g.worker_proxy_tls_cert_file.clone(),
+                    key_file: g.worker_proxy_tls_key_file.clone(),
+                    use_native_roots: Some(false),
+                }
+            })
+        });
+
     let mut action_schedulers = HashMap::new();
     let mut worker_schedulers = HashMap::new();
     for SchedulerConfig { name, spec } in cfg.schedulers.iter().flatten() {
         let (maybe_action_scheduler, maybe_worker_scheduler) =
-            scheduler_factory(spec, &store_manager, maybe_origin_event_tx.as_ref(), Some(locality_map.clone()))
+            scheduler_factory(spec, &store_manager, maybe_origin_event_tx.as_ref(), Some(locality_map.clone()), worker_proxy_tls.clone())
                 .await
                 .err_tip(|| format!("Failed to create scheduler '{name}'"))?;
         if let Some(action_scheduler) = maybe_action_scheduler {
@@ -298,14 +312,23 @@ async fn inner_main(
                 // the WorkerProxyStore wrapper.
                 unwrapped_cas_stores.insert(store_name.clone(), original_store.clone());
                 let proxy_store = nativelink_util::store_trait::Store::new(
-                    nativelink_store::worker_proxy_store::WorkerProxyStore::new(
-                        original_store,
-                        locality_map.clone(),
-                    ),
+                    if let Some(ref tls) = worker_proxy_tls {
+                        nativelink_store::worker_proxy_store::WorkerProxyStore::new_with_tls(
+                            original_store,
+                            locality_map.clone(),
+                            tls.clone(),
+                        )
+                    } else {
+                        nativelink_store::worker_proxy_store::WorkerProxyStore::new(
+                            original_store,
+                            locality_map.clone(),
+                        )
+                    },
                 );
                 store_manager.add_store(store_name, proxy_store);
                 info!(
                     store_name,
+                    worker_proxy_tls = worker_proxy_tls.is_some(),
                     "Wrapped CAS store with WorkerProxyStore for peer blob sharing"
                 );
             }
@@ -1242,7 +1265,7 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
             global_cfg.default_digest_size_health_check = DEFAULT_DIGEST_SIZE_HEALTH_CHECK_CFG;
         }
 
-        *global_cfg
+        global_cfg.clone()
     } else {
         GlobalConfig {
             max_open_files: fs::DEFAULT_OPEN_FILE_LIMIT,
@@ -1251,6 +1274,9 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
             pprof_port: 0,
             disable_otlp: true,
             nonblocking_log: true,
+            worker_proxy_tls_ca_file: None,
+            worker_proxy_tls_cert_file: None,
+            worker_proxy_tls_key_file: None,
         }
     };
 

@@ -19,6 +19,7 @@ use std::time::{Instant, SystemTime};
 use async_trait::async_trait;
 use futures::{Future, StreamExt, future};
 use nativelink_config::schedulers::SimpleSpec;
+use nativelink_config::stores::ClientTlsConfig;
 use nativelink_error::{Code, Error, ResultExt};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_proto::com::github::trace_machina::nativelink::events::OriginEvent;
@@ -493,6 +494,7 @@ impl SimpleScheduler {
             maybe_origin_event_tx,
             None,
             None,
+            None,
         )
     }
 
@@ -503,6 +505,7 @@ impl SimpleScheduler {
         maybe_origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
         cas_store: Option<nativelink_util::store_trait::Store>,
         locality_map: Option<nativelink_util::blob_locality_map::SharedBlobLocalityMap>,
+        worker_tls_config: Option<ClientTlsConfig>,
     ) -> (Arc<Self>, Arc<dyn WorkerScheduler>) {
         Self::new_with_callback(
             spec,
@@ -520,6 +523,7 @@ impl SimpleScheduler {
             maybe_origin_event_tx,
             cas_store,
             locality_map,
+            worker_tls_config,
         )
     }
 
@@ -538,6 +542,7 @@ impl SimpleScheduler {
         maybe_origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
         cas_store: Option<nativelink_util::store_trait::Store>,
         locality_map: Option<nativelink_util::blob_locality_map::SharedBlobLocalityMap>,
+        worker_tls_config: Option<ClientTlsConfig>,
     ) -> (Arc<Self>, Arc<dyn WorkerScheduler>) {
         let platform_property_manager = Arc::new(PlatformPropertyManager::new(
             spec.supported_platform_properties
@@ -594,6 +599,7 @@ impl SimpleScheduler {
             worker_registry,
             locality_map,
             cas_store,
+            worker_tls_config,
         );
 
         let worker_scheduler_clone = worker_scheduler.clone();
