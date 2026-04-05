@@ -465,7 +465,7 @@ fn start_worker_quic_server(
     // Enable QUIC MTU discovery for jumbo frames on LAN.
     transport.initial_mtu(1200);
     let mut mtu_config = quinn::MtuDiscoveryConfig::default();
-    mtu_config.upper_bound(8500);
+    mtu_config.upper_bound(8952);
     transport.mtu_discovery_config(Some(mtu_config));
     server_config.transport_config(Arc::new(transport));
 

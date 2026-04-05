@@ -428,12 +428,12 @@ pub fn h3_channel(endpoint_config: &GrpcEndpoint, connections: usize) -> Result<
     // Send QUIC keepalives every 5s to detect dead connections and
     // prevent NAT/firewall timeouts on the server→worker path.
     transport.keep_alive_interval(Some(Duration::from_secs(5)));
-    // Enable QUIC MTU discovery for jumbo frames. Probe up to 8500
-    // bytes (fits in 9000-byte Ethernet jumbo frames). Reduces packet
-    // rate by ~6x vs the 1200-byte QUIC minimum.
+    // Enable QUIC MTU discovery for jumbo frames. Probe up to 8952
+    // bytes (9000 jumbo MTU minus 40 IPv6 + 8 UDP headers). Reduces
+    // packet rate by ~6x vs default 1452.
     transport.initial_mtu(1200);
     let mut mtu_config = quinn::MtuDiscoveryConfig::default();
-    mtu_config.upper_bound(8500);
+    mtu_config.upper_bound(8952);
     transport.mtu_discovery_config(Some(mtu_config));
     client_config.transport_config(Arc::new(transport));
 

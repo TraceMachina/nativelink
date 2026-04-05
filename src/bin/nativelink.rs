@@ -1020,13 +1020,13 @@ async fn inner_main(
                 quinn::congestion::BbrConfig::default(),
             ));
             // Enable QUIC MTU discovery for jumbo frames. Start at the
-            // QUIC minimum (1200) and probe up to 8500 bytes (fits in
-            // 9000-byte Ethernet jumbo frames with IP/UDP overhead).
-            // Reduces packet rate by ~6x, making AES-GCM and per-packet
-            // processing proportionally cheaper.
+            // QUIC minimum (1200) and probe up to 8952 bytes (9000-byte
+            // jumbo Ethernet MTU minus 40 IPv6 + 8 UDP headers).
+            // Reduces packet rate by ~6x vs default 1452, making AES-GCM
+            // and per-packet processing proportionally cheaper.
             transport.initial_mtu(1200);
             let mut mtu_config = quinn::MtuDiscoveryConfig::default();
-            mtu_config.upper_bound(8500);
+            mtu_config.upper_bound(8952);
             transport.mtu_discovery_config(Some(mtu_config));
             quic_server_config.transport_config(Arc::new(transport));
 
