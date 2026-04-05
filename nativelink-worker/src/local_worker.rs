@@ -1713,7 +1713,23 @@ pub async fn new_local_worker(
         None
     };
 
-    let effective_cas_store_for_cas_server = effective_cas_store.clone();
+    // The worker CAS server (which receives mirror writes from the server)
+    // uses a separate FastSlowStore with slow_direction=ReadOnly. This
+    // prevents mirror writes from being uploaded back to the server —
+    // the blob is written to the local FilesystemStore only and pinned.
+    // The server will ack via BlobsInStableStorage to unpin, or request
+    // re-upload via UploadMissingBlobs on reconnect if it lost the blob.
+    let effective_cas_store_for_cas_server = {
+        let fast_store = effective_cas_store.fast_store().clone();
+        let slow_store = effective_cas_store.slow_store().clone();
+        let fss_spec = nativelink_config::stores::FastSlowSpec {
+            fast: nativelink_config::stores::StoreSpec::Noop(Default::default()),
+            slow: nativelink_config::stores::StoreSpec::Noop(Default::default()),
+            fast_direction: effective_cas_store.fast_direction(),
+            slow_direction: nativelink_config::stores::StoreDirection::ReadOnly,
+        };
+        FastSlowStore::new(&fss_spec, fast_store, slow_store)
+    };
 
     let running_actions_manager =
         Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
