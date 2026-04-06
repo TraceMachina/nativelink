@@ -660,7 +660,7 @@ async fn read_file_to_channel_std(
     read_buffer_size: usize,
     start_offset: u64,
 ) -> Result<FileSlot, Error> {
-    let (sync_tx, mut async_rx) = tokio::sync::mpsc::channel::<Result<Bytes, Error>>(1024);
+    let (sync_tx, mut async_rx) = tokio::sync::mpsc::channel::<Result<Bytes, Error>>(8);
 
     let read_task = spawn_blocking!("fs_read_file", move || {
         let mut f = file;
@@ -936,7 +936,7 @@ async fn write_file_from_channel_std(
     file: FileSlot,
     reader: &mut DropCloserReadHalf,
 ) -> Result<(u64, FileSlot), Error> {
-    let (async_tx, mut sync_rx) = tokio::sync::mpsc::channel::<Bytes>(1024);
+    let (async_tx, mut sync_rx) = tokio::sync::mpsc::channel::<Bytes>(8);
 
     let write_task = spawn_blocking!("fs_write_file", move || {
         let mut f = file;
