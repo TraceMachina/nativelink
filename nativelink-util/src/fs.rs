@@ -660,12 +660,13 @@ pub async fn write_file_from_channel(
 ) -> Result<(u64, FileSlot), Error> {
     use std::sync::Arc;
 
-    use futures::stream::{FuturesOrdered, StreamExt};
+    use futures::stream::{FuturesUnordered, StreamExt};
 
     /// Maximum number of io_uring pwrite SQEs in flight simultaneously.
-    /// Balances pipeline depth against memory pressure (each in-flight
-    /// write holds a Bytes buffer, typically 3 MiB).
-    const WRITE_PIPELINE_DEPTH: usize = 8;
+    /// Optane/NVMe SSDs can handle deep queues efficiently — the ring
+    /// has 128 slots so 512 will be capped by slot availability, which
+    /// provides natural backpressure.
+    const WRITE_PIPELINE_DEPTH: usize = 512;
 
     if !is_io_uring_available().await {
         return write_file_from_channel_std(file, reader).await;
@@ -693,68 +694,41 @@ pub async fn write_file_from_channel(
     let mut slow_write_count: u32 = 0;
     let task_start = std::time::Instant::now();
 
-    // Each in-flight entry tracks the write future, its chunk size, offset,
-    // and submission timestamp for slow-write diagnostics.
-    struct InFlightMeta {
+    // Completion result carries the meta alongside the io_uring result
+    // so FuturesUnordered can deliver completions in any order.
+    struct WriteCompletion {
         chunk_len: usize,
-        offset: u64,
-        write_start: std::time::Instant,
+        enqueue_time: std::time::Instant,
+        submit_time: std::time::Instant,
+        result: Result<usize, tokio_epoll_uring::Error<std::io::Error>>,
     }
-    let mut in_flight: FuturesOrdered<
-        std::pin::Pin<
-            Box<
-                dyn std::future::Future<
-                        Output = (
-                            (
-                                (Arc<std::fs::File>, Bytes),
-                                Result<usize, tokio_epoll_uring::Error<std::io::Error>>,
-                            ),
-                            std::time::Instant, // submit_time
-                        ),
-                    > + Send,
-            >,
-        >,
-    > = FuturesOrdered::new();
-    let mut metas: std::collections::VecDeque<InFlightMeta> = std::collections::VecDeque::new();
+    let mut in_flight: FuturesUnordered<
+        std::pin::Pin<Box<dyn std::future::Future<Output = WriteCompletion> + Send>>,
+    > = FuturesUnordered::new();
 
-    // Helper closure: drain one completed write from the front of the
-    // pipeline, checking for errors and updating diagnostics.
-    // Returns Err on write failure. Updates completed_bytes, max_write_ms,
-    // slow_write_count in place (passed as mutable refs to avoid capture issues).
     #[inline]
     fn process_completion(
-        result: (
-            (
-                (Arc<std::fs::File>, Bytes),
-                Result<usize, tokio_epoll_uring::Error<std::io::Error>>,
-            ),
-            std::time::Instant, // submit_time
-        ),
-        meta: InFlightMeta,
+        wc: WriteCompletion,
         completed_bytes: &mut u64,
         max_write_ms: &mut u128,
         slow_write_count: &mut u32,
     ) -> Result<(), Error> {
-        let (((_returned_fd, _), write_result), submit_time) = result;
-        let n = match write_result {
+        let n = match wc.result {
             Ok(n) => n,
             Err(e) => return Err(uring_err(e, "write_file_from_channel")),
         };
 
-        // For regular files, pwrite writes the full amount unless the
-        // disk is full. Handle partial writes defensively.
-        if n < meta.chunk_len {
+        if n < wc.chunk_len {
             return Err(make_err!(
                 Code::Internal,
-                "io_uring partial write: {n}/{} bytes at offset {}",
-                meta.chunk_len,
-                meta.offset
+                "io_uring partial write: {n}/{} bytes",
+                wc.chunk_len,
             ));
         }
 
-        let total_ms = meta.write_start.elapsed().as_millis();
-        let queue_ms = submit_time.duration_since(meta.write_start).as_millis();
-        let io_ms = submit_time.elapsed().as_millis();
+        let total_ms = wc.enqueue_time.elapsed().as_millis();
+        let queue_ms = wc.submit_time.duration_since(wc.enqueue_time).as_millis();
+        let io_ms = wc.submit_time.elapsed().as_millis();
         if total_ms > *max_write_ms {
             *max_write_ms = total_ms;
         }
@@ -764,29 +738,25 @@ pub async fn write_file_from_channel(
                 total_ms,
                 queue_ms,
                 io_ms,
-                chunk_len = meta.chunk_len,
+                chunk_len = wc.chunk_len,
                 total_so_far = *completed_bytes,
                 "write_file_from_channel: slow io_uring write (>100ms)"
             );
         }
-        *completed_bytes += meta.chunk_len as u64;
+        *completed_bytes += wc.chunk_len as u64;
         Ok(())
     }
 
     loop {
-        // If pipeline is full, await the oldest completion before
-        // accepting more data from the reader.
+        // If pipeline is full, drain one completion before accepting
+        // more data. FuturesUnordered delivers whichever finishes first.
         if in_flight.len() >= WRITE_PIPELINE_DEPTH {
-            let result = in_flight
+            let wc = in_flight
                 .next()
                 .await
                 .ok_or_else(|| make_err!(Code::Internal, "pipeline unexpectedly empty"))?;
-            let meta = metas
-                .pop_front()
-                .ok_or_else(|| make_err!(Code::Internal, "meta queue out of sync"))?;
             process_completion(
-                result,
-                meta,
+                wc,
                 &mut completed_bytes,
                 &mut max_write_ms,
                 &mut slow_write_count,
@@ -807,33 +777,23 @@ pub async fn write_file_from_channel(
 
         let enqueue_time = std::time::Instant::now();
 
-        // Submit write with a cloned Arc handle to the fd. The kernel
-        // uses pwrite at the explicit offset — no file cursor dependency.
-        // Wrap the future to capture submit-to-completion time separately
-        // from queue time (time sitting in FuturesOrdered before first poll).
         let write_fut = system.write(Arc::clone(&fd_arc), offset, data);
-        let timed_fut = async move {
-            // This runs when the future is first polled (io_uring submission).
+        in_flight.push(Box::pin(async move {
             let submit_time = std::time::Instant::now();
-            let result = write_fut.await;
-            (result, submit_time)
-        };
-        in_flight.push_back(Box::pin(timed_fut));
-        metas.push_back(InFlightMeta {
-            chunk_len,
-            offset,
-            write_start: enqueue_time,
-        });
+            let ((_fd, _buf), result) = write_fut.await;
+            WriteCompletion {
+                chunk_len,
+                enqueue_time,
+                submit_time,
+                result,
+            }
+        }));
     }
 
     // Drain all remaining in-flight writes.
-    while let Some(result) = in_flight.next().await {
-        let meta = metas
-            .pop_front()
-            .ok_or_else(|| make_err!(Code::Internal, "meta queue out of sync during drain"))?;
+    while let Some(wc) = in_flight.next().await {
         process_completion(
-            result,
-            meta,
+            wc,
             &mut completed_bytes,
             &mut max_write_ms,
             &mut slow_write_count,
