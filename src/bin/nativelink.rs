@@ -1251,6 +1251,10 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
         // Large async state machines (especially in debug builds) need more
         // stack space than the default 2 MiB per worker thread.
         .thread_stack_size(8 * 1024 * 1024)
+        // All file I/O uses spawn_blocking (benchmark showed 18-25x faster
+        // than io_uring for reads, 2.4-3.3x for writes). 1024 blocking
+        // threads allows high concurrent file I/O throughput.
+        .max_blocking_threads(1024)
         .enable_all()
         .build()?;
 

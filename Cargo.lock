@@ -3523,6 +3523,7 @@ dependencies = [
  "humantime",
  "hyper 1.8.1",
  "hyper-util",
+ "io-uring",
  "libc",
  "lru",
  "mock_instant",

@@ -7,7 +7,7 @@ name = "nativelink-util"
 version = "1.0.0"
 
 [features]
-io-uring = ["dep:tokio-epoll-uring"]
+io-uring = ["dep:tokio-epoll-uring", "dep:io-uring"]
 pprof = ["dep:pprof", "dep:axum"]
 quic = ["dep:tonic-h3", "dep:h3-util", "dep:quinn", "dep:h3-quinn", "dep:rustls", "dep:socket2"]
 
@@ -135,6 +135,7 @@ harness = false
 
 [target.'cfg(target_os = "linux")'.dependencies]
 tokio-epoll-uring = { path = "../tokio-epoll-uring/tokio-epoll-uring", optional = true }
+io-uring = { version = "0.6.0", optional = true }
 
 [package.metadata.cargo-machete]
 # Used by nativelink_test macro

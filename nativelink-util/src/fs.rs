@@ -452,6 +452,12 @@ pub async fn read_file_to_channel(
     read_buffer_size: usize,
     start_offset: u64,
 ) -> Result<FileSlot, Error> {
+    // Benchmark showed spawn_blocking+pread is 18-25x faster than io_uring
+    // for all file sizes (100B to 16MB) due to tokio-epoll-uring's per-SQE
+    // mutex + io_uring_enter overhead. Use the std path unconditionally.
+    return read_file_to_channel_std(file, writer, limit, read_buffer_size, start_offset).await;
+
+    #[allow(unreachable_code)]
     if !is_io_uring_available().await {
         return read_file_to_channel_std(file, writer, limit, read_buffer_size, start_offset).await;
     }
@@ -654,7 +660,7 @@ async fn read_file_to_channel_std(
     read_buffer_size: usize,
     start_offset: u64,
 ) -> Result<FileSlot, Error> {
-    let (sync_tx, mut async_rx) = tokio::sync::mpsc::channel::<Result<Bytes, Error>>(4);
+    let (sync_tx, mut async_rx) = tokio::sync::mpsc::channel::<Result<Bytes, Error>>(1024);
 
     let read_task = spawn_blocking!("fs_read_file", move || {
         let mut f = file;
@@ -730,6 +736,11 @@ pub async fn write_file_from_channel(
     file: FileSlot,
     reader: &mut DropCloserReadHalf,
 ) -> Result<(u64, FileSlot), Error> {
+    // Benchmark showed spawn_blocking is 2.4-3.3x faster than io_uring for
+    // writes >= 16KB due to tokio-epoll-uring overhead. Use std path.
+    return write_file_from_channel_std(file, reader).await;
+
+    #[allow(unreachable_code)]
     use std::sync::Arc;
 
     use futures::FutureExt;
@@ -925,7 +936,7 @@ async fn write_file_from_channel_std(
     file: FileSlot,
     reader: &mut DropCloserReadHalf,
 ) -> Result<(u64, FileSlot), Error> {
-    let (async_tx, mut sync_rx) = tokio::sync::mpsc::channel::<Bytes>(4);
+    let (async_tx, mut sync_rx) = tokio::sync::mpsc::channel::<Bytes>(1024);
 
     let write_task = spawn_blocking!("fs_write_file", move || {
         let mut f = file;
