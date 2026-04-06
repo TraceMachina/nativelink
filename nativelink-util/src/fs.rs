@@ -660,13 +660,15 @@ pub async fn write_file_from_channel(
 ) -> Result<(u64, FileSlot), Error> {
     use std::sync::Arc;
 
+    use futures::FutureExt;
     use futures::stream::{FuturesUnordered, StreamExt};
 
-    /// Maximum number of io_uring pwrite SQEs in flight simultaneously.
-    /// Optane/NVMe SSDs can handle deep queues efficiently — the ring
-    /// has 128 slots so 512 will be capped by slot availability, which
-    /// provides natural backpressure.
-    const WRITE_PIPELINE_DEPTH: usize = 512;
+    /// Maximum number of io_uring pwrite futures in flight simultaneously.
+    /// Matches RING_SIZE (128 SQ entries per thread-local ring). Beyond
+    /// this, futures just buffer Bytes data waiting for slots with no
+    /// throughput benefit. Actual in-flight is further limited by the
+    /// buf_channel depth (~24 slots).
+    const WRITE_PIPELINE_DEPTH: usize = 128;
 
     if !is_io_uring_available().await {
         return write_file_from_channel_std(file, reader).await;
@@ -748,8 +750,22 @@ pub async fn write_file_from_channel(
     }
 
     loop {
-        // If pipeline is full, drain one completion before accepting
-        // more data. FuturesUnordered delivers whichever finishes first.
+        // Drain all ready completions without blocking, then accept
+        // the next chunk. This keeps the pipeline moving — completions
+        // are processed as soon as they arrive, not batched.
+        loop {
+            match in_flight.next().now_or_never() {
+                Some(Some(wc)) => process_completion(
+                    wc,
+                    &mut completed_bytes,
+                    &mut max_write_ms,
+                    &mut slow_write_count,
+                )?,
+                _ => break,
+            }
+        }
+
+        // If pipeline is full, block until at least one completes.
         if in_flight.len() >= WRITE_PIPELINE_DEPTH {
             let wc = in_flight
                 .next()
