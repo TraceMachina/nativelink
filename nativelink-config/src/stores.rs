@@ -695,13 +695,13 @@ pub struct FilesystemSpec {
     pub max_concurrent_large_reads: usize,
 
     /// Size threshold above which reads are subject to
-    /// `max_concurrent_large_reads`. Default: 1 MiB.
+    /// `max_concurrent_large_reads`. Default: 4 MiB.
     #[serde(default = "default_large_read_threshold")]
     pub large_read_threshold_bytes: u64,
 }
 
 fn default_large_read_threshold() -> u64 {
-    1024 * 1024
+    4 * 1024 * 1024 // 4 MiB — reads below this complete too fast to threaten thread pool
 }
 
 impl Default for FilesystemSpec {
@@ -717,7 +717,7 @@ impl Default for FilesystemSpec {
             content_is_immutable: false,
             fadvise_dontneed: false,
             max_concurrent_large_reads: 0,
-            large_read_threshold_bytes: default_large_read_threshold(),
+            large_read_threshold_bytes: 4 * 1024 * 1024,
         }
     }
 }

@@ -816,7 +816,7 @@ pub struct FilesystemStore<Fe: FileEntry = FileEntryImpl> {
     /// Call POSIX_FADV_DONTNEED after reads/writes to drop page cache pages.
     fadvise_dontneed: bool,
     /// Optional semaphore to limit concurrent large reads (None = disabled).
-    large_read_semaphore: Option<Arc<tokio::sync::Semaphore>>,
+    large_read_semaphore: Option<tokio::sync::Semaphore>,
     #[metric(help = "Size threshold for large read limiting")]
     large_read_threshold: u64,
 }
@@ -905,7 +905,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             content_is_immutable: spec.content_is_immutable,
             fadvise_dontneed: spec.fadvise_dontneed,
             large_read_semaphore: if spec.max_concurrent_large_reads > 0 {
-                Some(Arc::new(tokio::sync::Semaphore::new(spec.max_concurrent_large_reads)))
+                Some(tokio::sync::Semaphore::new(spec.max_concurrent_large_reads))
             } else {
                 None
             },
