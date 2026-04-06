@@ -686,6 +686,22 @@ pub struct FilesystemSpec {
     /// Default: false
     #[serde(default)]
     pub fadvise_dontneed: bool,
+
+    /// Maximum concurrent reads for files larger than
+    /// `large_read_threshold_bytes`. 0 = disabled (default).
+    /// Prevents blocking thread pool exhaustion under high
+    /// parallelism with large blobs.
+    #[serde(default)]
+    pub max_concurrent_large_reads: usize,
+
+    /// Size threshold above which reads are subject to
+    /// `max_concurrent_large_reads`. Default: 1 MiB.
+    #[serde(default = "default_large_read_threshold")]
+    pub large_read_threshold_bytes: u64,
+}
+
+fn default_large_read_threshold() -> u64 {
+    1024 * 1024
 }
 
 impl Default for FilesystemSpec {
@@ -700,6 +716,8 @@ impl Default for FilesystemSpec {
             sync_data_only: true,
             content_is_immutable: false,
             fadvise_dontneed: false,
+            max_concurrent_large_reads: 0,
+            large_read_threshold_bytes: default_large_read_threshold(),
         }
     }
 }

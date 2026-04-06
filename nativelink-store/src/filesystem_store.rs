@@ -815,6 +815,10 @@ pub struct FilesystemStore<Fe: FileEntry = FileEntryImpl> {
     content_is_immutable: bool,
     /// Call POSIX_FADV_DONTNEED after reads/writes to drop page cache pages.
     fadvise_dontneed: bool,
+    /// Optional semaphore to limit concurrent large reads (None = disabled).
+    large_read_semaphore: Option<Arc<tokio::sync::Semaphore>>,
+    #[metric(help = "Size threshold for large read limiting")]
+    large_read_threshold: u64,
 }
 
 impl<Fe: FileEntry> FilesystemStore<Fe> {
@@ -900,6 +904,12 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             write_semaphore,
             content_is_immutable: spec.content_is_immutable,
             fadvise_dontneed: spec.fadvise_dontneed,
+            large_read_semaphore: if spec.max_concurrent_large_reads > 0 {
+                Some(Arc::new(tokio::sync::Semaphore::new(spec.max_concurrent_large_reads)))
+            } else {
+                None
+            },
+            large_read_threshold: spec.large_read_threshold_bytes,
         }))
     }
 
@@ -1464,7 +1474,32 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
                 owned_key.as_str()
             )
         })?;
+        let _large_read_permit = if let Some(sem) = &self.large_read_semaphore {
+            let digest_size = match owned_key.borrow() {
+                StoreKey::Digest(d) => d.size_bytes(),
+                _ => 0,
+            };
+            if digest_size > self.large_read_threshold {
+                Some(
+                    sem.acquire()
+                        .await
+                        .map_err(|_| make_err!(Code::Internal, "Large read semaphore closed"))?,
+                )
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let read_limit = length.unwrap_or(u64::MAX);
+        if offset > 0 {
+            warn!(
+                key = %owned_key.as_str(),
+                offset,
+                read_limit,
+                "FilesystemStore::get_part: non-zero offset read",
+            );
+        }
         let temp_file = entry.read_file_part(offset).or_else(|err| async move {
             // If the file is not found, we need to remove it from the eviction map.
             if err.code == Code::NotFound {
