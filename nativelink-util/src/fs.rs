@@ -295,30 +295,16 @@ pub fn get_open_files_for_test() -> usize {
     OPEN_FILE_LIMIT.load(Ordering::Acquire) - OPEN_FILE_SEMAPHORE.available_permits()
 }
 
-/// Open a file for reading.
+/// Open a file for reading, seeked to `start`.
 ///
-/// **Important**: the io_uring path ignores `start` because `read_file_to_channel`
-/// uses pread with explicit offsets. Callers MUST pass the same offset to
-/// `read_file_to_channel`'s `start_offset` parameter. Do NOT use the returned
-/// `FileSlot` for direct sequential reads at a non-zero offset — use pread or
-/// the spawn_blocking fallback instead.
-///
-/// Falls back to spawn_blocking (with seek) if io_uring is unavailable.
+/// Since `read_file_to_channel` now unconditionally uses the
+/// spawn_blocking+sequential-read path (not io_uring pread), the returned
+/// `FileSlot` MUST be seeked to `start` so that sequential `read()` calls
+/// begin at the correct offset. We therefore always delegate to
+/// `open_file_std` which performs the seek.
 #[cfg(all(feature = "io-uring", target_os = "linux"))]
 pub async fn open_file(path: impl AsRef<Path>, start: u64) -> Result<FileSlot, Error> {
-    if !is_io_uring_available().await {
-        return open_file_std(path, start).await;
-    }
-    let path = path.as_ref().to_owned();
-    let permit = get_permit().await?;
-    let system = tokio_epoll_uring::thread_local_system().await;
-    let mut opts = tokio_epoll_uring::ops::open_at::OpenOptions::new();
-    opts.read(true);
-    let owned_fd = system
-        .open(&path, &opts)
-        .await
-        .map_err(|e| uring_err(e, &format!("open {}", path.display())))?;
-    Ok(FileSlot::from_parts(permit, owned_fd.into()))
+    open_file_std(path, start).await
 }
 
 #[cfg(not(all(feature = "io-uring", target_os = "linux")))]
