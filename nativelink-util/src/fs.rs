@@ -470,93 +470,153 @@ pub async fn read_file_to_channel(
         libc::posix_fadvise(raw_fd, start_offset as i64, fadvise_len, libc::POSIX_FADV_SEQUENTIAL);
     }
 
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    use futures::FutureExt;
+    use futures::stream::{FuturesUnordered, StreamExt};
+
+    const READ_PIPELINE_DEPTH: usize = 1024;
+
     let mut remaining = limit;
-    let mut current_offset = start_offset;
-    let mut fd = std_file;
+    let mut submit_offset = start_offset;
 
-    // --- First read (priming the pipeline) ---
-    let first_to_read = read_buffer_size.min(remaining as usize);
-    if first_to_read == 0 {
-        return Ok(FileSlot::from_parts(permit, fd));
+    if remaining == 0 || read_buffer_size == 0 {
+        return Ok(FileSlot::from_parts(permit, std_file));
     }
 
-    let read_start = std::time::Instant::now();
-    // Safety: IoBufMut for Vec<u8> uses capacity as the writable region.
-    // The kernel fills bytes via pread; set_init(n) is called on completion.
-    // No need to zero-initialize — the kernel overwrites the buffer.
-    let ((returned_fd, returned_buf), result) =
-        system.read(fd, current_offset, Vec::with_capacity(first_to_read)).await;
-    fd = returned_fd;
+    // Wrap fd in Arc so multiple in-flight reads can hold a handle.
+    let fd_arc = Arc::new(std_file);
 
-    let n = match result {
-        Ok(0) => return Ok(FileSlot::from_parts(permit, fd)),
-        Ok(n) => n,
-        Err(e) => return Err(uring_err(e, "read_file_to_channel")),
-    };
-
-    let read_ms = read_start.elapsed().as_millis();
-    if read_ms > 100 {
-        warn!(
-            read_ms,
-            bytes_read = n,
-            current_offset,
-            "read_file_to_channel: slow io_uring read (>100ms)"
-        );
+    struct ReadCompletion {
+        offset: u64,
+        enqueue_time: std::time::Instant,
+        data: Result<Bytes, Error>,
     }
 
-    // Zero-copy: Vec heap transfers directly to Bytes.
-    let mut vec_buf = returned_buf;
-    vec_buf.truncate(n);
-    let mut pending_chunk = Bytes::from(vec_buf);
-    current_offset += n as u64;
-    remaining = remaining.saturating_sub(n as u64);
+    let mut in_flight: FuturesUnordered<
+        std::pin::Pin<Box<dyn std::future::Future<Output = ReadCompletion> + Send>>,
+    > = FuturesUnordered::new();
 
-    // --- Steady-state loop: overlap channel send with next io_uring read ---
-    // While the previous chunk travels over the network, the next chunk
-    // is being read from disk via io_uring. This hides disk latency
-    // behind network transmission.
+    // Completed reads waiting to be sent in order. Keyed by offset.
+    let mut pending_send: BTreeMap<u64, Bytes> = BTreeMap::new();
+    let mut send_offset = start_offset; // next offset the channel expects
+    let mut total_read: u64 = 0;
+
+    // Submit reads until we've covered the entire range or hit pipeline depth.
+    let mut submit_done = false;
+
     loop {
-        let to_read = read_buffer_size.min(remaining as usize);
-        if to_read == 0 {
-            // No more data to read — just send the last pending chunk.
+        // 1. Drain all ready completions without blocking.
+        loop {
+            match in_flight.next().now_or_never() {
+                Some(Some(rc)) => {
+                    let read_ms = rc.enqueue_time.elapsed().as_millis();
+                    if read_ms > 100 {
+                        warn!(
+                            read_ms,
+                            offset = rc.offset,
+                            "read_file_to_channel: slow io_uring read (>100ms)"
+                        );
+                    }
+                    let data = rc.data?;
+                    if data.is_empty() {
+                        submit_done = true;
+                    } else {
+                        pending_send.insert(rc.offset, data);
+                    }
+                }
+                _ => break,
+            }
+        }
+
+        // 2. Send completed chunks in order to the channel.
+        while let Some(data) = pending_send.remove(&send_offset) {
+            let len = data.len() as u64;
             writer
-                .send(pending_chunk)
+                .send(data)
                 .await
-                .err_tip(|| "failed to send final chunk from file reader")?;
+                .err_tip(|| "failed to send chunk from file reader")?;
+            send_offset += len;
+            total_read += len;
+        }
+
+        // 3. Submit new reads to fill the pipeline.
+        while !submit_done && in_flight.len() < READ_PIPELINE_DEPTH {
+            let to_read = read_buffer_size.min(remaining as usize);
+            if to_read == 0 {
+                submit_done = true;
+                break;
+            }
+            let offset = submit_offset;
+            submit_offset += to_read as u64;
+            remaining = remaining.saturating_sub(to_read as u64);
+
+            let enqueue_time = std::time::Instant::now();
+            let read_fut = system.read(Arc::clone(&fd_arc), offset, Vec::with_capacity(to_read));
+            in_flight.push(Box::pin(async move {
+                let ((_fd, returned_buf), result) = read_fut.await;
+                let data = match result {
+                    Ok(0) => Ok(Bytes::new()),
+                    Ok(n) => {
+                        let mut v = returned_buf;
+                        v.truncate(n);
+                        Ok(Bytes::from(v))
+                    }
+                    Err(e) => Err(uring_err(e, "read_file_to_channel")),
+                };
+                ReadCompletion {
+                    offset,
+                    enqueue_time,
+                    data,
+                }
+            }));
+        }
+
+        // 4. If everything is submitted and drained, we're done.
+        if submit_done && in_flight.is_empty() {
             break;
         }
 
-        // Submit next read and send previous chunk concurrently.
-        // Each iteration allocates a fresh Vec for the read buffer.
-        // Bytes::from(vec) transfers ownership zero-copy, so the Vec
-        // can't be reused — but mimalloc's thread-local free lists
-        // recycle the same pages, making this effectively free.
-        // No zero-init: kernel overwrites via pread, IoBufMut uses capacity.
-        let read_fut = system.read(fd, current_offset, Vec::with_capacity(to_read));
-        let send_fut = writer.send(pending_chunk);
-
-        let (send_result, ((returned_fd, returned_buf), read_result)) =
-            tokio::join!(send_fut, read_fut);
-
-        send_result.err_tip(|| "failed to send chunk from file reader")?;
-
-        fd = returned_fd;
-
-        let n = match read_result {
-            Ok(0) => break,
-            Ok(n) => n,
-            Err(e) => return Err(uring_err(e, "read_file_to_channel")),
-        };
-
-        // Zero-copy: transfer Vec heap to Bytes.
-        let mut vec_buf = returned_buf;
-        vec_buf.truncate(n);
-        pending_chunk = Bytes::from(vec_buf);
-        current_offset += n as u64;
-        remaining = remaining.saturating_sub(n as u64);
+        // 5. Block until at least one read completes.
+        if let Some(rc) = in_flight.next().await {
+            let read_ms = rc.enqueue_time.elapsed().as_millis();
+            if read_ms > 100 {
+                warn!(
+                    read_ms,
+                    offset = rc.offset,
+                    "read_file_to_channel: slow io_uring read (>100ms)"
+                );
+            }
+            let data = rc.data?;
+            if data.is_empty() {
+                submit_done = true;
+            } else {
+                pending_send.insert(rc.offset, data);
+            }
+        }
     }
 
-    Ok(FileSlot::from_parts(permit, fd))
+    // Send any remaining ordered chunks.
+    while let Some(data) = pending_send.remove(&send_offset) {
+        let len = data.len() as u64;
+        writer
+            .send(data)
+            .await
+            .err_tip(|| "failed to send chunk from file reader")?;
+        send_offset += len;
+        total_read += len;
+    }
+
+    let std_file = Arc::try_unwrap(fd_arc).map_err(|arc| {
+        make_err!(
+            Code::Internal,
+            "read fd_arc has {} strong refs after all reads completed",
+            Arc::strong_count(&arc)
+        )
+    })?;
+
+    Ok(FileSlot::from_parts(permit, std_file))
 }
 
 #[cfg(not(all(feature = "io-uring", target_os = "linux")))]
