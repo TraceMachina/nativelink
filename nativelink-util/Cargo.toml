@@ -18,6 +18,7 @@ nativelink-metric = { path = "../nativelink-metric" }
 nativelink-proto = { path = "../nativelink-proto" }
 
 async-trait = { version = "0.1.88", default-features = false }
+backtrace = { version = "0.3", default-features = false, features = ["std"] }
 base64 = { version = "0.22.1", default-features = false, features = ["std"] }
 bitflags = { version = "2.9.0", default-features = false }
 blake3 = { version = "1.8.0", features = ["mmap", "rayon"], default-features = false }

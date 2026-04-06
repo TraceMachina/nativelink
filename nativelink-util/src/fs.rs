@@ -705,8 +705,11 @@ pub async fn write_file_from_channel(
             Box<
                 dyn std::future::Future<
                         Output = (
-                            (Arc<std::fs::File>, Bytes),
-                            Result<usize, tokio_epoll_uring::Error<std::io::Error>>,
+                            (
+                                (Arc<std::fs::File>, Bytes),
+                                Result<usize, tokio_epoll_uring::Error<std::io::Error>>,
+                            ),
+                            std::time::Instant, // submit_time
                         ),
                     > + Send,
             >,
@@ -721,15 +724,18 @@ pub async fn write_file_from_channel(
     #[inline]
     fn process_completion(
         result: (
-            (Arc<std::fs::File>, Bytes),
-            Result<usize, tokio_epoll_uring::Error<std::io::Error>>,
+            (
+                (Arc<std::fs::File>, Bytes),
+                Result<usize, tokio_epoll_uring::Error<std::io::Error>>,
+            ),
+            std::time::Instant, // submit_time
         ),
         meta: InFlightMeta,
         completed_bytes: &mut u64,
         max_write_ms: &mut u128,
         slow_write_count: &mut u32,
     ) -> Result<(), Error> {
-        let ((_returned_fd, _), write_result) = result;
+        let (((_returned_fd, _), write_result), submit_time) = result;
         let n = match write_result {
             Ok(n) => n,
             Err(e) => return Err(uring_err(e, "write_file_from_channel")),
@@ -746,14 +752,18 @@ pub async fn write_file_from_channel(
             ));
         }
 
-        let write_ms = meta.write_start.elapsed().as_millis();
-        if write_ms > *max_write_ms {
-            *max_write_ms = write_ms;
+        let total_ms = meta.write_start.elapsed().as_millis();
+        let queue_ms = submit_time.duration_since(meta.write_start).as_millis();
+        let io_ms = submit_time.elapsed().as_millis();
+        if total_ms > *max_write_ms {
+            *max_write_ms = total_ms;
         }
-        if write_ms > 100 {
+        if total_ms > 100 {
             *slow_write_count += 1;
             warn!(
-                write_ms,
+                total_ms,
+                queue_ms,
+                io_ms,
                 chunk_len = meta.chunk_len,
                 total_so_far = *completed_bytes,
                 "write_file_from_channel: slow io_uring write (>100ms)"
@@ -795,16 +805,24 @@ pub async fn write_file_from_channel(
         let offset = write_offset;
         write_offset += chunk_len as u64;
 
-        let write_start = std::time::Instant::now();
+        let enqueue_time = std::time::Instant::now();
 
         // Submit write with a cloned Arc handle to the fd. The kernel
         // uses pwrite at the explicit offset — no file cursor dependency.
+        // Wrap the future to capture submit-to-completion time separately
+        // from queue time (time sitting in FuturesOrdered before first poll).
         let write_fut = system.write(Arc::clone(&fd_arc), offset, data);
-        in_flight.push_back(Box::pin(write_fut));
+        let timed_fut = async move {
+            // This runs when the future is first polled (io_uring submission).
+            let submit_time = std::time::Instant::now();
+            let result = write_fut.await;
+            (result, submit_time)
+        };
+        in_flight.push_back(Box::pin(timed_fut));
         metas.push_back(InFlightMeta {
             chunk_len,
             offset,
-            write_start,
+            write_start: enqueue_time,
         });
     }
 

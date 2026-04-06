@@ -128,10 +128,336 @@ pub fn dump_thread_stacks(label: &str) {
     }
 }
 
+/// Cooperative signal-based thread stack dumper for Linux.
+///
+/// Instead of spawning eu-stack (which takes 30s+ and can hang), we:
+/// 1. Enumerate threads via /proc/self/task/
+/// 2. Collect kernel-level info (comm, wchan, state, kernel stack)
+/// 3. Send a realtime signal to each thread via tgkill()
+/// 4. Each thread's signal handler captures its own backtrace (unresolved)
+/// 5. Collector waits for all threads to respond (with timeout)
+/// 6. Resolve symbols in bulk, format output
+///
+/// Total time: typically <100ms for hundreds of threads.
+#[cfg(target_os = "linux")]
+mod signal_dumper {
+    use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+    use std::sync::Once;
+
+    /// Maximum threads we can capture backtraces from in a single dump.
+    /// Pre-allocated to avoid allocation in the signal handler.
+    const MAX_THREADS: usize = 1024;
+
+    /// Signal used for cooperative stack capture. SIGRTMIN is often used
+    /// by glibc/pthreads internally, so we use SIGRTMIN + 1.
+    fn dump_signal() -> i32 {
+        libc::SIGRTMIN() + 1
+    }
+
+    /// A single slot for one thread's captured backtrace.
+    ///
+    /// The signal handler writes raw instruction pointer addresses here.
+    /// We avoid using `backtrace::Backtrace` directly in the handler
+    /// because its internal Vec allocation may not be async-signal-safe
+    /// under all allocators. Instead we capture raw IPs into a fixed
+    /// array, then build Backtrace frames after collection.
+    struct BacktraceSlot {
+        /// Raw instruction pointer addresses captured by the signal handler.
+        ips: [usize; 128],
+        /// Number of valid entries in `ips`.
+        count: usize,
+        /// TID that this slot belongs to (set before signaling).
+        tid: u32,
+        /// Set to true by the signal handler after capture completes.
+        captured: AtomicBool,
+    }
+
+    impl BacktraceSlot {
+        const fn empty() -> Self {
+            Self {
+                ips: [0; 128],
+                count: 0,
+                tid: 0,
+                captured: AtomicBool::new(false),
+            }
+        }
+
+        fn reset(&mut self, tid: u32) {
+            self.count = 0;
+            self.tid = tid;
+            self.captured.store(false, Ordering::Release);
+        }
+    }
+
+    /// Global state for the signal-based backtrace collector.
+    ///
+    /// Only one dump can be in progress at a time (enforced by
+    /// `DUMP_IN_PROGRESS`). The collector thread sets up the slots,
+    /// sends signals, and waits. Signal handlers write to their
+    /// assigned slot.
+    struct Collector {
+        slots: [std::cell::UnsafeCell<BacktraceSlot>; MAX_THREADS],
+        /// Number of active slots in this dump round.
+        active_count: AtomicUsize,
+        /// Number of threads that have finished capturing.
+        done_count: AtomicUsize,
+    }
+
+    // SAFETY: The slots are only written to by their owning thread's
+    // signal handler (one writer per slot), and read by the collector
+    // after all signal handlers have completed or timed out. The
+    // AtomicBool in each slot provides the synchronization barrier.
+    unsafe impl Sync for Collector {}
+    unsafe impl Send for Collector {}
+
+    impl Collector {
+        const fn new() -> Self {
+            // Use a macro to repeat the UnsafeCell initialization
+            // since UnsafeCell::new is not Copy.
+            const EMPTY_CELL: std::cell::UnsafeCell<BacktraceSlot> =
+                std::cell::UnsafeCell::new(BacktraceSlot::empty());
+            Self {
+                slots: [EMPTY_CELL; MAX_THREADS],
+                active_count: AtomicUsize::new(0),
+                done_count: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    static COLLECTOR: Collector = Collector::new();
+    static SIGNAL_INSTALLED: Once = Once::new();
+    static DUMP_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+    /// Maps a TID to its slot index. Called from the signal handler
+    /// and from the collector setup. Must be consistent.
+    ///
+    /// We store the TID->index mapping in each slot's `tid` field and
+    /// the signal handler searches linearly. With MAX_THREADS=1024 and
+    /// typical thread counts of 50-300, this is fast enough for a
+    /// signal handler (~1us).
+    static SLOT_COUNT: AtomicU32 = AtomicU32::new(0);
+
+    fn find_slot_for_tid(tid: u32) -> Option<usize> {
+        let count = SLOT_COUNT.load(Ordering::Acquire) as usize;
+        for i in 0..count {
+            // SAFETY: We only read the tid field, which was set before
+            // signaling and won't be modified until the dump is done.
+            let slot = unsafe { &*COLLECTOR.slots[i].get() };
+            if slot.tid == tid {
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    /// Signal handler invoked on the target thread. Captures raw
+    /// instruction pointers using `backtrace::trace_unsynchronized`.
+    ///
+    /// SAFETY requirements for async-signal-safety:
+    /// - No heap allocation (we write to pre-allocated fixed array)
+    /// - No locks (we use atomic flag for completion)
+    /// - `backtrace::trace_unsynchronized` walks the stack using
+    ///   frame pointers or DWARF unwind info without allocating
+    unsafe extern "C" fn signal_handler(
+        _sig: libc::c_int,
+        _info: *mut libc::siginfo_t,
+        _ctx: *mut libc::c_void,
+    ) {
+        // SAFETY: SYS_gettid always succeeds and returns the caller's TID.
+        let tid = unsafe { libc::syscall(libc::SYS_gettid) } as u32;
+        let Some(idx) = find_slot_for_tid(tid) else {
+            return;
+        };
+        // SAFETY: Each slot is exclusively owned by the thread whose TID
+        // matches slot.tid. The collector thread set up the slot before
+        // sending the signal, and won't read it until captured=true.
+        let slot = unsafe { &mut *COLLECTOR.slots[idx].get() };
+
+        // Capture raw instruction pointers without resolving symbols.
+        // trace_unsynchronized is the non-locking variant suitable for
+        // signal handlers.
+        let mut count = 0usize;
+        let max = slot.ips.len();
+        // SAFETY: We are in a signal handler context. trace_unsynchronized
+        // is the correct function here — it skips internal locks that
+        // trace() would take (which could deadlock in a signal handler).
+        // We write only to pre-allocated stack-local and slot memory.
+        unsafe {
+            backtrace::trace_unsynchronized(|frame| {
+                if count < max {
+                    slot.ips[count] = frame.ip() as usize;
+                    count += 1;
+                    true
+                } else {
+                    false
+                }
+            });
+        }
+        slot.count = count;
+        slot.captured.store(true, Ordering::Release);
+        COLLECTOR.done_count.fetch_add(1, Ordering::Release);
+    }
+
+    /// Install the signal handler (once).
+    fn install_signal_handler() {
+        SIGNAL_INSTALLED.call_once(|| {
+            unsafe {
+                let mut sa: libc::sigaction = core::mem::zeroed();
+                sa.sa_sigaction = signal_handler as *const () as usize;
+                sa.sa_flags = libc::SA_RESTART | libc::SA_SIGINFO;
+                libc::sigemptyset(&mut sa.sa_mask);
+                let ret = libc::sigaction(dump_signal(), &sa, core::ptr::null_mut());
+                if ret != 0 {
+                    eprintln!(
+                        "failed to install backtrace signal handler: {}",
+                        std::io::Error::last_os_error()
+                    );
+                }
+            }
+        });
+    }
+
+    /// Resolved backtrace for one thread.
+    pub(super) struct ThreadBacktrace {
+        pub tid: u32,
+        pub symbols: Vec<ResolvedFrame>,
+    }
+
+    /// A single resolved stack frame.
+    pub(super) struct ResolvedFrame {
+        pub ip: usize,
+        pub name: Option<String>,
+        pub filename: Option<String>,
+        pub lineno: Option<u32>,
+    }
+
+    /// Capture backtraces from all threads cooperatively.
+    ///
+    /// Returns a vec of per-thread resolved backtraces. Threads that
+    /// did not respond within the timeout are omitted.
+    pub(super) fn capture_all_backtraces(
+        tids: &[u32],
+    ) -> Vec<ThreadBacktrace> {
+        install_signal_handler();
+
+        // Only one dump at a time.
+        if DUMP_IN_PROGRESS.swap(true, Ordering::SeqCst) {
+            eprintln!("cooperative stack dump already in progress, skipping");
+            return Vec::new();
+        }
+
+        // Ensure we clear the in-progress flag when done.
+        struct DumpGuard;
+        impl Drop for DumpGuard {
+            fn drop(&mut self) {
+                DUMP_IN_PROGRESS.store(false, Ordering::SeqCst);
+            }
+        }
+        let _guard = DumpGuard;
+
+        let thread_count = tids.len().min(MAX_THREADS);
+        SLOT_COUNT.store(thread_count as u32, Ordering::Release);
+        COLLECTOR.active_count.store(thread_count, Ordering::Release);
+        COLLECTOR.done_count.store(0, Ordering::Release);
+
+        // Initialize slots.
+        for (i, &tid) in tids.iter().take(thread_count).enumerate() {
+            // SAFETY: No signal handler is accessing these slots yet
+            // because we haven't sent any signals.
+            unsafe {
+                (*COLLECTOR.slots[i].get()).reset(tid);
+            }
+        }
+
+        // Send signal to each thread.
+        let pid = std::process::id() as i32;
+        let sig = dump_signal();
+        let mut signaled = 0u32;
+        for &tid in tids.iter().take(thread_count) {
+            let ret = unsafe {
+                libc::syscall(libc::SYS_tgkill, pid, tid as i32, sig)
+            };
+            if ret == 0 {
+                signaled += 1;
+            }
+            // Thread may have exited between enumeration and signal —
+            // that's fine, we just won't get its backtrace.
+        }
+
+        // Wait for threads to respond, with timeout.
+        const TIMEOUT: core::time::Duration = core::time::Duration::from_secs(5);
+        const POLL_INTERVAL: core::time::Duration =
+            core::time::Duration::from_millis(1);
+        let deadline = std::time::Instant::now() + TIMEOUT;
+
+        while COLLECTOR.done_count.load(Ordering::Acquire) < signaled as usize {
+            if std::time::Instant::now() >= deadline {
+                let done = COLLECTOR.done_count.load(Ordering::Acquire);
+                eprintln!(
+                    "backtrace capture timeout: {done}/{signaled} threads responded in {TIMEOUT:.0?}"
+                );
+                break;
+            }
+            std::thread::sleep(POLL_INTERVAL);
+        }
+
+        // Collect and resolve backtraces.
+        let mut results = Vec::with_capacity(thread_count);
+        for i in 0..thread_count {
+            // SAFETY: Signal handlers have either completed (captured=true)
+            // or timed out. We only read slots that are marked captured.
+            let slot = unsafe { &*COLLECTOR.slots[i].get() };
+            if !slot.captured.load(Ordering::Acquire) {
+                // Thread didn't respond (D state, exited, etc.)
+                results.push(ThreadBacktrace {
+                    tid: slot.tid,
+                    symbols: Vec::new(),
+                });
+                continue;
+            }
+
+            // Resolve symbols for each instruction pointer.
+            let mut frames = Vec::with_capacity(slot.count);
+            for j in 0..slot.count {
+                let ip = slot.ips[j];
+                let mut resolved = ResolvedFrame {
+                    ip,
+                    name: None,
+                    filename: None,
+                    lineno: None,
+                };
+                // backtrace::resolve takes a *mut c_void pointer.
+                backtrace::resolve(ip as *mut core::ffi::c_void, |symbol| {
+                    if resolved.name.is_none() {
+                        resolved.name =
+                            symbol.name().map(|n| n.to_string());
+                    }
+                    if resolved.filename.is_none() {
+                        resolved.filename = symbol
+                            .filename()
+                            .map(|p| p.display().to_string());
+                    }
+                    if resolved.lineno.is_none() {
+                        resolved.lineno = symbol.lineno();
+                    }
+                });
+                frames.push(resolved);
+            }
+            results.push(ThreadBacktrace {
+                tid: slot.tid,
+                symbols: frames,
+            });
+        }
+
+        results
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn dump_thread_stacks_linux(label: &str) {
     use std::fmt::Write as _;
 
+    let start = std::time::Instant::now();
     let timestamp_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -154,28 +480,60 @@ fn dump_thread_stacks_linux(label: &str) {
         }
     };
 
-    let mut tids: Vec<_> = entries
+    let mut tids: Vec<u32> = entries
         .filter_map(|e| e.ok())
-        .filter_map(|e| e.file_name().to_str().map(String::from))
+        .filter_map(|e| e.file_name().to_str()?.parse::<u32>().ok())
         .collect();
     tids.sort();
 
     let _ = writeln!(output, "Thread count: {}", tids.len());
     let _ = writeln!(output);
 
-    for tid in &tids {
-        let _ = writeln!(output, "--- TID {tid} ---");
+    // Phase 1: Collect kernel-level info from /proc (fast, <10ms).
+    // Build a map of tid -> (comm, kernel info) for later merging.
+    let mut thread_names: std::collections::HashMap<u32, String> =
+        std::collections::HashMap::new();
+
+    for &tid in &tids {
         let base = format!("{task_dir}/{tid}");
 
         // Thread name
-        if let Ok(comm) = std::fs::read_to_string(format!("{base}/comm")) {
-            let _ = write!(output, "  comm: {comm}");
+        let comm = std::fs::read_to_string(format!("{base}/comm"))
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if !comm.is_empty() {
+            thread_names.insert(tid, comm.clone());
         }
-        // Wait channel (kernel function the thread is sleeping in)
+    }
+
+    // Phase 2: Cooperative signal-based backtrace capture.
+    let backtraces = signal_dumper::capture_all_backtraces(&tids);
+    let capture_elapsed = start.elapsed();
+
+    // Build a lookup from TID -> backtrace for output formatting.
+    let bt_map: std::collections::HashMap<u32, &signal_dumper::ThreadBacktrace> =
+        backtraces.iter().map(|bt| (bt.tid, bt)).collect();
+
+    // Phase 3: Format combined output (kernel info + userspace backtrace).
+    for &tid in &tids {
+        let tid_str = tid.to_string();
+        let base = format!("{task_dir}/{tid_str}");
+        let comm = thread_names
+            .get(&tid)
+            .map(String::as_str)
+            .unwrap_or("<unknown>");
+
+        let _ = writeln!(output, "--- TID {tid} ({comm}) ---");
+
+        // Wait channel
         if let Ok(wchan) = std::fs::read_to_string(format!("{base}/wchan")) {
-            let _ = writeln!(output, "  wchan: {wchan}");
+            let wchan = wchan.trim();
+            if !wchan.is_empty() && wchan != "0" {
+                let _ = writeln!(output, "  wchan: {wchan}");
+            }
         }
-        // Status (state, voluntary/involuntary context switches)
+        // Status lines
         if let Ok(status) = std::fs::read_to_string(format!("{base}/status")) {
             for line in status.lines() {
                 if line.starts_with("State:")
@@ -186,91 +544,65 @@ fn dump_thread_stacks_linux(label: &str) {
                 }
             }
         }
-        // Kernel stack (requires CAP_SYS_PTRACE or permissive ptrace_scope)
+        // Kernel stack
         if let Ok(stack) = std::fs::read_to_string(format!("{base}/stack")) {
-            if !stack.trim().is_empty() {
+            let trimmed = stack.trim();
+            if !trimmed.is_empty() {
                 let _ = writeln!(output, "  kernel stack:");
-                for line in stack.lines() {
+                for line in trimmed.lines() {
                     let _ = writeln!(output, "    {line}");
                 }
             }
         }
-        let _ = writeln!(output);
-    }
 
-    match std::fs::write(&path, &output) {
-        Ok(()) => eprintln!("Thread dump written to {path}"),
-        Err(err) => eprintln!("Failed to write thread dump to {path}: {err}"),
-    }
-
-    // Capture userspace backtraces via eu-stack for full Rust call stacks.
-    // eu-stack can hang indefinitely if the target process is wedged, so
-    // we spawn it as a child and poll with a 30-second timeout.
-    let bt_path = format!("/tmp/nativelink-stall-{timestamp_ms}-bt.txt");
-    let pid = std::process::id();
-    match std::process::Command::new("eu-stack")
-        .args(["-p", &pid.to_string(), "-l"])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-    {
-        Ok(mut child) => {
-            const EU_STACK_TIMEOUT: Duration = Duration::from_secs(30);
-            const POLL_INTERVAL: Duration = Duration::from_millis(250);
-            let deadline = std::time::Instant::now() + EU_STACK_TIMEOUT;
-            let status = loop {
-                match child.try_wait() {
-                    Ok(Some(status)) => break Some(status),
-                    Ok(None) => {
-                        if std::time::Instant::now() >= deadline {
-                            eprintln!(
-                                "eu-stack timed out after {EU_STACK_TIMEOUT:.0?}, killing child process"
-                            );
-                            drop(child.kill());
-                            // Reap the zombie
-                            drop(child.wait());
-                            break None;
-                        }
-                        std::thread::sleep(POLL_INTERVAL);
-                    }
-                    Err(err) => {
-                        eprintln!("eu-stack wait error: {err}");
-                        drop(child.kill());
-                        drop(child.wait());
-                        break None;
-                    }
-                }
-            };
-            if status.is_some() {
-                let stdout = child
-                    .stdout
-                    .take()
-                    .map(|mut r| {
-                        let mut buf = Vec::new();
-                        std::io::Read::read_to_end(&mut r, &mut buf).ok();
-                        buf
-                    })
-                    .unwrap_or_default();
-                let stderr = child
-                    .stderr
-                    .take()
-                    .map(|mut r| {
-                        let mut buf = Vec::new();
-                        std::io::Read::read_to_end(&mut r, &mut buf).ok();
-                        buf
-                    })
-                    .unwrap_or_default();
-                let combined =
-                    [&stdout[..], b"\n--- stderr ---\n", &stderr[..]].concat();
-                match std::fs::write(&bt_path, &combined) {
-                    Ok(()) => eprintln!("Userspace backtrace written to {bt_path}"),
-                    Err(err) => {
-                        eprintln!("Failed to write backtrace to {bt_path}: {err}");
+        // Userspace backtrace from cooperative capture.
+        if let Some(bt) = bt_map.get(&tid) {
+            if bt.symbols.is_empty() {
+                let _ = writeln!(output, "  userspace backtrace: <no response>");
+            } else {
+                let _ = writeln!(output, "  userspace backtrace:");
+                for (i, frame) in bt.symbols.iter().enumerate() {
+                    let name = frame.name.as_deref().unwrap_or("<unknown>");
+                    if let (Some(file), Some(line)) =
+                        (&frame.filename, frame.lineno)
+                    {
+                        let _ = writeln!(
+                            output,
+                            "    #{i:>3} {:#018x} {name}",
+                            frame.ip
+                        );
+                        let _ = writeln!(
+                            output,
+                            "         at {file}:{line}"
+                        );
+                    } else {
+                        let _ = writeln!(
+                            output,
+                            "    #{i:>3} {:#018x} {name}",
+                            frame.ip
+                        );
                     }
                 }
             }
         }
-        Err(err) => eprintln!("Failed to run eu-stack: {err}"),
+
+        let _ = writeln!(output);
+    }
+
+    let total_elapsed = start.elapsed();
+    let responded = backtraces.iter().filter(|bt| !bt.symbols.is_empty()).count();
+    let _ = writeln!(
+        output,
+        "=== Dump complete: {responded}/{} threads responded, capture: {capture_elapsed:.1?}, total: {total_elapsed:.1?} ===",
+        tids.len()
+    );
+
+    match std::fs::write(&path, &output) {
+        Ok(()) => eprintln!(
+            "Thread dump written to {path} ({responded}/{} threads, {total_elapsed:.1?})",
+            tids.len()
+        ),
+        Err(err) => eprintln!("Failed to write thread dump to {path}: {err}"),
     }
 
     cleanup_old_stall_dumps();

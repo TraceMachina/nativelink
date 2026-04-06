@@ -1,0 +1,6 @@
+[build]
+rustflags = ["-C", "target-cpu=native", "-C", "link-arg=-fuse-ld=mold", "-C", "force-frame-pointers=yes", "--cfg", "tokio_unstable"]
+
+[profile.release]
+lto = "thin"
+codegen-units = 8
