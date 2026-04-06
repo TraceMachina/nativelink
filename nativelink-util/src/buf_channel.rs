@@ -28,9 +28,11 @@ use tracing::warn;
 
 const ZERO_DATA: Bytes = Bytes::new();
 
-/// Default channel capacity: 24 slots. At 3MiB chunks (the default
-/// FilesystemStore read_buffer_size) this gives ~72MiB of buffered data.
-const DEFAULT_BUF_CHANNEL_CAPACITY: usize = 24;
+/// Default channel capacity: 512 slots. At 3MiB chunks (the default
+/// FilesystemStore read_buffer_size) this allows up to ~1.5GiB of
+/// buffered data, matched to the io_uring ring size and write pipeline
+/// depth so the channel never bottlenecks the I/O pipeline.
+const DEFAULT_BUF_CHANNEL_CAPACITY: usize = 512;
 
 /// Create a channel pair that can be used to transport buffer objects around to
 /// different components. This wrapper is used because the streams give some

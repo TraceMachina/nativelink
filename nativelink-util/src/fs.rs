@@ -664,11 +664,9 @@ pub async fn write_file_from_channel(
     use futures::stream::{FuturesUnordered, StreamExt};
 
     /// Maximum number of io_uring pwrite futures in flight simultaneously.
-    /// Matches RING_SIZE (128 SQ entries per thread-local ring). Beyond
-    /// this, futures just buffer Bytes data waiting for slots with no
-    /// throughput benefit. Actual in-flight is further limited by the
-    /// buf_channel depth (~24 slots).
-    const WRITE_PIPELINE_DEPTH: usize = 128;
+    /// Matched to RING_SIZE (512) and buf_channel capacity (512) so the
+    /// full pipeline can be utilized without artificial bottlenecks.
+    const WRITE_PIPELINE_DEPTH: usize = 512;
 
     if !is_io_uring_available().await {
         return write_file_from_channel_std(file, reader).await;
