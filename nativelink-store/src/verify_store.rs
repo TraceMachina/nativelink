@@ -200,7 +200,7 @@ impl StoreDriver for VerifyStore {
         } else {
             None
         };
-        let (tx, rx) = make_buf_channel_pair_with_size(64);
+        let (tx, rx) = make_buf_channel_pair_with_size(256);
 
         let update_fut = self.inner_store.update(digest, rx, size_info);
         let check_fut = self.inner_check_update(

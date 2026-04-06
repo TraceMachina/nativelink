@@ -467,7 +467,7 @@ fn collect_files_from_tree(
 }
 
 /// Maximum number of concurrent BatchReadBlobs RPCs in flight.
-const BATCH_READ_CONCURRENCY: usize = 16;
+const BATCH_READ_CONCURRENCY: usize = 32;
 
 /// Maximum number of concurrent ByteStream fetches in flight.
 
