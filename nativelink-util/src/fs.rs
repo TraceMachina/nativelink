@@ -491,6 +491,8 @@ pub async fn read_file_to_channel(
     struct ReadCompletion {
         offset: u64,
         enqueue_time: std::time::Instant,
+        submit_time: std::time::Instant,
+        bytes_read: usize,
         data: Result<Bytes, Error>,
     }
 
@@ -511,11 +513,18 @@ pub async fn read_file_to_channel(
         loop {
             match in_flight.next().now_or_never() {
                 Some(Some(rc)) => {
-                    let read_ms = rc.enqueue_time.elapsed().as_millis();
-                    if read_ms > 100 {
+                    let total_ms = rc.enqueue_time.elapsed().as_millis();
+                    let queue_ms = rc.submit_time.duration_since(rc.enqueue_time).as_millis();
+                    let io_ms = rc.submit_time.elapsed().as_millis();
+                    if total_ms > 100 {
                         warn!(
-                            read_ms,
+                            total_ms,
+                            queue_ms,
+                            io_ms,
+                            bytes_read = rc.bytes_read,
                             offset = rc.offset,
+                            in_flight = in_flight.len(),
+                            pending_send = pending_send.len(),
                             "read_file_to_channel: slow io_uring read (>100ms)"
                         );
                     }
@@ -555,19 +564,22 @@ pub async fn read_file_to_channel(
             let enqueue_time = std::time::Instant::now();
             let read_fut = system.read(Arc::clone(&fd_arc), offset, Vec::with_capacity(to_read));
             in_flight.push(Box::pin(async move {
+                let submit_time = std::time::Instant::now();
                 let ((_fd, returned_buf), result) = read_fut.await;
-                let data = match result {
-                    Ok(0) => Ok(Bytes::new()),
+                let (bytes_read, data) = match result {
+                    Ok(0) => (0, Ok(Bytes::new())),
                     Ok(n) => {
                         let mut v = returned_buf;
                         v.truncate(n);
-                        Ok(Bytes::from(v))
+                        (n, Ok(Bytes::from(v)))
                     }
-                    Err(e) => Err(uring_err(e, "read_file_to_channel")),
+                    Err(e) => (0, Err(uring_err(e, "read_file_to_channel"))),
                 };
                 ReadCompletion {
                     offset,
                     enqueue_time,
+                    submit_time,
+                    bytes_read,
                     data,
                 }
             }));
