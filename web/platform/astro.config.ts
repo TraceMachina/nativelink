@@ -7,7 +7,7 @@ import starlight from "@astrojs/starlight";
 
 import partytown from "@astrojs/partytown";
 import deno from "@deno/astro-adapter";
-import qwik from "@qwikdev/astro";
+import qwik from "@qwik.dev/astro";
 import tailwindcss from "@tailwindcss/vite";
 
 import { rehypeMermaid } from "@beoe/rehype-mermaid"; // "rehype-mermaid";
