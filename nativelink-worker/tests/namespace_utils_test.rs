@@ -15,10 +15,12 @@
 #![cfg(target_os = "linux")]
 
 use core::time::Duration;
+use std::ffi::CString;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use nativelink_error::Error;
+use nativelink_error::{Error, ResultExt};
 use nativelink_macro::nativelink_test;
 use nativelink_worker::namespace_utils;
 use pretty_assertions::assert_eq;
@@ -28,24 +30,28 @@ async fn test_namespaces_supported() -> Result<(), Error> {
     // This test is a smoke test to ensure that the namespace detection logic
     // runs without crashing. The result of this function is dependent on the
     // environment it is run in, so we don't assert the result.
-    let _supported = namespace_utils::namespaces_supported();
+    let _supported = namespace_utils::namespaces_supported(false);
     Ok(())
 }
 
 #[nativelink_test]
 async fn test_configure_namespace() -> Result<(), Error> {
-    if !namespace_utils::namespaces_supported() {
+    if !namespace_utils::namespaces_supported(false) {
         return Ok(());
     }
 
     let mut command = Command::new("sh");
     command.args(["-c", "echo \"uid=$(id -u) pid=$$\"; exit 4"]);
 
+    let root_dir = CString::new("/tmp").unwrap();
+    let action_dir = CString::new("/tmp/action").unwrap();
+
     // SAFETY: `configure_namespace` is designed to be used with `pre_exec`.
     // It is async-signal-safe and will fork, configure the namespace in the
     // child, and the original child process will continue to execute the command.
     unsafe {
-        command.pre_exec(namespace_utils::configure_namespace);
+        command
+            .pre_exec(move || namespace_utils::configure_namespace(false, &root_dir, &action_dir));
     }
 
     let output = command.output()?;
@@ -66,8 +72,77 @@ async fn test_configure_namespace() -> Result<(), Error> {
 }
 
 #[nativelink_test]
+async fn test_configure_namespace_mount_isolation() -> Result<(), Error> {
+    if !namespace_utils::namespaces_supported(true) {
+        return Ok(());
+    }
+
+    // Create a temporary root and action directory.
+    #[allow(clippy::cast_possible_truncation)]
+    let rand_num: u64 = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos() as u64;
+    let root_path = std::env::temp_dir().join(format!("nativelink_test_root_{rand_num}"));
+    let action1_path = root_path.join("action1");
+    let action2_path = root_path.join("action2");
+    let secret_file = action2_path.join("secret.txt");
+
+    std::fs::create_dir_all(&action1_path).err_tip(|| "Failed to create action1 dir")?;
+    std::fs::create_dir_all(&action2_path).err_tip(|| "Failed to create action2 dir")?;
+    std::fs::write(&secret_file, "top secret").err_tip(|| "Failed to write secret file")?;
+
+    let root_dir_c = CString::new(root_path.to_str().unwrap()).unwrap();
+    let action1_dir_c = CString::new(action1_path.to_str().unwrap()).unwrap();
+
+    let mut command = Command::new("sh");
+    // Try to read the secret file from the sibling directory.
+    // Since it's masked by tmpfs, it should not exist.
+    // We also check if /bin/sh still works by the fact that this command runs.
+    command.args([
+        "-c",
+        &format!(
+            "if [ -f {} ]; then exit 1; else exit 0; fi",
+            secret_file.display()
+        ),
+    ]);
+
+    unsafe {
+        command.pre_exec(move || {
+            namespace_utils::configure_namespace(true, &root_dir_c, &action1_dir_c)
+        });
+    }
+
+    let output = command.output()?;
+    assert_eq!(
+        Some(0),
+        output.status.code(),
+        "Sibling directory was not masked or command failed: {output:?}",
+    );
+
+    // Verify the action directory itself is still visible and has access to root.
+    let mut command_access = Command::new("sh");
+    command_access.args(["-c", "ls /bin/sh && exit 0"]);
+    let root_dir_c = CString::new(root_path.to_str().unwrap()).unwrap();
+    let action1_dir_c = CString::new(action1_path.to_str().unwrap()).unwrap();
+    unsafe {
+        command_access.pre_exec(move || {
+            namespace_utils::configure_namespace(true, &root_dir_c, &action1_dir_c)
+        });
+    }
+    let output_access = command_access.output()?;
+    assert_eq!(
+        Some(0),
+        output_access.status.code(),
+        "Lost access to root filesystem: {output_access:?}",
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
 async fn test_maybe_namespaced_child_kill_reaps_orphans() -> Result<(), Error> {
-    if !namespace_utils::namespaces_supported() {
+    if !namespace_utils::namespaces_supported(false) {
         return Ok(());
     }
 
@@ -81,9 +156,13 @@ async fn test_maybe_namespaced_child_kill_reaps_orphans() -> Result<(), Error> {
         &format!("sleep {unique_id} & sleep {unique_id} & wait"),
     ]);
 
+    let root_dir = CString::new("/tmp").unwrap();
+    let action_dir = CString::new("/tmp/action").unwrap();
+
     // SAFETY: configure_namespace is async-signal-safe and intended for pre_exec.
     unsafe {
-        command.pre_exec(namespace_utils::configure_namespace);
+        command
+            .pre_exec(move || namespace_utils::configure_namespace(false, &root_dir, &action_dir));
     }
 
     let child = command.spawn()?;
@@ -149,7 +228,7 @@ async fn test_maybe_namespaced_child_non_namespaced_kill() -> Result<(), Error> 
 
 #[nativelink_test]
 async fn test_maybe_namespaced_child_namespaced_natural_exit() -> Result<(), Error> {
-    if !namespace_utils::namespaces_supported() {
+    if !namespace_utils::namespaces_supported(false) {
         return Ok(());
     }
 
@@ -157,9 +236,13 @@ async fn test_maybe_namespaced_child_namespaced_natural_exit() -> Result<(), Err
     let mut command = tokio::process::Command::new("sh");
     command.args(["-c", &format!("exit {expected_exit_code}")]);
 
+    let root_dir = CString::new("/tmp").unwrap();
+    let action_dir = CString::new("/tmp/action").unwrap();
+
     // SAFETY: configure_namespace is async-signal-safe and intended for pre_exec.
     unsafe {
-        command.pre_exec(namespace_utils::configure_namespace);
+        command
+            .pre_exec(move || namespace_utils::configure_namespace(false, &root_dir, &action_dir));
     }
 
     let child = command.spawn()?;
@@ -176,15 +259,18 @@ async fn test_maybe_namespaced_child_namespaced_natural_exit() -> Result<(), Err
 
 #[nativelink_test]
 async fn test_maybe_namespaced_child_try_wait() -> Result<(), Error> {
-    if !namespace_utils::namespaces_supported() {
+    if !namespace_utils::namespaces_supported(false) {
         return Ok(());
     }
 
     // Test with a running process
     let mut command_running = tokio::process::Command::new("sleep");
     command_running.arg("10");
+    let root_dir = CString::new("/tmp").unwrap();
+    let action_dir = CString::new("/tmp/action").unwrap();
     unsafe {
-        command_running.pre_exec(namespace_utils::configure_namespace);
+        command_running
+            .pre_exec(move || namespace_utils::configure_namespace(false, &root_dir, &action_dir));
     }
     let child_running = command_running.spawn()?;
     let mut namespaced_child_running =
@@ -201,11 +287,14 @@ async fn test_maybe_namespaced_child_try_wait() -> Result<(), Error> {
     namespaced_child_running.wait().await?; // Wait for it to actually exit
 
     // Test with an exited process
+    let root_dir = CString::new("/tmp").unwrap();
+    let action_dir = CString::new("/tmp/action").unwrap();
     let expected_exit_code: i32 = 7;
     let mut command_exited = tokio::process::Command::new("sh");
     command_exited.args(["-c", &format!("exit {expected_exit_code}")]);
     unsafe {
-        command_exited.pre_exec(namespace_utils::configure_namespace);
+        command_exited
+            .pre_exec(move || namespace_utils::configure_namespace(false, &root_dir, &action_dir));
     }
     let child_exited = command_exited.spawn()?;
     let mut namespaced_child_exited =

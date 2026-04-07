@@ -1046,11 +1046,25 @@ impl RunningActionImpl {
         // Sandboxing of the command if we are running on Linux, this resolves issues where
         // children can spawn children and also provides better reproducibility.
         #[cfg(target_os = "linux")]
-        if self.running_actions_manager.use_namespaces {
+        {
+            let use_namespaces = self.running_actions_manager.use_namespaces;
+            let root_action_directory =
+                std::ffi::CString::new(self.running_actions_manager.root_action_directory.clone())
+                    .err_tip(|| "In RunningActionImpl::inner_execute()")?;
+            let action_directory = std::ffi::CString::new(self.action_directory.clone())
+                .err_tip(|| "In RunningActionImpl::inner_execute()")?;
+
             // SAFETY: This function is specifically designed to operate in a async-signal-safe
             // environment.
             unsafe {
-                command_builder.pre_exec(crate::namespace_utils::configure_namespace);
+                command_builder.pre_exec(move || match use_namespaces {
+                    UseNamespaces::No => Ok(()),
+                    _ => crate::namespace_utils::configure_namespace(
+                        matches!(use_namespaces, UseNamespaces::YesAndMount),
+                        &root_action_directory,
+                        &action_directory,
+                    ),
+                });
             }
         }
 
@@ -1070,7 +1084,10 @@ impl RunningActionImpl {
         // Wrap the child process to send SIGTERM rather than SIGKILL if namespaced to
         // prevent zombie processes.
         let child_process = crate::namespace_utils::MaybeNamespacedChild::new(
-            self.running_actions_manager.use_namespaces,
+            !matches!(
+                self.running_actions_manager.use_namespaces,
+                UseNamespaces::No,
+            ),
             child_process,
         );
 
@@ -1973,6 +1990,14 @@ impl UploadActionResults {
     }
 }
 
+#[cfg(target_os = "linux")]
+#[derive(Copy, Clone, Debug)]
+pub enum UseNamespaces {
+    No,
+    Yes,
+    YesAndMount,
+}
+
 #[derive(Debug)]
 pub struct RunningActionsManagerArgs<'a> {
     pub root_action_directory: String,
@@ -1986,7 +2011,7 @@ pub struct RunningActionsManagerArgs<'a> {
     pub timeout_handled_externally: bool,
     pub directory_cache: Option<Arc<crate::directory_cache::DirectoryCache>>,
     #[cfg(target_os = "linux")]
-    pub use_namespaces: bool,
+    pub use_namespaces: UseNamespaces,
 }
 
 struct CleanupGuard {
@@ -2018,7 +2043,7 @@ pub struct RunningActionsManagerImpl {
     max_upload_timeout: Duration,
     timeout_handled_externally: bool,
     #[cfg(target_os = "linux")]
-    use_namespaces: bool,
+    use_namespaces: UseNamespaces,
     running_actions: Mutex<HashMap<OperationId, Weak<RunningActionImpl>>>,
     // Note: We don't use Notify because we need to support a .wait_for()-like function, which
     // Notify does not support.

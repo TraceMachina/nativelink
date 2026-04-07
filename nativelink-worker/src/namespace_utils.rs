@@ -56,7 +56,7 @@ impl MaybeNamespacedChild {
 /// Determines whether the namespaces provided by this module are supported
 /// on the currently running system by forking a process and trying to enter
 /// it into the new namespaces.
-pub fn namespaces_supported() -> bool {
+pub fn namespaces_supported(mount: bool) -> bool {
     // SAFETY: Posix requires that geteuid is always successful.
     let uid = unsafe { libc::geteuid() };
     let uid_map = format!("{uid} {uid} 1\n");
@@ -64,20 +64,31 @@ pub fn namespaces_supported() -> bool {
     let pid = unsafe { libc::fork() };
     match pid {
         0 => {
+            let mut flags =
+                libc::CLONE_NEWPID | libc::CLONE_NEWUSER | libc::CLONE_NEWIPC | libc::CLONE_NEWUTS;
+            if mount {
+                flags |= libc::CLONE_NEWNS;
+            }
             // SAFETY: Unshare does not have any unsafe effects and modifies no
             // memory, it is also async-signal-safe.
-            if unsafe {
-                libc::unshare(
-                    libc::CLONE_NEWPID
-                        | libc::CLONE_NEWUSER
-                        | libc::CLONE_NEWIPC
-                        | libc::CLONE_NEWUTS,
-                )
-            } == 0
+            if unsafe { libc::unshare(flags) } == 0
                 && write_signal_safe(c"/proc/self/uid_map", uid_map.as_bytes()).is_ok()
             {
-                // SAFETY: It is always safe to _exit.
-                unsafe { libc::_exit(0) };
+                // SAFETY: Mount uses no memory and is async-signal-safe.
+                if !mount
+                    || unsafe {
+                        libc::mount(
+                            core::ptr::null(),
+                            c"/".as_ptr(),
+                            core::ptr::null(),
+                            libc::MS_REC | libc::MS_PRIVATE,
+                            core::ptr::null(),
+                        )
+                    } == 0
+                {
+                    // SAFETY: It is always safe to _exit.
+                    unsafe { libc::_exit(0) };
+                }
             }
             // SAFETY: It is always safe to _exit.
             unsafe { libc::_exit(1) };
@@ -109,24 +120,20 @@ fn write_signal_safe(file_name: &core::ffi::CStr, data: &[u8]) -> Result<(), cor
         // SAFETY: We just called a libc function that failed (-1).
         return Err(unsafe { *libc::__errno_location() });
     }
+    let fd = OwnedFd(fd);
 
     // SAFETY: The data is a known length slice and the file descriptor is
     // known to be valid as we just opened it.
-    let bytes_written = unsafe { libc::write(fd, data.as_ptr().cast(), data.len()) };
+    let bytes_written = unsafe { libc::write(fd.0, data.as_ptr().cast(), data.len()) };
 
-    let result = if bytes_written == -1 {
+    if bytes_written == -1 {
         // SAFETY: We just called a libc function that failed (-1).
         Err(unsafe { *libc::__errno_location() })
     } else if bytes_written as usize != data.len() {
         Err(libc::EIO)
     } else {
         Ok(())
-    };
-
-    // SAFETY: The file descriptor was just opened by us.
-    unsafe { libc::close(fd) };
-
-    result
+    }
 }
 
 /// An async-signal-safe method to close all open file descriptors for the
@@ -196,6 +203,112 @@ fn create_map_line(id: u32, buffer: &mut [u8; 32]) -> &'_ [u8] {
     &buffer[..pos]
 }
 
+/// A simple wrapper around a file descriptor to ensure async-signal-safety
+/// rather than the std version which may allocate.
+struct OwnedFd(libc::c_int);
+
+impl Drop for OwnedFd {
+    fn drop(&mut self) {
+        // SAFETY: We own the file descriptor, so we can close it.
+        unsafe {
+            libc::close(self.0);
+        }
+    }
+}
+
+fn perform_remount(
+    root_action_directory: &core::ffi::CStr,
+    action_directory: &core::ffi::CStr,
+) -> Result<(), std::io::Error> {
+    // Make the mount namespace private to avoid changes propagating back to the host.
+    // SAFETY: mount is async-signal-safe. We pass a null pointer for the source and valid
+    // C-string pointers for the target. The parameters match POSIX requirements.
+    if unsafe {
+        libc::mount(
+            core::ptr::null(),
+            c"/".as_ptr(),
+            core::ptr::null(),
+            libc::MS_REC | libc::MS_PRIVATE,
+            core::ptr::null(),
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    // Bind mount the action directory to itself to "save" its current contents before
+    // we mask its parent.
+    // SAFETY: mount is async-signal-safe. We pass valid C-string pointers for the paths.
+    if unsafe {
+        libc::mount(
+            action_directory.as_ptr(),
+            action_directory.as_ptr(),
+            core::ptr::null(),
+            libc::MS_BIND | libc::MS_REC,
+            core::ptr::null(),
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    // Open the directory with O_PATH so we can find it after masking the parent.
+    // SAFETY: open is async-signal-safe. The path is a valid C-string.
+    let fd = unsafe { libc::open(action_directory.as_ptr(), libc::O_PATH) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let fd = OwnedFd(fd);
+
+    // Mask the root action directory with a tmpfs to ensure sibling directories aren't visible.
+    // SAFETY: mount is async-signal-safe. The filesystem type and target are valid C-strings.
+    if unsafe {
+        libc::mount(
+            c"tmpfs".as_ptr(),
+            root_action_directory.as_ptr(),
+            c"tmpfs".as_ptr(),
+            0,
+            core::ptr::null(),
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    // Recreate the specific operation's directory inside the empty tmpfs.
+    // SAFETY: mkdir is async-signal-safe and the path is a valid C-string.
+    if unsafe { libc::mkdir(action_directory.as_ptr(), 0o777) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    // Bind mount the saved directory back from the file descriptor to the new path.
+    let mut proc_path = [0u8; 64];
+    let mut pos = 0;
+    for &b in b"/proc/self/fd/" {
+        proc_path[pos] = b;
+        pos += 1;
+    }
+    pos += u32_to_bytes(fd.0 as u32, &mut proc_path[pos..]);
+    proc_path[pos] = 0;
+
+    // SAFETY: mount is async-signal-safe. The target path is a valid C-string and the source
+    // path is correctly formatted using /proc/self/fd/.
+    if unsafe {
+        libc::mount(
+            proc_path.as_ptr().cast(),
+            action_directory.as_ptr(),
+            core::ptr::null(),
+            libc::MS_BIND | libc::MS_REC,
+            core::ptr::null(),
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    Ok(())
+}
+
 /// A hook for a `Command::spawn` to create the process in a new namespace.
 /// This creates a stub process that the Command points at which forwards
 /// SIGKILL to the actual process in the new user, PID, UTS and IPC
@@ -203,24 +316,25 @@ fn create_map_line(id: u32, buffer: &mut [u8; 32]) -> &'_ [u8] {
 ///
 /// This function is async-signal-safe and has no external locks or
 /// memory allocations.
-pub fn configure_namespace() -> std::io::Result<()> {
+pub fn configure_namespace(
+    mount: bool,
+    root_action_directory: &core::ffi::CStr,
+    action_directory: &core::ffi::CStr,
+) -> std::io::Result<()> {
     // SAFETY: It is always safe to call geteuid on Posix.
     let uid = unsafe { libc::geteuid() };
     // SAFETY: It is always safe to call getegid on Posix.
     let gid = unsafe { libc::getegid() };
 
+    let mut flags =
+        libc::CLONE_NEWPID | libc::CLONE_NEWUSER | libc::CLONE_NEWIPC | libc::CLONE_NEWUTS;
+    if mount {
+        flags |= libc::CLONE_NEWNS;
+    }
     // SAFETY: Unshare does not have any unsafe effects and modifies no
     // memory, it is also async-signal-safe.
-    if unsafe {
-        libc::unshare(
-            libc::CLONE_NEWPID | libc::CLONE_NEWUSER | libc::CLONE_NEWIPC | libc::CLONE_NEWUTS,
-        )
-    } != 0
-    {
-        // SAFETY: We just called a libc function that failed.
-        return Err(std::io::Error::from_raw_os_error(unsafe {
-            *libc::__errno_location()
-        }));
+    if unsafe { libc::unshare(flags) } != 0 {
+        return Err(std::io::Error::last_os_error());
     }
 
     if let Err(e) = write_signal_safe(c"/proc/self/setgroups", b"deny") {
@@ -244,6 +358,11 @@ pub fn configure_namespace() -> std::io::Result<()> {
         if e != libc::EPERM && e != libc::EACCES {
             return Err(std::io::Error::from_raw_os_error(e));
         }
+    }
+
+    // Configure the mount namespace if enabled.
+    if mount {
+        perform_remount(root_action_directory, action_directory).unwrap();
     }
 
     // Set hostname to "nativelink" to ensure reproducibility.
@@ -337,11 +456,6 @@ pub fn configure_namespace() -> std::io::Result<()> {
                 }
             }
         }
-        _ => {
-            // SAFETY: We just called a libc function that failed.
-            Err(std::io::Error::from_raw_os_error(unsafe {
-                *libc::__errno_location()
-            }))
-        }
+        _ => Err(std::io::Error::last_os_error()),
     }
 }
