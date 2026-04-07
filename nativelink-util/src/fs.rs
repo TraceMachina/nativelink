@@ -737,13 +737,17 @@ pub async fn write_file_from_channel(
 
     /// Coalescing target size. Incoming chunks are accumulated until at
     /// least this many bytes are pending, then submitted as one writev.
-    /// Matches ZFS recordsize (128 KiB) so each writev fills exactly
-    /// one ZFS record instead of creating many small records.
-    const COALESCE_TARGET: usize = 128 * 1024;
+    /// 1 MiB covers ZFS recordsize up to 1M (the max). Even on 128K
+    /// recordsize datasets this is safe — ZFS splits internally.
+    const COALESCE_TARGET: usize = 1024 * 1024;
 
-    /// Maximum time to wait for more chunks before submitting what we
-    /// have. Prevents indefinite buffering when the sender is slow.
-    const COALESCE_TIMEOUT: Duration = Duration::from_millis(100);
+    /// Maximum iovec entries per writev. Linux IOV_MAX is 1024.
+    const IOV_MAX: usize = 1024;
+
+    /// Fallback timeout for the drain-until-empty coalescing strategy.
+    /// Only fires when the sender has a genuine gap — in the normal
+    /// fast path, try_recv drains all available data with zero wait.
+    const COALESCE_FALLBACK_TIMEOUT: Duration = Duration::from_millis(1);
 
     if !is_io_uring_available().await {
         return write_file_from_channel_std(file, reader).await;
@@ -795,10 +799,15 @@ pub async fn write_file_from_channel(
             Err(e) => return Err(uring_err(e, "write_file_from_channel")),
         };
 
+        // pwritev can legally return a short write on signal interruption
+        // or resource limits. For regular files on local ZFS this
+        // essentially never happens, but we treat it as an error since
+        // CAS writes are retried at a higher level (FastSlowStore).
         if n < wc.chunk_len {
             return Err(make_err!(
                 Code::Internal,
-                "io_uring partial writev: {n}/{} bytes",
+                "io_uring partial writev: {n}/{} bytes (short write — \
+                 CAS blob will be retried by FastSlowStore)",
                 wc.chunk_len,
             ));
         }
@@ -870,27 +879,48 @@ pub async fn write_file_from_channel(
         pending_bytes += first.len();
         pending_chunks.push(first);
 
-        // Accumulate more chunks until we hit the target size or timeout.
-        if pending_bytes < COALESCE_TARGET {
-            let deadline = tokio::time::Instant::now() + COALESCE_TIMEOUT;
-            loop {
-                match tokio::time::timeout_at(deadline, reader.recv()).await {
-                    Ok(Ok(chunk)) => {
-                        if chunk.is_empty() {
-                            hit_eof = true;
-                            break;
-                        }
-                        pending_bytes += chunk.len();
-                        pending_chunks.push(chunk);
-                        if pending_bytes >= COALESCE_TARGET {
-                            break;
-                        }
+        // Drain-until-empty coalescing: pull all immediately available
+        // chunks without blocking. If still under target, do one short
+        // blocking recv to catch chunks in transit. Zero added latency
+        // when data is flowing fast (the common case).
+        while pending_bytes < COALESCE_TARGET && pending_chunks.len() < IOV_MAX {
+            // Try non-blocking recv from the channel's local queue.
+            match reader.try_recv() {
+                Some(Ok(chunk)) => {
+                    if chunk.is_empty() {
+                        hit_eof = true;
+                        break;
                     }
-                    Ok(Err(e)) => {
-                        return Err(e)
-                            .err_tip(|| "Failed to recv during coalescing in write_file_from_channel");
+                    pending_bytes += chunk.len();
+                    pending_chunks.push(chunk);
+                }
+                Some(Err(e)) => {
+                    return Err(e)
+                        .err_tip(|| "Failed to recv during coalescing");
+                }
+                None => {
+                    // Nothing queued locally. Do one short blocking recv
+                    // to catch data in transit from the async sender.
+                    match tokio::time::timeout(
+                        COALESCE_FALLBACK_TIMEOUT,
+                        reader.recv(),
+                    )
+                    .await
+                    {
+                        Ok(Ok(chunk)) => {
+                            if chunk.is_empty() {
+                                hit_eof = true;
+                                break;
+                            }
+                            pending_bytes += chunk.len();
+                            pending_chunks.push(chunk);
+                        }
+                        Ok(Err(e)) => {
+                            return Err(e)
+                                .err_tip(|| "Failed to recv during coalescing");
+                        }
+                        Err(_timeout) => break, // sender is genuinely slow
                     }
-                    Err(_timeout) => break,
                 }
             }
         }
