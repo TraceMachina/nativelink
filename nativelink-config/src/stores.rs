@@ -1387,6 +1387,18 @@ pub struct GrpcSpec {
         deserialize_with = "convert_numeric_with_shellexpand"
     )]
     pub parallel_chunk_count: u64,
+
+    /// When true and `use_http3` is also true on an endpoint, create both
+    /// TCP and QUIC transports. RPCs are routed to the best transport
+    /// based on benchmark data: QUIC for small/batched RPCs (FindMissing,
+    /// BatchUpdate, BatchRead, single-stream reads, AC lookups), TCP for
+    /// high-concurrency parallel reads and large streaming writes.
+    ///
+    /// Requires the `quic` feature flag. Ignored when `use_http3` is false.
+    ///
+    /// Default: false
+    #[serde(default)]
+    pub dual_transport: bool,
 }
 
 /// The possible error codes that might occur on an upstream request.

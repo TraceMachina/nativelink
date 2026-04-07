@@ -34,6 +34,7 @@ async fn fast_find_missing_blobs() -> Result<(), Error> {
         max_concurrent_batch_rpcs: 8,
         parallel_chunk_read_threshold: 0,
         parallel_chunk_count: 0,
+        dual_transport: false,
     };
     let store = GrpcStore::new(&spec).await?;
     let request = Request::new(FindMissingBlobsRequest {

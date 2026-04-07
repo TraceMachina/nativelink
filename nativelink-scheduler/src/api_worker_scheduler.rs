@@ -2443,6 +2443,7 @@ async fn create_worker_cas_connection(
         max_concurrent_batch_rpcs: 8,
         parallel_chunk_read_threshold: 8 * 1024 * 1024,
         parallel_chunk_count: 4,
+        dual_transport: false,
     };
     let store = GrpcStore::new(&spec)
         .await

@@ -132,6 +132,7 @@ tracing-test = { version = "0.2.5", default-features = false, features = [
 [[bench]]
 name = "fs_io_bench"
 harness = false
+required-features = ["io-uring"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 tokio-epoll-uring = { path = "../tokio-epoll-uring/tokio-epoll-uring", optional = true }

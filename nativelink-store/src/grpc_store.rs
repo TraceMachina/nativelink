@@ -76,12 +76,22 @@ struct PendingBatchEntry {
     result_tx: tokio::sync::oneshot::Sender<Result<(), Error>>,
 }
 
-/// Transport backend: either a multi-connection TCP pool or a single
-/// QUIC channel (which multiplexes internally).
+/// Transport backend: TCP pool, QUIC channel, or both with per-RPC
+/// selection based on benchmark data.
 enum Transport {
     Tcp(ConnectionManager),
     #[cfg(feature = "quic")]
     Quic(tls_utils::QuicChannel),
+    /// Dual transport: holds both TCP and QUIC connections. RPCs are
+    /// routed to the best transport based on benchmark data:
+    /// - QUIC: FindMissing, BatchUpdate, BatchRead, single-stream reads,
+    ///   AC lookups, small oneshot writes
+    /// - TCP: parallel chunked reads, large streaming writes
+    #[cfg(feature = "quic")]
+    Dual {
+        tcp: ConnectionManager,
+        quic: tls_utils::QuicChannel,
+    },
 }
 
 impl std::fmt::Debug for Transport {
@@ -90,6 +100,8 @@ impl std::fmt::Debug for Transport {
             Self::Tcp(cm) => f.debug_tuple("Tcp").field(cm).finish(),
             #[cfg(feature = "quic")]
             Self::Quic(_) => write!(f, "Quic"),
+            #[cfg(feature = "quic")]
+            Self::Dual { .. } => write!(f, "Dual(tcp+quic)"),
         }
     }
 }
@@ -143,14 +155,42 @@ impl GrpcStore {
             {
                 let ep = &spec.endpoints[0];
                 let connections = spec.connections_per_endpoint.max(1);
-                let channel = tls_utils::h3_channel(ep, connections)
-                    .map_err(|e| make_input_err!("Failed to create QUIC channel: {e:?}"))?;
-                info!(
-                    address = %ep.address,
-                    connections,
-                    "GrpcStore: using QUIC/HTTP3 transport",
-                );
-                Transport::Quic(channel)
+
+                if spec.dual_transport {
+                    // Dual transport: create both TCP and QUIC connections.
+                    let quic_channel = tls_utils::h3_channel(ep, connections)
+                        .map_err(|e| make_input_err!("Failed to create QUIC channel: {e:?}"))?;
+
+                    let mut tcp_endpoints = Vec::with_capacity(spec.endpoints.len());
+                    for endpoint_config in &spec.endpoints {
+                        let endpoint = tls_utils::endpoint(endpoint_config)
+                            .map_err(|e| make_input_err!("Invalid URI for GrpcStore endpoint (dual/tcp): {e:?}"))?;
+                        tcp_endpoints.push(endpoint);
+                    }
+                    let tcp_cm = ConnectionManager::new(
+                        tcp_endpoints.into_iter(),
+                        spec.connections_per_endpoint,
+                        spec.max_concurrent_requests,
+                        spec.retry.clone(),
+                        jitter_fn.clone(),
+                    );
+
+                    info!(
+                        address = %ep.address,
+                        connections,
+                        "GrpcStore: using dual transport (TCP for parallel reads/large writes, QUIC for batched/small RPCs)",
+                    );
+                    Transport::Dual { tcp: tcp_cm, quic: quic_channel }
+                } else {
+                    let channel = tls_utils::h3_channel(ep, connections)
+                        .map_err(|e| make_input_err!("Failed to create QUIC channel: {e:?}"))?;
+                    info!(
+                        address = %ep.address,
+                        connections,
+                        "GrpcStore: using QUIC/HTTP3 transport",
+                    );
+                    Transport::Quic(channel)
+                }
             }
             #[cfg(not(feature = "quic"))]
             {
@@ -457,6 +497,15 @@ impl GrpcStore {
                         .await
                         .err_tip(|| "in GrpcStore::find_missing_blobs (quic)")
                 }
+                #[cfg(feature = "quic")]
+                Transport::Dual { quic, .. } => {
+                    // Small/batched RPC: prefer QUIC (1.1x faster)
+                    ContentAddressableStorageClient::new(quic.clone())
+                        .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
+                        .find_missing_blobs(Request::new(request))
+                        .await
+                        .err_tip(|| "in GrpcStore::find_missing_blobs (dual/quic)")
+                }
             }
         })
         .await
@@ -490,6 +539,15 @@ impl GrpcStore {
                         .batch_update_blobs(Request::new(request))
                         .await
                         .err_tip(|| "in GrpcStore::batch_update_blobs (quic)")
+                }
+                #[cfg(feature = "quic")]
+                Transport::Dual { quic, .. } => {
+                    // Batched RPC: prefer QUIC (9x faster)
+                    ContentAddressableStorageClient::new(quic.clone())
+                        .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
+                        .batch_update_blobs(Request::new(request))
+                        .await
+                        .err_tip(|| "in GrpcStore::batch_update_blobs (dual/quic)")
                 }
             }
         })
@@ -533,6 +591,15 @@ impl GrpcStore {
                         .await
                         .err_tip(|| "in GrpcStore::batch_read_blobs (quic)")
                 }
+                #[cfg(feature = "quic")]
+                Transport::Dual { quic, .. } => {
+                    // Batched RPC: prefer QUIC
+                    ContentAddressableStorageClient::new(quic.clone())
+                        .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
+                        .batch_read_blobs(grpc_request)
+                        .await
+                        .err_tip(|| "in GrpcStore::batch_read_blobs (dual/quic)")
+                }
             }
         })
         .await
@@ -567,6 +634,15 @@ impl GrpcStore {
                         .await
                         .err_tip(|| "in GrpcStore::get_tree (quic)")
                 }
+                #[cfg(feature = "quic")]
+                Transport::Dual { quic, .. } => {
+                    // Metadata RPC: prefer QUIC
+                    ContentAddressableStorageClient::new(quic.clone())
+                        .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
+                        .get_tree(Request::new(request))
+                        .await
+                        .err_tip(|| "in GrpcStore::get_tree (dual/quic)")
+                }
             }
         })
         .await
@@ -585,7 +661,9 @@ impl GrpcStore {
     async fn read_internal(
         &self,
         request: ReadRequest,
+        prefer_tcp: bool,
     ) -> Result<impl Stream<Item = Result<ReadResponse, Status>> + use<>, Error> {
+        let _ = prefer_tcp; // Used only in the Dual transport arm (quic feature)
         let mut grpc_request = Request::new(request);
         if IS_WORKER_REQUEST.try_with(|v| *v).unwrap_or(false) {
             grpc_request.metadata_mut().insert(
@@ -612,6 +690,28 @@ impl GrpcStore {
                     .err_tip(|| "in GrpcStore::read (quic)")?
                     .into_inner()
             }
+            #[cfg(feature = "quic")]
+            Transport::Dual { tcp, quic } => {
+                if prefer_tcp {
+                    // Parallel chunked reads: prefer TCP (2x faster at
+                    // high concurrency)
+                    let channel = tcp.connection("bytestream_read".into()).await.err_tip(|| "in read_internal (dual/tcp)")?;
+                    ByteStreamClient::new(channel)
+                        .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
+                        .read(grpc_request)
+                        .await
+                        .err_tip(|| "in GrpcStore::read (dual/tcp)")?
+                        .into_inner()
+                } else {
+                    // Single-stream reads: prefer QUIC (2.6x faster)
+                    ByteStreamClient::new(quic.clone())
+                        .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
+                        .read(grpc_request)
+                        .await
+                        .err_tip(|| "in GrpcStore::read (dual/quic)")?
+                        .into_inner()
+                }
+            }
         };
         let first_response = response
             .message()
@@ -634,7 +734,7 @@ impl GrpcStore {
 
         let request = self.get_read_request(grpc_request.into_request().into_inner())?;
         self.perform_request(request, |request| async move {
-            self.read_internal(request).await
+            self.read_internal(request, false).await
         })
         .await
     }
@@ -736,6 +836,40 @@ impl GrpcStore {
                                     rpc_elapsed_ms,
                                     success = res.is_ok(),
                                     "GrpcStore::write: ByteStream.Write RPC returned (quic)",
+                                );
+                                res
+                            }
+                            #[cfg(feature = "quic")]
+                            Transport::Dual { tcp, .. } => {
+                                // Large streaming writes: prefer TCP (1.1x faster)
+                                let channel = tcp
+                                    .connection("bytestream_write".into())
+                                    .await
+                                    .err_tip(|| "in GrpcStore::write (dual/tcp)")?;
+                                let conn_elapsed_ms = u64::try_from(
+                                    conn_start.elapsed().as_millis(),
+                                )
+                                .unwrap_or(u64::MAX);
+                                trace!(
+                                    instance_name = %instance_for_rpc,
+                                    conn_elapsed_ms,
+                                    "GrpcStore::write: got connection, starting ByteStream.Write RPC (dual/tcp)",
+                                );
+                                let rpc_start = std::time::Instant::now();
+                                let res = ByteStreamClient::new(channel)
+                                    .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
+                                    .write(WriteStateWrapper::new(local_state_for_rpc))
+                                    .await
+                                    .err_tip(|| "in GrpcStore::write (dual/tcp)");
+                                let rpc_elapsed_ms = u64::try_from(
+                                    rpc_start.elapsed().as_millis(),
+                                )
+                                .unwrap_or(u64::MAX);
+                                trace!(
+                                    instance_name = %instance_for_rpc,
+                                    rpc_elapsed_ms,
+                                    success = res.is_ok(),
+                                    "GrpcStore::write: ByteStream.Write RPC returned (dual/tcp)",
                                 );
                                 res
                             }
@@ -854,6 +988,15 @@ impl GrpcStore {
                         .await
                         .err_tip(|| "in GrpcStore::query_write_status (quic)")
                 }
+                #[cfg(feature = "quic")]
+                Transport::Dual { quic, .. } => {
+                    // Small metadata RPC: prefer QUIC
+                    ByteStreamClient::new(quic.clone())
+                        .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
+                        .query_write_status(Request::new(request))
+                        .await
+                        .err_tip(|| "in GrpcStore::query_write_status (dual/quic)")
+                }
             }
         })
         .await
@@ -883,6 +1026,15 @@ impl GrpcStore {
                         .await
                         .err_tip(|| "in GrpcStore::get_action_result (quic)")
                 }
+                #[cfg(feature = "quic")]
+                Transport::Dual { quic, .. } => {
+                    // AC lookup: prefer QUIC
+                    ActionCacheClient::new(quic.clone())
+                        .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
+                        .get_action_result(Request::new(request))
+                        .await
+                        .err_tip(|| "in GrpcStore::get_action_result (dual/quic)")
+                }
             }
         })
         .await
@@ -911,6 +1063,15 @@ impl GrpcStore {
                         .update_action_result(Request::new(request))
                         .await
                         .err_tip(|| "in GrpcStore::update_action_result (quic)")
+                }
+                #[cfg(feature = "quic")]
+                Transport::Dual { quic, .. } => {
+                    // Small AC update: prefer QUIC
+                    ActionCacheClient::new(quic.clone())
+                        .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
+                        .update_action_result(Request::new(request))
+                        .await
+                        .err_tip(|| "in GrpcStore::update_action_result (dual/quic)")
                 }
             }
         })
@@ -1031,7 +1192,7 @@ impl GrpcStore {
                     read_limit: local_state.read_limit,
                 };
                 let mut stream = match self
-                    .read_internal(request)
+                    .read_internal(request, false)
                     .await
                     .err_tip(|| "in GrpcStore::get_part()")
                 {
@@ -1199,7 +1360,7 @@ impl GrpcStore {
                                 })?,
                             };
                             let mut stream = self
-                                .read_internal(request)
+                                .read_internal(request, true)
                                 .await
                                 .err_tip(|| {
                                     format!(

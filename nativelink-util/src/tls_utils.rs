@@ -410,14 +410,13 @@ pub fn h3_channel(endpoint_config: &GrpcEndpoint, connections: usize) -> Result<
     // BDP = 1.25 GB/s × 0.5ms ≈ 625 KB. Use generous windows to
     // handle bursts and concurrent streams without flow-control stalls.
     let mut transport = quinn::TransportConfig::default();
-    transport.stream_receive_window((16 * 1024 * 1024u32).into()); // 16 MiB per stream (vs 1 MiB)
-    transport.receive_window((128 * 1024 * 1024u32).into()); // 128 MiB connection (vs 24 MiB)
-    transport.send_window(128 * 1024 * 1024); // 128 MiB (vs 24 MiB)
-    transport.max_concurrent_bidi_streams(1024u32.into()); // vs 256
+    transport.stream_receive_window((16 * 1024 * 1024u32).into()); // 16 MiB per stream
+    transport.receive_window((256 * 1024 * 1024u32).into()); // 256 MiB connection
+    transport.send_window(256 * 1024 * 1024); // 256 MiB
+    transport.max_concurrent_bidi_streams(8192u32.into()); // 8K streams per connection
     transport.max_concurrent_uni_streams(1024u32.into());
-    transport.initial_rtt(Duration::from_micros(500)); // 0.5ms LAN RTT (vs 333ms default)
+    transport.initial_rtt(Duration::from_micros(500)); // 0.5ms LAN RTT
     // Reduce ACK delay from default 25ms to 5ms for LAN.
-    // 1ms caused H3_FRAME_ERROR from BBR pacing instability.
     let mut ack_freq = quinn::AckFrequencyConfig::default();
     ack_freq.max_ack_delay(Some(Duration::from_millis(5)));
     transport.ack_frequency_config(Some(ack_freq));
@@ -471,9 +470,10 @@ pub fn h3_channel(endpoint_config: &GrpcEndpoint, connections: usize) -> Result<
         );
 
         let h3_channel = tonic_h3::H3Channel::new(connector, uri.clone());
-        // 512 slots per connection. With N connections, total capacity
-        // is N×512 (e.g., 32×512 = 16384), sufficient for burst peaks.
-        let buffered = tower::buffer::Buffer::new(h3_channel, 512);
+        // 1024 slots per connection. With N connections, total capacity
+        // is N×1024 (e.g., 32×1024 = 32768), sufficient for burst peaks
+        // while providing backpressure under transport degradation.
+        let buffered = tower::buffer::Buffer::new(h3_channel, 1024);
         channels.push(buffered);
     }
 

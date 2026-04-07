@@ -27,6 +27,10 @@ strip = true
 [[bin]]
 name = "nativelink"
 
+[[bench]]
+name = "transport_bench"
+harness = false
+
 [features]
 default = ["io-uring"]
 io-uring = ["nativelink-util/io-uring", "nativelink-store/io-uring"]
@@ -95,9 +99,18 @@ tower = { version = "0.5.2", default-features = false }
 tracing = { version = "0.1.41", default-features = false, features = ["release_max_level_info"] }
 
 [dev-dependencies]
+criterion = { version = "0.5", default-features = false, features = ["async_tokio"] }
+futures = { version = "0.3.31", default-features = false }
+nativelink-config = { path = "nativelink-config" }
 nativelink-proto = { path = "nativelink-proto" }
+nativelink-service = { path = "nativelink-service" }
+nativelink-store = { path = "nativelink-store" }
+nativelink-util = { path = "nativelink-util" }
 prost = { version = "0.14.3", default-features = false }
 prost-types = { version = "0.14.3", default-features = false }
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "aws_lc_rs", "pem"] }
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] }
+rustls-pki-types = { version = "1", default-features = false, features = ["std"] }
 sha2 = { version = "0.10.8", default-features = false, features = ["asm"] }
 tempfile = { version = "3.15.0", default-features = false }
 tokio = { version = "1.44.1", features = [
@@ -105,6 +118,7 @@ tokio = { version = "1.44.1", features = [
   "rt-multi-thread",
   "time",
 ], default-features = false }
+tokio-stream = { version = "0.1.17", features = ["net"], default-features = false }
 tonic = { version = "0.14.5", features = [
   "transport",
 ], default-features = false }
