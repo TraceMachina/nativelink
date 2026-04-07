@@ -675,6 +675,15 @@ impl WorkerProxyStore {
     /// Mirror a blob to a random connected worker for OOM redundancy.
     /// Fire-and-forget: errors are logged but do not propagate.
     /// The blob data is passed as `Bytes` to avoid re-reading from the store.
+    /// Threshold above which mirror uses streaming `update()` instead of
+    /// `update_oneshot()`. 4 MiB is well under the 64 MiB gRPC max message
+    /// size, giving headroom for framing overhead.
+    const MIRROR_CHUNK_THRESHOLD: usize = 4 * 1024 * 1024;
+
+    /// Chunk size for the streaming mirror path. 3 MiB matches the
+    /// `max_bytes_per_stream` default used by ByteStream configs.
+    const MIRROR_CHUNK_SIZE: usize = 3 * 1024 * 1024;
+
     pub async fn mirror_blob_to_random_worker(
         &self,
         digest: DigestInfo,
@@ -712,7 +721,33 @@ impl WorkerProxyStore {
         };
 
         let size_bytes = data.len();
-        match store.update_oneshot(digest, data).await {
+        let result = if size_bytes > Self::MIRROR_CHUNK_THRESHOLD {
+            // Large blob: stream in chunks to stay under gRPC max message size.
+            let (mut tx, rx) = make_buf_channel_pair();
+            let chunk_size = Self::MIRROR_CHUNK_SIZE;
+            let data_for_sender = data;
+            tokio::spawn(async move {
+                let mut offset = 0;
+                while offset < data_for_sender.len() {
+                    let end = (offset + chunk_size).min(data_for_sender.len());
+                    let chunk = data_for_sender.slice(offset..end);
+                    if tx.send(chunk).await.is_err() {
+                        return;
+                    }
+                    offset = end;
+                }
+                drop(tx.send_eof());
+            });
+            let key: StoreKey<'_> = digest.into();
+            store
+                .update(key, rx, UploadSizeInfo::ExactSize(size_bytes as u64))
+                .await
+        } else {
+            // Small blob: single-message oneshot is more efficient.
+            store.update_oneshot(digest, data).await
+        };
+
+        match result {
             Ok(()) => {
                 info!(
                     %digest,

@@ -699,16 +699,22 @@ pub async fn read_file_to_channel_blocking(
     read_file_to_channel_std(file, writer, limit, read_buffer_size, start_offset).await
 }
 
-/// Write to `file` via pipelined io_uring pwrite, receiving chunks from
-/// `reader`. Up to `WRITE_PIPELINE_DEPTH` writes are kept in-flight
-/// simultaneously, overlapping ZFS/kernel processing of one write with
-/// submission of the next. For an 87 MiB blob with 3 MiB chunks this
-/// reduces ~29 sequential round-trips to ~29/8 ≈ 4 pipeline stalls.
+/// Write to `file` via coalesced io_uring pwritev, receiving chunks from
+/// `reader`. Small incoming chunks (typically 16 KiB from gRPC h2 framing)
+/// are accumulated until we have at least `COALESCE_TARGET` bytes or a
+/// timeout expires, then submitted as a single `IORING_OP_WRITEV` SQE
+/// with an iovec array pointing to all accumulated `Bytes` buffers.
+/// This is zero-copy — the kernel reads directly from the original gRPC
+/// frame allocations.
+///
+/// Up to `WRITE_PIPELINE_DEPTH` writev ops are kept in-flight
+/// simultaneously, overlapping ZFS/kernel processing with coalescing
+/// and submission of the next batch.
 ///
 /// The fd is wrapped in `Arc<std::fs::File>` so each in-flight write
 /// can hold its own `Arc` handle (required by `IoFd` ownership semantics
-/// in `tokio_epoll_uring::SystemHandle::write`). Since all writes use
-/// pwrite with explicit offsets, concurrent writes to the same fd are
+/// in `tokio_epoll_uring::SystemHandle::writev`). Since all writes use
+/// pwritev with explicit offsets, concurrent writes to the same fd are
 /// safe — the kernel handles per-write positioning independently of the
 /// file cursor.
 ///
@@ -719,14 +725,25 @@ pub async fn write_file_from_channel(
     reader: &mut DropCloserReadHalf,
 ) -> Result<(u64, FileSlot), Error> {
     use std::sync::Arc;
+    use std::time::Duration;
 
     use futures::FutureExt;
     use futures::stream::{FuturesUnordered, StreamExt};
 
-    /// Maximum number of io_uring pwrite futures in flight simultaneously.
+    /// Maximum number of io_uring writev futures in flight simultaneously.
     /// Matched to RING_SIZE (1024) and buf_channel capacity (1024) so
     /// the full pipeline can be utilized without artificial bottlenecks.
     const WRITE_PIPELINE_DEPTH: usize = 1024;
+
+    /// Coalescing target size. Incoming chunks are accumulated until at
+    /// least this many bytes are pending, then submitted as one writev.
+    /// Matches ZFS recordsize (128 KiB) so each writev fills exactly
+    /// one ZFS record instead of creating many small records.
+    const COALESCE_TARGET: usize = 128 * 1024;
+
+    /// Maximum time to wait for more chunks before submitting what we
+    /// have. Prevents indefinite buffering when the sender is slow.
+    const COALESCE_TIMEOUT: Duration = Duration::from_millis(100);
 
     if !is_io_uring_available().await {
         return write_file_from_channel_std(file, reader).await;
@@ -746,7 +763,7 @@ pub async fn write_file_from_channel(
 
     // Wrap fd in Arc so multiple in-flight writes can each hold a handle.
     // IoFd is implemented for Arc<T> where T: IoFd, so this works with
-    // system.write() which takes the fd by ownership.
+    // system.writev() which takes the fd by ownership.
     let fd_arc = Arc::new(std_file);
     let mut write_offset: u64 = 0;
     let mut completed_bytes: u64 = 0;
@@ -781,7 +798,7 @@ pub async fn write_file_from_channel(
         if n < wc.chunk_len {
             return Err(make_err!(
                 Code::Internal,
-                "io_uring partial write: {n}/{} bytes",
+                "io_uring partial writev: {n}/{} bytes",
                 wc.chunk_len,
             ));
         }
@@ -800,7 +817,7 @@ pub async fn write_file_from_channel(
                 io_ms,
                 chunk_len = wc.chunk_len,
                 total_so_far = *completed_bytes,
-                "write_file_from_channel: slow io_uring write (>100ms)"
+                "write_file_from_channel: slow io_uring writev (>100ms)"
             );
         }
         *completed_bytes += wc.chunk_len as u64;
@@ -808,9 +825,9 @@ pub async fn write_file_from_channel(
     }
 
     loop {
-        // Drain all ready completions without blocking, then accept
-        // the next chunk. This keeps the pipeline moving — completions
-        // are processed as soon as they arrive, not batched.
+        // Drain all ready completions without blocking, then start
+        // coalescing the next batch. This keeps the pipeline moving —
+        // completions are processed as soon as they arrive.
         loop {
             match in_flight.next().now_or_never() {
                 Some(Some(wc)) => process_completion(
@@ -837,31 +854,85 @@ pub async fn write_file_from_channel(
             )?;
         }
 
-        let data = reader
+        // --- Coalescing phase: accumulate chunks into a batch ---
+        let mut pending_chunks: Vec<Bytes> = Vec::new();
+        let mut pending_bytes: usize = 0;
+        let mut hit_eof = false;
+
+        // Get at least one chunk (blocking recv).
+        let first = reader
             .recv()
             .await
             .err_tip(|| "Failed to recv in write_file_from_channel")?;
-        if data.is_empty() {
+        if first.is_empty() {
             break; // EOF
         }
+        pending_bytes += first.len();
+        pending_chunks.push(first);
 
-        let chunk_len = data.len();
+        // Accumulate more chunks until we hit the target size or timeout.
+        if pending_bytes < COALESCE_TARGET {
+            let deadline = tokio::time::Instant::now() + COALESCE_TIMEOUT;
+            loop {
+                match tokio::time::timeout_at(deadline, reader.recv()).await {
+                    Ok(Ok(chunk)) => {
+                        if chunk.is_empty() {
+                            hit_eof = true;
+                            break;
+                        }
+                        pending_bytes += chunk.len();
+                        pending_chunks.push(chunk);
+                        if pending_bytes >= COALESCE_TARGET {
+                            break;
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        return Err(e)
+                            .err_tip(|| "Failed to recv during coalescing in write_file_from_channel");
+                    }
+                    Err(_timeout) => break,
+                }
+            }
+        }
+
+        // --- Submit coalesced writev ---
+        let total_len = pending_bytes;
         let offset = write_offset;
-        write_offset += chunk_len as u64;
+        write_offset += total_len as u64;
+
+        // Build iovec array pointing into the Bytes buffers. The
+        // iovecs and buffers are moved into WritevOp which keeps them
+        // alive until the kernel CQE arrives.
+        let iovecs: Vec<libc::iovec> = pending_chunks
+            .iter()
+            .map(|b| libc::iovec {
+                iov_base: b.as_ptr() as *mut libc::c_void,
+                iov_len: b.len(),
+            })
+            .collect();
 
         let enqueue_time = std::time::Instant::now();
+        let write_fut = system.writev(
+            Arc::clone(&fd_arc),
+            offset,
+            iovecs,
+            pending_chunks,
+        );
 
-        let write_fut = system.write(Arc::clone(&fd_arc), offset, data);
         in_flight.push(Box::pin(async move {
             let submit_time = std::time::Instant::now();
-            let ((_fd, _buf), result) = write_fut.await;
+            let (_fd, result) = write_fut.await;
             WriteCompletion {
-                chunk_len,
+                chunk_len: total_len,
                 enqueue_time,
                 submit_time,
                 result,
             }
         }));
+
+        if hit_eof {
+            break;
+        }
     }
 
     // Drain all remaining in-flight writes.

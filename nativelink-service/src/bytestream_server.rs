@@ -439,9 +439,9 @@ impl IdleStream {
 
 /// Maximum blob size for mirroring via the streaming write path. The streaming
 /// path does not buffer the data, so mirroring requires a re-read from the
-/// store. We only do this for blobs <= 16MB to avoid expensive re-reads of
-/// large blobs. The oneshot path passes the data directly (O(1) Bytes clone).
-const MIRROR_STREAM_MAX_SIZE: u64 = 16 * 1024 * 1024;
+/// store. With MemoryStore as the fast store for ALL blob sizes, re-reads
+/// are cheap (Bytes::clone from memory). Mirror all blobs for OOM redundancy.
+const MIRROR_STREAM_MAX_SIZE: u64 = u64::MAX;
 
 /// Spawn a background task to mirror a blob to a random connected worker
 /// for OOM redundancy. Fire-and-forget: errors are logged, not propagated.
