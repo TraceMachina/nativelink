@@ -62,7 +62,7 @@ use nativelink_util::zero_copy_codec::{
 };
 use opentelemetry::context::FutureExt;
 use parking_lot::Mutex;
-use tokio::time::sleep;
+use tokio::time::{sleep, timeout};
 use tonic::{Request, Response, Status, Streaming};
 use tracing::{Instrument, Level, debug, error, error_span, info, instrument, trace, warn};
 
@@ -1011,10 +1011,21 @@ impl ByteStreamServer {
                 if !data.is_empty() {
                     // Tee: clone the chunk to the mirror channel (O(1) Bytes refcount bump).
                     // Mirror errors are non-fatal — drop the mirror writer to stop mirroring.
+                    // Use a short timeout to avoid blocking the store write path when
+                    // the mirror consumer is slow or disconnected.
                     if let Some(mtx) = mirror_tx {
-                        if mtx.send(data.clone()).await.is_err() {
-                            // Worker disconnected mid-stream; stop mirroring.
-                            *mirror_tx = None;
+                        match timeout(Duration::from_millis(100), mtx.send(data.clone())).await {
+                            Ok(Ok(())) => {}
+                            Ok(Err(_)) => {
+                                // Worker disconnected mid-stream; stop mirroring.
+                                warn!("mirror channel closed, dropping mirror");
+                                *mirror_tx = None;
+                            }
+                            Err(_) => {
+                                // Mirror send timed out (consumer too slow); stop mirroring.
+                                warn!("mirror send timed out after 100ms, dropping mirror");
+                                *mirror_tx = None;
+                            }
                         }
                     }
 
@@ -1041,9 +1052,11 @@ impl ByteStreamServer {
                             tx.get_bytes_written()
                         ));
                     }
-                    // Send EOF to mirror first (non-fatal).
+                    // Send EOF to mirror (non-fatal, synchronous).
                     if let Some(mtx) = mirror_tx {
-                        drop(mtx.send_eof());
+                        if let Err(_err) = mtx.send_eof() {
+                            warn!("mirror EOF send failed, dropping mirror");
+                        }
                     }
                     // Gracefully close our store stream.
                     tx.send_eof()
