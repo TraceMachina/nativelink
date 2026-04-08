@@ -767,6 +767,72 @@ impl WorkerProxyStore {
             }
         }
     }
+
+    /// Mirror a blob to a random connected worker via a streaming channel.
+    /// The caller provides a `DropCloserReadHalf` that produces the blob data.
+    /// Fire-and-forget semantics: errors are logged but do not propagate.
+    pub async fn mirror_blob_via_stream(
+        &self,
+        digest: DigestInfo,
+        reader: DropCloserReadHalf,
+    ) {
+        static MIRROR_SEMAPHORE: Semaphore = Semaphore::const_new(64);
+
+        let _permit = match MIRROR_SEMAPHORE.acquire().await {
+            Ok(p) => p,
+            Err(_) => {
+                drop(reader);
+                return;
+            }
+        };
+
+        let endpoints = self.locality_map.read().all_endpoints();
+        if endpoints.is_empty() {
+            // No workers — drain the reader so the sender doesn't block.
+            drop(reader);
+            return;
+        }
+
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let idx = COUNTER.fetch_add(1, Ordering::Relaxed) as usize % endpoints.len();
+        let endpoint = &endpoints[idx];
+
+        let Some(store) = self.get_or_create_connection(endpoint).await else {
+            warn!(
+                %digest,
+                endpoint = endpoint.as_ref(),
+                "mirror_stream: failed to connect to worker"
+            );
+            drop(reader);
+            return;
+        };
+
+        let size_bytes = digest.size_bytes();
+        let key: StoreKey<'_> = digest.into();
+        let result = store
+            .update(key, reader, UploadSizeInfo::ExactSize(size_bytes))
+            .await;
+
+        match &result {
+            Ok(()) => {
+                info!(
+                    %digest,
+                    size_bytes,
+                    endpoint = endpoint.as_ref(),
+                    "mirror_stream: blob streamed to worker"
+                );
+            }
+            Err(e) => {
+                warn!(
+                    %digest,
+                    size_bytes,
+                    endpoint = endpoint.as_ref(),
+                    ?e,
+                    "mirror_stream: failed to stream blob to worker"
+                );
+            }
+        }
+    }
 }
 
 #[async_trait]

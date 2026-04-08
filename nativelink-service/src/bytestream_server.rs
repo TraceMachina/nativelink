@@ -438,12 +438,6 @@ impl IdleStream {
     }
 }
 
-/// Maximum blob size for mirroring via the streaming write path. The streaming
-/// path does not buffer the data, so mirroring requires a re-read from the
-/// store. With MemoryStore as the fast store for ALL blob sizes, re-reads
-/// are cheap (Bytes::clone from memory). Mirror all blobs for OOM redundancy.
-const MIRROR_STREAM_MAX_SIZE: u64 = u64::MAX;
-
 /// Spawn a background task to mirror a blob to a random connected worker
 /// for OOM redundancy. Fire-and-forget: errors are logged, not propagated.
 ///
@@ -948,6 +942,7 @@ impl ByteStreamServer {
                 impl Stream<Item = Result<WriteRequest, Status>> + Unpin,
             >,
             tx: &mut DropCloserWriteHalf,
+            mirror_tx: &mut Option<DropCloserWriteHalf>,
             outer_bytes_received: &Arc<AtomicU64>,
             expected_size: u64,
         ) -> Result<(), Error> {
@@ -1014,6 +1009,15 @@ impl ByteStreamServer {
 
                 // Do not process EOF or weird stuff will happen.
                 if !data.is_empty() {
+                    // Tee: clone the chunk to the mirror channel (O(1) Bytes refcount bump).
+                    // Mirror errors are non-fatal — drop the mirror writer to stop mirroring.
+                    if let Some(mtx) = mirror_tx {
+                        if mtx.send(data.clone()).await.is_err() {
+                            // Worker disconnected mid-stream; stop mirroring.
+                            *mirror_tx = None;
+                        }
+                    }
+
                     // We also need to process the possible EOF branch, so we can't early return.
                     if let Err(mut err) = tx.send(data).await {
                         err.code = Code::Internal;
@@ -1037,7 +1041,11 @@ impl ByteStreamServer {
                             tx.get_bytes_written()
                         ));
                     }
-                    // Gracefully close our stream.
+                    // Send EOF to mirror first (non-fatal).
+                    if let Some(mtx) = mirror_tx {
+                        drop(mtx.send_eof());
+                    }
+                    // Gracefully close our store stream.
                     tx.send_eof()
                         .err_tip(|| "Failed to send EOF in ByteStream::write")?;
                     return Ok(());
@@ -1056,17 +1064,48 @@ impl ByteStreamServer {
             self.create_or_join_upload_stream(uuid, instance_info, digest);
         let expected_size = stream.resource_info.expected_size as u64;
 
+        // Set up tee mirror channel if WorkerProxyStore is available and blob is non-empty.
+        let has_proxy = digest.size_bytes() > 0
+            && instance_info
+                .store
+                .as_store_driver()
+                .as_any()
+                .downcast_ref::<WorkerProxyStore>()
+                .is_some();
+        let (mut mirror_tx_opt, mirror_handle) = if has_proxy {
+            let (mtx, mrx) = make_buf_channel_pair_with_size(256);
+            let store_clone = instance_info.store.clone();
+            let handle = nativelink_util::background_spawn!("mirror_tee_stream", async move {
+                let Some(proxy) = store_clone
+                    .as_store_driver()
+                    .as_any()
+                    .downcast_ref::<WorkerProxyStore>()
+                else {
+                    return;
+                };
+                proxy.mirror_blob_via_stream(digest, mrx).await;
+            });
+            (Some(mtx), Some(handle))
+        } else {
+            (None, None)
+        };
+
         let active_stream = active_stream_guard.stream_state.as_mut().unwrap();
         try_join!(
             process_client_stream(
                 stream,
                 &mut active_stream.tx,
+                &mut mirror_tx_opt,
                 &active_stream_guard.bytes_received,
                 expected_size
             ),
             (&mut active_stream.store_update_fut)
                 .map_err(|err| { err.append("Error updating inner store") })
         )?;
+
+        // Fire-and-forget: drop the mirror handle without awaiting it.
+        // The mirror task runs to completion (or failure) in the background.
+        drop(mirror_handle);
 
         // Close our guard and consider the stream no longer active.
         active_stream_guard.graceful_finish();
@@ -1512,14 +1551,10 @@ impl ByteStreamServer {
                     .bytes_written_total
                     .fetch_add(expected_size, Ordering::Relaxed);
 
-                // Mirror the blob to a random worker for OOM redundancy.
-                // Fire-and-forget: don't delay the Bazel ACK.
-                // The oneshot path mirrors inside inner_write_oneshot with
-                // the data already in hand. The streaming path must re-read
-                // from the store, so we only mirror small blobs (<= 16MB).
-                if !use_oneshot && digest.size_bytes() <= MIRROR_STREAM_MAX_SIZE {
-                    mirror_blob_to_worker(&store, digest, None);
-                }
+                // Mirroring: the oneshot path mirrors inside inner_write_oneshot
+                // with data already in hand. The streaming path tees chunks to
+                // the mirror channel inside inner_write (simultaneous with store
+                // write), so no post-write re-read is needed.
             }
             Err(e) => {
                 error!(
