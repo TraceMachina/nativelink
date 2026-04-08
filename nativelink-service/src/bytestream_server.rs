@@ -936,6 +936,7 @@ impl ByteStreamServer {
         instance_info: &InstanceInfo,
         digest: DigestInfo,
         stream: WriteRequestStreamWrapper<impl Stream<Item = Result<WriteRequest, Status>> + Unpin>,
+        is_worker: bool,
     ) -> Result<Response<WriteResponse>, Error> {
         async fn process_client_stream(
             mut stream: WriteRequestStreamWrapper<
@@ -1077,8 +1078,12 @@ impl ByteStreamServer {
             self.create_or_join_upload_stream(uuid, instance_info, digest);
         let expected_size = stream.resource_info.expected_size as u64;
 
-        // Set up tee mirror channel if WorkerProxyStore is available and blob is non-empty.
-        let has_proxy = digest.size_bytes() > 0
+        // Set up tee mirror channel if WorkerProxyStore is available, blob is non-empty,
+        // and the upload is NOT from a worker. Workers already have the blob locally —
+        // mirroring it back to another worker wastes bandwidth and creates a feedback loop
+        // (worker A uploads → server mirrors to worker B → B is busy → mirror blocks A's upload).
+        let has_proxy = !is_worker
+            && digest.size_bytes() > 0
             && instance_info
                 .store
                 .as_store_driver()
@@ -1137,6 +1142,7 @@ impl ByteStreamServer {
         mut stream: WriteRequestStreamWrapper<
             impl Stream<Item = Result<WriteRequest, Status>> + Unpin,
         >,
+        is_worker: bool,
     ) -> Result<Response<WriteResponse>, Error> {
         let expected_size = stream.resource_info.expected_size as u64;
 
@@ -1253,7 +1259,10 @@ impl ByteStreamServer {
             .err_tip(|| "Error in update_oneshot")?;
 
         // Mirror to a random worker using the cloned data — no re-read needed.
-        mirror_blob_to_worker(&store, digest, Some(mirror_data));
+        // Skip mirroring for worker uploads — workers already have the blob.
+        if !is_worker {
+            mirror_blob_to_worker(&store, digest, Some(mirror_data));
+        }
 
         // Note: bytes_written_total is updated in the caller (bytestream_write) based on result
 
@@ -1335,6 +1344,7 @@ impl ByteStreamServer {
             impl Stream<Item = Result<WriteRequest, Status>> + Unpin + Send + 'static,
         >,
         zero_copy: bool,
+        is_worker: bool,
     ) -> Result<Response<WriteResponse>, Error> {
         let instance_name = stream.resource_info.instance_name.as_ref();
         let expected_size = stream.resource_info.expected_size as u64;
@@ -1491,7 +1501,7 @@ impl ByteStreamServer {
         const WRITE_TIMEOUT: Duration = Duration::from_secs(300);
         let write_fut = async {
             if use_oneshot {
-                self.inner_write_oneshot(instance, digest, stream)
+                self.inner_write_oneshot(instance, digest, stream, is_worker)
                     .instrument(error_span!("bytestream_write_oneshot", %zero_copy))
                     .with_context(
                         make_ctx_for_hash_func(digest_function)
@@ -1500,7 +1510,7 @@ impl ByteStreamServer {
                     .await
                     .err_tip(|| tip_oneshot_label)
             } else {
-                self.inner_write(instance, digest, stream)
+                self.inner_write(instance, digest, stream, is_worker)
                     .instrument(error_span!("bytestream_write", %zero_copy))
                     .with_context(
                         make_ctx_for_hash_func(digest_function)
@@ -1597,16 +1607,17 @@ impl ByteStreamServer {
     async fn zero_copy_write(
         &self,
         stream: impl Stream<Item = Result<WriteRequest, Status>> + Send + Unpin + 'static,
-        _metadata: &http::HeaderMap,
+        metadata: &http::HeaderMap,
     ) -> Result<Response<WriteResponse>, Status> {
         let start_time = Instant::now();
 
+        let is_worker = metadata.contains_key("x-nativelink-worker");
         let stream = WriteRequestStreamWrapper::from(stream)
             .await
             .err_tip(|| "Could not unwrap first stream message")
             .map_err(Into::<Status>::into)?;
 
-        self.bytestream_write(start_time, stream, true)
+        self.bytestream_write(start_time, stream, true, is_worker)
             .await
             .map_err(Into::into)
     }
@@ -1881,13 +1892,16 @@ impl ByteStream for ByteStreamServer {
     ) -> Result<Response<WriteResponse>, Status> {
         let start_time = Instant::now();
 
+        let is_worker = grpc_request
+            .metadata()
+            .contains_key("x-nativelink-worker");
         let request = grpc_request.into_inner();
         let stream = WriteRequestStreamWrapper::from(request)
             .await
             .err_tip(|| "Could not unwrap first stream message")
             .map_err(Into::<Status>::into)?;
 
-        self.bytestream_write(start_time, stream, false)
+        self.bytestream_write(start_time, stream, false, is_worker)
             .await
             .map_err(Into::into)
     }
