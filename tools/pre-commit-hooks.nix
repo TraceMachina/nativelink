@@ -6,7 +6,7 @@
   renovate-patched,
   ...
 }: let
-  excludes = ["nativelink-proto/genproto" "native-cli/vendor"];
+  excludes = ["nativelink-proto/genproto"];
 in {
   # Default hooks
   check-case-conflicts = {
@@ -80,53 +80,6 @@ in {
   typos = {
     enable = true;
     settings.configPath = "typos.toml";
-  };
-
-  # Go
-
-  # FIXME(palfrey): Blocked on https://github.com/daixiang0/gci/issues/239
-  # gci = {
-  #   description = "Fix go imports.";
-  #   enable = true;
-  #   entry = "${pkgs.gci}/bin/gci write";
-  #   inherit excludes;
-  #   name = "gci";
-  #   types = ["go"];
-  # };
-  gofumpt = {
-    description = "Format Go.";
-    enable = true;
-    entry = "${pkgs.gofumpt}/bin/gofumpt -w -l";
-    inherit excludes;
-    name = "gofumpt";
-    types = ["go"];
-  };
-  # TODO(palfrey): This linter works in the nix development environment, but
-  #                    not with `nix flake check`. It's unclear how to fix this.
-  golangci-lint-in-shell = {
-    enable = true;
-    entry = let
-      script = pkgs.writeShellScript "precommit-golangci-lint" ''
-        if [ ''${IN_NIX_SHELL} = "impure" ]; then
-          export PATH=${pkgs.go}/bin:$PATH
-          cd native-cli
-          ${pkgs.golangci-lint}/bin/golangci-lint run --modules-download-mode=readonly
-        fi
-      '';
-    in
-      builtins.toString script;
-    inherit excludes;
-    pass_filenames = false;
-    require_serial = true;
-    types = ["go"];
-  };
-  golines = {
-    description = "Shorten Go lines.";
-    enable = true;
-    entry = "${pkgs.golines}/bin/golines --max-len=80 -w";
-    inherit excludes;
-    name = "golines";
-    types = ["go"];
   };
 
   # Nix
