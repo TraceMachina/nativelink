@@ -355,6 +355,7 @@ impl Drop for LoggingReadStream {
 
 struct StreamState {
     uuid: UuidKey,
+    digest: DigestInfo,
     tx: DropCloserWriteHalf,
     store_update_fut: StoreUpdateFuture,
 }
@@ -683,20 +684,35 @@ impl ByteStreamServer {
                 Entry::Occupied(mut entry) => {
                     let maybe_idle_stream = entry.get_mut();
                     if let Some(idle_stream) = maybe_idle_stream.1.take() {
-                        // Case 2: Stream exists but is idle, we can resume it
-                        let bytes_received = maybe_idle_stream.0.clone();
-                        debug!(
-                            msg = "Joining existing stream",
-                            uuid = format!("{:032x}", entry.key())
-                        );
-                        // Track resumed upload
-                        instance
-                            .metrics
-                            .resumed_uploads
-                            .fetch_add(1, Ordering::Relaxed);
-                        UploadAction::Resume(Box::new(
-                            idle_stream.into_active_stream(bytes_received, instance),
-                        ))
+                        // Case 2: Stream exists but is idle — verify the digest
+                        // matches before resuming. A UUID reuse with a different
+                        // digest would send wrong data to the original store update.
+                        if idle_stream.stream_state.digest != digest {
+                            warn!(
+                                uuid = format!("{:032x}", uuid_key),
+                                original_digest = %idle_stream.stream_state.digest,
+                                new_digest = %digest,
+                                "Idle stream digest mismatch — discarding stale \
+                                 stream and creating new one"
+                            );
+                            drop(idle_stream);
+                            let bytes_received = Arc::new(AtomicU64::new(0));
+                            *maybe_idle_stream = (bytes_received.clone(), None);
+                            UploadAction::New(uuid_key, bytes_received)
+                        } else {
+                            let bytes_received = maybe_idle_stream.0.clone();
+                            debug!(
+                                msg = "Joining existing stream",
+                                uuid = format!("{:032x}", entry.key())
+                            );
+                            instance
+                                .metrics
+                                .resumed_uploads
+                                .fetch_add(1, Ordering::Relaxed);
+                            UploadAction::Resume(Box::new(
+                                idle_stream.into_active_stream(bytes_received, instance),
+                            ))
+                        }
                     } else {
                         // Case 3: Stream is active - generate a unique UUID to avoid collision
                         let original_key = *entry.key();
@@ -761,6 +777,7 @@ impl ByteStreamServer {
         ActiveStreamGuard {
             stream_state: Some(StreamState {
                 uuid,
+                digest,
                 tx,
                 store_update_fut,
             }),
