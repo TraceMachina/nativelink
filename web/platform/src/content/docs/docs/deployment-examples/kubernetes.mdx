@@ -1,153 +1,100 @@
 ---
 title: Kubernetes example
-description: 'An example setup for NativeLink in Kubernetes'
+description: 'Deploy NativeLink to Kubernetes with Helm'
 ---
 
-In this example you'll spin up a local Kubernetes cluster with NativeLink and
-run some Bazel builds against it.
+In this example you'll deploy NativeLink to a local Kubernetes cluster using
+Helm and run Bazel builds against it.
 
 **Requirements**
 
-- An `x86_64-linux` system. Either "real" Linux or WSL2.
-- A functional local Docker setup.
-- A recent version of Nix with flake support, for instance installed via the
-  [next-gen Nix installer](https://github.com/NixOS/experimental-nix-installer).
+- A local Kubernetes cluster. Either:
+  - [Docker Desktop](https://www.docker.com/products/docker-desktop/) with
+    Kubernetes enabled (Settings > Kubernetes > Enable Kubernetes), or
+  - [minikube](https://minikube.sigs.k8s.io/docs/start/)
+- [Helm 3](https://helm.sh/docs/intro/install/)
+- [kubectl](https://kubernetes.io/docs/tasks/tools/)
+- [Bazel](https://bazel.build/install) (to run builds against the cluster)
 
-:::caution
-This example doesn't work on Mac yet.
-:::
+## Install NativeLink
 
-:::note
-On modern systems you might need to enable some backwards-compatibility kernel
-modules.
-
-For instance, on NixOS:
-
-```nix
-boot.kernelModules = [
-  "iptable_filter"
-  "iptable_mangle"
-  "iptable_nat"
-  "iptable_raw"
-  "xt_socket"
-];
-```
-:::
-
-## ☁️ Prepare the cluster
-
-First, enter the NativeLink development environment:
+Pull the Helm chart from the NativeLink OCI registry and install it:
 
 ```bash
-git clone https://github.com/TraceMachina/nativelink && \
-    cd nativelink && \
-    nix develop
-```
-
-This environment contains Bazel and some cloud tooling, so you don't need to set
-up any kubernetes-related software yourself.
-
-Now, start the development cluster:
-
-```bash
-native up
+helm install nativelink \
+    oci://public.ecr.aws/b1l4l6w7/tracemachina/nativelink \
+    --version 1.0.0-rc1 \
+    -n nativelink \
+    --create-namespace
 ```
 
 :::tip
-The `native up` command uses Pulumi under the hood. You can view and delete
-the stack with `pulumi stack` and `pulumi destroy`. If you're queried for a
-stack password, press enter, as the password is an empty string.
+See the [NativeLink Helm chart on Artifact Hub](https://artifacthub.io/packages/helm/nativelink/nativelink)
+for all available versions and configuration options.
 :::
 
-Next, deploy NativeLink to the cluster:
+## Verify the deployment
+
+Wait for the pods to become ready:
 
 ```bash
-kubectl apply -k \
-    https://github.com/TraceMachina/nativelink//deploy/kubernetes-example
+kubectl get pods -n nativelink -w
 ```
 
-Once the infra is ready, trigger the pipelines that build the images:
+You should see pods for the CAS, scheduler, and worker components:
 
-```bash
-cat > nativelink-repo.yaml << EOF
-apiVersion: source.toolkit.fluxcd.io/v1
-kind: GitRepository
-metadata:
-  name: nativelink
-  namespace: default
-spec:
-  interval: 2m
-  url: https://github.com/TraceMachina/nativelink
-  ref:
-    branch: main
-EOF
-kubectl apply -f nativelink-repo.yaml
+```text
+NAME                                    READY   STATUS    RESTARTS   AGE
+nativelink-cas-...                      1/1     Running   0          60s
+nativelink-scheduler-...                1/1     Running   0          60s
+nativelink-worker-...                   1/1     Running   0          60s
 ```
 
-:::danger
-This example is built for demo purposes only. It's not a secure production-grade
-setup and will only work in the local development cluster created with
-`native up`.
+## Explore the deployment
 
-One-liner production-grade setups are still under construction.
-:::
-
-## 🔭 Explore deployments
-
-The deployment might take a wile to boot up. You can monitor progress via the
-dashboards that come with the development cluster:
-
-- [localhost:8080](http://localhost:8080): Cilium's Hubble UI to view the
-  cluster topology. NativeLink will be deployed into the `default` namespace.
-- [localhost:8081](http://localhost:8081): The Tekton Dashboard to view the
-  progress of the in-cluster pipelines. You'll find the pipelines under the
-  `PipelineRuns` tab.
-- [localhost:9000](http://localhost:9000): The Capacitor Dashboard to view Flux
-  Kustomizations. You can view NatieLink's logs here once it's fully deployed.
-
-In terminals, the following commands can be helpful to view deployment progress:
-
-- `tkn pr logs -n ci -f` to view the logs of a `PipelineRun` in the terminal.
-- `flux get all -A` to view the state of the NativeLink deployments.
-
-Once NativeLink is deployed:
-
-- `kubectl logs deploy/nativelink-cas` for the CAS (cache) logs.
-- `kubectl logs deploy/nativelink-scheduler` for the scheduler logs.
-- `kubectl logs deploy/nativelink-worker` for the worker logs.
-
-## 🏗️ Build against NativeLink
-
-The demo setup creates gateways to expose the `cas` and `scheduler` deployments
-via your local docker network. You can pass the Gateway addresses to Bazel
-invocations to make builds run against the cluster:
+View logs for individual components:
 
 ```bash
-NATIVELINK=$(kubectl get gtw nativelink-gateway -o=jsonpath='{.status.addresses[0].value}')
+# CAS (Content Addressable Storage) logs
+kubectl logs deploy/nativelink-cas -n nativelink
 
-echo "NativeLink IP: $NATIVELINK"
+# Scheduler logs
+kubectl logs deploy/nativelink-scheduler -n nativelink
 
+# Worker logs
+kubectl logs deploy/nativelink-worker -n nativelink
+```
+
+## Build against NativeLink
+
+Port-forward the NativeLink services to your local machine:
+
+```bash
+# In a separate terminal — keep this running
+kubectl port-forward svc/nativelink-cas 50051:50051 -n nativelink &
+kubectl port-forward svc/nativelink-scheduler 50052:50052 -n nativelink &
+```
+
+Now run a Bazel build against the cluster:
+
+```bash
 bazel build \
-    --remote_cache=grpc://$NATIVELINK \
-    --remote_executor=grpc://$NATIVELINK \
-    //local-remote-execution/examples:lre-cc
+    --remote_cache=grpc://localhost:50051 \
+    --remote_executor=grpc://localhost:50052 \
+    //...
 ```
 
-:::caution
-While the Dashboard ports are static, the NativeLink endpoints aren't (yet).
-If you shut down the cluster and reboot it, the `$NATIVELINK` IP addresses will
-change.
-:::
-
 :::tip
-You can add these flags to a to a `.bazelrc.user` file in the workspace root.
-Note that you'll need to pass in explicit IP addresses as this file can't
-resolve environment variables:
+Add these flags to a `.bazelrc.user` file in your workspace root so you don't
+have to pass them on every invocation:
+
 ```bash
 # .bazelrc.user
-build --remote_cache=grpc://172.20.255.4
-build --remote_executor=grpc://172.20.255.4
+build --remote_cache=grpc://localhost:50051
+build --remote_executor=grpc://localhost:50052
 ```
+
+Make sure your `.bazelrc` imports it:
 
 ```bash
 # .bazelrc
@@ -155,61 +102,57 @@ try-import %workspace%/.bazelrc.user
 ```
 :::
 
-The crucial part is this bit:
+The key output to look for:
 
-```txt
+```text
 INFO: 11 processes: 9 internal, 2 remote.
 ```
 
-It tells us that the compilation ran against the cluster. Let's clean the Bazel
-cache and run the build again:
+This tells you the build ran against the cluster. Clean the local cache and
+rebuild to verify caching works:
 
 ```bash
 bazel clean && bazel build \
-    --remote_cache=grpc://$CACHE \
-    --remote_executor=grpc://$SCHEDULER \
-    //local-remote-execution/examples:lre-cc
+    --remote_cache=grpc://localhost:50051 \
+    --remote_executor=grpc://localhost:50052 \
+    //...
 ```
 
-The build now shows cache hits instead of remote actions:
+You should now see cache hits:
 
-```txt
+```text
 INFO: 11 processes: 2 remote cache hit, 9 internal.
 ```
 
-## 🚀 Bonus: Local Remote Execution
+## Customize the deployment
 
-The worker deployment in this example leverages [Local Remote Execution](../explanations/lre).
-
-Local Remote Execution mirrors toolchains for remote execution in your local
-development environment. This lets you reuse build artifacts with virtually
-perfect cache hit rate across different repositories, developers, and CI.
-
-To test LRE in the cluster, clean the local cache and invoke another build
-against the cluster, but this time omit the `remote_executor` flag. This way
-you'll use remote caching without remote execution:
+To customize the Helm chart values, first extract the default values:
 
 ```bash
-bazel clean && bazel build \
-    --remote_cache=grpc://$CACHE \
-    //local-remote-execution/examples:lre-cc
+helm show values \
+    oci://public.ecr.aws/b1l4l6w7/tracemachina/nativelink \
+    --version 1.0.0-rc1 > nativelink-values.yaml
 ```
 
-You'll get remote cache hits as if your local machine was a `nativelink-worker`:
-
-```txt
-INFO: 11 processes: 2 remote cache hit, 9 internal.
-```
-
-## 🧹 Clean up
-
-When you're done testing, delete the cluster:
+Edit `nativelink-values.yaml` to your needs, then upgrade the release:
 
 ```bash
-# Delete the kind cluster
-native down
+helm upgrade nativelink \
+    oci://public.ecr.aws/b1l4l6w7/tracemachina/nativelink \
+    --version 1.0.0-rc1 \
+    -n nativelink \
+    -f nativelink-values.yaml
+```
 
-# Remove the container registry and loadbalancer
-docker container stop kind-registry | xargs docker rm
-docker container stop kind-loadbalancer | xargs docker rm
+See the [Helm chart documentation](https://artifacthub.io/packages/helm/nativelink/nativelink)
+for details on configuring cloud object stores (S3, GCS, Azure Blob),
+Redis, ingress, metrics, and more.
+
+## Clean up
+
+When you're done testing, remove the NativeLink deployment:
+
+```bash
+helm uninstall nativelink -n nativelink
+kubectl delete namespace nativelink
 ```

@@ -3,120 +3,85 @@ title: NativeLink deployment example for Chromium
 description: 'An example for building Chromium with NativeLink in Kubernetes.'
 ---
 
-In this example you'll spin up a local Kubernetes cluster with NativeLink and
-run a Chromium build against it.
+In this example you'll deploy NativeLink to a local Kubernetes cluster using
+Helm and run a Chromium build against it.
 
 **Requirements**
 
 - An `x86_64-linux` system running a recent Ubuntu. Either "real" Linux or WSL2.
-- A functional local Docker setup.
-- A recent version of Nix with flake support, for instance installed via the
-  [next-gen Nix installer](https://github.com/NixOS/experimental-nix-installer).
+- A local Kubernetes cluster. Either:
+  - [Docker Desktop](https://www.docker.com/products/docker-desktop/) with
+    Kubernetes enabled (Settings > Kubernetes > Enable Kubernetes), or
+  - [minikube](https://minikube.sigs.k8s.io/docs/start/)
+- [Helm 3](https://helm.sh/docs/intro/install/)
+- [kubectl](https://kubernetes.io/docs/tasks/tools/)
 
 :::caution
 This example doesn't work on Mac and Linux distributions other than Ubuntu.
 :::
 
-## ☁️ Prepare the cluster
+## Install NativeLink
 
-First, enter the NativeLink development environment:
-
-```bash
-git clone https://github.com/TraceMachina/nativelink && \
-    cd nativelink && \
-    nix develop
-```
-
-This environment contains some cloud tooling, so you don't need to set up any
-kubernetes-related software yourself.
-
-Now, start the development cluster:
+Pull the Helm chart from the NativeLink OCI registry and install it:
 
 ```bash
-native up
-```
-
-Once the infra is ready, trigger the pipelines that build the images:
-
-```bash
-cat > dummy-repo.yaml << EOF
-apiVersion: source.toolkit.fluxcd.io/v1
-kind: GitRepository
-metadata:
-  name: dummy-repository
-  namespace: default
-spec:
-  interval: 2m
-  url: https://github.com/TraceMachina/nativelink
-  ref:
-    branch: main
-EOF
-kubectl apply -f dummy-repo.yaml
+helm install nativelink \
+    oci://public.ecr.aws/b1l4l6w7/tracemachina/nativelink \
+    --version 1.0.0-rc1 \
+    -n nativelink \
+    --create-namespace
 ```
 
 :::tip
-The `native up` command uses Pulumi under the hood. You can view and delete
-the stack with `pulumi stack` and `pulumi destroy`. If you're queried for a
-stack password, press enter, as the password is an empty string.
+See the [NativeLink Helm chart on Artifact Hub](https://artifacthub.io/packages/helm/nativelink/nativelink)
+for all available versions and configuration options.
 :::
 
-Next, deploy NativeLink to the cluster:
+## Verify the deployment
+
+Wait for the pods to become ready:
 
 ```bash
-kubectl apply -k \
-    https://github.com/TraceMachina/nativelink//deploy/chromium-example
+kubectl get pods -n nativelink -w
 ```
 
-:::danger
-This example is built for demo purposes only. It's not a secure production-grade
-setup and will only work in the local development cluster created with
-`native up`.
+You should see pods for the CAS, scheduler, and worker components:
 
-One-liner production-grade setups are still under construction.
-:::
+```text
+NAME                                    READY   STATUS    RESTARTS   AGE
+nativelink-cas-...                      1/1     Running   0          60s
+nativelink-scheduler-...                1/1     Running   0          60s
+nativelink-worker-...                   1/1     Running   0          60s
+```
 
-## 🔭 Explore deployments
+## Explore the deployment
 
-The deployment might take a wile to boot up. You can monitor progress via the
-dashboards that come with the development cluster:
-
-- [localhost:8080](http://localhost:8080): Cilium's Hubble UI to view the
-  cluster topology. NativeLink will be deployed into the `default` namespace.
-- [localhost:8081](http://localhost:8081): The Tekton Dashboard to view the
-  progress of the in-cluster pipelines. You'll find the pipelines under the
-  `PipelineRuns` tab.
-- [localhost:9000](http://localhost:9000): The Capacitor Dashboard to view Flux
-  Kustomizations. You can view NatieLink's logs here once it's fully deployed.
-
-In terminals, the following commands can be helpful to view deployment progress:
-
-- `tkn pr logs -f` to view the logs of a `PipelineRun` in the terminal.
-- `flux get all -A` to view the state of the NativeLink deployments.
-
-Once NativeLink is deployed:
-
-- `kubectl logs deploy/nativelink-cas` for the CAS (cache) logs.
-- `kubectl logs deploy/nativelink-scheduler` for the scheduler logs.
-- `kubectl logs deploy/nativelink-worker` for the worker logs.
-
-## 🏗️ Build against NativeLink
-
-The demo setup creates gateways to expose the `cas` and `scheduler` deployments
-via your local docker network. The following command builds the Chromium tests
-against the cluster:
+View logs for individual components:
 
 ```bash
-build-chromium-tests
+# CAS (Content Addressable Storage) logs
+kubectl logs deploy/nativelink-cas -n nativelink
+
+# Scheduler logs
+kubectl logs deploy/nativelink-scheduler -n nativelink
+
+# Worker logs
+kubectl logs deploy/nativelink-worker -n nativelink
 ```
 
-The `build-chromium-tests` command simplifies the setup described in
-[linux/build_instructions.md](https://chromium.googlesource.com/chromium/src/+/main/docs/linux/build_instructions.md).
-After preparing the requirements, it runs a Reclient build against the cluster.
+## Build Chromium against NativeLink
 
-:::note
-See [`deploy/chromium-example/build_chromium_tests.sh`](https://github.com/TraceMachina/nativelink/blob/main/deploy/chromium-example/build_chromium_tests.sh)
-for the script contents.
-:::
+Port-forward the NativeLink services to your local machine:
+
+```bash
+# In a separate terminal — keep this running
+kubectl port-forward svc/nativelink-cas 50051:50051 -n nativelink &
+kubectl port-forward svc/nativelink-scheduler 50052:50052 -n nativelink &
+```
+
+Follow the [Chromium Linux build instructions](https://chromium.googlesource.com/chromium/src/+/main/docs/linux/build_instructions.md)
+to set up the Chromium source and dependencies, then run a Reclient build
+against the cluster using the forwarded endpoints.
 
 You can view Reclient's logs like so:
 
@@ -124,15 +89,11 @@ You can view Reclient's logs like so:
 watch $HOME/chromium/src/buildtools/reclient/reproxystatus
 ```
 
-## 🧹 Clean up
+## Clean up
 
-When you're done testing, delete the cluster:
+When you're done testing, remove the NativeLink deployment:
 
 ```bash
-# Delete the kind cluster
-native down
-
-# Remove the container registry and loadbalancer
-docker container stop kind-registry | xargs docker rm
-docker container stop kind-loadbalancer | xargs docker rm
+helm uninstall nativelink -n nativelink
+kubectl delete namespace nativelink
 ```
