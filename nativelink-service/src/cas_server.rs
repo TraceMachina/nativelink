@@ -42,7 +42,7 @@ use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::make_ctx_for_hash_func;
 use nativelink_util::log_utils::throughput_mbps;
 use nativelink_util::stall_detector::StallGuard;
-use nativelink_util::store_trait::{IS_WORKER_REQUEST, Store, StoreLike};
+use nativelink_util::store_trait::{IS_MIRROR_REQUEST, IS_WORKER_REQUEST, Store, StoreLike};
 use nativelink_util::zero_copy_codec::{
     GrpcUnaryBody, decode_unary_request, encode_grpc_unary_response,
 };
@@ -171,6 +171,7 @@ impl CasServer {
     async fn inner_batch_update_blobs(
         &self,
         request: BatchUpdateBlobsRequest,
+        is_mirror: bool,
     ) -> Result<Response<BatchUpdateBlobsResponse>, Error> {
         let instance_name = &request.instance_name;
 
@@ -258,10 +259,12 @@ impl CasServer {
                 // Clone data for mirroring (Bytes clone is O(1) refcount bump).
                 let mirror_data = request_data.clone();
                 let upload_start = std::time::Instant::now();
-                let result = store_ref
-                    .update_oneshot(digest_info, request_data)
-                    .await
-                    .err_tip(|| "Error writing to store");
+                let result = IS_MIRROR_REQUEST.scope(is_mirror, async {
+                    store_ref
+                        .update_oneshot(digest_info, request_data)
+                        .await
+                        .err_tip(|| "Error writing to store")
+                }).await;
                 match &result {
                     Ok(()) => {
                         let elapsed = upload_start.elapsed();
@@ -273,7 +276,10 @@ impl CasServer {
                             "BatchUpdateBlobs: CAS write completed",
                         );
                         // Mirror to a random worker for OOM redundancy.
-                        mirror_blob_to_worker_with_data(store_ref, digest_info, mirror_data);
+                        // Skip for mirror writes to avoid feedback loops.
+                        if !is_mirror {
+                            mirror_blob_to_worker_with_data(store_ref, digest_info, mirror_data);
+                        }
                     }
                     Err(e) => {
                         let elapsed = upload_start.elapsed();
@@ -319,6 +325,7 @@ impl CasServer {
     async fn zero_copy_batch_update_blobs(
         &self,
         request: BatchUpdateBlobsRequest,
+        is_mirror: bool,
     ) -> Result<Response<BatchUpdateBlobsResponse>, Status> {
         let digest_function = request.digest_function;
 
@@ -326,7 +333,7 @@ impl CasServer {
             nativelink_util::stall_detector::DEFAULT_STALL_THRESHOLD,
             "BatchUpdateBlobs",
         );
-        self.inner_batch_update_blobs(request)
+        self.inner_batch_update_blobs(request, is_mirror)
             .instrument(error_span!("cas_server_batch_update_blobs"))
             .with_context(
                 make_ctx_for_hash_func(digest_function)
@@ -487,50 +494,61 @@ impl CasServer {
         // Per-level timing and dedup tracking for diagnostics.
         let mut bfs_level: u32 = 0;
         let mut total_duplicates_skipped: u64 = 0;
+        let mut total_missing_skipped: u64 = 0;
         let mut level_timings: Vec<(u32, usize, u64, u64)> = Vec::new(); // (level, dirs_fetched, children_discovered, elapsed_ms)
 
         while !deque.is_empty() && !page_filled {
             let level_start = std::time::Instant::now();
             let level: Vec<DigestInfo> = deque.drain(..).collect();
             // Fetch all directories in this BFS level concurrently.
+            // Tolerant: missing or corrupt directories are skipped rather than
+            // failing the entire GetTree response. The client can fill in gaps
+            // via individual directory fetches for only the missing entries.
             let mut futs = FuturesUnordered::new();
             for digest in &level {
                 let store = store.clone();
                 let digest = *digest;
                 futs.push(async move {
-                    let dir = get_and_decode_digest::<Directory>(&store, digest.into())
-                        .await
-                        .err_tip(|| {
-                            format!(
-                                "Converting digest to Directory (digest: {})",
-                                digest,
-                            )
-                        })?;
-                    Ok::<_, Error>((digest, dir))
+                    let result = get_and_decode_digest::<Directory>(&store, digest.into())
+                        .await;
+                    (digest, result)
                 });
             }
             // Collect results into a map so we can iterate in deterministic (discovery) order.
+            // Missing directories are skipped with a warning.
             let mut level_results: HashMap<DigestInfo, Directory> =
                 HashMap::with_capacity(level.len());
-            while let Some(result) = futs.next().await {
-                let (digest, directory) = result?;
-                level_results.insert(digest, directory);
+            let mut level_missing: u64 = 0;
+            while let Some((digest, result)) = futs.next().await {
+                match result {
+                    Ok(directory) => {
+                        level_results.insert(digest, directory);
+                    }
+                    Err(e) => {
+                        warn!(
+                            ?root_digest,
+                            missing_digest = %digest,
+                            bfs_level,
+                            err = ?e,
+                            "GetTree: skipping missing/corrupt directory, client will fetch individually"
+                        );
+                        level_missing += 1;
+                    }
+                }
             }
+            total_missing_skipped += level_missing;
             // Process directories in the order they appeared in the deque (BFS discovery order).
+            // Missing directories are skipped — the client's parallel BFS fallback
+            // will detect gaps and fetch them individually.
             let mut level_new_children: u64 = 0;
             let mut level_duplicates: u64 = 0;
             for (i, digest) in level.iter().enumerate() {
-                let directory = level_results
-                    .get(digest)
-                    .cloned()
-                    .err_tip(|| {
-                        format!(
-                            "Directory missing from level results (digest: {}, level_size: {}, results_size: {})",
-                            digest,
-                            level.len(),
-                            level_results.len(),
-                        )
-                    })?;
+                let Some(directory) = level_results.get(digest).cloned() else {
+                    // This directory was missing/corrupt — skip it.
+                    // Its children won't be enqueued, but the client will
+                    // discover and fetch them via its own tree walk.
+                    continue;
+                };
                 if *digest == page_token_digest {
                     page_token_matched = true;
                 }
@@ -625,16 +643,30 @@ impl CasServer {
             .collect::<Vec<_>>()
             .join(", ");
 
-        info!(
-            ?root_digest,
-            dir_count = directories.len(),
-            total_bytes,
-            total_duplicates_skipped,
-            bfs_levels = bfs_level,
-            elapsed_ms = elapsed.as_millis() as u64,
-            level_breakdown = %level_breakdown,
-            "GetTree: resolved directory tree",
-        );
+        if total_missing_skipped > 0 {
+            warn!(
+                ?root_digest,
+                dir_count = directories.len(),
+                total_bytes,
+                total_missing_skipped,
+                total_duplicates_skipped,
+                bfs_levels = bfs_level,
+                elapsed_ms = elapsed.as_millis() as u64,
+                level_breakdown = %level_breakdown,
+                "GetTree: resolved directory tree (partial — some directories missing)",
+            );
+        } else {
+            info!(
+                ?root_digest,
+                dir_count = directories.len(),
+                total_bytes,
+                total_duplicates_skipped,
+                bfs_levels = bfs_level,
+                elapsed_ms = elapsed.as_millis() as u64,
+                level_breakdown = %level_breakdown,
+                "GetTree: resolved directory tree",
+            );
+        }
 
         Ok(futures::stream::once(async {
             Ok(GetTreeResponse {
@@ -689,6 +721,9 @@ impl ContentAddressableStorage for CasServer {
         &self,
         grpc_request: Request<BatchUpdateBlobsRequest>,
     ) -> Result<Response<BatchUpdateBlobsResponse>, Status> {
+        let is_mirror = grpc_request
+            .metadata()
+            .contains_key("x-nativelink-mirror");
         let request = grpc_request.into_inner();
         let digest_function = request.digest_function;
 
@@ -696,7 +731,7 @@ impl ContentAddressableStorage for CasServer {
             nativelink_util::stall_detector::DEFAULT_STALL_THRESHOLD,
             "BatchUpdateBlobs",
         );
-        self.inner_batch_update_blobs(request)
+        self.inner_batch_update_blobs(request, is_mirror)
             .instrument(error_span!("cas_server_batch_update_blobs"))
             .with_context(
                 make_ctx_for_hash_func(digest_function)
@@ -827,7 +862,8 @@ impl tower::Service<http::Request<tonic::body::Body>> for ZeroCopyCasService {
         {
             let inner = self.inner.clone();
             Box::pin(async move {
-                let (_parts, body) = req.into_parts();
+                let (parts, body) = req.into_parts();
+                let is_mirror = parts.headers.contains_key("x-nativelink-mirror");
 
                 // Decode the unary request directly from body frames.
                 let request: BatchUpdateBlobsRequest =
@@ -836,7 +872,7 @@ impl tower::Service<http::Request<tonic::body::Body>> for ZeroCopyCasService {
                         Err(status) => return Ok(status.into_http()),
                     };
 
-                let result = inner.zero_copy_batch_update_blobs(request).await;
+                let result = inner.zero_copy_batch_update_blobs(request, is_mirror).await;
 
                 match result {
                     Ok(response) => {

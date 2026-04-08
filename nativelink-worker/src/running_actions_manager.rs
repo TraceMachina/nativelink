@@ -292,9 +292,10 @@ pub async fn resolve_directory_tree(
                         );
                         return Ok(tree);
                     }
-                    // Tree structure didn't match BFS ordering; fall through.
-                    // Count how many child references are missing from the tree
-                    // so the warning includes actionable diagnostic info.
+                    // Tree is incomplete — some directories missing (server may
+                    // have returned a partial tree due to evicted blobs). Count
+                    // the gaps and fill them via parallel BFS for only the missing
+                    // directories, keeping everything GetTree already gave us.
                     let missing_children: usize = tree.values().map(|dir| {
                         dir.directories.iter().filter(|node| {
                             node.digest
@@ -303,6 +304,31 @@ pub async fn resolve_directory_tree(
                                 .map_or(true, |d| !tree.contains_key(&d))
                         }).count()
                     }).sum();
+                    if tree.contains_key(root_digest) && missing_children > 0 {
+                        // We have the root and some subtrees but not all. Use
+                        // parallel BFS to fill in just the missing subtrees.
+                        info!(
+                            root = ?root_digest,
+                            tree_size = tree.len(),
+                            missing_children,
+                            "resolve_directory_tree: GetTree partial, filling gaps via parallel BFS"
+                        );
+                        let gap_start = std::time::Instant::now();
+                        resolve_directory_tree_fill_gaps(cas_store, &mut tree).await?;
+                        let gap_elapsed = gap_start.elapsed();
+                        let total_bytes: u64 = tree.keys().map(|d| d.size_bytes()).sum();
+                        let total_files: usize = tree.values().map(|d| d.files.len()).sum();
+                        info!(
+                            root = ?root_digest,
+                            dir_count = tree.len(),
+                            total_files,
+                            total_bytes,
+                            gap_fill_ms = gap_elapsed.as_millis() as u64,
+                            total_elapsed_ms = tree_start.elapsed().as_millis() as u64,
+                            "resolve_directory_tree: completed via GetTree + gap fill"
+                        );
+                        return Ok(tree);
+                    }
                     warn!(
                         root = ?root_digest,
                         tree_has_root = tree.contains_key(root_digest),
@@ -310,7 +336,7 @@ pub async fn resolve_directory_tree(
                         expected_size = dir_by_pos.len(),
                         missing_children,
                         validation_elapsed_ms = tree_start.elapsed().as_millis() as u64,
-                        "resolve_directory_tree: GetTree BFS validation failed, falling back to recursive fetch"
+                        "resolve_directory_tree: GetTree BFS validation failed, falling back to parallel BFS"
                     );
                 }
             }
@@ -319,23 +345,24 @@ pub async fn resolve_directory_tree(
                     root = ?root_digest,
                     err = ?e,
                     elapsed_ms = tree_start.elapsed().as_millis() as u64,
-                    "resolve_directory_tree: GetTree RPC failed, falling back to recursive fetch"
+                    "resolve_directory_tree: GetTree RPC failed, falling back to parallel BFS"
                 );
             }
         }
     } else {
         info!(
             root = ?root_digest,
-            method = "recursive fetch",
-            "resolve_directory_tree: no GrpcStore available, using recursive fetch",
+            method = "parallel BFS",
+            "resolve_directory_tree: no GrpcStore available, using parallel BFS",
         );
     }
 
-    // Fallback: recursive fetch (original behavior).
-    let recursive_start = std::time::Instant::now();
-    let mut tree = HashMap::new();
-    resolve_directory_tree_recursive(cas_store, root_digest, &mut tree).await?;
-    let recursive_elapsed = recursive_start.elapsed();
+    // Fallback: parallel BFS fetch — fetches all directories at each BFS level
+    // concurrently, avoiding the sequential 134ms-per-RPC bottleneck of the old
+    // recursive DFS approach.
+    let parallel_start = std::time::Instant::now();
+    let tree = resolve_directory_tree_parallel(cas_store, root_digest).await?;
+    let parallel_elapsed = parallel_start.elapsed();
     let total_elapsed = tree_start.elapsed();
     let total_bytes: u64 = tree.keys().map(|d| d.size_bytes()).sum();
     let total_files: usize = tree.values().map(|d| d.files.len()).sum();
@@ -347,45 +374,184 @@ pub async fn resolve_directory_tree(
         total_symlinks,
         total_bytes,
         individual_fetches = tree.len(),
-        recursive_ms = recursive_elapsed.as_millis() as u64,
+        parallel_ms = parallel_elapsed.as_millis() as u64,
         total_elapsed_ms = total_elapsed.as_millis() as u64,
-        "resolve_directory_tree: completed via recursive fetch"
+        "resolve_directory_tree: completed via parallel BFS fetch"
     );
     Ok(tree)
 }
 
-/// Recursively fetch directories via individual `get_and_decode_digest` calls.
-fn resolve_directory_tree_recursive<'a>(
-    cas_store: &'a FastSlowStore,
-    digest: &'a DigestInfo,
-    tree: &'a mut HashMap<DigestInfo, ProtoDirectory>,
-) -> BoxFuture<'a, Result<(), Error>> {
-    async move {
-        if tree.contains_key(digest) {
-            return Ok(());
-        }
-        let directory = get_and_decode_digest::<ProtoDirectory>(cas_store, digest.into())
-            .await
-            .err_tip(|| "Converting digest to Directory in recursive tree fetch")?;
-        let child_digests: Vec<DigestInfo> = directory
-            .directories
-            .iter()
-            .map(|d| {
-                d.digest
+/// Fetch all directories in a tree using parallel BFS.
+///
+/// Instead of sequential DFS (one RPC per directory, ~134ms each), this fetches
+/// all directories at each BFS level concurrently using `buffer_unordered(64)`.
+/// For a tree with 1000 directories across 10 levels, this reduces wall-clock
+/// time from ~134s to ~1.3s (10 levels x 134ms per level).
+///
+/// The GrpcStore internally routes small blob reads through `BatchReadBlobs`,
+/// so the 64-wide concurrency naturally batches into efficient RPCs.
+async fn resolve_directory_tree_parallel(
+    cas_store: &FastSlowStore,
+    root_digest: &DigestInfo,
+) -> Result<HashMap<DigestInfo, ProtoDirectory>, Error> {
+    let mut tree = HashMap::new();
+    let mut seen = HashSet::new();
+    let mut queue: Vec<DigestInfo> = vec![*root_digest];
+    seen.insert(*root_digest);
+
+    let mut bfs_level: u32 = 0;
+
+    while !queue.is_empty() {
+        let level_start = std::time::Instant::now();
+        let level_size = queue.len();
+
+        // Fetch all directories in the current BFS level concurrently.
+        let results: Vec<Result<(DigestInfo, ProtoDirectory), Error>> =
+            futures::stream::iter(queue.drain(..).map(|digest| {
+                async move {
+                    let dir =
+                        get_and_decode_digest::<ProtoDirectory>(cas_store, digest.into())
+                            .await
+                            .err_tip(|| {
+                                format!(
+                                    "Fetching directory {digest} in parallel BFS (level {bfs_level})"
+                                )
+                            })?;
+                    Ok((digest, dir))
+                }
+            }))
+            .buffer_unordered(64)
+            .collect()
+            .await;
+
+        // Process results: insert into tree and collect children for the next level.
+        let mut new_children: u64 = 0;
+        for result in results {
+            let (digest, directory) = result?;
+            for child_node in &directory.directories {
+                let child_digest: DigestInfo = child_node
+                    .digest
                     .as_ref()
                     .err_tip(|| "Expected Digest in DirectoryNode")?
                     .try_into()
-                    .err_tip(|| "Parsing child directory digest in recursive tree fetch")
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        tree.insert(*digest, directory);
-        for child in &child_digests {
-            resolve_directory_tree_recursive(cas_store, child, tree).await?;
+                    .err_tip(|| "Parsing child directory digest in parallel BFS")?;
+                if seen.insert(child_digest) {
+                    queue.push(child_digest);
+                    new_children += 1;
+                }
+            }
+            tree.insert(digest, directory);
         }
-        Ok(())
+
+        let level_ms = level_start.elapsed().as_millis() as u64;
+        if level_ms > 100 {
+            warn!(
+                bfs_level,
+                dirs_fetched = level_size,
+                new_children,
+                elapsed_ms = level_ms,
+                "resolve_directory_tree_parallel: slow BFS level (>100ms)"
+            );
+        } else {
+            debug!(
+                bfs_level,
+                dirs_fetched = level_size,
+                new_children,
+                elapsed_ms = level_ms,
+                "resolve_directory_tree_parallel: BFS level completed"
+            );
+        }
+
+        bfs_level += 1;
     }
-    .boxed()
+
+    Ok(tree)
 }
+
+/// Fill gaps in a partially-resolved directory tree.
+///
+/// When GetTree returns a partial response (some directories missing due to
+/// eviction), this function finds all child references that point to missing
+/// directories and fetches them via parallel BFS. It modifies the tree in-place,
+/// adding the missing directories.
+async fn resolve_directory_tree_fill_gaps(
+    cas_store: &FastSlowStore,
+    tree: &mut HashMap<DigestInfo, ProtoDirectory>,
+) -> Result<(), Error> {
+    let mut seen: HashSet<DigestInfo> = tree.keys().copied().collect();
+
+    // Find all child references that point to missing directories.
+    let mut queue: Vec<DigestInfo> = tree
+        .values()
+        .flat_map(|dir| &dir.directories)
+        .filter_map(|node| {
+            node.digest
+                .as_ref()
+                .and_then(|d| DigestInfo::try_from(d).ok())
+        })
+        .filter(|d| !tree.contains_key(d))
+        .collect();
+    // Deduplicate the initial queue.
+    queue.sort_unstable();
+    queue.dedup();
+    for d in &queue {
+        seen.insert(*d);
+    }
+
+    let mut bfs_level: u32 = 0;
+
+    while !queue.is_empty() {
+        let level_start = std::time::Instant::now();
+        let level_size = queue.len();
+
+        let results: Vec<Result<(DigestInfo, ProtoDirectory), Error>> =
+            futures::stream::iter(queue.drain(..).map(|digest| {
+                async move {
+                    let dir =
+                        get_and_decode_digest::<ProtoDirectory>(cas_store, digest.into())
+                            .await
+                            .err_tip(|| {
+                                format!("Fetching gap directory {digest} in parallel BFS")
+                            })?;
+                    Ok((digest, dir))
+                }
+            }))
+            .buffer_unordered(64)
+            .collect()
+            .await;
+
+        for result in results {
+            let (digest, directory) = result?;
+            for child_node in &directory.directories {
+                let child_digest: DigestInfo = child_node
+                    .digest
+                    .as_ref()
+                    .err_tip(|| "Expected Digest in DirectoryNode")?
+                    .try_into()
+                    .err_tip(|| "Parsing child directory digest in gap fill")?;
+                if seen.insert(child_digest) && !tree.contains_key(&child_digest) {
+                    queue.push(child_digest);
+                }
+            }
+            tree.insert(digest, directory);
+        }
+
+        debug!(
+            bfs_level,
+            dirs_fetched = level_size,
+            remaining = queue.len(),
+            elapsed_ms = level_start.elapsed().as_millis() as u64,
+            "resolve_directory_tree_fill_gaps: BFS level completed"
+        );
+        bfs_level += 1;
+    }
+
+    Ok(())
+}
+
+// TODO(tree-dedup): Add a tree_resolution_dedup map to RunningActionsManagerImpl
+// to coalesce concurrent resolutions for the same input_root_digest. When multiple
+// actions share the same input tree, only one should fetch it while others wait.
 
 /// Walk the resolved directory tree, creating all directories and collecting
 /// all files that need to be materialized. Returns the flat list of files.

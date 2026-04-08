@@ -49,7 +49,8 @@ use nativelink_util::proto_stream_utils::{
 use nativelink_util::resource_info::ResourceInfo;
 use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::store_trait::{
-    IS_WORKER_REQUEST, ItemCallback, StoreDriver, StoreKey, StoreOptimizations, UploadSizeInfo,
+    IS_MIRROR_REQUEST, IS_WORKER_REQUEST, ItemCallback, StoreDriver, StoreKey, StoreOptimizations,
+    UploadSizeInfo,
 };
 use nativelink_util::{default_health_status_indicator, tls_utils};
 use opentelemetry::context::Context;
@@ -522,13 +523,21 @@ impl GrpcStore {
 
         let mut request = grpc_request.into_inner();
         request.instance_name.clone_from(&self.instance_name);
+        let is_mirror = IS_MIRROR_REQUEST.try_with(|v| *v).unwrap_or(false);
         self.perform_request(request, |request| async move {
+            let mut grpc_request = Request::new(request);
+            if is_mirror {
+                grpc_request.metadata_mut().insert(
+                    "x-nativelink-mirror",
+                    tonic::metadata::MetadataValue::from_static("1"),
+                );
+            }
             match &self.transport {
                 Transport::Tcp(cm) => {
                     let channel = cm.connection("batch_update_blobs".into()).await.err_tip(|| "in batch_update_blobs")?;
                     ContentAddressableStorageClient::new(channel)
                         .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
-                        .batch_update_blobs(Request::new(request))
+                        .batch_update_blobs(grpc_request)
                         .await
                         .err_tip(|| "in GrpcStore::batch_update_blobs")
                 }
@@ -536,7 +545,7 @@ impl GrpcStore {
                 Transport::Quic(ch) => {
                     ContentAddressableStorageClient::new(ch.clone())
                         .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
-                        .batch_update_blobs(Request::new(request))
+                        .batch_update_blobs(grpc_request)
                         .await
                         .err_tip(|| "in GrpcStore::batch_update_blobs (quic)")
                 }
@@ -545,7 +554,7 @@ impl GrpcStore {
                     // Batched RPC: prefer QUIC (9x faster)
                     ContentAddressableStorageClient::new(quic.clone())
                         .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
-                        .batch_update_blobs(Request::new(request))
+                        .batch_update_blobs(grpc_request)
                         .await
                         .err_tip(|| "in GrpcStore::batch_update_blobs (dual/quic)")
                 }
@@ -752,6 +761,11 @@ impl GrpcStore {
             "CAS operation on AC store"
         );
 
+        // Capture the mirror flag from the task-local before entering the
+        // retry loop. The flag is set by WorkerProxyStore's mirror functions
+        // and propagates through the GrpcStore to become an RPC header.
+        let is_mirror = IS_MIRROR_REQUEST.try_with(|v| *v).unwrap_or(false);
+
         let local_state = Arc::new(Mutex::new(WriteState::new(
             self.instance_name.clone(),
             stream,
@@ -763,6 +777,7 @@ impl GrpcStore {
         trace!(
             instance_name = %instance_name,
             rpc_timeout_s = rpc_timeout.as_secs(),
+            is_mirror,
             "GrpcStore::write: starting ByteStream write",
         );
         let mut attempt: u32 = 0;
@@ -785,6 +800,28 @@ impl GrpcStore {
                     let conn_start = std::time::Instant::now();
                     let instance_for_rpc = instance_name.clone();
                     let local_state_for_rpc = local_state.clone();
+
+                    /// Helper: build the tonic Request for a ByteStream write,
+                    /// attaching the `x-nativelink-mirror` header when the
+                    /// write originates from a server-side mirror operation.
+                    fn make_write_request<T, E>(
+                        state: Arc<Mutex<WriteState<T, E>>>,
+                        is_mirror: bool,
+                    ) -> Request<WriteStateWrapper<T, E>>
+                    where
+                        T: Stream<Item = Result<WriteRequest, E>> + Unpin + Send + 'static,
+                        E: Into<Error> + 'static,
+                    {
+                        let mut request = Request::new(WriteStateWrapper::new(state));
+                        if is_mirror {
+                            request.metadata_mut().insert(
+                                "x-nativelink-mirror",
+                                tonic::metadata::MetadataValue::from_static("1"),
+                            );
+                        }
+                        request
+                    }
+
                     let rpc_fut = async {
                         match &self.transport {
                             Transport::Tcp(cm) => {
@@ -804,7 +841,7 @@ impl GrpcStore {
                                 let rpc_start = std::time::Instant::now();
                                 let res = ByteStreamClient::new(channel)
                                     .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
-                                    .write(WriteStateWrapper::new(local_state_for_rpc))
+                                    .write(make_write_request(local_state_for_rpc, is_mirror))
                                     .await
                                     .err_tip(|| "in GrpcStore::write");
                                 let rpc_elapsed_ms = u64::try_from(
@@ -824,7 +861,7 @@ impl GrpcStore {
                                 let rpc_start = std::time::Instant::now();
                                 let res = ByteStreamClient::new(ch.clone())
                                     .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
-                                    .write(WriteStateWrapper::new(local_state_for_rpc))
+                                    .write(make_write_request(local_state_for_rpc, is_mirror))
                                     .await
                                     .err_tip(|| "in GrpcStore::write (quic)");
                                 let rpc_elapsed_ms = u64::try_from(
@@ -858,7 +895,7 @@ impl GrpcStore {
                                 let rpc_start = std::time::Instant::now();
                                 let res = ByteStreamClient::new(channel)
                                     .max_decoding_message_size(MAX_GRPC_DECODING_SIZE)
-                                    .write(WriteStateWrapper::new(local_state_for_rpc))
+                                    .write(make_write_request(local_state_for_rpc, is_mirror))
                                     .await
                                     .err_tip(|| "in GrpcStore::write (dual/tcp)");
                                 let rpc_elapsed_ms = u64::try_from(

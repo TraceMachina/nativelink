@@ -35,8 +35,8 @@ use nativelink_util::buf_channel::{
 use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::{HealthStatus, HealthStatusIndicator};
 use nativelink_util::store_trait::{
-    IS_WORKER_REQUEST, ItemCallback, REDIRECT_PREFIX, Store, StoreDriver, StoreKey, StoreLike,
-    StoreOptimizations, UploadSizeInfo,
+    IS_MIRROR_REQUEST, IS_WORKER_REQUEST, ItemCallback, REDIRECT_PREFIX, Store, StoreDriver,
+    StoreKey, StoreLike, StoreOptimizations, UploadSizeInfo,
 };
 
 use crate::grpc_store::GrpcStore;
@@ -721,31 +721,33 @@ impl WorkerProxyStore {
         };
 
         let size_bytes = data.len();
-        let result = if size_bytes > Self::MIRROR_CHUNK_THRESHOLD {
-            // Large blob: stream in chunks to stay under gRPC max message size.
-            let (mut tx, rx) = make_buf_channel_pair();
-            let chunk_size = Self::MIRROR_CHUNK_SIZE;
-            let data_for_sender = data;
-            tokio::spawn(async move {
-                let mut offset = 0;
-                while offset < data_for_sender.len() {
-                    let end = (offset + chunk_size).min(data_for_sender.len());
-                    let chunk = data_for_sender.slice(offset..end);
-                    if tx.send(chunk).await.is_err() {
-                        return;
+        let result = IS_MIRROR_REQUEST.scope(true, async {
+            if size_bytes > Self::MIRROR_CHUNK_THRESHOLD {
+                // Large blob: stream in chunks to stay under gRPC max message size.
+                let (mut tx, rx) = make_buf_channel_pair();
+                let chunk_size = Self::MIRROR_CHUNK_SIZE;
+                let data_for_sender = data;
+                tokio::spawn(async move {
+                    let mut offset = 0;
+                    while offset < data_for_sender.len() {
+                        let end = (offset + chunk_size).min(data_for_sender.len());
+                        let chunk = data_for_sender.slice(offset..end);
+                        if tx.send(chunk).await.is_err() {
+                            return;
+                        }
+                        offset = end;
                     }
-                    offset = end;
-                }
-                drop(tx.send_eof());
-            });
-            let key: StoreKey<'_> = digest.into();
-            store
-                .update(key, rx, UploadSizeInfo::ExactSize(size_bytes as u64))
-                .await
-        } else {
-            // Small blob: single-message oneshot is more efficient.
-            store.update_oneshot(digest, data).await
-        };
+                    drop(tx.send_eof());
+                });
+                let key: StoreKey<'_> = digest.into();
+                store
+                    .update(key, rx, UploadSizeInfo::ExactSize(size_bytes as u64))
+                    .await
+            } else {
+                // Small blob: single-message oneshot is more efficient.
+                store.update_oneshot(digest, data).await
+            }
+        }).await;
 
         match result {
             Ok(()) => {
@@ -809,9 +811,11 @@ impl WorkerProxyStore {
 
         let size_bytes = digest.size_bytes();
         let key: StoreKey<'_> = digest.into();
-        let result = store
-            .update(key, reader, UploadSizeInfo::ExactSize(size_bytes))
-            .await;
+        let result = IS_MIRROR_REQUEST.scope(true, async {
+            store
+                .update(key, reader, UploadSizeInfo::ExactSize(size_bytes))
+                .await
+        }).await;
 
         match &result {
             Ok(()) => {

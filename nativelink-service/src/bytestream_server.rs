@@ -54,7 +54,7 @@ use nativelink_util::digest_hasher::{
 use nativelink_util::proto_stream_utils::WriteRequestStreamWrapper;
 use nativelink_util::resource_info::ResourceInfo;
 use nativelink_util::spawn;
-use nativelink_util::store_trait::{IS_WORKER_REQUEST, REDIRECT_PREFIX, Store, StoreLike, StoreOptimizations, UploadSizeInfo};
+use nativelink_util::store_trait::{IS_MIRROR_REQUEST, IS_WORKER_REQUEST, REDIRECT_PREFIX, Store, StoreLike, StoreOptimizations, UploadSizeInfo};
 use nativelink_util::task::JoinHandleDropGuard;
 use nativelink_util::zero_copy_codec::{
     GrpcUnaryBody, ZeroCopyReadBody, ZeroCopyWriteStream, decode_unary_request,
@@ -937,6 +937,7 @@ impl ByteStreamServer {
         digest: DigestInfo,
         stream: WriteRequestStreamWrapper<impl Stream<Item = Result<WriteRequest, Status>> + Unpin>,
         is_worker: bool,
+        is_mirror: bool,
     ) -> Result<Response<WriteResponse>, Error> {
         async fn process_client_stream(
             mut stream: WriteRequestStreamWrapper<
@@ -1079,10 +1080,11 @@ impl ByteStreamServer {
         let expected_size = stream.resource_info.expected_size as u64;
 
         // Set up tee mirror channel if WorkerProxyStore is available, blob is non-empty,
-        // and the upload is NOT from a worker. Workers already have the blob locally —
-        // mirroring it back to another worker wastes bandwidth and creates a feedback loop
-        // (worker A uploads → server mirrors to worker B → B is busy → mirror blocks A's upload).
+        // and the upload is NOT from a worker or a mirror. Workers already have the blob
+        // locally — mirroring it back to another worker wastes bandwidth. Mirror writes
+        // should not be re-mirrored to avoid infinite loops.
         let has_proxy = !is_worker
+            && !is_mirror
             && digest.size_bytes() > 0
             && instance_info
                 .store
@@ -1143,6 +1145,7 @@ impl ByteStreamServer {
             impl Stream<Item = Result<WriteRequest, Status>> + Unpin,
         >,
         is_worker: bool,
+        is_mirror: bool,
     ) -> Result<Response<WriteResponse>, Error> {
         let expected_size = stream.resource_info.expected_size as u64;
 
@@ -1259,8 +1262,9 @@ impl ByteStreamServer {
             .err_tip(|| "Error in update_oneshot")?;
 
         // Mirror to a random worker using the cloned data — no re-read needed.
-        // Skip mirroring for worker uploads — workers already have the blob.
-        if !is_worker {
+        // Skip mirroring for worker uploads and mirror writes — workers already
+        // have the blob, and mirror writes should not be re-mirrored.
+        if !is_worker && !is_mirror {
             mirror_blob_to_worker(&store, digest, Some(mirror_data));
         }
 
@@ -1345,6 +1349,7 @@ impl ByteStreamServer {
         >,
         zero_copy: bool,
         is_worker: bool,
+        is_mirror: bool,
     ) -> Result<Response<WriteResponse>, Error> {
         let instance_name = stream.resource_info.instance_name.as_ref();
         let expected_size = stream.resource_info.expected_size as u64;
@@ -1499,9 +1504,9 @@ impl ByteStreamServer {
         // indefinitely (e.g., when a QUIC stream wedges during cache
         // warming bursts).
         const WRITE_TIMEOUT: Duration = Duration::from_secs(300);
-        let write_fut = async {
+        let write_fut = IS_MIRROR_REQUEST.scope(is_mirror, async {
             if use_oneshot {
-                self.inner_write_oneshot(instance, digest, stream, is_worker)
+                self.inner_write_oneshot(instance, digest, stream, is_worker, is_mirror)
                     .instrument(error_span!("bytestream_write_oneshot", %zero_copy))
                     .with_context(
                         make_ctx_for_hash_func(digest_function)
@@ -1510,7 +1515,7 @@ impl ByteStreamServer {
                     .await
                     .err_tip(|| tip_oneshot_label)
             } else {
-                self.inner_write(instance, digest, stream, is_worker)
+                self.inner_write(instance, digest, stream, is_worker, is_mirror)
                     .instrument(error_span!("bytestream_write", %zero_copy))
                     .with_context(
                         make_ctx_for_hash_func(digest_function)
@@ -1519,7 +1524,7 @@ impl ByteStreamServer {
                     .await
                     .err_tip(|| tip_label)
             }
-        };
+        });
         let result = match tokio::time::timeout(WRITE_TIMEOUT, write_fut).await {
             Ok(r) => r,
             Err(_) => {
@@ -1612,12 +1617,13 @@ impl ByteStreamServer {
         let start_time = Instant::now();
 
         let is_worker = metadata.contains_key("x-nativelink-worker");
+        let is_mirror = metadata.contains_key("x-nativelink-mirror");
         let stream = WriteRequestStreamWrapper::from(stream)
             .await
             .err_tip(|| "Could not unwrap first stream message")
             .map_err(Into::<Status>::into)?;
 
-        self.bytestream_write(start_time, stream, true, is_worker)
+        self.bytestream_write(start_time, stream, true, is_worker, is_mirror)
             .await
             .map_err(Into::into)
     }
@@ -1895,13 +1901,16 @@ impl ByteStream for ByteStreamServer {
         let is_worker = grpc_request
             .metadata()
             .contains_key("x-nativelink-worker");
+        let is_mirror = grpc_request
+            .metadata()
+            .contains_key("x-nativelink-mirror");
         let request = grpc_request.into_inner();
         let stream = WriteRequestStreamWrapper::from(request)
             .await
             .err_tip(|| "Could not unwrap first stream message")
             .map_err(Into::<Status>::into)?;
 
-        self.bytestream_write(start_time, stream, false, is_worker)
+        self.bytestream_write(start_time, stream, false, is_worker, is_mirror)
             .await
             .map_err(Into::into)
     }

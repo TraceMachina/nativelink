@@ -37,6 +37,12 @@ tokio::task_local! {
     /// between proxying blob data (for clients) and returning a redirect
     /// with peer endpoints (for workers).
     pub static IS_WORKER_REQUEST: bool;
+
+    /// Set to `true` when the current write originates from a server-side
+    /// mirror operation. The worker's `FastSlowStore` checks this to hold
+    /// the blob in memory only (skip disk and server upload), avoiding
+    /// disk I/O for data that is already persisted on the server.
+    pub static IS_MIRROR_REQUEST: bool;
 }
 
 /// Prefix for redirect errors returned by `WorkerProxyStore` to worker callers.

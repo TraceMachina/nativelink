@@ -21,6 +21,7 @@ use core::time::Duration;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::sync::{Arc, Weak};
+use std::time::Instant;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -35,7 +36,7 @@ use nativelink_util::buf_channel::{
 use nativelink_util::fs;
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::store_trait::{
-    ItemCallback, Store, StoreDriver, StoreKey, StoreLike, StoreOptimizations,
+    IS_MIRROR_REQUEST, ItemCallback, Store, StoreDriver, StoreKey, StoreLike, StoreOptimizations,
     UploadSizeInfo, slow_update_store_with_file,
 };
 use parking_lot::Mutex;
@@ -85,6 +86,11 @@ pub struct FastSlowStore {
     /// Digests whose background slow-store write failed. Tracked so the
     /// worker can retry uploads on reconnect.
     failed_slow_writes: Arc<Mutex<HashSet<DigestInfo>>>,
+    /// Blobs received via server-side mirror that are held in memory only.
+    /// The server has already persisted these blobs — we hold them so peers
+    /// and local actions can read them without disk I/O. Cleaned up when
+    /// `BlobsInStableStorage` arrives or after a TTL expiry.
+    mirror_blobs: Mutex<HashMap<DigestInfo, (Bytes, Instant)>>,
 }
 
 // This guard ensures that the populating_digests is cleared even if the future
@@ -154,6 +160,7 @@ impl FastSlowStore {
             stable_notify: Arc::new(Notify::new()),
             shutting_down: AtomicBool::new(false),
             failed_slow_writes: Arc::new(Mutex::new(HashSet::new())),
+            mirror_blobs: Mutex::new(HashMap::new()),
         })
     }
 
@@ -269,7 +276,30 @@ impl FastSlowStore {
             stable_notify: Arc::new(Notify::new()),
             shutting_down: AtomicBool::new(false),
             failed_slow_writes: shared,
+            mirror_blobs: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// Remove mirror blobs that the server has confirmed are in stable storage.
+    pub fn remove_mirror_blobs(&self, digests: &[DigestInfo]) {
+        let mut guard = self.mirror_blobs.lock();
+        for digest in digests {
+            guard.remove(digest);
+        }
+    }
+
+    /// Remove mirror blobs older than the given duration. Returns the number
+    /// of blobs expired.
+    pub fn expire_mirror_blobs(&self, max_age: Duration) -> usize {
+        let mut guard = self.mirror_blobs.lock();
+        let before = guard.len();
+        guard.retain(|_, (_, inserted_at)| inserted_at.elapsed() < max_age);
+        before - guard.len()
+    }
+
+    /// Current number of mirror blobs held in memory.
+    pub fn mirror_blob_count(&self) -> usize {
+        self.mirror_blobs.lock().len()
     }
 
     fn get_loader<'a>(&self, key: StoreKey<'a>) -> LoaderGuard<'a> {
@@ -537,6 +567,20 @@ impl StoreDriver for FastSlowStore {
                 }
             }
         }
+        // Check mirror blobs for any still-missing digests.
+        {
+            let mirror = self.mirror_blobs.lock();
+            if !mirror.is_empty() {
+                for (k, result) in key.iter().zip(results.iter_mut()) {
+                    if result.is_none() {
+                        let digest = k.borrow().into_digest();
+                        if let Some((data, _)) = mirror.get(&digest) {
+                            *result = Some(data.len() as u64);
+                        }
+                    }
+                }
+            }
+        }
         Ok(())
     }
 
@@ -546,6 +590,34 @@ impl StoreDriver for FastSlowStore {
         mut reader: DropCloserReadHalf,
         size_info: UploadSizeInfo,
     ) -> Result<(), Error> {
+        // Mirror writes: hold blob data in memory only, skip both disk and
+        // server. The server already has this blob persisted and is pushing
+        // a copy to us for read locality. Data is cleaned up when
+        // BlobsInStableStorage arrives or after a TTL.
+        let is_mirror = IS_MIRROR_REQUEST.try_with(|v| *v).unwrap_or(false);
+        if is_mirror {
+            let digest = key.borrow().into_digest();
+            let mut chunks = bytes::BytesMut::new();
+            loop {
+                let chunk = reader
+                    .recv()
+                    .await
+                    .err_tip(|| "mirror recv in FastSlowStore::update")?;
+                if chunk.is_empty() {
+                    break; // EOF
+                }
+                chunks.extend_from_slice(&chunk);
+            }
+            let data = chunks.freeze();
+            debug!(
+                %digest,
+                data_len = data.len(),
+                "FastSlowStore: mirror blob stored in memory"
+            );
+            self.mirror_blobs.lock().insert(digest, (data, Instant::now()));
+            return Ok(());
+        }
+
         // If either one of our stores is a noop store, bypass the multiplexing
         // and just use the store that is not a noop store.
         let ignore_slow = self
@@ -794,6 +866,19 @@ impl StoreDriver for FastSlowStore {
         key: StoreKey<'_>,
         data: Bytes,
     ) -> Result<(), Error> {
+        // Mirror writes: hold in memory only.
+        let is_mirror = IS_MIRROR_REQUEST.try_with(|v| *v).unwrap_or(false);
+        if is_mirror {
+            let digest = key.borrow().into_digest();
+            debug!(
+                %digest,
+                data_len = data.len(),
+                "FastSlowStore: mirror blob stored in memory (oneshot)"
+            );
+            self.mirror_blobs.lock().insert(digest, (data, Instant::now()));
+            return Ok(());
+        }
+
         let ignore_slow = self
             .slow_store
             .inner_store(Some(key.borrow()))
@@ -1045,6 +1130,33 @@ impl StoreDriver for FastSlowStore {
         offset: u64,
         length: Option<u64>,
     ) -> Result<(), Error> {
+        // Check mirror blob cache first — these are blobs the server pushed
+        // to us that we hold in memory only.
+        {
+            let digest = key.borrow().into_digest();
+            let maybe_data = self.mirror_blobs.lock().get(&digest).map(|(d, _)| d.clone());
+            if let Some(data) = maybe_data {
+                let offset_usize = usize::try_from(offset).unwrap_or(usize::MAX);
+                if offset_usize < data.len() {
+                    let end = length
+                        .and_then(|l| usize::try_from(l).ok())
+                        .map(|l| offset_usize.saturating_add(l).min(data.len()))
+                        .unwrap_or(data.len());
+                    let slice = data.slice(offset_usize..end);
+                    if !slice.is_empty() {
+                        writer
+                            .send(slice)
+                            .await
+                            .err_tip(|| "Failed to send mirror blob data")?;
+                    }
+                }
+                writer
+                    .send_eof()
+                    .err_tip(|| "Failed to send EOF for mirror blob")?;
+                return Ok(());
+            }
+        }
+
         if self.fast_store.has(key.borrow()).await?.is_some() {
             // Try the fast store first. If the item was evicted between the
             // has() check and this get_part() call (TOCTOU race), fall through

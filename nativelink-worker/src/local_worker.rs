@@ -614,6 +614,9 @@ pub struct BlobsAvailableState {
     /// Backstop interval: even without blob changes, wake periodically to
     /// pick up subtree-only deltas that bypass the tracker notify.
     max_interval: Duration,
+    /// The FastSlowStore backing the worker's CAS server. Used to clean up
+    /// mirror blobs when `BlobsInStableStorage` is received.
+    cas_server_fss: Option<Arc<FastSlowStore>>,
 }
 
 struct LocalWorkerImpl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> {
@@ -1015,6 +1018,9 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
         if let Some(ref state) = self.blobs_available_state {
             let mut grpc_client = self.grpc_client.clone();
             let state = state.clone();
+            // Extract mirror cleanup reference before state is moved into
+            // the BlobsAvailable loop.
+            let mirror_cleanup_fss = state.cas_server_fss.clone();
             let ram = self.running_actions_manager.clone();
             futures.push(
                 async move {
@@ -1046,6 +1052,31 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                 }
                 .boxed(),
             );
+
+            // Periodic cleanup of stale mirror blobs. If the server never sends
+            // BlobsInStableStorage for a digest (e.g., because the server
+            // restarted), mirror blobs would leak memory. This task expires
+            // blobs older than 120s every 30s.
+            if let Some(cas_fss_for_cleanup) = mirror_cleanup_fss {
+                futures.push(
+                    async move {
+                        const MIRROR_TTL: Duration = Duration::from_secs(120);
+                        const CLEANUP_INTERVAL: Duration = Duration::from_secs(30);
+                        loop {
+                            sleep(CLEANUP_INTERVAL).await;
+                            let expired = cas_fss_for_cleanup.expire_mirror_blobs(MIRROR_TTL);
+                            if expired > 0 {
+                                warn!(
+                                    expired,
+                                    remaining = cas_fss_for_cleanup.mirror_blob_count(),
+                                    "expired stale mirror blobs (no BlobsInStableStorage received)"
+                                );
+                            }
+                        }
+                    }
+                    .boxed(),
+                );
+            }
         }
 
         // On (re)connect, retry any failed background slow-store writes
@@ -1184,6 +1215,21 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                 // may track different digests).
                                 if let Some(cas_store) = self.running_actions_manager.get_cas_store() {
                                     cas_store.ack_digests(&acked_digests);
+                                }
+                                // Clean up mirror blobs from the CAS server's
+                                // FastSlowStore — the server has confirmed it
+                                // persisted these, so we no longer need memory copies.
+                                if let Some(ref cas_fss) = state.cas_server_fss {
+                                    let before = cas_fss.mirror_blob_count();
+                                    cas_fss.remove_mirror_blobs(&acked_digests);
+                                    let removed = before - cas_fss.mirror_blob_count();
+                                    if removed > 0 {
+                                        info!(
+                                            removed,
+                                            remaining = cas_fss.mirror_blob_count(),
+                                            "BlobsInStableStorage: removed mirror blobs from memory"
+                                        );
+                                    }
                                 }
                                 info!(
                                     unpinned,
@@ -1745,6 +1791,8 @@ pub async fn new_local_worker(
             &fss_spec, fast_store, slow_store, &effective_cas_store,
         )
     };
+    // Keep a reference for mirror blob cleanup in BlobsInStableStorage.
+    let cas_server_fss = effective_cas_store_for_cas_server.clone();
 
     let running_actions_manager =
         Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
@@ -1809,6 +1857,7 @@ pub async fn new_local_worker(
                 cas_endpoint,
                 notify,
                 max_interval: Duration::from_millis(max_interval_ms),
+                cas_server_fss: Some(cas_server_fss.clone()),
             })
         } else {
             warn!("FastSlowStore's fast store is not a FilesystemStore; BlobsAvailable reporting disabled");
