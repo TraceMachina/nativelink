@@ -999,65 +999,85 @@ where
             .saturating_add(length.unwrap_or(isize::MAX as usize) as isize)
             .saturating_sub(1);
 
-        // And we don't ever want to read more than `read_chunk_size` bytes at a time, so we'll need to iterate.
-        let mut chunk_start = data_start;
-        let mut chunk_end = cmp::min(
-            data_start.saturating_add(self.read_chunk_size as isize) - 1,
-            data_end,
-        );
-
+        // Read in chunks of `read_chunk_size`. The outer loop handles a TOCTOU
+        // race: GETRANGE on a missing key returns "" (not an error), so if a
+        // concurrent `update` publishes the key (via RENAME) between our
+        // GETRANGE and the EXISTS fallback check, we retry the read once.
         let mut client = self.get_client().await?;
+        let mut retried = false;
         loop {
-            let chunk: Bytes = client
-                .connection_manager
-                .getrange(encoded_key, chunk_start, chunk_end)
-                .await
-                .err_tip(|| "In RedisStore::get_part::getrange")?;
-
-            let didnt_receive_full_chunk = chunk.len() < self.read_chunk_size;
-            let reached_end_of_data = chunk_end == data_end;
-
-            if didnt_receive_full_chunk || reached_end_of_data {
-                if !chunk.is_empty() {
-                    writer
-                        .send(chunk)
-                        .await
-                        .err_tip(|| "Failed to write data in RedisStore::get_part")?;
-                }
-
-                break; // No more data to read.
-            }
-
-            // We received a full chunk's worth of data, so write it...
-            writer
-                .send(chunk)
-                .await
-                .err_tip(|| "Failed to write data in RedisStore::get_part")?;
-
-            // ...and go grab the next chunk.
-            chunk_start = chunk_end + 1;
-            chunk_end = cmp::min(
-                chunk_start.saturating_add(self.read_chunk_size as isize) - 1,
+            let mut chunk_start = data_start;
+            let mut chunk_end = cmp::min(
+                data_start.saturating_add(self.read_chunk_size as isize) - 1,
                 data_end,
             );
-        }
 
-        // If we didn't write any data, check if the key exists, if not return a NotFound error.
-        // This is required by spec.
-        if writer.get_bytes_written() == 0 {
-            // We're supposed to read 0 bytes, so just check if the key exists.
-            let exists: bool = client
-                .connection_manager
-                .exists(encoded_key)
-                .await
-                .err_tip(|| "In RedisStore::get_part::zero_exists")?;
+            loop {
+                let chunk: Bytes = client
+                    .connection_manager
+                    .getrange(encoded_key, chunk_start, chunk_end)
+                    .await
+                    .err_tip(|| "In RedisStore::get_part::getrange")?;
 
-            if !exists {
-                return Err(make_err!(
-                    Code::NotFound,
-                    "Data not found in Redis store for digest: {key:?}"
-                ));
+                let didnt_receive_full_chunk = chunk.len() < self.read_chunk_size;
+                let reached_end_of_data = chunk_end == data_end;
+
+                if didnt_receive_full_chunk || reached_end_of_data {
+                    if !chunk.is_empty() {
+                        writer
+                            .send(chunk)
+                            .await
+                            .err_tip(|| "Failed to write data in RedisStore::get_part")?;
+                    }
+
+                    break; // No more data to read.
+                }
+
+                // We received a full chunk's worth of data, so write it...
+                writer
+                    .send(chunk)
+                    .await
+                    .err_tip(|| "Failed to write data in RedisStore::get_part")?;
+
+                // ...and go grab the next chunk.
+                chunk_start = chunk_end + 1;
+                chunk_end = cmp::min(
+                    chunk_start.saturating_add(self.read_chunk_size as isize) - 1,
+                    data_end,
+                );
             }
+
+            // If we didn't write any data, check if the key exists, if not
+            // return a NotFound error. This is required by spec.
+            if writer.get_bytes_written() == 0 {
+                let exists: bool = client
+                    .connection_manager
+                    .exists(encoded_key)
+                    .await
+                    .err_tip(|| "In RedisStore::get_part::zero_exists")?;
+
+                if !exists {
+                    return Err(make_err!(
+                        Code::NotFound,
+                        "Data not found in Redis store for digest: {key:?}"
+                    ));
+                }
+
+                // Key exists but GETRANGE returned empty — a concurrent RENAME
+                // may have published the key between our GETRANGE and EXISTS.
+                // Retry the entire read once.
+                if !retried {
+                    retried = true;
+                    warn!(
+                        ?key,
+                        "GETRANGE returned empty but EXISTS=true, retrying (TOCTOU race)"
+                    );
+                    continue;
+                }
+                // Already retried — offset is genuinely past end of data (valid EOF).
+            }
+
+            break;
         }
 
         writer
