@@ -348,10 +348,6 @@
             type = "app";
             program = "${nativelink}/bin/nativelink";
           };
-          native = {
-            type = "app";
-            program = "${pkgs.nativelink-tools.native-cli}/bin/native";
-          };
         };
         packages =
           rec {
@@ -528,7 +524,6 @@
               pkgs.lre.clang
               pkgs.lre.lre-cc.lre-cc-configs-gen
               pkgs.nativelink-tools.local-image-test
-              pkgs.nativelink-tools.native-cli
               pkgs.nativelink-tools.create-local-image
             ]
             ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
