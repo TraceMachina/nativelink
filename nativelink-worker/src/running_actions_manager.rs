@@ -154,6 +154,71 @@ struct FileToMaterialize {
     mtime: Option<prost_types::Timestamp>,
 }
 
+/// Parse a GetTree response (flat list of directories in BFS order) into a
+/// digest-keyed map. The root directory is assigned `root_digest`; child
+/// directories are assigned digests based on their parent's `DirectoryNode`
+/// references.
+///
+/// This function is public for testing. It handles the case where the server
+/// skips missing directories in a tolerant GetTree response — the resulting
+/// tree may be incomplete, and the caller should validate + gap-fill.
+pub fn parse_get_tree_response(
+    all_dirs: Vec<ProtoDirectory>,
+    root_digest: &DigestInfo,
+) -> HashMap<DigestInfo, ProtoDirectory> {
+    // Build the tree by computing each directory's content digest.
+    // This is position-independent and handles the case where the server
+    // skips missing directories in a tolerant GetTree response — no
+    // position-based assignment that breaks when entries are missing.
+    //
+    // The digest function is obtained from the current context (set by
+    // the caller's OpenTelemetry/tracing context). We fall back to the
+    // default (BLAKE3) if no context is set.
+    let digest_function = Context::current()
+        .get::<DigestHasherFunc>()
+        .map_or_else(default_digest_hasher_func, |v| *v);
+
+    let mut tree = HashMap::with_capacity(all_dirs.len());
+    for dir in all_dirs {
+        let encoded = dir.encode_to_vec();
+        let mut hasher = digest_function.hasher();
+        hasher.update(&encoded);
+        let computed_digest = hasher.finalize_digest();
+        tree.insert(computed_digest, dir);
+    }
+
+    // If the root digest isn't in the tree (different serialization produced
+    // a different hash), fall back: assume position 0 is the root.
+    if !tree.contains_key(root_digest) && !tree.is_empty() {
+        // The root might have been computed with a different hash due to
+        // protobuf serialization differences. Try to identify it by
+        // matching: the root should be the only directory not referenced
+        // as a child by any other directory.
+        let all_child_digests: HashSet<DigestInfo> = tree
+            .values()
+            .flat_map(|dir| &dir.directories)
+            .filter_map(|node| {
+                node.digest
+                    .as_ref()
+                    .and_then(|d| DigestInfo::try_from(d).ok())
+            })
+            .collect();
+        let orphans: Vec<DigestInfo> = tree
+            .keys()
+            .filter(|d| !all_child_digests.contains(d))
+            .copied()
+            .collect();
+        if orphans.len() == 1 {
+            // Found a unique root — re-key it under root_digest.
+            if let Some(root_dir) = tree.remove(&orphans[0]) {
+                tree.insert(*root_digest, root_dir);
+            }
+        }
+    }
+
+    tree
+}
+
 /// Maximum size for a blob to be eligible for BatchReadBlobs (1 MiB).
 /// Blobs larger than this use the existing ByteStream path.
 const BATCH_READ_MAX_BLOB_SIZE: u64 = 1024 * 1024;
@@ -215,53 +280,7 @@ pub async fn resolve_directory_tree(
                 );
 
                 if !all_dirs.is_empty() {
-                    // Build the tree using BFS assignment from the root.
-                    // The GetTree response returns directories in BFS order
-                    // (root first). Rather than re-encoding each directory
-                    // and hoping the digest matches (which fails when the
-                    // original bytes were serialized by a different protobuf
-                    // implementation, e.g. Java), we assign digests by
-                    // walking the tree structure: the root gets `root_digest`,
-                    // and each child gets the digest its parent references.
-                    //
-                    // The server deduplicates: if two parents reference the
-                    // same child digest, the child appears only once in the
-                    // response. We mirror this by tracking `seen` digests
-                    // and only consuming a new position for unseen children.
-                    let mut tree = HashMap::with_capacity(all_dirs.len());
-                    let mut dir_by_pos: Vec<ProtoDirectory> = all_dirs;
-                    // BFS queue: (position_in_dir_by_pos, assigned_digest).
-                    let mut queue: VecDeque<(usize, DigestInfo)> = VecDeque::new();
-                    queue.push_back((0, *root_digest));
-                    let mut next_child_pos: usize = 1;
-                    // Track digests we've already assigned a position to,
-                    // mirroring the server's deduplication.
-                    let mut seen: HashSet<DigestInfo> = HashSet::new();
-                    seen.insert(*root_digest);
-
-                    while let Some((pos, digest)) = queue.pop_front() {
-                        if pos >= dir_by_pos.len() {
-                            break;
-                        }
-                        let dir = std::mem::take(&mut dir_by_pos[pos]);
-                        for child_node in &dir.directories {
-                            if let Some(child_digest) = child_node
-                                .digest
-                                .as_ref()
-                                .and_then(|d| DigestInfo::try_from(d).ok())
-                            {
-                                // Only assign a new position for previously
-                                // unseen digests (matching server dedup).
-                                if seen.insert(child_digest) {
-                                    if next_child_pos < dir_by_pos.len() {
-                                        queue.push_back((next_child_pos, child_digest));
-                                        next_child_pos += 1;
-                                    }
-                                }
-                            }
-                        }
-                        tree.insert(digest, dir);
-                    }
+                    let mut tree = parse_get_tree_response(all_dirs, root_digest);
 
                     // Validate structural completeness: every child reference
                     // should point to a digest in the tree.
@@ -333,7 +352,7 @@ pub async fn resolve_directory_tree(
                         root = ?root_digest,
                         tree_has_root = tree.contains_key(root_digest),
                         tree_size = tree.len(),
-                        expected_size = dir_by_pos.len(),
+                        // dir_by_pos is consumed by parse_get_tree_response
                         missing_children,
                         validation_elapsed_ms = tree_start.elapsed().as_millis() as u64,
                         "resolve_directory_tree: GetTree BFS validation failed, falling back to parallel BFS"

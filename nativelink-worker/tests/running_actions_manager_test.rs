@@ -4765,6 +4765,125 @@ exit 1
     }
 
     #[nativelink_test]
+    async fn parse_get_tree_response_with_missing_directory_test(
+    ) -> Result<(), Box<dyn core::error::Error>> {
+        // Regression test: when the server's GetTree response skips a missing
+        // directory (tolerant mode), the digest-based parsing must still
+        // correctly identify each directory. The tree structure is:
+        //   root → [A, B]    (server skips B because it's missing)
+        //   A → [std]
+        //   std → (leaf file)
+        //
+        // With the old position-based parser, skipping B would shift positions
+        // and assign std's content to B's digest, losing std entirely.
+        use nativelink_worker::running_actions_manager::parse_get_tree_response;
+
+        // Build directories bottom-up so digests are content-based.
+        let file_digest = DigestInfo::new([5u8; 32], 10);
+
+        // std/ directory — contains mod.rs
+        let std_dir = Directory {
+            files: vec![FileNode {
+                name: "mod.rs".to_string(),
+                digest: Some(file_digest.into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let std_encoded = std_dir.encode_to_vec();
+        let std_digest = {
+            let mut hasher = nativelink_util::digest_hasher::default_digest_hasher_func().hasher();
+            hasher.update(&std_encoded);
+            hasher.finalize_digest()
+        };
+
+        // A/ directory — contains std/
+        let a_dir = Directory {
+            directories: vec![DirectoryNode {
+                name: "std".to_string(),
+                digest: Some(std_digest.into()),
+            }],
+            ..Default::default()
+        };
+        let a_encoded = a_dir.encode_to_vec();
+        let a_digest = {
+            let mut hasher = nativelink_util::digest_hasher::default_digest_hasher_func().hasher();
+            hasher.update(&a_encoded);
+            hasher.finalize_digest()
+        };
+
+        // B/ directory — this one will be MISSING from the response.
+        let b_digest = DigestInfo::new([99u8; 32], 50);
+
+        // root/ directory — contains A/ and B/
+        let root_dir = Directory {
+            directories: vec![
+                DirectoryNode {
+                    name: "A".to_string(),
+                    digest: Some(a_digest.into()),
+                },
+                DirectoryNode {
+                    name: "B".to_string(),
+                    digest: Some(b_digest.into()),
+                },
+            ],
+            ..Default::default()
+        };
+        let root_encoded = root_dir.encode_to_vec();
+        let root_digest = {
+            let mut hasher = nativelink_util::digest_hasher::default_digest_hasher_func().hasher();
+            hasher.update(&root_encoded);
+            hasher.finalize_digest()
+        };
+
+        // Server sends BFS order but SKIPS B (missing from CAS).
+        // Full BFS would be: [root, A, B, std]
+        // Tolerant response: [root, A, std]  (B omitted)
+        let response_dirs = vec![root_dir, a_dir, std_dir];
+
+        let tree = parse_get_tree_response(response_dirs, &root_digest);
+
+        // Root should be in the tree.
+        assert!(tree.contains_key(&root_digest), "root should be in tree");
+
+        // A should be in the tree.
+        assert!(tree.contains_key(&a_digest), "A should be in tree");
+
+        // std should be in the tree under its correct digest.
+        assert!(
+            tree.contains_key(&std_digest),
+            "std directory should be in tree under its correct digest"
+        );
+
+        // B should NOT be in the tree (it was skipped).
+        assert!(
+            !tree.contains_key(&b_digest),
+            "B should not be in tree (it was missing)"
+        );
+
+        // Verify std has the right content.
+        let std_entry = tree.get(&std_digest).unwrap();
+        assert_eq!(std_entry.files.len(), 1);
+        assert_eq!(std_entry.files[0].name, "mod.rs");
+
+        // Verify the tree validation would detect the gap (B is missing).
+        let all_children_present = tree.values().all(|dir| {
+            dir.directories.iter().all(|node| {
+                node.digest
+                    .as_ref()
+                    .and_then(|d| DigestInfo::try_from(d).ok())
+                    .is_some_and(|d| tree.contains_key(&d))
+            })
+        });
+        assert!(
+            !all_children_present,
+            "tree validation should detect B is missing"
+        );
+
+        Ok(())
+    }
+
+    #[nativelink_test]
     async fn download_to_directory_nested_std_directory_test(
     ) -> Result<(), Box<dyn core::error::Error>> {
         // Regression test for the rustix `maybe_polyfill/std/mod.rs` bug.
