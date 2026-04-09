@@ -23,8 +23,12 @@ jobs:
       fail-fast: false
       matrix:
         image: [image, nativelink-worker-init, nativelink-worker-lre-cc, nativelink-worker-lre-rs]
-    name: Publish ${{ matrix.image }}
-    runs-on: ubuntu-24.04
+        os: [ubuntu-24.04]
+        include:
+          - os: macos-26
+            image: nativelink-worker-lre-rs
+    name: Publish ${{ matrix.image }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
     permissions:
       packages: write
       id-token: write
