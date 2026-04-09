@@ -4763,4 +4763,137 @@ exit 1
         fs::remove_dir_all(&root_action_directory).await?;
         Ok(())
     }
+
+    #[nativelink_test]
+    async fn download_to_directory_nested_std_directory_test(
+    ) -> Result<(), Box<dyn core::error::Error>> {
+        // Regression test for the rustix `maybe_polyfill/std/mod.rs` bug.
+        // Verifies that a directory literally named "std" (which collides with
+        // Rust's standard library name) is materialized correctly during
+        // remote execution input fetch. The tree structure mimics:
+        //   root/
+        //     src/
+        //       maybe_polyfill/
+        //         std/
+        //           mod.rs
+        //       lib.rs
+        const MOD_RS_CONTENT: &str = "// std polyfill module";
+        const LIB_RS_CONTENT: &str = "pub mod maybe_polyfill;";
+
+        let (fast_store, slow_store, cas_store, _ac_store) = setup_stores().await?;
+
+        let root_directory_digest = {
+            // Upload file contents.
+            let mod_rs_digest = DigestInfo::new([80u8; 32], MOD_RS_CONTENT.len() as u64);
+            slow_store
+                .as_ref()
+                .update_oneshot(mod_rs_digest, MOD_RS_CONTENT.into())
+                .await?;
+
+            let lib_rs_digest = DigestInfo::new([81u8; 32], LIB_RS_CONTENT.len() as u64);
+            slow_store
+                .as_ref()
+                .update_oneshot(lib_rs_digest, LIB_RS_CONTENT.into())
+                .await?;
+
+            // std/ directory (deepest) — contains mod.rs
+            let std_digest = DigestInfo::new([82u8; 32], 32);
+            let std_dir = Directory {
+                files: vec![FileNode {
+                    name: "mod.rs".to_string(),
+                    digest: Some(mod_rs_digest.into()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            slow_store
+                .as_ref()
+                .update_oneshot(std_digest, std_dir.encode_to_vec().into())
+                .await?;
+
+            // maybe_polyfill/ directory — contains std/
+            let maybe_polyfill_digest = DigestInfo::new([83u8; 32], 32);
+            let maybe_polyfill_dir = Directory {
+                directories: vec![DirectoryNode {
+                    name: "std".to_string(),
+                    digest: Some(std_digest.into()),
+                }],
+                ..Default::default()
+            };
+            slow_store
+                .as_ref()
+                .update_oneshot(
+                    maybe_polyfill_digest,
+                    maybe_polyfill_dir.encode_to_vec().into(),
+                )
+                .await?;
+
+            // src/ directory — contains maybe_polyfill/ and lib.rs
+            let src_digest = DigestInfo::new([84u8; 32], 32);
+            let src_dir = Directory {
+                files: vec![FileNode {
+                    name: "lib.rs".to_string(),
+                    digest: Some(lib_rs_digest.into()),
+                    ..Default::default()
+                }],
+                directories: vec![DirectoryNode {
+                    name: "maybe_polyfill".to_string(),
+                    digest: Some(maybe_polyfill_digest.into()),
+                }],
+                ..Default::default()
+            };
+            slow_store
+                .as_ref()
+                .update_oneshot(src_digest, src_dir.encode_to_vec().into())
+                .await?;
+
+            // root directory — contains src/
+            let root_digest = DigestInfo::new([85u8; 32], 32);
+            let root_dir = Directory {
+                directories: vec![DirectoryNode {
+                    name: "src".to_string(),
+                    digest: Some(src_digest.into()),
+                }],
+                ..Default::default()
+            };
+            slow_store
+                .as_ref()
+                .update_oneshot(root_digest, root_dir.encode_to_vec().into())
+                .await?;
+            root_digest
+        };
+
+        let download_dir = make_temp_path("download_dir_std");
+        fs::create_dir_all(&download_dir).await?;
+        download_to_directory(
+            cas_store.as_ref(),
+            fast_store.as_pin(),
+            &root_directory_digest,
+            &download_dir,
+            None,
+        )
+        .await?;
+
+        // The critical assertion: std/mod.rs must exist.
+        let mod_rs_path =
+            format!("{download_dir}/src/maybe_polyfill/std/mod.rs");
+        let content = fs::read(&mod_rs_path).await?;
+        assert_eq!(
+            from_utf8(&content)?,
+            MOD_RS_CONTENT,
+            "maybe_polyfill/std/mod.rs should have correct content"
+        );
+
+        // Verify the directory named "std" exists as a directory.
+        let std_meta =
+            fs::metadata(format!("{download_dir}/src/maybe_polyfill/std")).await?;
+        assert!(std_meta.is_dir(), "std should be a directory");
+
+        // Verify lib.rs also exists.
+        let lib_rs_path = format!("{download_dir}/src/lib.rs");
+        let lib_content = fs::read(&lib_rs_path).await?;
+        assert_eq!(from_utf8(&lib_content)?, LIB_RS_CONTENT);
+
+        Ok(())
+    }
 }

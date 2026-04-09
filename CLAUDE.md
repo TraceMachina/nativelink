@@ -57,6 +57,9 @@
   (unit, integration, and cross-component interaction tests). Verify they fail before
   implementing the feature, then make them pass. Include fakes/mocks for
   hardware-interaction tests where needed.
+- **Bug fixes require a failing test first**: when fixing a bug, write a test that
+  reproduces the failure, verify it fails, then implement the fix and show the test
+  passes. Never fix a bug without a regression test.
 - Integration tests in `tests/` directory; minimal inline `#[cfg(test)]` modules
 - Use `nativelink-macro` test harness (`#[nativelink_test]`)
 
