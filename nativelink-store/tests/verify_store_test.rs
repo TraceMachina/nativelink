@@ -17,7 +17,7 @@ use core::pin::Pin;
 use futures::future::pending;
 use futures::try_join;
 use nativelink_config::stores::{MemorySpec, StoreSpec, VerifySpec};
-use nativelink_error::{Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt};
 use nativelink_macro::nativelink_test;
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_store::verify_store::VerifyStore;
@@ -366,6 +366,204 @@ async fn verify_size_and_hash_succeeds_on_small_data() -> Result<(), Error> {
         inner_store.has(digest).await,
         Ok(Some(VALUE.len() as u64)),
         "Expected data to exist in store after update"
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn verify_hash_on_read_catches_corrupted_data() -> Result<(), Error> {
+    /// This value is sha256("123").
+    const CORRECT_HASH: &str = "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3";
+    const CORRECT_VALUE: &str = "123";
+    const CORRUPTED_VALUE: &str = "999";
+
+    let inner_store = MemoryStore::new(&MemorySpec::default());
+    let store = VerifyStore::new(
+        &VerifySpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            verify_size: false,
+            verify_hash: true,
+        },
+        Store::new(inner_store.clone()),
+    );
+
+    // Write corrupted data directly to the inner store, bypassing verification.
+    let digest = DigestInfo::try_new(CORRECT_HASH, CORRECT_VALUE.len() as u64).unwrap();
+    inner_store
+        .update_oneshot(digest, CORRUPTED_VALUE.into())
+        .await?;
+
+    // Reading through the verify store should detect the hash mismatch.
+    let result = store.get_part_unchunked(digest, 0, None).await;
+    assert!(result.is_err(), "Expected hash mismatch error, got: {:?}", result);
+    let err = result.unwrap_err();
+    assert!(
+        err.to_string().contains("Hash mismatch on read"),
+        "Error should mention hash mismatch on read, got: {err:?}"
+    );
+    assert_eq!(err.code, Code::DataLoss, "Error code should be DataLoss");
+    Ok(())
+}
+
+#[nativelink_test]
+async fn verify_hash_on_read_passes_for_correct_data() -> Result<(), Error> {
+    /// This value is sha256("123").
+    const HASH: &str = "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3";
+    const VALUE: &str = "123";
+
+    let inner_store = MemoryStore::new(&MemorySpec::default());
+    let store = VerifyStore::new(
+        &VerifySpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            verify_size: false,
+            verify_hash: true,
+        },
+        Store::new(inner_store.clone()),
+    );
+
+    let digest = DigestInfo::try_new(HASH, VALUE.len() as u64).unwrap();
+    inner_store
+        .update_oneshot(digest, VALUE.into())
+        .await?;
+
+    let result = store.get_part_unchunked(digest, 0, None).await;
+    assert_eq!(
+        result.as_deref(),
+        Ok(VALUE.as_bytes()),
+        "Expected correct data, got: {:?}",
+        result
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn verify_size_on_read_catches_wrong_size() -> Result<(), Error> {
+    const VALUE_SHORT: &str = "12";
+
+    let inner_store = MemoryStore::new(&MemorySpec::default());
+    let store = VerifyStore::new(
+        &VerifySpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            verify_size: true,
+            verify_hash: false,
+        },
+        Store::new(inner_store.clone()),
+    );
+
+    // Create a digest that says 5 bytes, but store only 2 bytes in inner store.
+    let digest = DigestInfo::try_new(VALID_HASH1, 5).unwrap();
+    inner_store
+        .update_oneshot(digest, VALUE_SHORT.into())
+        .await?;
+
+    let result = store.get_part_unchunked(digest, 0, None).await;
+    assert!(result.is_err(), "Expected size mismatch error, got: {:?}", result);
+    let err = result.unwrap_err();
+    assert!(
+        err.to_string().contains("Expected size 5 but got size 2 on read"),
+        "Error should mention size mismatch, got: {err:?}"
+    );
+    assert_eq!(err.code, Code::DataLoss, "Error code should be DataLoss");
+    Ok(())
+}
+
+#[nativelink_test]
+async fn verify_hash_on_partial_read_is_skipped() -> Result<(), Error> {
+    /// This value is sha256("123").
+    const HASH: &str = "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3";
+    const VALUE: &str = "123";
+
+    let inner_store = MemoryStore::new(&MemorySpec::default());
+    let store = VerifyStore::new(
+        &VerifySpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            verify_size: true,
+            verify_hash: true,
+        },
+        Store::new(inner_store.clone()),
+    );
+
+    let digest = DigestInfo::try_new(HASH, VALUE.len() as u64).unwrap();
+    inner_store
+        .update_oneshot(digest, VALUE.into())
+        .await?;
+
+    // Partial read with offset -- verification should be skipped.
+    let result = store.get_part_unchunked(digest, 1, Some(2)).await;
+    assert_eq!(
+        result.as_deref(),
+        Ok(&VALUE.as_bytes()[1..3]),
+        "Partial read should succeed without verification, got: {:?}",
+        result
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn verify_blake3_hash_on_read_catches_corruption() -> Result<(), Error> {
+    /// This value is blake3("123").
+    const CORRECT_HASH: &str = "b3d4f8803f7e24b8f389b072e75477cdbcfbe074080fb5e500e53e26e054158e";
+    const CORRECT_VALUE: &str = "123";
+    const CORRUPTED_VALUE: &str = "abc";
+
+    let inner_store = MemoryStore::new(&MemorySpec::default());
+    let store = VerifyStore::new(
+        &VerifySpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            verify_size: false,
+            verify_hash: true,
+        },
+        Store::new(inner_store.clone()),
+    );
+
+    let digest = DigestInfo::try_new(CORRECT_HASH, CORRECT_VALUE.len() as u64).unwrap();
+    inner_store
+        .update_oneshot(digest, CORRUPTED_VALUE.into())
+        .await?;
+
+    let result = store
+        .get_part_unchunked(digest, 0, None)
+        .instrument(info_span!("get_part_unchunked"))
+        .with_context(make_ctx_for_hash_func(DigestHasherFunc::Blake3)?)
+        .await;
+
+    assert!(result.is_err(), "Expected hash mismatch error, got: {:?}", result);
+    let err = result.unwrap_err();
+    assert!(
+        err.to_string().contains("Hash mismatch on read"),
+        "Error should mention hash mismatch on read, got: {err:?}"
+    );
+    assert_eq!(err.code, Code::DataLoss, "Error code should be DataLoss");
+    Ok(())
+}
+
+#[nativelink_test]
+async fn verify_both_size_and_hash_on_read_succeeds() -> Result<(), Error> {
+    /// This value is sha256("123").
+    const HASH: &str = "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3";
+    const VALUE: &str = "123";
+
+    let inner_store = MemoryStore::new(&MemorySpec::default());
+    let store = VerifyStore::new(
+        &VerifySpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            verify_size: true,
+            verify_hash: true,
+        },
+        Store::new(inner_store.clone()),
+    );
+
+    let digest = DigestInfo::try_new(HASH, VALUE.len() as u64).unwrap();
+    inner_store
+        .update_oneshot(digest, VALUE.into())
+        .await?;
+
+    let result = store.get_part_unchunked(digest, 0, None).await;
+    assert_eq!(
+        result.as_deref(),
+        Ok(VALUE.as_bytes()),
+        "Expected correct data when both verify_size and verify_hash pass, got: {:?}",
+        result
     );
     Ok(())
 }

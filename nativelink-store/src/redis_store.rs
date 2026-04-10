@@ -344,6 +344,16 @@ where
     /// limits the calls to `get_client()`, but the requests per client
     /// are small enough that it works well enough.
     client_permits: Arc<Semaphore>,
+
+    /// Per-command timeout safety net. Set to 2x the configured
+    /// command_timeout_ms so the redis crate's internal response_timeout
+    /// fires first under normal conditions. This outer timeout only
+    /// triggers when the redis crate's timeout mechanism itself fails
+    /// (reconnect races, cluster retries, connection pool stalls).
+    /// Without this, a hung command could silently return empty data
+    /// instead of an error.
+    #[metric(help = "Per-command timeout safety net in milliseconds")]
+    command_timeout: Duration,
 }
 
 impl<C, M> Debug for RedisStore<C, M>
@@ -409,6 +419,7 @@ where
         scan_count: usize,
         max_client_permits: usize,
         max_count_per_cursor: u64,
+        command_timeout: Duration,
         subscriber_channel: UnboundedReceiver<PushInfo>,
         connection_manager: M,
     ) -> Result<Self, Error> {
@@ -427,6 +438,7 @@ where
             subscriber_channel: Mutex::new(Some(subscriber_channel)),
             client_permits: Arc::new(Semaphore::new(max_client_permits)),
             max_count_per_cursor,
+            command_timeout,
         })
     }
 
@@ -579,6 +591,7 @@ impl RedisStore<ClusterConnection, ClusterRedisManager<ClusterConnection>> {
             spec.scan_count,
             spec.max_client_permits,
             spec.max_count_per_cursor,
+            command_timeout * 2,
             subscriber_channel,
             ClusterRedisManager::new(client.get_async_connection().await?).await?,
         )
@@ -695,6 +708,7 @@ impl RedisStore<ConnectionManager, StandardRedisManager<ConnectionManager>> {
         }
 
         let (tx, subscriber_channel) = unbounded_channel();
+        let command_timeout = Duration::from_millis(spec.command_timeout_ms);
 
         Self::new_from_builder_and_parts(
             spec.experimental_pub_sub_channel.clone(),
@@ -705,6 +719,7 @@ impl RedisStore<ConnectionManager, StandardRedisManager<ConnectionManager>> {
             spec.scan_count,
             spec.max_client_permits,
             spec.max_count_per_cursor,
+            command_timeout * 2,
             subscriber_channel,
             StandardRedisManager::new(Box::new(move || {
                 Box::pin(Self::connect(spec.clone(), tx.clone()))
@@ -747,12 +762,30 @@ where
                 // AND when the key exists with value of length 0.
                 // Therefore, we need to check both length and existence
                 // and do it in a pipeline for efficiency
-                let (blob_len, exists) = pipe()
-                    .strlen(encoded_key.as_ref())
-                    .exists(encoded_key.as_ref())
-                    .query_async::<(u64, bool)>(&mut client.connection_manager)
-                    .await
-                    .err_tip(|| "In RedisStore::has_with_results::all")?;
+                let cmd_start = Instant::now();
+                let (blob_len, exists) = timeout(
+                    self.command_timeout,
+                    pipe()
+                        .strlen(encoded_key.as_ref())
+                        .exists(encoded_key.as_ref())
+                        .query_async::<(u64, bool)>(&mut client.connection_manager),
+                )
+                .await
+                .map_err(|_| {
+                    let elapsed_ms = cmd_start.elapsed().as_millis() as u64;
+                    error!(cmd = "STRLEN+EXISTS", key = %encoded_key, elapsed_ms, "redis command timed out");
+                    make_err!(
+                        Code::Unavailable,
+                        "Redis STRLEN+EXISTS timed out after {elapsed_ms}ms for key {encoded_key}"
+                    )
+                })?
+                .err_tip(|| "In RedisStore::has_with_results::all")?;
+                let elapsed = cmd_start.elapsed();
+                if elapsed.as_secs() >= 5 {
+                    error!(cmd = "STRLEN+EXISTS", key = %encoded_key, elapsed_ms = elapsed.as_millis() as u64, "redis command slow (>5s)");
+                } else if elapsed.as_secs() >= 1 {
+                    warn!(cmd = "STRLEN+EXISTS", key = %encoded_key, elapsed_ms = elapsed.as_millis() as u64, "redis command slow (>1s)");
+                }
 
                 *result = if exists { Some(blob_len) } else { None };
 
@@ -895,22 +928,46 @@ where
             .map(|res| {
                 let (offset, end_pos, chunk) = res?;
                 let temp_key_ref = &temp_key;
+                let cmd_timeout = self.command_timeout;
                 Ok(async move {
                     let (mut connection_manager, connect_id) = self.connection_manager.get_connection().await?;
-                    match connection_manager
-                        .setrange::<_, _, usize>(temp_key_ref, offset, chunk.to_vec())
-                        .await {
+                    let chunk_len = chunk.len();
+                    let cmd_start = Instant::now();
+                    let setrange_result = timeout(
+                        cmd_timeout,
+                        connection_manager.setrange::<_, _, usize>(temp_key_ref, offset, chunk.to_vec()),
+                    )
+                    .await
+                    .map_err(|_| {
+                        let elapsed_ms = cmd_start.elapsed().as_millis() as u64;
+                        error!(cmd = "SETRANGE", key = %temp_key_ref, elapsed_ms, "redis command timed out");
+                        make_err!(
+                            Code::Unavailable,
+                            "Redis SETRANGE timed out after {elapsed_ms}ms for key {temp_key_ref}, offset = {offset}, end_pos = {end_pos}"
+                        )
+                    })?;
+                    match setrange_result {
                         Ok(_) => {},
                         Err(err)
                             if err.kind() == redis::ErrorKind::Server(redis::ServerErrorKind::ReadOnly) =>
                         {
                             let (mut connection_manager, _connect_id) = self.connection_manager.reconnect(connect_id).await?;
-                            connection_manager
-                                .setrange::<_, _, usize>(temp_key_ref, offset, chunk.to_vec())
-                                .await
-                                .err_tip(
-                                    || format!("(after reconnect) while appending to temp key ({temp_key_ref}) in RedisStore::update. offset = {offset}. end_pos = {end_pos}"),
-                                )?;
+                            timeout(
+                                cmd_timeout,
+                                connection_manager.setrange::<_, _, usize>(temp_key_ref, offset, chunk.to_vec()),
+                            )
+                            .await
+                            .map_err(|_| {
+                                let elapsed_ms = cmd_start.elapsed().as_millis() as u64;
+                                error!(cmd = "SETRANGE", key = %temp_key_ref, elapsed_ms, "redis command timed out after reconnect");
+                                make_err!(
+                                    Code::Unavailable,
+                                    "Redis SETRANGE timed out after {elapsed_ms}ms (after reconnect) for key {temp_key_ref}, offset = {offset}, end_pos = {end_pos}"
+                                )
+                            })?
+                            .err_tip(
+                                || format!("(after reconnect) while appending to temp key ({temp_key_ref}) in RedisStore::update. offset = {offset}. end_pos = {end_pos}"),
+                            )?;
                         }
                         Err(err) => {
                             let mut error: Error = err.into();
@@ -919,6 +976,12 @@ where
                                 .push(format!("While appending to temp key ({temp_key_ref}) in RedisStore::update. offset = {offset}. end_pos = {end_pos}"));
                             return Err(error);
                         }
+                    }
+                    let elapsed = cmd_start.elapsed();
+                    if elapsed.as_secs() >= 5 {
+                        error!(cmd = "SETRANGE", key = %temp_key_ref, elapsed_ms = elapsed.as_millis() as u64, size_bytes = chunk_len, "redis command slow (>5s)");
+                    } else if elapsed.as_secs() >= 1 {
+                        warn!(cmd = "SETRANGE", key = %temp_key_ref, elapsed_ms = elapsed.as_millis() as u64, size_bytes = chunk_len, "redis command slow (>1s)");
                     }
                     Ok::<u32, Error>(end_pos)
                 })
@@ -932,11 +995,27 @@ where
             }
         }
 
-        let blob_len: usize = client
-            .connection_manager
-            .strlen(&temp_key)
-            .await
-            .err_tip(|| format!("In RedisStore::update strlen check for {temp_key}"))?;
+        let cmd_start = Instant::now();
+        let blob_len: usize = timeout(
+            self.command_timeout,
+            client.connection_manager.strlen(&temp_key),
+        )
+        .await
+        .map_err(|_| {
+            let elapsed_ms = cmd_start.elapsed().as_millis() as u64;
+            error!(cmd = "STRLEN", key = %final_key, elapsed_ms, "redis command timed out");
+            make_err!(
+                Code::Unavailable,
+                "Redis STRLEN timed out after {elapsed_ms}ms for key {final_key}"
+            )
+        })?
+        .err_tip(|| format!("In RedisStore::update strlen check for {temp_key}"))?;
+        let elapsed = cmd_start.elapsed();
+        if elapsed.as_secs() >= 5 {
+            error!(cmd = "STRLEN", key = %final_key, elapsed_ms = elapsed.as_millis() as u64, "redis command slow (>5s)");
+        } else if elapsed.as_secs() >= 1 {
+            warn!(cmd = "STRLEN", key = %final_key, elapsed_ms = elapsed.as_millis() as u64, "redis command slow (>1s)");
+        }
         // This is a safety check to ensure that in the event some kind of retry was to happen
         // and the data was appended to the key twice, we reject the data.
         if blob_len != usize::try_from(total_len).unwrap_or(usize::MAX) {
@@ -950,18 +1029,51 @@ where
         }
 
         // Rename the temp key so that the data appears under the real key. Any data already present in the real key is lost.
-        client
-            .connection_manager
-            .rename::<_, _, ()>(&temp_key, final_key.as_ref())
-            .await
-            .err_tip(|| "While queueing key rename in RedisStore::update()")?;
+        let cmd_start = Instant::now();
+        timeout(
+            self.command_timeout,
+            client.connection_manager.rename::<_, _, ()>(&temp_key, final_key.as_ref()),
+        )
+        .await
+        .map_err(|_| {
+            let elapsed_ms = cmd_start.elapsed().as_millis() as u64;
+            error!(cmd = "RENAME", key = %final_key, elapsed_ms, "redis command timed out");
+            make_err!(
+                Code::Unavailable,
+                "Redis RENAME timed out after {elapsed_ms}ms for key {final_key}"
+            )
+        })?
+        .err_tip(|| "While queueing key rename in RedisStore::update()")?;
+        let elapsed = cmd_start.elapsed();
+        if elapsed.as_secs() >= 5 {
+            error!(cmd = "RENAME", key = %final_key, elapsed_ms = elapsed.as_millis() as u64, size_bytes = blob_len, "redis command slow (>5s)");
+        } else if elapsed.as_secs() >= 1 {
+            warn!(cmd = "RENAME", key = %final_key, elapsed_ms = elapsed.as_millis() as u64, size_bytes = blob_len, "redis command slow (>1s)");
+        }
 
         // If we have a publish channel configured, send a notice that the key has been set.
         if let Some(pub_sub_channel) = &self.pub_sub_channel {
-            return Ok(client
-                .connection_manager
-                .publish(pub_sub_channel, final_key.as_ref())
-                .await?);
+            let cmd_start = Instant::now();
+            let result = timeout(
+                self.command_timeout,
+                client.connection_manager.publish(pub_sub_channel, final_key.as_ref()),
+            )
+            .await
+            .map_err(|_| {
+                let elapsed_ms = cmd_start.elapsed().as_millis() as u64;
+                error!(cmd = "PUBLISH", key = %final_key, elapsed_ms, "redis command timed out");
+                make_err!(
+                    Code::Unavailable,
+                    "Redis PUBLISH timed out after {elapsed_ms}ms for key {final_key}"
+                )
+            })??;
+            let elapsed = cmd_start.elapsed();
+            if elapsed.as_secs() >= 5 {
+                error!(cmd = "PUBLISH", key = %final_key, elapsed_ms = elapsed.as_millis() as u64, "redis command slow (>5s)");
+            } else if elapsed.as_secs() >= 1 {
+                warn!(cmd = "PUBLISH", key = %final_key, elapsed_ms = elapsed.as_millis() as u64, "redis command slow (>1s)");
+            }
+            return Ok(result);
         }
 
         Ok(())
@@ -1013,11 +1125,27 @@ where
             );
 
             loop {
-                let chunk: Bytes = client
-                    .connection_manager
-                    .getrange(encoded_key, chunk_start, chunk_end)
-                    .await
-                    .err_tip(|| "In RedisStore::get_part::getrange")?;
+                let cmd_start = Instant::now();
+                let chunk: Bytes = timeout(
+                    self.command_timeout,
+                    client.connection_manager.getrange(encoded_key, chunk_start, chunk_end),
+                )
+                .await
+                .map_err(|_| {
+                    let elapsed_ms = cmd_start.elapsed().as_millis() as u64;
+                    error!(cmd = "GETRANGE", key = %encoded_key, elapsed_ms, "redis command timed out");
+                    make_err!(
+                        Code::Unavailable,
+                        "Redis GETRANGE timed out after {elapsed_ms}ms for key {encoded_key}"
+                    )
+                })?
+                .err_tip(|| "In RedisStore::get_part::getrange")?;
+                let elapsed = cmd_start.elapsed();
+                if elapsed.as_secs() >= 5 {
+                    error!(cmd = "GETRANGE", key = %encoded_key, elapsed_ms = elapsed.as_millis() as u64, size_bytes = chunk.len(), "redis command slow (>5s)");
+                } else if elapsed.as_secs() >= 1 {
+                    warn!(cmd = "GETRANGE", key = %encoded_key, elapsed_ms = elapsed.as_millis() as u64, size_bytes = chunk.len(), "redis command slow (>1s)");
+                }
 
                 let didnt_receive_full_chunk = chunk.len() < self.read_chunk_size;
                 let reached_end_of_data = chunk_end == data_end;
@@ -1050,11 +1178,27 @@ where
             // If we didn't write any data, check if the key exists, if not
             // return a NotFound error. This is required by spec.
             if writer.get_bytes_written() == 0 {
-                let exists: bool = client
-                    .connection_manager
-                    .exists(encoded_key)
-                    .await
-                    .err_tip(|| "In RedisStore::get_part::zero_exists")?;
+                let cmd_start = Instant::now();
+                let exists: bool = timeout(
+                    self.command_timeout,
+                    client.connection_manager.exists(encoded_key),
+                )
+                .await
+                .map_err(|_| {
+                    let elapsed_ms = cmd_start.elapsed().as_millis() as u64;
+                    error!(cmd = "EXISTS", key = %encoded_key, elapsed_ms, "redis command timed out");
+                    make_err!(
+                        Code::Unavailable,
+                        "Redis EXISTS timed out after {elapsed_ms}ms for key {encoded_key}"
+                    )
+                })?
+                .err_tip(|| "In RedisStore::get_part::zero_exists")?;
+                let elapsed = cmd_start.elapsed();
+                if elapsed.as_secs() >= 5 {
+                    error!(cmd = "EXISTS", key = %encoded_key, elapsed_ms = elapsed.as_millis() as u64, "redis command slow (>5s)");
+                } else if elapsed.as_secs() >= 1 {
+                    warn!(cmd = "EXISTS", key = %encoded_key, elapsed_ms = elapsed.as_millis() as u64, "redis command slow (>1s)");
+                }
 
                 if !exists {
                     return Err(make_err!(

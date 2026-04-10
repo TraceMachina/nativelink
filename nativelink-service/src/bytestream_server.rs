@@ -49,7 +49,7 @@ use nativelink_util::common::DigestInfo;
 use nativelink_util::log_utils::throughput_mbps;
 use nativelink_util::stall_detector::StallGuard;
 use nativelink_util::digest_hasher::{
-    DigestHasherFunc, default_digest_hasher_func, make_ctx_for_hash_func,
+    DigestHasher, DigestHasherFunc, default_digest_hasher_func, make_ctx_for_hash_func,
 };
 use nativelink_util::proto_stream_utils::WriteRequestStreamWrapper;
 use nativelink_util::resource_info::ResourceInfo;
@@ -293,10 +293,12 @@ struct LoggingReadStream {
     expected_size: u64,
     bytes_sent: u64,
     completed: bool,
+    hasher: nativelink_util::digest_hasher::DigestHasherImpl,
 }
 
 impl LoggingReadStream {
     fn new(inner: ReadStream, start_time: Instant, digest: DigestInfo, expected_size: u64) -> Self {
+        let hasher = nativelink_util::digest_hasher::default_digest_hasher_func().hasher();
         Self {
             inner,
             start_time,
@@ -304,18 +306,32 @@ impl LoggingReadStream {
             expected_size,
             bytes_sent: 0,
             completed: false,
+            hasher,
         }
     }
 
-    fn log_completion(&self, status: &str) {
+    fn log_completion(&mut self, status: &str) {
         let elapsed = self.start_time.elapsed();
         let elapsed_ms = elapsed.as_millis() as u64;
+        let actual_digest = self.hasher.finalize_digest();
+
+        if actual_digest != self.digest {
+            error!(
+                expected = %self.digest,
+                actual = %actual_digest,
+                bytes_sent = self.bytes_sent,
+                elapsed_ms,
+                "ByteStream::read: SERVER-SIDE HASH MISMATCH — data corrupted before sending"
+            );
+        }
+
         info!(
             digest = %self.digest,
             expected_size = self.expected_size,
             bytes_sent = self.bytes_sent,
             elapsed_ms,
             throughput_mbps = %throughput_mbps(self.bytes_sent, elapsed),
+            hash_verified = (actual_digest == self.digest),
             status,
             "ByteStream::read: CAS read completed",
         );
@@ -330,6 +346,7 @@ impl Stream for LoggingReadStream {
         match &result {
             Poll::Ready(Some(Ok(response))) => {
                 self.bytes_sent += response.data.len() as u64;
+                self.hasher.update(&response.data);
             }
             Poll::Ready(None) => {
                 self.completed = true;

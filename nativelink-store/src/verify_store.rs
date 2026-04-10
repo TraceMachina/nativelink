@@ -18,9 +18,10 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use opentelemetry::context::Context;
 use tokio::sync::Notify;
+use tracing::error;
 
 use nativelink_config::stores::VerifySpec;
-use nativelink_error::{Error, ResultExt, make_input_err};
+use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{
     DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair_with_size,
@@ -149,6 +150,79 @@ impl VerifyStore {
         }
         Ok(())
     }
+
+    /// Verifies data read from the inner store by hashing and size-checking
+    /// each chunk as it streams through to the caller's writer.
+    async fn inner_check_get_part<D: DigestHasher>(
+        &self,
+        writer: &mut DropCloserWriteHalf,
+        mut rx: DropCloserReadHalf,
+        maybe_expected_size: Option<u64>,
+        original_hash: &PackedHash,
+        mut maybe_hasher: Option<&mut D>,
+    ) -> Result<(), Error> {
+        let mut sum_size: u64 = 0;
+        loop {
+            let chunk = rx
+                .recv()
+                .await
+                .err_tip(|| "Failed to read chunk in check_get_part in verify store")?;
+
+            // EOF
+            if chunk.is_empty() {
+                if let Some(expected_size) = maybe_expected_size {
+                    if sum_size != expected_size {
+                        self.size_verification_failures.inc();
+                        error!(
+                            expected_size,
+                            actual_size = sum_size,
+                            "size mismatch on read in verify store"
+                        );
+                        return Err(make_err!(
+                            Code::DataLoss,
+                            "Expected size {} but got size {} on read",
+                            expected_size,
+                            sum_size
+                        ));
+                    }
+                }
+                if let Some(hasher) = maybe_hasher.as_mut() {
+                    let digest = hasher.finalize_digest();
+                    let hash_result = digest.packed_hash();
+                    if original_hash != hash_result {
+                        self.hash_verification_failures.inc();
+                        error!(
+                            %original_hash,
+                            %hash_result,
+                            "hash mismatch on read in verify store"
+                        );
+                        return Err(make_err!(
+                            Code::DataLoss,
+                            "Hash mismatch on read: expected {original_hash} but got {hash_result}",
+                        ));
+                    }
+                }
+                writer
+                    .send_eof()
+                    .err_tip(|| "In verify_store::check_get_part sending eof")?;
+                break;
+            }
+
+            sum_size += chunk.len() as u64;
+
+            // Hash while forwarding to the caller's writer.
+            let write_future = writer.send(chunk.clone());
+
+            if let Some(hasher) = maybe_hasher.as_mut() {
+                hasher.update(chunk.as_ref());
+            }
+
+            write_future
+                .await
+                .err_tip(|| "Failed to forward chunk to writer in verify store get_part")?;
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -223,7 +297,52 @@ impl StoreDriver for VerifyStore {
         offset: u64,
         length: Option<u64>,
     ) -> Result<(), Error> {
-        self.inner_store.get_part(key, writer, offset, length).await
+        // Only verify full reads with a digest key — partial reads cannot
+        // be hash-verified and string keys have no expected digest.
+        let should_verify = (self.verify_hash || self.verify_size)
+            && offset == 0
+            && length.is_none()
+            && matches!(key, StoreKey::Digest(_));
+
+        if !should_verify {
+            return self.inner_store.get_part(key, writer, offset, length).await;
+        }
+
+        let StoreKey::Digest(digest) = key else {
+            unreachable!("checked above");
+        };
+
+        let mut hasher = if self.verify_hash {
+            Some(
+                Context::current()
+                    .get::<DigestHasherFunc>()
+                    .map_or_else(default_digest_hasher_func, |v| *v)
+                    .hasher(),
+            )
+        } else {
+            None
+        };
+
+        let maybe_expected_size = if self.verify_size {
+            Some(digest.size_bytes())
+        } else {
+            None
+        };
+
+        let (mut tx, rx) = make_buf_channel_pair_with_size(256);
+
+        let get_fut = self.inner_store.get_part(digest, &mut tx, 0, None);
+        let check_fut = self.inner_check_get_part(
+            writer,
+            rx,
+            maybe_expected_size,
+            digest.packed_hash(),
+            hasher.as_mut(),
+        );
+
+        let (get_res, check_res) = tokio::join!(get_fut, check_fut);
+
+        get_res.merge(check_res)
     }
 
     fn inner_store(&self, _digest: Option<StoreKey>) -> &'_ dyn StoreDriver {
