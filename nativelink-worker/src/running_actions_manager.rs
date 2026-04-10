@@ -154,26 +154,17 @@ struct FileToMaterialize {
     mtime: Option<prost_types::Timestamp>,
 }
 
-/// Parse a GetTree response (flat list of directories in BFS order) into a
-/// digest-keyed map. The root directory is assigned `root_digest`; child
-/// directories are assigned digests based on their parent's `DirectoryNode`
-/// references.
-///
-/// This function is public for testing. It handles the case where the server
-/// skips missing directories in a tolerant GetTree response — the resulting
-/// tree may be incomplete, and the caller should validate + gap-fill.
+/// Parse a GetTree response into a digest-keyed map. Each directory's digest
+/// is computed by hashing its serialized protobuf, making the result
+/// position-independent (tolerant GetTree responses with missing entries
+/// are handled correctly). The resulting tree may be incomplete — the
+/// caller should validate and gap-fill.
 pub fn parse_get_tree_response(
     all_dirs: Vec<ProtoDirectory>,
     root_digest: &DigestInfo,
 ) -> HashMap<DigestInfo, ProtoDirectory> {
-    // Build the tree by computing each directory's content digest.
-    // This is position-independent and handles the case where the server
-    // skips missing directories in a tolerant GetTree response — no
-    // position-based assignment that breaks when entries are missing.
-    //
-    // The digest function is obtained from the current context (set by
-    // the caller's OpenTelemetry/tracing context). We fall back to the
-    // default (BLAKE3) if no context is set.
+    // Compute each directory's content digest from its serialized proto.
+    // Digest function comes from the current context; falls back to BLAKE3.
     let digest_function = Context::current()
         .get::<DigestHasherFunc>()
         .map_or_else(default_digest_hasher_func, |v| *v);
@@ -352,7 +343,6 @@ pub async fn resolve_directory_tree(
                         root = ?root_digest,
                         tree_has_root = tree.contains_key(root_digest),
                         tree_size = tree.len(),
-                        // dir_by_pos is consumed by parse_get_tree_response
                         missing_children,
                         validation_elapsed_ms = tree_start.elapsed().as_millis() as u64,
                         "resolve_directory_tree: GetTree BFS validation failed, falling back to parallel BFS"

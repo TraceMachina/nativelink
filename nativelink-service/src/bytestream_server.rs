@@ -1093,7 +1093,7 @@ impl ByteStreamServer {
                 .downcast_ref::<WorkerProxyStore>()
                 .is_some();
         let (mut mirror_tx_opt, mirror_handle) = if has_proxy {
-            let (mtx, mrx) = make_buf_channel_pair_with_size(256);
+            let (mtx, mrx) = make_buf_channel_pair_with_size(16);
             let store_clone = instance_info.store.clone();
             let handle = nativelink_util::background_spawn!("mirror_tee_stream", async move {
                 let Some(proxy) = store_clone

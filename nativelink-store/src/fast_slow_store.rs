@@ -48,6 +48,10 @@ use tracing::{debug, error, trace, warn};
 
 type Loader = Arc<OnceCell<()>>;
 
+/// Maximum aggregate bytes held in `mirror_blobs`. When exceeded, new mirror
+/// blobs are silently dropped (the server already persisted them).
+const MIRROR_BLOBS_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024; // 2 GiB
+
 // TODO(palfrey) We should consider copying the data in the background to allow the
 // client to hang up while the data is buffered. An alternative is to possibly make a
 // "BufferedStore" that could be placed on the "slow" store that would hang up early
@@ -91,6 +95,9 @@ pub struct FastSlowStore {
     /// and local actions can read them without disk I/O. Cleaned up when
     /// `BlobsInStableStorage` arrives or after a TTL expiry.
     mirror_blobs: Mutex<HashMap<DigestInfo, (Bytes, Instant)>>,
+    /// Total bytes currently held in `mirror_blobs`. Tracked separately to
+    /// enforce `MIRROR_BLOBS_MAX_BYTES` without iterating the map.
+    mirror_blobs_total_bytes: AtomicU64,
 }
 
 // This guard ensures that the populating_digests is cleared even if the future
@@ -161,6 +168,7 @@ impl FastSlowStore {
             shutting_down: AtomicBool::new(false),
             failed_slow_writes: Arc::new(Mutex::new(HashSet::new())),
             mirror_blobs: Mutex::new(HashMap::new()),
+            mirror_blobs_total_bytes: AtomicU64::new(0),
         })
     }
 
@@ -277,14 +285,21 @@ impl FastSlowStore {
             shutting_down: AtomicBool::new(false),
             failed_slow_writes: shared,
             mirror_blobs: Mutex::new(HashMap::new()),
+            mirror_blobs_total_bytes: AtomicU64::new(0),
         })
     }
 
     /// Remove mirror blobs that the server has confirmed are in stable storage.
     pub fn remove_mirror_blobs(&self, digests: &[DigestInfo]) {
         let mut guard = self.mirror_blobs.lock();
+        let mut freed = 0u64;
         for digest in digests {
-            guard.remove(digest);
+            if let Some((data, _)) = guard.remove(digest) {
+                freed += data.len() as u64;
+            }
+        }
+        if freed > 0 {
+            self.mirror_blobs_total_bytes.fetch_sub(freed, Ordering::Relaxed);
         }
     }
 
@@ -293,7 +308,18 @@ impl FastSlowStore {
     pub fn expire_mirror_blobs(&self, max_age: Duration) -> usize {
         let mut guard = self.mirror_blobs.lock();
         let before = guard.len();
-        guard.retain(|_, (_, inserted_at)| inserted_at.elapsed() < max_age);
+        let mut freed = 0u64;
+        guard.retain(|_, (data, inserted_at)| {
+            if inserted_at.elapsed() < max_age {
+                true
+            } else {
+                freed += data.len() as u64;
+                false
+            }
+        });
+        if freed > 0 {
+            self.mirror_blobs_total_bytes.fetch_sub(freed, Ordering::Relaxed);
+        }
         before - guard.len()
     }
 
@@ -609,12 +635,31 @@ impl StoreDriver for FastSlowStore {
                 chunks.extend_from_slice(&chunk);
             }
             let data = chunks.freeze();
-            debug!(
-                %digest,
-                data_len = data.len(),
-                "FastSlowStore: mirror blob stored in memory"
-            );
-            self.mirror_blobs.lock().insert(digest, (data, Instant::now()));
+            let data_len = data.len() as u64;
+            {
+                let mut guard = self.mirror_blobs.lock();
+                let current = self.mirror_blobs_total_bytes.load(Ordering::Relaxed);
+                if current + data_len > MIRROR_BLOBS_MAX_BYTES {
+                    debug!(
+                        %digest,
+                        data_len,
+                        current_total = current,
+                        "mirror blob dropped — memory cap exceeded"
+                    );
+                    return Ok(());
+                }
+                if let Some((old_data, _)) = guard.insert(digest, (data, Instant::now())) {
+                    // Replacing existing entry — adjust by net difference.
+                    let old_len = old_data.len() as u64;
+                    if data_len >= old_len {
+                        self.mirror_blobs_total_bytes.fetch_add(data_len - old_len, Ordering::Relaxed);
+                    } else {
+                        self.mirror_blobs_total_bytes.fetch_sub(old_len - data_len, Ordering::Relaxed);
+                    }
+                } else {
+                    self.mirror_blobs_total_bytes.fetch_add(data_len, Ordering::Relaxed);
+                }
+            }
             return Ok(());
         }
 
@@ -870,12 +915,30 @@ impl StoreDriver for FastSlowStore {
         let is_mirror = IS_MIRROR_REQUEST.try_with(|v| *v).unwrap_or(false);
         if is_mirror {
             let digest = key.borrow().into_digest();
-            debug!(
-                %digest,
-                data_len = data.len(),
-                "FastSlowStore: mirror blob stored in memory (oneshot)"
-            );
-            self.mirror_blobs.lock().insert(digest, (data, Instant::now()));
+            let data_len = data.len() as u64;
+            {
+                let mut guard = self.mirror_blobs.lock();
+                let current = self.mirror_blobs_total_bytes.load(Ordering::Relaxed);
+                if current + data_len > MIRROR_BLOBS_MAX_BYTES {
+                    debug!(
+                        %digest,
+                        data_len,
+                        current_total = current,
+                        "mirror blob dropped — memory cap exceeded"
+                    );
+                    return Ok(());
+                }
+                if let Some((old_data, _)) = guard.insert(digest, (data, Instant::now())) {
+                    let old_len = old_data.len() as u64;
+                    if data_len >= old_len {
+                        self.mirror_blobs_total_bytes.fetch_add(data_len - old_len, Ordering::Relaxed);
+                    } else {
+                        self.mirror_blobs_total_bytes.fetch_sub(old_len - data_len, Ordering::Relaxed);
+                    }
+                } else {
+                    self.mirror_blobs_total_bytes.fetch_add(data_len, Ordering::Relaxed);
+                }
+            }
             return Ok(());
         }
 

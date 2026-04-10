@@ -4884,6 +4884,71 @@ exit 1
     }
 
     #[nativelink_test]
+    async fn parse_get_tree_response_orphan_root_fallback_test(
+    ) -> Result<(), Box<dyn core::error::Error>> {
+        // Test the orphan-detection fallback: when the caller's root_digest
+        // doesn't match the computed digest of any directory (e.g., due to
+        // protobuf serialization differences), the function identifies the
+        // root as the unique "orphan" — a directory not referenced as a child
+        // by any other directory — and re-keys it under root_digest.
+        use nativelink_worker::running_actions_manager::parse_get_tree_response;
+
+        let file_digest = DigestInfo::new([7u8; 32], 20);
+
+        // child/ directory
+        let child_dir = Directory {
+            files: vec![FileNode {
+                name: "data.bin".to_string(),
+                digest: Some(file_digest.into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let child_encoded = child_dir.encode_to_vec();
+        let child_digest = {
+            let mut hasher = nativelink_util::digest_hasher::default_digest_hasher_func().hasher();
+            hasher.update(&child_encoded);
+            hasher.finalize_digest()
+        };
+
+        // root/ directory — contains child/
+        let root_dir = Directory {
+            directories: vec![DirectoryNode {
+                name: "child".to_string(),
+                digest: Some(child_digest.into()),
+            }],
+            ..Default::default()
+        };
+
+        // Simulate a root_digest that differs from the computed digest
+        // (as if the server serialized the proto differently).
+        let fake_root_digest = DigestInfo::new([42u8; 32], 999);
+
+        let response_dirs = vec![root_dir.clone(), child_dir.clone()];
+        let tree = parse_get_tree_response(response_dirs, &fake_root_digest);
+
+        // The root should be re-keyed under fake_root_digest.
+        assert!(
+            tree.contains_key(&fake_root_digest),
+            "root should be re-keyed under the caller's root_digest"
+        );
+        let root_entry = tree.get(&fake_root_digest).unwrap();
+        assert_eq!(root_entry.directories.len(), 1);
+        assert_eq!(root_entry.directories[0].name, "child");
+
+        // The child should still be accessible under its computed digest.
+        assert!(
+            tree.contains_key(&child_digest),
+            "child should remain under its computed digest"
+        );
+        let child_entry = tree.get(&child_digest).unwrap();
+        assert_eq!(child_entry.files.len(), 1);
+        assert_eq!(child_entry.files[0].name, "data.bin");
+
+        Ok(())
+    }
+
+    #[nativelink_test]
     async fn download_to_directory_nested_std_directory_test(
     ) -> Result<(), Box<dyn core::error::Error>> {
         // Regression test for the rustix `maybe_polyfill/std/mod.rs` bug.

@@ -458,17 +458,20 @@ impl DirectoryCache {
                     }
                 }
 
-                let now_millis = SystemTime::now()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis() as u64;
+                // Use the filesystem modification time so that LRU eviction
+                // at startup correctly identifies the oldest entries.
+                let mtime_millis = metadata
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+                    .map_or(0u64, |d| d.as_millis() as u64);
 
                 initial_cache.insert(
                     digest,
                     CachedDirectoryMetadata {
                         path: entry_path,
                         size,
-                        last_access_millis: AtomicU64::new(now_millis),
+                        last_access_millis: AtomicU64::new(mtime_millis),
                         ref_count: AtomicUsize::new(0),
                     },
                 );
@@ -485,6 +488,74 @@ impl DirectoryCache {
                 elapsed_ms = load_elapsed.as_millis() as u64,
                 "DirectoryCache: loaded existing entries from disk on startup",
             );
+        }
+
+        // Enforce max_entries and max_size_bytes limits on the loaded entries.
+        // Old entries from previous runs may have accumulated beyond limits.
+        // Sort once by mtime (oldest first) then evict from the front — O(n log n).
+        let mut startup_evicted_count = 0u64;
+        let mut startup_evicted_bytes = 0u64;
+        let mut startup_evict_paths = Vec::new();
+
+        if initial_cache.len() > config.max_entries
+            || (config.max_size_bytes > 0
+                && initial_cache.values().map(|m| m.size).sum::<u64>() > config.max_size_bytes)
+        {
+            let mut sorted: Vec<(DigestInfo, u64, u64)> = initial_cache
+                .iter()
+                .map(|(d, m)| (*d, m.last_access_millis.load(Ordering::Relaxed), m.size))
+                .collect();
+            sorted.sort_by_key(|&(_, mtime, _)| mtime);
+
+            let mut current_size: u64 = initial_cache.values().map(|m| m.size).sum();
+            for (digest, _, size) in &sorted {
+                let over_count = initial_cache.len() > config.max_entries;
+                let over_size = config.max_size_bytes > 0 && current_size > config.max_size_bytes;
+                if !over_count && !over_size {
+                    break;
+                }
+                if let Some(meta) = initial_cache.remove(digest) {
+                    startup_evicted_bytes += meta.size;
+                    startup_evicted_count += 1;
+                    current_size -= size;
+                    startup_evict_paths.push(meta.path);
+                }
+            }
+        }
+
+        // If we evicted entries, rebuild subtree indexes from surviving entries
+        // and delete the evicted directories from disk.
+        if startup_evicted_count > 0 {
+            // Rebuild subtree indexes: keep only entries whose parent cache entry survived.
+            let surviving_paths: HashSet<PathBuf> = initial_cache
+                .keys()
+                .map(|d| config.cache_root.join(d.to_string()))
+                .collect();
+            let surviving_digests: HashSet<DigestInfo> =
+                initial_cache.keys().copied().collect();
+            initial_subtree_index
+                .retain(|_, path| {
+                    surviving_paths.iter().any(|sp| path.starts_with(sp))
+                });
+            initial_subtree_refcount.retain(|k, _| initial_subtree_index.contains_key(k));
+            initial_subtree_to_roots.retain(|k, roots| {
+                roots.retain(|r| surviving_digests.contains(r));
+                !roots.is_empty() && initial_subtree_index.contains_key(k)
+            });
+
+            info!(
+                evicted_entries = startup_evicted_count,
+                evicted_bytes = startup_evicted_bytes,
+                evicted_mb = format!("{:.1}", startup_evicted_bytes as f64 / (1024.0 * 1024.0)),
+                remaining_entries = initial_cache.len(),
+                remaining_bytes = initial_cache.values().map(|m| m.size).sum::<u64>(),
+                "DirectoryCache: cleaned up stale entries at startup"
+            );
+
+            // Delete evicted directories from disk (best-effort)
+            for path in startup_evict_paths {
+                Self::remove_readonly_dir(&path).await;
+            }
         }
 
         Ok(Self {
@@ -4065,5 +4136,173 @@ mod tests {
         fs::remove_file(&dest2).await.unwrap();
 
         Ok(())
+    }
+
+    #[nativelink_test]
+    async fn test_startup_cleanup_evicts_old_entries_by_count() -> Result<(), Error> {
+        use filetime::{FileTime, set_file_mtime};
+
+        let temp_dir = TempDir::new().unwrap();
+        let cache_root = temp_dir.path().join("cache");
+        fs::create_dir_all(&cache_root).await.unwrap();
+
+        // Write the cache version file so it doesn't get wiped
+        fs::write(
+            cache_root.join(CACHE_VERSION_FILENAME),
+            format!("{CACHE_FORMAT_VERSION}\n"),
+        )
+        .await
+        .unwrap();
+
+        // Create 5 fake cache directories with distinct mtimes.
+        // Directory names must match DigestInfo::to_string() format: "{hash}-{size}"
+        let digests: Vec<DigestInfo> = (0..5)
+            .map(|i| {
+                let hash = format!("{:0>64}", format!("{i:x}"));
+                DigestInfo::try_new(&hash, 100).unwrap()
+            })
+            .collect();
+
+        for (i, digest) in digests.iter().enumerate() {
+            let dir_path = cache_root.join(digest.to_string());
+            fs::create_dir_all(&dir_path).await.unwrap();
+            // Write a small file so the directory has non-zero size
+            fs::write(dir_path.join("data.txt"), "hello").await.unwrap();
+            // Set mtime: older entries get smaller timestamps
+            // Entry 0 is oldest (mtime=1000), entry 4 is newest (mtime=5000)
+            let mtime = FileTime::from_unix_time((i as i64 + 1) * 1000, 0);
+            set_file_mtime(&dir_path, mtime).unwrap();
+        }
+
+        // Verify all 5 directories exist on disk
+        assert_eq!(count_cache_dirs(&cache_root).await, 5);
+
+        let (store, _) = setup_test_store().await;
+
+        // Create cache with max_entries=2 — should evict the 3 oldest entries
+        let config = DirectoryCacheConfig {
+            max_entries: 2,
+            max_size_bytes: 0, // no size limit
+            cache_root: cache_root.clone(),
+            direct_use_mode: false,
+        };
+        let cache = DirectoryCache::new(config, store, None).await?;
+
+        // Should have exactly 2 entries (the two newest)
+        let stats = cache.stats().await;
+        assert_eq!(
+            stats.entries, 2,
+            "Cache should have 2 entries after startup cleanup, got {}",
+            stats.entries
+        );
+
+        // The two newest entries (index 3 and 4) should survive
+        let surviving = cache.cached_digests().await;
+        assert!(
+            surviving.contains(&digests[3]),
+            "Entry 3 (second newest) should survive"
+        );
+        assert!(
+            surviving.contains(&digests[4]),
+            "Entry 4 (newest) should survive"
+        );
+
+        // The oldest entries should be gone from disk
+        for i in 0..3 {
+            let dir_path = cache_root.join(digests[i].to_string());
+            assert!(
+                !dir_path.exists(),
+                "Entry {i} (old) should be deleted from disk"
+            );
+        }
+
+        // Only 2 directories should remain on disk (plus the version file)
+        assert_eq!(count_cache_dirs(&cache_root).await, 2);
+
+        Ok(())
+    }
+
+    #[nativelink_test]
+    async fn test_startup_cleanup_evicts_old_entries_by_size() -> Result<(), Error> {
+        use filetime::{FileTime, set_file_mtime};
+
+        let temp_dir = TempDir::new().unwrap();
+        let cache_root = temp_dir.path().join("cache");
+        fs::create_dir_all(&cache_root).await.unwrap();
+
+        // Write the cache version file
+        fs::write(
+            cache_root.join(CACHE_VERSION_FILENAME),
+            format!("{CACHE_FORMAT_VERSION}\n"),
+        )
+        .await
+        .unwrap();
+
+        // Create 3 cache entries, each ~1KB (directory + file)
+        let digests: Vec<DigestInfo> = (0..3)
+            .map(|i| {
+                let hash = format!("{:0>64}", format!("ab{i:x}"));
+                DigestInfo::try_new(&hash, 200).unwrap()
+            })
+            .collect();
+
+        let file_data = vec![b'x'; 1024]; // 1KB file
+        for (i, digest) in digests.iter().enumerate() {
+            let dir_path = cache_root.join(digest.to_string());
+            fs::create_dir_all(&dir_path).await.unwrap();
+            fs::write(dir_path.join("data.bin"), &file_data).await.unwrap();
+            let mtime = FileTime::from_unix_time((i as i64 + 1) * 1000, 0);
+            set_file_mtime(&dir_path, mtime).unwrap();
+        }
+
+        let (store, _) = setup_test_store().await;
+
+        // max_size_bytes ~2KB — only 1-2 entries should fit
+        // Each entry is ~1KB file + directory overhead, so 2048 should allow
+        // at most 1-2 entries depending on filesystem overhead.
+        let config = DirectoryCacheConfig {
+            max_entries: 100, // high count limit
+            max_size_bytes: 2048,
+            cache_root: cache_root.clone(),
+            direct_use_mode: false,
+        };
+        let cache = DirectoryCache::new(config, store, None).await?;
+
+        let stats = cache.stats().await;
+        // With 3 entries of ~1KB each, total ~3KB exceeds 2KB limit.
+        // At least one entry must be evicted.
+        assert!(
+            stats.entries < 3,
+            "Should have evicted at least one entry, but have {}",
+            stats.entries
+        );
+        assert!(
+            stats.total_size_bytes <= 2048,
+            "Total size {} should be within 2048 byte limit",
+            stats.total_size_bytes
+        );
+
+        // The newest entry should survive (oldest evicted first)
+        let surviving = cache.cached_digests().await;
+        assert!(
+            surviving.contains(&digests[2]),
+            "Newest entry should survive size-based eviction"
+        );
+
+        Ok(())
+    }
+
+    /// Helper: count subdirectories under the cache root (excludes files like .cache_version)
+    async fn count_cache_dirs(cache_root: &Path) -> usize {
+        let mut count = 0;
+        let mut entries = fs::read_dir(cache_root).await.unwrap();
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            if let Ok(meta) = fs::symlink_metadata(entry.path()).await {
+                if meta.is_dir() {
+                    count += 1;
+                }
+            }
+        }
+        count
     }
 }
