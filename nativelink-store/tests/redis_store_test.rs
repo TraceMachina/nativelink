@@ -736,7 +736,6 @@ async fn test_sentinel_connect_with_bad_master() {
     let spec = RedisSpec {
         addresses: vec![format!("redis+sentinel://127.0.0.1:{port}/")],
         mode: RedisMode::Sentinel,
-        connection_timeout_ms: 100,
         ..Default::default()
     };
     assert_eq!(
