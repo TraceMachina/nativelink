@@ -42,6 +42,7 @@ pub mod retry;
 pub mod shutdown_guard;
 pub mod stall_detector;
 pub mod store_trait;
+pub mod streaming_blob;
 pub mod task;
 pub mod telemetry;
 pub mod tls_utils;
