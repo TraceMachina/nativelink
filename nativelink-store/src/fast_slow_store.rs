@@ -1220,7 +1220,29 @@ impl StoreDriver for FastSlowStore {
             }
         }
 
-        if self.fast_store.has(key.borrow()).await?.is_some() {
+        let fast_has = self.fast_store.has(key.borrow()).await?;
+        let expected_size = match key.borrow() {
+            StoreKey::Digest(d) => d.size_bytes(),
+            StoreKey::Str(_) => 0, // Can't validate size for string keys.
+        };
+        let fast_valid = match fast_has {
+            Some(size) if expected_size > 0 && size != expected_size => {
+                // Fast store has the key but with wrong size — partial/corrupt entry.
+                // Skip it and fall through to the slow store for correct data.
+                // The corrupt entry will be overwritten when the slow store
+                // populates the fast store with the correct blob.
+                error!(
+                    ?key,
+                    fast_size = size,
+                    expected_size,
+                    "fast store has partial/corrupt entry, skipping to slow store"
+                );
+                false
+            }
+            Some(_) => true,
+            None => false,
+        };
+        if fast_valid {
             // Try the fast store first. If the item was evicted between the
             // has() check and this get_part() call (TOCTOU race), fall through
             // to the slow-store path instead of propagating NotFound.

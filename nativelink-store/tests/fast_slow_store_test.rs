@@ -705,3 +705,68 @@ async fn lazy_not_found_syncs_to_fast_store() -> Result<(), Error> {
     );
     Ok(())
 }
+
+#[nativelink_test]
+async fn partial_slow_store_read_does_not_poison_fast_store() -> Result<(), Error> {
+    // Regression test: if the slow store read is interrupted (channel drops
+    // before all data is sent), the fast store (MemoryStore) must NOT retain
+    // a partial blob. A subsequent read should re-fetch from the slow store
+    // — not serve truncated data.
+    //
+    // This simulates what happens when a Redis command times out mid-stream:
+    // the slow store channel drops, MemoryStore::update() receives EOF after
+    // partial data, inserts the partial BytesWrapper, and future reads serve
+    // truncated content.
+    let fast_store = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let slow_store = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let fast_slow_store_arc = FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+        },
+        fast_store.clone(),
+        slow_store.clone(),
+    );
+    let fast_slow_store = Store::new(fast_slow_store_arc);
+
+    let full_data = make_random_data(100_000); // 100KB
+    let digest = DigestInfo::try_new(VALID_HASH, full_data.len() as u64).unwrap();
+
+    // Put the full blob in the slow store.
+    slow_store
+        .update_oneshot(digest, full_data.clone().into())
+        .await?;
+
+    // Now simulate what happens when the slow store read is partial:
+    // Write a PARTIAL blob directly into the fast store's MemoryStore.
+    // This simulates the bug where MemoryStore::update() inserts partial
+    // data when the upstream channel drops mid-stream.
+    let partial_data = &full_data[..1000]; // Only 1KB of 100KB
+    fast_store
+        .update_oneshot(digest, Bytes::copy_from_slice(partial_data))
+        .await?;
+
+    // Read through FastSlowStore. It should find the entry in the fast store
+    // (MemoryStore) and serve it. If the bug exists, it serves only 1KB.
+    let result = fast_slow_store.get_part_unchunked(digest, 0, None).await?;
+
+    // The result should be the FULL data, not the partial 1KB.
+    assert_eq!(
+        result.len(),
+        full_data.len(),
+        "FastSlowStore served truncated data from poisoned fast store! \
+         Got {} bytes, expected {}. The MemoryStore has a partial entry \
+         that should have been detected/removed.",
+        result.len(),
+        full_data.len(),
+    );
+    assert_eq!(
+        result.as_ref(),
+        full_data.as_slice(),
+        "Data content mismatch"
+    );
+
+    Ok(())
+}
