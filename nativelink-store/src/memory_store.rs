@@ -23,8 +23,8 @@ use std::time::SystemTime;
 use async_trait::async_trait;
 use bytes::Bytes;
 use nativelink_config::stores::MemorySpec;
-use nativelink_error::{Code, Error, ResultExt};
-use tracing::{debug, warn};
+use nativelink_error::{Code, Error, ResultExt, make_err};
+use tracing::{debug, error, warn};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::evicting_map::{LenEntry, ShardedEvictingMap};
@@ -270,6 +270,9 @@ impl StoreDriver for MemoryStore {
         let mut remaining = length.unwrap_or(default_len).min(default_len);
 
         // Walk the chunk chain, sending each relevant piece without copying.
+        let num_chunks = value.chunks.len();
+        let mut chunks_sent = 0u32;
+        let initial_remaining = remaining;
         for chunk in &value.chunks {
             if remaining == 0 {
                 break;
@@ -289,6 +292,23 @@ impl StoreDriver for MemoryStore {
                 .send(slice)
                 .await
                 .err_tip(|| "Failed to write data in memory store")?;
+            chunks_sent += 1;
+        }
+        if remaining > 0 {
+            error!(
+                key = ?owned_key,
+                total_len,
+                num_chunks,
+                chunks_sent,
+                initial_remaining,
+                remaining,
+                "memory_store::get_part: incomplete read — chunks exhausted before all data sent"
+            );
+            return Err(make_err!(
+                Code::Internal,
+                "MemoryStore: chunks exhausted with {remaining} bytes remaining \
+                 (total_len={total_len}, chunks={num_chunks}, sent={chunks_sent})"
+            ));
         }
         writer
             .send_eof()
