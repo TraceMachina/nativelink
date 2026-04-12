@@ -1252,12 +1252,22 @@ impl StoreDriver for FastSlowStore {
                 .await
             {
                 Ok(()) => {
+                    let bytes_written = writer.get_bytes_written();
+                    if expected_size > 0 && bytes_written != expected_size {
+                        error!(
+                            ?key,
+                            bytes_written,
+                            expected_size,
+                            fast_has_size = ?fast_has,
+                            "FastSlowStore::get_part: fast store returned Ok but bytes_written != expected_size"
+                        );
+                    }
                     self.metrics
                         .fast_store_hit_count
                         .fetch_add(1, Ordering::Acquire);
                     self.metrics
                         .fast_store_downloaded_bytes
-                        .fetch_add(writer.get_bytes_written(), Ordering::Acquire);
+                        .fetch_add(bytes_written, Ordering::Acquire);
                     return Ok(());
                 }
                 Err(err) if err.code == Code::NotFound && writer.get_bytes_written() == 0 => {
@@ -1351,13 +1361,26 @@ impl StoreDriver for FastSlowStore {
         // store instead of recursing (which could loop indefinitely under
         // heavy eviction pressure).
         if let Some(writer) = writer.take() {
+            // This is a WAITER — the loader populated the fast store, now read from it.
             let bytes_before = writer.get_bytes_written();
             match self
                 .fast_store
                 .get_part(key.borrow(), &mut *writer, offset, length)
                 .await
             {
-                Ok(()) => Ok(()),
+                Ok(()) => {
+                    let bytes_written = writer.get_bytes_written() - bytes_before;
+                    if expected_size > 0 && bytes_written != expected_size {
+                        error!(
+                            ?key,
+                            bytes_written,
+                            expected_size,
+                            path = "waiter_after_populate",
+                            "FastSlowStore::get_part: waiter read wrong size from fast store after populate"
+                        );
+                    }
+                    Ok(())
+                }
                 Err(err)
                     if err.code == Code::NotFound
                         && writer.get_bytes_written() == bytes_before =>
