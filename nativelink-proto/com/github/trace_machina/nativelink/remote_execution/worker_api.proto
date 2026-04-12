@@ -354,7 +354,16 @@ message StartExecute {
     repeated build.bazel.remote.execution.v2.Directory resolved_directories = 9;
     repeated build.bazel.remote.execution.v2.Digest resolved_directory_digests = 10;
 
-    reserved 11; // NextId.
+    /// Server-computed list of input blob digests the worker is believed to
+    /// be missing, based on the locality map snapshot at dispatch time.
+    /// When present, the worker can skip its own has_with_results check for
+    /// these digests and immediately begin fetching, saving 5-50ms of
+    /// existence-check round-trip. If the hints are stale (e.g. a blob was
+    /// evicted between snapshot and fetch), the worker falls back to its
+    /// normal error-recovery path.
+    repeated build.bazel.remote.execution.v2.Digest missing_digests = 11;
+
+    reserved 12; // NextId.
 }
 
 /// This is a special message used to save actions into the CAS that can be used

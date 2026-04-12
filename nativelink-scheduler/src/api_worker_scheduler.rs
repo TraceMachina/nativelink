@@ -453,12 +453,12 @@ impl ApiWorkerSchedulerImpl {
                 .find(|(id, _)| id == wid)
                 .map(|(_, s)| *s)
                 .unwrap_or(0);
-            info!(
+            debug!(
                 candidates = viable.len(),
                 worker_id = %wid,
                 winner_load_score = winner_score,
                 ?viable_loads,
-                "Load-aware worker selection"
+                "load-aware worker selection"
             );
         }
 
@@ -586,11 +586,11 @@ impl ApiWorkerSchedulerImpl {
             }
             if let Some((ref wid, score)) = best {
                 if score <= CACHE_AFFINITY_LOAD_CUTOFF {
-                    info!(
+                    debug!(
                         ?wid,
                         load_score = score,
                         %input_root_digest,
-                        "Directory cache hit -- worker has input_root_digest cached (root or subtree), giving scheduling priority"
+                        "directory cache hit — worker has input_root cached"
                     );
                 }
             }
@@ -679,18 +679,13 @@ impl ApiWorkerSchedulerImpl {
                             "Subtree coverage -- all candidates overloaded, picking least-loaded cache match"
                         );
                     } else {
-                        info!(
+                        debug!(
                             ?wid,
                             cached_bytes,
                             cached_files,
-                            total_bytes,
-                            total_files,
-                            cached_score,
-                            total_score,
-                            load_score,
                             coverage_pct = pct,
                             %input_root_digest,
-                            "Subtree coverage winner -- worker has {}% of input tree (bytes+files) cached",
+                            "subtree coverage winner — {}% cached",
                             pct,
                         );
                     }
@@ -749,11 +744,11 @@ impl ApiWorkerSchedulerImpl {
                     sorted.into_iter()
                         .find(|(wid, (score, _))| *score > 0 && worker_is_viable(wid))
                         .map(|(wid, (score, _))| {
-                            info!(
+                            debug!(
                                 ?wid,
                                 score,
                                 %input_root_digest,
-                                "Locality scoring -- worker has {} cached input bytes",
+                                "locality scoring — {} cached bytes",
                                 score
                             );
                             wid
@@ -954,6 +949,7 @@ impl ApiWorkerSchedulerImpl {
             peer_hints: peer_hints.to_vec(),
             resolved_directories,
             resolved_directory_digests,
+            missing_digests: Vec::new(),
         };
         let msg = UpdateForWorker {
             update: Some(update_for_worker::Update::StartAction(start_execute)),
@@ -1608,7 +1604,7 @@ impl ApiWorkerScheduler {
             Some((scores, hints)) => (Some(scores), hints.as_slice()),
             None => (None, &[]),
         };
-        let result = inner.inner_find_and_reserve_worker(
+        let mut result = inner.inner_find_and_reserve_worker(
             platform_properties,
             operation_id,
             action_info,
@@ -1652,28 +1648,63 @@ impl ApiWorkerScheduler {
         // Drop the write lock before spawning prefetch.
         drop(inner);
 
-        // ── Phase 4: spawn targeted prefetch (AFTER write lock released) ──
+        // ── Phase 4: spawn targeted prefetch + missing digest hints ──
         // If we have a resolved tree, a locality map, and the selected
         // worker has a CAS endpoint, compute the set of missing blobs and
         // push them to the worker concurrently with the StartExecute dispatch.
         // Also reuse the missing set for cache warming (Phase 5) so we only
         // warm blobs the worker will actually fetch from the server.
+        //
+        // Additionally, inject the full set of missing digests (all sizes)
+        // into the StartExecute message so the worker can skip its own
+        // has_with_results existence check, saving 5-50ms per action.
         let missing_blobs = if let (Some(tree), Some(loc_map), Some(endpoint)) =
-            (&resolved_tree, &self.locality_map, worker_cas_endpoint)
+            (&resolved_tree, &self.locality_map, &worker_cas_endpoint)
         {
-            let missing = Self::compute_missing_blobs(
+            // Compute small-blob prefetch candidates (size-capped).
+            let prefetch_missing = Self::compute_missing_blobs(
                 &tree.file_digests,
-                &endpoint,
+                endpoint,
                 loc_map,
             );
-            if !missing.is_empty() {
+            if !prefetch_missing.is_empty() {
                 self.spawn_prefetch(
-                    endpoint,
-                    missing.clone(),
+                    Arc::clone(endpoint),
+                    prefetch_missing.clone(),
                     operation_id.to_string(),
                 );
             }
-            Some(missing)
+
+            // Compute the FULL set of missing digests (all sizes) for the
+            // missing_digests hint in StartExecute. This lets the worker
+            // skip the has_with_results round-trip entirely.
+            let map = loc_map.read();
+            let blobs = map.blobs_map();
+            let all_missing: Vec<(DigestInfo, u64)> = tree.file_digests
+                .iter()
+                .filter(|(_, size)| *size > 0)
+                .filter(|(digest, _)| {
+                    blobs
+                        .get(digest)
+                        .map_or(true, |endpoints| endpoints.get(endpoint.as_ref()).is_none())
+                })
+                .copied()
+                .collect();
+            drop(map);
+
+            // Inject missing_digests into the StartExecute proto message.
+            if let Some((_, _, ref mut msg)) = result {
+                if let Some(update_for_worker::Update::StartAction(ref mut start_execute)) =
+                    msg.update
+                {
+                    start_execute.missing_digests = all_missing
+                        .iter()
+                        .map(|(digest, _)| (*digest).into())
+                        .collect();
+                }
+            }
+
+            Some(prefetch_missing)
         } else {
             None
         };
@@ -1759,7 +1790,7 @@ impl ApiWorkerScheduler {
         {
             let mut cache = self.tree_cache.lock().await;
             if let Some(cached) = cache.get(&input_root_digest) {
-                info!(
+                debug!(
                     %input_root_digest,
                     file_count = cached.file_digests.len(),
                     dir_count = cached.dir_digests.len(),
@@ -1796,68 +1827,129 @@ impl ApiWorkerScheduler {
             in_progress.insert(input_root_digest);
         }
 
-        // Cache miss — spawn background resolution to warm cache for
-        // future actions. This action proceeds with load-based scoring.
-        let tree_cache = self.tree_cache.clone();
-        let in_progress_ref = self.tree_resolution_in_progress.clone();
-        let failures_ref = self.tree_resolution_failures.clone();
-        let failed_dirs_ref = self.failed_directory_digests.clone();
-        let store = cas_store.clone();
-        let digest = input_root_digest;
-        tokio::spawn(async move {
-            match resolve_tree_from_cas(&store, digest, &failed_dirs_ref).await {
-                Ok(resolved) => {
-                    let entry_bytes = resolved.estimated_heap_bytes();
-                    info!(
-                        %digest,
-                        file_count = resolved.file_digests.len(),
-                        dir_count = resolved.dir_digests.len(),
-                        entry_bytes,
-                        "background tree resolution complete, caching"
-                    );
-                    let mut cache = tree_cache.lock().await;
-                    let before_count = cache.len();
-                    cache.put(digest, Arc::new(resolved));
-                    let evicted = before_count.saturating_sub(cache.len().saturating_sub(1));
-                    if evicted > 0 {
-                        info!(
-                            evicted,
-                            cache_entries = cache.len(),
-                            cache_bytes = cache.total_bytes(),
-                            "tree cache byte-bounded eviction"
-                        );
-                    }
-                    // Clear any stale failure entry.
-                    failures_ref.lock().await.remove(&digest);
-                }
-                Err(err) => {
-                    // Increment attempt counter for exponential backoff.
-                    let mut failures = failures_ref.lock().await;
-                    let attempts = failures
-                        .get(&digest)
-                        .map(|&(_, a)| a)
-                        .unwrap_or(0)
-                        + 1;
-                    let backoff = backoff_for_attempt(FAILURE_BACKOFF, attempts);
-                    warn!(
-                        %digest,
-                        ?err,
-                        attempts,
-                        backoff_secs = backoff.as_secs(),
-                        "background tree resolution failed, suppressing retries"
-                    );
-                    failures.insert(digest, (Instant::now(), attempts));
-                }
-            }
-            // Always remove from in-progress set.
-            in_progress_ref.lock().await.remove(&digest);
-        });
-
-        info!(
-            %input_root_digest,
-            "tree cache miss, using load-based scoring (background resolution started)"
+        // Cache miss — resolve inline so the current action benefits from
+        // locality scoring. Tree resolution is typically fast (MemoryStore
+        // or local CAS) and the result is cached for future actions.
+        // A 200ms timeout prevents slow CAS lookups from blocking dispatch.
+        let resolve_fut = resolve_tree_from_cas(
+            cas_store,
+            input_root_digest,
+            &self.failed_directory_digests,
         );
-        None
+        let resolve_result =
+            tokio::time::timeout(Duration::from_millis(200), resolve_fut).await;
+
+        // Always remove from in-progress set.
+        self.tree_resolution_in_progress
+            .lock()
+            .await
+            .remove(&input_root_digest);
+
+        match resolve_result {
+            Ok(Ok(resolved)) => {
+                let entry_bytes = resolved.estimated_heap_bytes();
+                info!(
+                    %input_root_digest,
+                    file_count = resolved.file_digests.len(),
+                    dir_count = resolved.dir_digests.len(),
+                    entry_bytes,
+                    "inline tree resolution complete, caching"
+                );
+                let arc = Arc::new(resolved);
+                let mut cache = self.tree_cache.lock().await;
+                let before_count = cache.len();
+                cache.put(input_root_digest, Arc::clone(&arc));
+                let evicted = before_count.saturating_sub(cache.len().saturating_sub(1));
+                if evicted > 0 {
+                    info!(
+                        evicted,
+                        cache_entries = cache.len(),
+                        cache_bytes = cache.total_bytes(),
+                        "tree cache byte-bounded eviction"
+                    );
+                }
+                // Clear any stale failure entry.
+                self.tree_resolution_failures
+                    .lock()
+                    .await
+                    .remove(&input_root_digest);
+                Some(arc)
+            }
+            Ok(Err(err)) => {
+                // Resolution failed — record in negative cache with backoff.
+                let mut failures = self.tree_resolution_failures.lock().await;
+                let attempts = failures
+                    .get(&input_root_digest)
+                    .map(|&(_, a)| a)
+                    .unwrap_or(0)
+                    + 1;
+                let backoff = backoff_for_attempt(FAILURE_BACKOFF, attempts);
+                warn!(
+                    %input_root_digest,
+                    ?err,
+                    attempts,
+                    backoff_secs = backoff.as_secs(),
+                    "inline tree resolution failed, suppressing retries"
+                );
+                failures.insert(input_root_digest, (Instant::now(), attempts));
+                None
+            }
+            Err(_elapsed) => {
+                // Resolution timed out — fall back to load-based scoring.
+                // Spawn background task to finish resolution for next time.
+                let tree_cache = self.tree_cache.clone();
+                let in_progress_ref = self.tree_resolution_in_progress.clone();
+                let failures_ref = self.tree_resolution_failures.clone();
+                let failed_dirs_ref = self.failed_directory_digests.clone();
+                let store = cas_store.clone();
+                let digest = input_root_digest;
+                // Mark in-progress again for the background task.
+                self.tree_resolution_in_progress
+                    .lock()
+                    .await
+                    .insert(digest);
+                tokio::spawn(async move {
+                    match resolve_tree_from_cas(&store, digest, &failed_dirs_ref).await {
+                        Ok(resolved) => {
+                            let entry_bytes = resolved.estimated_heap_bytes();
+                            info!(
+                                %digest,
+                                file_count = resolved.file_digests.len(),
+                                dir_count = resolved.dir_digests.len(),
+                                entry_bytes,
+                                "background tree resolution complete after timeout, caching"
+                            );
+                            let mut cache = tree_cache.lock().await;
+                            cache.put(digest, Arc::new(resolved));
+                            failures_ref.lock().await.remove(&digest);
+                        }
+                        Err(err) => {
+                            let mut failures = failures_ref.lock().await;
+                            let attempts = failures
+                                .get(&digest)
+                                .map(|&(_, a)| a)
+                                .unwrap_or(0)
+                                + 1;
+                            let backoff = backoff_for_attempt(FAILURE_BACKOFF, attempts);
+                            warn!(
+                                %digest,
+                                ?err,
+                                attempts,
+                                backoff_secs = backoff.as_secs(),
+                                "background tree resolution failed, suppressing retries"
+                            );
+                            failures.insert(digest, (Instant::now(), attempts));
+                        }
+                    }
+                    in_progress_ref.lock().await.remove(&digest);
+                });
+                info!(
+                    %input_root_digest,
+                    "tree resolution timed out, using load-based scoring"
+                );
+                None
+            }
+        }
     }
 
     /// Returns the per-worker prefetch semaphore, creating it if needed.
@@ -1996,48 +2088,14 @@ impl ApiWorkerScheduler {
                 }
             };
 
-            // Bulk has() check to filter out blobs the worker already has.
-            // This avoids re-reading and re-pushing blobs that arrived via
-            // concurrent actions or peer sharing.
-            let store_keys: Vec<StoreKey<'_>> = missing_blobs
-                .iter()
-                .map(|(digest, _)| (*digest).into())
-                .collect();
-            let mut has_results = vec![None; store_keys.len()];
-            let has_check_ok = worker_store
-                .has_with_results(&store_keys, &mut has_results)
-                .await
-                .is_ok();
-
-            let mut actually_missing: Vec<(DigestInfo, u64)> = Vec::new();
-            let mut blobs_already_present: u64 = 0;
-
-            if has_check_ok {
-                for (i, (digest, size)) in missing_blobs.iter().enumerate() {
-                    if has_results[i].is_some() {
-                        blobs_already_present += 1;
-                    } else {
-                        actually_missing.push((*digest, *size));
-                    }
-                }
-            } else {
-                // has() failed, try pushing everything anyway
-                actually_missing = missing_blobs;
-            }
-
-            if actually_missing.is_empty() {
-                metrics
-                    .prefetch_blobs_already_present
-                    .fetch_add(blobs_already_present, Ordering::Relaxed);
-                info!(
-                    %operation_id,
-                    worker_endpoint = %endpoint_str,
-                    blobs_already_present,
-                    elapsed_ms = start.elapsed().as_millis() as u64,
-                    "prefetch: all blobs already present on worker"
-                );
-                return;
-            }
+            // Skip the redundant has() check against the worker's CAS.
+            // The missing_blobs list was already filtered by compute_missing_blobs()
+            // using the locality map (refreshed every 100ms via BlobsAvailable).
+            // The has() round-trip to the worker costs 5-20ms and provides
+            // marginal benefit: at worst we re-push a few small blobs that
+            // arrived between the locality snapshot and now, costing <1ms at
+            // 10GbE for the capped prefetch batch sizes.
+            let actually_missing = missing_blobs;
 
             // Group blobs into batches of up to PREFETCH_BATCH_SIZE_BYTES.
             // Each batch will be read from CAS and pushed via update_oneshot,
@@ -2163,9 +2221,6 @@ impl ApiWorkerScheduler {
                 .prefetch_blobs_failed
                 .fetch_add(blobs_failed, Ordering::Relaxed);
             metrics
-                .prefetch_blobs_already_present
-                .fetch_add(blobs_already_present, Ordering::Relaxed);
-            metrics
                 .prefetch_batches_sent
                 .fetch_add(batches_sent, Ordering::Relaxed);
 
@@ -2179,7 +2234,6 @@ impl ApiWorkerScheduler {
                 blobs_sent,
                 bytes_sent,
                 blobs_failed,
-                blobs_already_present,
                 elapsed_ms = elapsed.as_millis() as u64,
                 "prefetch: completed batched push to worker"
             );
@@ -2444,6 +2498,7 @@ async fn create_worker_cas_connection(
         parallel_chunk_read_threshold: 8 * 1024 * 1024,
         parallel_chunk_count: 4,
         dual_transport: false,
+        zstd_compression: false,
     };
     let store = GrpcStore::new(&spec)
         .await
@@ -3599,14 +3654,11 @@ mod tests {
             None,
         );
 
-        // First call: cache miss, returns None and spawns background resolution.
+        // First call: cache miss, inline resolution succeeds and caches.
         let result1 = scheduler.resolve_input_tree(dir_digest).await;
-        assert!(result1.is_none(), "Expected None from first resolve (lazy cache miss)");
+        assert!(result1.is_some(), "Expected Some from first resolve (inline resolution)");
 
-        // Wait for the background resolution task to populate the cache.
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-        // Second call: cache hit from background resolution.
+        // Second call: cache hit returns the same Arc.
         let result2 = scheduler.resolve_input_tree(dir_digest).await;
         assert!(result2.is_some(), "Expected Some from second resolve (cache hit)");
 
@@ -3614,8 +3666,13 @@ mod tests {
         let result3 = scheduler.resolve_input_tree(dir_digest).await;
         assert!(result3.is_some(), "Expected Some from third resolve (cache hit)");
 
+        let arc1 = result1.unwrap();
         let arc2 = result2.unwrap();
         let arc3 = result3.unwrap();
+        assert!(
+            Arc::ptr_eq(&arc1, &arc2),
+            "Expected resolve_input_tree to return the same Arc on cache hit (pointer equality)"
+        );
         assert!(
             Arc::ptr_eq(&arc2, &arc3),
             "Expected resolve_input_tree to return the same Arc on cache hit (pointer equality)"

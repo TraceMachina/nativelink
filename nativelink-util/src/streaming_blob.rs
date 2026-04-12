@@ -368,6 +368,8 @@ impl StreamingBlob {
 /// readers to discover blobs that are still being written.
 pub struct InFlightBlobMap {
     map: RwLock<HashMap<DigestInfo, Arc<StreamingBlobInner>>>,
+    /// Maximum concurrent in-flight blobs. 0 = unlimited.
+    max_entries: usize,
 }
 
 impl fmt::Debug for InFlightBlobMap {
@@ -382,24 +384,37 @@ impl InFlightBlobMap {
     pub fn new() -> Self {
         Self {
             map: RwLock::new(HashMap::new()),
+            max_entries: 0,
         }
     }
 
-    /// Register a new streaming blob.  Returns a writer and reader
-    /// pair.  The inner is stored in the map for discovery by other
-    /// readers.
+    /// Create with a maximum number of concurrent in-flight blobs.
+    /// When the limit is reached, new registrations return `None`
+    /// (the write proceeds without streaming readers).
+    pub fn with_max_entries(max_entries: usize) -> Self {
+        Self {
+            map: RwLock::new(HashMap::new()),
+            max_entries,
+        }
+    }
+
+    /// Register a new streaming blob.  Returns `Some((writer, reader))`
+    /// if registered, or `None` if the map is at capacity.
     pub fn register(
         &self,
         digest: DigestInfo,
         max_buffer_bytes: u64,
-    ) -> (StreamingBlobWriter, StreamingBlobReader) {
+    ) -> Option<(StreamingBlobWriter, StreamingBlobReader)> {
         let inner = Arc::new(StreamingBlobInner::new(digest, max_buffer_bytes));
-        self.map
-            .write()
-            .insert(digest, Arc::clone(&inner));
+        let mut map = self.map.write();
+        if self.max_entries > 0 && map.len() >= self.max_entries {
+            return None;
+        }
+        map.insert(digest, Arc::clone(&inner));
+        drop(map);
         let writer = StreamingBlobWriter::new(Arc::clone(&inner));
         let reader = StreamingBlobReader::new(inner);
-        (writer, reader)
+        Some((writer, reader))
     }
 
     /// Get a reader for an in-flight blob, if one exists.
@@ -407,6 +422,13 @@ impl InFlightBlobMap {
         let map = self.map.read();
         map.get(digest)
             .map(|inner| StreamingBlobReader::new(Arc::clone(inner)))
+    }
+
+    /// Get the raw `Arc<StreamingBlobInner>` for a digest, if registered.
+    ///
+    /// Used for `Arc::ptr_eq` comparison during grace-period removal.
+    pub fn get_inner(&self, digest: &DigestInfo) -> Option<Arc<StreamingBlobInner>> {
+        self.map.read().get(digest).cloned()
     }
 
     /// Remove a blob from the map, but only if the stored `Arc`
@@ -437,6 +459,10 @@ impl Default for InFlightBlobMap {
         Self::new()
     }
 }
+
+/// Default maximum concurrent in-flight streaming blobs.
+/// With 64 MiB per blob, 128 entries = 8 GiB worst case.
+pub const DEFAULT_MAX_IN_FLIGHT_BLOBS: usize = 128;
 
 #[cfg(test)]
 mod tests {
@@ -675,7 +701,7 @@ mod tests {
         let digest = test_digest(8);
 
         // Register a blob.
-        let (mut writer, mut reader1) = map.register(digest, 1024 * 1024);
+        let (mut writer, mut reader1) = map.register(digest, 1024 * 1024).unwrap();
         assert_eq!(map.len(), 1);
 
         // Get a reader for the same digest.
@@ -728,5 +754,190 @@ mod tests {
         writer.send_eof().unwrap();
         let err = writer.send_eof().unwrap_err();
         assert_eq!(err.code, Code::Internal);
+    }
+
+    // ---------------------------------------------------------------
+    // 11. Writer error propagation when readers are blocked waiting
+    // ---------------------------------------------------------------
+    #[tokio::test]
+    async fn writer_error_wakes_blocked_reader() {
+        let (mut writer, mut reader) = StreamingBlob::new(test_digest(11), 1024 * 1024);
+
+        // Reader is blocked waiting for data — send error from another task.
+        let write_handle = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            writer.send_error(make_err!(Code::Aborted, "upload cancelled"));
+        });
+
+        // This should unblock when the error is sent.
+        let start = std::time::Instant::now();
+        let err = reader.next_chunk().await.unwrap_err();
+        let elapsed = start.elapsed();
+
+        assert_eq!(err.code, Code::Aborted);
+        assert!(
+            elapsed >= std::time::Duration::from_millis(20),
+            "reader should have waited for error, but returned in {elapsed:?}"
+        );
+
+        write_handle.await.unwrap();
+    }
+
+    // ---------------------------------------------------------------
+    // 12. Multiple concurrent readers at different speeds
+    // ---------------------------------------------------------------
+    #[tokio::test]
+    async fn concurrent_readers_different_speeds() {
+        // Large buffer so no eviction happens.
+        let (mut writer, mut fast_reader) = StreamingBlob::new(test_digest(12), 1024 * 1024);
+
+        let inner = Arc::clone(&fast_reader.inner);
+        let mut slow_reader = StreamingBlob::new_reader(&inner);
+
+        // Write 10 chunks.
+        let chunks: Vec<Bytes> = (0..10)
+            .map(|i| Bytes::from(format!("data-{i:04}")))
+            .collect();
+        for c in &chunks {
+            writer.send(c.clone()).await.unwrap();
+        }
+        writer.send_eof().unwrap();
+
+        // Fast reader: consume all chunks immediately.
+        let mut fast_data = Vec::new();
+        loop {
+            let chunk = fast_reader.next_chunk().await.unwrap();
+            if chunk.is_empty() {
+                break;
+            }
+            fast_data.push(chunk);
+        }
+        assert_eq!(fast_data.len(), 10);
+
+        // Slow reader: consume one at a time with a delay.
+        let mut slow_data = Vec::new();
+        loop {
+            let chunk = slow_reader.next_chunk().await.unwrap();
+            if chunk.is_empty() {
+                break;
+            }
+            slow_data.push(chunk);
+        }
+        assert_eq!(slow_data.len(), 10);
+
+        // Both should have identical data despite different read speeds.
+        assert_eq!(fast_data, slow_data);
+        for (i, chunk) in fast_data.iter().enumerate() {
+            assert_eq!(chunk, &chunks[i]);
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // 13. Window eviction under memory pressure — slow reader gets
+    //     Unavailable while fast reader succeeds
+    // ---------------------------------------------------------------
+    #[tokio::test]
+    async fn window_eviction_slow_reader_fast_reader() {
+        // Buffer limited to 30 bytes. Each chunk is 10 bytes.
+        let (writer, mut slow_reader) = StreamingBlob::new(test_digest(13), 30);
+
+        let inner = Arc::clone(&slow_reader.inner);
+        let mut fast_reader = StreamingBlob::new_reader(&inner);
+
+        // Write 5 chunks of 10 bytes each (50 bytes total).
+        // After chunk 4, the buffer exceeds 30 bytes, so oldest chunks
+        // get evicted.
+        for i in 0..5u8 {
+            writer.send(Bytes::from(vec![i; 10])).await.unwrap();
+
+            // Fast reader keeps up: consume each chunk as it arrives.
+            let chunk = fast_reader.next_chunk().await.unwrap();
+            assert_eq!(chunk.len(), 10);
+            assert_eq!(chunk[0], i);
+        }
+
+        let mut writer = writer;
+        writer.send_eof().unwrap();
+
+        // Fast reader should see EOF since it consumed everything.
+        let eof = fast_reader.next_chunk().await.unwrap();
+        assert!(eof.is_empty());
+
+        // Slow reader hasn't read anything — its cursor is at 0,
+        // but eviction has moved earliest_chunk_idx forward.
+        let earliest = slow_reader
+            .inner
+            .earliest_chunk_idx
+            .load(Ordering::Acquire);
+        assert!(
+            earliest > 0,
+            "expected eviction to move earliest_chunk_idx, got {earliest}"
+        );
+
+        let err = slow_reader.next_chunk().await.unwrap_err();
+        assert_eq!(
+            err.code,
+            Code::Unavailable,
+            "slow reader should get Unavailable after falling behind"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // 14. InFlightBlobMap cleanup: writer completes, entry removed
+    // ---------------------------------------------------------------
+    #[tokio::test]
+    async fn in_flight_blob_map_remove_after_write_completes() {
+        let map = InFlightBlobMap::new();
+        let digest = test_digest(14);
+
+        let (mut writer, mut reader) = map.register(digest, 1024 * 1024).unwrap();
+        assert_eq!(map.len(), 1);
+
+        // Simulate a complete write cycle.
+        writer.send(Bytes::from_static(b"payload")).await.unwrap();
+        writer.send_eof().unwrap();
+
+        // Reader consumes all data.
+        let chunk = reader.next_chunk().await.unwrap();
+        assert_eq!(chunk, Bytes::from_static(b"payload"));
+        let eof = reader.next_chunk().await.unwrap();
+        assert!(eof.is_empty());
+
+        // Now remove using the correct inner Arc.
+        let inner = map.get_inner(&digest).expect("should still be registered");
+        map.remove(&digest, &inner);
+
+        // Verify the entry is gone.
+        assert_eq!(map.len(), 0);
+        assert!(map.is_empty());
+        assert!(map.get_reader(&digest).is_none());
+        assert!(map.get_inner(&digest).is_none());
+    }
+
+    // ---------------------------------------------------------------
+    // 15. InFlightBlobMap: get_reader returns None for non-existent digest
+    // ---------------------------------------------------------------
+    #[tokio::test]
+    async fn in_flight_blob_map_get_reader_nonexistent() {
+        let map = InFlightBlobMap::new();
+
+        let missing_digest = test_digest(15);
+        assert!(
+            map.get_reader(&missing_digest).is_none(),
+            "get_reader should return None for unregistered digest"
+        );
+        assert!(
+            map.get_inner(&missing_digest).is_none(),
+            "get_inner should return None for unregistered digest"
+        );
+
+        // Register a different digest and confirm original is still absent.
+        let other_digest = test_digest(99);
+        let (_writer, _reader) = map.register(other_digest, 1024).unwrap();
+        assert_eq!(map.len(), 1);
+        assert!(
+            map.get_reader(&missing_digest).is_none(),
+            "get_reader should still return None for the unregistered digest"
+        );
     }
 }

@@ -231,7 +231,12 @@ impl SimpleScheduler {
         /// (reducing platform properties and inserting into running_action_infos)
         /// under a single lock acquisition, so concurrent matches cannot
         /// select the same worker.
-        const MATCH_CONCURRENCY: usize = 8;
+        ///
+        /// Increased from 8 to 32 to reduce queue drain time during burst
+        /// scheduling (e.g. build startup). With 10+ workers the higher
+        /// concurrency prevents a backlog without meaningful lock contention
+        /// since the worker registry write lock is held briefly per match.
+        const MATCH_CONCURRENCY: usize = 32;
 
         // Cache for computed platform properties, keyed by sorted key-value
         // pairs. This avoids recomputing the same PlatformProperties for

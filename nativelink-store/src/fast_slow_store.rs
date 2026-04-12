@@ -1226,16 +1226,17 @@ impl StoreDriver for FastSlowStore {
             StoreKey::Str(_) => 0, // Can't validate size for string keys.
         };
         let fast_valid = match fast_has {
-            Some(size) if expected_size > 0 && size != expected_size => {
-                // Fast store has the key but with wrong size — partial/corrupt entry.
-                // Skip it and fall through to the slow store for correct data.
-                // The corrupt entry will be overwritten when the slow store
-                // populates the fast store with the correct blob.
+            Some(size) if expected_size > 0 && size < expected_size => {
+                // Fast store has the key but with less data than expected —
+                // truncated/corrupt entry. Skip it and fall through to the
+                // slow store for correct data.
+                // Note: size > expected_size is normal because FilesystemStore
+                // reports size_on_disk (block-aligned), not data size.
                 error!(
                     ?key,
                     fast_size = size,
                     expected_size,
-                    "fast store has partial/corrupt entry, skipping to slow store"
+                    "fast store has truncated entry, skipping to slow store"
                 );
                 false
             }
@@ -1252,22 +1253,12 @@ impl StoreDriver for FastSlowStore {
                 .await
             {
                 Ok(()) => {
-                    let bytes_written = writer.get_bytes_written();
-                    if expected_size > 0 && bytes_written != expected_size {
-                        error!(
-                            ?key,
-                            bytes_written,
-                            expected_size,
-                            fast_has_size = ?fast_has,
-                            "FastSlowStore::get_part: fast store returned Ok but bytes_written != expected_size"
-                        );
-                    }
                     self.metrics
                         .fast_store_hit_count
                         .fetch_add(1, Ordering::Acquire);
                     self.metrics
                         .fast_store_downloaded_bytes
-                        .fetch_add(bytes_written, Ordering::Acquire);
+                        .fetch_add(writer.get_bytes_written(), Ordering::Acquire);
                     return Ok(());
                 }
                 Err(err) if err.code == Code::NotFound && writer.get_bytes_written() == 0 => {
@@ -1361,26 +1352,13 @@ impl StoreDriver for FastSlowStore {
         // store instead of recursing (which could loop indefinitely under
         // heavy eviction pressure).
         if let Some(writer) = writer.take() {
-            // This is a WAITER — the loader populated the fast store, now read from it.
             let bytes_before = writer.get_bytes_written();
             match self
                 .fast_store
                 .get_part(key.borrow(), &mut *writer, offset, length)
                 .await
             {
-                Ok(()) => {
-                    let bytes_written = writer.get_bytes_written() - bytes_before;
-                    if expected_size > 0 && bytes_written != expected_size {
-                        error!(
-                            ?key,
-                            bytes_written,
-                            expected_size,
-                            path = "waiter_after_populate",
-                            "FastSlowStore::get_part: waiter read wrong size from fast store after populate"
-                        );
-                    }
-                    Ok(())
-                }
+                Ok(()) => Ok(()),
                 Err(err)
                     if err.code == Code::NotFound
                         && writer.get_bytes_written() == bytes_before =>

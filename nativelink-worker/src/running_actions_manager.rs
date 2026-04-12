@@ -1073,6 +1073,7 @@ pub fn download_to_directory<'a>(
     digest: &'a DigestInfo,
     current_directory: &'a str,
     pre_resolved_tree: Option<HashMap<DigestInfo, ProtoDirectory>>,
+    server_missing_digests: Option<HashSet<DigestInfo>>,
 ) -> BoxFuture<'a, Result<(), Error>> {
     async move {
         let phase_start = std::time::Instant::now();
@@ -1182,7 +1183,7 @@ pub fn download_to_directory<'a>(
             return Ok(());
         }
 
-        // Step 3: Batch-check which blobs are already in the fast store.
+        // Step 3: Determine which blobs are already cached and which are missing.
         // Deduplicate digests first to avoid redundant checks.
         let unique_digests: Vec<DigestInfo> = {
             let mut seen = HashSet::with_capacity(files.len());
@@ -1199,31 +1200,63 @@ pub fn download_to_directory<'a>(
         };
 
         let has_check_start = std::time::Instant::now();
-        let store_keys: Vec<StoreKey<'_>> =
-            unique_digests.iter().map(|d| (*d).into()).collect();
-        let mut has_results = vec![None; store_keys.len()];
-        // Check in chunks to reduce Mutex hold time in the fast store,
-        // allowing concurrent operations from other actions to interleave.
-        const HAS_CHECK_CHUNK: usize = 2000;
-        for start in (0..store_keys.len()).step_by(HAS_CHECK_CHUNK) {
-            let end = (start + HAS_CHECK_CHUNK).min(store_keys.len());
-            Pin::new(cas_store.fast_store())
-                .has_with_results(&store_keys[start..end], &mut has_results[start..end])
-                .await
-                .err_tip(|| "Batch has_with_results on fast store")?;
-        }
 
-        let cached_set: HashSet<DigestInfo> = unique_digests
-            .iter()
-            .zip(has_results.iter())
-            .filter_map(|(digest, result)| result.map(|_| *digest))
-            .collect();
+        // When the scheduler provides missing_digests hints (computed from
+        // the locality map at dispatch time), trust those hints and skip the
+        // expensive has_with_results round-trip to the fast store. This saves
+        // 5-50ms per action. If the hints are stale (a blob was evicted
+        // between dispatch and now), the fetch will repopulate it via the
+        // normal FastSlowStore path.
+        let (cached_set, missing_digests) = if let Some(ref server_missing) = server_missing_digests {
+            let cached: HashSet<DigestInfo> = unique_digests
+                .iter()
+                .filter(|d| !server_missing.contains(d))
+                .copied()
+                .collect();
+            let missing: Vec<DigestInfo> = unique_digests
+                .iter()
+                .filter(|d| server_missing.contains(d))
+                .copied()
+                .collect();
+            info!(
+                total_files = files.len(),
+                unique_digests = unique_digests.len(),
+                cached = cached.len(),
+                missing = missing.len(),
+                server_hints = server_missing.len(),
+                "download_to_directory: using server-provided missing digest hints (skipping has_with_results)"
+            );
+            (cached, missing)
+        } else {
+            // No server hints — fall back to the full has_with_results check.
+            let store_keys: Vec<StoreKey<'_>> =
+                unique_digests.iter().map(|d| (*d).into()).collect();
+            let mut has_results = vec![None; store_keys.len()];
+            // Check in chunks to reduce Mutex hold time in the fast store,
+            // allowing concurrent operations from other actions to interleave.
+            const HAS_CHECK_CHUNK: usize = 2000;
+            for start in (0..store_keys.len()).step_by(HAS_CHECK_CHUNK) {
+                let end = (start + HAS_CHECK_CHUNK).min(store_keys.len());
+                Pin::new(cas_store.fast_store())
+                    .has_with_results(&store_keys[start..end], &mut has_results[start..end])
+                    .await
+                    .err_tip(|| "Batch has_with_results on fast store")?;
+            }
 
-        let missing_digests: Vec<DigestInfo> = unique_digests
-            .iter()
-            .zip(has_results.iter())
-            .filter_map(|(digest, result)| if result.is_none() { Some(*digest) } else { None })
-            .collect();
+            let cached: HashSet<DigestInfo> = unique_digests
+                .iter()
+                .zip(has_results.iter())
+                .filter_map(|(digest, result)| result.map(|_| *digest))
+                .collect();
+
+            let missing: Vec<DigestInfo> = unique_digests
+                .iter()
+                .zip(has_results.iter())
+                .filter_map(|(digest, result)| if result.is_none() { Some(*digest) } else { None })
+                .collect();
+
+            (cached, missing)
+        };
 
         let has_check_elapsed = has_check_start.elapsed();
         let has_check_ms = phase_start.elapsed().as_millis();
@@ -1237,6 +1270,7 @@ pub fn download_to_directory<'a>(
             cached_bytes,
             missing = missing_digests.len(),
             missing_bytes,
+            used_server_hints = server_missing_digests.is_some(),
             elapsed_ms = has_check_elapsed.as_millis() as u64,
             "download_to_directory: batch existence check complete"
         );
@@ -1723,6 +1757,7 @@ pub async fn prepare_action_inputs(
     digest: &DigestInfo,
     work_directory: &str,
     pre_resolved_tree: Option<HashMap<DigestInfo, ProtoDirectory>>,
+    server_missing_digests: Option<HashSet<DigestInfo>>,
 ) -> Result<Option<DigestInfo>, Error> {
     // Try cache first if available
     if let Some(cache) = directory_cache {
@@ -1782,7 +1817,7 @@ pub async fn prepare_action_inputs(
     }
 
     // Traditional path (cache disabled or failed)
-    download_to_directory(cas_store, filesystem_store, digest, work_directory, pre_resolved_tree).await?;
+    download_to_directory(cas_store, filesystem_store, digest, work_directory, pre_resolved_tree, server_missing_digests).await?;
     Ok(None)
 }
 
@@ -2396,6 +2431,10 @@ pub struct RunningActionImpl {
     /// StartExecute). Used once during prepare_action to skip the GetTree
     /// RPC, then taken (dropped) to free memory.
     pre_resolved_tree: Mutex<Option<HashMap<DigestInfo, ProtoDirectory>>>,
+    /// Server-provided hints about which input digests the worker is
+    /// believed to be missing. Used once during prepare_action to skip
+    /// the has_with_results round-trip, then taken (dropped) to free memory.
+    server_missing_digests: Mutex<Option<HashSet<DigestInfo>>>,
 }
 
 impl RunningActionImpl {
@@ -2407,6 +2446,7 @@ impl RunningActionImpl {
         timeout: Duration,
         running_actions_manager: Arc<RunningActionsManagerImpl>,
         pre_resolved_tree: Option<HashMap<DigestInfo, ProtoDirectory>>,
+        server_missing_digests: Option<HashSet<DigestInfo>>,
     ) -> Self {
         let work_directory = format!("{}/{}", action_directory, "work");
         let (kill_channel_tx, kill_channel_rx) = oneshot::channel();
@@ -2432,6 +2472,7 @@ impl RunningActionImpl {
             // Only needs to be cleaned up after a prepare_action call, set there.
             did_cleanup: AtomicBool::new(true),
             pre_resolved_tree: Mutex::new(pre_resolved_tree),
+            server_missing_digests: Mutex::new(server_missing_digests),
         }
     }
 
@@ -2450,7 +2491,8 @@ impl RunningActionImpl {
     ///
     /// This function will aggressively download and spawn potentially thousands of futures. It is
     /// up to the stores to rate limit if needed.
-    async fn inner_prepare_action(self: Arc<Self>) -> Result<Arc<Self>, Error> {
+    fn inner_prepare_action(self: Arc<Self>) -> BoxFuture<'static, Result<Arc<Self>, Error>> {
+        Box::pin(async move {
         {
             let mut state = self.state.lock();
             state.execution_metadata.input_fetch_start_timestamp =
@@ -2473,6 +2515,8 @@ impl RunningActionImpl {
                 .map_or(false, |c| c.is_direct_use_mode());
             // Take the pre-resolved tree (if any) — consumed once during input fetch.
             let pre_resolved_tree = self.pre_resolved_tree.lock().take();
+            // Take the server-provided missing digest hints (if any).
+            let server_missing_digests = self.server_missing_digests.lock().take();
             let (command, direct_use_digest) = try_join(command_fut, async {
                 if !is_direct_use {
                     // Normal mode: create work directory first, then populate it.
@@ -2493,6 +2537,7 @@ impl RunningActionImpl {
                         &self.action_info.input_root_digest,
                         &self.work_directory,
                         pre_resolved_tree,
+                        server_missing_digests,
                     ))
                     .await
             })
@@ -2691,6 +2736,7 @@ impl RunningActionImpl {
                 (self.running_actions_manager.callbacks.now_fn)();
         }
         Ok(self)
+        })
     }
 
     async fn inner_execute(self: Arc<Self>) -> Result<Arc<Self>, Error> {
@@ -4663,6 +4709,23 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                     None
                 };
 
+                // Extract server-provided missing digest hints before
+                // consuming start_execute.
+                let server_missing_digests = if !start_execute.missing_digests.is_empty() {
+                    let set: HashSet<DigestInfo> = start_execute
+                        .missing_digests
+                        .drain(..)
+                        .filter_map(|d| DigestInfo::try_from(&d).ok())
+                        .collect();
+                    info!(
+                        hints = set.len(),
+                        "Received missing digest hints from scheduler"
+                    );
+                    Some(set)
+                } else {
+                    None
+                };
+
                 let queued_timestamp = start_execute
                     .queued_timestamp
                     .and_then(|time| time.try_into().ok())
@@ -4710,6 +4773,7 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                     timeout,
                     self.clone(),
                     pre_resolved_tree,
+                    server_missing_digests,
                 ));
                 {
                     let mut running_actions = self.running_actions.lock();

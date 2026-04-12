@@ -282,6 +282,7 @@ impl Worker {
                     peer_hints: Vec::new(),
                     resolved_directories: Vec::new(),
                     resolved_directory_digests: Vec::new(),
+                    missing_digests: Vec::new(),
                 };
                 reduce_platform_properties(
                     worker_platform_properties,

@@ -332,6 +332,8 @@ async fn test_multiple_clients_subscribe_to_same_action() -> Result<(), Error> {
                 peer_hints: Vec::new(),
                 resolved_directories: Vec::new(),
                 resolved_directory_digests: Vec::new(),
+
+                missing_digests: Vec::new(),
             })),
         };
         let msg_for_worker = rx_from_worker.recv().await.unwrap();

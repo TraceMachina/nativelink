@@ -265,6 +265,8 @@ async fn blake3_digest_function_registered_properly() -> Result<(), Error> {
                         peer_hints: Vec::new(),
                         resolved_directories: Vec::new(),
                         resolved_directory_digests: Vec::new(),
+
+                        missing_digests: Vec::new(),
                     })),
                 })
                 .unwrap(),
@@ -358,6 +360,8 @@ async fn simple_worker_start_action_test() -> Result<(), Error> {
                         peer_hints: Vec::new(),
                         resolved_directories: Vec::new(),
                         resolved_directory_digests: Vec::new(),
+
+                        missing_digests: Vec::new(),
                     })),
                 })
                 .unwrap(),
@@ -638,6 +642,8 @@ async fn experimental_precondition_script_fails() -> Result<(), Error> {
                         peer_hints: Vec::new(),
                         resolved_directories: Vec::new(),
                         resolved_directory_digests: Vec::new(),
+
+                        missing_digests: Vec::new(),
                     })),
                 })
                 .unwrap(),
@@ -728,6 +734,8 @@ async fn kill_action_request_kills_action() -> Result<(), Error> {
                         peer_hints: Vec::new(),
                         resolved_directories: Vec::new(),
                         resolved_directory_digests: Vec::new(),
+
+                        missing_digests: Vec::new(),
                     })),
                 })
                 .unwrap(),
@@ -825,6 +833,8 @@ async fn cas_not_found_returns_failed_precondition_test() -> Result<(), Error> {
                         peer_hints: Vec::new(),
                         resolved_directories: Vec::new(),
                         resolved_directory_digests: Vec::new(),
+
+                        missing_digests: Vec::new(),
                     })),
                 })
                 .unwrap(),
@@ -938,6 +948,8 @@ async fn non_cas_not_found_returns_internal_error_test() -> Result<(), Error> {
                         peer_hints: Vec::new(),
                         resolved_directories: Vec::new(),
                         resolved_directory_digests: Vec::new(),
+
+                        missing_digests: Vec::new(),
                     })),
                 })
                 .unwrap(),
@@ -1057,6 +1069,8 @@ async fn worker_translates_not_found_to_failed_precondition_test() -> Result<(),
                         peer_hints: Vec::new(),
                         resolved_directories: Vec::new(),
                         resolved_directory_digests: Vec::new(),
+
+                        missing_digests: Vec::new(),
                     })),
                 })
                 .unwrap(),
@@ -1174,6 +1188,8 @@ async fn peer_hints_passed_to_action_manager_test() -> Result<(), Error> {
                         peer_hints: peer_hints.clone(),
                         resolved_directories: Vec::new(),
                         resolved_directory_digests: Vec::new(),
+
+                        missing_digests: Vec::new(),
                     })),
                 })
                 .unwrap(),
@@ -1285,6 +1301,8 @@ async fn empty_peer_hints_action_starts_normally_test() -> Result<(), Error> {
                         peer_hints: Vec::new(),
                         resolved_directories: Vec::new(),
                         resolved_directory_digests: Vec::new(),
+
+                        missing_digests: Vec::new(),
                     })),
                 })
                 .unwrap(),
@@ -1439,6 +1457,8 @@ async fn multiple_peer_hints_with_multiple_endpoints_test() -> Result<(), Error>
                         peer_hints: peer_hints.clone(),
                         resolved_directories: Vec::new(),
                         resolved_directory_digests: Vec::new(),
+
+                        missing_digests: Vec::new(),
                     })),
                 })
                 .unwrap(),

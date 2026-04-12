@@ -21,7 +21,7 @@ mod tests {
     #[cfg(target_family = "unix")]
     use core::task::Poll;
     use core::time::Duration;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::env;
     use std::ffi::OsString;
     use std::io::{Cursor, Write};
@@ -63,7 +63,7 @@ mod tests {
     use nativelink_util::blob_locality_map::new_shared_blob_locality_map;
     use nativelink_util::common::{DigestInfo, fs};
     use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
-    use nativelink_util::store_trait::{Store, StoreLike};
+    use nativelink_util::store_trait::{Store, StoreKey, StoreLike};
     use nativelink_worker::running_actions_manager::{
         Callbacks, ExecutionConfiguration, RunningAction, RunningActionImpl, RunningActionsManager,
         RunningActionsManagerArgs, RunningActionsManagerImpl, download_to_directory,
@@ -232,6 +232,7 @@ mod tests {
                 &root_directory_digest,
                 &download_dir,
                 None,
+                None,
             )
             .await?;
             download_dir
@@ -338,6 +339,7 @@ mod tests {
                 &root_directory_digest,
                 &download_dir,
                 None,
+                None,
             )
             .await?;
             download_dir
@@ -412,6 +414,7 @@ mod tests {
                 fast_store.as_pin(),
                 &root_directory_digest,
                 &download_dir,
+                None,
                 None,
             )
             .await?;
@@ -497,6 +500,7 @@ mod tests {
             &root_directory_digest,
             &download_dir,
             None,
+            None,
         )
         .await?;
 
@@ -566,6 +570,7 @@ mod tests {
             fast_store.as_pin(),
             &root_directory_digest,
             &download_dir,
+            None,
             None,
         )
         .await?;
@@ -649,6 +654,7 @@ mod tests {
             &root_directory_digest,
             &download_dir,
             None,
+            None,
         )
         .await?;
 
@@ -689,6 +695,7 @@ mod tests {
             fast_store.as_pin(),
             &root_directory_digest,
             &download_dir,
+            None,
             None,
         )
         .await?;
@@ -763,6 +770,7 @@ mod tests {
             &root_directory_digest,
             &download_dir,
             None,
+            None,
         )
         .await?;
 
@@ -819,6 +827,7 @@ mod tests {
             &root_directory_digest,
             &download_dir,
             None,
+            None,
         )
         .await;
 
@@ -860,6 +869,7 @@ mod tests {
             fast_store.as_pin(),
             &root_directory_digest,
             &download_dir,
+            None,
             None,
         )
         .await;
@@ -925,6 +935,7 @@ mod tests {
             fast_store.as_pin(),
             &root_directory_digest,
             &download_dir,
+            None,
             None,
         )
         .await?;
@@ -1045,6 +1056,7 @@ mod tests {
                         peer_hints: Vec::new(),
                         resolved_directories: Vec::new(),
                         resolved_directory_digests: Vec::new(),
+                        missing_digests: Vec::new(),
                     },
                 )
                 .await?;
@@ -1175,6 +1187,7 @@ mod tests {
                         peer_hints: Vec::new(),
                         resolved_directories: Vec::new(),
                         resolved_directory_digests: Vec::new(),
+                        missing_digests: Vec::new(),
                     },
                 )
                 .await?;
@@ -1321,6 +1334,7 @@ mod tests {
                         peer_hints: Vec::new(),
                         resolved_directories: Vec::new(),
                         resolved_directory_digests: Vec::new(),
+                        missing_digests: Vec::new(),
                     },
                 )
                 .await?;
@@ -1506,6 +1520,7 @@ mod tests {
                         peer_hints: Vec::new(),
                         resolved_directories: Vec::new(),
                         resolved_directory_digests: Vec::new(),
+                        missing_digests: Vec::new(),
                     },
                 )
                 .await?;
@@ -1675,6 +1690,7 @@ mod tests {
                         peer_hints: Vec::new(),
                         resolved_directories: Vec::new(),
                         resolved_directory_digests: Vec::new(),
+                        missing_digests: Vec::new(),
                     },
                 )
                 .await?;
@@ -1883,6 +1899,7 @@ mod tests {
                         peer_hints: Vec::new(),
                         resolved_directories: Vec::new(),
                         resolved_directory_digests: Vec::new(),
+                        missing_digests: Vec::new(),
                     },
                 )
                 .await?;
@@ -2037,6 +2054,7 @@ mod tests {
                     peer_hints: Vec::new(),
                     resolved_directories: Vec::new(),
                     resolved_directory_digests: Vec::new(),
+                        missing_digests: Vec::new(),
                 },
             )
             .await?;
@@ -2222,6 +2240,7 @@ exit 0
                     peer_hints: Vec::new(),
                     resolved_directories: Vec::new(),
                     resolved_directory_digests: Vec::new(),
+                        missing_digests: Vec::new(),
                 },
             )
             .await?;
@@ -2413,6 +2432,7 @@ exit 0
                     peer_hints: Vec::new(),
                     resolved_directories: Vec::new(),
                     resolved_directory_digests: Vec::new(),
+                        missing_digests: Vec::new(),
                 },
             )
             .await?;
@@ -2575,6 +2595,7 @@ exit 1
                     peer_hints: Vec::new(),
                     resolved_directories: Vec::new(),
                     resolved_directory_digests: Vec::new(),
+                        missing_digests: Vec::new(),
                 },
             )
             .await?;
@@ -3144,6 +3165,7 @@ exit 1
                         peer_hints: Vec::new(),
                         resolved_directories: Vec::new(),
                         resolved_directory_digests: Vec::new(),
+                        missing_digests: Vec::new(),
                     },
                 )
                 .and_then(|action| {
@@ -3236,6 +3258,7 @@ exit 1
                         peer_hints: Vec::new(),
                         resolved_directories: Vec::new(),
                         resolved_directory_digests: Vec::new(),
+                        missing_digests: Vec::new(),
                     },
                 )
                 .and_then(|action| {
@@ -3328,6 +3351,7 @@ exit 1
                         peer_hints: Vec::new(),
                         resolved_directories: Vec::new(),
                         resolved_directory_digests: Vec::new(),
+                        missing_digests: Vec::new(),
                     },
                 )
                 .and_then(|action| {
@@ -3465,6 +3489,7 @@ exit 1
                     peer_hints: Vec::new(),
                     resolved_directories: Vec::new(),
                     resolved_directory_digests: Vec::new(),
+                        missing_digests: Vec::new(),
                 },
             )
             .and_then(|action| {
@@ -3619,6 +3644,7 @@ exit 1
                     peer_hints: Vec::new(),
                     resolved_directories: Vec::new(),
                     resolved_directory_digests: Vec::new(),
+                        missing_digests: Vec::new(),
                 },
             )
             .await?;
@@ -3879,6 +3905,7 @@ exit 1
                     peer_hints: Vec::new(),
                     resolved_directories: Vec::new(),
                     resolved_directory_digests: Vec::new(),
+                        missing_digests: Vec::new(),
                 },
             )
             .await?;
@@ -4018,6 +4045,7 @@ exit 1
                         peer_hints: Vec::new(),
                         resolved_directories: Vec::new(),
                         resolved_directory_digests: Vec::new(),
+                        missing_digests: Vec::new(),
                     },
                 )
                 .await?;
@@ -4205,6 +4233,7 @@ exit 1
                     peer_hints: Vec::new(),
                     resolved_directories: Vec::new(),
                     resolved_directory_digests: Vec::new(),
+                        missing_digests: Vec::new(),
                 },
             )
             .await?;
@@ -4329,6 +4358,7 @@ exit 1
                     peer_hints: Vec::new(),
                     resolved_directories: Vec::new(),
                     resolved_directory_digests: Vec::new(),
+                        missing_digests: Vec::new(),
                 },
             )
             .await;
@@ -4445,6 +4475,7 @@ exit 1
                     peer_hints: Vec::new(),
                     resolved_directories: Vec::new(),
                     resolved_directory_digests: Vec::new(),
+                        missing_digests: Vec::new(),
                 },
             )
             .await?;
@@ -4469,6 +4500,7 @@ exit 1
                     peer_hints: Vec::new(),
                     resolved_directories: Vec::new(),
                     resolved_directory_digests: Vec::new(),
+                        missing_digests: Vec::new(),
                 },
             )
             .await;
@@ -4614,6 +4646,7 @@ exit 1
                     }],
                     resolved_directories: Vec::new(),
                     resolved_directory_digests: Vec::new(),
+                        missing_digests: Vec::new(),
                 },
             )
             .await?;
@@ -4653,6 +4686,7 @@ exit 1
                     peer_hints: Vec::new(),
                     resolved_directories: Vec::new(),
                     resolved_directory_digests: Vec::new(),
+                        missing_digests: Vec::new(),
                 },
             )
             .await?;
@@ -4701,6 +4735,7 @@ exit 1
                     }],
                     resolved_directories: Vec::new(),
                     resolved_directory_digests: Vec::new(),
+                        missing_digests: Vec::new(),
                 },
             )
             .await?;
@@ -4740,6 +4775,7 @@ exit 1
                     }],
                     resolved_directories: Vec::new(),
                     resolved_directory_digests: Vec::new(),
+                        missing_digests: Vec::new(),
                 },
             )
             .await?;
@@ -5055,6 +5091,7 @@ exit 1
             &root_directory_digest,
             &download_dir,
             None,
+            None,
         )
         .await?;
 
@@ -5077,6 +5114,456 @@ exit 1
         let lib_rs_path = format!("{download_dir}/src/lib.rs");
         let lib_content = fs::read(&lib_rs_path).await?;
         assert_eq!(from_utf8(&lib_content)?, LIB_RS_CONTENT);
+
+        Ok(())
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Server missing digest hints tests
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// When server_missing_digests is provided, download_to_directory
+    /// should skip the has_with_results check and treat the hinted
+    /// digests as missing (to be fetched from the slow store).
+    #[nativelink_test]
+    async fn download_to_directory_with_server_missing_hints()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const FILE1_NAME: &str = "cached.txt";
+        const FILE1_CONTENT: &str = "ALREADY_CACHED";
+        const FILE2_NAME: &str = "missing.txt";
+        const FILE2_CONTENT: &str = "NEEDS_FETCH";
+
+        let (fast_store, slow_store, cas_store, _ac_store) = setup_stores().await?;
+
+        let file1_digest = DigestInfo::new([20u8; 32], FILE1_CONTENT.len() as u64);
+        let file2_digest = DigestInfo::new([21u8; 32], FILE2_CONTENT.len() as u64);
+
+        // Put file1 in both stores (cached).
+        slow_store
+            .as_ref()
+            .update_oneshot(file1_digest, FILE1_CONTENT.into())
+            .await?;
+        fast_store
+            .as_ref()
+            .update_oneshot(file1_digest, FILE1_CONTENT.into())
+            .await?;
+
+        // Put file2 only in slow store (not cached on fast).
+        slow_store
+            .as_ref()
+            .update_oneshot(file2_digest, FILE2_CONTENT.into())
+            .await?;
+
+        let root_directory_digest = DigestInfo::new([22u8; 32], 32);
+        let root_directory = Directory {
+            files: vec![
+                FileNode {
+                    name: FILE1_NAME.to_string(),
+                    digest: Some(file1_digest.into()),
+                    ..Default::default()
+                },
+                FileNode {
+                    name: FILE2_NAME.to_string(),
+                    digest: Some(file2_digest.into()),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        slow_store
+            .as_ref()
+            .update_oneshot(
+                root_directory_digest,
+                root_directory.encode_to_vec().into(),
+            )
+            .await?;
+
+        // Provide server hints saying file2 is missing.
+        let mut missing = HashSet::new();
+        missing.insert(file2_digest);
+
+        let download_dir = make_temp_path("download_dir_hints");
+        fs::create_dir_all(&download_dir).await?;
+        download_to_directory(
+            cas_store.as_ref(),
+            fast_store.as_pin(),
+            &root_directory_digest,
+            &download_dir,
+            None,
+            Some(missing),
+        )
+        .await?;
+
+        // Both files should be present with correct content.
+        let content1 = fs::read(format!("{download_dir}/{FILE1_NAME}")).await?;
+        assert_eq!(from_utf8(&content1)?, FILE1_CONTENT);
+
+        let content2 = fs::read(format!("{download_dir}/{FILE2_NAME}")).await?;
+        assert_eq!(from_utf8(&content2)?, FILE2_CONTENT);
+
+        Ok(())
+    }
+
+    /// Verify that stale hints (marking a blob as missing when it's
+    /// actually cached) still work -- the blob gets re-fetched from
+    /// the slow store even though it was already in the fast store.
+    #[nativelink_test]
+    async fn download_to_directory_stale_missing_hints()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const FILE_NAME: &str = "stale.txt";
+        const FILE_CONTENT: &str = "STALE_HINT_FILE";
+
+        let (fast_store, slow_store, cas_store, _ac_store) = setup_stores().await?;
+
+        let file_digest = DigestInfo::new([30u8; 32], FILE_CONTENT.len() as u64);
+
+        // Put the file in BOTH stores.
+        slow_store
+            .as_ref()
+            .update_oneshot(file_digest, FILE_CONTENT.into())
+            .await?;
+        fast_store
+            .as_ref()
+            .update_oneshot(file_digest, FILE_CONTENT.into())
+            .await?;
+
+        let root_directory_digest = DigestInfo::new([31u8; 32], 32);
+        let root_directory = Directory {
+            files: vec![FileNode {
+                name: FILE_NAME.to_string(),
+                digest: Some(file_digest.into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        slow_store
+            .as_ref()
+            .update_oneshot(
+                root_directory_digest,
+                root_directory.encode_to_vec().into(),
+            )
+            .await?;
+
+        // Provide stale hints: claim the file is missing even though
+        // it's actually cached.
+        let mut missing = HashSet::new();
+        missing.insert(file_digest);
+
+        let download_dir = make_temp_path("download_dir_stale_hints");
+        fs::create_dir_all(&download_dir).await?;
+        download_to_directory(
+            cas_store.as_ref(),
+            fast_store.as_pin(),
+            &root_directory_digest,
+            &download_dir,
+            None,
+            Some(missing),
+        )
+        .await?;
+
+        // The file should still be present (re-fetched via FastSlowStore).
+        let content = fs::read(format!("{download_dir}/{FILE_NAME}")).await?;
+        assert_eq!(from_utf8(&content)?, FILE_CONTENT);
+
+        Ok(())
+    }
+
+    /// Verify that an empty server_missing_digests set (all blobs
+    /// hinted as cached) still downloads correctly.
+    #[nativelink_test]
+    async fn download_to_directory_empty_missing_hints()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const FILE_NAME: &str = "all_cached.txt";
+        const FILE_CONTENT: &str = "ALL_CACHED_FILE";
+
+        let (fast_store, slow_store, cas_store, _ac_store) = setup_stores().await?;
+
+        let file_digest = DigestInfo::new([40u8; 32], FILE_CONTENT.len() as u64);
+
+        // Put the file in both stores.
+        slow_store
+            .as_ref()
+            .update_oneshot(file_digest, FILE_CONTENT.into())
+            .await?;
+        fast_store
+            .as_ref()
+            .update_oneshot(file_digest, FILE_CONTENT.into())
+            .await?;
+
+        let root_directory_digest = DigestInfo::new([41u8; 32], 32);
+        let root_directory = Directory {
+            files: vec![FileNode {
+                name: FILE_NAME.to_string(),
+                digest: Some(file_digest.into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        slow_store
+            .as_ref()
+            .update_oneshot(
+                root_directory_digest,
+                root_directory.encode_to_vec().into(),
+            )
+            .await?;
+
+        // Empty hints set: everything is "cached" (nothing missing).
+        let missing = HashSet::new();
+
+        let download_dir = make_temp_path("download_dir_empty_hints");
+        fs::create_dir_all(&download_dir).await?;
+        download_to_directory(
+            cas_store.as_ref(),
+            fast_store.as_pin(),
+            &root_directory_digest,
+            &download_dir,
+            None,
+            Some(missing),
+        )
+        .await?;
+
+        // File should be present via hardlink from fast store.
+        let content = fs::read(format!("{download_dir}/{FILE_NAME}")).await?;
+        assert_eq!(from_utf8(&content)?, FILE_CONTENT);
+
+        Ok(())
+    }
+
+    /// Verify the None path (no server hints) still does the
+    /// has_with_results check as before.
+    #[nativelink_test]
+    async fn download_to_directory_no_hints_uses_has_check()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const FILE_NAME: &str = "no_hints.txt";
+        const FILE_CONTENT: &str = "NO_HINTS_FILE";
+
+        let (fast_store, slow_store, cas_store, _ac_store) = setup_stores().await?;
+
+        let file_digest = DigestInfo::new([50u8; 32], FILE_CONTENT.len() as u64);
+
+        // Only in slow store (fast store miss).
+        slow_store
+            .as_ref()
+            .update_oneshot(file_digest, FILE_CONTENT.into())
+            .await?;
+
+        let root_directory_digest = DigestInfo::new([51u8; 32], 32);
+        let root_directory = Directory {
+            files: vec![FileNode {
+                name: FILE_NAME.to_string(),
+                digest: Some(file_digest.into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        slow_store
+            .as_ref()
+            .update_oneshot(
+                root_directory_digest,
+                root_directory.encode_to_vec().into(),
+            )
+            .await?;
+
+        let download_dir = make_temp_path("download_dir_no_hints");
+        fs::create_dir_all(&download_dir).await?;
+        // Pass None for server_missing_digests: uses the fallback
+        // has_with_results path.
+        download_to_directory(
+            cas_store.as_ref(),
+            fast_store.as_pin(),
+            &root_directory_digest,
+            &download_dir,
+            None,
+            None,
+        )
+        .await?;
+
+        let content = fs::read(format!("{download_dir}/{FILE_NAME}")).await?;
+        assert_eq!(from_utf8(&content)?, FILE_CONTENT);
+
+        Ok(())
+    }
+
+    /// When server_missing_digests marks blobs as missing, verify
+    /// populate_fast_store_unchecked is used (has() is skipped) by
+    /// confirming blobs NOT in the fast store are fetched from slow.
+    #[nativelink_test]
+    async fn download_to_directory_missing_hints_skip_has_check()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const CACHED_NAME: &str = "cached_blob.txt";
+        const CACHED_CONTENT: &str = "I_AM_CACHED";
+        const MISSING_NAME: &str = "missing_blob.txt";
+        const MISSING_CONTENT: &str = "I_NEED_FETCH";
+
+        let (fast_store, slow_store, cas_store, _ac_store) = setup_stores().await?;
+
+        let cached_digest = DigestInfo::new([60u8; 32], CACHED_CONTENT.len() as u64);
+        let missing_digest = DigestInfo::new([61u8; 32], MISSING_CONTENT.len() as u64);
+
+        // cached_blob: present in both stores.
+        slow_store
+            .as_ref()
+            .update_oneshot(cached_digest, CACHED_CONTENT.into())
+            .await?;
+        fast_store
+            .as_ref()
+            .update_oneshot(cached_digest, CACHED_CONTENT.into())
+            .await?;
+
+        // missing_blob: only in slow store (will be fetched via
+        // populate_fast_store_unchecked when hints say it's missing).
+        slow_store
+            .as_ref()
+            .update_oneshot(missing_digest, MISSING_CONTENT.into())
+            .await?;
+
+        // Confirm the missing blob is NOT in fast store before the test.
+        let key: StoreKey<'_> = missing_digest.into();
+        let has = fast_store.as_ref().has(key).await?;
+        assert!(has.is_none(), "missing_blob should not be in fast store yet");
+
+        let root_directory_digest = DigestInfo::new([62u8; 32], 32);
+        let root_directory = Directory {
+            files: vec![
+                FileNode {
+                    name: CACHED_NAME.to_string(),
+                    digest: Some(cached_digest.into()),
+                    ..Default::default()
+                },
+                FileNode {
+                    name: MISSING_NAME.to_string(),
+                    digest: Some(missing_digest.into()),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        slow_store
+            .as_ref()
+            .update_oneshot(
+                root_directory_digest,
+                root_directory.encode_to_vec().into(),
+            )
+            .await?;
+
+        let mut missing_set = HashSet::new();
+        missing_set.insert(missing_digest);
+
+        let download_dir = make_temp_path("download_dir_skip_has");
+        fs::create_dir_all(&download_dir).await?;
+        download_to_directory(
+            cas_store.as_ref(),
+            fast_store.as_pin(),
+            &root_directory_digest,
+            &download_dir,
+            None,
+            Some(missing_set),
+        )
+        .await?;
+
+        // Both files should be materialized correctly.
+        let cached_content = fs::read(format!("{download_dir}/{CACHED_NAME}")).await?;
+        assert_eq!(from_utf8(&cached_content)?, CACHED_CONTENT);
+
+        let missing_content = fs::read(format!("{download_dir}/{MISSING_NAME}")).await?;
+        assert_eq!(from_utf8(&missing_content)?, MISSING_CONTENT);
+
+        // The missing blob should now be in the fast store (populated
+        // via populate_fast_store_unchecked).
+        let key: StoreKey<'_> = missing_digest.into();
+        let has_after = fast_store.as_ref().has(key).await?;
+        assert!(
+            has_after.is_some(),
+            "missing blob should be in fast store after download"
+        );
+
+        Ok(())
+    }
+
+    /// Large missing_digests list (100+ entries) — verify no performance
+    /// regression and all files are materialized correctly.
+    #[nativelink_test]
+    async fn download_to_directory_large_missing_digests_list()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let (fast_store, slow_store, cas_store, _ac_store) = setup_stores().await?;
+
+        const NUM_FILES: usize = 150;
+
+        let mut file_nodes = Vec::with_capacity(NUM_FILES);
+        let mut missing_set = HashSet::new();
+        let mut file_digests = Vec::with_capacity(NUM_FILES);
+
+        for i in 0..NUM_FILES {
+            let content = format!("file-content-{i:04}");
+            // Generate unique hash: first two bytes encode the index.
+            let mut hash = [0u8; 32];
+            hash[0] = (i >> 8) as u8;
+            hash[1] = (i & 0xff) as u8;
+            hash[2] = 0xAA; // sentinel to distinguish from other tests
+            let digest = DigestInfo::new(hash, content.len() as u64);
+
+            // Put in slow store only (missing from fast).
+            slow_store
+                .as_ref()
+                .update_oneshot(digest, content.clone().into())
+                .await?;
+
+            file_nodes.push(FileNode {
+                name: format!("file_{i:04}.txt"),
+                digest: Some(digest.into()),
+                ..Default::default()
+            });
+
+            // Mark all as missing.
+            missing_set.insert(digest);
+            file_digests.push((digest, content));
+        }
+
+        let root_directory_digest = DigestInfo::new([70u8; 32], 32);
+        let root_directory = Directory {
+            files: file_nodes,
+            ..Default::default()
+        };
+        slow_store
+            .as_ref()
+            .update_oneshot(
+                root_directory_digest,
+                root_directory.encode_to_vec().into(),
+            )
+            .await?;
+
+        let download_dir = make_temp_path("download_dir_large_missing");
+        fs::create_dir_all(&download_dir).await?;
+
+        let start = std::time::Instant::now();
+        download_to_directory(
+            cas_store.as_ref(),
+            fast_store.as_pin(),
+            &root_directory_digest,
+            &download_dir,
+            None,
+            Some(missing_set),
+        )
+        .await?;
+        let elapsed = start.elapsed();
+
+        // Verify all 150 files are present with correct content.
+        for (i, (_digest, expected_content)) in file_digests.iter().enumerate() {
+            let path = format!("{download_dir}/file_{i:04}.txt");
+            let actual = fs::read(&path).await?;
+            assert_eq!(
+                from_utf8(&actual)?,
+                expected_content.as_str(),
+                "Content mismatch for file_{i:04}.txt"
+            );
+        }
+
+        // Performance sanity check: 150 small in-memory blobs should complete
+        // in well under 30 seconds, even on slow CI.
+        assert!(
+            elapsed < Duration::from_secs(30),
+            "150-file download took {elapsed:?}, expected < 30s"
+        );
 
         Ok(())
     }

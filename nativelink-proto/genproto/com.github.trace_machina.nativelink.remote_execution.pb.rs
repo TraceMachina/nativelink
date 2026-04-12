@@ -401,6 +401,15 @@ pub struct StartExecute {
     pub resolved_directory_digests: ::prost::alloc::vec::Vec<
         super::super::super::super::super::build::bazel::remote::execution::v2::Digest,
     >,
+    /// / Server-computed list of input blob digests the worker is believed to
+    /// / be missing, based on the locality map snapshot at dispatch time.
+    /// / When present, the worker can skip its own has_with_results check for
+    /// / these digests and immediately begin fetching, saving 5-50ms of
+    /// / existence-check round-trip.
+    #[prost(message, repeated, tag = "11")]
+    pub missing_digests: ::prost::alloc::vec::Vec<
+        super::super::super::super::super::build::bazel::remote::execution::v2::Digest,
+    >,
 }
 /// / This is a special message used to save actions into the CAS that can be used
 /// / by programs like bb_browswer to inspect the history of a build.

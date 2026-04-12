@@ -229,6 +229,39 @@ pub struct ByteStreamConfig {
         skip_serializing_if = "is_default"
     )]
     pub persist_stream_on_disconnect_timeout: usize,
+
+    /// Enable read-while-write streaming: readers can begin consuming
+    /// blob data from in-flight uploads before the write has committed
+    /// to the store.  When disabled (default), reads always go through
+    /// the store and will get NotFound until the write completes.
+    ///
+    /// Default: false
+    #[serde(default)]
+    pub streaming_read_while_write: bool,
+
+    /// Maximum bytes buffered per in-flight streaming blob.  Only used
+    /// when `streaming_read_while_write` is true.  Older chunks are
+    /// evicted when the buffer exceeds this limit (sliding window).
+    ///
+    /// Default: 64 MiB
+    #[serde(
+        default,
+        deserialize_with = "convert_data_size_with_shellexpand",
+        skip_serializing_if = "is_default"
+    )]
+    pub max_streaming_blob_buffer_bytes: usize,
+
+    /// Maximum total bytes held across all partial (idle) uploads for this
+    /// instance. When exceeded, the oldest idle streams are evicted first.
+    /// 0 means unlimited (rely on time-based eviction only).
+    ///
+    /// Default: 256 MiB
+    #[serde(
+        default,
+        deserialize_with = "convert_data_size_with_shellexpand",
+        skip_serializing_if = "is_default"
+    )]
+    pub max_partial_write_bytes: u64,
 }
 
 // Older bytestream config. All fields are as per the newer docs, but this requires

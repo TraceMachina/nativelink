@@ -46,15 +46,19 @@ use nativelink_util::buf_channel::{
     DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair_with_size,
 };
 use nativelink_util::common::DigestInfo;
-use nativelink_util::log_utils::throughput_mbps;
-use nativelink_util::stall_detector::StallGuard;
 use nativelink_util::digest_hasher::{
     DigestHasher, DigestHasherFunc, default_digest_hasher_func, make_ctx_for_hash_func,
 };
+use nativelink_util::log_utils::throughput_mbps;
 use nativelink_util::proto_stream_utils::WriteRequestStreamWrapper;
 use nativelink_util::resource_info::ResourceInfo;
 use nativelink_util::spawn;
-use nativelink_util::store_trait::{IS_MIRROR_REQUEST, IS_WORKER_REQUEST, REDIRECT_PREFIX, Store, StoreLike, StoreOptimizations, UploadSizeInfo};
+use nativelink_util::stall_detector::StallGuard;
+use nativelink_util::store_trait::{
+    IS_MIRROR_REQUEST, IS_WORKER_REQUEST, REDIRECT_PREFIX, Store, StoreLike, StoreOptimizations,
+    UploadSizeInfo,
+};
+use nativelink_util::streaming_blob::{InFlightBlobMap, StreamingBlobWriter};
 use nativelink_util::task::JoinHandleDropGuard;
 use nativelink_util::zero_copy_codec::{
     GrpcUnaryBody, ZeroCopyReadBody, ZeroCopyWriteStream, decode_unary_request,
@@ -71,6 +75,18 @@ const DEFAULT_PERSIST_STREAM_ON_DISCONNECT_TIMEOUT: Duration = Duration::from_se
 
 /// If this value changes update the documentation in the config definition.
 const DEFAULT_MAX_BYTES_PER_STREAM: usize = 3 * 1024 * 1024;
+
+/// Default memory budget for partial (idle) writes: 256 MiB.
+const DEFAULT_MAX_PARTIAL_WRITE_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Saturating decrement for an `AtomicU64`. Prevents wrapping to `u64::MAX`
+/// if concurrent `fetch_sub` calls race (e.g., sweeper eviction + stream resume).
+#[inline]
+fn atomic_saturating_sub(counter: &AtomicU64, val: u64) {
+    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
+        Some(cur.saturating_sub(val))
+    });
+}
 
 /// Metrics for `ByteStream` server operations.
 /// Tracks upload/download activity, throughput, and latency.
@@ -106,6 +122,10 @@ pub struct ByteStreamMetrics {
     pub resumed_uploads: AtomicU64,
     /// Number of idle streams that timed out
     pub idle_stream_timeouts: AtomicU64,
+    /// Current total bytes held in idle (partial) streams
+    pub partial_write_bytes: AtomicU64,
+    /// Number of idle streams evicted due to memory pressure
+    pub idle_stream_evictions_memory: AtomicU64,
 }
 
 impl MetricsComponent for ByteStreamMetrics {
@@ -206,6 +226,18 @@ impl MetricsComponent for ByteStreamMetrics {
             MetricKind::Counter,
             "Number of idle streams that timed out"
         );
+        publish!(
+            "partial_write_bytes",
+            &self.partial_write_bytes,
+            MetricKind::Counter,
+            "Current total bytes held in idle streams"
+        );
+        publish!(
+            "idle_stream_evictions_memory",
+            &self.idle_stream_evictions_memory,
+            MetricKind::Counter,
+            "Idle streams evicted due to memory pressure"
+        );
 
         Ok(MetricPublishKnownKindData::Component)
     }
@@ -267,6 +299,19 @@ pub struct InstanceInfo {
     /// write; the rest subscribe to the watch channel and get the result.
     /// `None` = in progress, `Some(true)` = succeeded, `Some(false)` = failed.
     in_flight_writes: Arc<Mutex<HashMap<DigestInfo, tokio::sync::watch::Receiver<Option<bool>>>>>,
+    /// Registry of in-flight streaming blobs.  Readers can discover and
+    /// stream from uploads that have not yet committed to the store.
+    /// Only populated when `streaming_read_while_write` is enabled.
+    in_flight_blobs: Arc<InFlightBlobMap>,
+    /// Whether the streaming read-while-write feature is enabled.
+    streaming_read_while_write: bool,
+    /// Per-blob buffer budget for streaming blobs (bytes).
+    max_streaming_blob_buffer_bytes: u64,
+    /// Maximum total bytes held across all partial (idle) uploads.
+    /// 0 means unlimited (time-based eviction only).
+    max_partial_write_bytes: u64,
+    /// Current total bytes held in idle streams. Shared with the sweeper.
+    partial_write_bytes: Arc<AtomicU64>,
 }
 
 impl Debug for InstanceInfo {
@@ -277,6 +322,11 @@ impl Debug for InstanceInfo {
             .field("active_uploads", &self.active_uploads)
             .field("idle_stream_timeout", &self.idle_stream_timeout)
             .field("metrics", &self.metrics)
+            .field(
+                "streaming_read_while_write",
+                &self.streaming_read_while_write,
+            )
+            .field("in_flight_blobs", &self.in_flight_blobs)
             .finish()
     }
 }
@@ -393,6 +443,8 @@ struct ActiveStreamGuard {
     bytes_received: Arc<AtomicU64>,
     active_uploads: Arc<Mutex<HashMap<UuidKey, BytesWrittenAndIdleStream>>>,
     metrics: Arc<ByteStreamMetrics>,
+    /// Shared counter tracking total bytes held in idle streams.
+    partial_write_bytes: Arc<AtomicU64>,
 }
 
 impl ActiveStreamGuard {
@@ -420,6 +472,15 @@ impl Drop for ActiveStreamGuard {
             );
             return;
         };
+
+        // Track the bytes this stream holds as partial write memory.
+        let stream_bytes = self.bytes_received.load(Ordering::Acquire);
+        self.partial_write_bytes
+            .fetch_add(stream_bytes, Ordering::Relaxed);
+        self.metrics
+            .partial_write_bytes
+            .fetch_add(stream_bytes, Ordering::Relaxed);
+
         // Mark stream as idle with current timestamp.
         // The global sweeper will clean it up after idle_stream_timeout.
         // This avoids spawning a task per stream, reducing overhead from O(n) to O(1).
@@ -446,11 +507,17 @@ impl IdleStream {
         bytes_received: Arc<AtomicU64>,
         instance_info: &InstanceInfo,
     ) -> ActiveStreamGuard {
+        // Decrement partial_write_bytes since this stream is no longer idle.
+        let stream_bytes = bytes_received.load(Ordering::Acquire);
+        atomic_saturating_sub(&instance_info.partial_write_bytes, stream_bytes);
+        atomic_saturating_sub(&instance_info.metrics.partial_write_bytes, stream_bytes);
+
         ActiveStreamGuard {
             stream_state: Some(self.stream_state),
             bytes_received,
             active_uploads: instance_info.active_uploads.clone(),
             metrics: instance_info.metrics.clone(),
+            partial_write_bytes: instance_info.partial_write_bytes.clone(),
         }
     }
 }
@@ -574,11 +641,19 @@ impl ByteStreamServer {
         let active_uploads: Arc<Mutex<HashMap<UuidKey, BytesWrittenAndIdleStream>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let metrics = Arc::new(ByteStreamMetrics::default());
+        let partial_write_bytes = Arc::new(AtomicU64::new(0));
+
+        let max_partial_write_bytes = if config.max_partial_write_bytes == 0 {
+            DEFAULT_MAX_PARTIAL_WRITE_BYTES
+        } else {
+            config.max_partial_write_bytes
+        };
 
         // Spawn a single global sweeper task that periodically cleans up expired idle streams.
         // This replaces per-stream timeout tasks, reducing task spawn overhead from O(n) to O(1).
         let sweeper_active_uploads = Arc::downgrade(&active_uploads);
         let sweeper_metrics = Arc::downgrade(&metrics);
+        let sweeper_partial_write_bytes = Arc::downgrade(&partial_write_bytes);
         let sweep_interval = idle_stream_timeout / 2; // Check every half-timeout period
         let sweeper_handle = spawn!("bytestream_idle_stream_sweeper", async move {
             loop {
@@ -589,20 +664,23 @@ impl ByteStreamServer {
                     break;
                 };
                 let metrics = sweeper_metrics.upgrade();
+                let partial_bytes = sweeper_partial_write_bytes.upgrade();
 
                 let now = Instant::now();
                 let mut expired_count = 0u64;
+                let mut expired_bytes = 0u64;
 
-                // Lock and sweep expired entries
+                // Pass 1: evict streams that exceeded idle_stream_timeout
                 {
                     let mut uploads = active_uploads.lock();
-                    uploads.retain(|uuid, (_, maybe_idle)| {
+                    uploads.retain(|uuid, (bytes_received, maybe_idle)| {
                         if let Some(idle_stream) = maybe_idle {
                             if now.duration_since(idle_stream.idle_since) >= idle_stream_timeout {
                                 debug!(
                                     msg = "Sweeping expired idle stream",
-                                    uuid = format!("{:032x}", uuid)
+                                    uuid = format!("{:032x}", uuid),
                                 );
+                                expired_bytes += bytes_received.load(Ordering::Acquire);
                                 expired_count += 1;
                                 return false; // Remove this entry
                             }
@@ -611,20 +689,113 @@ impl ByteStreamServer {
                     });
                 }
 
-                // Update metrics outside the lock
+                // Update metrics for time-based evictions
                 if expired_count > 0 {
                     if let Some(m) = &metrics {
                         m.idle_stream_timeouts
                             .fetch_add(expired_count, Ordering::Relaxed);
-                        m.active_uploads.fetch_sub(expired_count, Ordering::Relaxed);
+                        atomic_saturating_sub(&m.active_uploads, expired_count);
+                        atomic_saturating_sub(&m.partial_write_bytes, expired_bytes);
+                    }
+                    if let Some(pb) = &partial_bytes {
+                        atomic_saturating_sub(pb, expired_bytes);
                     }
                     trace!(
                         msg = "Sweeper cleaned up expired streams",
-                        count = expired_count
+                        count = expired_count,
                     );
+                }
+
+                // Pass 2: memory-pressure eviction -- evict oldest idle streams
+                // until partial_write_bytes <= max_partial_write_bytes.
+                if max_partial_write_bytes > 0 {
+                    let current_bytes = partial_bytes
+                        .as_ref()
+                        .map_or(0, |pb| pb.load(Ordering::Relaxed));
+                    if current_bytes > max_partial_write_bytes {
+                        let mut memory_evicted_count = 0u64;
+                        let mut memory_evicted_bytes = 0u64;
+
+                        // Collect idle streams with their idle_since for sorting.
+                        let mut idle_entries: Vec<(UuidKey, Instant, u64)> = Vec::new();
+                        {
+                            let uploads = active_uploads.lock();
+                            for (uuid, (bytes_received, maybe_idle)) in uploads.iter() {
+                                if let Some(idle_stream) = maybe_idle {
+                                    idle_entries.push((
+                                        *uuid,
+                                        idle_stream.idle_since,
+                                        bytes_received.load(Ordering::Acquire),
+                                    ));
+                                }
+                            }
+                        }
+
+                        // Sort by idle_since ascending (oldest first).
+                        idle_entries.sort_by_key(|&(_, idle_since, _)| idle_since);
+
+                        let mut remaining_bytes = current_bytes;
+                        let mut uuids_to_evict = Vec::new();
+                        for (uuid, _, stream_bytes) in &idle_entries {
+                            if remaining_bytes <= max_partial_write_bytes {
+                                break;
+                            }
+                            uuids_to_evict.push(*uuid);
+                            memory_evicted_bytes += stream_bytes;
+                            remaining_bytes = remaining_bytes.saturating_sub(*stream_bytes);
+                            memory_evicted_count += 1;
+                        }
+
+                        // Remove the selected entries. Re-check that each
+                        // stream is still idle — it may have been resumed
+                        // between the two lock acquisitions.
+                        if !uuids_to_evict.is_empty() {
+                            let mut uploads = active_uploads.lock();
+                            let mut actually_evicted = 0u64;
+                            let mut actually_evicted_bytes = 0u64;
+                            for uuid in &uuids_to_evict {
+                                if let Some((bytes_counter, maybe_idle)) = uploads.get(uuid) {
+                                    if maybe_idle.is_some() {
+                                        let bytes = bytes_counter.load(Ordering::Acquire);
+                                        uploads.remove(uuid);
+                                        actually_evicted += 1;
+                                        actually_evicted_bytes += bytes;
+                                    }
+                                    // else: stream was resumed, skip it
+                                }
+                            }
+                            memory_evicted_count = actually_evicted;
+                            memory_evicted_bytes = actually_evicted_bytes;
+                        }
+
+                        if memory_evicted_count > 0 {
+                            warn!(
+                                evicted = memory_evicted_count,
+                                evicted_bytes = memory_evicted_bytes,
+                                budget = max_partial_write_bytes,
+                                remaining = remaining_bytes,
+                                "memory-pressure eviction triggered for idle streams",
+                            );
+                            if let Some(pb) = &partial_bytes {
+                                atomic_saturating_sub(pb, memory_evicted_bytes);
+                            }
+                            if let Some(m) = &metrics {
+                                atomic_saturating_sub(&m.partial_write_bytes, memory_evicted_bytes);
+                                m.idle_stream_evictions_memory
+                                    .fetch_add(memory_evicted_count, Ordering::Relaxed);
+                                atomic_saturating_sub(&m.active_uploads, memory_evicted_count);
+                            }
+                        }
+                    }
                 }
             }
         });
+
+        let max_streaming_blob_buffer_bytes = if config.max_streaming_blob_buffer_bytes == 0 {
+            64 * 1024 * 1024 // 64 MiB default
+        } else {
+            config.max_streaming_blob_buffer_bytes as u64
+        };
 
         Ok(InstanceInfo {
             store,
@@ -634,6 +805,13 @@ impl ByteStreamServer {
             metrics,
             _sweeper_handle: Arc::new(sweeper_handle),
             in_flight_writes: Arc::new(Mutex::new(HashMap::new())),
+            in_flight_blobs: Arc::new(InFlightBlobMap::with_max_entries(
+                nativelink_util::streaming_blob::DEFAULT_MAX_IN_FLIGHT_BLOBS,
+            )),
+            streaming_read_while_write: config.streaming_read_while_write,
+            max_streaming_blob_buffer_bytes,
+            max_partial_write_bytes,
+            partial_write_bytes,
         })
     }
 
@@ -699,6 +877,10 @@ impl ByteStreamServer {
                         // matches before resuming. A UUID reuse with a different
                         // digest would send wrong data to the original store update.
                         if idle_stream.stream_state.digest != digest {
+                            // Decrement partial_write_bytes for the discarded idle stream.
+                            let stale_bytes = maybe_idle_stream.0.load(Ordering::Acquire);
+                            atomic_saturating_sub(&instance.partial_write_bytes, stale_bytes);
+                            atomic_saturating_sub(&instance.metrics.partial_write_bytes, stale_bytes);
                             warn!(
                                 uuid = format!("{:032x}", uuid_key),
                                 original_digest = %idle_stream.stream_state.digest,
@@ -795,6 +977,7 @@ impl ByteStreamServer {
             bytes_received,
             active_uploads: instance.active_uploads.clone(),
             metrics: instance.metrics.clone(),
+            partial_write_bytes: instance.partial_write_bytes.clone(),
         }
     }
 
@@ -804,7 +987,151 @@ impl ByteStreamServer {
         digest: DigestInfo,
         read_request: ReadRequest,
         is_worker: bool,
-    ) -> Result<impl Stream<Item = Result<ReadResponse, Status>> + Send + use<>, Error> {
+    ) -> Result<ReadStream, Error> {
+        // Check InFlightBlobMap first: if the blob is currently being
+        // written, stream from the in-memory buffer instead of waiting
+        // for the store commit.
+        if instance.streaming_read_while_write {
+            if let Some(mut streaming_reader) = instance.in_flight_blobs.get_reader(&digest) {
+                info!(
+                    %digest,
+                    "inner_read: serving from in-flight streaming blob"
+                );
+                let max_bytes = instance.max_bytes_per_stream;
+                let read_offset = u64::try_from(read_request.read_offset)
+                    .err_tip(|| "Could not convert read_offset to u64")?;
+                let read_limit = u64::try_from(read_request.read_limit)
+                    .err_tip(|| "Could not convert read_limit to u64")?;
+                let read_limit = if read_limit != 0 {
+                    Some(read_limit)
+                } else {
+                    None
+                };
+
+                let stream = unfold(
+                    (streaming_reader, 0u64, read_offset, read_limit, max_bytes),
+                    |(mut reader, mut bytes_sent, read_offset, read_limit, max_bytes)| async move {
+                        // Skip bytes before read_offset.
+                        while bytes_sent < read_offset {
+                            match reader.next_chunk().await {
+                                Ok(chunk) if chunk.is_empty() => return None, // EOF
+                                Ok(chunk) => {
+                                    let chunk_end = bytes_sent + chunk.len() as u64;
+                                    if chunk_end > read_offset {
+                                        // Partial overlap — slice into the relevant portion.
+                                        let skip = (read_offset - bytes_sent) as usize;
+                                        let usable = chunk.slice(skip..);
+                                        bytes_sent = chunk_end;
+
+                                        // Apply read_limit.
+                                        let effective = bytes_sent - read_offset;
+                                        if let Some(limit) = read_limit {
+                                            if effective >= limit {
+                                                let trim = (effective - limit) as usize;
+                                                let final_chunk = if trim > 0 && trim < usable.len()
+                                                {
+                                                    usable.slice(..usable.len() - trim)
+                                                } else {
+                                                    usable
+                                                };
+                                                if final_chunk.is_empty() {
+                                                    return None;
+                                                }
+                                                let resp = ReadResponse { data: final_chunk };
+                                                return Some((
+                                                    Ok(resp),
+                                                    (
+                                                        reader,
+                                                        bytes_sent,
+                                                        read_offset,
+                                                        read_limit,
+                                                        max_bytes,
+                                                    ),
+                                                ));
+                                            }
+                                        }
+
+                                        // Respect max_bytes_per_stream.
+                                        let data = if usable.len() > max_bytes {
+                                            // Re-adjust bytes_sent for the portion we actually send.
+                                            bytes_sent = read_offset
+                                                + (max_bytes as u64).min(usable.len() as u64);
+                                            usable.slice(..max_bytes)
+                                        } else {
+                                            usable
+                                        };
+                                        let resp = ReadResponse { data };
+                                        return Some((
+                                            Ok(resp),
+                                            (
+                                                reader,
+                                                bytes_sent,
+                                                read_offset,
+                                                read_limit,
+                                                max_bytes,
+                                            ),
+                                        ));
+                                    }
+                                    bytes_sent = chunk_end;
+                                    continue;
+                                }
+                                Err(e) => {
+                                    return Some((
+                                        Err(e.into()),
+                                        (reader, bytes_sent, read_offset, read_limit, max_bytes),
+                                    ));
+                                }
+                            }
+                        }
+
+                        // Check read_limit.
+                        let effective_sent = bytes_sent - read_offset;
+                        if let Some(limit) = read_limit {
+                            if effective_sent >= limit {
+                                return None;
+                            }
+                        }
+
+                        // Normal read path.
+                        match reader.next_chunk().await {
+                            Ok(chunk) if chunk.is_empty() => None, // EOF
+                            Ok(chunk) => {
+                                let mut data = chunk;
+                                bytes_sent += data.len() as u64;
+
+                                // Trim to read_limit if needed.
+                                if let Some(limit) = read_limit {
+                                    let new_effective = bytes_sent - read_offset;
+                                    if new_effective > limit {
+                                        let overshoot = (new_effective - limit) as usize;
+                                        data = data.slice(..data.len() - overshoot);
+                                        bytes_sent -= overshoot as u64;
+                                    }
+                                }
+
+                                // Trim to max_bytes_per_stream.
+                                if data.len() > max_bytes {
+                                    data = data.slice(..max_bytes);
+                                }
+
+                                let resp = ReadResponse { data };
+                                Some((
+                                    Ok(resp),
+                                    (reader, bytes_sent, read_offset, read_limit, max_bytes),
+                                ))
+                            }
+                            Err(e) => Some((
+                                Err(e.into()),
+                                (reader, bytes_sent, read_offset, read_limit, max_bytes),
+                            )),
+                        }
+                    },
+                );
+
+                return Ok(Box::pin(stream) as ReadStream);
+            }
+        }
+
         struct ReaderState {
             max_bytes_per_stream: usize,
             rx: DropCloserReadHalf,
@@ -855,7 +1182,7 @@ impl ByteStreamServer {
 
         Ok(Box::pin(unfold(state, move |state| {
             async {
-            let mut state = state?; // If None our stream is done.
+            let mut state: ReaderState = state?; // If None our stream is done.
             let mut response = ReadResponse::default();
             {
                 let consume_fut = state.rx.consume(Some(state.max_bytes_per_stream));
@@ -937,7 +1264,7 @@ impl ByteStreamServer {
             }
             Some((Ok(response), Some(state)))
         }.instrument(read_stream_span.clone())
-        })))
+        })) as ReadStream)
     }
 
     // We instrument tracing here as well as below because `stream` has a hash on it
@@ -962,6 +1289,7 @@ impl ByteStreamServer {
             >,
             tx: &mut DropCloserWriteHalf,
             mirror_tx: &mut Option<DropCloserWriteHalf>,
+            streaming_blob_writer: &Option<StreamingBlobWriter>,
             outer_bytes_received: &Arc<AtomicU64>,
             expected_size: u64,
         ) -> Result<(), Error> {
@@ -1048,6 +1376,16 @@ impl ByteStreamServer {
                         }
                     }
 
+                    // Append chunk to the streaming blob so concurrent readers
+                    // can consume data before the store write completes.
+                    if let Some(sbw) = streaming_blob_writer {
+                        // Errors here are non-fatal — the streaming blob may
+                        // have been terminated by a previous error.
+                        if let Err(e) = sbw.send(data.clone()).await {
+                            debug!(?e, "streaming blob send failed, continuing store write");
+                        }
+                    }
+
                     // We also need to process the possible EOF branch, so we can't early return.
                     if let Err(mut err) = tx.send(data).await {
                         err.code = Code::Internal;
@@ -1127,18 +1465,74 @@ impl ByteStreamServer {
             (None, None)
         };
 
+        // Register a streaming blob so readers can consume data
+        // before the store write commits (read-while-write).
+        let streaming_blob_writer = if instance_info.streaming_read_while_write {
+            if let Some((writer, _reader)) = instance_info
+                .in_flight_blobs
+                .register(digest, instance_info.max_streaming_blob_buffer_bytes)
+            {
+                info!(
+                    %digest,
+                    "registered streaming blob for read-while-write"
+                );
+                Some(writer)
+            } else {
+                debug!(
+                    %digest,
+                    "in-flight blob map at capacity, skipping read-while-write"
+                );
+                None
+            }
+        } else {
+            None
+        };
+
         let active_stream = active_stream_guard.stream_state.as_mut().unwrap();
-        try_join!(
+        let write_result = try_join!(
             process_client_stream(
                 stream,
                 &mut active_stream.tx,
                 &mut mirror_tx_opt,
+                &streaming_blob_writer,
                 &active_stream_guard.bytes_received,
                 expected_size
             ),
             (&mut active_stream.store_update_fut)
                 .map_err(|err| { err.append("Error updating inner store") })
-        )?;
+        );
+
+        // Propagate terminal state to the streaming blob.
+        if let Some(mut sbw) = streaming_blob_writer {
+            match &write_result {
+                Ok(_) => {
+                    if let Err(e) = sbw.send_eof() {
+                        debug!(?e, "streaming blob send_eof failed");
+                    }
+                }
+                Err(e) => {
+                    sbw.send_error(e.clone());
+                }
+            }
+
+            // Schedule deferred removal from InFlightBlobMap after a grace
+            // period so in-progress readers can finish consuming data.
+            let in_flight_blobs = Arc::clone(&instance_info.in_flight_blobs);
+            let inner_arc = instance_info.in_flight_blobs.get_inner(&digest);
+            if let Some(inner_arc) = inner_arc {
+                nativelink_util::background_spawn!("streaming_blob_grace_removal", async move {
+                    sleep(Duration::from_secs(5)).await;
+                    in_flight_blobs.remove(&digest, &inner_arc);
+                    debug!(
+                        %digest,
+                        "removed streaming blob after grace period"
+                    );
+                });
+            }
+        }
+
+        // Propagate the result after streaming blob cleanup.
+        write_result?;
 
         // Fire-and-forget: drop the mirror handle without awaiting it.
         // The mirror task runs to completion (or failure) in the background.
@@ -1229,10 +1623,8 @@ impl ByteStreamServer {
                 } else {
                     // Second+ chunk — spill into BytesMut.
                     let buf = buffer.get_or_insert_with(|| {
-                        let capacity = usize::try_from(
-                            expected_size.min(64 * 1024 * 1024),
-                        )
-                        .unwrap_or(64 * 1024 * 1024);
+                        let capacity = usize::try_from(expected_size.min(64 * 1024 * 1024))
+                            .unwrap_or(64 * 1024 * 1024);
                         let mut b = BytesMut::with_capacity(capacity);
                         if let Some(first) = single_chunk.take() {
                             b.extend_from_slice(&first);
@@ -1525,19 +1917,13 @@ impl ByteStreamServer {
             if use_oneshot {
                 self.inner_write_oneshot(instance, digest, stream, is_worker, is_mirror)
                     .instrument(error_span!("bytestream_write_oneshot", %zero_copy))
-                    .with_context(
-                        make_ctx_for_hash_func(digest_function)
-                            .err_tip(|| tip_label)?,
-                    )
+                    .with_context(make_ctx_for_hash_func(digest_function).err_tip(|| tip_label)?)
                     .await
                     .err_tip(|| tip_oneshot_label)
             } else {
                 self.inner_write(instance, digest, stream, is_worker, is_mirror)
                     .instrument(error_span!("bytestream_write", %zero_copy))
-                    .with_context(
-                        make_ctx_for_hash_func(digest_function)
-                            .err_tip(|| tip_label)?,
-                    )
+                    .with_context(make_ctx_for_hash_func(digest_function).err_tip(|| tip_label)?)
                     .await
                     .err_tip(|| tip_label)
             }
@@ -1654,10 +2040,7 @@ impl ByteStreamServer {
         &self,
         read_request: ReadRequest,
         metadata: &http::HeaderMap,
-    ) -> Result<
-        http::Response<tonic::body::Body>,
-        Status,
-    > {
+    ) -> Result<http::Response<tonic::body::Body>, Status> {
         let start_time = Instant::now();
 
         let is_worker = metadata.contains_key("x-nativelink-worker");
@@ -1677,9 +2060,8 @@ impl ByteStreamServer {
             .fetch_add(1, Ordering::Relaxed);
 
         let store = instance.store.clone();
-        let digest =
-            DigestInfo::try_new(resource_info.hash.as_ref(), resource_info.expected_size)
-                .map_err(Into::<Status>::into)?;
+        let digest = DigestInfo::try_new(resource_info.hash.as_ref(), resource_info.expected_size)
+            .map_err(Into::<Status>::into)?;
 
         // GrpcStore shortcut: proxy the read directly.
         if let Some(grpc_store) = store.downcast_ref::<GrpcStore>(Some(digest.into())) {
@@ -1694,8 +2076,7 @@ impl ByteStreamServer {
                     .await?,
             );
             let body = ZeroCopyReadBody::new(stream);
-            let mut http_response =
-                http::Response::new(tonic::body::Body::new(body));
+            let mut http_response = http::Response::new(tonic::body::Body::new(body));
             http_response.headers_mut().insert(
                 http::header::CONTENT_TYPE,
                 tonic::metadata::GRPC_CONTENT_TYPE,
@@ -1706,7 +2087,10 @@ impl ByteStreamServer {
         let digest_function = resource_info
             .digest_function
             .as_deref()
-            .map_or_else(|| Ok(default_digest_hasher_func()), DigestHasherFunc::try_from)
+            .map_or_else(
+                || Ok(default_digest_hasher_func()),
+                DigestHasherFunc::try_from,
+            )
             .map_err(Into::<Status>::into)?;
 
         // Covers stream setup only (inner_read returns a Stream).
@@ -1752,16 +2136,10 @@ impl ByteStreamServer {
                     .fetch_add(expected_size, Ordering::Relaxed);
 
                 // Wrap in LoggingReadStream to track throughput and log on completion.
-                let logging = LoggingReadStream::new(
-                    Box::pin(stream),
-                    start_time,
-                    digest,
-                    expected_size,
-                );
+                let logging = LoggingReadStream::new(stream, start_time, digest, expected_size);
 
                 let body = ZeroCopyReadBody::new(logging);
-                let mut http_response =
-                    http::Response::new(tonic::body::Body::new(body));
+                let mut http_response = http::Response::new(tonic::body::Body::new(body));
                 http_response.headers_mut().insert(
                     http::header::CONTENT_TYPE,
                     tonic::metadata::GRPC_CONTENT_TYPE,
@@ -1784,6 +2162,19 @@ impl ByteStreamServer {
             }
         }
     }
+    /// Test/diagnostic helper: get current partial_write_bytes for a given instance.
+    pub fn partial_write_bytes(&self, instance_name: &str) -> u64 {
+        self.instance_infos
+            .get(instance_name)
+            .map_or(0, |info| info.partial_write_bytes.load(Ordering::Relaxed))
+    }
+
+    /// Test/diagnostic helper: get metrics for a given instance.
+    pub fn metrics(&self, instance_name: &str) -> Option<Arc<ByteStreamMetrics>> {
+        self.instance_infos
+            .get(instance_name)
+            .map(|info| info.metrics.clone())
+    }
 }
 
 #[tonic::async_trait]
@@ -1802,9 +2193,7 @@ impl ByteStream for ByteStreamServer {
     ) -> Result<Response<Self::ReadStream>, Status> {
         let start_time = Instant::now();
 
-        let is_worker = grpc_request
-            .metadata()
-            .contains_key("x-nativelink-worker");
+        let is_worker = grpc_request.metadata().contains_key("x-nativelink-worker");
         let read_request = grpc_request.into_inner();
         let resource_info = ResourceInfo::new(&read_request.resource_name, false)?;
         let instance_name = resource_info.instance_name.as_ref();
@@ -1852,12 +2241,7 @@ impl ByteStream for ByteStreamServer {
             .map(|stream| -> Response<Self::ReadStream> {
                 // Wrap in LoggingReadStream to log when the client finishes
                 // consuming all data (or drops the stream early).
-                let logging = LoggingReadStream::new(
-                    Box::pin(stream),
-                    start_time,
-                    digest,
-                    expected_size,
-                );
+                let logging = LoggingReadStream::new(stream, start_time, digest, expected_size);
                 Response::new(Box::pin(logging))
             });
 
@@ -1915,12 +2299,8 @@ impl ByteStream for ByteStreamServer {
     ) -> Result<Response<WriteResponse>, Status> {
         let start_time = Instant::now();
 
-        let is_worker = grpc_request
-            .metadata()
-            .contains_key("x-nativelink-worker");
-        let is_mirror = grpc_request
-            .metadata()
-            .contains_key("x-nativelink-mirror");
+        let is_worker = grpc_request.metadata().contains_key("x-nativelink-worker");
+        let is_mirror = grpc_request.metadata().contains_key("x-nativelink-mirror");
         let request = grpc_request.into_inner();
         let stream = WriteRequestStreamWrapper::from(request)
             .await
@@ -2022,9 +2402,7 @@ impl tower::Service<http::Request<tonic::body::Body>> for ZeroCopyByteStreamServ
                         // Encode the WriteResponse as a gRPC frame.
                         let body_bytes = encode_grpc_unary_response(&write_response);
                         let body = GrpcUnaryBody::new(body_bytes);
-                        let mut http_response = http::Response::new(
-                            tonic::body::Body::new(body),
-                        );
+                        let mut http_response = http::Response::new(tonic::body::Body::new(body));
                         *http_response.headers_mut() = resp_metadata.into_headers();
                         http_response.headers_mut().insert(
                             http::header::CONTENT_TYPE,
@@ -2032,9 +2410,7 @@ impl tower::Service<http::Request<tonic::body::Body>> for ZeroCopyByteStreamServ
                         );
                         Ok(http_response)
                     }
-                    Err(status) => {
-                        Ok(status.into_http())
-                    }
+                    Err(status) => Ok(status.into_http()),
                 }
             })
         } else if path == "/google.bytestream.ByteStream/Read" {
@@ -2060,4 +2436,3 @@ impl tower::Service<http::Request<tonic::body::Body>> for ZeroCopyByteStreamServ
         }
     }
 }
-

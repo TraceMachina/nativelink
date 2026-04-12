@@ -211,6 +211,7 @@ impl WorkerProxyStore {
             parallel_chunk_read_threshold: 8 * 1024 * 1024,
             parallel_chunk_count: 8,
             dual_transport: false,
+            zstd_compression: false,
         };
         let store = GrpcStore::new(&spec)
             .await
