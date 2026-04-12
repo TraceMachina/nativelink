@@ -1381,7 +1381,7 @@ pub struct GrpcSpec {
     /// `ceil(remaining / parallel_chunk_count)` bytes. More chunks
     /// increase parallelism but also RPC overhead.
     ///
-    /// Default: 8
+    /// Default: 64
     #[serde(
         default = "default_parallel_chunk_count",
         deserialize_with = "convert_numeric_with_shellexpand"
@@ -1399,6 +1399,21 @@ pub struct GrpcSpec {
     /// Default: false
     #[serde(default)]
     pub dual_transport: bool,
+
+    /// Enable zstd compression at the tonic (gRPC transport) level for
+    /// this client connection. When enabled, the client sends
+    /// `grpc-accept-encoding: zstd` so the server compresses responses,
+    /// and sends `grpc-encoding: zstd` to compress outgoing requests.
+    ///
+    /// This is most valuable for worker<->server traffic over LAN where
+    /// source files compress ~4:1, saving 10-80ms per action at 10GbE.
+    /// CPU overhead is negligible on modern CPUs (zstd ~3GB/s).
+    ///
+    /// Requires the server listener to also accept zstd compression.
+    ///
+    /// Default: false
+    #[serde(default)]
+    pub zstd_compression: bool,
 }
 
 /// The possible error codes that might occur on an upstream request.
