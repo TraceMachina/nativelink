@@ -271,8 +271,22 @@ impl StoreDriver for MemoryStore {
 
         // Walk the chunk chain, sending each relevant piece without copying.
         let num_chunks = value.chunks.len();
+        let actual_data_len: usize = value.chunks.iter().map(|c| c.len()).sum();
         let mut chunks_sent = 0u32;
+        let mut bytes_sent_total = 0usize;
         let initial_remaining = remaining;
+
+        // Detect total_len vs actual data mismatch before iterating.
+        if total_len != actual_data_len {
+            error!(
+                key = ?owned_key,
+                total_len,
+                actual_data_len,
+                num_chunks,
+                "memory_store::get_part: total_len != sum(chunk.len()) — BytesWrapper is corrupt"
+            );
+        }
+
         for chunk in &value.chunks {
             if remaining == 0 {
                 break;
@@ -287,27 +301,40 @@ impl StoreDriver for MemoryStore {
             let end = chunk_len.min(start + remaining);
             let slice = chunk.slice(start..end);
             remaining -= slice.len();
+            bytes_sent_total += slice.len();
             offset = 0;
-            writer
-                .send(slice)
-                .await
-                .err_tip(|| "Failed to write data in memory store")?;
+            let send_result = writer.send(slice).await;
+            if let Err(e) = send_result {
+                error!(
+                    key = ?owned_key,
+                    total_len,
+                    num_chunks,
+                    chunks_sent,
+                    bytes_sent_total,
+                    remaining,
+                    err = %e,
+                    "memory_store::get_part: send failed mid-stream"
+                );
+                return Err(e).err_tip(|| "Failed to write data in memory store");
+            }
             chunks_sent += 1;
         }
         if remaining > 0 {
             error!(
                 key = ?owned_key,
                 total_len,
+                actual_data_len,
                 num_chunks,
                 chunks_sent,
                 initial_remaining,
                 remaining,
+                bytes_sent_total,
                 "memory_store::get_part: incomplete read — chunks exhausted before all data sent"
             );
             return Err(make_err!(
                 Code::Internal,
                 "MemoryStore: chunks exhausted with {remaining} bytes remaining \
-                 (total_len={total_len}, chunks={num_chunks}, sent={chunks_sent})"
+                 (total_len={total_len}, actual_data={actual_data_len}, chunks={num_chunks}, sent={chunks_sent})"
             ));
         }
         writer
