@@ -289,6 +289,10 @@ pub struct OldByteStreamConfig {
         skip_serializing_if = "is_default"
     )]
     pub persist_stream_on_disconnect_timeout: usize,
+    #[serde(default)]
+    pub streaming_read_while_write: bool,
+    #[serde(default)]
+    pub max_streaming_blob_buffer_bytes: usize,
 }
 
 #[derive(Deserialize, Serialize, Debug)]
