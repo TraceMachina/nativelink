@@ -420,13 +420,17 @@ pub fn h3_channel(endpoint_config: &GrpcEndpoint, connections: usize) -> Result<
     let mut ack_freq = quinn::AckFrequencyConfig::default();
     ack_freq.max_ack_delay(Some(Duration::from_millis(5)));
     transport.ack_frequency_config(Some(ack_freq));
-    // Allow idle connections to persist for 60s before cleanup.
-    transport.max_idle_timeout(Some(Duration::from_secs(60).try_into().unwrap()));
+    // Idle timeout: 15s. Short enough that dead connections (from server
+    // restart) are detected within ~2 keepalive cycles (5s each) plus
+    // this timeout, rather than blocking RPCs for the full RPC timeout.
+    transport.max_idle_timeout(Some(Duration::from_secs(15).try_into().unwrap()));
     // BBR handles bursty workloads better than Cubic on high-BDP LAN.
     transport.congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
-    // Send QUIC keepalives every 5s to detect dead connections and
-    // prevent NAT/firewall timeouts on the server→worker path.
-    transport.keep_alive_interval(Some(Duration::from_secs(5)));
+    // Send QUIC keepalives every 2s to detect dead connections quickly
+    // after server restart. Combined with 15s idle timeout, a dead
+    // connection is detected within ~4-6s, triggering H3Connection's
+    // built-in reconnection before the RPC timeout (120s) expires.
+    transport.keep_alive_interval(Some(Duration::from_secs(2)));
     // Enable QUIC MTU discovery for jumbo frames. Probe up to 8952
     // bytes (9000 jumbo MTU minus 40 IPv6 + 8 UDP headers). Reduces
     // packet rate by ~6x vs default 1452.
