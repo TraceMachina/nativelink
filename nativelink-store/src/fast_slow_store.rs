@@ -1378,15 +1378,17 @@ impl StoreDriver for FastSlowStore {
         let streaming_inner = loader_guard.streaming_inner.clone();
         let is_waiter = !loader_guard.is_new;
 
-        if is_waiter {
-            // Another thread is populating — stream from the populate buffer
-            // concurrently. Data arrives as each chunk is read from the slow
-            // store, giving us near-zero time-to-first-byte instead of
-            // blocking until the full populate completes.
+        if is_waiter && !streaming_inner.is_terminal() {
+            // Another thread is actively populating — stream from the
+            // populate buffer concurrently. Data arrives as each chunk is
+            // read from the slow store, giving near-zero time-to-first-byte.
             //
-            // For blobs larger than the sliding window, the reader may miss
-            // early chunks. Detect this by checking if eviction has already
-            // started and fall back to slow store.
+            // If the populate already completed (is_terminal=true), skip
+            // this path — the buffer may be empty/drained. Read from the
+            // fast store instead (or fall through to slow store).
+            //
+            // For blobs larger than the sliding window, early chunks may
+            // have been evicted. Detect this and fall back to slow store.
             drop(loader_guard);
             info!(
                 ?key,
@@ -1394,7 +1396,6 @@ impl StoreDriver for FastSlowStore {
             );
             let earliest = streaming_inner.earliest_chunk_idx();
             if earliest > 0 {
-                // Chunks already evicted — can't serve from byte 0.
                 debug!(
                     ?key,
                     earliest,
@@ -1451,22 +1452,35 @@ impl StoreDriver for FastSlowStore {
                     }
                 }
             }
-            let bytes_streamed = writer.get_bytes_written();
-            if bytes_streamed == 0 && offset == 0 && length.is_none() {
-                // Zero bytes streamed for a full read — the populate may
-                // have completed before we subscribed. Fall back to slow store.
-                warn!(
-                    ?key,
-                    "streaming populate: zero bytes received, falling back to slow store"
-                );
-                return self.slow_store
-                    .get_part(key.borrow(), &mut *writer, offset, length)
-                    .await;
-            }
             writer
                 .send_eof()
                 .err_tip(|| "Failed to send EOF after streaming populate")?;
             Ok(())
+        } else if is_waiter {
+            // Populate already completed (is_terminal=true). Read from the
+            // fast store, falling back to slow store if evicted.
+            drop(loader_guard);
+            let bytes_before = writer.get_bytes_written();
+            match self
+                .fast_store
+                .get_part(key.borrow(), &mut *writer, offset, length)
+                .await
+            {
+                Ok(()) => Ok(()),
+                Err(err)
+                    if err.code == Code::NotFound
+                        && writer.get_bytes_written() == bytes_before =>
+                {
+                    warn!(
+                        ?key,
+                        "fast store item evicted after populate, reading from slow store"
+                    );
+                    self.slow_store
+                        .get_part(key.borrow(), &mut *writer, offset, length)
+                        .await
+                }
+                Err(err) => Err(err),
+            }
         } else {
             // We're the populator — stream to the client directly AND tee
             // data into the streaming buffer for any concurrent waiters.
