@@ -83,7 +83,7 @@ impl fmt::Debug for StreamingBlobInner {
 }
 
 impl StreamingBlobInner {
-    fn new(digest: DigestInfo, max_buffer_bytes: u64) -> Self {
+    pub fn new(digest: DigestInfo, max_buffer_bytes: u64) -> Self {
         Self {
             chunks: RwLock::new(VecDeque::new()),
             chunk_count: AtomicU64::new(0),
@@ -96,9 +96,14 @@ impl StreamingBlobInner {
         }
     }
 
-    /// Returns true if the terminal state has been set.
-    fn is_terminal(&self) -> bool {
+    /// Returns true if the terminal state has been set (EOF or error).
+    pub fn is_terminal(&self) -> bool {
         self.terminal.lock().is_some()
+    }
+
+    /// Returns true if the buffer currently holds any chunks.
+    pub fn has_data(&self) -> bool {
+        !self.chunks.read().is_empty()
     }
 
     /// Returns the digest associated with this blob.
@@ -127,7 +132,7 @@ impl fmt::Debug for StreamingBlobWriter {
 }
 
 impl StreamingBlobWriter {
-    fn new(inner: Arc<StreamingBlobInner>) -> Self {
+    pub fn new(inner: Arc<StreamingBlobInner>) -> Self {
         Self {
             inner,
             eof_sent: false,
@@ -264,7 +269,7 @@ impl fmt::Debug for StreamingBlobReader {
 }
 
 impl StreamingBlobReader {
-    fn new(inner: Arc<StreamingBlobInner>) -> Self {
+    pub fn new(inner: Arc<StreamingBlobInner>) -> Self {
         let earliest = inner.earliest_chunk_idx.load(Ordering::Acquire);
         Self {
             inner,

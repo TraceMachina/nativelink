@@ -39,6 +39,7 @@ use nativelink_util::store_trait::{
     IS_MIRROR_REQUEST, ItemCallback, Store, StoreDriver, StoreKey, StoreLike, StoreOptimizations,
     UploadSizeInfo, slow_update_store_with_file,
 };
+use nativelink_util::streaming_blob::{StreamingBlobInner, StreamingBlobWriter};
 use parking_lot::Mutex;
 use tokio::sync::{Notify, OnceCell};
 use tracing::{debug, error, trace, warn};
@@ -71,7 +72,7 @@ pub struct FastSlowStore {
     // are blocked.  This may feel like it's causing a slow down of tasks, but
     // actually it's faster because we're not downloading the file multiple
     // times are doing loads of duplicate IO.
-    populating_digests: Mutex<HashMap<StoreKey<'static>, Loader>>,
+    populating_digests: Mutex<HashMap<StoreKey<'static>, (Loader, Arc<StreamingBlobInner>)>>,
     /// Holds data for blobs whose background slow-store write is still in
     /// progress. If the fast store evicts the blob before the slow write
     /// completes, `get_part` serves from this map to prevent NotFound gaps.
@@ -106,6 +107,9 @@ struct LoaderGuard<'a> {
     weak_store: Weak<FastSlowStore>,
     key: StoreKey<'a>,
     loader: Option<Loader>,
+    /// Streaming buffer shared between the populating thread and waiters.
+    /// Waiters read from this instead of blocking on the OnceCell.
+    streaming_inner: Arc<StreamingBlobInner>,
 }
 
 impl LoaderGuard<'_> {
@@ -140,9 +144,9 @@ impl Drop for LoaderGuard<'_> {
         if let std::collections::hash_map::Entry::Occupied(occupied_entry) =
             guard.entry(owned_key)
         {
-            if Arc::ptr_eq(occupied_entry.get(), &loader) {
+            if Arc::ptr_eq(&occupied_entry.get().0, &loader) {
                 drop(loader);
-                if Arc::strong_count(occupied_entry.get()) == 1 {
+                if Arc::strong_count(&occupied_entry.get().0) == 1 {
                     // This is the last loader, so remove it.
                     occupied_entry.remove();
                 }
@@ -328,27 +332,44 @@ impl FastSlowStore {
         self.mirror_blobs.lock().len()
     }
 
+    /// Default per-blob streaming buffer: 64 MiB sliding window.
+    const POPULATE_STREAM_BUFFER_BYTES: u64 = 64 * 1024 * 1024;
+
     fn get_loader<'a>(&self, key: StoreKey<'a>) -> LoaderGuard<'a> {
         // Get a single loader instance that's used to populate the fast store
         // for this digest.  If another request comes in then it's de-duplicated.
         // Pre-compute the owned key outside the lock to minimize lock hold time.
         let owned_key = key.borrow().into_owned();
-        let loader = match self
+        let digest = match key.borrow() {
+            StoreKey::Digest(d) => d,
+            _ => DigestInfo::zero_digest(),
+        };
+        let (loader, streaming_inner) = match self
             .populating_digests
             .lock()
             .entry(owned_key)
         {
             std::collections::hash_map::Entry::Occupied(occupied_entry) => {
-                occupied_entry.get().clone()
+                let (l, s) = occupied_entry.get();
+                (l.clone(), s.clone())
             }
             std::collections::hash_map::Entry::Vacant(vacant_entry) => {
-                vacant_entry.insert(Arc::new(OnceCell::new())).clone()
+                let inner = Arc::new(StreamingBlobInner::new(
+                    digest,
+                    Self::POPULATE_STREAM_BUFFER_BYTES,
+                ));
+                let entry = vacant_entry.insert((
+                    Arc::new(OnceCell::new()),
+                    Arc::clone(&inner),
+                ));
+                (entry.0.clone(), inner)
             }
         };
         LoaderGuard {
             weak_store: self.weak_self.clone(),
             key,
             loader: Some(loader),
+            streaming_inner,
         }
     }
 
@@ -358,6 +379,7 @@ impl FastSlowStore {
         maybe_writer: Option<&mut DropCloserWriteHalf>,
         offset: u64,
         length: Option<u64>,
+        mut streaming_writer: StreamingBlobWriter,
     ) -> Result<(), Error> {
         let reader_stream_size = if self
             .slow_store
@@ -412,6 +434,8 @@ impl FastSlowStore {
                     // We are dropped as soon as we send_eof to writer_pin, so
                     // we wait until we've finished all of our joins to do that.
                     let fast_res = fast_tx.send_eof();
+                    // Signal EOF to streaming waiters.
+                    let _ = streaming_writer.send_eof();
                     return Ok::<_, Error>((fast_res, maybe_writer_pin));
                 }
 
@@ -439,6 +463,11 @@ impl FastSlowStore {
                 );
 
                 bytes_received += output_buf_len;
+
+                // Tee data to the streaming buffer so waiters can read
+                // concurrently instead of blocking until populate completes.
+                // Errors are non-fatal (no waiters subscribed yet is fine).
+                let _ = streaming_writer.send(output_buf.clone()).await;
 
                 let (fast_tx_res, writer_res) = join!(fast_tx.send(output_buf), writer_fut);
                 fast_tx_res.err_tip(|| "Failed to write to fast store in fast_slow store")?;
@@ -491,9 +520,11 @@ impl FastSlowStore {
             ));
         }
 
-        self.get_loader(key.borrow())
+        let loader_guard = self.get_loader(key.borrow());
+        let sw = StreamingBlobWriter::new(loader_guard.streaming_inner.clone());
+        loader_guard
             .get_or_try_init(|| {
-                Pin::new(self).populate_and_maybe_stream(key.borrow(), None, 0, None)
+                Pin::new(self).populate_and_maybe_stream(key.borrow(), None, 0, None, sw)
             })
             .await
             .err_tip(|| "Failed to populate()")
@@ -1340,18 +1371,81 @@ impl StoreDriver for FastSlowStore {
         }
 
         let mut writer = Some(writer);
-        self.get_loader(key.borrow())
+        let loader_guard = self.get_loader(key.borrow());
+        let streaming_inner = loader_guard.streaming_inner.clone();
+        let sw = StreamingBlobWriter::new(streaming_inner.clone());
+        loader_guard
             .get_or_try_init(|| {
-                self.populate_and_maybe_stream(key.borrow(), writer.take(), offset, length)
+                self.populate_and_maybe_stream(
+                    key.borrow(),
+                    writer.take(),
+                    offset,
+                    length,
+                    sw,
+                )
             })
             .await?;
 
-        // If we were a waiter (not the streaming thread), read from the
-        // fast store which was just populated. If the blob was evicted
-        // between populate and this read, fall back directly to the slow
-        // store instead of recursing (which could loop indefinitely under
-        // heavy eviction pressure).
+        // If we were a waiter (not the streaming thread), stream from the
+        // populate buffer if it's still active, otherwise read from the fast
+        // store which was just populated.
         if let Some(writer) = writer.take() {
+            // Try streaming from the populate buffer first — this avoids
+            // blocking until populate completes and avoids the TOCTOU race
+            // where the blob is evicted between populate and get_part.
+            if !streaming_inner.is_terminal() || streaming_inner.has_data() {
+                let mut reader = nativelink_util::streaming_blob::StreamingBlobReader::new(
+                    streaming_inner,
+                );
+                // Skip to offset and respect length for partial reads.
+                let mut pos = 0u64;
+                let end = offset + length.unwrap_or(u64::MAX);
+                loop {
+                    match reader.next_chunk().await {
+                        Ok(chunk) if chunk.is_empty() => break, // EOF
+                        Ok(chunk) => {
+                            let chunk_end = pos + chunk.len() as u64;
+                            if chunk_end > offset && pos < end {
+                                let start = if pos < offset {
+                                    (offset - pos) as usize
+                                } else {
+                                    0
+                                };
+                                let stop = if chunk_end > end {
+                                    chunk.len() - (chunk_end - end) as usize
+                                } else {
+                                    chunk.len()
+                                };
+                                if start < stop {
+                                    writer
+                                        .send(chunk.slice(start..stop))
+                                        .await
+                                        .err_tip(|| "Failed to send streaming populate data")?;
+                                }
+                            }
+                            pos = chunk_end;
+                            if pos >= end {
+                                break;
+                            }
+                        }
+                        Err(err) => {
+                            // Streaming buffer error — fall back to fast store.
+                            debug!(
+                                ?key,
+                                %err,
+                                "streaming populate buffer error, falling back to fast store"
+                            );
+                            break;
+                        }
+                    }
+                }
+                writer
+                    .send_eof()
+                    .err_tip(|| "Failed to send EOF after streaming populate")?;
+                return Ok(());
+            }
+
+            // Fallback: read from fast store (populate completed, buffer drained).
             let bytes_before = writer.get_bytes_written();
             match self
                 .fast_store
@@ -1369,7 +1463,7 @@ impl StoreDriver for FastSlowStore {
                          reading directly from slow store"
                     );
                     self.slow_store
-                        .get_part(key, &mut *writer, offset, length)
+                        .get_part(key.borrow(), &mut *writer, offset, length)
                         .await
                 }
                 Err(err) => Err(err),
