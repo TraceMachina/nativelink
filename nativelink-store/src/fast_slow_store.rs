@@ -42,7 +42,7 @@ use nativelink_util::store_trait::{
 use nativelink_util::streaming_blob::{StreamingBlobInner, StreamingBlobWriter};
 use parking_lot::Mutex;
 use tokio::sync::{Notify, OnceCell};
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 // TODO(palfrey) This store needs to be evaluated for more efficient memory usage,
 // there are many copies happening internally.
@@ -1388,6 +1388,10 @@ impl StoreDriver for FastSlowStore {
             // early chunks. Detect this by checking if eviction has already
             // started and fall back to slow store.
             drop(loader_guard);
+            info!(
+                ?key,
+                "streaming populate: waiter reading concurrently from populate buffer"
+            );
             let earliest = streaming_inner.earliest_chunk_idx();
             if earliest > 0 {
                 // Chunks already evicted — can't serve from byte 0.
@@ -1446,6 +1450,18 @@ impl StoreDriver for FastSlowStore {
                             .await;
                     }
                 }
+            }
+            let bytes_streamed = writer.get_bytes_written();
+            if bytes_streamed == 0 && offset == 0 && length.is_none() {
+                // Zero bytes streamed for a full read — the populate may
+                // have completed before we subscribed. Fall back to slow store.
+                warn!(
+                    ?key,
+                    "streaming populate: zero bytes received, falling back to slow store"
+                );
+                return self.slow_store
+                    .get_part(key.borrow(), &mut *writer, offset, length)
+                    .await;
             }
             writer
                 .send_eof()
