@@ -1,6 +1,9 @@
 ---
 name: Prepare Nix
 description: "Common setup for all runs using Nix."
+inputs:
+  nativelink_attic_token:
+    required: true
 runs:
   using: "composite"
   steps:
@@ -13,13 +16,13 @@ runs:
       with:
         source-tag: v3.13.0
 
-    # FIXME(palfrey): Replace with better cache. Workers are currently taking minutes to upload data
-    # all the time, probably because we're at ~500GB of 10GB in the cache storage and it's breaking.
-    # We've tried Flakehub, but it doesn't work for us because it assumes "branches on an org repo"
-    # not our "fork and branch on your own repo" setup for it's auth so we can't currently use that.
-
-    # - name: Add Nix magic cache
-    #   uses: >- # https://github.com/DeterminateSystems/magic-nix-cache-action/releases/tag/v13
-    #     DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39
-    #   with:
-    #     source-tag: v0.1.6
+    - name: Setup attic cache
+      run: |
+        nix build nixpkgs#attic-client
+        # Note NATIVELINK_ATTIC_TOKEN is blank for PR builds as they don't have secret access
+        ./result/bin/attic login uc1-dev https://attic.uc1.scdev.nativelink.net/ $NATIVELINK_ATTIC_TOKEN
+        ./result/bin/attic use nativelink
+        ./result/bin/attic watch-store nativelink &
+      shell: bash
+      env:
+        NATIVELINK_ATTIC_TOKEN: ${{ inputs.nativelink_attic_token }}
