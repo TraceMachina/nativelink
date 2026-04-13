@@ -186,15 +186,15 @@ impl<I: InstantWrapper> ExistenceCacheStore<I> {
 
         // Insert found from previous query into our cache.
         {
-            // Note: Sadly due to some weird lifetime issues we need to collect here, but
-            // in theory we don't actually need to collect.
-            let inserts = not_cached_keys
-                .iter()
-                .zip(inner_results.iter())
-                .filter_map(|(key, result)| {
-                    result.map(|size| (key.borrow().into_digest(), ExistenceItem(size)))
-                })
-                .collect::<Vec<_>>();
+            // The iterator borrows not_cached_keys and inner_results which are
+            // local — the borrow can't cross the insert_many() await boundary
+            // (the iterator wouldn't be Send). Collect into a Vec first.
+            let mut inserts = Vec::with_capacity(not_cached_keys.len());
+            for (key, result) in not_cached_keys.iter().zip(inner_results.iter()) {
+                if let Some(size) = result {
+                    inserts.push((key.borrow().into_digest(), ExistenceItem(*size)));
+                }
+            }
             drop(self.existence_cache.insert_many(inserts).await);
         }
 

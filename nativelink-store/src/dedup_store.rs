@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bincode::serde::{decode_from_slice, encode_to_vec};
-use futures::stream::{self, FuturesOrdered, StreamExt, TryStreamExt};
+use futures::stream::{self, FuturesUnordered, StreamExt, TryStreamExt};
 use nativelink_config::stores::DedupSpec;
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
@@ -174,26 +174,25 @@ impl StoreDriver for DedupStore {
         digests: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
-        digests
+        let futs: FuturesUnordered<_> = digests
             .iter()
-            .zip(results.iter_mut())
-            .map(|(key, result)| async move {
+            .enumerate()
+            .map(|(idx, key)| async move {
                 if is_zero_digest(key.borrow()) {
-                    *result = Some(0);
-                    return Ok(());
+                    return Ok((idx, Some(0)));
                 }
 
                 match self.has(key.borrow()).await {
-                    Ok(maybe_size) => {
-                        *result = maybe_size;
-                        Ok(())
-                    }
+                    Ok(maybe_size) => Ok((idx, maybe_size)),
                     Err(err) => Err(err),
                 }
             })
-            .collect::<FuturesOrdered<_>>()
-            .try_collect()
-            .await
+            .collect();
+        let indexed_results: Vec<(usize, Option<u64>)> = futs.try_collect().await?;
+        for (idx, maybe_size) in indexed_results {
+            results[idx] = maybe_size;
+        }
+        Ok(())
     }
 
     async fn update(

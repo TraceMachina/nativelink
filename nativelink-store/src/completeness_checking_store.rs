@@ -17,6 +17,7 @@ use core::{iter, mem};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use futures::stream::{FuturesUnordered, StreamExt};
 use futures::{FutureExt, TryFutureExt, select};
 use nativelink_error::{Code, Error, ResultExt, make_err};
@@ -32,10 +33,14 @@ use nativelink_util::store_trait::{
     ItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };
 use parking_lot::Mutex;
+use prost::Message;
 use tokio::sync::Notify;
 use tracing::{info, warn};
 
 use crate::ac_utils::{get_and_decode_digest, get_size_and_decode_digest};
+
+/// Safety bound for AC entry sizes fetched into memory.
+const MAX_ACTION_MSG_SIZE: usize = 10 << 20; // 10mb.
 
 /// Given a proto action result, return all relevant digests and
 /// output directories that need to be checked.
@@ -352,6 +357,104 @@ impl CompletenessCheckingStore {
         }
         // Unreachable.
     }
+
+    /// Fetch a single AC entry, verify CAS completeness, and return the
+    /// raw bytes of the entry. This avoids the double-fetch that would
+    /// occur if we called `inner_has_with_results` then `ac_store.get_part`.
+    async fn get_and_verify_single(
+        &self,
+        key: StoreKey<'_>,
+    ) -> Result<Bytes, Error> {
+        // Step 1: Fetch the raw AC entry bytes once.
+        let store_data = self
+            .ac_store
+            .as_store_driver_pin()
+            .get_part_unchunked(key.borrow(), 0, Some(MAX_ACTION_MSG_SIZE as u64))
+            .await
+            .err_tip(|| "Failed to fetch AC entry in CompletenessCheckingStore::get_and_verify_single")?;
+
+        // Step 2: Decode the AC entry.
+        let action_result = ProtoActionResult::decode(store_data.clone())
+            .map_err(|e| {
+                make_err!(
+                    Code::NotFound,
+                    "Stored value appears to be corrupt: {e} - {key:?}"
+                )
+            })?;
+
+        // Step 3: Extract CAS digests and output directories.
+        let (mut digest_infos, output_directories) =
+            get_digests_and_output_dirs(action_result)?;
+
+        // Step 4: Collect additional digests from output directories.
+        if !output_directories.is_empty() {
+            let mut futures = FuturesUnordered::new();
+            let tree_digests = output_directories
+                .into_iter()
+                .filter_map(|output_dir| output_dir.tree_digest.map(DigestInfo::try_from));
+            for maybe_tree_digest in tree_digests {
+                let tree_digest = maybe_tree_digest
+                    .err_tip(|| "Could not decode tree digest in get_and_verify_single")?;
+                futures.push(async move {
+                    let tree = get_and_decode_digest::<ProtoTree>(
+                        &self.cas_store,
+                        tree_digest.into(),
+                    )
+                    .await?;
+                    let mut digests = Vec::new();
+                    for dir in tree.children.into_iter().chain(tree.root) {
+                        for file in dir.files {
+                            if let Some(digest) = file.digest {
+                                digests.push(
+                                    DigestInfo::try_from(digest)
+                                        .err_tip(|| "Expected digest to exist and be convertible")?
+                                        .into(),
+                                );
+                            }
+                        }
+                    }
+                    Result::<Vec<StoreKey<'static>>, Error>::Ok(digests)
+                });
+            }
+            while let Some(result) = futures.next().await {
+                digest_infos.extend(result?);
+            }
+        }
+
+        // Step 5: Batch-check all CAS digests.
+        if !digest_infos.is_empty() {
+            let mut has_results = vec![None; digest_infos.len()];
+            self.cas_store
+                .has_with_results(&digest_infos, &mut has_results)
+                .await
+                .err_tip(|| "Error checking CAS existence in get_and_verify_single")?;
+
+            let mut verified_batch = Vec::new();
+            for (i, r) in has_results.iter().enumerate() {
+                if r.is_some() {
+                    if let StoreKey::Digest(d) = &digest_infos[i] {
+                        verified_batch.push(*d);
+                    }
+                } else {
+                    self.incomplete_entries_counter.inc();
+                    return Err(make_err!(
+                        Code::NotFound,
+                        "Digest found, but not all parts were found in CompletenessCheckingStore::get_part"
+                    ));
+                }
+            }
+            if !verified_batch.is_empty() {
+                info!(
+                    count = verified_batch.len(),
+                    "pinning verified CAS digests to prevent eviction"
+                );
+                self.cas_store.pin_digests(&verified_batch);
+            }
+        }
+
+        self.complete_entries_counter.inc();
+        Ok(store_data)
+    }
 }
 
 #[async_trait]
@@ -380,17 +483,35 @@ impl StoreDriver for CompletenessCheckingStore {
         offset: u64,
         length: Option<u64>,
     ) -> Result<(), Error> {
-        let results = &mut [None];
-        self.inner_has_with_results(&[key.borrow()], results)
+        // Fetch the AC entry once, verify CAS completeness, and serve
+        // the already-fetched bytes — avoiding a redundant second read.
+        let store_data = self
+            .get_and_verify_single(key.borrow())
             .await
             .err_tip(|| "when calling CompletenessCheckingStore::get_part")?;
-        if results[0].is_none() {
-            return Err(make_err!(
-                Code::NotFound,
-                "Digest found, but not all parts were found in CompletenessCheckingStore::get_part"
-            ));
+
+        // Apply offset/length slicing.
+        let data_len = store_data.len();
+        let start = usize::try_from(offset).unwrap_or(data_len).min(data_len);
+        let end = match length {
+            Some(len) => {
+                let len = usize::try_from(len).unwrap_or(data_len);
+                start.saturating_add(len).min(data_len)
+            }
+            None => data_len,
+        };
+        let slice = store_data.slice(start..end);
+
+        if !slice.is_empty() {
+            writer
+                .send(slice)
+                .await
+                .err_tip(|| "Failed to send data in CompletenessCheckingStore::get_part")?;
         }
-        self.ac_store.get_part(key, writer, offset, length).await
+        writer
+            .send_eof()
+            .err_tip(|| "Failed to send eof in CompletenessCheckingStore::get_part")?;
+        Ok(())
     }
 
     fn inner_store(&self, _digest: Option<StoreKey>) -> &dyn StoreDriver {

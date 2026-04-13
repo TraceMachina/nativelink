@@ -329,7 +329,10 @@ impl StoreDriver for VerifyStore {
             None
         };
 
-        let (mut tx, rx) = make_buf_channel_pair_with_size(256);
+        // The hasher processes at memory speed (~GB/s), so the channel
+        // never needs deep buffering. 4 slots keeps memory low and avoids
+        // excess context-switch overhead from a 256-slot channel.
+        let (mut tx, rx) = make_buf_channel_pair_with_size(4);
 
         let get_fut = self.inner_store.get_part(digest, &mut tx, 0, None);
         let check_fut = self.inner_check_get_part(

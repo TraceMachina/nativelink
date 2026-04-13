@@ -129,17 +129,18 @@ mod tests {
     }
 
     async fn run_action(action: Arc<RunningActionImpl>) -> Result<ActionResult, Error> {
-        action
+        let result = action
             .clone()
             .prepare_action()
-            .and_then(RunningAction::execute)
-            .and_then(RunningAction::upload_results)
-            .and_then(RunningAction::get_finished_result)
-            .then(|result| async move {
-                action.cleanup().await?;
-                result
-            })
-            .await
+            .await?
+            .execute()
+            .await?
+            .upload_results()
+            .await?
+            .get_finished_result()
+            .await;
+        action.cleanup().await?;
+        result
     }
 
     const NOW_TIME: u64 = 10000;
@@ -3492,19 +3493,21 @@ exit 1
                         missing_digests: Vec::new(),
                 },
             )
-            .and_then(|action| {
-                action
+            .and_then(|action| async move {
+                let result = action
                     .clone()
                     .prepare_action()
-                    .and_then(RunningAction::execute)
-                    .and_then(RunningAction::upload_results)
-                    .and_then(RunningAction::get_finished_result)
-                    .then(|result| async move {
-                        if let Err(e) = action.cleanup().await {
-                            return Result::<ActionResult, Error>::Err(e).merge(result);
-                        }
-                        result
-                    })
+                    .await?
+                    .execute()
+                    .await?
+                    .upload_results()
+                    .await?
+                    .get_finished_result()
+                    .await;
+                if let Err(e) = action.cleanup().await {
+                    return Result::<ActionResult, Error>::Err(e).merge(result);
+                }
+                result
             });
 
         let (results, ()) = tokio::join!(execute_results_fut, async move {
@@ -3631,7 +3634,7 @@ exit 1
         let operation_id = OperationId::default().to_string();
 
         let (cleanup_tx, cleanup_rx) = oneshot::channel();
-        let cleanup_was_requested = AtomicBool::new(false);
+        let cleanup_was_requested = Arc::new(AtomicBool::new(false));
         let action = running_actions_manager
             .create_and_add_action(
                 WORKER_ID.to_string(),
@@ -3648,20 +3651,28 @@ exit 1
                 },
             )
             .await?;
-        let execute_results_fut = action
-            .clone()
-            .prepare_action()
-            .and_then(RunningAction::execute)
-            .and_then(RunningAction::upload_results)
-            .and_then(RunningAction::get_finished_result)
-            .then(|result| async {
+        let execute_results_fut = {
+            let action = action.clone();
+            let cleanup_was_requested = cleanup_was_requested.clone();
+            async move {
+                let result = action
+                    .clone()
+                    .prepare_action()
+                    .await?
+                    .execute()
+                    .await?
+                    .upload_results()
+                    .await?
+                    .get_finished_result()
+                    .await;
                 cleanup_was_requested.store(true, Ordering::Release);
                 cleanup_rx.await.expect("Could not receive cleanup signal");
                 if let Err(e) = action.cleanup().await {
                     return Result::<ActionResult, Error>::Err(e).merge(result);
                 }
                 result
-            });
+            }
+        };
 
         tokio::pin!(execute_results_fut);
         {

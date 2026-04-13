@@ -290,8 +290,17 @@ async fn drop_on_eof_completes_store_futures() -> Result<(), Error> {
             offset: u64,
             length: Option<u64>,
         ) -> Result<(), Error> {
-            // Gets called in the slow store and we provide the data that's
-            // sent to the upstream and the fast store.
+            // Return NotFound if this store doesn't have the digest,
+            // matching real store behavior (MemoryStore, FilesystemStore).
+            if let Some(has_digest) = self.digest {
+                let store_key: StoreKey<'_> = has_digest.into();
+                if key != store_key {
+                    return Err(make_err!(Code::NotFound, "Key not found in DropCheckStore"));
+                }
+            } else {
+                return Err(make_err!(Code::NotFound, "Key not found in DropCheckStore"));
+            }
+            // Provide the data for matching keys (used by the slow store path).
             let bytes = length.unwrap_or_else(|| key.into_digest().size_bytes()) - offset;
             let data = vec![0_u8; usize::try_from(bytes).unwrap_or(usize::MAX)];
             writer.send(Bytes::copy_from_slice(&data)).await?;
@@ -708,15 +717,12 @@ async fn lazy_not_found_syncs_to_fast_store() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn partial_slow_store_read_does_not_poison_fast_store() -> Result<(), Error> {
-    // Regression test: if the slow store read is interrupted (channel drops
-    // before all data is sent), the fast store (MemoryStore) must NOT retain
-    // a partial blob. A subsequent read should re-fetch from the slow store
-    // — not serve truncated data.
-    //
-    // This simulates what happens when a Redis command times out mid-stream:
-    // the slow store channel drops, MemoryStore::update() receives EOF after
-    // partial data, inserts the partial BytesWrapper, and future reads serve
-    // truncated content.
+    // Regression test: if the fast store has a truncated entry, FastSlowStore
+    // must not silently serve partial data. Since get_part() no longer calls
+    // has() first (to avoid the double round-trip), truncation is detected
+    // post-read by comparing bytes written against the digest size. Because
+    // bytes were already sent to the writer, the operation returns an error
+    // so the caller can retry.
     let fast_store = Store::new(MemoryStore::new(&MemorySpec::default()));
     let slow_store = Store::new(MemoryStore::new(&MemorySpec::default()));
     let fast_slow_store_arc = FastSlowStore::new(
@@ -739,33 +745,26 @@ async fn partial_slow_store_read_does_not_poison_fast_store() -> Result<(), Erro
         .update_oneshot(digest, full_data.clone().into())
         .await?;
 
-    // Now simulate what happens when the slow store read is partial:
     // Write a PARTIAL blob directly into the fast store's MemoryStore.
-    // This simulates the bug where MemoryStore::update() inserts partial
-    // data when the upstream channel drops mid-stream.
     let partial_data = &full_data[..1000]; // Only 1KB of 100KB
     fast_store
         .update_oneshot(digest, Bytes::copy_from_slice(partial_data))
         .await?;
 
-    // Read through FastSlowStore. It should find the entry in the fast store
-    // (MemoryStore) and serve it. If the bug exists, it serves only 1KB.
-    let result = fast_slow_store.get_part_unchunked(digest, 0, None).await?;
-
-    // The result should be the FULL data, not the partial 1KB.
-    assert_eq!(
-        result.len(),
-        full_data.len(),
-        "FastSlowStore served truncated data from poisoned fast store! \
-         Got {} bytes, expected {}. The MemoryStore has a partial entry \
-         that should have been detected/removed.",
-        result.len(),
-        full_data.len(),
+    // Read through FastSlowStore. It detects the truncated fast store entry
+    // and returns an error (bytes already sent, cannot fall through to slow store).
+    let result = fast_slow_store.get_part_unchunked(digest, 0, None).await;
+    assert!(
+        result.is_err(),
+        "Expected error for truncated fast store entry, got {} bytes",
+        result.as_ref().map(|d| d.len()).unwrap_or(0),
     );
+    let err = result.unwrap_err();
     assert_eq!(
-        result.as_ref(),
-        full_data.as_slice(),
-        "Data content mismatch"
+        err.code,
+        Code::Internal,
+        "Expected Internal error code for truncated data, got {:?}",
+        err.code,
     );
 
     Ok(())

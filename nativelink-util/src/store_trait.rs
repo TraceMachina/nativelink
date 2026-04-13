@@ -55,7 +55,10 @@ use rand::{RngCore, SeedableRng};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
-use crate::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair};
+use crate::buf_channel::{
+    DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
+    make_buf_channel_pair_with_size,
+};
 use crate::common::DigestInfo;
 use crate::digest_hasher::{DigestHasher, DigestHasherFunc, default_digest_hasher_func};
 use crate::fs;
@@ -731,7 +734,7 @@ pub trait StoreDriver:
         // TODO(palfrey) This is extremely inefficient, since we have exactly
         // what we need here. Maybe we could instead make a version of the stream
         // that can take objects already fully in memory instead?
-        let (mut tx, rx) = make_buf_channel_pair();
+        let (mut tx, rx) = make_buf_channel_pair_with_size(4);
 
         let data_len =
             u64::try_from(data.len()).err_tip(|| "Could not convert data.len() to u64")?;
@@ -786,7 +789,7 @@ pub trait StoreDriver:
         // TODO(palfrey) This is extremely inefficient, since we have exactly
         // what we need here. Maybe we could instead make a version of the stream
         // that can take objects already fully in memory instead?
-        let (mut tx, mut rx) = make_buf_channel_pair();
+        let (mut tx, mut rx) = make_buf_channel_pair_with_size(4);
 
         let (data_res, get_part_res) = join!(
             rx.consume(length_usize),

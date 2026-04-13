@@ -665,7 +665,7 @@ impl StoreDriver for FastSlowStore {
         let is_mirror = IS_MIRROR_REQUEST.try_with(|v| *v).unwrap_or(false);
         if is_mirror {
             let digest = key.borrow().into_digest();
-            let mut chunks = bytes::BytesMut::new();
+            let mut chunks = bytes::BytesMut::with_capacity(digest.size_bytes() as usize);
             loop {
                 let chunk = reader
                     .recv()
@@ -1262,57 +1262,53 @@ impl StoreDriver for FastSlowStore {
             }
         }
 
-        let fast_has = self.fast_store.has(key.borrow()).await?;
-        let expected_size = match key.borrow() {
-            StoreKey::Digest(d) => d.size_bytes(),
-            StoreKey::Str(_) => 0, // Can't validate size for string keys.
-        };
-        let fast_valid = match fast_has {
-            Some(size) if expected_size > 0 && size < expected_size => {
-                // Fast store has the key but with less data than expected —
-                // truncated/corrupt entry. Skip it and fall through to the
-                // slow store for correct data.
-                // Note: size > expected_size is normal because FilesystemStore
-                // reports size_on_disk (block-aligned), not data size.
-                error!(
-                    ?key,
-                    fast_size = size,
-                    expected_size,
-                    "fast store has truncated entry, skipping to slow store"
-                );
-                false
-            }
-            Some(_) => true,
-            None => false,
-        };
-        if fast_valid {
-            // Try the fast store first. If the item was evicted between the
-            // has() check and this get_part() call (TOCTOU race), fall through
-            // to the slow-store path instead of propagating NotFound.
-            match self
-                .fast_store
-                .get_part(key.borrow(), writer.borrow_mut(), offset, length)
-                .await
-            {
-                Ok(()) => {
-                    self.metrics
-                        .fast_store_hit_count
-                        .fetch_add(1, Ordering::Acquire);
-                    self.metrics
-                        .fast_store_downloaded_bytes
-                        .fetch_add(writer.get_bytes_written(), Ordering::Acquire);
-                    return Ok(());
-                }
-                Err(err) if err.code == Code::NotFound && writer.get_bytes_written() == 0 => {
-                    // Item was evicted between has() and get_part().
-                    // Only safe to fall through if no bytes were written yet.
-                    debug!(
+        // Try the fast store directly — avoids the extra has() round-trip.
+        // On NotFound (with no bytes written), fall through to slow store.
+        let bytes_before = writer.get_bytes_written();
+        match self
+            .fast_store
+            .get_part(key.borrow(), writer.borrow_mut(), offset, length)
+            .await
+        {
+            Ok(()) => {
+                let bytes_written = writer.get_bytes_written() - bytes_before;
+                // Validate full reads against digest size to detect truncated entries.
+                let expected_size = match key.borrow() {
+                    StoreKey::Digest(d) => d.size_bytes(),
+                    StoreKey::Str(_) => 0,
+                };
+                if expected_size > 0 && offset == 0 && length.is_none()
+                    && bytes_written < expected_size
+                {
+                    error!(
                         ?key,
-                        "Fast store item evicted between has() and get_part(), falling through to slow store"
+                        bytes_written,
+                        expected_size,
+                        "fast store returned truncated data, cannot recover (bytes already sent)"
                     );
+                    // Bytes were already written — we cannot fall through to slow store.
+                    // Return an error so the caller retries the whole operation.
+                    return Err(make_err!(
+                        Code::Internal,
+                        "Fast store returned {bytes_written} bytes but expected {expected_size}"
+                    ));
                 }
-                Err(err) => return Err(err),
+                self.metrics
+                    .fast_store_hit_count
+                    .fetch_add(1, Ordering::Acquire);
+                self.metrics
+                    .fast_store_downloaded_bytes
+                    .fetch_add(bytes_written, Ordering::Acquire);
+                return Ok(());
             }
+            Err(err) if err.code == Code::NotFound && writer.get_bytes_written() == bytes_before => {
+                // Fast store miss — no bytes written, safe to fall through.
+                debug!(
+                    ?key,
+                    "fast store miss, falling through to slow store"
+                );
+            }
+            Err(err) => return Err(err),
         }
 
         // Check in-flight slow writes: the blob may have been evicted from the

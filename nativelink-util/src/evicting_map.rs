@@ -1423,7 +1423,9 @@ where
         <It as IntoIterator>::IntoIter: Send,
         R: Borrow<Q> + Send,
     {
-        // Group (original_index, key_ref) by shard, then batch-lookup each shard.
+        // Group (original_index, key_ref) by shard, then batch-lookup each shard
+        // concurrently. Each shard has an independent lock, so parallel queries
+        // avoid head-of-line blocking behind a slow shard.
         let keys_vec: Vec<R> = keys.into_iter().collect();
         let mut shard_groups: Vec<Vec<usize>> = vec![Vec::new(); self.shards.len()];
         for (i, key) in keys_vec.iter().enumerate() {
@@ -1431,18 +1433,26 @@ where
             shard_groups[shard_idx].push(i);
         }
 
-        for (shard_idx, indices) in shard_groups.iter().enumerate() {
-            if indices.is_empty() {
-                continue;
-            }
-            // Build a sub-batch of keys for this shard.
-            let shard_keys: Vec<&Q> = indices.iter().map(|&i| keys_vec[i].borrow()).collect();
-            let mut shard_results = vec![None; shard_keys.len()];
-            self.shards[shard_idx]
-                .sizes_for_keys(shard_keys.into_iter(), &mut shard_results, peek)
-                .await;
+        let mut futures: FuturesUnordered<_> = shard_groups
+            .iter()
+            .enumerate()
+            .filter(|(_, indices)| !indices.is_empty())
+            .map(|(shard_idx, indices)| {
+                let shard = &self.shards[shard_idx];
+                let shard_keys: Vec<&Q> = indices.iter().map(|&i| keys_vec[i].borrow()).collect();
+                async move {
+                    let mut shard_results = vec![None; shard_keys.len()];
+                    shard
+                        .sizes_for_keys(shard_keys.into_iter(), &mut shard_results, peek)
+                        .await;
+                    (shard_idx, shard_results)
+                }
+            })
+            .collect();
+
+        while let Some((shard_idx, shard_results)) = futures.next().await {
             // Scatter results back to the original positions.
-            for (j, &orig_idx) in indices.iter().enumerate() {
+            for (j, &orig_idx) in shard_groups[shard_idx].iter().enumerate() {
                 results[orig_idx] = shard_results[j];
             }
         }
@@ -1457,7 +1467,7 @@ where
         Iter: IntoIterator<Item = &'b Q>,
         Q: 'b,
     {
-        // Group keys by shard, batch-lookup each, scatter results back.
+        // Group keys by shard, batch-lookup each concurrently, scatter results back.
         let keys_vec: Vec<&'b Q> = keys.into_iter().collect();
         let mut results = vec![None; keys_vec.len()];
         let mut shard_groups: Vec<Vec<usize>> = vec![Vec::new(); self.shards.len()];
@@ -1465,13 +1475,22 @@ where
             shard_groups[self.shard_index(*key)].push(i);
         }
 
-        for (shard_idx, indices) in shard_groups.iter().enumerate() {
-            if indices.is_empty() {
-                continue;
-            }
-            let shard_keys: Vec<&'b Q> = indices.iter().map(|&i| keys_vec[i]).collect();
-            let shard_results = self.shards[shard_idx].get_many(shard_keys).await;
-            for (j, &orig_idx) in indices.iter().enumerate() {
+        let mut futures: FuturesUnordered<_> = shard_groups
+            .iter()
+            .enumerate()
+            .filter(|(_, indices)| !indices.is_empty())
+            .map(|(shard_idx, indices)| {
+                let shard = &self.shards[shard_idx];
+                let shard_keys: Vec<&'b Q> = indices.iter().map(|&i| keys_vec[i]).collect();
+                async move {
+                    let shard_results = shard.get_many(shard_keys).await;
+                    (shard_idx, shard_results)
+                }
+            })
+            .collect();
+
+        while let Some((shard_idx, shard_results)) = futures.next().await {
+            for (j, &orig_idx) in shard_groups[shard_idx].iter().enumerate() {
                 results[orig_idx] = shard_results[j].clone();
             }
         }
@@ -1497,19 +1516,25 @@ where
         <It as IntoIterator>::IntoIter: Send,
         K: 'static,
     {
-        // Group inserts by shard, then insert_many each batch.
+        // Group inserts by shard, then insert_many each batch concurrently.
         let mut shard_groups: Vec<Vec<(K, T)>> = (0..self.shards.len()).map(|_| Vec::new()).collect();
         for (key, data) in inserts {
             let idx = self.shard_index(key.borrow());
             shard_groups[idx].push((key, data));
         }
 
+        let mut futures: FuturesUnordered<_> = shard_groups
+            .into_iter()
+            .enumerate()
+            .filter(|(_, group)| !group.is_empty())
+            .map(|(shard_idx, group)| {
+                let shard = &self.shards[shard_idx];
+                async move { shard.insert_many(group).await }
+            })
+            .collect();
+
         let mut all_replaced = Vec::new();
-        for (shard_idx, group) in shard_groups.into_iter().enumerate() {
-            if group.is_empty() {
-                continue;
-            }
-            let replaced = self.shards[shard_idx].insert_many(group).await;
+        while let Some(replaced) = futures.next().await {
             all_replaced.extend(replaced);
         }
         all_replaced

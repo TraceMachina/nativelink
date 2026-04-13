@@ -451,7 +451,7 @@ impl CasServer {
             .try_into()
             .err_tip(|| "In GetTreeRequest::root_digest")?;
 
-        let mut deque: VecDeque<DigestInfo> = VecDeque::new();
+        let mut deque: VecDeque<DigestInfo> = VecDeque::with_capacity(64);
         // Track all digests we have ever enqueued to avoid fetching/processing
         // the same directory twice. In a Merkle tree, identical subdirectory
         // structures share the same digest, so multiple parents at the same BFS
@@ -460,8 +460,8 @@ impl CasServer {
         //   2. `level_results.remove()` succeeds for the first occurrence but
         //      returns None for duplicates, causing a spurious
         //      "Directory missing from level results" error.
-        let mut seen: HashSet<DigestInfo> = HashSet::new();
-        let mut directories: Vec<Directory> = Vec::new();
+        let mut seen: HashSet<DigestInfo> = HashSet::with_capacity(256);
+        let mut directories: Vec<Directory> = Vec::with_capacity(256);
         // `page_token` will return the `{hash_str}-{size_bytes}` of the current request's first directory digest.
         let page_token_digest = if request.page_token.is_empty() {
             root_digest
@@ -495,7 +495,7 @@ impl CasServer {
         let mut bfs_level: u32 = 0;
         let mut total_duplicates_skipped: u64 = 0;
         let mut total_missing_skipped: u64 = 0;
-        let mut level_timings: Vec<(u32, usize, u64, u64)> = Vec::new(); // (level, dirs_fetched, children_discovered, elapsed_ms)
+        let mut level_timings: Vec<(u32, usize, u64, u64)> = Vec::with_capacity(16); // (level, dirs_fetched, children_discovered, elapsed_ms)
 
         while !deque.is_empty() && !page_filled {
             let level_start = std::time::Instant::now();
