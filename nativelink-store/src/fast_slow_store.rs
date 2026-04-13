@@ -383,7 +383,7 @@ impl FastSlowStore {
         maybe_writer: Option<&mut DropCloserWriteHalf>,
         offset: u64,
         length: Option<u64>,
-        mut streaming_writer: StreamingBlobWriter,
+        mut streaming_writer: Option<StreamingBlobWriter>,
     ) -> Result<(), Error> {
         let reader_stream_size = if self
             .slow_store
@@ -439,7 +439,9 @@ impl FastSlowStore {
                     // we wait until we've finished all of our joins to do that.
                     let fast_res = fast_tx.send_eof();
                     // Signal EOF to streaming waiters.
-                    let _ = streaming_writer.send_eof();
+                    if let Some(ref mut sw) = streaming_writer {
+                        let _ = sw.send_eof();
+                    }
                     return Ok::<_, Error>((fast_res, maybe_writer_pin));
                 }
 
@@ -470,8 +472,9 @@ impl FastSlowStore {
 
                 // Tee data to the streaming buffer so waiters can read
                 // concurrently instead of blocking until populate completes.
-                // Errors are non-fatal (no waiters subscribed yet is fine).
-                let _ = streaming_writer.send(output_buf.clone()).await;
+                if let Some(ref sw) = streaming_writer {
+                    let _ = sw.send(output_buf.clone()).await;
+                }
 
                 let (fast_tx_res, writer_res) = join!(fast_tx.send(output_buf), writer_fut);
                 fast_tx_res.err_tip(|| "Failed to write to fast store in fast_slow store")?;
@@ -525,7 +528,11 @@ impl FastSlowStore {
         }
 
         let loader_guard = self.get_loader(key.borrow());
-        let sw = StreamingBlobWriter::new(loader_guard.streaming_inner.clone());
+        let sw = if loader_guard.is_new {
+            Some(StreamingBlobWriter::new(loader_guard.streaming_inner.clone()))
+        } else {
+            None // Waiter — don't create a writer that would poison the buffer on drop.
+        };
         loader_guard
             .get_or_try_init(|| {
                 Pin::new(self).populate_and_maybe_stream(key.borrow(), None, 0, None, sw)
@@ -1484,7 +1491,7 @@ impl StoreDriver for FastSlowStore {
         } else {
             // We're the populator — stream to the client directly AND tee
             // data into the streaming buffer for any concurrent waiters.
-            let sw = StreamingBlobWriter::new(streaming_inner);
+            let sw = Some(StreamingBlobWriter::new(streaming_inner));
             loader_guard
                 .get_or_try_init(|| {
                     self.populate_and_maybe_stream(
