@@ -1383,7 +1383,23 @@ impl StoreDriver for FastSlowStore {
             // concurrently. Data arrives as each chunk is read from the slow
             // store, giving us near-zero time-to-first-byte instead of
             // blocking until the full populate completes.
+            //
+            // For blobs larger than the sliding window, the reader may miss
+            // early chunks. Detect this by checking if eviction has already
+            // started and fall back to slow store.
             drop(loader_guard);
+            let earliest = streaming_inner.earliest_chunk_idx();
+            if earliest > 0 {
+                // Chunks already evicted — can't serve from byte 0.
+                debug!(
+                    ?key,
+                    earliest,
+                    "streaming populate: chunks evicted, falling back to slow store"
+                );
+                return self.slow_store
+                    .get_part(key.borrow(), &mut *writer, offset, length)
+                    .await;
+            }
             let mut reader = nativelink_util::streaming_blob::StreamingBlobReader::new(
                 streaming_inner,
             );

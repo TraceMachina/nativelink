@@ -106,6 +106,12 @@ impl StreamingBlobInner {
         !self.chunks.read().is_empty()
     }
 
+    /// Index of the earliest chunk still in the buffer. Non-zero means
+    /// early chunks have been evicted (blob exceeds the sliding window).
+    pub fn earliest_chunk_idx(&self) -> u64 {
+        self.earliest_chunk_idx.load(Ordering::Acquire)
+    }
+
     /// Returns the digest associated with this blob.
     pub fn digest(&self) -> &DigestInfo {
         &self.digest
