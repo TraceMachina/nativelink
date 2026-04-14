@@ -166,6 +166,11 @@ impl GrpcStore {
 
                     let mut tcp_endpoints = Vec::with_capacity(spec.endpoints.len());
                     for endpoint_config in &spec.endpoints {
+                        // Skip QUIC-only endpoints — the TCP ConnectionManager
+                        // can't connect to UDP-only ports.
+                        if endpoint_config.use_http3 {
+                            continue;
+                        }
                         let endpoint = tls_utils::endpoint(endpoint_config)
                             .map_err(|e| make_input_err!("Invalid URI for GrpcStore endpoint (dual/tcp): {e:?}"))?;
                         tcp_endpoints.push(endpoint);
