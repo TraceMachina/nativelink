@@ -241,6 +241,27 @@ impl CasServer {
         Server::new(self)
     }
 
+    /// Returns the number of entries in the tree cache. Exposed for
+    /// integration tests to verify caching behavior.
+    #[doc(hidden)]
+    pub async fn tree_cache_len(&self) -> usize {
+        self.tree_cache.len_for_test().await
+    }
+
+    /// Returns the number of entries in the subtree cache. Exposed for
+    /// integration tests to verify caching behavior.
+    #[doc(hidden)]
+    pub async fn subtree_cache_len(&self) -> usize {
+        self.subtree_cache.len_for_test().await
+    }
+
+    /// Returns the number of in-flight GetTree BFS operations. Exposed
+    /// for integration tests to verify coalescing behavior.
+    #[doc(hidden)]
+    pub fn tree_inflight_len(&self) -> usize {
+        self.tree_inflight.lock().len()
+    }
+
     /// Wrap this server in a `ZeroCopyCasService` that intercepts
     /// `BatchUpdateBlobs` RPCs and decodes the request directly from HTTP
     /// body frames, bypassing tonic's `BytesMut` reassembly buffer.
@@ -968,18 +989,27 @@ impl CasServer {
         // digest. Only cache complete, non-paginated results with no
         // missing directories (partial trees could be stale).
         if is_unpaginated && total_missing_skipped == 0 {
+            // Move directories into Arc first (zero-copy), give cache a
+            // cheap Arc clone, then clone out for the response. Avoids
+            // the old Arc::new(directories.clone()) which briefly doubled
+            // the directory list in memory.
+            let dirs_arc = Arc::new(directories);
             let cached = CachedTree {
-                directories: Arc::new(directories.clone()),
+                directories: Arc::clone(&dirs_arc),
                 encoded_size: total_bytes,
                 next_page_token: next_page_token.clone(),
             };
             drop(self.tree_cache.insert(root_digest, cached).await);
+            Ok(GetTreeResponse {
+                directories: dirs_arc.as_ref().clone(),
+                next_page_token,
+            })
+        } else {
+            Ok(GetTreeResponse {
+                directories,
+                next_page_token,
+            })
         }
-
-        Ok(GetTreeResponse {
-            directories,
-            next_page_token,
-        })
     }
 }
 
