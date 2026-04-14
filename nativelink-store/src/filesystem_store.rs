@@ -23,7 +23,8 @@ use std::time::SystemTime;
 use async_lock::RwLock;
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures::stream::{StreamExt, TryStreamExt};
+use bytes::BytesMut;
+use futures::stream::{FuturesUnordered, StreamExt, TryStreamExt};
 use futures::{Future, TryFutureExt};
 use nativelink_config::stores::FilesystemSpec;
 use nativelink_error::{Code, Error, ResultExt, make_err};
@@ -362,6 +363,53 @@ impl FileEntry for FileEntryImpl {
         let encoded_file_path = self.get_encoded_file_path().read().await;
         handler(encoded_file_path.get_file_path().to_os_string()).await
     }
+}
+
+/// Reads a file entry's contents directly into `Bytes`, bypassing
+/// buf_channel. Opens the file via `read_file_part` (which acquires the
+/// FD semaphore), then reads in a blocking thread. Reads up to `length`
+/// bytes (or until EOF if None).
+async fn read_file_entry_bytes<Fe: FileEntry>(
+    entry: &Fe,
+    length: Option<u64>,
+) -> Result<Bytes, Error> {
+    let file_slot = entry.read_file_part(0).await?;
+
+    let read_limit = length.unwrap_or(u64::MAX);
+    let read_limit_usize = usize::try_from(read_limit.min(256 * 1024 * 1024))
+        .unwrap_or(256 * 1024 * 1024);
+
+    tokio::task::spawn_blocking(move || -> Result<Bytes, Error> {
+        use std::io::Read;
+        let mut f = file_slot;
+        // Start with a reasonable initial capacity (64 KiB) and grow as needed,
+        // rather than pre-allocating the full limit which could be very large.
+        let initial_cap = read_limit_usize.min(64 * 1024);
+        let mut buf = BytesMut::with_capacity(initial_cap);
+        let mut total_read = 0usize;
+        let mut read_buf = vec![0u8; 64 * 1024];
+        loop {
+            let remaining = read_limit_usize.saturating_sub(total_read);
+            if remaining == 0 {
+                break;
+            }
+            let to_read = read_buf.len().min(remaining);
+            match f.as_std_mut().read(&mut read_buf[..to_read]) {
+                Ok(0) => break,
+                Ok(n) => {
+                    buf.extend_from_slice(&read_buf[..n]);
+                    total_read += n;
+                }
+                Err(e) => return Err(make_err!(
+                    Code::Internal,
+                    "read_file_entry_bytes: read failed: {e:?}"
+                )),
+            }
+        }
+        Ok(buf.freeze())
+    })
+    .await
+    .map_err(|e| make_err!(Code::Internal, "read_file_entry_bytes join error: {e:?}"))?
 }
 
 impl Debug for FileEntryImpl {
@@ -1537,6 +1585,66 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
             .err_tip(|| "Filed to send EOF in filesystem store get_part")?;
 
         Ok(())
+    }
+
+    /// Batch read that bypasses buf_channel overhead. Uses FuturesUnordered
+    /// for parallelism but reads each file directly into Bytes without
+    /// allocating a channel pair per key. Preserves stale-entry cleanup
+    /// (removes from evicting map if file is missing on disk).
+    async fn batch_get_part_unchunked(
+        self: Pin<&Self>,
+        keys: Vec<StoreKey<'_>>,
+        length: Option<u64>,
+    ) -> Vec<Result<Bytes, Error>> {
+        let n = keys.len();
+        let futs: FuturesUnordered<_> = keys
+            .into_iter()
+            .enumerate()
+            .map(|(idx, key)| {
+                let owned_key = key.into_owned();
+                async move {
+                    if is_zero_digest(owned_key.borrow()) {
+                        return (idx, Ok(Bytes::new()));
+                    }
+
+                    let entry = match self.evicting_map.get(&owned_key).await {
+                        Some(e) => e,
+                        None => {
+                            return (idx, Err(make_err!(
+                                Code::NotFound,
+                                "{} not found in filesystem store",
+                                owned_key.as_str()
+                            )));
+                        }
+                    };
+
+                    let result = read_file_entry_bytes(entry.as_ref(), length).await;
+                    match &result {
+                        Ok(_) => {}
+                        Err(e) if e.code == Code::NotFound => {
+                            // Stale entry: file missing on disk. Remove from
+                            // evicting map so the upper layer re-fetches.
+                            warn!(
+                                key = %owned_key.as_str(),
+                                "batch_get: stale cache entry, file not found on disk"
+                            );
+                            self.evicting_map.remove(&owned_key).await;
+                        }
+                        Err(_) => {}
+                    }
+                    (idx, result)
+                }
+            })
+            .collect();
+
+        let mut results: Vec<Result<Bytes, Error>> = (0..n)
+            .map(|_| Err(make_err!(Code::Internal, "batch slot not filled")))
+            .collect();
+        let mut stream = futs;
+        while let Some((idx, result)) = stream.next().await {
+            results[idx] = result;
+        }
+        results
     }
 
     fn inner_store(&self, _digest: Option<StoreKey>) -> &dyn StoreDriver {

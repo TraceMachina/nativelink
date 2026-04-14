@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use nativelink_config::stores::MemorySpec;
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use tracing::{debug, error, warn};
@@ -63,6 +63,41 @@ impl BytesWrapper {
     fn from_chunks(chunks: Vec<Bytes>) -> Self {
         let total_len = chunks.iter().map(|c| c.len() as u64).sum();
         Self { total_len, chunks }
+    }
+
+    /// Returns a contiguous `Bytes` from the scatter-gather chunks,
+    /// capped to at most `length` bytes. Zero-copy when there is a
+    /// single chunk that fits within the cap.
+    fn to_contiguous(&self, length: Option<u64>) -> Bytes {
+        let cap = length
+            .map(|v| v.min(self.total_len) as usize)
+            .unwrap_or(self.total_len as usize);
+
+        if cap == 0 || self.chunks.is_empty() {
+            return Bytes::new();
+        }
+
+        // Single chunk that fits entirely — zero-copy (just Arc bump).
+        if self.chunks.len() == 1 {
+            let chunk = &self.chunks[0];
+            if chunk.len() <= cap {
+                return chunk.clone();
+            }
+            return chunk.slice(..cap);
+        }
+
+        // Multiple chunks: concatenate up to `cap` bytes.
+        let mut buf = BytesMut::with_capacity(cap);
+        let mut remaining = cap;
+        for chunk in &self.chunks {
+            if remaining == 0 {
+                break;
+            }
+            let take = chunk.len().min(remaining);
+            buf.extend_from_slice(&chunk[..take]);
+            remaining -= take;
+        }
+        buf.freeze()
     }
 }
 
@@ -342,6 +377,46 @@ impl StoreDriver for MemoryStore {
             .send_eof()
             .err_tip(|| "Failed to write EOF in memory store get_part")?;
         Ok(())
+    }
+
+    /// Batch read that bypasses buf_channel overhead. Looks up all keys
+    /// in the evicting map in a tight loop and returns contiguous Bytes
+    /// directly, avoiding per-key channel allocation + async task pairs.
+    async fn batch_get_part_unchunked(
+        self: Pin<&Self>,
+        keys: Vec<StoreKey<'_>>,
+        length: Option<u64>,
+    ) -> Vec<Result<Bytes, Error>> {
+        let owned_keys: Vec<StoreKey<'static>> = keys
+            .into_iter()
+            .map(|k| k.into_owned())
+            .collect();
+
+        let lookup_keys: Vec<StoreKey<'static>> = owned_keys
+            .iter()
+            .filter(|k| !is_zero_digest((*k).clone()))
+            .cloned()
+            .collect();
+
+        let batch_results = self.evicting_map.get_many(lookup_keys.iter()).await;
+
+        let mut batch_iter = batch_results.into_iter();
+        owned_keys
+            .iter()
+            .map(|key| {
+                if is_zero_digest((*key).clone()) {
+                    return Ok(Bytes::new());
+                }
+                match batch_iter.next() {
+                    Some(Some(wrapper)) => Ok(wrapper.to_contiguous(length)),
+                    Some(None) | None => Err(make_err!(
+                        Code::NotFound,
+                        "Key {:?} not found in MemoryStore",
+                        key
+                    )),
+                }
+            })
+            .collect()
     }
 
     fn inner_store(&self, _digest: Option<StoreKey>) -> &dyn StoreDriver {
