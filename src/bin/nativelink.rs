@@ -23,10 +23,11 @@ use axum::Router;
 use axum::http::Uri;
 use clap::Parser;
 use futures::FutureExt;
-use futures::future::{BoxFuture, Either, OptionFuture, TryFutureExt, try_join_all};
+use futures::future::{BoxFuture, OptionFuture, TryFutureExt, try_join_all};
 use hyper::StatusCode;
 use hyper_util::rt::tokio::TokioIo;
 use hyper_util::server::conn::auto;
+use hyper_util::server::graceful::GracefulShutdown;
 use hyper_util::service::TowerToHyperService;
 use mimalloc::MiMalloc;
 use nativelink_config::cas_server::{
@@ -165,6 +166,8 @@ async fn inner_main(
     cfg: CasConfig,
     shutdown_tx: broadcast::Sender<ShutdownGuard>,
     scheduler_shutdown_tx: Sender<()>,
+    #[cfg(target_family = "unix")] scheduler_shutdown_rx: oneshot::Receiver<()>,
+    #[cfg(target_family = "unix")] mut shutdown_guard: ShutdownGuard,
 ) -> Result<(), Error> {
     const fn into_encoding(from: HttpCompressionAlgorithm) -> Option<CompressionEncoding> {
         match from {
@@ -397,6 +400,12 @@ async fn inner_main(
             );
         }
     }
+
+    // Graceful shutdown: accept_stop signals HTTP accept loops to stop,
+    // drain_receivers lets the SIGTERM handler wait for connection drain.
+    let (accept_stop_tx, _accept_stop_rx) = tokio::sync::watch::channel(false);
+    #[cfg(target_family = "unix")]
+    let mut drain_receivers: Vec<oneshot::Receiver<()>> = Vec::new();
 
     for server_cfg in server_cfgs {
         let services = server_cfg
@@ -815,6 +824,14 @@ async fn inner_main(
             http.http2().max_header_list_size(value);
         }
         info!("Ready, listening on {socket_addr}",);
+        let graceful = GracefulShutdown::new();
+        let mut accept_stop_rx = accept_stop_tx.subscribe();
+        let (drain_tx, drain_rx) = oneshot::channel::<()>();
+        #[cfg(target_family = "unix")]
+        drain_receivers.push(drain_rx);
+        #[cfg(not(target_family = "unix"))]
+        drop(drain_rx);
+
         root_futures.push(Box::pin(async move {
             loop {
                 select! {
@@ -868,6 +885,7 @@ async fn inner_main(
 
                                 let (http, svc, maybe_tls_acceptor) =
                                     (http.clone(), svc.clone(), maybe_tls_acceptor.clone());
+                                let watcher = graceful.watcher();
 
                                 background_spawn!(
                                     name: "http_connection",
@@ -876,25 +894,32 @@ async fn inner_main(
                                         remote_addr = %remote_addr,
                                         socket_addr = %socket_addr,
                                     ).in_scope(|| async move {
-                                        let serve_connection = if let Some(tls_acceptor) = maybe_tls_acceptor {
+                                        // Serve the connection wrapped with graceful
+                                        // shutdown. On SIGTERM, GracefulShutdown sends
+                                        // HTTP/2 GOAWAY, letting in-flight RPCs finish.
+                                        let result = if let Some(tls_acceptor) = maybe_tls_acceptor {
                                             match tls_acceptor.accept(tcp_stream).await {
-                                                Ok(tls_stream) => Either::Left(http.serve_connection(
-                                                    TokioIo::new(tls_stream),
-                                                    TowerToHyperService::new(svc),
-                                                )),
+                                                Ok(tls_stream) => {
+                                                    let conn = http.serve_connection(
+                                                        TokioIo::new(tls_stream),
+                                                        TowerToHyperService::new(svc),
+                                                    );
+                                                    watcher.watch(conn).await
+                                                }
                                                 Err(err) => {
                                                     error!(?err, "Failed to accept tls stream");
                                                     return;
                                                 }
                                             }
                                         } else {
-                                            Either::Right(http.serve_connection(
+                                            let conn = http.serve_connection(
                                                 TokioIo::new(tcp_stream),
                                                 TowerToHyperService::new(svc),
-                                            ))
+                                            );
+                                            watcher.watch(conn).await
                                         };
 
-                                        if let Err(err) = serve_connection.await {
+                                        if let Err(err) = result {
                                             // Walk the error source chain looking
                                             // for a std::io::Error so we can
                                             // downgrade normal connection-close
@@ -941,9 +966,32 @@ async fn inner_main(
                             }
                         }
                     },
+                    _ = accept_stop_rx.changed() => {
+                        let count = graceful.count();
+                        info!(
+                            %socket_addr,
+                            count,
+                            "SIGTERM: listener stopping, draining in-flight connections"
+                        );
+                        // Send HTTP/2 GOAWAY to all connections and wait for
+                        // in-flight RPCs to complete. Timeout ensures we don't
+                        // block shutdown indefinitely.
+                        if count > 0 {
+                            tokio::select! {
+                                _ = graceful.shutdown() => {
+                                    info!(%socket_addr, "all connections drained");
+                                }
+                                _ = tokio::time::sleep(Duration::from_secs(30)) => {
+                                    warn!(%socket_addr, "connection drain timed out after 30s");
+                                }
+                            }
+                        }
+                        let _ = drain_tx.send(());
+                        break;
+                    },
                 }
             }
-            // Unreachable
+            Ok(())
         }));
         } // end ListenerConfig::Http
 
@@ -1098,10 +1146,23 @@ async fn inner_main(
             let h3_router = tonic_h3::server::H3Router::new(routes);
 
             info!("Ready, listening on {socket_addr} (QUIC/HTTP3)");
+            let mut quic_stop_rx = accept_stop_tx.subscribe();
+            let (quic_drain_tx, quic_drain_rx) = oneshot::channel::<()>();
+            #[cfg(target_family = "unix")]
+            drain_receivers.push(quic_drain_rx);
+            #[cfg(not(target_family = "unix"))]
+            drop(quic_drain_rx);
             root_futures.push(Box::pin(async move {
-                if let Err(err) = h3_router.serve(acceptor).await {
+                if let Err(err) = h3_router
+                    .serve_with_shutdown(acceptor, async move {
+                        let _ = quic_stop_rx.changed().await;
+                        info!(%socket_addr, "QUIC/HTTP3 listener shutting down");
+                    })
+                    .await
+                {
                     error!(?err, "QUIC/HTTP3 server error");
                 }
+                let _ = quic_drain_tx.send(());
                 Ok(())
             }));
         }
@@ -1187,6 +1248,65 @@ async fn inner_main(
             };
             root_futures.push(Box::pin(spawn_fut.map_ok_or_else(|e| Err(e.into()), |v| v)));
         }
+    }
+
+    // Graceful SIGTERM handler: stop accepting → drain connections →
+    // flush writes → shut down workers/schedulers → exit.
+    #[cfg(target_family = "unix")]
+    {
+        let shutdown_tx_clone = shutdown_tx.clone();
+        #[expect(clippy::disallowed_methods, reason = "signal handler spawned in inner_main")]
+        tokio::spawn(async move {
+            signal(SignalKind::terminate())
+                .expect("Failed to listen to SIGTERM")
+                .recv()
+                .await;
+            warn!("SIGTERM received, starting graceful shutdown");
+
+            // Step 1: Stop accepting new connections. Each HTTP listener
+            // sees this in its select! and starts draining via GOAWAY.
+            let _ = accept_stop_tx.send(true);
+
+            // Step 2: Wait for all listeners to finish draining in-flight
+            // connections. Each listener has its own 30s drain timeout.
+            info!(
+                listeners = drain_receivers.len(),
+                "waiting for listeners to drain"
+            );
+            let drain_all = futures::future::join_all(drain_receivers);
+            tokio::select! {
+                _ = drain_all => {
+                    info!("all listeners drained");
+                }
+                _ = tokio::time::sleep(Duration::from_secs(35)) => {
+                    warn!("listener drain wait timed out after 35s");
+                }
+            }
+
+            // Step 3: Flush in-flight background slow writes. All RPCs
+            // have completed (or timed out), so all writes are queued.
+            if let Some(sm) = STORE_MANAGER.get() {
+                info!("flushing in-flight slow writes before shutdown");
+                sm.flush_slow_writes(Duration::from_secs(30)).await;
+            }
+
+            // Step 4: Shut down workers and schedulers (20s budget).
+            drop(shutdown_tx_clone.send(shutdown_guard.clone()));
+            tokio::select! {
+                result = async {
+                    // Use .ok() instead of .expect() — if the scheduler
+                    // handler panics, we still want process::exit to run.
+                    let _ = scheduler_shutdown_rx.await;
+                    let () = shutdown_guard.wait_for(Priority::P0).await;
+                } => { let _ = result; }
+                _ = tokio::time::sleep(Duration::from_secs(20)) => {
+                    warn!("scheduler/worker shutdown timed out after 20s");
+                }
+            }
+
+            warn!("graceful shutdown complete");
+            std::process::exit(143);
+        });
     }
 
     // Set up a shutdown handler for the worker schedulers.
@@ -1319,10 +1439,6 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
     // Each listener will perform its cleanup and then drop its `oneshot::Sender`, signaling completion.
     // Once all `oneshot::Sender` instances are dropped, the worker knows it can safely terminate.
     let (shutdown_tx, _) = broadcast::channel::<ShutdownGuard>(BROADCAST_CAPACITY);
-    #[cfg(target_family = "unix")]
-    let shutdown_tx_clone = shutdown_tx.clone();
-    #[cfg(target_family = "unix")]
-    let mut shutdown_guard = ShutdownGuard::default();
 
     #[expect(clippy::disallowed_methods, reason = "signal handler on main runtime")]
     runtime.spawn(async move {
@@ -1335,30 +1451,8 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
 
     #[allow(unused_variables)]
     let (scheduler_shutdown_tx, scheduler_shutdown_rx) = oneshot::channel();
-
     #[cfg(target_family = "unix")]
-    #[expect(clippy::disallowed_methods, reason = "signal handler on main runtime")]
-    runtime.spawn(async move {
-        signal(SignalKind::terminate())
-            .expect("Failed to listen to SIGTERM")
-            .recv()
-            .await;
-        warn!("Process terminated via SIGTERM");
-        // Flush all in-flight background slow writes before shutting down.
-        // This prevents blob loss from writes that were accepted but not
-        // yet persisted to the slow store (FilesystemStore).
-        if let Some(sm) = STORE_MANAGER.get() {
-            info!("flushing in-flight slow writes before shutdown");
-            sm.flush_slow_writes(Duration::from_secs(30)).await;
-        }
-        drop(shutdown_tx_clone.send(shutdown_guard.clone()));
-        scheduler_shutdown_rx
-            .await
-            .expect("Failed to receive scheduler shutdown");
-        let () = shutdown_guard.wait_for(Priority::P0).await;
-        warn!("Successfully shut down nativelink.");
-        std::process::exit(143);
-    });
+    let shutdown_guard = ShutdownGuard::default();
 
     // Spawn a heartbeat task inside the tokio runtime and an external
     // watchdog OS thread that detects when the runtime stalls.
@@ -1415,7 +1509,18 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
     runtime
         .block_on(async {
             trace_span!("main")
-                .in_scope(|| async { inner_main(cfg, shutdown_tx, scheduler_shutdown_tx).await })
+                .in_scope(|| async {
+                    inner_main(
+                        cfg,
+                        shutdown_tx,
+                        scheduler_shutdown_tx,
+                        #[cfg(target_family = "unix")]
+                        scheduler_shutdown_rx,
+                        #[cfg(target_family = "unix")]
+                        shutdown_guard,
+                    )
+                    .await
+                })
                 .await
         })
         .err_tip(|| "main() function failed")?;

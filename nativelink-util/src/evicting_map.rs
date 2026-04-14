@@ -1228,7 +1228,7 @@ where
 /// Target number of independent shards used by `ShardedEvictingMap`.
 /// Power of 2 for fast modulo via bitmask. The actual count may be
 /// reduced when configured limits are too small for meaningful sharding.
-const TARGET_NUM_SHARDS: usize = 64;
+const TARGET_NUM_SHARDS: usize = 16;
 
 /// Minimum per-shard capacity in bytes (or count) required for sharding
 /// to be meaningful. If the total divided by shards is below this, we

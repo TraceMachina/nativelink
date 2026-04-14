@@ -633,6 +633,8 @@ struct LocalWorkerImpl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsM
     metrics: Arc<Metrics>,
     /// State for periodic BlobsAvailable reporting. None if disabled (no CAS endpoint).
     blobs_available_state: Option<BlobsAvailableState>,
+    /// Reference to the CAS server shutdown signal for graceful shutdown.
+    cas_shutdown_tx: &'a Option<tokio::sync::watch::Sender<bool>>,
 }
 
 pub async fn preconditions_met<H: BuildHasher + Sync>(
@@ -694,6 +696,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
         running_actions_manager: Arc<U>,
         metrics: Arc<Metrics>,
         blobs_available_state: Option<BlobsAvailableState>,
+        cas_shutdown_tx: &'a Option<tokio::sync::watch::Sender<bool>>,
     ) -> Self {
         Self {
             config,
@@ -707,6 +710,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
             actions_in_transit: Arc::new(AtomicU64::new(0)),
             metrics,
             blobs_available_state,
+            cas_shutdown_tx,
         }
     }
 
@@ -1571,6 +1575,11 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                 res = futures.next() => res.err_tip(|| "Keep-alive should always pending. Likely unable to send data to scheduler")??,
                 complete_msg = shutdown_rx.recv().fuse() => {
                     warn!("Worker loop received shutdown signal. Shutting down worker...",);
+                    // Signal the worker CAS server to stop accepting new
+                    // connections and drain in-flight blob transfers.
+                    if let Some(tx) = self.cas_shutdown_tx {
+                        let _ = tx.send(true);
+                    }
                     let mut grpc_client = self.grpc_client.clone();
                     let shutdown_guard = complete_msg.map_err(|e| make_err!(Code::Internal, "Failed to receive shutdown message: {e:?}"))?;
                     let actions_in_flight = actions_in_flight.clone();
@@ -1612,6 +1621,9 @@ pub struct LocalWorker<T: WorkerApiClientTrait + 'static, U: RunningActionsManag
     /// Guards for the worker CAS server tasks (TCP + QUIC). Keeps the tasks
     /// alive as long as the `LocalWorker` is alive. When dropped, servers abort.
     _cas_server_guards: Vec<JoinHandleDropGuard<Result<(), Error>>>,
+    /// Signals the worker CAS server to stop accepting connections during
+    /// graceful shutdown. Sent `true` when the worker receives SIGTERM.
+    cas_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
 }
 
 impl<
@@ -1937,6 +1949,11 @@ pub async fn new_local_worker(
         } else {
             None
         };
+        // Shutdown signal for the worker CAS server. On SIGTERM, the worker
+        // sends `true` so the CAS server stops accepting new connections and
+        // drains in-flight requests before the process exits.
+        let (cas_shutdown_tx, cas_shutdown_rx) = tokio::sync::watch::channel(false);
+        let mut tcp_shutdown_rx = cas_shutdown_rx.clone();
         let tcp_guard = spawn!("worker_cas_tcp", async move {
             info!(
                 worker_name = %tcp_worker_name,
@@ -1953,7 +1970,10 @@ pub async fn new_local_worker(
             let result = builder
                 .add_service(tcp_cas_svc)
                 .add_service(tcp_bs_svc)
-                .serve(addr)
+                .serve_with_shutdown(addr, async move {
+                    let _ = tcp_shutdown_rx.changed().await;
+                    info!(%addr, "worker CAS server shutting down gracefully");
+                })
                 .await
                 .map_err(|e| make_err!(Code::Internal, "Worker CAS TCP server failed: {e:?}"));
             if let Err(ref e) = result {
@@ -1981,10 +2001,11 @@ pub async fn new_local_worker(
         if let Some(quic_guard) = _quic_guard {
             guards.push(quic_guard);
         }
-        guards
+        (guards, Some(cas_shutdown_tx))
     } else {
-        Vec::new()
+        (Vec::new(), None)
     };
+    let (cas_server_guard, cas_shutdown_tx) = cas_server_guard;
 
     // Start pprof HTTP server if configured and the feature is enabled.
     #[cfg(feature = "pprof")]
@@ -2062,6 +2083,7 @@ pub async fn new_local_worker(
         Box::new(move |d| Box::pin(sleep(d))),
         blobs_available_state,
         cas_server_guard,
+        cas_shutdown_tx,
     );
     Ok(local_worker)
 }
@@ -2074,6 +2096,7 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
         sleep_fn: Box<dyn Fn(Duration) -> BoxFuture<'static, ()> + Send + Sync>,
         blobs_available_state: Option<BlobsAvailableState>,
         cas_server_guards: Vec<JoinHandleDropGuard<Result<(), Error>>>,
+        cas_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
     ) -> Self {
         let metrics = Arc::new(Metrics::new(Arc::downgrade(
             running_actions_manager.metrics(),
@@ -2086,6 +2109,7 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
             metrics,
             blobs_available_state,
             _cas_server_guards: cas_server_guards,
+            cas_shutdown_tx,
         }
     }
 
@@ -2198,6 +2222,7 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
                         self.running_actions_manager.clone(),
                         self.metrics.clone(),
                         self.blobs_available_state.clone(),
+                        &self.cas_shutdown_tx,
                     ),
                     update_for_worker_stream,
                 ),

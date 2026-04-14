@@ -30,7 +30,8 @@ use nativelink_error::{Error, ResultExt, error_if};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
-use nativelink_util::evicting_map::{LenEntry, ShardedEvictingMap};
+use nativelink_util::evicting_map::LenEntry;
+use nativelink_util::moka_evicting_map::MokaEvictingMap;
 use nativelink_util::health_utils::{HealthStatus, HealthStatusIndicator};
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::store_trait::{
@@ -56,7 +57,7 @@ impl LenEntry for ExistenceItem {
 pub struct ExistenceCacheStore<I: InstantWrapper> {
     #[metric(group = "inner_store")]
     inner_store: Store,
-    existence_cache: Arc<ShardedEvictingMap<DigestInfo, DigestInfo, ExistenceItem, I>>,
+    existence_cache: Arc<MokaEvictingMap<DigestInfo, DigestInfo, ExistenceItem, I>>,
 
     // We need to pause them temporarily when inserting into the inner store
     // as if it immediately expires them, we should only apply the remove callbacks
@@ -130,7 +131,7 @@ impl<I: InstantWrapper> ExistenceCacheStore<I> {
     ) -> Arc<Self> {
         let empty_policy = EvictionPolicy::default();
         let eviction_policy = spec.eviction_policy.as_ref().unwrap_or(&empty_policy);
-        let existence_cache = Arc::new(ShardedEvictingMap::new(eviction_policy, anchor_time));
+        let existence_cache = Arc::new(MokaEvictingMap::with_anchor(eviction_policy, anchor_time));
         existence_cache.start_background_eviction();
         let existence_cache_store = Arc::new(Self {
             inner_store,

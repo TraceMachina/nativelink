@@ -101,6 +101,16 @@ impl StreamingBlobInner {
         self.terminal.lock().is_some()
     }
 
+    /// Returns true if the terminal state is an error (writer dropped
+    /// without EOF or explicit error). Readers should fall back to the
+    /// store instead of consuming an errored stream.
+    pub fn has_error(&self) -> bool {
+        self.terminal
+            .lock()
+            .as_ref()
+            .is_some_and(|r| r.is_err())
+    }
+
     /// Returns true if the buffer currently holds any chunks.
     pub fn has_data(&self) -> bool {
         !self.chunks.read().is_empty()
@@ -282,6 +292,11 @@ impl StreamingBlobReader {
             cursor_chunk_idx: earliest,
             cursor_byte_offset: 0,
         }
+    }
+
+    /// Access the underlying `StreamingBlobInner` for state checks.
+    pub fn inner(&self) -> &StreamingBlobInner {
+        &self.inner
     }
 
     /// Returns the next chunk of data, waiting if necessary.

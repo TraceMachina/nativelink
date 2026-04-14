@@ -21,6 +21,7 @@ pub mod common;
 pub mod connection_manager;
 pub mod digest_hasher;
 pub mod evicting_map;
+pub mod moka_evicting_map;
 pub mod fastcdc;
 pub mod fs;
 pub mod fs_util;

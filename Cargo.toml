@@ -64,6 +64,7 @@ futures = { version = "0.3.31", default-features = false }
 hex = { version = "0.4.3", default-features = false }
 hyper = { version = "1.6.0", default-features = false }
 hyper-util = { version = "0.1.11", default-features = false, features = [
+  "server-graceful",
   "tracing",
 ] }
 mimalloc = { version = "0.1.44", default-features = false, features = ["override", "v3"] }

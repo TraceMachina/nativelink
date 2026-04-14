@@ -974,9 +974,22 @@ impl ByteStreamServer {
     ) -> Result<ReadStream, Error> {
         // Check InFlightBlobMap first: if the blob is currently being
         // written, stream from the in-memory buffer instead of waiting
-        // for the store commit.
+        // for the store commit. Skip errored entries — they represent
+        // failed writes whose stale map entries haven't been cleaned up
+        // yet. Falling through to the store read will serve the blob
+        // from CAS if it was written by a concurrent/retry upload.
         if instance.streaming_read_while_write {
             if let Some(mut streaming_reader) = instance.in_flight_blobs.get_reader(&digest) {
+                if streaming_reader.inner().has_error() {
+                    info!(
+                        %digest,
+                        "inner_read: skipping errored in-flight blob, falling back to store"
+                    );
+                    // Remove the poisoned entry so future reads don't hit it.
+                    if let Some(inner_arc) = instance.in_flight_blobs.get_inner(&digest) {
+                        instance.in_flight_blobs.remove(&digest, &inner_arc);
+                    }
+                } else {
                 info!(
                     %digest,
                     "inner_read: serving from in-flight streaming blob"
@@ -1113,7 +1126,8 @@ impl ByteStreamServer {
                 );
 
                 return Ok(Box::pin(stream) as ReadStream);
-            }
+            } // else (not errored)
+            } // if let Some(streaming_reader)
         }
 
         struct ReaderState {

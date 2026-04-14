@@ -68,3 +68,23 @@
   `git log`, `git blame`, and `git log -S` to understand *why* the code exists.
   If a commit message or comment explains the reason, evaluate whether that reason
   still applies before making the change.
+
+## Git Journal
+- **Journal all git operations**: append every `git commit`, `git push`, `git revert`,
+  `git stash`, and any other state-changing git command to `.claude/git-journal.md`
+  in the working directory. Each entry should include the timestamp, command, and a
+  one-line description. This prevents losing track of what was done across context
+  compressions.
+
+## Working Directory Discipline
+- **Always verify `pwd` before git operations.** Agent worktrees (`.claude/worktrees/`)
+  have separate git branches. Commits in a worktree do NOT go to `main`. The Bash tool
+  may silently `cd` into a worktree after an agent runs. Always `cd /path/to/nativelink`
+  before any `git commit`, `git push`, or `git status`.
+- **Never use `git stash pop`** — it can cause merge conflicts that `git checkout --` resolves
+  by reverting uncommitted edits. Use `git stash apply` + `git stash drop` separately.
+- **Commit early, commit often.** After each logical change compiles, commit immediately.
+  Don't accumulate multiple uncommitted changes across a session — context compression
+  or worktree confusion can lose them.
+- **After editing files, verify with `git diff --stat HEAD`** that the expected changes
+  appear before moving on to the next task.

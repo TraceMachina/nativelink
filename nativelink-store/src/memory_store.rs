@@ -27,7 +27,8 @@ use nativelink_error::{Code, Error, ResultExt, make_err};
 use tracing::{debug, error, warn};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
-use nativelink_util::evicting_map::{LenEntry, ShardedEvictingMap};
+use nativelink_util::evicting_map::LenEntry;
+use nativelink_util::moka_evicting_map::MokaEvictingMap;
 use nativelink_util::health_utils::{
     HealthRegistryBuilder, HealthStatusIndicator, default_health_status_indicator,
 };
@@ -86,7 +87,7 @@ impl LenEntry for BytesWrapper {
 #[derive(Debug, MetricsComponent)]
 pub struct MemoryStore {
     #[metric(group = "evicting_map")]
-    evicting_map: Arc<ShardedEvictingMap<
+    evicting_map: Arc<MokaEvictingMap<
         StoreKeyBorrow,
         StoreKey<'static>,
         BytesWrapper,
@@ -99,7 +100,7 @@ impl MemoryStore {
     pub fn new(spec: &MemorySpec) -> Arc<Self> {
         let empty_policy = nativelink_config::stores::EvictionPolicy::default();
         let eviction_policy = spec.eviction_policy.as_ref().unwrap_or(&empty_policy);
-        let evicting_map = Arc::new(ShardedEvictingMap::new(eviction_policy, SystemTime::now()));
+        let evicting_map = Arc::new(MokaEvictingMap::with_anchor(eviction_policy, SystemTime::now()));
         evicting_map.start_background_eviction();
         Arc::new(Self { evicting_map })
     }

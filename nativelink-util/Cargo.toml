@@ -32,8 +32,10 @@ http-body = { version = "1.0.1", default-features = false }
 humantime = { version = "2.3.0", default-features = false }
 hyper = { version = "1.6.0", default-features = false }
 hyper-util = { version = "0.1.11", default-features = false }
+dashmap = { version = "6", default-features = false }
 libc = { version = "0.2.177", default-features = false }
 lru = { version = "0.16.0", default-features = false }
+moka = { version = "0.12", features = ["sync"], default-features = false }
 mock_instant = { version = "0.5.3", default-features = false }
 opentelemetry = { version = "0.31.0", default-features = false }
 opentelemetry-appender-tracing = { version = "0.31.1", default-features = false }
