@@ -192,11 +192,16 @@ where
         // Setting capacity to (max_bytes - evict_bytes) ensures moka
         // keeps headroom, similar to the old evict_bytes behavior.
         if max_bytes > 0 {
-            let effective_capacity = max_bytes.saturating_sub(evict_bytes);
+            // Moka's weigher returns u32 but we track bytes as u64.
+            // Scale capacity and weights to KB granularity so items up
+            // to 4TB fit in u32. A 1-byte item weighs 1 (minimum).
+            const SCALE: u64 = 1024;
+            let effective_capacity = max_bytes.saturating_sub(evict_bytes) / SCALE;
             builder = builder
                 .max_capacity(effective_capacity)
                 .weigher(|_key: &K, value: &T| -> u32 {
-                    u32::try_from(value.len()).unwrap_or(u32::MAX)
+                    let kb = value.len().div_ceil(SCALE);
+                    u32::try_from(kb).unwrap_or(u32::MAX)
                 });
         } else if max_count > 0 {
             builder = builder.max_capacity(max_count);
@@ -247,6 +252,14 @@ where
                 })
             {
                 // Channel full — spawn fire-and-forget cleanup.
+                // Note: ItemCallbacks are skipped here because the
+                // callback list lives on the struct, not in the closure.
+                // This is rare (only during burst eviction exceeding 4096
+                // buffered events) and the callbacks are best-effort.
+                warn!(
+                    "eviction channel full, spawning inline cleanup \
+                     (ItemCallbacks skipped for this entry)"
+                );
                 let evicted_key = event.key;
                 let evicted_value = event.value;
                 tokio::spawn(async move {
@@ -343,12 +356,14 @@ where
         data: T,
         _seconds_since_anchor: i32,
     ) -> Option<T> {
-        // Moka doesn't support custom insertion times. Items loaded at
-        // startup will have "now" as their insertion time. TinyLFU will
-        // naturally evict items that are not accessed after startup.
-        // TODO: Use Moka's Expiry trait to set per-entry remaining TTL
-        // based on seconds_since_anchor for better startup ordering.
-        let old = self.insert_inner(key, data);
+        // Startup path: files are inserted oldest-first (sorted by atime).
+        // We deliberately skip the frequency bump (the extra get() in
+        // insert_inner) so all items enter at freq=1. Moka's window deque
+        // is FIFO, so oldest items (inserted first) will be evicted first
+        // when the window overflows — preserving atime-based ordering.
+        // Items that get accessed after startup will be bumped to freq>=2
+        // naturally, making them survive TinyLFU admission.
+        let old = self.insert_startup(key, data);
         if let Some(ref value) = old {
             value.unref().await;
         }
@@ -423,6 +438,34 @@ where
             self.replaced_bytes.add(size);
             self.replaced_items.inc();
         }
+        existing
+    }
+
+    /// Startup-optimized insert: no frequency bump, no per-insert
+    /// run_pending_tasks(). Caller should call cache.run_pending_tasks()
+    /// after the full batch. Items enter at freq=1, preserving FIFO
+    /// ordering in Moka's window deque (oldest-inserted evicted first).
+    fn insert_startup(&self, key: K, data: T) -> Option<T> {
+        let size = data.len();
+        self.lifetime_inserted_bytes.add(size);
+
+        // BTree update (if enabled).
+        {
+            let btree = self.btree.read();
+            if btree.is_some() {
+                drop(btree);
+                let mut btree = self.btree.write();
+                if let Some(ref mut set) = *btree {
+                    set.insert(key.clone());
+                }
+            }
+        }
+
+        let existing = self.cache.get(key.borrow());
+        self.cache.insert(key.clone(), data);
+        // No frequency bump (no extra get()).
+        // No run_pending_tasks() — deferred to caller.
+        self.fire_on_insert_callbacks(&key, size);
         existing
     }
 
@@ -681,8 +724,10 @@ where
         if let Some((owned_key, entry)) = self.pinned.remove(key) {
             self.pinned_bytes
                 .fetch_sub(entry.size, Ordering::Relaxed);
-            // Move back into moka cache.
-            self.cache.insert(owned_key, entry.data);
+            // Move back into moka cache with frequency bump so TinyLFU
+            // doesn't immediately reject the re-inserted item.
+            self.cache.insert(owned_key.clone(), entry.data);
+            drop(self.cache.get(owned_key.borrow()));
         }
     }
 
