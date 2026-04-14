@@ -438,10 +438,10 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
         // Update existence cache based on results.
         for (digest, result) in digests.iter().zip(results.iter()) {
             match result {
-                Ok(data) => {
+                Ok(_data) => {
                     let _ = self
                         .existence_cache
-                        .insert(*digest, ExistenceItem(data.len() as u64))
+                        .insert(*digest, ExistenceItem(digest.size_bytes()))
                         .await;
                 }
                 Err(err) if err.code == nativelink_error::Code::NotFound => {

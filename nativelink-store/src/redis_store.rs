@@ -98,6 +98,10 @@ const DEFAULT_SCAN_COUNT: usize = 10_000;
 /// Note: If this changes it should be updated in the config documentation.
 pub const DEFAULT_MAX_COUNT_PER_CURSOR: u64 = 1_500;
 
+/// Maximum number of keys per Redis pipeline batch. Larger batches are
+/// chunked to avoid unbounded response buffering on the Redis connection.
+const MAX_PIPELINE_BATCH: usize = 5000;
+
 const DEFAULT_CLIENT_PERMITS: usize = 500;
 
 /// A wrapper around Redis to allow it to be reconnected.
@@ -820,113 +824,124 @@ where
             return Ok(());
         }
 
-        // Build a single pipeline with STRLEN+EXISTS for each key.
-        // This sends all commands in one round-trip instead of N separate ones.
-        let mut pipeline = pipe();
-        for encoded_key in &encoded_keys {
-            // Redis returns 0 when the key doesn't exist AND when the key
-            // exists with value of length 0. We need both STRLEN and EXISTS
-            // to distinguish the two cases.
-            pipeline.strlen(encoded_key.as_str());
-            pipeline.exists(encoded_key.as_str());
-        }
+        // Process keys in chunks to avoid unbounded Redis response buffering.
+        // Each chunk builds a pipeline with STRLEN+EXISTS for each key and
+        // sends all commands in one round-trip.
+        for chunk_start in (0..encoded_keys.len()).step_by(MAX_PIPELINE_BATCH) {
+            let chunk_end = cmp::min(chunk_start + MAX_PIPELINE_BATCH, encoded_keys.len());
+            let chunk_keys = &encoded_keys[chunk_start..chunk_end];
+            let chunk_indices = &pipeline_indices[chunk_start..chunk_end];
 
-        let mut client = self.get_client().await?;
+            let mut pipeline = pipe();
+            for encoded_key in chunk_keys {
+                // Redis returns 0 when the key doesn't exist AND when the key
+                // exists with value of length 0. We need both STRLEN and EXISTS
+                // to distinguish the two cases.
+                pipeline.strlen(encoded_key.as_str());
+                pipeline.exists(encoded_key.as_str());
+            }
 
-        let cmd_start = Instant::now();
-        let pipeline_result = timeout(
-            self.command_timeout,
-            pipeline.query_async::<Vec<Value>>(&mut client.connection_manager),
-        )
-        .await;
+            let mut client = self.get_client().await?;
 
-        let raw_values = match pipeline_result {
-            Err(_) => {
-                let elapsed_ms = cmd_start.elapsed().as_millis() as u64;
+            let cmd_start = Instant::now();
+            let pipeline_result = timeout(
+                self.command_timeout,
+                pipeline.query_async::<Vec<Value>>(&mut client.connection_manager),
+            )
+            .await;
+
+            let raw_values = match pipeline_result {
+                Err(_) => {
+                    let elapsed_ms = cmd_start.elapsed().as_millis() as u64;
+                    error!(
+                        cmd = "pipelined STRLEN+EXISTS",
+                        key_count = chunk_keys.len(),
+                        elapsed_ms,
+                        "redis pipeline timed out"
+                    );
+                    return Err(make_err!(
+                        Code::Unavailable,
+                        "Redis pipelined STRLEN+EXISTS timed out after {elapsed_ms}ms for {n} keys",
+                        n = chunk_keys.len()
+                    ));
+                }
+                Ok(Err(ref err))
+                    if err.kind()
+                        == redis::ErrorKind::Server(redis::ServerErrorKind::CrossSlot) =>
+                {
+                    // In cluster mode, keys may hash to different slots. Fall back
+                    // to per-key pipelines sent concurrently.
+                    info!(
+                        key_count = encoded_keys.len(),
+                        "CrossSlot error in has_with_results, falling back to per-key pipelines"
+                    );
+                    drop(client);
+                    return self
+                        .has_with_results_per_key(
+                            &pipeline_indices,
+                            &encoded_keys,
+                            results,
+                        )
+                        .await;
+                }
+                Ok(result) => result
+                    .err_tip(|| "In RedisStore::has_with_results pipelined query")?,
+            };
+
+            let elapsed = cmd_start.elapsed();
+            if elapsed.as_secs() >= 5 {
                 error!(
                     cmd = "pipelined STRLEN+EXISTS",
-                    key_count = encoded_keys.len(),
-                    elapsed_ms,
-                    "redis pipeline timed out"
+                    key_count = chunk_keys.len(),
+                    elapsed_ms = elapsed.as_millis() as u64,
+                    "redis pipeline slow (>5s)"
                 );
+            } else if elapsed.as_secs() >= 1 {
+                warn!(
+                    cmd = "pipelined STRLEN+EXISTS",
+                    key_count = chunk_keys.len(),
+                    elapsed_ms = elapsed.as_millis() as u64,
+                    "redis pipeline slow (>1s)"
+                );
+            }
+
+            // Each key contributes 2 values: [strlen_result, exists_result].
+            let expected_len = chunk_keys.len() * 2;
+            if raw_values.len() != expected_len {
                 return Err(make_err!(
-                    Code::Unavailable,
-                    "Redis pipelined STRLEN+EXISTS timed out after {elapsed_ms}ms for {n} keys",
-                    n = encoded_keys.len()
+                    Code::Internal,
+                    "Redis pipeline returned {actual} values, expected {expected} (2 per key for {n} keys)",
+                    actual = raw_values.len(),
+                    expected = expected_len,
+                    n = chunk_keys.len()
                 ));
             }
-            Ok(Err(ref err))
-                if err.kind()
-                    == redis::ErrorKind::Server(redis::ServerErrorKind::CrossSlot) =>
-            {
-                // In cluster mode, keys may hash to different slots. Fall back
-                // to per-key pipelines sent concurrently.
-                drop(client);
-                return self
-                    .has_with_results_per_key(
-                        &pipeline_indices,
-                        &encoded_keys,
-                        results,
-                    )
-                    .await;
+
+            for (pair_idx, &result_idx) in chunk_indices.iter().enumerate() {
+                let strlen_val = &raw_values[pair_idx * 2];
+                let exists_val = &raw_values[pair_idx * 2 + 1];
+
+                let blob_len: u64 = redis::from_redis_value_ref(strlen_val)
+                    .map_err(|e| {
+                        make_err!(
+                            Code::Internal,
+                            "Failed to parse STRLEN result for key {}: {:?}",
+                            chunk_keys[pair_idx],
+                            e
+                        )
+                    })?;
+                let exists: bool = redis::from_redis_value_ref(exists_val)
+                    .map_err(|e| {
+                        make_err!(
+                            Code::Internal,
+                            "Failed to parse EXISTS result for key {}: {:?}",
+                            chunk_keys[pair_idx],
+                            e
+                        )
+                    })?;
+
+                results[result_idx] = if exists { Some(blob_len) } else { None };
             }
-            Ok(result) => result
-                .err_tip(|| "In RedisStore::has_with_results pipelined query")?,
-        };
-
-        let elapsed = cmd_start.elapsed();
-        if elapsed.as_secs() >= 5 {
-            error!(
-                cmd = "pipelined STRLEN+EXISTS",
-                key_count = encoded_keys.len(),
-                elapsed_ms = elapsed.as_millis() as u64,
-                "redis pipeline slow (>5s)"
-            );
-        } else if elapsed.as_secs() >= 1 {
-            warn!(
-                cmd = "pipelined STRLEN+EXISTS",
-                key_count = encoded_keys.len(),
-                elapsed_ms = elapsed.as_millis() as u64,
-                "redis pipeline slow (>1s)"
-            );
-        }
-
-        // Each key contributes 2 values: [strlen_result, exists_result].
-        let expected_len = encoded_keys.len() * 2;
-        if raw_values.len() != expected_len {
-            return Err(make_err!(
-                Code::Internal,
-                "Redis pipeline returned {actual} values, expected {expected} (2 per key for {n} keys)",
-                actual = raw_values.len(),
-                expected = expected_len,
-                n = encoded_keys.len()
-            ));
-        }
-
-        for (pair_idx, &result_idx) in pipeline_indices.iter().enumerate() {
-            let strlen_val = &raw_values[pair_idx * 2];
-            let exists_val = &raw_values[pair_idx * 2 + 1];
-
-            let blob_len: u64 = redis::from_redis_value_ref(strlen_val)
-                .map_err(|e| {
-                    make_err!(
-                        Code::Internal,
-                        "Failed to parse STRLEN result for key {}: {:?}",
-                        encoded_keys[pair_idx],
-                        e
-                    )
-                })?;
-            let exists: bool = redis::from_redis_value_ref(exists_val)
-                .map_err(|e| {
-                    make_err!(
-                        Code::Internal,
-                        "Failed to parse EXISTS result for key {}: {:?}",
-                        encoded_keys[pair_idx],
-                        e
-                    )
-                })?;
-
-            results[result_idx] = if exists { Some(blob_len) } else { None };
         }
 
         Ok(())
@@ -1405,158 +1420,169 @@ where
             return results;
         }
 
-        // Build a single pipeline: GETRANGE + EXISTS for each key.
-        // EXISTS is needed because GETRANGE returns "" for missing keys.
-        let mut pipeline = pipe();
-        for encoded_key in &encoded_keys {
-            pipeline.getrange(encoded_key.as_str(), 0isize, max_len.saturating_sub(1));
-            pipeline.exists(encoded_key.as_str());
-        }
+        // Process keys in chunks to avoid unbounded Redis response buffering.
+        // Each chunk builds a pipeline with GETRANGE+EXISTS and sends it in
+        // one round-trip.
+        for chunk_start in (0..encoded_keys.len()).step_by(MAX_PIPELINE_BATCH) {
+            let chunk_end = cmp::min(chunk_start + MAX_PIPELINE_BATCH, encoded_keys.len());
+            let chunk_keys = &encoded_keys[chunk_start..chunk_end];
+            let chunk_indices = &pipeline_indices[chunk_start..chunk_end];
 
-        let client = match self.get_client().await {
-            Ok(c) => c,
-            Err(e) => {
-                for &idx in &pipeline_indices {
-                    results[idx] = Err(make_err!(
-                        Code::Unavailable,
-                        "failed to get redis client for batch read: {:?}",
-                        e
-                    ));
-                }
-                return results;
+            let mut pipeline = pipe();
+            for encoded_key in chunk_keys {
+                pipeline.getrange(encoded_key.as_str(), 0isize, max_len.saturating_sub(1));
+                pipeline.exists(encoded_key.as_str());
             }
-        };
 
-        let cmd_start = Instant::now();
-        let pipeline_result = timeout(
-            self.command_timeout,
-            pipeline.query_async::<Vec<Value>>(&mut client.connection_manager.clone()),
-        )
-        .await;
+            let client = match self.get_client().await {
+                Ok(c) => c,
+                Err(e) => {
+                    for &idx in chunk_indices {
+                        results[idx] = Err(make_err!(
+                            Code::Unavailable,
+                            "failed to get redis client for batch read: {:?}",
+                            e
+                        ));
+                    }
+                    return results;
+                }
+            };
 
-        let raw_values = match pipeline_result {
-            Err(_) => {
-                let elapsed_ms = cmd_start.elapsed().as_millis() as u64;
+            let cmd_start = Instant::now();
+            let pipeline_result = timeout(
+                self.command_timeout,
+                pipeline.query_async::<Vec<Value>>(&mut client.connection_manager.clone()),
+            )
+            .await;
+
+            let raw_values = match pipeline_result {
+                Err(_) => {
+                    let elapsed_ms = cmd_start.elapsed().as_millis() as u64;
+                    error!(
+                        cmd = "pipelined batch GETRANGE+EXISTS",
+                        key_count = chunk_keys.len(),
+                        elapsed_ms,
+                        "redis batch pipeline timed out"
+                    );
+                    for &idx in chunk_indices {
+                        results[idx] = Err(make_err!(
+                            Code::Unavailable,
+                            "Redis batch GETRANGE+EXISTS timed out after {elapsed_ms}ms"
+                        ));
+                    }
+                    return results;
+                }
+                Ok(Err(ref err))
+                    if err.kind()
+                        == redis::ErrorKind::Server(redis::ServerErrorKind::CrossSlot) =>
+                {
+                    // Cluster mode: keys hash to different slots. Fall back to
+                    // concurrent individual reads for ALL remaining keys.
+                    info!(
+                        key_count = n,
+                        "CrossSlot error in batch_get_part_unchunked, falling back to per-key reads"
+                    );
+                    drop(client);
+                    let futs: FuturesUnordered<_> = keys
+                        .into_iter()
+                        .enumerate()
+                        .map(|(idx, key)| async move {
+                            let result = self.get_part_unchunked(key, 0, length).await;
+                            (idx, result)
+                        })
+                        .collect();
+                    let mut fallback_results: Vec<Result<Bytes, Error>> =
+                        (0..n).map(|_| Err(make_err!(Code::Internal, "batch slot not filled")))
+                            .collect();
+                    let mut stream = futs;
+                    while let Some((idx, result)) = stream.next().await {
+                        fallback_results[idx] = result;
+                    }
+                    return fallback_results;
+                }
+                Ok(Err(e)) => {
+                    for &idx in chunk_indices {
+                        results[idx] = Err(make_err!(
+                            Code::Unavailable,
+                            "redis batch GETRANGE+EXISTS failed: {:?}",
+                            e
+                        ));
+                    }
+                    return results;
+                }
+                Ok(Ok(v)) => v,
+            };
+
+            let elapsed = cmd_start.elapsed();
+            if elapsed.as_secs() >= 5 {
                 error!(
                     cmd = "pipelined batch GETRANGE+EXISTS",
-                    key_count = encoded_keys.len(),
-                    elapsed_ms,
-                    "redis batch pipeline timed out"
+                    key_count = chunk_keys.len(),
+                    elapsed_ms = elapsed.as_millis() as u64,
+                    "redis batch pipeline slow (>5s)"
                 );
-                for &idx in &pipeline_indices {
-                    results[idx] = Err(make_err!(
-                        Code::Unavailable,
-                        "Redis batch GETRANGE+EXISTS timed out after {elapsed_ms}ms"
-                    ));
+            } else if elapsed.as_secs() >= 1 {
+                warn!(
+                    cmd = "pipelined batch GETRANGE+EXISTS",
+                    key_count = chunk_keys.len(),
+                    elapsed_ms = elapsed.as_millis() as u64,
+                    "redis batch pipeline slow (>1s)"
+                );
+            }
+
+            // Each key contributes 2 values: [getrange_result, exists_result].
+            let expected_len = chunk_keys.len() * 2;
+            if raw_values.len() != expected_len {
+                let err_msg = format!(
+                    "Redis batch pipeline returned {} values, expected {} (2 per key for {} keys)",
+                    raw_values.len(),
+                    expected_len,
+                    chunk_keys.len()
+                );
+                for &idx in chunk_indices {
+                    results[idx] = Err(make_err!(Code::Internal, "{}", err_msg));
                 }
                 return results;
             }
-            Ok(Err(ref err))
-                if err.kind()
-                    == redis::ErrorKind::Server(redis::ServerErrorKind::CrossSlot) =>
-            {
-                // Cluster mode: keys hash to different slots. Fall back to
-                // concurrent individual reads.
-                drop(client);
-                let futs: FuturesUnordered<_> = keys
-                    .into_iter()
-                    .enumerate()
-                    .map(|(idx, key)| async move {
-                        let result = self.get_part_unchunked(key, 0, length).await;
-                        (idx, result)
-                    })
-                    .collect();
-                let mut fallback_results: Vec<Result<Bytes, Error>> =
-                    (0..n).map(|_| Err(make_err!(Code::Internal, "batch slot not filled")))
-                        .collect();
-                let mut stream = futs;
-                while let Some((idx, result)) = stream.next().await {
-                    fallback_results[idx] = result;
-                }
-                return fallback_results;
-            }
-            Ok(Err(e)) => {
-                for &idx in &pipeline_indices {
-                    results[idx] = Err(make_err!(
-                        Code::Unavailable,
-                        "redis batch GETRANGE+EXISTS failed: {:?}",
-                        e
-                    ));
-                }
-                return results;
-            }
-            Ok(Ok(v)) => v,
-        };
 
-        let elapsed = cmd_start.elapsed();
-        if elapsed.as_secs() >= 5 {
-            error!(
-                cmd = "pipelined batch GETRANGE+EXISTS",
-                key_count = encoded_keys.len(),
-                elapsed_ms = elapsed.as_millis() as u64,
-                "redis batch pipeline slow (>5s)"
-            );
-        } else if elapsed.as_secs() >= 1 {
-            warn!(
-                cmd = "pipelined batch GETRANGE+EXISTS",
-                key_count = encoded_keys.len(),
-                elapsed_ms = elapsed.as_millis() as u64,
-                "redis batch pipeline slow (>1s)"
-            );
-        }
+            for (pair_idx, &result_idx) in chunk_indices.iter().enumerate() {
+                let getrange_val = &raw_values[pair_idx * 2];
+                let exists_val = &raw_values[pair_idx * 2 + 1];
 
-        // Each key contributes 2 values: [getrange_result, exists_result].
-        let expected_len = encoded_keys.len() * 2;
-        if raw_values.len() != expected_len {
-            let err_msg = format!(
-                "Redis batch pipeline returned {} values, expected {} (2 per key for {} keys)",
-                raw_values.len(),
-                expected_len,
-                encoded_keys.len()
-            );
-            for &idx in &pipeline_indices {
-                results[idx] = Err(make_err!(Code::Internal, "{}", err_msg));
-            }
-            return results;
-        }
+                let data: Vec<u8> = match redis::from_redis_value_ref(getrange_val) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        results[result_idx] = Err(make_err!(
+                            Code::Internal,
+                            "failed to parse GETRANGE result for key {}: {:?}",
+                            chunk_keys[pair_idx],
+                            e
+                        ));
+                        continue;
+                    }
+                };
+                let exists: bool = match redis::from_redis_value_ref(exists_val) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        results[result_idx] = Err(make_err!(
+                            Code::Internal,
+                            "failed to parse EXISTS result for key {}: {:?}",
+                            chunk_keys[pair_idx],
+                            e
+                        ));
+                        continue;
+                    }
+                };
 
-        for (pair_idx, &result_idx) in pipeline_indices.iter().enumerate() {
-            let getrange_val = &raw_values[pair_idx * 2];
-            let exists_val = &raw_values[pair_idx * 2 + 1];
-
-            let data: Vec<u8> = match redis::from_redis_value_ref(getrange_val) {
-                Ok(v) => v,
-                Err(e) => {
+                if data.is_empty() && !exists {
                     results[result_idx] = Err(make_err!(
-                        Code::Internal,
-                        "failed to parse GETRANGE result for key {}: {:?}",
-                        encoded_keys[pair_idx],
-                        e
+                        Code::NotFound,
+                        "Data not found in Redis store for key: {}",
+                        chunk_keys[pair_idx]
                     ));
-                    continue;
+                } else {
+                    results[result_idx] = Ok(Bytes::from(data));
                 }
-            };
-            let exists: bool = match redis::from_redis_value_ref(exists_val) {
-                Ok(v) => v,
-                Err(e) => {
-                    results[result_idx] = Err(make_err!(
-                        Code::Internal,
-                        "failed to parse EXISTS result for key {}: {:?}",
-                        encoded_keys[pair_idx],
-                        e
-                    ));
-                    continue;
-                }
-            };
-
-            if data.is_empty() && !exists {
-                results[result_idx] = Err(make_err!(
-                    Code::NotFound,
-                    "Data not found in Redis store for key: {}",
-                    encoded_keys[pair_idx]
-                ));
-            } else {
-                results[result_idx] = Ok(Bytes::from(data));
             }
         }
 

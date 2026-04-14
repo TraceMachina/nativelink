@@ -51,6 +51,10 @@ use prost::Message;
 use tonic::{Request, Response, Status};
 use tracing::{Instrument, Level, debug, error, error_span, info, instrument, warn};
 
+/// Maximum per-blob size for BatchReadBlobs batch reads (64 MiB).
+/// Bounds memory usage per blob when reading through the store chain.
+const MAX_BATCH_READ_BLOB_SIZE: u64 = 64 << 20;
+
 /// Spawn a background task to mirror a blob (with data already in hand)
 /// to a random connected worker for OOM redundancy. Fire-and-forget.
 fn mirror_blob_to_worker_with_data(store: &Store, digest: DigestInfo, data: Bytes) {
@@ -371,9 +375,12 @@ impl CasServer {
 
         // Use batch_get_part_unchunked which pipelines the underlying I/O
         // (e.g. a single Redis round-trip for all keys instead of N individual ones).
+        // Cap per-blob size to bound memory usage across the batch.
         let keys: Vec<_> = parsed_digests.iter().map(|d| StoreKey::Digest(*d)).collect();
         let read_start = std::time::Instant::now();
-        let batch_results = store.batch_get_part_unchunked(keys, None).await;
+        let batch_results = store
+            .batch_get_part_unchunked(keys, Some(MAX_BATCH_READ_BLOB_SIZE))
+            .await;
         let batch_elapsed = read_start.elapsed();
 
         let mut total_bytes: u64 = 0;
