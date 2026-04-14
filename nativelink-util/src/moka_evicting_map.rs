@@ -63,10 +63,10 @@ struct EvictionEvent<K, T> {
 }
 
 /// A cache backed by `moka::sync::Cache` with an API that mirrors
-/// `ShardedEvictingMap`. Moka handles eviction internally using a
-/// TinyLFU admission + LRU eviction policy, so there is no need for
-/// manual eviction loops. Pinning is handled via a side `DashMap` that
-/// keeps entries alive outside the moka cache.
+/// the previous LRU-based `EvictingMap`. Moka handles eviction
+/// internally using a TinyLFU admission + LRU eviction policy, so
+/// there is no need for manual eviction loops. Pinning is handled
+/// via a side `DashMap` that keeps entries alive outside the moka cache.
 pub struct MokaEvictingMap<
     K: Ord + Hash + Eq + Clone + Debug + Send + Borrow<Q>,
     Q: Ord + Hash + Eq + Debug,

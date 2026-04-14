@@ -2461,9 +2461,9 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
-    // Gap 4: BlobChangeTracker <-> EvictingMap integration test
+    // Gap 4: BlobChangeTracker <-> MokaEvictingMap integration test
     // ---------------------------------------------------------------
-    // Wires: EvictingMap -> ItemCallbackHolder -> BlobChangeTracker
+    // Wires: MokaEvictingMap -> ItemCallbackHolder -> BlobChangeTracker
     // and verifies that inserts and evictions flow through correctly.
     #[test]
     fn test_blob_change_tracker_evicting_map_integration() {
@@ -2471,10 +2471,11 @@ mod tests {
 
         use nativelink_config::stores::EvictionPolicy;
         use nativelink_store::callback_utils::ItemCallbackHolder;
-        use nativelink_util::evicting_map::{EvictingMap, LenEntry};
+        use nativelink_util::evicting_map::LenEntry;
+        use nativelink_util::moka_evicting_map::MokaEvictingMap;
         use nativelink_util::store_trait::StoreKeyBorrow;
 
-        // Simple value type for the EvictingMap.
+        // Simple value type for the MokaEvictingMap.
         #[derive(Clone, Debug)]
         struct TestValue(u64);
 
@@ -2492,14 +2493,14 @@ mod tests {
             .unwrap();
 
         rt.block_on(async {
-            // Create an EvictingMap with max_bytes = 100.
-            let evicting_map = EvictingMap::<
+            // Create a MokaEvictingMap with max_bytes = 100.
+            let evicting_map = MokaEvictingMap::<
                 StoreKeyBorrow,
                 StoreKey<'static>,
                 TestValue,
                 SystemTime,
                 ItemCallbackHolder,
-            >::new(
+            >::with_anchor(
                 &EvictionPolicy {
                     max_count: 0,
                     max_seconds: 0,

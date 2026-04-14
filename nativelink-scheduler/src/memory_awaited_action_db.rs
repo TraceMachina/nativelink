@@ -83,8 +83,8 @@ impl Drop for ClientAwaitedAction {
     }
 }
 
-/// Trait to be able to use the `EvictingMap` with `ClientAwaitedAction`.
-/// Note: We only use `EvictingMap` for a time based eviction, which is
+/// Trait to be able to use `MokaEvictingMap` with `ClientAwaitedAction`.
+/// Note: We only use the evicting map for time-based eviction, which is
 /// why the implementation has fixed default values in it.
 impl LenEntry for ClientAwaitedAction {
     #[inline]

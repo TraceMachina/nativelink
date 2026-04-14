@@ -961,7 +961,7 @@ pub trait StoreDriver:
     /// Pin digests to prevent eviction while a worker is fetching them.
     /// Wrapper stores should delegate to their inner store. Stores that
     /// support pinning (e.g., `FilesystemStore`) override this to call
-    /// `EvictingMap::pin_key()`. The default is a no-op.
+    /// `MokaEvictingMap::pin_key()`. The default is a no-op.
     fn pin_digests(&self, _digests: &[DigestInfo]) {}
 
     /// Drain digests whose background slow-store write failed.
