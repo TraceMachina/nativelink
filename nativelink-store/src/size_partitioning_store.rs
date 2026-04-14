@@ -16,8 +16,9 @@ use core::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use nativelink_config::stores::SizePartitioningSpec;
-use nativelink_error::{Error, ResultExt, make_input_err};
+use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
@@ -146,6 +147,70 @@ impl StoreDriver for SizePartitioningStore {
         self.upper_store
             .get_part(digest, writer, offset, length)
             .await
+    }
+
+    async fn batch_get_part_unchunked(
+        self: Pin<&Self>,
+        keys: Vec<StoreKey<'_>>,
+        length: Option<u64>,
+    ) -> Vec<Result<Bytes, Error>> {
+        let n = keys.len();
+        let mut results: Vec<Result<Bytes, Error>> =
+            (0..n).map(|_| Err(make_err!(Code::Internal, "batch slot not filled"))).collect();
+
+        // Partition keys by size threshold into lower/upper batches.
+        let mut lower_indices: Vec<usize> = Vec::with_capacity(n);
+        let mut lower_keys: Vec<StoreKey<'_>> = Vec::with_capacity(n);
+        let mut upper_indices: Vec<usize> = Vec::with_capacity(n);
+        let mut upper_keys: Vec<StoreKey<'_>> = Vec::with_capacity(n);
+
+        for (i, key) in keys.iter().enumerate() {
+            match key {
+                StoreKey::Digest(digest) if digest.size_bytes() < self.partition_size => {
+                    lower_indices.push(i);
+                    lower_keys.push(key.borrow());
+                }
+                StoreKey::Digest(_) => {
+                    upper_indices.push(i);
+                    upper_keys.push(key.borrow());
+                }
+                other => {
+                    results[i] = Err(make_input_err!(
+                        "SizePartitioningStore only supports Digest keys, got {other:?}"
+                    ));
+                }
+            }
+        }
+
+        let (lower_results, upper_results) = join!(
+            async {
+                if lower_keys.is_empty() {
+                    Vec::new()
+                } else {
+                    Pin::new(self.lower_store.as_store_driver())
+                        .batch_get_part_unchunked(lower_keys, length)
+                        .await
+                }
+            },
+            async {
+                if upper_keys.is_empty() {
+                    Vec::new()
+                } else {
+                    Pin::new(self.upper_store.as_store_driver())
+                        .batch_get_part_unchunked(upper_keys, length)
+                        .await
+                }
+            },
+        );
+
+        for (slot, result) in lower_indices.into_iter().zip(lower_results) {
+            results[slot] = result;
+        }
+        for (slot, result) in upper_indices.into_iter().zip(upper_results) {
+            results[slot] = result;
+        }
+
+        results
     }
 
     fn inner_store(&self, key: Option<StoreKey>) -> &'_ dyn StoreDriver {

@@ -1502,6 +1502,40 @@ impl StoreDriver for FastSlowStore {
         }
     }
 
+    async fn batch_get_part_unchunked(
+        self: Pin<&Self>,
+        keys: Vec<StoreKey<'_>>,
+        length: Option<u64>,
+    ) -> Vec<Result<Bytes, Error>> {
+        // Try the fast store batch first.
+        let mut results = Pin::new(self.fast_store.as_store_driver())
+            .batch_get_part_unchunked(keys.iter().map(|k| k.borrow()).collect(), length)
+            .await;
+
+        // Collect indices that missed in fast store for slow store fallback.
+        let mut slow_indices: Vec<usize> = Vec::new();
+        let mut slow_keys: Vec<StoreKey<'_>> = Vec::new();
+        for (i, result) in results.iter().enumerate() {
+            if let Err(e) = result {
+                if e.code == Code::NotFound {
+                    slow_indices.push(i);
+                    slow_keys.push(keys[i].borrow());
+                }
+            }
+        }
+
+        if !slow_indices.is_empty() {
+            let slow_results = Pin::new(self.slow_store.as_store_driver())
+                .batch_get_part_unchunked(slow_keys, length)
+                .await;
+            for (slot, slow_result) in slow_indices.into_iter().zip(slow_results) {
+                results[slot] = slow_result;
+            }
+        }
+
+        results
+    }
+
     fn inner_store(&self, _key: Option<StoreKey>) -> &dyn StoreDriver {
         self
     }

@@ -1365,6 +1365,198 @@ where
             .err_tip(|| "Failed to write EOF in redis store get_part")
     }
 
+    /// Pipelined batch read: sends all GETRANGE commands in a single Redis
+    /// round-trip. Intended for small blobs (directory protos, action results)
+    /// where each blob fits in a single GETRANGE chunk.
+    async fn batch_get_part_unchunked(
+        self: Pin<&Self>,
+        keys: Vec<StoreKey<'_>>,
+        length: Option<u64>,
+    ) -> Vec<Result<Bytes, Error>> {
+        let n = keys.len();
+        if n == 0 {
+            return Vec::new();
+        }
+
+        // Separate zero-digest keys from keys that need Redis lookup.
+        let max_len = length.unwrap_or(isize::MAX as u64) as isize;
+        let mut pipeline_indices: Vec<usize> = Vec::with_capacity(n);
+        let mut encoded_keys: Vec<String> = Vec::with_capacity(n);
+        let mut results: Vec<Result<Bytes, Error>> =
+            (0..n).map(|_| Err(make_err!(Code::Internal, "batch slot not filled"))).collect();
+
+        for (i, key) in keys.iter().enumerate() {
+            if is_zero_digest(key.borrow()) {
+                results[i] = Ok(Bytes::new());
+            } else {
+                let encoded = self.encode_key(key);
+                encoded_keys.push(encoded.into_owned());
+                pipeline_indices.push(i);
+            }
+        }
+
+        if pipeline_indices.is_empty() {
+            return results;
+        }
+
+        // Build a single pipeline: GETRANGE + EXISTS for each key.
+        // EXISTS is needed because GETRANGE returns "" for missing keys.
+        let mut pipeline = pipe();
+        for encoded_key in &encoded_keys {
+            pipeline.getrange(encoded_key.as_str(), 0isize, max_len.saturating_sub(1));
+            pipeline.exists(encoded_key.as_str());
+        }
+
+        let client = match self.get_client().await {
+            Ok(c) => c,
+            Err(e) => {
+                for &idx in &pipeline_indices {
+                    results[idx] = Err(make_err!(
+                        Code::Unavailable,
+                        "failed to get redis client for batch read: {:?}",
+                        e
+                    ));
+                }
+                return results;
+            }
+        };
+
+        let cmd_start = Instant::now();
+        let pipeline_result = timeout(
+            self.command_timeout,
+            pipeline.query_async::<Vec<Value>>(&mut client.connection_manager.clone()),
+        )
+        .await;
+
+        let raw_values = match pipeline_result {
+            Err(_) => {
+                let elapsed_ms = cmd_start.elapsed().as_millis() as u64;
+                error!(
+                    cmd = "pipelined batch GETRANGE+EXISTS",
+                    key_count = encoded_keys.len(),
+                    elapsed_ms,
+                    "redis batch pipeline timed out"
+                );
+                for &idx in &pipeline_indices {
+                    results[idx] = Err(make_err!(
+                        Code::Unavailable,
+                        "Redis batch GETRANGE+EXISTS timed out after {elapsed_ms}ms"
+                    ));
+                }
+                return results;
+            }
+            Ok(Err(ref err))
+                if err.kind()
+                    == redis::ErrorKind::Server(redis::ServerErrorKind::CrossSlot) =>
+            {
+                // Cluster mode: keys hash to different slots. Fall back to
+                // concurrent individual reads.
+                drop(client);
+                let futs: FuturesUnordered<_> = keys
+                    .into_iter()
+                    .enumerate()
+                    .map(|(idx, key)| async move {
+                        let result = self.get_part_unchunked(key, 0, length).await;
+                        (idx, result)
+                    })
+                    .collect();
+                let mut fallback_results: Vec<Result<Bytes, Error>> =
+                    (0..n).map(|_| Err(make_err!(Code::Internal, "batch slot not filled")))
+                        .collect();
+                let mut stream = futs;
+                while let Some((idx, result)) = stream.next().await {
+                    fallback_results[idx] = result;
+                }
+                return fallback_results;
+            }
+            Ok(Err(e)) => {
+                for &idx in &pipeline_indices {
+                    results[idx] = Err(make_err!(
+                        Code::Unavailable,
+                        "redis batch GETRANGE+EXISTS failed: {:?}",
+                        e
+                    ));
+                }
+                return results;
+            }
+            Ok(Ok(v)) => v,
+        };
+
+        let elapsed = cmd_start.elapsed();
+        if elapsed.as_secs() >= 5 {
+            error!(
+                cmd = "pipelined batch GETRANGE+EXISTS",
+                key_count = encoded_keys.len(),
+                elapsed_ms = elapsed.as_millis() as u64,
+                "redis batch pipeline slow (>5s)"
+            );
+        } else if elapsed.as_secs() >= 1 {
+            warn!(
+                cmd = "pipelined batch GETRANGE+EXISTS",
+                key_count = encoded_keys.len(),
+                elapsed_ms = elapsed.as_millis() as u64,
+                "redis batch pipeline slow (>1s)"
+            );
+        }
+
+        // Each key contributes 2 values: [getrange_result, exists_result].
+        let expected_len = encoded_keys.len() * 2;
+        if raw_values.len() != expected_len {
+            let err_msg = format!(
+                "Redis batch pipeline returned {} values, expected {} (2 per key for {} keys)",
+                raw_values.len(),
+                expected_len,
+                encoded_keys.len()
+            );
+            for &idx in &pipeline_indices {
+                results[idx] = Err(make_err!(Code::Internal, "{}", err_msg));
+            }
+            return results;
+        }
+
+        for (pair_idx, &result_idx) in pipeline_indices.iter().enumerate() {
+            let getrange_val = &raw_values[pair_idx * 2];
+            let exists_val = &raw_values[pair_idx * 2 + 1];
+
+            let data: Vec<u8> = match redis::from_redis_value_ref(getrange_val) {
+                Ok(v) => v,
+                Err(e) => {
+                    results[result_idx] = Err(make_err!(
+                        Code::Internal,
+                        "failed to parse GETRANGE result for key {}: {:?}",
+                        encoded_keys[pair_idx],
+                        e
+                    ));
+                    continue;
+                }
+            };
+            let exists: bool = match redis::from_redis_value_ref(exists_val) {
+                Ok(v) => v,
+                Err(e) => {
+                    results[result_idx] = Err(make_err!(
+                        Code::Internal,
+                        "failed to parse EXISTS result for key {}: {:?}",
+                        encoded_keys[pair_idx],
+                        e
+                    ));
+                    continue;
+                }
+            };
+
+            if data.is_empty() && !exists {
+                results[result_idx] = Err(make_err!(
+                    Code::NotFound,
+                    "Data not found in Redis store for key: {}",
+                    encoded_keys[pair_idx]
+                ));
+            } else {
+                results[result_idx] = Ok(Bytes::from(data));
+            }
+        }
+
+        results
+    }
+
     fn inner_store(&self, _digest: Option<StoreKey>) -> &dyn StoreDriver {
         self
     }

@@ -27,7 +27,8 @@ use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures::{Future, FutureExt, Stream, join, try_join};
+use futures::{Future, FutureExt, Stream, StreamExt, join, try_join};
+use futures::stream::FuturesUnordered;
 use nativelink_error::{Code, Error, ResultExt, error_if, make_err};
 use tokio::sync::Notify;
 
@@ -639,6 +640,19 @@ pub trait StoreLike: Send + Sync + Sized + Unpin + 'static {
             .get_part_unchunked(key.into(), offset, length)
     }
 
+    /// Reads multiple small blobs in a single batch. Delegates to
+    /// [`StoreDriver::batch_get_part_unchunked`] which may pipeline the
+    /// underlying I/O (e.g. a single Redis pipeline for N keys).
+    #[inline]
+    fn batch_get_part_unchunked<'a>(
+        &'a self,
+        keys: Vec<StoreKey<'a>>,
+        length: Option<u64>,
+    ) -> impl Future<Output = Vec<Result<Bytes, Error>>> + Send + 'a {
+        self.as_store_driver_pin()
+            .batch_get_part_unchunked(keys, length)
+    }
+
     /// Default implementation of the health check. Some stores may want to override this
     /// in situations where the default implementation is not sufficient.
     #[inline]
@@ -800,6 +814,34 @@ pub trait StoreDriver:
         get_part_res
             .err_tip(|| "Failed to get_part in get_part_unchunked")
             .merge(data_res.err_tip(|| "Failed to read stream to completion in get_part_unchunked"))
+    }
+
+    /// Reads multiple small blobs in a single batch operation. Returns one
+    /// `Result<Bytes, Error>` per key, in the same order as the input. The
+    /// default implementation fans out via `FuturesUnordered`; stores that
+    /// support pipelining (e.g. `RedisStore`) override this with a single
+    /// round-trip.
+    async fn batch_get_part_unchunked(
+        self: Pin<&Self>,
+        keys: Vec<StoreKey<'_>>,
+        length: Option<u64>,
+    ) -> Vec<Result<Bytes, Error>> {
+        let futs: FuturesUnordered<_> = keys
+            .into_iter()
+            .enumerate()
+            .map(|(idx, key)| async move {
+                let result = self.get_part_unchunked(key, 0, length).await;
+                (idx, result)
+            })
+            .collect();
+        let mut results: Vec<Result<Bytes, Error>> =
+            (0..futs.len()).map(|_| Err(make_err!(Code::Internal, "batch slot not filled")))
+                .collect();
+        let mut stream = futs;
+        while let Some((idx, result)) = stream.next().await {
+            results[idx] = result;
+        }
+        results
     }
 
     /// See: [`StoreLike::check_health`] for details.

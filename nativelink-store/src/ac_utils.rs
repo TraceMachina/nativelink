@@ -84,6 +84,47 @@ pub async fn get_size_and_decode_digest<T: Message + Default + 'static>(
         .map(|v| (v, store_data_len))
 }
 
+/// Batch-fetches and decodes multiple digests in a single store operation.
+/// Returns results in the same order as the input digests. Uses
+/// [`StoreDriver::batch_get_part_unchunked`] which pipelines the underlying
+/// I/O when the store supports it (e.g. Redis).
+pub async fn batch_get_and_decode_digest<T: Message + Default + 'static>(
+    store: &impl StoreLike,
+    digests: &[DigestInfo],
+) -> Vec<(DigestInfo, Result<T, Error>)> {
+    if digests.is_empty() {
+        return Vec::new();
+    }
+
+    let keys: Vec<_> = digests.iter().map(|d| StoreKey::Digest(*d)).collect();
+    let raw_results = store
+        .as_store_driver_pin()
+        .batch_get_part_unchunked(keys, Some(MAX_ACTION_MSG_SIZE as u64))
+        .await;
+
+    digests
+        .iter()
+        .zip(raw_results)
+        .map(|(digest, result)| {
+            let decoded = match result {
+                Ok(data) => T::decode(data).err_tip_with_code(|e| {
+                    (
+                        Code::NotFound,
+                        format!("Stored value appears to be corrupt: {e} - {digest:?}"),
+                    )
+                }),
+                Err(mut err) => {
+                    if err.code == Code::NotFound {
+                        err.messages.resize_with(1, String::new);
+                    }
+                    Err(err)
+                }
+            };
+            (*digest, decoded)
+        })
+        .collect()
+}
+
 /// Computes the digest of a message.
 pub fn message_to_digest(
     message: &impl Message,

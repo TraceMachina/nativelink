@@ -34,7 +34,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
     compressor,
 };
 use nativelink_proto::google::rpc::Status as GrpcStatus;
-use nativelink_store::ac_utils::get_and_decode_digest;
+use nativelink_store::ac_utils::batch_get_and_decode_digest;
 use nativelink_store::grpc_store::GrpcStore;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_store::worker_proxy_store::WorkerProxyStore;
@@ -500,26 +500,19 @@ impl CasServer {
         while !deque.is_empty() && !page_filled {
             let level_start = std::time::Instant::now();
             let level: Vec<DigestInfo> = deque.drain(..).collect();
-            // Fetch all directories in this BFS level concurrently.
+            // Batch-fetch all directories in this BFS level using a single
+            // pipelined store operation (one Redis round-trip instead of N).
             // Tolerant: missing or corrupt directories are skipped rather than
             // failing the entire GetTree response. The client can fill in gaps
             // via individual directory fetches for only the missing entries.
-            let mut futs = FuturesUnordered::new();
-            for digest in &level {
-                let store = store.clone();
-                let digest = *digest;
-                futs.push(async move {
-                    let result = get_and_decode_digest::<Directory>(&store, digest.into())
-                        .await;
-                    (digest, result)
-                });
-            }
+            let batch_results =
+                batch_get_and_decode_digest::<Directory>(&store, &level).await;
             // Collect results into a map so we can iterate in deterministic (discovery) order.
             // Missing directories are skipped with a warning.
             let mut level_results: HashMap<DigestInfo, Directory> =
                 HashMap::with_capacity(level.len());
             let mut level_missing: u64 = 0;
-            while let Some((digest, result)) = futs.next().await {
+            for (digest, result) in batch_results {
                 match result {
                     Ok(directory) => {
                         level_results.insert(digest, directory);

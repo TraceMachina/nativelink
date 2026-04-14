@@ -426,6 +426,33 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
         result
     }
 
+    async fn batch_get_part_unchunked(
+        self: Pin<&Self>,
+        keys: Vec<StoreKey<'_>>,
+        length: Option<u64>,
+    ) -> Vec<Result<Bytes, Error>> {
+        let digests: Vec<DigestInfo> = keys.iter().map(|k| k.borrow().into_digest()).collect();
+        let results = Pin::new(self.inner_store.as_store_driver())
+            .batch_get_part_unchunked(keys, length)
+            .await;
+        // Update existence cache based on results.
+        for (digest, result) in digests.iter().zip(results.iter()) {
+            match result {
+                Ok(data) => {
+                    let _ = self
+                        .existence_cache
+                        .insert(*digest, ExistenceItem(data.len() as u64))
+                        .await;
+                }
+                Err(err) if err.code == nativelink_error::Code::NotFound => {
+                    self.existence_cache.remove(digest).await;
+                }
+                Err(_) => {}
+            }
+        }
+        results
+    }
+
     fn inner_store(&self, _digest: Option<StoreKey>) -> &dyn StoreDriver {
         self
     }

@@ -16,6 +16,7 @@ use core::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use opentelemetry::context::Context;
 use tokio::sync::Notify;
 use tracing::error;
@@ -346,6 +347,16 @@ impl StoreDriver for VerifyStore {
         let (get_res, check_res) = tokio::join!(get_fut, check_fut);
 
         get_res.merge(check_res)
+    }
+
+    async fn batch_get_part_unchunked(
+        self: Pin<&Self>,
+        keys: Vec<StoreKey<'_>>,
+        length: Option<u64>,
+    ) -> Vec<Result<Bytes, Error>> {
+        Pin::new(self.inner_store.as_store_driver())
+            .batch_get_part_unchunked(keys, length)
+            .await
     }
 
     fn inner_store(&self, _digest: Option<StoreKey>) -> &'_ dyn StoreDriver {
