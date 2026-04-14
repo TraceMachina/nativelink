@@ -29,7 +29,6 @@ use bytes::Bytes;
 use const_format::formatcp;
 use futures::stream::FuturesUnordered;
 use futures::{Stream, StreamExt, TryFutureExt, TryStreamExt, future};
-use itertools::izip;
 use nativelink_config::stores::{RedisMode, RedisSpec};
 use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::MetricsComponent;
@@ -731,43 +730,31 @@ impl RedisStore<ConnectionManager, StandardRedisManager<ConnectionManager>> {
     }
 }
 
-#[async_trait]
-impl<C, M> StoreDriver for RedisStore<C, M>
+impl<C, M> RedisStore<C, M>
 where
     C: ConnectionLike + Clone + Send + Sync + Unpin + 'static,
     M: RedisManager<C> + Unpin + Send + Sync + 'static,
 {
-    async fn has_with_results(
-        self: Pin<&Self>,
-        keys: &[StoreKey<'_>],
+    /// Fallback for `has_with_results` when pipelined batch fails (e.g. CrossSlot
+    /// in cluster mode). Sends per-key STRLEN+EXISTS pipelines concurrently.
+    async fn has_with_results_per_key(
+        &self,
+        pipeline_indices: &[usize],
+        encoded_keys: &[String],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
-        // TODO(palfrey) We could use pipeline here, but it makes retry more
-        // difficult and it doesn't work very well in cluster mode.
-        // If we wanted to optimize this with pipeline be careful to
-        // implement retry and to support cluster mode.
-
-        izip!(keys.iter(), results.iter_mut(),)
-            .map(|(key, result)| async move {
-                // We need to do a special pass to ensure our zero key exist.
-                if is_zero_digest(key.borrow()) {
-                    *result = Some(0);
-                    return Ok::<_, Error>(());
-                }
-                let encoded_key = self.encode_key(key);
-
+        pipeline_indices
+            .iter()
+            .zip(encoded_keys.iter())
+            .map(|(&result_idx, encoded_key)| async move {
                 let mut client = self.get_client().await?;
 
-                // Redis returns 0 when the key doesn't exist
-                // AND when the key exists with value of length 0.
-                // Therefore, we need to check both length and existence
-                // and do it in a pipeline for efficiency
                 let cmd_start = Instant::now();
                 let (blob_len, exists) = timeout(
                     self.command_timeout,
                     pipe()
-                        .strlen(encoded_key.as_ref())
-                        .exists(encoded_key.as_ref())
+                        .strlen(encoded_key.as_str())
+                        .exists(encoded_key.as_str())
                         .query_async::<(u64, bool)>(&mut client.connection_manager),
                 )
                 .await
@@ -779,7 +766,7 @@ where
                         "Redis STRLEN+EXISTS timed out after {elapsed_ms}ms for key {encoded_key}"
                     )
                 })?
-                .err_tip(|| "In RedisStore::has_with_results::all")?;
+                .err_tip(|| "In RedisStore::has_with_results_per_key")?;
                 let elapsed = cmd_start.elapsed();
                 if elapsed.as_secs() >= 5 {
                     error!(cmd = "STRLEN+EXISTS", key = %encoded_key, elapsed_ms = elapsed.as_millis() as u64, "redis command slow (>5s)");
@@ -787,13 +774,162 @@ where
                     warn!(cmd = "STRLEN+EXISTS", key = %encoded_key, elapsed_ms = elapsed.as_millis() as u64, "redis command slow (>1s)");
                 }
 
-                *result = if exists { Some(blob_len) } else { None };
-
-                Ok::<_, Error>(())
+                let value = if exists { Some(blob_len) } else { None };
+                Ok::<_, Error>((result_idx, value))
             })
             .collect::<FuturesUnordered<_>>()
-            .try_collect()
+            .try_for_each(|(result_idx, value)| {
+                results[result_idx] = value;
+                future::ready(Ok(()))
+            })
             .await
+    }
+}
+
+#[async_trait]
+impl<C, M> StoreDriver for RedisStore<C, M>
+where
+    C: ConnectionLike + Clone + Send + Sync + Unpin + 'static,
+    M: RedisManager<C> + Unpin + Send + Sync + 'static,
+{
+    async fn has_with_results(
+        self: Pin<&Self>,
+        keys: &[StoreKey<'_>],
+        results: &mut [Option<u64>],
+    ) -> Result<(), Error> {
+        if keys.is_empty() {
+            return Ok(());
+        }
+
+        // Handle zero digests and collect non-zero keys that need Redis lookup.
+        // Track which indices in the results array correspond to pipeline commands.
+        let mut pipeline_indices = Vec::with_capacity(keys.len());
+        let mut encoded_keys = Vec::with_capacity(keys.len());
+
+        for (i, key) in keys.iter().enumerate() {
+            if is_zero_digest(key.borrow()) {
+                results[i] = Some(0);
+            } else {
+                let encoded = self.encode_key(key);
+                encoded_keys.push(encoded.into_owned());
+                pipeline_indices.push(i);
+            }
+        }
+
+        if pipeline_indices.is_empty() {
+            return Ok(());
+        }
+
+        // Build a single pipeline with STRLEN+EXISTS for each key.
+        // This sends all commands in one round-trip instead of N separate ones.
+        let mut pipeline = pipe();
+        for encoded_key in &encoded_keys {
+            // Redis returns 0 when the key doesn't exist AND when the key
+            // exists with value of length 0. We need both STRLEN and EXISTS
+            // to distinguish the two cases.
+            pipeline.strlen(encoded_key.as_str());
+            pipeline.exists(encoded_key.as_str());
+        }
+
+        let mut client = self.get_client().await?;
+
+        let cmd_start = Instant::now();
+        let pipeline_result = timeout(
+            self.command_timeout,
+            pipeline.query_async::<Vec<Value>>(&mut client.connection_manager),
+        )
+        .await;
+
+        let raw_values = match pipeline_result {
+            Err(_) => {
+                let elapsed_ms = cmd_start.elapsed().as_millis() as u64;
+                error!(
+                    cmd = "pipelined STRLEN+EXISTS",
+                    key_count = encoded_keys.len(),
+                    elapsed_ms,
+                    "redis pipeline timed out"
+                );
+                return Err(make_err!(
+                    Code::Unavailable,
+                    "Redis pipelined STRLEN+EXISTS timed out after {elapsed_ms}ms for {n} keys",
+                    n = encoded_keys.len()
+                ));
+            }
+            Ok(Err(ref err))
+                if err.kind()
+                    == redis::ErrorKind::Server(redis::ServerErrorKind::CrossSlot) =>
+            {
+                // In cluster mode, keys may hash to different slots. Fall back
+                // to per-key pipelines sent concurrently.
+                drop(client);
+                return self
+                    .has_with_results_per_key(
+                        &pipeline_indices,
+                        &encoded_keys,
+                        results,
+                    )
+                    .await;
+            }
+            Ok(result) => result
+                .err_tip(|| "In RedisStore::has_with_results pipelined query")?,
+        };
+
+        let elapsed = cmd_start.elapsed();
+        if elapsed.as_secs() >= 5 {
+            error!(
+                cmd = "pipelined STRLEN+EXISTS",
+                key_count = encoded_keys.len(),
+                elapsed_ms = elapsed.as_millis() as u64,
+                "redis pipeline slow (>5s)"
+            );
+        } else if elapsed.as_secs() >= 1 {
+            warn!(
+                cmd = "pipelined STRLEN+EXISTS",
+                key_count = encoded_keys.len(),
+                elapsed_ms = elapsed.as_millis() as u64,
+                "redis pipeline slow (>1s)"
+            );
+        }
+
+        // Each key contributes 2 values: [strlen_result, exists_result].
+        let expected_len = encoded_keys.len() * 2;
+        if raw_values.len() != expected_len {
+            return Err(make_err!(
+                Code::Internal,
+                "Redis pipeline returned {actual} values, expected {expected} (2 per key for {n} keys)",
+                actual = raw_values.len(),
+                expected = expected_len,
+                n = encoded_keys.len()
+            ));
+        }
+
+        for (pair_idx, &result_idx) in pipeline_indices.iter().enumerate() {
+            let strlen_val = &raw_values[pair_idx * 2];
+            let exists_val = &raw_values[pair_idx * 2 + 1];
+
+            let blob_len: u64 = redis::from_redis_value_ref(strlen_val)
+                .map_err(|e| {
+                    make_err!(
+                        Code::Internal,
+                        "Failed to parse STRLEN result for key {}: {:?}",
+                        encoded_keys[pair_idx],
+                        e
+                    )
+                })?;
+            let exists: bool = redis::from_redis_value_ref(exists_val)
+                .map_err(|e| {
+                    make_err!(
+                        Code::Internal,
+                        "Failed to parse EXISTS result for key {}: {:?}",
+                        encoded_keys[pair_idx],
+                        e
+                    )
+                })?;
+
+            results[result_idx] = if exists { Some(blob_len) } else { None };
+        }
+
+        Ok(())
     }
 
     async fn list(
