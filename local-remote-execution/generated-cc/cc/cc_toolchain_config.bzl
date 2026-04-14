@@ -1703,5 +1703,4 @@ cc_toolchain_config = rule(
         )),
     },
     fragments = ["apple", "cpp"],
-    provides = [CcToolchainConfigInfo],
 )
