@@ -33,7 +33,8 @@ use nativelink_util::buf_channel::{
     DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
 };
 use nativelink_util::common::{DigestInfo, fs};
-use nativelink_util::evicting_map::{LenEntry, ShardedEvictingMap};
+use nativelink_util::evicting_map::LenEntry;
+use nativelink_util::moka_evicting_map::MokaEvictingMap;
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use nativelink_util::store_trait::{
     ItemCallback, StoreDriver, StoreKey, StoreKeyBorrow, StoreOptimizations, UploadSizeInfo,
@@ -459,11 +460,11 @@ pub fn key_from_file(file_name: &str, file_type: FileType) -> Result<StoreKey<'_
 /// `add_files_to_cache`.
 const SIMULTANEOUS_METADATA_READS: usize = 200;
 
-type FsEvictingMap<'a, Fe> =
-    ShardedEvictingMap<StoreKeyBorrow, StoreKey<'a>, Arc<Fe>, SystemTime, ItemCallbackHolder>;
+type FsEvictingMap<Fe> =
+    MokaEvictingMap<StoreKeyBorrow, StoreKey<'static>, Arc<Fe>, SystemTime, ItemCallbackHolder>;
 
 async fn add_files_to_cache<Fe: FileEntry>(
-    evicting_map: &FsEvictingMap<'_, Fe>,
+    evicting_map: &FsEvictingMap<Fe>,
     anchor_time: &SystemTime,
     shared_context: &Arc<SharedContext>,
     block_size: u64,
@@ -471,7 +472,7 @@ async fn add_files_to_cache<Fe: FileEntry>(
 ) -> Result<(), Error> {
     #[expect(clippy::too_many_arguments)]
     async fn process_entry<Fe: FileEntry>(
-        evicting_map: &FsEvictingMap<'_, Fe>,
+        evicting_map: &FsEvictingMap<Fe>,
         file_name: &str,
         file_type: FileType,
         atime: SystemTime,
@@ -683,7 +684,7 @@ async fn add_files_to_cache<Fe: FileEntry>(
     }
 
     async fn add_files_for_folder<Fe: FileEntry>(
-        evicting_map: &FsEvictingMap<'_, Fe>,
+        evicting_map: &FsEvictingMap<Fe>,
         anchor_time: &SystemTime,
         shared_context: &Arc<SharedContext>,
         block_size: u64,
@@ -802,7 +803,7 @@ pub struct FilesystemStore<Fe: FileEntry = FileEntryImpl> {
     #[metric]
     shared_context: Arc<SharedContext>,
     #[metric(group = "evicting_map")]
-    evicting_map: Arc<FsEvictingMap<'static, Fe>>,
+    evicting_map: Arc<FsEvictingMap<Fe>>,
     #[metric(help = "Block size of the configured filesystem")]
     block_size: u64,
     #[metric(help = "Size of the configured read buffer size")]
@@ -855,7 +856,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
 
         let empty_policy = nativelink_config::stores::EvictionPolicy::default();
         let eviction_policy = spec.eviction_policy.as_ref().unwrap_or(&empty_policy);
-        let evicting_map = Arc::new(ShardedEvictingMap::new(eviction_policy, now));
+        let evicting_map = Arc::new(MokaEvictingMap::with_anchor(eviction_policy, now));
 
         // Create temp and content directories and the s and d subdirectories.
 

@@ -27,7 +27,8 @@ use nativelink_util::action_messages::{
     ActionInfo, ActionStage, ActionUniqueKey, ActionUniqueQualifier, OperationId,
 };
 use nativelink_util::chunked_stream::ChunkedStream;
-use nativelink_util::evicting_map::{EvictingMap, LenEntry};
+use nativelink_util::evicting_map::LenEntry;
+use nativelink_util::moka_evicting_map::MokaEvictingMap;
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::metrics::{
     EXECUTION_METRICS, ExecutionResult, ExecutionStage, make_execution_attributes,
@@ -314,7 +315,7 @@ pub struct AwaitedActionDbImpl<I: InstantWrapper, NowFn: Fn() -> I> {
     /// A lookup table to lookup the state of an action by its client operation id.
     #[metric(group = "client_operation_ids")]
     client_operation_to_awaited_action:
-        EvictingMap<OperationId, OperationId, Arc<ClientAwaitedAction>, I>,
+        MokaEvictingMap<OperationId, OperationId, Arc<ClientAwaitedAction>, I>,
 
     /// A lookup table to lookup the state of an action by its worker operation id.
     #[metric(group = "operation_ids")]
@@ -944,7 +945,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync + 'static>
     ) -> Self {
         let (action_event_tx, mut action_event_rx) = mpsc::unbounded_channel();
         let inner = Arc::new(Mutex::new(AwaitedActionDbImpl {
-            client_operation_to_awaited_action: EvictingMap::new(eviction_config, (now_fn)()),
+            client_operation_to_awaited_action: MokaEvictingMap::with_anchor(eviction_config, (now_fn)()),
             operation_id_to_awaited_action: BTreeMap::new(),
             action_info_hash_key_to_awaited_action: HashMap::new(),
             sorted_action_info_hash_keys: SortedAwaitedActions::default(),
