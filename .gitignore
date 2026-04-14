@@ -22,6 +22,7 @@ nixos.bazelrc
 rust-project.json
 darwin.bazelrc
 nativelink.bazelrc
+user.bazelrc
 *.log
 buck-out/
 nativelink_config.schema.json

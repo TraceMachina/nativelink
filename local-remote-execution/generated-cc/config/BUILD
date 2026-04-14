@@ -43,5 +43,5 @@ platform(
         "container-image": "docker://lre-cc:zms5771rx1yqb4wd6qbj5f9sb2paq75k",
         "OSFamily": "Linux",
     },
-    parents = ["@local_config_platform//:host"],
+    parents = ["@platforms//host"],
 )
