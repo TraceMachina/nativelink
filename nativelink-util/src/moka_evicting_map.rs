@@ -357,12 +357,42 @@ where
         _seconds_since_anchor: i32,
     ) -> Option<T> {
         // Startup path: files are inserted oldest-first (sorted by atime).
-        // We deliberately skip the frequency bump (the extra get() in
-        // insert_inner) so all items enter at freq=1. Moka's window deque
-        // is FIFO, so oldest items (inserted first) will be evicted first
-        // when the window overflows — preserving atime-based ordering.
-        // Items that get accessed after startup will be bumped to freq>=2
-        // naturally, making them survive TinyLFU admission.
+        //
+        // The `seconds_since_anchor` parameter is intentionally ignored.
+        // Moka's `Expiry` trait (expire_after_create) was investigated as
+        // a way to give older files shorter remaining TTL, but it does NOT
+        // help with size-based eviction ordering. Moka has two independent
+        // eviction mechanisms:
+        //
+        //   1. Time-based expiration (timer wheel + deque scanning):
+        //      Removes entries whose TTL/TTI has elapsed. The `Expiry`
+        //      trait only controls this — a shorter TTL makes an entry
+        //      expire sooner in wall-clock time, but has zero effect on
+        //      which entry gets evicted when the cache is over capacity.
+        //
+        //   2. Size-based eviction (TinyLFU admission + LRU probation):
+        //      When the cache exceeds max_capacity, entries are evicted
+        //      from the front of the MainProbation deque (LRU position).
+        //      Candidates must beat victims' aggregated frequency to be
+        //      admitted. TTL plays no role here.
+        //
+        // Current mitigation (sufficient for startup ordering):
+        //   - `insert_startup()` skips the frequency bump (no extra get()),
+        //     so all startup entries have freq=0 in the frequency sketch.
+        //   - `insert_startup()` defers `run_pending_tasks()` to the caller,
+        //     so WriteOps are batched. When processed, entries are pushed to
+        //     the back of the MainProbation deque in insertion order (FIFO).
+        //   - Since files are inserted oldest-atime-first, the oldest files
+        //     sit at the front (LRU position) of probation and are evicted
+        //     first during size pressure. This preserves atime ordering.
+        //   - After startup, runtime accesses bump freq>0 naturally, so
+        //     actively-used entries survive TinyLFU admission.
+        //
+        // What would be needed for true atime-proportional eviction:
+        //   - A custom eviction policy (not available in moka 0.12), or
+        //   - Maintaining a separate age-ordered structure and manually
+        //     invalidating entries. The complexity isn't justified given
+        //     that FIFO-ordered probation already approximates atime order.
         let old = self.insert_startup(key, data);
         if let Some(ref value) = old {
             value.unref().await;
@@ -443,8 +473,10 @@ where
 
     /// Startup-optimized insert: no frequency bump, no per-insert
     /// run_pending_tasks(). Caller should call cache.run_pending_tasks()
-    /// after the full batch. Items enter at freq=1, preserving FIFO
-    /// ordering in Moka's window deque (oldest-inserted evicted first).
+    /// after the full batch. Items enter at freq=0 in the frequency
+    /// sketch and are pushed to MainProbation in insertion order when
+    /// WriteOps are processed, so oldest-inserted entries sit at the
+    /// front (LRU position) and are evicted first during size pressure.
     fn insert_startup(&self, key: K, data: T) -> Option<T> {
         let size = data.len();
         self.lifetime_inserted_bytes.add(size);

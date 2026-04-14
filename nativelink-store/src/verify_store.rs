@@ -349,6 +349,28 @@ impl StoreDriver for VerifyStore {
         get_res.merge(check_res)
     }
 
+    /// Delegates directly to the inner store **without** hash or size
+    /// verification. The single-key [`get_part`] path streams data through
+    /// [`inner_check_get_part`] which hashes every byte and checks the
+    /// final size, but this batch path intentionally skips that work.
+    ///
+    /// This is acceptable for the current callers:
+    ///
+    /// - **GetTree BFS** (`get_tree_bfs`): directory protos returned by
+    ///   this method are immediately decoded via `prost::Message::decode`,
+    ///   which rejects malformed / truncated data.
+    /// - **`BatchReadBlobs`**: blobs are returned to remote clients who
+    ///   verify content hashes themselves per the REAPI contract.
+    ///
+    /// **Trade-off**: a corrupt or truncated blob could be served without
+    /// detection by this store layer, whereas the streaming `get_part()`
+    /// path would catch it. The risk is mitigated by the callers above
+    /// but is not zero — a bit-flip that still parses as valid protobuf
+    /// (or a blob consumed without client-side hash verification) would
+    /// go unnoticed.
+    ///
+    /// TODO: optionally verify the blake3 hash of each blob returned
+    /// here, at the cost of one hash computation per blob.
     async fn batch_get_part_unchunked(
         self: Pin<&Self>,
         keys: Vec<StoreKey<'_>>,
