@@ -1164,8 +1164,39 @@ where
             ));
         }
 
-        // Rename the temp key so that the data appears under the real key. Any data already present in the real key is lost.
+        // Pipeline RENAME (and optionally PUBLISH) in a single round-trip.
+        // Previously these were 1-2 separate commands; pipelining saves one RTT
+        // when pub_sub is configured, and keeps the code consistent otherwise.
         let cmd_start = Instant::now();
+        if let Some(pub_sub_channel) = &self.pub_sub_channel {
+            // RENAME + PUBLISH in one pipeline round-trip.
+            let result = timeout(
+                self.command_timeout,
+                pipe()
+                    .rename(&temp_key, final_key.as_ref())
+                    .publish(pub_sub_channel, final_key.as_ref())
+                    .query_async::<((), ())>(&mut client.connection_manager),
+            )
+            .await
+            .map_err(|_| {
+                let elapsed_ms = cmd_start.elapsed().as_millis() as u64;
+                error!(cmd = "RENAME+PUBLISH", key = %final_key, elapsed_ms, "redis pipeline timed out");
+                make_err!(
+                    Code::Unavailable,
+                    "Redis RENAME+PUBLISH timed out after {elapsed_ms}ms for key {final_key}"
+                )
+            })?
+            .err_tip(|| "While pipelining RENAME+PUBLISH in RedisStore::update()")?;
+            let elapsed = cmd_start.elapsed();
+            if elapsed.as_secs() >= 5 {
+                error!(cmd = "RENAME+PUBLISH", key = %final_key, elapsed_ms = elapsed.as_millis() as u64, size_bytes = blob_len, "redis pipeline slow (>5s)");
+            } else if elapsed.as_secs() >= 1 {
+                warn!(cmd = "RENAME+PUBLISH", key = %final_key, elapsed_ms = elapsed.as_millis() as u64, size_bytes = blob_len, "redis pipeline slow (>1s)");
+            }
+            return Ok(result.1);
+        }
+
+        // No pub_sub — just RENAME.
         timeout(
             self.command_timeout,
             client.connection_manager.rename::<_, _, ()>(&temp_key, final_key.as_ref()),
@@ -1185,31 +1216,6 @@ where
             error!(cmd = "RENAME", key = %final_key, elapsed_ms = elapsed.as_millis() as u64, size_bytes = blob_len, "redis command slow (>5s)");
         } else if elapsed.as_secs() >= 1 {
             warn!(cmd = "RENAME", key = %final_key, elapsed_ms = elapsed.as_millis() as u64, size_bytes = blob_len, "redis command slow (>1s)");
-        }
-
-        // If we have a publish channel configured, send a notice that the key has been set.
-        if let Some(pub_sub_channel) = &self.pub_sub_channel {
-            let cmd_start = Instant::now();
-            let result = timeout(
-                self.command_timeout,
-                client.connection_manager.publish(pub_sub_channel, final_key.as_ref()),
-            )
-            .await
-            .map_err(|_| {
-                let elapsed_ms = cmd_start.elapsed().as_millis() as u64;
-                error!(cmd = "PUBLISH", key = %final_key, elapsed_ms, "redis command timed out");
-                make_err!(
-                    Code::Unavailable,
-                    "Redis PUBLISH timed out after {elapsed_ms}ms for key {final_key}"
-                )
-            })??;
-            let elapsed = cmd_start.elapsed();
-            if elapsed.as_secs() >= 5 {
-                error!(cmd = "PUBLISH", key = %final_key, elapsed_ms = elapsed.as_millis() as u64, "redis command slow (>5s)");
-            } else if elapsed.as_secs() >= 1 {
-                warn!(cmd = "PUBLISH", key = %final_key, elapsed_ms = elapsed.as_millis() as u64, "redis command slow (>1s)");
-            }
-            return Ok(result);
         }
 
         Ok(())

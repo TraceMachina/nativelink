@@ -42,7 +42,7 @@ use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::make_ctx_for_hash_func;
 use nativelink_util::log_utils::throughput_mbps;
 use nativelink_util::stall_detector::StallGuard;
-use nativelink_util::store_trait::{IS_MIRROR_REQUEST, IS_WORKER_REQUEST, Store, StoreLike};
+use nativelink_util::store_trait::{IS_MIRROR_REQUEST, IS_WORKER_REQUEST, Store, StoreKey, StoreLike};
 use nativelink_util::zero_copy_codec::{
     GrpcUnaryBody, decode_unary_request, encode_grpc_unary_response,
 };
@@ -363,25 +363,32 @@ impl CasServer {
             return grpc_store.batch_read_blobs(Request::new(request)).await;
         }
 
-        let store_ref = &store;
-        let read_futures: FuturesUnordered<_> = request
+        // Parse all digests upfront so we can do a single pipelined batch read.
+        let mut parsed_digests: Vec<DigestInfo> = Vec::with_capacity(request.digests.len());
+        for digest in &request.digests {
+            parsed_digests.push(DigestInfo::try_from(digest.clone())?);
+        }
+
+        // Use batch_get_part_unchunked which pipelines the underlying I/O
+        // (e.g. a single Redis round-trip for all keys instead of N individual ones).
+        let keys: Vec<_> = parsed_digests.iter().map(|d| StoreKey::Digest(*d)).collect();
+        let read_start = std::time::Instant::now();
+        let batch_results = store.batch_get_part_unchunked(keys, None).await;
+        let batch_elapsed = read_start.elapsed();
+
+        let mut total_bytes: u64 = 0;
+        let responses: Vec<batch_read_blobs_response::Response> = request
             .digests
             .into_iter()
-            .map(|digest| async move {
-                let digest_copy = DigestInfo::try_from(digest.clone())?;
-                // TODO(palfrey) There is a security risk here of someone taking all the memory on the instance.
-                let read_start = std::time::Instant::now();
-                let result = store_ref
-                    .get_part_unchunked(digest_copy, 0, None)
-                    .await
-                    .err_tip(|| "Error reading from store");
-                let (status, data) = result.map_or_else(
-                    |mut e| {
-                        let elapsed = read_start.elapsed();
+            .zip(parsed_digests.iter())
+            .zip(batch_results)
+            .map(|((digest, &digest_info), result)| {
+                let (status, data) = match result {
+                    Err(mut e) => {
                         if e.code != Code::NotFound {
                             error!(
-                                %digest_copy,
-                                elapsed_ms = elapsed.as_millis() as u64,
+                                %digest_info,
+                                elapsed_ms = batch_elapsed.as_millis() as u64,
                                 ?e,
                                 "BatchReadBlobs: CAS read failed",
                             );
@@ -393,31 +400,28 @@ impl CasServer {
                             e.messages.resize_with(1, String::new);
                         }
                         (e.into(), Bytes::new())
-                    },
-                    |v| {
-                        let elapsed = read_start.elapsed();
-                        let size_bytes = v.len() as u64;
-                        debug!(
-                            %digest_copy,
-                            size_bytes,
-                            elapsed_ms = elapsed.as_millis() as u64,
-                            throughput_mbps = format!("{:.1}", throughput_mbps(size_bytes, elapsed)),
-                            "BatchReadBlobs: CAS read completed",
-                        );
+                    }
+                    Ok(v) => {
+                        total_bytes += v.len() as u64;
                         (GrpcStatus::default(), v)
-                    },
-                );
-                Ok::<_, Error>(batch_read_blobs_response::Response {
+                    }
+                };
+                batch_read_blobs_response::Response {
                     status: Some(status),
                     digest: Some(digest),
                     compressor: compressor::Value::Identity.into(),
                     data,
-                })
+                }
             })
             .collect();
-        let responses = read_futures
-            .try_collect::<Vec<batch_read_blobs_response::Response>>()
-            .await?;
+
+        debug!(
+            blob_count = responses.len(),
+            total_bytes,
+            elapsed_ms = batch_elapsed.as_millis() as u64,
+            throughput_mbps = format!("{:.1}", throughput_mbps(total_bytes, batch_elapsed)),
+            "BatchReadBlobs: batch completed",
+        );
 
         Ok(Response::new(BatchReadBlobsResponse { responses }))
     }
