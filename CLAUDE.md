@@ -69,6 +69,12 @@
   If a commit message or comment explains the reason, evaluate whether that reason
   still applies before making the change.
 
+## Code Review
+- **Before committing any change**, send the changes to a code review agent and a
+  performance review agent. Work to obtain their sign-off before committing. Fix
+  any issues they identify. Only commit after both reviews pass with no blocking
+  issues.
+
 ## Git Journal
 - **Journal all git operations**: append every `git commit`, `git push`, `git revert`,
   `git stash`, and any other state-changing git command to `.claude/git-journal.md`

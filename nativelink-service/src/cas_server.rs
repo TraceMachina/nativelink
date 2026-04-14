@@ -52,6 +52,7 @@ use nativelink_util::zero_copy_codec::{
 };
 use opentelemetry::context::FutureExt;
 use prost::Message;
+use tokio::sync::watch;
 use tonic::{Request, Response, Status};
 use tracing::{Instrument, Level, debug, error, error_span, info, instrument, warn};
 
@@ -70,11 +71,26 @@ const TREE_CACHE_MAX_COUNT: u64 = 10_000;
 /// for trees that aren't re-requested.
 const TREE_CACHE_TTL_SECS: u32 = 300;
 
+/// Maximum total encoded size of cached individual directory protos (256 MiB).
+/// This cache is populated as a side effect of BFS traversal, so future
+/// GetTree calls with overlapping subtrees can skip store fetches for
+/// directories already seen.
+const SUBTREE_CACHE_MAX_BYTES: usize = 256 << 20;
+
+/// Maximum number of cached individual directory protos.
+const SUBTREE_CACHE_MAX_COUNT: u64 = 50_000;
+
+/// TTL for cached individual directory protos (5 minutes).
+const SUBTREE_CACHE_TTL_SECS: u32 = 300;
+
 /// A cached GetTree result: the full list of directories for a given
 /// root digest. Keyed by `DigestInfo` in the tree cache.
+///
+/// `directories` is wrapped in `Arc` so cache hits return a cheap
+/// reference-count bump instead of deep-cloning every `Directory`.
 #[derive(Clone, Debug)]
 struct CachedTree {
-    directories: Vec<Directory>,
+    directories: Arc<Vec<Directory>>,
     /// Pre-computed total protobuf encoded size for LenEntry.
     encoded_size: u64,
     /// The next_page_token from the full BFS traversal (empty string
@@ -91,6 +107,31 @@ impl LenEntry for CachedTree {
     #[inline]
     fn is_empty(&self) -> bool {
         self.directories.is_empty()
+    }
+}
+
+/// A cached individual `Directory` proto, populated as a side effect of
+/// GetTree BFS traversal. When a future BFS encounters a directory
+/// digest that's already cached here, it uses the cached proto instead
+/// of reading from the store. This avoids redundant fetches for
+/// overlapping subtrees across concurrent or sequential GetTree calls
+/// (very common in Bazel builds within the same repository).
+#[derive(Clone, Debug)]
+struct CachedDirectory {
+    directory: Directory,
+    /// Pre-computed protobuf encoded size for LenEntry.
+    encoded_size: u64,
+}
+
+impl LenEntry for CachedDirectory {
+    #[inline]
+    fn len(&self) -> u64 {
+        self.encoded_size
+    }
+
+    #[inline]
+    fn is_empty(&self) -> bool {
+        self.encoded_size == 0
     }
 }
 
@@ -130,6 +171,33 @@ pub struct CasServer {
     /// immutable (content-addressed), so a cache hit avoids re-running
     /// the full BFS traversal. Bounded by size and TTL.
     tree_cache: MokaEvictingMap<DigestInfo, DigestInfo, CachedTree, SystemTime>,
+    /// Cache of individual directory digests -> their resolved Directory
+    /// proto. Populated as a side effect of GetTree BFS. When a future
+    /// BFS encounters a directory that's already cached here, it can use
+    /// the cached proto instead of reading from the store. This covers
+    /// the common case of overlapping subtrees across GetTree calls
+    /// (e.g., multiple Bazel targets in the same repo share identical
+    /// third_party/ or generated code directories).
+    ///
+    /// Level 3 optimization (Tree proto lookup) is deferred: GetTree is
+    /// keyed by a root Directory digest, but Tree protos are stored
+    /// under their own separate digest in the CAS. There is no mapping
+    /// from root_directory_digest -> tree_digest in the CAS protocol,
+    /// so the server cannot look up a pre-assembled Tree proto given
+    /// only the root digest. Supporting this would require either:
+    ///   (a) A side index populated from ActionResult output_directories,
+    ///       requiring hooks into the AC write path, or
+    ///   (b) A separate mapping store (root_digest -> tree_digest).
+    /// The subtree cache already covers the main performance win
+    /// (avoiding redundant fetches for shared subdirectories), so the
+    /// Tree proto lookup is not needed at this time.
+    subtree_cache: MokaEvictingMap<DigestInfo, DigestInfo, CachedDirectory, SystemTime>,
+    /// In-flight GetTree BFS operations, keyed by root digest. When
+    /// multiple concurrent GetTree calls arrive for the same tree,
+    /// only the first performs the BFS traversal. Others subscribe to
+    /// the watch channel and wait for the result to appear in
+    /// `tree_cache`, avoiding thundering-herd redundant traversals.
+    tree_inflight: parking_lot::Mutex<HashMap<DigestInfo, watch::Receiver<bool>>>,
 }
 
 type GetTreeStream = Pin<Box<dyn Stream<Item = Result<GetTreeResponse, Status>> + Send + 'static>>;
@@ -153,9 +221,19 @@ impl CasServer {
             ..Default::default()
         };
         let tree_cache = MokaEvictingMap::with_anchor(&tree_cache_policy, SystemTime::now());
+        let subtree_cache_policy = EvictionPolicy {
+            max_bytes: SUBTREE_CACHE_MAX_BYTES,
+            max_count: SUBTREE_CACHE_MAX_COUNT,
+            max_seconds: SUBTREE_CACHE_TTL_SECS,
+            ..Default::default()
+        };
+        let subtree_cache =
+            MokaEvictingMap::with_anchor(&subtree_cache_policy, SystemTime::now());
         Ok(Self {
             stores,
             tree_cache,
+            subtree_cache,
+            tree_inflight: parking_lot::Mutex::new(HashMap::new()),
         })
     }
 
@@ -271,7 +349,7 @@ impl CasServer {
         }
 
         // Batch has() check: skip writes for blobs the store already has.
-        let keys: Vec<nativelink_util::store_trait::StoreKey<'_>> = parsed
+        let keys: Vec<StoreKey<'_>> = parsed
             .iter()
             .map(|(d, _)| (*d).into())
             .collect();
@@ -520,6 +598,19 @@ impl CasServer {
         // traversals. CAS trees are immutable (content-addressed), so
         // the cached result is always valid.
         let is_unpaginated = request.page_token.is_empty() && request.page_size == 0;
+
+        // For unpaginated requests, coalesce concurrent GetTree calls
+        // for the same root digest. Only one request performs the BFS
+        // traversal; others wait for it to populate the tree_cache.
+        // This prevents thundering-herd when many workers request the
+        // same tree simultaneously.
+        //
+        // `inflight_tx` is Some when we are the "leader" — the first
+        // request that registered for this root_digest. On all exit
+        // paths (success, error, early return) we must send on it to
+        // wake waiters, and remove the entry from `tree_inflight`.
+        let mut inflight_tx: Option<watch::Sender<bool>> = None;
+
         if is_unpaginated {
             if let Some(cached) = self.tree_cache.get(&root_digest).await {
                 let elapsed = tree_start.elapsed();
@@ -532,14 +623,107 @@ impl CasServer {
                 );
                 return Ok(futures::stream::once(futures::future::ready(
                     Ok(GetTreeResponse {
-                        directories: cached.directories,
+                        directories: cached.directories.as_ref().clone(),
                         next_page_token: cached.next_page_token,
                     }),
                 ))
                 .right_stream());
             }
+
+            // Check-and-register in a single lock scope to prevent
+            // TOCTOU race where two requests both see no inflight entry
+            // and both register as leader.
+            let maybe_rx = {
+                use std::collections::hash_map::Entry;
+                let mut inflight = self.tree_inflight.lock();
+                match inflight.entry(root_digest) {
+                    Entry::Occupied(entry) => {
+                        // Another request is already doing BFS.
+                        Some(entry.get().clone())
+                    }
+                    Entry::Vacant(entry) => {
+                        // We are the first — register as leader.
+                        let (tx, rx) = watch::channel(false);
+                        entry.insert(rx);
+                        inflight_tx = Some(tx);
+                        None
+                    }
+                }
+            };
+            if let Some(mut rx) = maybe_rx {
+                // Wait for the leader to complete BFS.
+                info!(
+                    ?root_digest,
+                    "GetTree: coalescing with in-flight BFS traversal",
+                );
+                // Ignore errors (sender dropped = leader failed/panicked).
+                let _ = rx.changed().await;
+                // Re-check cache — the leader should have populated it.
+                if let Some(cached) = self.tree_cache.get(&root_digest).await {
+                    let elapsed = tree_start.elapsed();
+                    info!(
+                        ?root_digest,
+                        dir_count = cached.directories.len(),
+                        encoded_size = cached.encoded_size,
+                        elapsed_us = elapsed.as_micros() as u64,
+                        "GetTree: coalesced cache hit",
+                    );
+                    return Ok(futures::stream::once(futures::future::ready(
+                        Ok(GetTreeResponse {
+                            directories: cached.directories.as_ref().clone(),
+                            next_page_token: cached.next_page_token,
+                        }),
+                    ))
+                    .right_stream());
+                }
+                // Leader failed (missing dirs, error, etc.). Fall through
+                // and do our own BFS as a non-leader (no inflight_tx).
+                warn!(
+                    ?root_digest,
+                    "GetTree: coalesced request found no cache entry, performing own BFS",
+                );
+            }
         }
 
+        // BFS traversal. Runs for:
+        // - The inflight leader (inflight_tx is Some)
+        // - A waiter whose leader failed (inflight_tx is None, is_unpaginated)
+        // - Paginated requests (inflight_tx is None, !is_unpaginated)
+        let result = self
+            .bfs_get_tree(
+                &store,
+                root_digest,
+                &request.page_token,
+                request.page_size,
+                tree_start,
+                is_unpaginated,
+            )
+            .await;
+
+        // Cleanup: if we are the inflight leader, notify waiters and
+        // remove ourselves from the inflight map regardless of outcome.
+        if let Some(tx) = inflight_tx {
+            // Send wakes all receivers waiting on changed().
+            let _ = tx.send(true);
+            self.tree_inflight.lock().remove(&root_digest);
+        }
+
+        let response = result?;
+        Ok(futures::stream::once(futures::future::ready(Ok(response))).right_stream())
+    }
+
+    /// Perform the BFS traversal for GetTree. Factored out so the
+    /// coalescing logic in `inner_get_tree` can wrap it with inflight
+    /// tracking and cleanup.
+    async fn bfs_get_tree(
+        &self,
+        store: &Store,
+        root_digest: DigestInfo,
+        page_token: &str,
+        page_size: i32,
+        tree_start: std::time::Instant,
+        is_unpaginated: bool,
+    ) -> Result<GetTreeResponse, Error> {
         let mut deque: VecDeque<DigestInfo> = VecDeque::with_capacity(64);
         // Track all digests we have ever enqueued to avoid fetching/processing
         // the same directory twice. In a Merkle tree, identical subdirectory
@@ -552,10 +736,10 @@ impl CasServer {
         let mut seen: HashSet<DigestInfo> = HashSet::with_capacity(256);
         let mut directories: Vec<Directory> = Vec::with_capacity(256);
         // `page_token` will return the `{hash_str}-{size_bytes}` of the current request's first directory digest.
-        let page_token_digest = if request.page_token.is_empty() {
+        let page_token_digest = if page_token.is_empty() {
             root_digest
         } else {
-            let mut page_token_parts = request.page_token.split('-');
+            let mut page_token_parts = page_token.split('-');
             DigestInfo::try_new(
                 page_token_parts
                     .next()
@@ -568,7 +752,6 @@ impl CasServer {
             )
             .err_tip(|| "Failed to parse `page_token` as `Digest` in `GetTreeRequest`")?
         };
-        let page_size = request.page_size;
         // If `page_size` is 0, paging is not necessary — return all directories.
         let page_size_limit = if page_size == 0 {
             usize::MAX
@@ -584,37 +767,62 @@ impl CasServer {
         let mut bfs_level: u32 = 0;
         let mut total_duplicates_skipped: u64 = 0;
         let mut total_missing_skipped: u64 = 0;
-        let mut level_timings: Vec<(u32, usize, u64, u64)> = Vec::with_capacity(16); // (level, dirs_fetched, children_discovered, elapsed_ms)
+        let mut total_subtree_cache_hits: u64 = 0;
+        let mut level_timings: Vec<(u32, usize, u64, u64, u64)> = Vec::with_capacity(16); // (level, dirs_fetched, children_discovered, elapsed_ms, cache_hits)
 
         while !deque.is_empty() && !page_filled {
             let level_start = std::time::Instant::now();
             let level: Vec<DigestInfo> = deque.drain(..).collect();
-            // Batch-fetch all directories in this BFS level using a single
-            // pipelined store operation (one Redis round-trip instead of N).
-            // Tolerant: missing or corrupt directories are skipped rather than
-            // failing the entire GetTree response. The client can fill in gaps
-            // via individual directory fetches for only the missing entries.
-            let batch_results =
-                batch_get_and_decode_digest::<Directory>(&store, &level).await;
-            // Collect results into a map so we can iterate in deterministic (discovery) order.
-            // Missing directories are skipped with a warning.
+
+            // Subtree cache lookup: check which directories we already have
+            // cached from previous GetTree calls. Only fetch uncached ones
+            // from the store (avoids redundant I/O for overlapping subtrees).
             let mut level_results: HashMap<DigestInfo, Directory> =
                 HashMap::with_capacity(level.len());
+            let mut uncached_digests: Vec<DigestInfo> = Vec::with_capacity(level.len());
+            let mut level_cache_hits: u64 = 0;
+
+            for &digest in &level {
+                if let Some(cached_dir) = self.subtree_cache.get(&digest).await {
+                    level_results.insert(digest, cached_dir.directory);
+                    level_cache_hits += 1;
+                } else {
+                    uncached_digests.push(digest);
+                }
+            }
+            total_subtree_cache_hits += level_cache_hits;
+
+            // Batch-fetch uncached directories using a single pipelined
+            // store operation (one Redis round-trip instead of N).
+            // Tolerant: missing or corrupt directories are skipped rather
+            // than failing the entire GetTree response. The client can
+            // fill in gaps via individual directory fetches.
             let mut level_missing: u64 = 0;
-            for (digest, result) in batch_results {
-                match result {
-                    Ok(directory) => {
-                        level_results.insert(digest, directory);
-                    }
-                    Err(e) => {
-                        warn!(
-                            ?root_digest,
-                            missing_digest = %digest,
-                            bfs_level,
-                            err = ?e,
-                            "GetTree: skipping missing/corrupt directory, client will fetch individually"
-                        );
-                        level_missing += 1;
+            if !uncached_digests.is_empty() {
+                let batch_results =
+                    batch_get_and_decode_digest::<Directory>(store, &uncached_digests).await;
+                for (digest, result) in batch_results {
+                    match result {
+                        Ok(directory) => {
+                            // Populate the subtree cache for future GetTree calls.
+                            let encoded_size = directory.encoded_len() as u64;
+                            let cached = CachedDirectory {
+                                directory: directory.clone(),
+                                encoded_size,
+                            };
+                            drop(self.subtree_cache.insert(digest, cached).await);
+                            level_results.insert(digest, directory);
+                        }
+                        Err(e) => {
+                            warn!(
+                                ?root_digest,
+                                missing_digest = %digest,
+                                bfs_level,
+                                err = ?e,
+                                "GetTree: skipping missing/corrupt directory, client will fetch individually"
+                            );
+                            level_missing += 1;
+                        }
                     }
                 }
             }
@@ -686,7 +894,9 @@ impl CasServer {
             debug!(
                 ?root_digest,
                 bfs_level,
-                dirs_fetched = level.len(),
+                dirs_in_level = level.len(),
+                subtree_cache_hits = level_cache_hits,
+                store_fetched = uncached_digests.len(),
                 new_children = level_new_children,
                 duplicates_skipped = level_duplicates,
                 elapsed_ms = level_elapsed_ms,
@@ -697,14 +907,16 @@ impl CasServer {
                 warn!(
                     ?root_digest,
                     bfs_level,
-                    dirs_fetched = level.len(),
+                    dirs_in_level = level.len(),
+                    subtree_cache_hits = level_cache_hits,
+                    store_fetched = uncached_digests.len(),
                     new_children = level_new_children,
                     elapsed_ms = level_elapsed_ms,
                     "GetTree: slow BFS level (>100ms)",
                 );
             }
 
-            level_timings.push((bfs_level, level.len(), level_new_children, level_elapsed_ms));
+            level_timings.push((bfs_level, level.len(), level_new_children, level_elapsed_ms, level_cache_hits));
             bfs_level += 1;
         }
         // `next_page_token` will return the `{hash_str}-{size_bytes}` of the next request's first directory digest.
@@ -719,8 +931,8 @@ impl CasServer {
         // Build per-level timing breakdown string for the summary log.
         let level_breakdown: String = level_timings
             .iter()
-            .map(|(lvl, dirs, children, ms)| {
-                format!("L{lvl}:{dirs}dirs/{children}children/{ms}ms")
+            .map(|(lvl, dirs, children, ms, cache_hits)| {
+                format!("L{lvl}:{dirs}dirs/{cache_hits}cached/{children}children/{ms}ms")
             })
             .collect::<Vec<_>>()
             .join(", ");
@@ -732,6 +944,7 @@ impl CasServer {
                 total_bytes,
                 total_missing_skipped,
                 total_duplicates_skipped,
+                total_subtree_cache_hits,
                 bfs_levels = bfs_level,
                 elapsed_ms = elapsed.as_millis() as u64,
                 level_breakdown = %level_breakdown,
@@ -743,6 +956,7 @@ impl CasServer {
                 dir_count = directories.len(),
                 total_bytes,
                 total_duplicates_skipped,
+                total_subtree_cache_hits,
                 bfs_levels = bfs_level,
                 elapsed_ms = elapsed.as_millis() as u64,
                 level_breakdown = %level_breakdown,
@@ -755,20 +969,17 @@ impl CasServer {
         // missing directories (partial trees could be stale).
         if is_unpaginated && total_missing_skipped == 0 {
             let cached = CachedTree {
-                directories: directories.clone(),
+                directories: Arc::new(directories.clone()),
                 encoded_size: total_bytes,
                 next_page_token: next_page_token.clone(),
             };
-            let _ = self.tree_cache.insert(root_digest, cached).await;
+            drop(self.tree_cache.insert(root_digest, cached).await);
         }
 
-        Ok(futures::stream::once(futures::future::ready(
-            Ok(GetTreeResponse {
-                directories,
-                next_page_token,
-            }),
-        ))
-        .right_stream())
+        Ok(GetTreeResponse {
+            directories,
+            next_page_token,
+        })
     }
 }
 

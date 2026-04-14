@@ -520,15 +520,70 @@ where
     {
         let mut replaced = Vec::new();
         for (key, data) in inserts {
-            let old = self.insert_inner(key, data);
+            // Use insert_batch (no per-item run_pending_tasks) to avoid
+            // N+1 maintenance passes. Process all pending tasks once at end.
+            let old = self.insert_batch(key, data);
             if let Some(value) = old {
                 value.unref().await;
                 replaced.push(value);
             }
         }
-        // Run pending tasks once after batch, not per-insert.
         self.cache.run_pending_tasks();
         replaced
+    }
+
+    /// Batch-optimized insert: includes frequency bump but defers
+    /// run_pending_tasks() to the caller. Used by insert_many().
+    fn insert_batch(&self, key: K, data: T) -> Option<T> {
+        let size = data.len();
+        self.lifetime_inserted_bytes.add(size);
+
+        // Update BTree index.
+        {
+            let btree = self.btree.read();
+            if btree.is_some() {
+                drop(btree);
+                let mut btree = self.btree.write();
+                if let Some(ref mut set) = *btree {
+                    set.insert(key.clone());
+                }
+            }
+        }
+
+        // If key is pinned, replace in pinned map directly.
+        if self.has_pinned() && self.pinned.contains_key(key.borrow()) {
+            let old = self.pinned.remove(key.borrow()).map(|(_, entry)| {
+                self.pinned_bytes
+                    .fetch_sub(entry.size, Ordering::Relaxed);
+                entry.data
+            });
+            self.pinned.insert(
+                key.clone(),
+                PinnedEntry {
+                    data: data.clone(),
+                    pinned_at: Instant::now(),
+                    size,
+                },
+            );
+            self.pinned_bytes.fetch_add(size, Ordering::Relaxed);
+            self.fire_on_insert_callbacks(&key, size);
+            if old.is_some() {
+                self.replaced_bytes.add(size);
+                self.replaced_items.inc();
+            }
+            return old;
+        }
+
+        let existing = self.cache.get(key.borrow());
+        self.cache.insert(key.clone(), data);
+        // Frequency bump (same as insert_inner) but NO run_pending_tasks.
+        drop(self.cache.get(key.borrow()));
+        self.fire_on_insert_callbacks(&key, size);
+        if existing.is_some() {
+            self.replaced_bytes.add(size);
+            self.replaced_items.inc();
+        }
+        existing
     }
 
     // ---------------------------------------------------------------
