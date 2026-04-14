@@ -435,20 +435,25 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
         let results = Pin::new(self.inner_store.as_store_driver())
             .batch_get_part_unchunked(keys, length)
             .await;
-        // Update existence cache based on results.
+        // Batch-update existence cache: collect successful digests for a
+        // single insert_many() call (one run_pending_tasks() at the end)
+        // instead of N sequential insert() calls.
+        let mut inserts = Vec::new();
+        let mut removals = Vec::new();
         for (digest, result) in digests.iter().zip(results.iter()) {
             match result {
-                Ok(_data) => {
-                    let _ = self
-                        .existence_cache
-                        .insert(*digest, ExistenceItem(digest.size_bytes()))
-                        .await;
-                }
+                Ok(_) => inserts.push((*digest, ExistenceItem(digest.size_bytes()))),
                 Err(err) if err.code == nativelink_error::Code::NotFound => {
-                    self.existence_cache.remove(digest).await;
+                    removals.push(*digest);
                 }
                 Err(_) => {}
             }
+        }
+        if !inserts.is_empty() {
+            drop(self.existence_cache.insert_many(inserts).await);
+        }
+        for digest in removals {
+            self.existence_cache.remove(&digest).await;
         }
         results
     }

@@ -18,11 +18,13 @@ use core::task::{Context, Poll};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use bytes::Bytes;
 use futures::stream::{FuturesUnordered, Stream};
 use futures::{StreamExt, TryStreamExt};
 use nativelink_config::cas_server::{CasStoreConfig, WithInstanceName};
+use nativelink_config::stores::EvictionPolicy;
 use nativelink_error::{Code, Error, ResultExt, error_if, make_input_err};
 use nativelink_proto::build::bazel::remote::execution::v2::content_addressable_storage_server::{
     ContentAddressableStorage, ContentAddressableStorageServer as Server,
@@ -40,7 +42,9 @@ use nativelink_store::store_manager::StoreManager;
 use nativelink_store::worker_proxy_store::WorkerProxyStore;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::make_ctx_for_hash_func;
+use nativelink_util::evicting_map::LenEntry;
 use nativelink_util::log_utils::throughput_mbps;
+use nativelink_util::moka_evicting_map::MokaEvictingMap;
 use nativelink_util::stall_detector::StallGuard;
 use nativelink_util::store_trait::{IS_MIRROR_REQUEST, IS_WORKER_REQUEST, Store, StoreKey, StoreLike};
 use nativelink_util::zero_copy_codec::{
@@ -54,6 +58,41 @@ use tracing::{Instrument, Level, debug, error, error_span, info, instrument, war
 /// Maximum per-blob size for BatchReadBlobs batch reads (64 MiB).
 /// Bounds memory usage per blob when reading through the store chain.
 const MAX_BATCH_READ_BLOB_SIZE: u64 = 64 << 20;
+
+/// Maximum total encoded size of cached GetTree results (512 MiB).
+const TREE_CACHE_MAX_BYTES: usize = 512 << 20;
+
+/// Maximum number of cached GetTree results.
+const TREE_CACHE_MAX_COUNT: u64 = 10_000;
+
+/// TTL for cached GetTree results (5 minutes). CAS trees are immutable
+/// (content-addressed), but we expire entries to bound memory usage
+/// for trees that aren't re-requested.
+const TREE_CACHE_TTL_SECS: u32 = 300;
+
+/// A cached GetTree result: the full list of directories for a given
+/// root digest. Keyed by `DigestInfo` in the tree cache.
+#[derive(Clone, Debug)]
+struct CachedTree {
+    directories: Vec<Directory>,
+    /// Pre-computed total protobuf encoded size for LenEntry.
+    encoded_size: u64,
+    /// The next_page_token from the full BFS traversal (empty string
+    /// when the tree is complete).
+    next_page_token: String,
+}
+
+impl LenEntry for CachedTree {
+    #[inline]
+    fn len(&self) -> u64 {
+        self.encoded_size
+    }
+
+    #[inline]
+    fn is_empty(&self) -> bool {
+        self.directories.is_empty()
+    }
+}
 
 /// Spawn a background task to mirror a blob (with data already in hand)
 /// to a random connected worker for OOM redundancy. Fire-and-forget.
@@ -87,6 +126,10 @@ fn mirror_blob_to_worker_with_data(store: &Store, digest: DigestInfo, data: Byte
 #[derive(Debug)]
 pub struct CasServer {
     stores: HashMap<String, Store>,
+    /// Cache of GetTree results keyed by root digest. CAS trees are
+    /// immutable (content-addressed), so a cache hit avoids re-running
+    /// the full BFS traversal. Bounded by size and TTL.
+    tree_cache: MokaEvictingMap<DigestInfo, DigestInfo, CachedTree, SystemTime>,
 }
 
 type GetTreeStream = Pin<Box<dyn Stream<Item = Result<GetTreeResponse, Status>> + Send + 'static>>;
@@ -103,7 +146,17 @@ impl CasServer {
             })?;
             stores.insert(config.instance_name.to_string(), store);
         }
-        Ok(Self { stores })
+        let tree_cache_policy = EvictionPolicy {
+            max_bytes: TREE_CACHE_MAX_BYTES,
+            max_count: TREE_CACHE_MAX_COUNT,
+            max_seconds: TREE_CACHE_TTL_SECS,
+            ..Default::default()
+        };
+        let tree_cache = MokaEvictingMap::with_anchor(&tree_cache_policy, SystemTime::now());
+        Ok(Self {
+            stores,
+            tree_cache,
+        })
     }
 
     pub fn into_service(self) -> Server<Self> {
@@ -462,6 +515,31 @@ impl CasServer {
             .try_into()
             .err_tip(|| "In GetTreeRequest::root_digest")?;
 
+        // Cache check: for non-paginated requests (the common case from
+        // Bazel), serve from the tree cache to avoid redundant BFS
+        // traversals. CAS trees are immutable (content-addressed), so
+        // the cached result is always valid.
+        let is_unpaginated = request.page_token.is_empty() && request.page_size == 0;
+        if is_unpaginated {
+            if let Some(cached) = self.tree_cache.get(&root_digest).await {
+                let elapsed = tree_start.elapsed();
+                info!(
+                    ?root_digest,
+                    dir_count = cached.directories.len(),
+                    encoded_size = cached.encoded_size,
+                    elapsed_us = elapsed.as_micros() as u64,
+                    "GetTree: cache hit",
+                );
+                return Ok(futures::stream::once(futures::future::ready(
+                    Ok(GetTreeResponse {
+                        directories: cached.directories,
+                        next_page_token: cached.next_page_token,
+                    }),
+                ))
+                .right_stream());
+            }
+        }
+
         let mut deque: VecDeque<DigestInfo> = VecDeque::with_capacity(64);
         // Track all digests we have ever enqueued to avoid fetching/processing
         // the same directory twice. In a Merkle tree, identical subdirectory
@@ -672,12 +750,24 @@ impl CasServer {
             );
         }
 
-        Ok(futures::stream::once(async {
+        // Cache the result for future GetTree calls with the same root
+        // digest. Only cache complete, non-paginated results with no
+        // missing directories (partial trees could be stale).
+        if is_unpaginated && total_missing_skipped == 0 {
+            let cached = CachedTree {
+                directories: directories.clone(),
+                encoded_size: total_bytes,
+                next_page_token: next_page_token.clone(),
+            };
+            let _ = self.tree_cache.insert(root_digest, cached).await;
+        }
+
+        Ok(futures::stream::once(futures::future::ready(
             Ok(GetTreeResponse {
                 directories,
                 next_page_token,
-            })
-        })
+            }),
+        ))
         .right_stream())
     }
 }

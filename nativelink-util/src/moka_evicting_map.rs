@@ -314,6 +314,10 @@ where
         self.cache.get(key)
     }
 
+    /// Retrieve multiple values by key. Sequential iteration is intentional:
+    /// Moka's `cache.get()` is synchronous (lock-free concurrent hash map),
+    /// so 500 lookups complete in ~50us. Parallelism via `spawn_blocking` or
+    /// `par_iter` would add more overhead than it saves.
     pub async fn get_many<'b, Iter>(&self, keys: Iter) -> Vec<Option<T>>
     where
         Iter: IntoIterator<Item = &'b Q>,
