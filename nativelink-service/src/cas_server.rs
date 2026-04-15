@@ -307,7 +307,7 @@ impl CasServer {
             .filter_map(|(maybe_size, digest)| maybe_size.map_or_else(|| Some(digest), |_| None))
             .collect();
 
-        info!(
+        debug!(
             requested = requested_blobs.len(),
             missing = missing_blob_digests.len(),
             "FindMissingBlobs",

@@ -24,7 +24,7 @@ use nativelink_config::stores::Retry;
 use nativelink_error::{Code, Error, make_err};
 use tokio::sync::{mpsc, oneshot};
 use tonic::transport::{Channel, Endpoint, channel};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 use crate::background_spawn;
 use crate::retry::{self, Retrier, RetryResult};
@@ -264,7 +264,7 @@ impl ConnectionManagerWorker {
                 "Connection failed, reconnecting"
             );
         } else {
-            info!(
+            debug!(
                 ?connection_index,
                 endpoint = ?endpoint.uri(),
                 "Creating new connection"

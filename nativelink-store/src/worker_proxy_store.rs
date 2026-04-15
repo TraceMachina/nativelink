@@ -820,7 +820,7 @@ impl WorkerProxyStore {
 
         match &result {
             Ok(()) => {
-                info!(
+                debug!(
                     %digest,
                     size_bytes,
                     endpoint = endpoint.as_ref(),

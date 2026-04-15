@@ -696,7 +696,7 @@ impl WorkerConnection {
         }
 
         if !evicted.is_empty() {
-            info!(
+            debug!(
                 worker_id=?self.worker_id,
                 endpoint,
                 count=evicted.len(),
@@ -706,7 +706,7 @@ impl WorkerConnection {
         }
 
         if !digests_with_ts.is_empty() {
-            info!(
+            debug!(
                 worker_id=?self.worker_id,
                 endpoint,
                 count=digests_with_ts.len(),

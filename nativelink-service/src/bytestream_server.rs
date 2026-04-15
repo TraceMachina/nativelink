@@ -361,7 +361,7 @@ impl LoggingReadStream {
         let elapsed = self.start_time.elapsed();
         let elapsed_ms = elapsed.as_millis() as u64;
 
-        info!(
+        debug!(
             digest = %self.digest,
             expected_size = self.expected_size,
             bytes_sent = self.bytes_sent,
@@ -1470,7 +1470,7 @@ impl ByteStreamServer {
                 .in_flight_blobs
                 .register(digest, instance_info.max_streaming_blob_buffer_bytes)
             {
-                info!(
+                debug!(
                     %digest,
                     "registered streaming blob for read-while-write"
                 );
@@ -1786,7 +1786,7 @@ impl ByteStreamServer {
 
         // Fast path: skip the write if the blob already exists.
         if store.has(digest).await.unwrap_or(None).is_some() {
-            info!(
+            debug!(
                 %digest,
                 size_bytes = expected_size,
                 "ByteStream::write: skipped, blob already exists",
@@ -1962,7 +1962,7 @@ impl ByteStreamServer {
         match &result {
             Ok(_) => {
                 let elapsed = start_time.elapsed();
-                info!(
+                debug!(
                     %digest,
                     size_bytes = expected_size,
                     elapsed_ms = elapsed.as_millis() as u64,

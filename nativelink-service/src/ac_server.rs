@@ -36,7 +36,7 @@ use nativelink_util::store_trait::{Store, StoreLike};
 use opentelemetry::context::FutureExt;
 use prost::Message;
 use tonic::{Request, Response, Status};
-use tracing::{Instrument, Level, error, error_span, info, instrument};
+use tracing::{Instrument, Level, debug, error, error_span, instrument};
 
 #[derive(Debug, Clone)]
 pub struct AcStoreInfo {
@@ -112,7 +112,7 @@ impl AcServer {
             Ok(action_result) => {
                 let elapsed = get_start.elapsed();
                 let size_bytes = action_result.encoded_len() as u64;
-                info!(
+                debug!(
                     ?digest,
                     size_bytes,
                     elapsed_ms = elapsed.as_millis() as u64,
@@ -127,7 +127,7 @@ impl AcServer {
                     // `get_action_result` is frequent to get NotFound errors, so remove all
                     // messages to save space.
                     e.messages.clear();
-                    info!(
+                    debug!(
                         elapsed_us = elapsed.as_micros() as u64,
                         "AC read NotFound",
                     );
@@ -187,7 +187,7 @@ impl AcServer {
         let elapsed = start.elapsed();
         match &result {
             Ok(()) => {
-                info!(
+                debug!(
                     ?digest,
                     size_bytes,
                     elapsed_ms = elapsed.as_millis() as u64,

@@ -42,7 +42,7 @@ use nativelink_util::store_trait::{
 use nativelink_util::streaming_blob::{StreamingBlobInner, StreamingBlobWriter};
 use parking_lot::Mutex;
 use tokio::sync::{Notify, OnceCell};
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, trace, warn};
 
 // TODO(palfrey) This store needs to be evaluated for more efficient memory usage,
 // there are many copies happening internally.
@@ -1393,7 +1393,7 @@ impl StoreDriver for FastSlowStore {
             // For blobs larger than the sliding window, early chunks may
             // have been evicted. Detect this and fall back to slow store.
             drop(loader_guard);
-            info!(
+            debug!(
                 ?key,
                 "streaming populate: waiter reading concurrently from populate buffer"
             );
