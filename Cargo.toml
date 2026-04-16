@@ -58,7 +58,7 @@ hyper-util = { version = "0.1.11", default-features = false, features = [
   "tracing",
 ] }
 mimalloc = { version = "0.1.48", default-features = false, features = ["v3"] }
-rand = { version = "0.9.0", default-features = false, features = [
+rand = { version = "0.10.0", default-features = false, features = [
   "thread_rng",
 ] }
 rustls-pki-types = { version = "1.13.1", features = [

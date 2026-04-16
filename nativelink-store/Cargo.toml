@@ -81,7 +81,7 @@ parking_lot = { version = "0.12.3", features = [
 ], default-features = false }
 patricia_tree = { version = "0.9.0", default-features = false }
 prost = { version = "0.13.5", default-features = false }
-rand = { version = "0.9.0", default-features = false, features = [
+rand = { version = "0.10.0", default-features = false, features = [
   "thread_rng",
 ] }
 redis = { version = "1.0.0", default-features = false, features = [
@@ -148,7 +148,7 @@ mock_instant = { version = "0.5.3", default-features = false }
 pretty_assertions = { version = "1.4.1", features = [
   "std",
 ], default-features = false }
-rand = { version = "0.9.0", default-features = false, features = [
+rand = { version = "0.10.0", default-features = false, features = [
   "small_rng",
   "thread_rng",
 ] }
