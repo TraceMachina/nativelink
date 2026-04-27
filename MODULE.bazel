@@ -7,15 +7,37 @@ module(
 bazel_dep(name = "rules_cc", version = "0.2.17")
 bazel_dep(name = "platforms", version = "1.0.0")
 bazel_dep(name = "bazel_skylib", version = "1.8.2")
-bazel_dep(name = "rules_python", version = "1.7.0")
+bazel_dep(name = "rules_python", version = "1.9.0")
 bazel_dep(name = "rules_shell", version = "0.6.1")
 
-python = use_extension("@rules_python//python/extensions:python.bzl", "python")
-python.toolchain(
-    configure_coverage_tool = True,
-    python_version = "3.13",
+# We use the Nix Python install, as per https://rules-python.readthedocs.io/en/latest/toolchains.html#local-toolchain
+local_runtime_repo = use_repo_rule(
+    "@rules_python//python/local_toolchains:repos.bzl",
+    "local_runtime_repo",
 )
-use_repo(python, python = "python_versions")
+
+local_runtime_toolchains_repo = use_repo_rule(
+    "@rules_python//python/local_toolchains:repos.bzl",
+    "local_runtime_toolchains_repo",
+)
+
+local_runtime_repo(
+    name = "local_python3",
+    dev_dependency = True,
+    interpreter_path = "python3",
+    on_failure = "fail",
+)
+
+local_runtime_toolchains_repo(
+    name = "local_toolchains",
+    dev_dependency = True,
+    runtimes = ["local_python3"],
+)
+
+register_toolchains(
+    "@local_toolchains//:all",
+    dev_dependency = True,
+)
 
 bazel_dep(name = "rules_rust", version = "0.68.1")
 archive_override(
