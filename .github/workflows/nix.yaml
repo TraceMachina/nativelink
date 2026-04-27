@@ -35,6 +35,8 @@ jobs:
 
       - name: Prepare Worker
         uses: ./.github/actions/prepare-nix
+        with:
+          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
 
       - name: Invoke Bazel build in Nix shell
         run: |
@@ -65,6 +67,8 @@ jobs:
 
       - name: Prepare Worker
         uses: ./.github/actions/prepare-nix
+        with:
+          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
 
       - name: Invoke Cargo build in Nix shell
         run: >
@@ -88,6 +92,8 @@ jobs:
 
       - name: Prepare Worker
         uses: ./.github/actions/prepare-nix
+        with:
+          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
 
       - name: Test nix run
         run: |
@@ -97,7 +103,7 @@ jobs:
     name: ${{ matrix.test-name }}
     strategy:
       matrix:
-          test-name: [buildstream, buck2, rbe-toolchain] # Disabling mongo as it has to build all of mongo from scratch for some reason
+          test-name: [buildstream, buck2, rbe-toolchain, mongo]
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -107,6 +113,8 @@ jobs:
 
       - name: Prepare Worker
         uses: ./.github/actions/prepare-nix
+        with:
+          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
 
       - name: Test ${{ matrix.test-name }} run
         run: |

@@ -16,14 +16,14 @@
 
 # Some toolchains, like the darwin ones, don't have an actual container image.
 # We still map them to the output of the tag of the corresponding theoretical
-# worker image so that bare metal metal workers can advertise exact
+# worker image so that bare metal workers can advertise exact
 # exec_properties to schedulers.
 
 platform(
     name = "aarch64-apple-darwin",
     exec_properties = {
-        # nix eval .#packages.aarch64-darwin.nativelink-worker-lre-rs.imageTag
-        "lre-rs": "yhrc25xbirgjrh8zxqp44ysq5wibr5yb",
+        # tag is from nix eval .#packages.aarch64-darwin.nativelink-worker-lre-rs.imageTag
+        "container-image": "ghcr.io/tracemachina/nativelink-worker-lre-rs:yhrc25xbirgjrh8zxqp44ysq5wibr5yb",
     },
     parents = ["@local-remote-execution//platforms:aarch64-darwin"],
 )
@@ -32,8 +32,8 @@ platform(
     name = "aarch64-unknown-linux-gnu",
     constraint_values = ["@local-remote-execution//libc:glibc"],
     exec_properties = {
-        # nix eval .#packages.aarch64-linux.nativelink-worker-lre-rs.imageTag
-        "lre-rs": "8h9253qs3c1dcz80xjdj352b66ksm58c",
+        # tag is from nix eval .#packages.aarch64-linux.nativelink-worker-lre-rs.imageTag
+        "container-image": "ghcr.io/tracemachina/nativelink-worker-lre-rs:8h9253qs3c1dcz80xjdj352b66ksm58c",
     },
     parents = ["@local-remote-execution//platforms:aarch64-linux"],
 )
@@ -42,8 +42,8 @@ platform(
     name = "aarch64-unknown-linux-musl",
     constraint_values = ["@local-remote-execution//libc:musl"],
     exec_properties = {
-        # nix eval .#packages.aarch64-linux.nativelink-worker-lre-rs.imageTag
-        "lre-rs": "8h9253qs3c1dcz80xjdj352b66ksm58c",
+        # tag is from nix eval .#packages.aarch64-linux.nativelink-worker-lre-rs.imageTag
+        "container-image": "ghcr.io/tracemachina/nativelink-worker-lre-rs:8h9253qs3c1dcz80xjdj352b66ksm58c",
     },
     parents = ["@local-remote-execution//platforms:aarch64-linux"],
 )
@@ -51,8 +51,8 @@ platform(
 platform(
     name = "x86_64-apple-darwin",
     exec_properties = {
-        # nix eval .#packages.x86_64-darwin.nativelink-worker-lre-rs.imageTag
-        "lre-rs": "09pcycn3y2lblpd64cdca8sm6vvwzalv",
+        # tag is from nix eval .#packages.x86_64-darwin.nativelink-worker-lre-rs.imageTag
+        "container-image": "ghcr.io/tracemachina/nativelink-worker-lre-rs:09pcycn3y2lblpd64cdca8sm6vvwzalv",
     },
     parents = ["@local-remote-execution//platforms:x86_64-darwin"],
 )
@@ -61,8 +61,8 @@ platform(
     name = "x86_64-unknown-linux-gnu",
     constraint_values = ["@local-remote-execution//libc:glibc"],
     exec_properties = {
-        # nix eval .#packages.x86_64-linux.nativelink-worker-lre-rs.imageTag
-        "lre-rs": "l9azdnlsva9az170z9l61ph78xpcxjbw",
+        # tag is from nix eval .#packages.x86_64-linux.nativelink-worker-lre-rs.imageTag
+        "container-image": "ghcr.io/tracemachina/nativelink-worker-lre-rs:l9azdnlsva9az170z9l61ph78xpcxjbw",
     },
     parents = ["@local-remote-execution//platforms:x86_64-linux"],
 )
@@ -71,8 +71,8 @@ platform(
     name = "x86_64-unknown-linux-musl",
     constraint_values = ["@local-remote-execution//libc:musl"],
     exec_properties = {
-        # nix eval .#packages.x86_64-linux.nativelink-worker-lre-rs.imageTag
-        "lre-rs": "l9azdnlsva9az170z9l61ph78xpcxjbw",
+        # tag is from nix eval .#packages.x86_64-linux.nativelink-worker-lre-rs.imageTag
+        "container-image": "ghcr.io/tracemachina/nativelink-worker-lre-rs:l9azdnlsva9az170z9l61ph78xpcxjbw",
     },
     parents = ["@local-remote-execution//platforms:x86_64-linux"],
 )
