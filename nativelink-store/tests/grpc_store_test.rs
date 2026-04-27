@@ -1,5 +1,6 @@
 use core::pin::Pin;
 use core::time::Duration;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_lock::Mutex;
@@ -49,6 +50,8 @@ fn test_spec<T: Into<String>>(endpoint: T, use_legacy_resource_names: bool) -> G
         connections_per_endpoint: 0,
         rpc_timeout_s: 1,
         use_legacy_resource_names,
+        headers: HashMap::new(),
+        forward_headers: vec![],
     }
 }
 
