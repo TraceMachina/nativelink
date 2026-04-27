@@ -1232,7 +1232,7 @@ pub struct GrpcSpec {
     /// `InvalidArgument: Unsupported digest function` errors.
     ///
     /// Default: false
-    #[serde(default)]
+    #[serde(default, deserialize_with = "convert_boolean_with_shellexpand")]
     pub use_legacy_resource_names: bool,
 }
 
