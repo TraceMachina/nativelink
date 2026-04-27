@@ -14,7 +14,7 @@
 
 # Current supported Ubuntu version, Noble Numbat aka 24.04 LTS
 # Locked down to a specific revision to avoid issues with package versions
-ARG OS_VERSION=noble-20250925@sha256:728785b59223d755e3e5c5af178fab1be7031f3522c5ccd7a0b32b80d8248123
+ARG OS_VERSION=26.04@sha256:5e275723f82c67e387ba9e3c24baa0abdcb268917f276a0561c97bef9450d0b4
 # `--compilation_mode` to pass into bazel (eg: opt, dbg, fastbuild).
 ARG OPT_LEVEL=opt
 # Additional bazel flags.
