@@ -860,6 +860,14 @@ pub struct LocalWorkerConfig {
     /// to true and it is not supported the worker will exit with an error.
     /// Default: False.
     pub use_namespaces: Option<bool>,
+
+    /// Whether to use a mount namespace to isolate the worker root.  This is only
+    /// available on Linux and when `use_namespaces` is true.  It is highly recommended
+    /// provides additional hermeticity.  If explicitly set to true and it is not
+    /// supported or `use_namespaces` is not set to true the worker will exit with an
+    /// error.
+    /// Default: False.
+    pub use_mount_namespace: Option<bool>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
