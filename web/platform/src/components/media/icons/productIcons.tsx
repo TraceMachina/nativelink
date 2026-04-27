@@ -1,4 +1,4 @@
-import { component$, type PropsOf } from "@qwik.dev/core";
+import { type PropsOf, component$ } from "@qwik.dev/core";
 
 export const CAS = component$<PropsOf<"svg">>((props) => {
   return (
