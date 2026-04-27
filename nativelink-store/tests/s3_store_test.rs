@@ -781,3 +781,149 @@ async fn has_with_expired_result() -> Result<(), Error> {
 
     Ok(())
 }
+
+// Regression test for multipart upload chunk size calculation.
+// Verifies that chunk_count calculation: (max_size / MIN_MULTIPART_SIZE).clamp(0, MAX_UPLOAD_PARTS - 1) + 1
+// correctly handles files that result in the minimum chunk size being used.
+#[nativelink_test]
+async fn multipart_chunk_size_clamp_min() -> Result<(), Error> {
+    // Same as in s3_store.
+    const MIN_MULTIPART_SIZE: usize = 5 * 1024 * 1024; // 5mb.
+    // Use 4 chunks to test chunk calculation without excessive memory allocation.
+    const AC_ENTRY_SIZE: usize = MIN_MULTIPART_SIZE * 3 + 50;
+
+    let mut send_data: Vec<u8> = Vec::with_capacity(AC_ENTRY_SIZE);
+    for i in 0..send_data.capacity() {
+        send_data.push(u8::try_from((i * 3) % 256).expect("modulo 256 always fits in u8"));
+    }
+    let digest = DigestInfo::try_new(VALID_HASH1, send_data.len())?;
+
+    let mock_client = StaticReplayClient::new(vec![
+            ReplayEvent::new(
+                http::Request::builder()
+                    .uri(format!(
+                        "https://{BUCKET_NAME}.s3.{REGION}.amazonaws.com/{VALID_HASH1}-{AC_ENTRY_SIZE}?uploads",
+                    ))
+                    .method("POST")
+                    .body(SdkBody::empty())
+                    .unwrap(),
+                http::Response::builder()
+                    .status(StatusCode::OK)
+                    .body(SdkBody::from(
+                        r#"
+                        <InitiateMultipartUploadResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+                          <UploadId>Dummy-uploadid</UploadId>
+                        </InitiateMultipartUploadResult>"#
+                            .as_bytes(),
+                    ))
+                    .unwrap(),
+            ),
+            ReplayEvent::new(
+                http::Request::builder()
+                    .uri(format!(
+                        "https://{BUCKET_NAME}.s3.{REGION}.amazonaws.com/{VALID_HASH1}-{AC_ENTRY_SIZE}?x-id=UploadPart&partNumber=1&uploadId=Dummy-uploadid",
+                    ))
+                    .method("PUT")
+                    .header("content-type", "application/octet-stream")
+                    .header("content-length", "5242880")
+                    .body(SdkBody::from(&send_data[0..MIN_MULTIPART_SIZE]))
+                    .unwrap(),
+                http::Response::builder()
+                    .status(StatusCode::OK)
+                    .body(SdkBody::empty())
+                    .unwrap(),
+            ),
+            ReplayEvent::new(
+                http::Request::builder()
+                    .uri(format!(
+                        "https://{BUCKET_NAME}.s3.{REGION}.amazonaws.com/{VALID_HASH1}-{AC_ENTRY_SIZE}?x-id=UploadPart&partNumber=2&uploadId=Dummy-uploadid",
+                    ))
+                    .method("PUT")
+                    .header("content-type", "application/octet-stream")
+                    .header("content-length", "5242880")
+                    .body(SdkBody::from(&send_data[MIN_MULTIPART_SIZE..MIN_MULTIPART_SIZE * 2]))
+                    .unwrap(),
+                http::Response::builder()
+                    .status(StatusCode::OK)
+                    .body(SdkBody::empty())
+                    .unwrap(),
+            ),
+            ReplayEvent::new(
+                http::Request::builder()
+                    .uri(format!(
+                        "https://{BUCKET_NAME}.s3.{REGION}.amazonaws.com/{VALID_HASH1}-{AC_ENTRY_SIZE}?x-id=UploadPart&partNumber=3&uploadId=Dummy-uploadid",
+                    ))
+                    .method("PUT")
+                    .header("content-type", "application/octet-stream")
+                    .header("content-length", "5242880")
+                    .body(SdkBody::from(&send_data[MIN_MULTIPART_SIZE * 2..MIN_MULTIPART_SIZE * 3]))
+                    .unwrap(),
+                http::Response::builder()
+                    .status(StatusCode::OK)
+                    .body(SdkBody::empty())
+                    .unwrap(),
+            ),
+            ReplayEvent::new(
+                http::Request::builder()
+                    .uri(format!(
+                        "https://{BUCKET_NAME}.s3.{REGION}.amazonaws.com/{VALID_HASH1}-{AC_ENTRY_SIZE}?x-id=UploadPart&partNumber=4&uploadId=Dummy-uploadid",
+                    ))
+                    .method("PUT")
+                    .header("content-type", "application/octet-stream")
+                    .header("content-length", "50")
+                    .body(SdkBody::from(
+                        &send_data[MIN_MULTIPART_SIZE * 3..MIN_MULTIPART_SIZE * 3 + 50],
+                    ))
+                    .unwrap(),
+                http::Response::builder()
+                    .status(StatusCode::OK)
+                    .body(SdkBody::empty())
+                    .unwrap(),
+            ),
+            ReplayEvent::new(
+                http::Request::builder()
+                    .uri(format!(
+                        "https://{BUCKET_NAME}.s3.{REGION}.amazonaws.com/{VALID_HASH1}-{AC_ENTRY_SIZE}?uploadId=Dummy-uploadid",
+                    ))
+                    .method("POST")
+                    .header("content-length", "255")
+                    .body(SdkBody::from(concat!(
+                        r#"<CompleteMultipartUpload xmlns="http://s3.amazonaws.com/doc/2006-03-01/">"#,
+                        "<Part><PartNumber>1</PartNumber></Part>",
+                        "<Part><PartNumber>2</PartNumber></Part>",
+                        "<Part><PartNumber>3</PartNumber></Part>",
+                        "<Part><PartNumber>4</PartNumber></Part>",
+                        "</CompleteMultipartUpload>",
+                    )))
+                    .unwrap(),
+                http::Response::builder()
+                    .status(StatusCode::OK)
+                    .body(SdkBody::from(concat!(
+                        "<CompleteMultipartUploadResult>",
+                        "</CompleteMultipartUploadResult>",
+                    )))
+                    .unwrap(),
+            ),
+        ]);
+    let test_config = Builder::new()
+        .behavior_version(BehaviorVersion::v2025_08_07())
+        .region(Region::from_static(REGION))
+        .http_client(mock_client.clone())
+        .build();
+    let s3_client = aws_sdk_s3::Client::from_conf(test_config);
+    let store = S3Store::new_with_client_and_jitter(
+        &ExperimentalAwsSpec {
+            bucket: BUCKET_NAME.to_string(),
+            ..Default::default()
+        },
+        s3_client,
+        Arc::new(move |_delay| Duration::from_secs(0)),
+        MockInstantWrapped::default,
+    )?;
+    store
+        .update_oneshot(digest, send_data.clone().into())
+        .await
+        .unwrap();
+    mock_client.assert_requests_match(&[]);
+    Ok(())
+}
