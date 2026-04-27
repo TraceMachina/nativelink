@@ -103,7 +103,7 @@ jobs:
     name: ${{ matrix.test-name }}
     strategy:
       matrix:
-          test-name: [buildstream, buck2, rbe-toolchain] # Disabling mongo as it has to build all of mongo from scratch for some reason
+          test-name: [buildstream, buck2, rbe-toolchain, mongo]
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
