@@ -586,3 +586,53 @@ root in a new mount namespace. Note, `use_mount_namespace` only works if `use_na
 
 Note this only applies for non-Dockerised workers, as workers in Docker don't have permissions to make a new user
 namespace. If however you use privileged containers, this works as per non-Docker setups.
+
+## Authenticating to Upstream gRPC Stores
+
+When NativeLink proxies to an upstream remote cache, two fields on the `grpc`
+store control how credentials are attached to outgoing requests.
+
+### Static credentials (`headers`)
+
+Use `headers` for fixed service-account tokens or API keys that don't change
+per request:
+
+```json5
+"grpc": {
+  "endpoints": [{"address": "grpcs://remote-cache.example.com:8980"}],
+  "store_type": "cas",
+  "headers": {
+    "authorization": "Bearer my-service-account-token"
+  }
+}
+```
+
+### Forwarding client credentials (`forward_headers`)
+
+Use `forward_headers` to pass through credentials that the build client sends
+with each request. For example a short-lived JWT supplied via Bazel's
+`--remote_header=authorization=Bearer <token>` flag:
+
+```json5
+"grpc": {
+  "endpoints": [{"address": "grpcs://remote-cache.example.com:8980"}],
+  "store_type": "cas",
+  "forward_headers": ["authorization"]
+}
+```
+
+NativeLink captures every ASCII header from the inbound client request and
+stores it in the request context. Any name listed in `forward_headers` is then
+injected into the corresponding outgoing upstream call, so the upstream cache
+sees the same credential the build client presented.
+
+Both fields can be used together. `forward_headers` values are applied after
+`headers`, so a forwarded value will override a static one if both name the
+same header.
+
+### Distributed tracing
+
+Every outgoing upstream request also automatically receives the current W3C
+trace context (`traceparent` / `tracestate`), so traces span correctly across
+multiple NativeLink instances and into upstream services without any additional
+configuration.

@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use core::time::Duration;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use rand::Rng;
@@ -500,7 +501,16 @@ pub enum StoreSpec {
     ///   ],
     ///   "connections_per_endpoint": "5",
     ///   "rpc_timeout_s": "5m",
-    ///   "store_type": "ac"
+    ///   "store_type": "ac",
+    ///   // Static headers attached to every outgoing request to the upstream
+    ///   // remote cache. Useful for fixed service-account credentials.
+    ///   "headers": {
+    ///     "authorization": "Bearer my-static-token"
+    ///   },
+    ///   // Header names to copy from the inbound client request and forward to
+    ///   // the upstream remote cache. Use this to pass through dynamic
+    ///   // credentials such as a JWT sent by the build client.
+    ///   "forward_headers": ["authorization", "x-custom-token"]
     /// }
     /// ```
     ///
@@ -1234,6 +1244,24 @@ pub struct GrpcSpec {
     /// Default: false
     #[serde(default, deserialize_with = "convert_boolean_with_shellexpand")]
     pub use_legacy_resource_names: bool,
+
+    /// Static headers to attach to every outgoing gRPC request sent to this
+    /// store's upstream endpoints. Useful for fixed authentication tokens
+    /// (e.g. `{"authorization": "Bearer <token>"}`) and other static metadata.
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+
+    /// Header names to forward from the incoming client request to every
+    /// outgoing upstream request. The header value is taken from the client
+    /// request that triggered this store operation. Use this to pass through
+    /// dynamic credentials such as JWT tokens sent by build clients.
+    ///
+    /// Example: `["authorization", "x-custom-token"]`
+    ///
+    /// `NativeLink` also automatically injects the current OpenTelemetry trace
+    /// context (`traceparent` / `tracestate`) into every outgoing request.
+    #[serde(default)]
+    pub forward_headers: Vec<String>,
 }
 
 /// The possible error codes that might occur on an upstream request.

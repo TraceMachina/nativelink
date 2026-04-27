@@ -270,7 +270,16 @@
        ],
        "connections_per_endpoint": "5",
        "rpc_timeout_s": "5m",
-       "store_type": "ac"
+       "store_type": "ac",
+       // Static headers attached to every outgoing request to the upstream
+       // remote cache. Useful for fixed service-account credentials.
+       "headers": {
+         "authorization": "Bearer my-static-token"
+       },
+       // Header names to copy from the inbound client request and forward to
+       // the upstream remote cache. Use this to pass through dynamic
+       // credentials such as a JWT sent by the build client.
+       "forward_headers": ["authorization", "x-custom-token"]
      }
     },
     {
