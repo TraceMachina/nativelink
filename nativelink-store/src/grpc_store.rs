@@ -68,6 +68,7 @@ pub struct GrpcStore {
     connection_manager: ConnectionManager,
     /// Per-RPC timeout. `Duration::ZERO` means disabled.
     rpc_timeout: Duration,
+    use_legacy_resource_names: bool,
 }
 
 impl GrpcStore {
@@ -110,6 +111,7 @@ impl GrpcStore {
                 jitter_fn,
             ),
             rpc_timeout,
+            use_legacy_resource_names: spec.use_legacy_resource_names,
         }))
     }
 
@@ -676,22 +678,31 @@ impl StoreDriver for GrpcStore {
             return self.update_action_result_from_bytes(digest, reader).await;
         }
 
-        let digest_function = Context::current()
-            .get::<DigestHasherFunc>()
-            .map_or_else(default_digest_hasher_func, |v| *v)
-            .proto_digest_func()
-            .as_str_name()
-            .to_ascii_lowercase();
-
         let mut buf = Uuid::encode_buffer();
-        let resource_name = format!(
-            "{}/uploads/{}/blobs/{}/{}/{}",
-            &self.instance_name,
-            Uuid::new_v4().hyphenated().encode_lower(&mut buf),
-            digest_function,
-            digest.packed_hash(),
-            digest.size_bytes(),
-        );
+        let resource_name = if self.use_legacy_resource_names {
+            format!(
+                "{}/uploads/{}/blobs/{}/{}",
+                &self.instance_name,
+                Uuid::new_v4().hyphenated().encode_lower(&mut buf),
+                digest.packed_hash(),
+                digest.size_bytes(),
+            )
+        } else {
+            let digest_function = Context::current()
+                .get::<DigestHasherFunc>()
+                .map_or_else(default_digest_hasher_func, |v| *v)
+                .proto_digest_func()
+                .as_str_name()
+                .to_ascii_lowercase();
+            format!(
+                "{}/uploads/{}/blobs/{}/{}/{}",
+                &self.instance_name,
+                Uuid::new_v4().hyphenated().encode_lower(&mut buf),
+                digest_function,
+                digest.packed_hash(),
+                digest.size_bytes(),
+            )
+        };
         trace!(
             resource_name = %resource_name,
             digest_hash = %digest.packed_hash(),
@@ -779,20 +790,28 @@ impl StoreDriver for GrpcStore {
             return writer.send_eof();
         }
 
-        let digest_function = Context::current()
-            .get::<DigestHasherFunc>()
-            .map_or_else(default_digest_hasher_func, |v| *v)
-            .proto_digest_func()
-            .as_str_name()
-            .to_ascii_lowercase();
-
-        let resource_name = format!(
-            "{}/blobs/{}/{}/{}",
-            &self.instance_name,
-            digest_function,
-            digest.packed_hash(),
-            digest.size_bytes(),
-        );
+        let resource_name = if self.use_legacy_resource_names {
+            format!(
+                "{}/blobs/{}/{}",
+                &self.instance_name,
+                digest.packed_hash(),
+                digest.size_bytes(),
+            )
+        } else {
+            let digest_function = Context::current()
+                .get::<DigestHasherFunc>()
+                .map_or_else(default_digest_hasher_func, |v| *v)
+                .proto_digest_func()
+                .as_str_name()
+                .to_ascii_lowercase();
+            format!(
+                "{}/blobs/{}/{}/{}",
+                &self.instance_name,
+                digest_function,
+                digest.packed_hash(),
+                digest.size_bytes(),
+            )
+        };
 
         let local_state = LocalState {
             resource_name,
