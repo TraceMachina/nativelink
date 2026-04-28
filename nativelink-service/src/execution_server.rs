@@ -277,6 +277,8 @@ impl ExecutionServer {
             )
             .await?;
 
+        debug!(?action_info, "Scheduling action");
+
         let action_listener = instance_info
             .scheduler
             .add_action(OperationId::default(), Arc::new(action_info))
