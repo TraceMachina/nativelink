@@ -79,5 +79,4 @@ def _impl(ctx):
 armeabi_cc_toolchain_config = rule(
     implementation = _impl,
     attrs = {},
-    provides = [CcToolchainConfigInfo],
 )
