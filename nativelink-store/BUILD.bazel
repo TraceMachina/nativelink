@@ -180,6 +180,7 @@ rust_test_suite(
         "@crates//:rand",
         "@crates//:redis",
         "@crates//:redis-test",
+        "@crates//:regex",
         "@crates//:reqwest",
         "@crates//:serde_json",
         "@crates//:serial_test",
