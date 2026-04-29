@@ -569,7 +569,8 @@ prevent timeouts and reduce pressure during spikes.
 
 We've seen in some client configurations issues where Bazel in particular can leave zombie processes around on workers.
 To solve this, we've two options around sandboxing that are currently switched off by default for backwards
-compatibility, but are recommended for production configurations
+compatibility, but are recommended for production configurations. Note this only applies for non-Dockerised workers,
+as workers in Docker can't make the new user namespace as they're already in a [chroot](https://en.wikipedia.org/wiki/Chroot).
 
 ```json5
 workers: [{

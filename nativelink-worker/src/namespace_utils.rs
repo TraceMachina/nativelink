@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::io::Error;
+
 /// A wrapper around a Child to send SIGTERM to kill the process instead
 /// of SIGKILL as it's wrapped by the stub.
 #[derive(Debug)]
@@ -27,7 +29,7 @@ impl MaybeNamespacedChild {
 
     /// Send SIGTERM if namespaced which sends SIGKILL to the child, otherwise
     /// send SIGKILL to the child.
-    pub async fn kill(&mut self) -> Result<(), std::io::Error> {
+    pub async fn kill(&mut self) -> Result<(), Error> {
         if self.namespaced {
             // It would be safer to call send_signal to use the pidfd to avoid
             // races, however this is still an experimental API, see:
@@ -44,13 +46,18 @@ impl MaybeNamespacedChild {
         self.child.kill().await
     }
 
-    pub fn try_wait(&mut self) -> Result<Option<std::process::ExitStatus>, std::io::Error> {
+    pub fn try_wait(&mut self) -> Result<Option<std::process::ExitStatus>, Error> {
         self.child.try_wait()
     }
 
-    pub async fn wait(&mut self) -> Result<std::process::ExitStatus, std::io::Error> {
+    pub async fn wait(&mut self) -> Result<std::process::ExitStatus, Error> {
         self.child.wait().await
     }
+}
+
+fn exit(status: i32) -> ! {
+    // SAFETY: It is always safe to _exit.
+    unsafe { libc::_exit(status) };
 }
 
 /// Determines whether the namespaces provided by this module are supported
@@ -71,27 +78,48 @@ pub fn namespaces_supported(mount: bool) -> bool {
             }
             // SAFETY: Unshare does not have any unsafe effects and modifies no
             // memory, it is also async-signal-safe.
-            if unsafe { libc::unshare(flags) } == 0
-                && write_signal_safe(c"/proc/self/uid_map", uid_map.as_bytes()).is_ok()
-            {
-                // SAFETY: Mount uses no memory and is async-signal-safe.
-                if !mount
-                    || unsafe {
-                        libc::mount(
-                            core::ptr::null(),
-                            c"/".as_ptr(),
-                            core::ptr::null(),
-                            libc::MS_REC | libc::MS_PRIVATE,
-                            core::ptr::null(),
-                        )
-                    } == 0
+            if unsafe { libc::unshare(flags) } == 0 {
+                match write_signal_safe(c"/proc/self/uid_map", uid_map.as_bytes()) {
+                    Ok(()) => {
+                        if !mount {
+                            exit(0);
+                        }
+                        // SAFETY: Mount uses no memory and is async-signal-safe.
+                        if unsafe {
+                            libc::mount(
+                                core::ptr::null(),
+                                c"/".as_ptr(),
+                                core::ptr::null(),
+                                libc::MS_REC | libc::MS_PRIVATE,
+                                core::ptr::null(),
+                            )
+                        } == 0
+                        {
+                            exit(0);
+                        } else {
+                            println!(
+                                "Failure to mount during namespace checking. Err = {}",
+                                Error::last_os_error()
+                            );
+                        }
+                    }
+                    Err(uid_map_result) => {
+                        println!(
+                            "Error while writing to /proc/self/uid_map. Err = {uid_map_result}, {}",
+                            Error::last_os_error(),
+                        );
+                    }
+                }
+            } else {
+                let last_os_error = Error::last_os_error();
+                println!("Error during unshare. Err = {}", last_os_error);
+                if let Some(os_error) = last_os_error.raw_os_error()
+                    && os_error == libc::EPERM
                 {
-                    // SAFETY: It is always safe to _exit.
-                    unsafe { libc::_exit(0) };
+                    println!("If the worker is inside Docker, namespaces don't work!");
                 }
             }
-            // SAFETY: It is always safe to _exit.
-            unsafe { libc::_exit(1) };
+            exit(1);
         }
         pid if pid > 0 => {
             let mut status = 0;
@@ -219,7 +247,7 @@ impl Drop for OwnedFd {
 fn perform_remount(
     root_action_directory: &core::ffi::CStr,
     action_directory: &core::ffi::CStr,
-) -> Result<(), std::io::Error> {
+) -> Result<(), Error> {
     // Make the mount namespace private to avoid changes propagating back to the host.
     // SAFETY: mount is async-signal-safe. We pass a null pointer for the source and valid
     // C-string pointers for the target. The parameters match POSIX requirements.
@@ -233,7 +261,7 @@ fn perform_remount(
         )
     } != 0
     {
-        return Err(std::io::Error::last_os_error());
+        return Err(Error::last_os_error());
     }
 
     // Bind mount the action directory to itself to "save" its current contents before
@@ -249,14 +277,14 @@ fn perform_remount(
         )
     } != 0
     {
-        return Err(std::io::Error::last_os_error());
+        return Err(Error::last_os_error());
     }
 
     // Open the directory with O_PATH so we can find it after masking the parent.
     // SAFETY: open is async-signal-safe. The path is a valid C-string.
     let fd = unsafe { libc::open(action_directory.as_ptr(), libc::O_PATH) };
     if fd < 0 {
-        return Err(std::io::Error::last_os_error());
+        return Err(Error::last_os_error());
     }
     let fd = OwnedFd(fd);
 
@@ -272,13 +300,13 @@ fn perform_remount(
         )
     } != 0
     {
-        return Err(std::io::Error::last_os_error());
+        return Err(Error::last_os_error());
     }
 
     // Recreate the specific operation's directory inside the empty tmpfs.
     // SAFETY: mkdir is async-signal-safe and the path is a valid C-string.
     if unsafe { libc::mkdir(action_directory.as_ptr(), 0o777) } != 0 {
-        return Err(std::io::Error::last_os_error());
+        return Err(Error::last_os_error());
     }
 
     // Bind mount the saved directory back from the file descriptor to the new path.
@@ -303,7 +331,7 @@ fn perform_remount(
         )
     } != 0
     {
-        return Err(std::io::Error::last_os_error());
+        return Err(Error::last_os_error());
     }
 
     Ok(())
@@ -334,20 +362,20 @@ pub fn configure_namespace(
     // SAFETY: Unshare does not have any unsafe effects and modifies no
     // memory, it is also async-signal-safe.
     if unsafe { libc::unshare(flags) } != 0 {
-        return Err(std::io::Error::last_os_error());
+        return Err(Error::last_os_error());
     }
 
     if let Err(e) = write_signal_safe(c"/proc/self/setgroups", b"deny") {
         // If we fail to write this it will just make gid_map fail later,
         // but we may be able to continue anyway.
         if e != libc::EPERM && e != libc::EACCES && e != libc::ENOENT {
-            return Err(std::io::Error::from_raw_os_error(e));
+            return Err(Error::from_raw_os_error(e));
         }
     }
 
     let mut buffer = [0u8; 32];
     write_signal_safe(c"/proc/self/uid_map", create_map_line(uid, &mut buffer))
-        .map_err(std::io::Error::from_raw_os_error)?;
+        .map_err(Error::from_raw_os_error)?;
 
     // If we can't write to gid_map, we just ignore it. This usually happens if
     // setgroups was not written to (because of permissions) or if we are in a
@@ -356,7 +384,7 @@ pub fn configure_namespace(
         // If this fails then we can probably continue just fine, it's just
         // the uid that's important.
         if e != libc::EPERM && e != libc::EACCES {
-            return Err(std::io::Error::from_raw_os_error(e));
+            return Err(Error::from_raw_os_error(e));
         }
     }
 
@@ -373,7 +401,7 @@ pub fn configure_namespace(
         // SAFETY: We just called a libc function that failed.
         let err = unsafe { *libc::__errno_location() };
         if err != libc::EPERM && err != libc::EACCES {
-            return Err(std::io::Error::from_raw_os_error(err));
+            return Err(Error::from_raw_os_error(err));
         }
     }
 
@@ -384,8 +412,7 @@ pub fn configure_namespace(
         0 => {
             // SAFETY: This function is async-signal-safe and references no memory or resources.
             if unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) } != 0 {
-                // SAFETY: It's always safe to _exit.
-                unsafe { libc::_exit(1) };
+                exit(1);
             }
             Ok(())
         }
@@ -417,8 +444,7 @@ pub fn configure_namespace(
                     let res = unsafe { libc::waitpid(-1, &raw mut status, libc::WNOHANG) };
                     if res == pid {
                         if libc::WIFEXITED(status) {
-                            // SAFETY: It's always safe to _exit.
-                            unsafe { libc::_exit(libc::WEXITSTATUS(status)) };
+                            exit(libc::WEXITSTATUS(status));
                         } else if libc::WIFSIGNALED(status) {
                             // Try to exit with the same signal as the child.
                             // SAFETY: The sigset was previously allocated and used on the stack.
@@ -432,14 +458,12 @@ pub fn configure_namespace(
                             // SAFETY: It's always safe to raise and as a fallback we _exit below.
                             unsafe { libc::raise(libc::WTERMSIG(status)) };
                             // We shouldn't get here, but it's a fallback in case.
-                            // SAFETY: It's always safe to _exit.
-                            unsafe { libc::_exit(libc::WTERMSIG(status)) };
+                            exit(libc::WTERMSIG(status));
                         }
                     } else if res <= 0 {
                         // SAFETY: We just called a libc function that failed.
                         if res == -1 && unsafe { *libc::__errno_location() } != libc::EINTR {
-                            // SAFETY: It's always safe to _exit.
-                            unsafe { libc::_exit(255) };
+                            exit(255);
                         }
                         // Break the reaping loop to wait for signals.
                         break;
@@ -456,6 +480,6 @@ pub fn configure_namespace(
                 }
             }
         }
-        _ => Err(std::io::Error::last_os_error()),
+        _ => Err(Error::last_os_error()),
     }
 }

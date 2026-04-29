@@ -627,14 +627,20 @@ pub async fn new_local_worker(
 
     #[cfg(not(target_os = "linux"))]
     if config.use_namespaces.is_some_and(core::convert::identity) {
-        return Err(make_err!(Code::Unavailable, "Namespaces not supported"));
+        return Err(make_err!(
+            Code::Unavailable,
+            "Namespaces not supported on non-Linux OSes"
+        ));
     }
     #[cfg(not(target_os = "linux"))]
     if config
         .use_mount_namespace
         .is_some_and(core::convert::identity)
     {
-        return Err(make_err!(Code::Unavailable, "Namespaces not supported"));
+        return Err(make_err!(
+            Code::Unavailable,
+            "Mount namespaces not supported on non-Linux OSes"
+        ));
     }
 
     let running_actions_manager =
