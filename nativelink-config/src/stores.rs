@@ -1219,10 +1219,10 @@ pub struct GrpcSpec {
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub rpc_timeout_s: u64,
 
-    /// Use legacy ByteStream resource name format, omitting the digest
+    /// Use legacy `ByteStream` resource name format, omitting the digest
     /// function component from the path.
     ///
-    /// Modern NativeLink generates resource names like:
+    /// Modern `NativeLink` generates resource names like:
     ///   `{instance}/blobs/{digest_function}/{hash}/{size}`
     ///
     /// Older backends (e.g. Buildbarn pre-v0.3) expect the original format:
