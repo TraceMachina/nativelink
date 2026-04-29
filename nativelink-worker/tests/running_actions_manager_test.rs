@@ -4066,11 +4066,18 @@ exit 1
             },
         )?);
 
+        // Can't just use /bin/sh because of Nix paths
+        let sh_path = which::which("sh")
+            .map_err(|e| Error::from_std_err(Code::Internal, &e))
+            .err_tip(|| "Getting sh_path path")?
+            .to_string_lossy()
+            .to_string();
+
         let input_root_digest = serialize_and_upload_message(
             &Directory {
                 symlinks: vec![SymlinkNode {
                     name: "my_sh".to_string(),
-                    target: "/bin/sh".to_string(),
+                    target: sh_path,
                     node_properties: None,
                 }],
                 ..Default::default()
