@@ -3,6 +3,7 @@ use core::time::Duration;
 use std::sync::Arc;
 
 use async_lock::Mutex;
+use futures::stream::unfold;
 use futures::{Stream, StreamExt};
 use nativelink_config::stores::{GrpcEndpoint, GrpcSpec, Retry, StoreType};
 use nativelink_error::{Error, ResultExt};
@@ -28,8 +29,9 @@ use tonic::{Request, Response, Status, Streaming};
 use tracing::info;
 
 const VALID_HASH: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
+const RAW_INPUT: &str = "123";
 
-fn test_spec<T: Into<String>>(endpoint: T) -> GrpcSpec {
+fn test_spec<T: Into<String>>(endpoint: T, use_legacy_resource_names: bool) -> GrpcSpec {
     GrpcSpec {
         instance_name: String::new(),
         endpoints: vec![GrpcEndpoint {
@@ -46,12 +48,13 @@ fn test_spec<T: Into<String>>(endpoint: T) -> GrpcSpec {
         max_concurrent_requests: 0,
         connections_per_endpoint: 0,
         rpc_timeout_s: 1,
+        use_legacy_resource_names,
     }
 }
 
 #[nativelink_test]
 async fn fast_find_missing_blobs() -> Result<(), Error> {
-    let spec = test_spec("http://foobar");
+    let spec = test_spec("http://foobar", false);
     let store = GrpcStore::new(&spec).await?;
     let request = Request::new(FindMissingBlobsRequest {
         instance_name: String::new(),
@@ -70,28 +73,45 @@ async fn fast_find_missing_blobs() -> Result<(), Error> {
 #[derive(Debug, Clone)]
 struct FakeStreamServer {
     write_requests: Arc<Mutex<Vec<WriteRequest>>>,
+    read_requests: Arc<Mutex<Vec<ReadRequest>>>,
 }
 
 impl FakeStreamServer {
     fn new() -> Self {
         Self {
             write_requests: Arc::new(Mutex::new(vec![])),
+            read_requests: Arc::new(Mutex::new(vec![])),
         }
     }
 }
 
 type ReadStream = Pin<Box<dyn Stream<Item = Result<ReadResponse, Status>> + Send + 'static>>;
 
+struct ReaderState {
+    responded: bool,
+}
+
 #[tonic::async_trait]
 impl ByteStream for FakeStreamServer {
     type ReadStream = ReadStream;
 
-    #[allow(clippy::unimplemented)]
     async fn read(
         &self,
-        _grpc_request: Request<ReadRequest>,
+        grpc_request: Request<ReadRequest>,
     ) -> Result<Response<Self::ReadStream>, Status> {
-        unimplemented!();
+        let read_request = grpc_request.into_inner();
+        self.read_requests.lock().await.push(read_request);
+
+        let folded = unfold(ReaderState { responded: false }, async move |state| {
+            if state.responded {
+                return None;
+            }
+            let response = ReadResponse {
+                data: RAW_INPUT.as_bytes().into(),
+            };
+            Some((Ok(response), ReaderState { responded: true }))
+        });
+        Ok(Response::new(Box::pin(folded)))
     }
 
     async fn write(
@@ -137,12 +157,15 @@ async fn make_fake_bytestream_server() -> (FakeStreamServer, u16) {
     (fake_stream_server, port)
 }
 
-#[nativelink_test]
-async fn write_update_works() -> Result<(), Error> {
-    const RAW_INPUT: &str = "123";
-
+async fn write_update_works_core(
+    use_legacy_resource_names: bool,
+    upload_pattern: Regex,
+) -> Result<(), Error> {
     let (server, port) = make_fake_bytestream_server().await;
-    let spec = test_spec(format!("http://localhost:{port}"));
+    let spec = test_spec(
+        format!("http://localhost:{port}"),
+        use_legacy_resource_names,
+    );
     let store = GrpcStore::new(&spec).await?;
     let digest = DigestInfo::try_new(VALID_HASH, RAW_INPUT.len()).unwrap();
 
@@ -164,7 +187,6 @@ async fn write_update_works() -> Result<(), Error> {
     let write_requests = server.write_requests.lock().await;
     assert_eq!(write_requests.len(), 1);
     let write_request = write_requests.first().unwrap();
-    let upload_pattern = Regex::new("/uploads/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/blobs/sha256/0123456789abcdef000000000000000000010000000000000123456789abcdef/3").unwrap();
     assert!(
         upload_pattern.is_match(&write_request.resource_name),
         "resource name: {}",
@@ -172,4 +194,55 @@ async fn write_update_works() -> Result<(), Error> {
     );
     assert_eq!(write_request.data, RAW_INPUT.as_bytes());
     Ok(())
+}
+
+#[nativelink_test]
+async fn write_update_works() -> Result<(), Error> {
+    let upload_pattern = Regex::new("/uploads/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/blobs/sha256/0123456789abcdef000000000000000000010000000000000123456789abcdef/3").unwrap();
+    write_update_works_core(false, upload_pattern).await
+}
+
+#[nativelink_test]
+async fn write_update_works_with_legacy_resource_names() -> Result<(), Error> {
+    let upload_pattern = Regex::new("/uploads/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/blobs/0123456789abcdef000000000000000000010000000000000123456789abcdef/3").unwrap();
+    write_update_works_core(true, upload_pattern).await
+}
+
+async fn read_works_core(
+    use_legacy_resource_names: bool,
+    upload_pattern: &str,
+) -> Result<(), Error> {
+    let (server, port) = make_fake_bytestream_server().await;
+    let spec = test_spec(
+        format!("http://localhost:{port}"),
+        use_legacy_resource_names,
+    );
+    let store = GrpcStore::new(&spec).await?;
+    let digest = DigestInfo::try_new(VALID_HASH, RAW_INPUT.len()).unwrap();
+
+    let (tx, mut rx) = make_buf_channel_pair();
+    store.get_part(digest, tx, 0, None).await.unwrap();
+    let bytes = rx.recv().await?;
+    assert_eq!(bytes, RAW_INPUT.as_bytes());
+
+    let read_requests = server.read_requests.lock().await;
+    assert_eq!(read_requests.len(), 1);
+    let read_request = read_requests.first().unwrap();
+    assert_eq!(upload_pattern, &read_request.resource_name,);
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn read_works() -> Result<(), Error> {
+    let upload_pattern =
+        "/blobs/sha256/0123456789abcdef000000000000000000010000000000000123456789abcdef/3";
+    read_works_core(false, upload_pattern).await
+}
+
+#[nativelink_test]
+async fn read_works_with_legacy_resource_names() -> Result<(), Error> {
+    let upload_pattern =
+        "/blobs/0123456789abcdef000000000000000000010000000000000123456789abcdef/3";
+    read_works_core(true, upload_pattern).await
 }

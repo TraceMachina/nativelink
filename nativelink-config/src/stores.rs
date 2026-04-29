@@ -1218,6 +1218,22 @@ pub struct GrpcSpec {
     /// Default: 0 (disabled)
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub rpc_timeout_s: u64,
+
+    /// Use legacy `ByteStream` resource name format, omitting the digest
+    /// function component from the path.
+    ///
+    /// Modern `NativeLink` generates resource names like:
+    ///   `{instance}/blobs/{digest_function}/{hash}/{size}`
+    ///
+    /// Older backends (e.g. Buildbarn pre-v0.3) expect the original format:
+    ///   `{instance}/blobs/{hash}/{size}`
+    ///
+    /// Set this to `true` when connecting to such backends to avoid
+    /// `InvalidArgument: Unsupported digest function` errors.
+    ///
+    /// Default: false
+    #[serde(default, deserialize_with = "convert_boolean_with_shellexpand")]
+    pub use_legacy_resource_names: bool,
 }
 
 /// The possible error codes that might occur on an upstream request.

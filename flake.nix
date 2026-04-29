@@ -482,6 +482,7 @@
               pkgs.git-cliff
               pkgs.buck2
               packages.update-module-hashes
+              pkgs.python3
 
               # Rust
               bazel
