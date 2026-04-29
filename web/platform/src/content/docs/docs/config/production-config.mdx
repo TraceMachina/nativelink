@@ -569,7 +569,7 @@ prevent timeouts and reduce pressure during spikes.
 
 We've seen in some client configurations issues where Bazel in particular can leave zombie processes around on workers.
 To solve this, we've two options around sandboxing that are currently switched off by default for backwards
-compatibility, but are recommended for production configurations
+compatibility, but are recommended for production configurations.
 
 ```json5
 workers: [{
@@ -583,3 +583,6 @@ workers: [{
 
 `use_namespaces` enables process namespacing for workers, and `use_mount_namespace` then also isolates the worker
 root in a new mount namespace. Note, `use_mount_namespace` only works if `use_namespaces` is switched on as well.
+
+Note this only applies for non-Dockerised workers, as workers in Docker don't have permissions to make a new user
+namespace. If however you use privileged containers, this works as per non-Docker setups.
