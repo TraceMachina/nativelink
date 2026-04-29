@@ -41,6 +41,7 @@ Nvidia
 NVMe
 hello@nativelink.com
 [Nn]ative[Ll]ink
+namespacing
 [Nn]anophotonic
 OCI
 onboarding
@@ -85,7 +86,7 @@ XCode
 CMake
 Gradle
 Pantsbuild
-sandboxing
+[Ss]andboxing
 [Cc]onfig
 bytestream
 [Ff]ailover
