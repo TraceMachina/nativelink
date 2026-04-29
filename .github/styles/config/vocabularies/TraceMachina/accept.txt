@@ -132,3 +132,4 @@ kubectl
 [Mm]itigations
 [Pp]recompute
 attrs
+chroot
