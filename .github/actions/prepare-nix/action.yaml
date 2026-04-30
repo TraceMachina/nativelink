@@ -17,12 +17,15 @@ runs:
         source-tag: v3.13.0
 
     - name: Setup attic cache
-      run: |
-        nix build nixpkgs#attic-client
-        # Note NATIVELINK_ATTIC_TOKEN is blank for PR builds as they don't have secret access
-        ./result/bin/attic login uc1-dev https://attic.uc1.scdev.nativelink.net/ $NATIVELINK_ATTIC_TOKEN
-        ./result/bin/attic use nativelink
-        ./result/bin/attic watch-store nativelink &
-      shell: bash
-      env:
-        NATIVELINK_ATTIC_TOKEN: ${{ inputs.nativelink_attic_token }}
+      uses: >- # v4
+        nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60
+      with:
+        timeout_minutes: 10
+        max_attempts: 3
+        command: |
+          nix build nixpkgs#attic-client
+          # Note NATIVELINK_ATTIC_TOKEN is blank for PR builds as they don't have secret access
+          ./result/bin/attic login uc1-dev https://attic.uc1.scdev.nativelink.net/ ${{ inputs.nativelink_attic_token }}
+          ./result/bin/attic use nativelink
+          ./result/bin/attic watch-store nativelink &
+        shell: bash
