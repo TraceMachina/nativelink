@@ -35,7 +35,7 @@ const SiRockylinux = (props) =>
 
 export const Testimonial = component$(() => {
   return (
-    <div class="flex flex-col gap-10 flex justify-center items-center pb-12">
+    <div class="flex flex-col gap-10 flex justify-center items-center section-spacing-minor">
       <div class="w-full bg-gradient-to-r from-white to-[#707098] bg-clip-text px-14 py-6 text-center text-lg leading-none tracking-normal text-transparent md:w-[891px] md:px-0 md:text-justify md:text-[36px]">
         "I asked about some issues a month ago and got swift feedback. We've
         been running NativeLink in production for about 2 weeks with great

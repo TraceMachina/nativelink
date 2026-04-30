@@ -52,7 +52,7 @@ export const Contributors = component$(() => {
   ];
 
   return (
-    <div class="flex min-h-fit w-full flex-col items-center justify-center py-16">
+    <div class="flex min-h-fit w-full flex-col items-center justify-center section-spacing-minor">
       {/* Row 1 - Label */}
       <div class={"flex items-center justify-center"}>
         <Label

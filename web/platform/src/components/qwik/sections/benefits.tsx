@@ -26,7 +26,7 @@ const benefits = [
 
 export const Benefits = component$(() => {
   return (
-    <div class="flex w-full flex-col items-center justify-center gap-10 py-20">
+    <div class="flex w-full flex-col items-center justify-center gap-10 section-spacing-major">
       <Label text="the nativelink difference" class="text-base px-4" />
       <div class="flex flex-col gap-10 md:flex-row">
         {benefits.map((benefit, _index) => (
