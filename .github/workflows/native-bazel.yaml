@@ -63,6 +63,16 @@ jobs:
           fi
         shell: bash
 
+      - name: Check for changes as a result of Bazel
+        run: |
+          if [ `git status --porcelain=1 | wc -l` -ne 0 ]; then\
+            git status ; \
+            git diff; \
+            echo "Changes seen!"; \
+            exit 1;\
+          fi
+        shell: bash
+
   redis-store-tester:
     name: Redis store tester
     runs-on: ubuntu-24.04

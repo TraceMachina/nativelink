@@ -25,3 +25,4 @@ user.bazelrc
 *.log
 buck-out/
 nativelink_config.schema.json
+bc
