@@ -48,6 +48,7 @@ jobs:
         run: >
           nix develop --impure --command
           bash -c "bazel run \
+           --lockfile_mode=error \
            --verbose_failures \
            @local-remote-execution//examples:${TOOLCHAIN}"
 

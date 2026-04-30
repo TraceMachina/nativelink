@@ -42,10 +42,10 @@ jobs:
         run: |
           if [ "$RUNNER_OS" == "Linux" ]; then
             nix develop --impure --command \
-            bash -c "bazel test ... --verbose_failures"
+            bash -c "bazel test ... --verbose_failures --lockfile_mode=error"
           elif [ "$RUNNER_OS" == "macOS" ]; then
             nix develop --impure --command \
-            bash -c "bazel test //... --verbose_failures"
+            bash -c "bazel test //... --verbose_failures --lockfile_mode=error"
           else
             echo "Unsupported runner OS: $RUNNER_OS"
             exit 1

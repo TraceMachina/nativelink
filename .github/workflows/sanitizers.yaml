@@ -45,5 +45,5 @@ jobs:
           repository-cache: true
 
       - name: Run Bazel tests
-        run: bazel test --config=${{ matrix.sanitizer }} --verbose_failures //...
+        run: bazel test --config=${{ matrix.sanitizer }} --lockfile_mode=error --verbose_failures //...
         shell: bash
