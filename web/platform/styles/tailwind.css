@@ -49,43 +49,54 @@ nav a,
 }
 
 /* Systematic heading hierarchy using 1.333 (perfect fourth) scale */
-h1, .h1 {
+/* Only apply to main content headings, not component-scoped headings */
+main > section h1,
+main > div > h1,
+.hero h1,
+h1:not([class*="text-"]):not(.card *, .faq *, [class*="px-"] *) {
    font-size: 96px;
    font-weight: 700;
    line-height: 1.15;
    text-wrap: balance;
 }
 
-h2, .h2 {
-   font-size: 72px;
+/* H2-H6 should only apply to documentation/content pages, not components */
+article h2,
+.content h2,
+main > section > h2 {
+   font-size: 48px;
    font-weight: 700;
    line-height: 1.2;
    text-wrap: balance;
 }
 
-h3, .h3 {
-   font-size: 54px;
+article h3,
+.content h3 {
+   font-size: 36px;
    font-weight: 600;
    line-height: 1.25;
    text-wrap: balance;
 }
 
-h4, .h4 {
-   font-size: 40px;
+article h4,
+.content h4 {
+   font-size: 27px;
    font-weight: 600;
    line-height: 1.3;
    text-wrap: balance;
 }
 
-h5, .h5 {
-   font-size: 30px;
+article h5,
+.content h5 {
+   font-size: 20px;
    font-weight: 600;
    line-height: 1.4;
    text-wrap: balance;
 }
 
-h6, .h6 {
-   font-size: 22px;
+article h6,
+.content h6 {
+   font-size: 16px;
    font-weight: 600;
    line-height: 1.5;
    text-wrap: balance;
@@ -93,22 +104,36 @@ h6, .h6 {
 
 /* Responsive heading sizes for mobile */
 @media (max-width: 768px) {
-   h1, .h1 {
+   main > section h1,
+   main > div > h1,
+   .hero h1,
+   h1:not([class*="text-"]):not(.card *, .faq *, [class*="px-"] *) {
       font-size: 48px;
    }
-   h2, .h2 {
-      font-size: 36px;
+
+   article h2,
+   .content h2,
+   main > section > h2 {
+      font-size: 32px;
    }
-   h3, .h3 {
-      font-size: 28px;
+
+   article h3,
+   .content h3 {
+      font-size: 24px;
    }
-   h4, .h4 {
-      font-size: 22px;
+
+   article h4,
+   .content h4 {
+      font-size: 20px;
    }
-   h5, .h5 {
+
+   article h5,
+   .content h5 {
       font-size: 18px;
    }
-   h6, .h6 {
+
+   article h6,
+   .content h6 {
       font-size: 16px;
    }
 }
