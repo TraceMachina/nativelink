@@ -46,7 +46,7 @@ export const VideoCard = component$<VideoCard>(
           </video>
         </div>
         <div class="px-6 py-4">
-          <h2 class="mb-2 flex h-24 items-center justify-start pr-16 text-xl font-bold">
+          <h2 class="mb-2 flex min-h-24 items-center justify-start text-xl font-bold">
             <LinearGradient text={headline} />
           </h2>
           <p class="text-base text-gray-400">{description}</p>
