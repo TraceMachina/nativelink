@@ -66,7 +66,7 @@ const DesktopNav = component$<DesktopNavProps>(({ url, scrolled }) => {
     <nav
       class={`w-[50vw] h-14 hidden md:flex justify-center items-center z-40 transition-all duration-300 ${scrolled.value ? "" : ""}`}
     >
-      <ul class="hidden md:flex w-full backdrop-filter backdrop-blur-md text-white px-4 border-white/10 z-60 gap-6 rounded-2xl bg-white/10 border h-12 justify-center items-center">
+      <ul class="hidden md:flex w-full backdrop-filter backdrop-blur-md text-black px-4 border-black/10 z-60 gap-6 rounded-2xl bg-white/50 border h-12 justify-center items-center">
         {links.map((link) => (
           <NavLink
             key={link.name}
@@ -90,17 +90,17 @@ interface MobileNavProps {
 const MobileNav = component$<MobileNavProps>(({ url, navState }) => {
   return (
     <nav
-      class={`fixed top-0 h-full z-40 right-0 w-[100svw] bg-black transition-transform duration-300 ease-in-out ${
+      class={`fixed top-0 h-full z-40 right-0 w-[100svw] bg-white border-l border-black/10 transition-transform duration-300 ease-in-out ${
         navState.value ? "translate-x-0" : "translate-x-full"
       } md:hidden`}
     >
-      <ul class="text-white w-full h-full flex flex-col justify-center items-center gap-10">
+      <ul class="text-black w-full h-full flex flex-col justify-center items-center gap-10">
         {links.map((link) => (
           <NavLink
             key={link.name}
             pathName={url.pathName}
             href={link.href}
-            activeClass="font-bold border rounded-full border-white/20 px-4 py-2"
+            activeClass="font-bold border rounded-full border-black/20 px-4 py-2"
           >
             {link.name}
           </NavLink>

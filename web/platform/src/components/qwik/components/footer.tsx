@@ -74,10 +74,9 @@ export const Footer = component$(() => {
   });
 
   return (
-    <footer class="relative w-full text-white bg-black py-4 overflow-hidden">
+    <footer class="relative w-full text-black border-t border-black/10 py-4 overflow-hidden">
       <div class="absolute bottom-0 mx-0 left-0 right-0 w-full h-full ">
-        {/* Background Video */}
-        <BackgroundVideo class="absolute bottom-[0] md:bottom-[-20vh] left-0 z-0 h-full md:h-auto object-cover md:w-screen" />
+        {/* Remove background video for clean light theme */}
         {/* <div class="absolute w-[150vw] bottom-0 left-1/2 transform -translate-x-1/2 translate-y-5/12">
             <Background class="rotate-180 w-full" />
         </div> */}
