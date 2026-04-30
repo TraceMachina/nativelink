@@ -1,28 +1,20 @@
+/* Clean light theme - minimal gradients */
 :root {
-   --purple-hsl: 255, 60%, 60%;
-   --overlay-blurple: hsla(var(--purple-hsl), 0.2);
-}
-
-:root[data-theme="light"] {
-   --purple-hsl: 255, 85%, 65%;
+   --accent-border: rgba(0, 0, 0, 0.1);
 }
 
 [data-has-hero] .page {
-   background:
-      linear-gradient(215deg, var(--overlay-blurple), transparent 40%)
-      radial-gradient(var(--overlay-blurple), transparent 40%) no-repeat -60vw
-      -40vh / 105vw 200vh,
-      radial-gradient(var(--overlay-blurple), transparent 65%) no-repeat 50%
-      calc(100% + 20rem) / 60rem 30rem;
+   background: rgb(245, 244, 239);
 }
 
 [data-has-hero] header {
-   border-bottom: 1px solid transparent;
-   background-color: transparent;
+   border-bottom: 1px solid var(--accent-border);
+   background-color: rgba(245, 244, 239, 0.95);
    -webkit-backdrop-filter: blur(16px);
    backdrop-filter: blur(16px);
 }
 
 [data-has-hero] .hero > img {
-   filter: drop-shadow(0 0 3rem var(--overlay-blurple));
+   filter: none;
+   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.06);
 }

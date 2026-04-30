@@ -39,16 +39,8 @@ export const Hero = component$(() => {
   });
 
   return (
-    <div class="relative flex w-full flex-col items-center justify-evenly gap-5 pb-10 text-white overflow-hidden">
-      {/* Background Video */}
-      <BackgroundVideo class="absolute top-10 md:top-[-20vh] left-0 z-0 w-full object-cover" />
-
-      <div class="absolute md:hidden flex justify-center items-center overflow-hidden">
-        <Background class="w-[200vw]" />
-      </div>
-      <div class="absolute hidden md:flex justify-center items-center overflow-hidden">
-        <div class="bg-black/50 w-screen h-screen" />
-      </div>
+    <div class="relative flex w-full flex-col items-center justify-evenly gap-5 pb-10 text-black overflow-hidden">
+      {/* Remove heavy background video for clean light theme */}
 
       {/* Overlay Image */}
       {/* <img
@@ -58,7 +50,7 @@ export const Hero = component$(() => {
       /> */}
 
       {/* Content */}
-      <div class="relative z-20 flex w-full flex-col items-center justify-evenly gap-2 pb-10 pt-36 text-white md:w-[850px]">
+      <div class="relative z-20 flex w-full flex-col items-center justify-evenly gap-2 pb-10 pt-36 text-black md:w-[850px]">
         <div class="px-12 md:px-0 md:py-12">
           <div class="flex flex-col items-center gap-2 text-center">
             <h1 class="text-4xl md:text-8xl font-bold">
@@ -78,9 +70,9 @@ export const Hero = component$(() => {
           <a
             id="button"
             href="/docs/introduction/setup"
-            class="w-1/2 h-10 flex items-center bg-black justify-center rounded-xl border-white/80 border border-solid text-white transition-all duration-200 hover:border-white hover:text-white md:h-[37px] md:w-[193px]"
+            class="w-1/2 h-10 flex items-center bg-black justify-center border-black border border-solid text-white transition-all duration-200 hover:bg-gray-800 md:h-[44px] md:w-[193px]"
           >
-            Clone the repo
+            Get Started →
           </a>
         </div>
         <div class="w-full flex justify-center items-center">

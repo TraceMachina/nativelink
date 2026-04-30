@@ -9,7 +9,7 @@ import { Testimonial } from "../sections/testimonials.tsx";
 
 export const LandingPage = component$(() => {
   return (
-    <main class="w-full z-20 bg-black font-nunito text-white">
+    <main class="w-full z-20 text-black">
       <Hero />
       <Contributors />
       <Testimonial />
