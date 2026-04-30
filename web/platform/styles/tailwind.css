@@ -48,6 +48,112 @@ nav a,
    }
 }
 
+/* Systematic heading hierarchy using 1.333 (perfect fourth) scale */
+h1, .h1 {
+   font-size: 96px;
+   font-weight: 700;
+   line-height: 1.15;
+}
+
+h2, .h2 {
+   font-size: 72px;
+   font-weight: 700;
+   line-height: 1.2;
+}
+
+h3, .h3 {
+   font-size: 54px;
+   font-weight: 600;
+   line-height: 1.25;
+}
+
+h4, .h4 {
+   font-size: 40px;
+   font-weight: 600;
+   line-height: 1.3;
+}
+
+h5, .h5 {
+   font-size: 30px;
+   font-weight: 600;
+   line-height: 1.4;
+}
+
+h6, .h6 {
+   font-size: 22px;
+   font-weight: 600;
+   line-height: 1.5;
+}
+
+/* Responsive heading sizes for mobile */
+@media (max-width: 768px) {
+   h1, .h1 {
+      font-size: 48px;
+   }
+   h2, .h2 {
+      font-size: 36px;
+   }
+   h3, .h3 {
+      font-size: 28px;
+   }
+   h4, .h4 {
+      font-size: 22px;
+   }
+   h5, .h5 {
+      font-size: 18px;
+   }
+   h6, .h6 {
+      font-size: 16px;
+   }
+}
+
+/* Vertical spacing hierarchy - create breathing room between sections */
+.section-spacing-major {
+   padding-top: 8rem;
+   padding-bottom: 8rem;
+}
+
+.section-spacing-minor {
+   padding-top: 4rem;
+   padding-bottom: 4rem;
+}
+
+/* Responsive spacing for mobile */
+@media (max-width: 768px) {
+   .section-spacing-major {
+      padding-top: 4rem;
+      padding-bottom: 4rem;
+   }
+   .section-spacing-minor {
+      padding-top: 2rem;
+      padding-bottom: 2rem;
+   }
+}
+
+/* Touch target improvements - minimum 44px for accessibility */
+nav a,
+header a,
+button {
+   min-height: 44px;
+   min-width: 44px;
+   display: inline-flex;
+   align-items: center;
+   justify-content: center;
+}
+
+/* Ensure nav links have proper spacing */
+nav ul li a {
+   padding: 0.75rem 1rem;
+}
+
+/* Social icons and header buttons */
+header button,
+header a[aria-label] {
+   min-height: 44px;
+   min-width: 44px;
+   padding: 0.5rem;
+}
+
 /* @theme {
   --color-primaryColor: rgb(99, 102, 241);
   --color-secondaryColor: rgb(161, 163, 247);
