@@ -208,7 +208,7 @@ export const Header = component$((url: URL) => {
   return (
     <header
       class={`${scrolled.value ? "bg-[rgb(248,247,244)]/95 backdrop-blur-sm border-b border-[rgb(220,220,220)]" : "bg-transparent"}
-    fixed top-0 z-30 flex h-14 py-10 px-4 md:px-8 transition-all duration-500
+    fixed top-0 z-30 flex h-14 py-10 px-4 md:px-8 mt-10 transition-all duration-500
     w-full justify-between flex-row items-center gap-2`}
     >
       <HeaderLogo />
