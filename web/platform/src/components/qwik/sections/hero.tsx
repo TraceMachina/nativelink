@@ -70,7 +70,7 @@ export const Hero = component$(() => {
           <a
             id="button"
             href="/docs/introduction/setup"
-            class="w-1/2 h-10 flex items-center bg-black justify-center border-black border border-solid text-white transition-all duration-200 hover:bg-gray-800 md:h-[44px] md:w-[193px]"
+            class="w-1/2 h-10 flex items-center bg-white justify-center border-black border-2 border-solid text-black transition-all duration-200 hover:bg-black hover:text-white md:h-[44px] md:w-[193px]"
           >
             Get Started →
           </a>
