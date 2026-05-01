@@ -88,7 +88,7 @@ fn enrich_request<T>(
         && let Some(client_headers) = Context::current().get::<ClientHeaders>()
     {
         for name in forward_headers {
-            if let Some(value) = client_headers.0.get(name)
+            if let Some(value) = client_headers.0.get(&name.to_lowercase())
                 && let (Ok(k), Ok(v)) = (
                     MetadataKey::from_bytes(name.as_bytes()),
                     MetadataValue::try_from(value.as_str()),
@@ -147,7 +147,8 @@ impl GrpcStore {
 
         let mut headers = Vec::with_capacity(spec.headers.len());
         for (name, value) in &spec.headers {
-            let key = MetadataKey::from_bytes(name.as_bytes()).map_err(|_| {
+            // We lowercase keys as HTTP headers are case-insensitive so we should match all cases
+            let key = MetadataKey::from_bytes(name.to_lowercase().as_bytes()).map_err(|_| {
                 make_err!(Code::InvalidArgument, "Invalid gRPC metadata key: {name}")
             })?;
             let val = MetadataValue::try_from(value.as_str()).map_err(|_| {
@@ -177,7 +178,12 @@ impl GrpcStore {
             rpc_timeout,
             use_legacy_resource_names: spec.use_legacy_resource_names,
             headers,
-            forward_headers: spec.forward_headers.clone(),
+            // We lowercase keys as HTTP headers are case-insensitive so we should match all cases
+            forward_headers: spec
+                .forward_headers
+                .iter()
+                .map(|s| s.to_lowercase())
+                .collect(),
         }))
     }
 

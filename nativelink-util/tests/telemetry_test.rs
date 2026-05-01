@@ -141,7 +141,7 @@ async fn oltp_logs_with_headers() -> Result<(), Box<dyn core::error::Error>> {
 
     let request: Request<Body> = Request::builder()
         .method("GET")
-        .header("foo", "bar")
+        .header("Foo", "bar")
         .uri("/demo")
         .body(Body::empty())?;
     run_request(&mut svc, request).await?;

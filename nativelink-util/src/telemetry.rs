@@ -259,7 +259,7 @@ where
                     value
                         .to_str()
                         .ok()
-                        .map(|v| (name.as_str().to_string(), v.to_string()))
+                        .map(|v| (name.as_str().to_lowercase(), v.to_string()))
                 })
                 .collect(),
         ));

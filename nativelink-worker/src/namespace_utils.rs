@@ -172,13 +172,13 @@ pub fn namespaces_supported(mount: bool) -> bool {
                         );
                     }
                 }
-                return false;
+            } else {
+                error!(
+                    exit_code = status,
+                    "Namespaces: waitpid exit with non-exit code"
+                );
             }
-            error!(
-                exit_code = status,
-                "Namespaces: waitpid exit with non-exit code"
-            );
-            return false;
+            false
         }
         _ => false,
     }

@@ -291,7 +291,8 @@ async fn read_works_with_legacy_resource_names() -> Result<(), Error> {
 async fn read_works_with_headers() -> Result<(), Error> {
     fn set_spec(mut spec: GrpcSpec) -> GrpcSpec {
         spec.headers.insert("foo".into(), "bar".into());
-        spec.forward_headers.push("something".into());
+        // Testing with mixed case, as it gets lowercased internally
+        spec.forward_headers.push("SomeTHING".into());
         spec
     }
 
@@ -300,7 +301,8 @@ async fn read_works_with_headers() -> Result<(), Error> {
 
     let client_headers = {
         let mut headers: HashMap<String, String> = HashMap::new();
-        headers.insert("something".to_string(), "from outside".to_string());
+        // We're inserting a lowercase one here as the telemetry insertion uses a lowercase one
+        headers.insert("something".to_string(), "From outside".to_string());
         ClientHeaders(Arc::new(headers))
     };
 
@@ -312,7 +314,9 @@ async fn read_works_with_headers() -> Result<(), Error> {
     assert_eq!(read_request.metadata.get("foo"), Some(&"bar".to_string()));
     assert_eq!(
         read_request.metadata.get("something"),
-        Some(&"from outside".to_string())
+        Some(&"From outside".to_string()),
+        "{:#?}",
+        read_request.metadata
     );
     drop(cx_guard);
 
