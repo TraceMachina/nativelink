@@ -40,11 +40,11 @@ interface URL {
 
 const HeaderLogo = component$(() => {
   return (
-    <a href="/" class="h-full w-[25vw] z-50 flex justify-center items-center">
+    <a href="/" class="h-full shrink-0 z-50 flex items-center">
       <img
         src={Logo}
         loading="lazy"
-        class="w-[179px] hidden md:flex"
+        class="w-[160px] hidden md:flex"
         alt="Nativelink Logo"
       />
       <img
@@ -64,7 +64,7 @@ interface DesktopNavProps {
 const DesktopNav = component$<DesktopNavProps>(({ url, scrolled }) => {
   return (
     <nav
-      class={`w-[50vw] h-14 hidden md:flex justify-center items-center z-40 transition-all duration-300`}
+      class={`flex-1 max-w-5xl h-14 hidden md:flex justify-center items-center z-40 transition-all duration-300`}
     >
       <ul class="hidden md:flex w-full backdrop-filter backdrop-blur-md text-black px-6 border-[rgb(220,220,220)] z-60 gap-6 rounded-interactive bg-white/80 border-2 h-12 justify-center items-center">
         {links.map((link) => (
@@ -138,7 +138,7 @@ const Hamburger = component$<Hamburger>(({ navState }) => {
 const Widgets = component$(() => {
   useStylesScoped$(styles);
   return (
-    <div class="w-1/2 md:w-[25vw] flex flex-row items-center justify-end gap-4 text-[16px] pr-4">
+    <div class="shrink-0 flex flex-row items-center justify-end gap-4 text-[16px]">
       <div class="z-60 flex flex-row gap-3 items-center">
         <a
           target="_blank"
@@ -181,7 +181,7 @@ const Widgets = component$(() => {
         id="button"
         href="/docs/introduction/setup#-quickstart"
         target="_blank"
-        class="hidden md:flex bg-black text-white hover:bg-[rgb(40,40,40)] transition-colors duration-200 px-6 min-h-[48px] rounded-interactive justify-center items-center border-2 border-black"
+        class="hidden md:flex bg-black text-white hover:bg-[rgb(40,40,40)] transition-colors duration-200 px-6 min-h-[48px] rounded-interactive justify-center items-center border-2 border-black whitespace-nowrap"
         rel="noreferrer"
       >
         Get Started
@@ -208,8 +208,8 @@ export const Header = component$((url: URL) => {
   return (
     <header
       class={`${scrolled.value ? "bg-[rgb(248,247,244)]/95 backdrop-blur-sm border-b border-[rgb(220,220,220)]" : "bg-transparent"}
-    fixed top-0 z-30 flex h-14 py-10 md:px-0 transition-all duration-500
-    w-full justify-between flex-row items-center`}
+    fixed top-0 z-30 flex h-14 py-10 px-4 md:px-8 transition-all duration-500
+    w-full justify-between flex-row items-center gap-2`}
     >
       <HeaderLogo />
       <DesktopNav url={url} scrolled={scrolled} />
