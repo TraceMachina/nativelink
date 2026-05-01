@@ -95,7 +95,7 @@ const CompanyCards = component$(() => {
           </div>
           <a
             href={card.link}
-            class="text-white no-underline! bg-black px-8 py-2 rounded-xl"
+            class="text-black no-underline! bg-white border-2 border-black px-8 py-2 rounded-xl hover:bg-black hover:text-white transition-colors"
             target="_blank"
             rel="noopener noreferrer"
           >
