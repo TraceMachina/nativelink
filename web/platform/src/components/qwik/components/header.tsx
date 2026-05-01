@@ -207,7 +207,7 @@ export const Header = component$((url: URL) => {
 
   return (
     <header
-      class={`${scrolled.value ? "bg-black" : "bg-transparent"}
+      class={`${scrolled.value ? "bg-white/90" : "bg-transparent"}
     fixed top-0 z-30 flex h-14 py-10 md:px-0 transition-all duration-500
     w-full justify-between flex-row items-center`}
     >
