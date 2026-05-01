@@ -37,7 +37,7 @@ const products = [
 
 export const Features = component$(() => {
   return (
-    <div class="flex flex-col items-center justify-center gap-24 section-spacing-major">
+    <div class="flex flex-col items-center justify-center gap-24 section-spacing-major section-divider">
       <Label text="a seamless experience" class="text-base px-4" />
       <div class="flex flex-col items-center gap-12 md:flex-row md:items-start md:justify-evenly md:gap-3">
         {products.map((product, _index) => (

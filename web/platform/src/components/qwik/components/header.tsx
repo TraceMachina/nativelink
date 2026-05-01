@@ -64,9 +64,9 @@ interface DesktopNavProps {
 const DesktopNav = component$<DesktopNavProps>(({ url, scrolled }) => {
   return (
     <nav
-      class={`w-[50vw] h-14 hidden md:flex justify-center items-center z-40 transition-all duration-300 ${scrolled.value ? "" : ""}`}
+      class={`w-[50vw] h-14 hidden md:flex justify-center items-center z-40 transition-all duration-300`}
     >
-      <ul class="hidden md:flex w-full backdrop-filter backdrop-blur-md text-black px-4 border-black/10 z-60 gap-6 rounded-2xl bg-white/50 border h-12 justify-center items-center">
+      <ul class="hidden md:flex w-full backdrop-filter backdrop-blur-md text-black px-6 border-[rgb(220,220,220)] z-60 gap-6 rounded-interactive bg-white/80 border-2 h-12 justify-center items-center">
         {links.map((link) => (
           <NavLink
             key={link.name}
@@ -138,11 +138,11 @@ const Hamburger = component$<Hamburger>(({ navState }) => {
 const Widgets = component$(() => {
   useStylesScoped$(styles);
   return (
-    <div class="w-1/2 md:w-[25vw] flex flex-row items-center justify-center gap-2 text-[16px]">
-      <div class="z-60 flex flex-row gap-3">
+    <div class="w-1/2 md:w-[25vw] flex flex-row items-center justify-end gap-4 text-[16px] pr-4">
+      <div class="z-60 flex flex-row gap-3 items-center">
         <a
           target="_blank"
-          class="md:hidden"
+          class="md:hidden w-10 h-10 flex items-center justify-center"
           href="https://forms.gle/LtaWSixEC6bYi5xF7"
           rel="noreferrer"
           aria-label="Nativelink Slack channel"
@@ -151,7 +151,7 @@ const Widgets = component$(() => {
         </a>
         <a
           target="_blank"
-          class="hidden md:flex hover:rotate-360 transition-all duration-300"
+          class="hidden md:flex w-10 h-10 items-center justify-center hover:opacity-70 transition-opacity duration-200"
           href="https://forms.gle/LtaWSixEC6bYi5xF7"
           rel="noreferrer"
           aria-label="Nativelink Slack channel"
@@ -159,7 +159,7 @@ const Widgets = component$(() => {
           <SlackIcon />
         </a>
         <a
-          class="md:hidden"
+          class="md:hidden w-10 h-10 flex items-center justify-center"
           href="https://github.com/tracemachina/nativelink"
           target="_blank"
           rel="noreferrer"
@@ -168,7 +168,7 @@ const Widgets = component$(() => {
           <GitHub />
         </a>
         <a
-          class="hidden md:flex hover:rotate-360 transition-all duration-300"
+          class="hidden md:flex w-10 h-10 items-center justify-center hover:opacity-70 transition-opacity duration-200"
           href="https://github.com/tracemachina/nativelink"
           target="_blank"
           rel="noreferrer"
@@ -181,7 +181,7 @@ const Widgets = component$(() => {
         id="button"
         href="/docs/introduction/setup#-quickstart"
         target="_blank"
-        class="hidden md:flex bg-white text-black hover:bg-gray-200 transition-colors duration-300 px-4 h-8 rounded-xl justify-center items-center"
+        class="hidden md:flex bg-black text-white hover:bg-[rgb(40,40,40)] transition-colors duration-200 px-6 min-h-[48px] rounded-interactive justify-center items-center border-2 border-black"
         rel="noreferrer"
       >
         Get Started
@@ -207,7 +207,7 @@ export const Header = component$((url: URL) => {
 
   return (
     <header
-      class={`${scrolled.value ? "bg-white/90" : "bg-transparent"}
+      class={`${scrolled.value ? "bg-[rgb(248,247,244)]/95 backdrop-blur-sm border-b border-[rgb(220,220,220)]" : "bg-transparent"}
     fixed top-0 z-30 flex h-14 py-10 md:px-0 transition-all duration-500
     w-full justify-between flex-row items-center`}
     >

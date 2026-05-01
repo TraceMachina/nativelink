@@ -46,18 +46,19 @@ nav a,
 }
 
 @theme {
-   /* Pi.website inspired light theme */
-   --color-background: rgb(245, 244, 239);
+   /* Technical Warmth theme - softer, more approachable */
+   --color-background: rgb(248, 247, 244);
    --color-foreground: rgb(0, 0, 0);
    --color-muted: rgb(100, 100, 100);
    --color-border: rgb(220, 220, 220);
    --color-accent: rgb(0, 0, 0);
-   --color-accent-hover: rgb(51, 51, 51);
+   --color-accent-hover: rgb(40, 40, 40);
+   --color-accent-line: rgb(180, 180, 180);
 
    /* Legacy variables for compatibility */
    --color-primary: rgb(100, 100, 100);
    --color-primarybg: rgb(0, 0, 0);
-   --color-secondarybg: rgb(245, 244, 239);
+   --color-secondarybg: rgb(248, 247, 244);
    --color-primaryBorder: rgb(220, 220, 220);
    --color-glass: rgba(0, 0, 0, 0.04);
    --color-glassBorder: rgba(0, 0, 0, 0.1);
@@ -69,6 +70,33 @@ nav a,
    }
    .shadow-glass {
       box-shadow: 0px 4px 30px rgba(0, 0, 0, 0.1);
+   }
+
+   /* Technical Warmth: subtle section dividers */
+   .section-divider {
+      position: relative;
+   }
+
+   .section-divider::after {
+      content: '';
+      position: absolute;
+      bottom: 0;
+      left: 10%;
+      right: 10%;
+      height: 1px;
+      background-color: var(--color-accent-line);
+   }
+
+   /* Rounded corners for interactive elements */
+   .rounded-interactive {
+      border-radius: 4px;
+   }
+
+   /* Card styling with subtle borders */
+   .card-warm {
+      border: 2px solid var(--color-border);
+      border-radius: 4px;
+      background-color: rgba(255, 255, 255, 0.5);
    }
 }
 

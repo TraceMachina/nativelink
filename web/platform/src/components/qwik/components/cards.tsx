@@ -18,13 +18,13 @@ interface VideoCard {
 export const BorderlessCard = component$<BorderlessCard>(
   ({ icon, headline, text }) => {
     return (
-      <div class="flex h-auto w-5/6 flex-col items-start justify-start md:w-[277px] md:gap-0">
+      <div class="flex h-auto w-5/6 flex-col items-start justify-start md:w-[277px] md:gap-0 p-6 card-warm">
         <div>{icon}</div>
         <LinearGradient
           text={headline}
           class="py-4 pr-8 text-[25px] md:h-[120px] md:px-0 md:py-6"
         />
-        <span class="w-full text-[#8280A6] md:w-[273px]">{text}</span>
+        <span class="w-full text-[rgb(60,60,60)] md:w-[273px]">{text}</span>
       </div>
     );
   },
@@ -33,7 +33,7 @@ export const BorderlessCard = component$<BorderlessCard>(
 export const VideoCard = component$<VideoCard>(
   ({ headline, description, link }) => {
     return (
-      <div class="max-w-sm overflow-hidden rounded-xl border border-solid border-primaryBorder text-white shadow-lg">
+      <div class="max-w-sm overflow-hidden rounded-interactive border-2 border-solid border-primaryBorder text-white shadow-lg">
         <div class="relative h-48 w-full">
           <video
             class="h-full w-full object-cover"
@@ -89,7 +89,7 @@ export const PricingCard = component$(() => {
         <div
           id="Card"
           key={plan.title}
-          class="flex flex-col gap-5 items-center justify-between p-6 w-80 rounded-lg bg-glass rounded-xl shadow-lg shadow-glass backdrop-blur-[8px] border border-glassBorder"
+          class="flex flex-col gap-5 items-center justify-between p-6 w-80 rounded-interactive bg-glass shadow-lg shadow-glass backdrop-blur-[8px] border-2 border-glassBorder"
         >
           <h2 class="text-2xl font-semibold text-white">{plan.title}</h2>
           <ul class="my-4 text-sm text-gray-200 space-y-2">
@@ -101,7 +101,7 @@ export const PricingCard = component$(() => {
           </ul>
           <a
             href={plan.cta.link}
-            class="mt-auto px-4 py-2 bg-blue-500 text-white rounded-lg shadow-md hover:bg-blue-600"
+            class="mt-auto px-4 py-2 bg-black text-white rounded-interactive shadow-md hover:bg-[rgb(40,40,40)] min-h-[48px] flex items-center justify-center"
           >
             {plan.cta.title}
           </a>

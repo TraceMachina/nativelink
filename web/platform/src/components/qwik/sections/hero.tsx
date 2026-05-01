@@ -70,7 +70,7 @@ export const Hero = component$(() => {
           <a
             id="button"
             href="/docs/introduction/setup"
-            class="w-1/2 h-10 flex items-center bg-white justify-center border-black border-2 border-solid text-black transition-all duration-200 hover:bg-black hover:text-white md:h-[44px] md:w-[193px]"
+            class="w-1/2 h-10 flex items-center bg-black justify-center border-black border-2 border-solid text-white transition-all duration-200 hover:bg-[rgb(40,40,40)] md:h-[44px] md:w-[193px] rounded-interactive"
           >
             Get Started →
           </a>
@@ -79,7 +79,7 @@ export const Hero = component$(() => {
           <div class="w-9/11 relative">
             <video
               src={videoMockUp}
-              class="w-full h-full object-contain self-center shadow-[0px_0px_50px_0px_rgba(96,80,230,0.3)]"
+              class="w-full h-full object-contain self-center shadow-[0px_0px_50px_0px_rgba(96,80,230,0.3)] border-2 border-[rgb(220,220,220)] rounded-interactive"
               autoplay={false}
               loop={true}
               muted={true}

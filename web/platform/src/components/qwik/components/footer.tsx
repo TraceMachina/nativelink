@@ -74,32 +74,12 @@ export const Footer = component$(() => {
   });
 
   return (
-    <footer class="relative w-full text-black border-t border-black/10 py-4 overflow-hidden">
-      <div class="absolute bottom-0 mx-0 left-0 right-0 w-full h-full ">
-        {/* Remove background video for clean light theme */}
-        {/* <div class="absolute w-[150vw] bottom-0 left-1/2 transform -translate-x-1/2 translate-y-5/12">
-            <Background class="rotate-180 w-full" />
-        </div> */}
-
-        <div class="absolute bottom-0 justify-center items-center overflow-hidden">
-          <div class="bg-black/50 w-screen h-screen" />
-        </div>
-        {/* <div class="absolute flex justify-center items-center overflow-hidden">
-          <div class="bg-black/50 w-screen h-screen" />
-        </div> */}
-        {/* Overlay Image */}
-        {/* <img
-          src={Overlay.src}
-          class="absolute inset-0 h-full w-full object-cover"
-          alt="Overlay"
-        /> */}
-      </div>
-
-      <div class="relative z-10 flex h-full w-full flex-col items-center justify-center gap-6 md:flex-row md:gap-0">
-        <div class="flex w-full items-center justify-center text-[2.5rem] leading-none tracking-normal md:text-[52px] ">
-          <div class="w-full  flex flex-col items-center">
+    <footer class="relative w-full text-black border-t border-[rgb(180,180,180)] py-16 md:py-24 bg-[rgb(248,247,244)]">
+      <div class="relative z-10 flex h-full w-full flex-col items-center justify-center gap-12 md:flex-row md:gap-0 px-6">
+        <div class="flex w-full items-center justify-center text-[2.5rem] leading-none tracking-normal md:text-[52px]">
+          <div class="w-full flex flex-col items-center">
             <div class="text-center">
-              Lets <span class="text-[#AD96FF]">build</span> together.
+              Lets <span class="font-bold">build</span> together.
             </div>
           </div>
         </div>
@@ -111,11 +91,11 @@ export const Footer = component$(() => {
               onSubmit$={(e) => e.preventDefault()}
             >
               <div class="w-full">
-                <label class="mb-2 block text-lg font-thin" for="email">
+                <label class="mb-2 block text-base font-normal" for="email">
                   Sign up for our newsletter *
                 </label>
                 <input
-                  class="flex focus:shadow-outline w-full bg-white appearance-none rounded-2xl border px-3 py-3 leading-tight text-gray-700 shadow focus:outline-none"
+                  class="flex w-full bg-white appearance-none rounded-interactive border-2 border-[rgb(220,220,220)] px-4 py-3 leading-tight text-black focus:outline-none focus:border-black"
                   id="email"
                   name="data.email"
                   type="email"
@@ -126,10 +106,10 @@ export const Footer = component$(() => {
                 />
                 {message.value && (
                   <div
-                    class={`w-full text-center ${
+                    class={`w-full text-center mt-2 text-sm ${
                       message.value.toLowerCase().includes("failed")
-                        ? "text-red-500"
-                        : "text-green-500"
+                        ? "text-red-600"
+                        : "text-green-600"
                     }`}
                   >
                     {message.value}
@@ -138,7 +118,7 @@ export const Footer = component$(() => {
               </div>
               <div class="w-full flex items-center justify-between">
                 <button
-                  class="focus:shadow-outline w-full rounded-full bg-purple-600 px-4 py-3 font-thin text-white hover:bg-purple-700 focus:outline-none"
+                  class="w-full rounded-interactive bg-black px-6 py-3 min-h-[48px] font-normal text-white hover:bg-[rgb(40,40,40)] focus:outline-none transition-colors duration-200"
                   type="button"
                   onClick$={handleSubmit}
                 >
@@ -149,10 +129,10 @@ export const Footer = component$(() => {
 
             <div
               id="footer-links"
-              class="w-full flex flex-col justiy-center gap-2 items-start font-thin"
+              class="w-full flex flex-col justiy-center gap-3 items-start font-normal"
             >
               {_links.map((link, _index) => (
-                <a key={link.name} href={link.link}>
+                <a key={link.name} href={link.link} class="hover:opacity-60 transition-opacity">
                   {link.name}
                 </a>
               ))}
@@ -160,21 +140,16 @@ export const Footer = component$(() => {
 
             <div
               id="footer-links"
-              class="w-full flex flex-col justiy-center gap-2 items-start font-thin"
+              class="w-full flex flex-col justiy-center gap-3 items-start font-normal"
             >
               {law.map((link, _index) => (
-                <a key={link.name} href={link.link}>
+                <a key={link.name} href={link.link} class="hover:opacity-60 transition-opacity">
                   {link.name}
                 </a>
               ))}
             </div>
 
-            {/* <div class="text-[22px]">
-              <span class="text-[#AD96FF]">Get in touch:</span>{" "}
-              <a href="mailto:hello@nativelink.com">hello@nativelink.com</a>
-            </div> */}
-
-            <div class="flex flex-col">
+            <div class="flex flex-col gap-2">
               <a href="/" class="z-50">
                 <img
                   src={Logo}
@@ -183,7 +158,7 @@ export const Footer = component$(() => {
                   alt="Nativelink Logo"
                 />
               </a>
-              <span class="text-white! font-thin">© Trace Machina 2025</span>
+              <span class="text-black font-normal">© Trace Machina 2025</span>
             </div>
           </div>
         </div>
