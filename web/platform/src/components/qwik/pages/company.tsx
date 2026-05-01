@@ -30,8 +30,6 @@ const _cards = [
 const CompanyHero = component$(() => {
   return (
     <div class="relative w-full flex flex-col md:flex-row  md:gap-14 justify-center items-center ">
-      <BackgroundVideo class="z-0 absolute inset-0 w-full h-full object-cover" />
-      <div class="absolute inset-0 w-full h-full bg-gradient-to-b from-black via-black/40 to-black opacity-80" />
 
       <div class="px-8 z-10 gap-10 flex flex-col md:w-[650px] ">
         <div class="pr-8">
@@ -40,12 +38,12 @@ const CompanyHero = component$(() => {
             class="text-4xl md:text-5xl text-left pr-10"
           />
         </div>
-        <span class="text-white! test-base">
+        <span class="test-base">
           At Trace Machina, our mission is to revolutionize the development of
           complex systems by providing cutting-edge tools that drastically
           reduce costs.
         </span>
-        <span class="text-sm text-primary">
+        <span class="text-sm text-muted">
           We empower engineers to build the future of technology by making
           advanced build and simulation processes as intuitive and efficient as
           web development. Our commitment is to deliver innovative solutions
@@ -88,16 +86,16 @@ const CompanyCards = component$(() => {
     <div class="flex px-8 flex-col justify-start md:justify-stretch items-center gap-5 pb-24">
       {_cards.map((card) => (
         <div
-          class="shadow-md w-full md:w-full md:flex-row flex flex-col md:justify-between justify-start md:items-center items-start gap-3 rounded-lg py-8 px-10 border border-solid border-primary/40"
+          class="shadow-md w-full md:w-full md:flex-row flex flex-col md:justify-between justify-start md:items-center items-start gap-3 rounded-lg py-8 px-10 border border-solid border-black/10"
           key={card.title}
         >
           <div class="flex flex-col gap-2">
             <h2 class="text-2xl font-thin">{card.title}</h2>
-            <p class="text-primary pr-24">{card.description}</p>
+            <p class="text-muted pr-24">{card.description}</p>
           </div>
           <a
             href={card.link}
-            class="text-black no-underline! bg-white px-8 py-2 rounded-xl"
+            class="text-white no-underline! bg-black px-8 py-2 rounded-xl"
             target="_blank"
             rel="noopener noreferrer"
           >
@@ -115,7 +113,7 @@ export const CompanyPage = component$(() => {
   });
 
   return (
-    <main class="flex w-full w-screen flex-col pt-24 items-start justify-start bg-black font-nunito text-white">
+    <main class="flex w-full w-screen flex-col pt-24 items-start justify-start text-black">
       <div class="gap-10 flex w-full flex-col justify-center items-center">
         <CompanyHero />
         <CompanyContact />

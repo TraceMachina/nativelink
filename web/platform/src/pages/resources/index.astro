@@ -14,12 +14,8 @@ const pageTitle = "NativeLink Resources | Blog, Case Studies, Changelog";
 ---
 
 <Layout title={pageTitle}>
-  <div class=" w-screen h-auto text-white text-4xl bg-black flex flex-col justify-center items-center">
+  <div class=" w-screen h-auto text-black text-4xl flex flex-col justify-center items-center">
     <div class="relative w-full h-[50svh] flex flex-col justify-center items-start">
-      <BackgroundVideo class="absolute inset-0 w-full h-full object-cover" />
-      <div class="absolute inset-0 w-full h-full bg-gradient-to-r from-purple-500 to-blue-500 opacity-50"></div>
-      <div class="absolute inset-0 w-full h-full bg-gradient-to-b from-transparent via-black/50 to-black"></div>
-
       <LinearGradient text="Resources" class="z-10 text-thin text-5xl self-start pl-8 md:pl-48 py-8"/>
     </div>
 
@@ -28,12 +24,12 @@ const pageTitle = "NativeLink Resources | Blog, Case Studies, Changelog";
     <div class="relative w-screen px-8 md:px-0 md:w-9/12 flex gap-4 pb-16 mb-6">
       <a
         href="/resources/oreilly-bazel-book"
-        class="h-96 w-full md:w-96 shrink-0 flex flex-col justify-evenly rounded-xl items-center border border-solid border-white bg-gradient-to-br from-purple-900/20 to-blue-900/20 hover:from-purple-900/30 hover:to-blue-900/30 transition-colors"
+        class="h-96 w-full md:w-96 shrink-0 flex flex-col justify-evenly rounded-xl items-center border border-solid border-black/10 hover:bg-white/50 transition-colors"
       >
         <div class="text-8xl">📘</div>
         <div class="w-full h-full flex flex-col justify-between items-start p-6">
           <LinearGradient text="Extending Bazel to Its Full Potential" class="text-2xl w-full" />
-          <p class="text-sm text-gray-300 mb-4">Leveraging Cloud and Parallelization to Ship Reliable Code Faster</p>
+          <p class="text-sm text-muted mb-4">Leveraging Cloud and Parallelization to Ship Reliable Code Faster</p>
           <span class="text-lg">Download Now →</span>
         </div>
       </a>
@@ -47,7 +43,7 @@ const pageTitle = "NativeLink Resources | Blog, Case Studies, Changelog";
         .map((post) => (
           <a
             href={"/resources/blog/" + post.id}
-            class="h-96 w-11/12 md:w-72 shrink-0 flex flex-col snap-always md:justify-evenly justify-start rounded-xl items-center border border-solid border-white snap-center"
+            class="h-96 w-11/12 md:w-72 shrink-0 flex flex-col snap-always md:justify-evenly justify-start rounded-xl items-center border border-solid border-black/10 snap-center"
           >
             {post.data.image && (
               <img src={post.data.image} alt={post.data.title || "Blog post image"} class="w-full h-48 object-contain rounded-t-xl" />
@@ -68,7 +64,7 @@ const pageTitle = "NativeLink Resources | Blog, Case Studies, Changelog";
         .map((post) => (
           <a
             href={"/resources/blog/" + post.id}
-            class="h-96 w-11/12 md:w-72 shrink-0 flex flex-col snap-always md:justify-evenly justify-start rounded-xl items-center border border-solid border-white snap-center"
+            class="h-96 w-11/12 md:w-72 shrink-0 flex flex-col snap-always md:justify-evenly justify-start rounded-xl items-center border border-solid border-black/10 snap-center"
           >
             {post.data.image && (
               <img src={post.data.image} alt={post.data.title || "Blog post image"} class="w-full h-48 object-cover rounded-t-xl" />
@@ -102,7 +98,7 @@ const pageTitle = "NativeLink Resources | Blog, Case Studies, Changelog";
         .map((post) => (
           <a
             href={"/resources/blog/" + post.id}
-            class="h-96 w-11/12 md:w-72 shrink-0 flex flex-col snap-always md:justify-evenly justify-start rounded-xl items-center border border-solid border-white snap-center"
+            class="h-96 w-11/12 md:w-72 shrink-0 flex flex-col snap-always md:justify-evenly justify-start rounded-xl items-center border border-solid border-black/10 snap-center"
           >
             {post.data.image && (
               <img src={post.data.image} alt={post.data.title || "Blog post image"} class="w-full h-48 object-cover rounded-t-xl" />
@@ -116,8 +112,8 @@ const pageTitle = "NativeLink Resources | Blog, Case Studies, Changelog";
     </div>
 
     <div class="w-full pb-12 h-auto flex justify-center items-center">
-      <a class="w-36 h-10 bg-white flex justify-center items-center rounded-xl border border-solid border-white" href="/resources/blog">
-        <button type="button" class="text-sm! md:text-md text-black">
+      <a class="w-36 h-10 bg-black flex justify-center items-center rounded-xl border border-solid border-black/10" href="/resources/blog">
+        <button type="button" class="text-sm! md:text-md text-white">
         Go to Blog
         </button>
       </a>

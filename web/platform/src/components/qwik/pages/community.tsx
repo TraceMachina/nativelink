@@ -48,15 +48,8 @@ export const CommunityPage = component$(() => {
   });
 
   return (
-    <main class="pt-36 flex gap-10 bg-black justify-center flex-col items-center px-8 w-screen text-white text-4xl">
+    <main class="pt-36 flex gap-10 justify-center flex-col items-center px-8 w-screen text-black text-4xl">
       <div class="relative flex flex-col w-full md:w-[1000px] gap-10 items-start justify-center h-96">
-        {/* Backgrounds */}
-        <div class="z-0 absolute inset-0">
-          <div class="w-96 h-96 bg-gradient-to-b from-blue-400 to-purple-500 rounded-full blur-3xl opacity-50 absolute -top-40 -left-60 md:top-24 md:-left-96" />
-        </div>
-        <div class="z-0 absolute inset-0">
-          <div class="w-36 h-36 bg-purple-500 rounded-full blur-3xl opacity-50 absolute top-64 right-20 md:-right-80" />
-        </div>
 
         <LinearGradient
           text={"Join our community"}
@@ -90,7 +83,7 @@ export const CommunityPage = component$(() => {
           {_events.map(({ title, date, description }) => (
             <div
               key={title}
-              class="flex flex-col gap-5 border-[rgb(57,64,75)] md:w-1/3 px-5 py-8 border rounded-lg"
+              class="flex flex-col gap-5 border-black/10 md:w-1/3 px-5 py-8 border rounded-lg"
             >
               <LinearGradient text={title} class="text-lg text-left " />
               <span class="text-sm">{date}</span>
