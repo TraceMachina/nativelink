@@ -54,7 +54,7 @@ export const Hero = component$(() => {
         <div class="px-12 md:px-0 md:py-12">
           <div class="flex flex-col items-center gap-2 text-center">
             <h1 class="text-4xl md:text-8xl font-bold">
-              The Parallel Compute Platform
+              Build Software As Fast As Your Agents Ship
             </h1>
             <p class="text-xl md:text-3xl h-[2.5em] transition-opacity duration-500">
               {rotatingText.value}
