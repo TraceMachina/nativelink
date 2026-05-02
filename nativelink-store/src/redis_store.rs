@@ -1723,12 +1723,24 @@ where
                         }
                         result => (connection_manager, result),
                     };
-                let create_result = result.err_tip(|| {
-                    format!(
-                        "Error with ft_create in RedisStore::search_by_index_prefix({})",
-                        get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY),
-                    )
-                });
+                // RediSearch returns `Extension: "Index": already exists`
+                // when our `ft_create` races another caller who already
+                // created (or never lost) the index. That is *not* a
+                // real failure: it just means the index is in place,
+                // which is the only postcondition we care about. Treat
+                // it as Ok so the merged error below only carries the
+                // signal-bearing failure (e.g. an actual ft_aggregate
+                // timeout) instead of polluting it with noise.
+                let create_result = match result {
+                    Ok(()) => Ok(()),
+                    Err(ref e) if format!("{e:?}").contains("already exists") => Ok(()),
+                    Err(_) => result.err_tip(|| {
+                        format!(
+                            "Error with ft_create in RedisStore::search_by_index_prefix({})",
+                            get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY),
+                        )
+                    }),
+                };
 
                 let run_result = run_ft_aggregate(connection_manager).await.err_tip(|| {
                     format!(

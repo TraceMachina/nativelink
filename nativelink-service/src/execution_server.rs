@@ -349,8 +349,33 @@ impl ExecutionServer {
             .execution_policy
             .map_or(DEFAULT_EXECUTION_PRIORITY, |p| p.priority);
 
-        let action =
-            get_and_decode_digest::<Action>(&instance_info.cas_store, digest.into()).await?;
+        // Same recovery model as the post-Action blob check below, but
+        // for the Action proto itself: Bazel's interrupted-build state
+        // can leave the Action digest absent from CAS; without a
+        // `PreconditionFailure` detail Bazel can't know which blob to
+        // re-upload and surfaces the failure as terminal. Detect
+        // NotFound on the Action fetch and translate it into the same
+        // FAILED_PRECONDITION + violations shape so Bazel auto-recovers.
+        let action = match get_and_decode_digest::<Action>(&instance_info.cas_store, digest.into())
+            .await
+        {
+            Ok(a) => a,
+            Err(e) if e.code == Code::NotFound => {
+                warn!(
+                    %digest,
+                    %e,
+                    "Execute: Action proto missing from CAS; returning FAILED_PRECONDITION with PreconditionFailure detail so Bazel can re-upload"
+                );
+                let summary = format!(
+                    "Action {digest} is missing from CAS; client should re-upload it and retry"
+                );
+                return Ok(Err(missing_blobs_failed_precondition(
+                    &[(digest, "Action")],
+                    &summary,
+                )));
+            }
+            Err(e) => return Err(e).err_tip(|| "Decoding Action proto in Execute")?,
+        };
 
         // Eager-validate that the blobs we'll feed to the worker are
         // present in CAS *before* queuing the action. The most common
