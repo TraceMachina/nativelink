@@ -646,6 +646,25 @@ impl StoreDriver for FastSlowStore {
 
         let mut writer = Some(writer);
 
+        // Drive the dedup loader. Two distinct paths:
+        //
+        //   * Leader (created the OnceCell entry): runs `populate` with
+        //     OUR `writer`, streaming directly to the caller while
+        //     filling the fast cache. No timeout: a multi-GB blob
+        //     legitimately takes minutes to stream, and cancelling our
+        //     own populate would propagate the failure to every other
+        //     reader of this digest.
+        //
+        //   * Follower: bound the wait so a wedged leader does not pin
+        //     us until the upstream `gRPC` deadline fires. The follower
+        //     closure passes `None` for `writer`. This is critical: if
+        //     the OnceCell ever promotes our follower closure to leader
+        //     (because the original leader's future was dropped), and
+        //     our `tokio::time::timeout` then cancels it, *no* caller
+        //     `writer` was ever moved into the populate stream, so no
+        //     `gRPC` sender is dropped without EOF. The follower then
+        //     re-enters `get_part` below and reads from the now-warm
+        //     fast cache, OR falls back to the slow store on timeout.
         let needs_slow_store_fallback: bool = {
             let loader_guard = self.get_loader(key.borrow());
             let is_leader = loader_guard.is_leader;
@@ -657,9 +676,8 @@ impl StoreDriver for FastSlowStore {
                     .await?;
                 false
             } else {
-                let load_fut = loader_guard.get_or_try_init(|| async {
-                    self.populate_and_maybe_stream(key.borrow(), writer.take(), offset, length)
-                        .await
+                let load_fut = loader_guard.get_or_try_init(|| {
+                    self.populate_and_maybe_stream(key.borrow(), None, offset, length)
                 });
                 match tokio::time::timeout(LEADER_WAIT_TIMEOUT, load_fut).await {
                     Ok(result) => {
