@@ -1755,6 +1755,10 @@ where
                 }
             };
 
+            if matches!(raw_redis_map, Value::Int(_)) {
+                return None;
+            }
+
             let Some(redis_map) = raw_redis_map.as_sequence() else {
                 return Some(Err(Error::new(
                     Code::Internal,
