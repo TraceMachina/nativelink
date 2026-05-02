@@ -17,6 +17,7 @@ use core::cmp::{max, min};
 use core::ops::Range;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicU64, Ordering};
+use core::time::Duration;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::sync::{Arc, Weak};
@@ -72,6 +73,7 @@ struct LoaderGuard<'a> {
     weak_store: Weak<FastSlowStore>,
     key: StoreKey<'a>,
     loader: Option<Loader>,
+    is_leader: bool,
 }
 
 impl LoaderGuard<'_> {
@@ -142,6 +144,7 @@ impl FastSlowStore {
     fn get_loader<'a>(&self, key: StoreKey<'a>) -> LoaderGuard<'a> {
         // Get a single loader instance that's used to populate the fast store
         // for this digest.  If another request comes in then it's de-duplicated.
+        let mut is_leader = false;
         let loader = match self
             .populating_digests
             .lock()
@@ -151,6 +154,7 @@ impl FastSlowStore {
                 occupied_entry.get().clone()
             }
             std::collections::hash_map::Entry::Vacant(vacant_entry) => {
+                is_leader = true;
                 vacant_entry.insert(Arc::new(OnceCell::new())).clone()
             }
         };
@@ -158,6 +162,7 @@ impl FastSlowStore {
             weak_store: self.weak_self.clone(),
             key,
             loader: Some(loader),
+            is_leader,
         }
     }
 
@@ -640,11 +645,51 @@ impl StoreDriver for FastSlowStore {
         }
 
         let mut writer = Some(writer);
-        self.get_loader(key.borrow())
-            .get_or_try_init(|| {
-                self.populate_and_maybe_stream(key.borrow(), writer.take(), offset, length)
-            })
-            .await?;
+
+        let needs_slow_store_fallback: bool = {
+            let loader_guard = self.get_loader(key.borrow());
+            let is_leader = loader_guard.is_leader;
+            if is_leader {
+                loader_guard
+                    .get_or_try_init(|| {
+                        self.populate_and_maybe_stream(key.borrow(), writer.take(), offset, length)
+                    })
+                    .await?;
+                false
+            } else {
+                let load_fut = loader_guard.get_or_try_init(|| async {
+                    self.populate_and_maybe_stream(key.borrow(), writer.take(), offset, length)
+                        .await
+                });
+                match tokio::time::timeout(LEADER_WAIT_TIMEOUT, load_fut).await {
+                    Ok(result) => {
+                        result?;
+                        false
+                    }
+                    Err(_elapsed) => {
+                        self.metrics
+                            .leader_wait_timeouts
+                            .fetch_add(1, Ordering::Acquire);
+                        warn!(
+                            %key,
+                            timeout_secs = LEADER_WAIT_TIMEOUT.as_secs(),
+                            "FastSlowStore::get_part: leader-wait exceeded timeout, bypassing dedup and reading slow store directly",
+                        );
+                        true
+                    }
+                }
+            }
+        };
+
+        if needs_slow_store_fallback && let Some(writer) = writer.take() {
+            return self
+                .slow_store
+                .get_part(key, writer, offset, length)
+                .await
+                .err_tip(
+                    || "In FastSlowStore::get_part slow_store fallback after leader-wait timeout",
+                );
+        }
 
         // If we didn't stream then re-enter which will stream from the fast
         // store, or retry the download.  We should not get in a loop here
@@ -691,6 +736,19 @@ struct FastSlowStoreMetrics {
     slow_store_hit_count: AtomicU64,
     #[metric(help = "Downloaded bytes from the slow store")]
     slow_store_downloaded_bytes: AtomicU64,
+    #[metric(
+        help = "Number of times a follower bypassed the populating-digests dedup because the leader exceeded LEADER_WAIT_TIMEOUT"
+    )]
+    leader_wait_timeouts: AtomicU64,
 }
+
+/// Maximum time a follower will wait on the leader-populator before
+/// bypassing the dedup map and reading directly from the slow store.
+///
+/// Without this bound a single wedged populator would block every
+/// concurrent reader of the same digest until each one's own `gRPC`
+/// deadline fired (e.g. Bazel's `--remote_timeout`), turning a
+/// single slow read into a fan-out of `DEADLINE_EXCEEDED` errors.
+const LEADER_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
 
 default_health_status_indicator!(FastSlowStore);

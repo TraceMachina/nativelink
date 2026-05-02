@@ -14,13 +14,14 @@
 
 use core::convert::Into;
 use core::pin::Pin;
+use core::time::Duration;
 use std::collections::{HashMap, VecDeque};
 
 use bytes::Bytes;
 use futures::stream::{FuturesUnordered, Stream};
 use futures::{StreamExt, TryStreamExt};
 use nativelink_config::cas_server::{CasStoreConfig, WithInstanceName};
-use nativelink_error::{Code, Error, ResultExt, error_if, make_input_err};
+use nativelink_error::{Code, Error, ResultExt, error_if, make_err, make_input_err};
 use nativelink_proto::build::bazel::remote::execution::v2::content_addressable_storage_server::{
     ContentAddressableStorage, ContentAddressableStorageServer as Server,
 };
@@ -47,6 +48,9 @@ pub struct CasServer {
 }
 
 type GetTreeStream = Pin<Box<dyn Stream<Item = Result<GetTreeResponse, Status>> + Send + 'static>>;
+
+/// Per-blob deadline applied inside `BatchReadBlobs` / `BatchUpdateBlobs`.
+const BATCH_PER_BLOB_TIMEOUT: Duration = Duration::from_secs(30);
 
 impl CasServer {
     pub fn new(
@@ -135,10 +139,22 @@ impl CasServer {
                     size_bytes,
                     request_data.len()
                 );
-                let result = store_ref
-                    .update_oneshot(digest_info, request_data)
-                    .await
-                    .err_tip(|| "Error writing to store");
+                // Apply a per-blob deadline so one slow upload does not
+                // make the whole batch hit the client's overall deadline.
+                let result = match tokio::time::timeout(
+                    BATCH_PER_BLOB_TIMEOUT,
+                    store_ref.update_oneshot(digest_info, request_data),
+                )
+                .await
+                {
+                    Ok(r) => r.err_tip(|| "Error writing to store"),
+                    Err(_elapsed) => Err(make_err!(
+                        Code::DeadlineExceeded,
+                        "BatchUpdateBlobs per-blob timeout ({} s) elapsed for digest {}",
+                        BATCH_PER_BLOB_TIMEOUT.as_secs(),
+                        digest_info,
+                    )),
+                };
                 Ok::<_, Error>(batch_update_blobs_response::Response {
                     digest: Some(digest),
                     status: Some(result.map_or_else(Into::into, |()| GrpcStatus::default())),
@@ -178,10 +194,22 @@ impl CasServer {
             .map(|digest| async move {
                 let digest_copy = DigestInfo::try_from(digest.clone())?;
                 // TODO(palfrey) There is a security risk here of someone taking all the memory on the instance.
-                let result = store_ref
-                    .get_part_unchunked(digest_copy, 0, None)
-                    .await
-                    .err_tip(|| "Error reading from store");
+                // Apply a per-blob deadline so one slow read does not
+                // make the whole batch hit the client's overall deadline.
+                let result = match tokio::time::timeout(
+                    BATCH_PER_BLOB_TIMEOUT,
+                    store_ref.get_part_unchunked(digest_copy, 0, None),
+                )
+                .await
+                {
+                    Ok(r) => r.err_tip(|| "Error reading from store"),
+                    Err(_elapsed) => Err(make_err!(
+                        Code::DeadlineExceeded,
+                        "BatchReadBlobs per-blob timeout ({} s) elapsed for digest {}",
+                        BATCH_PER_BLOB_TIMEOUT.as_secs(),
+                        digest_copy,
+                    )),
+                };
                 let (status, data) = result.map_or_else(
                     |mut e| {
                         if e.code == Code::NotFound {
