@@ -27,6 +27,7 @@ impl WarmWorkerPoolsConfig {
 pub enum Language {
     Jvm,
     NodeJs,
+    Swift,
     Custom(String),
 }
 
@@ -36,6 +37,7 @@ impl Language {
         match self {
             Self::Jvm => "jvm",
             Self::NodeJs => "nodejs",
+            Self::Swift => "swift",
             Self::Custom(value) => value.as_str(),
         }
     }
@@ -274,6 +276,7 @@ impl From<nativelink_config::warm_worker_pools::Language> for Language {
         match value {
             nativelink_config::warm_worker_pools::Language::Jvm => Language::Jvm,
             nativelink_config::warm_worker_pools::Language::NodeJs => Language::NodeJs,
+            nativelink_config::warm_worker_pools::Language::Swift => Language::Swift,
             nativelink_config::warm_worker_pools::Language::Custom(s) => Language::Custom(s),
         }
     }

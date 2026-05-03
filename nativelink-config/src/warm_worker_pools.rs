@@ -32,6 +32,7 @@ pub struct WarmWorkerPoolsConfig {
 pub enum Language {
     Jvm,
     NodeJs,
+    Swift,
     Custom(String),
 }
 

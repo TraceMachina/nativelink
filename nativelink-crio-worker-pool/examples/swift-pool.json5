@@ -1,0 +1,118 @@
+{
+  // Example configuration for a Swift warm worker pool.
+  //
+  // Pair with the docker image at nativelink-crio-worker-pool/docker/swift/.
+  // COW isolation is enabled by default - leave it on for any deployment
+  // serving more than one tenant.
+  pools: [
+    {
+      name: "swift-pool",
+      language: "swift",
+      cri_socket: "unix:///var/run/crio/crio.sock",
+      container_image: "ghcr.io/tracemachina/nativelink-worker-swift:latest",
+      crictl_binary: "crictl",
+      namespace: "nativelink",
+
+      // Pool sizing. Swift toolchain is heavier than Node but lighter than
+      // a JVM with a large heap; tune based on your workload mix.
+      min_warm_workers: 3,
+      max_workers: 30,
+
+      // Worker process configuration.
+      worker_command: [
+        "/usr/local/bin/nativelink-worker",
+      ],
+      worker_args: [
+        "--config",
+        "/etc/nativelink/worker-config.json",
+      ],
+      env: {
+        RUST_LOG: "info",
+
+        // Keep swiftc output deterministic so action cache entries dedupe
+        // across jobs that compile the same inputs.
+        SWIFT_DETERMINISTIC_HASHING: "1",
+
+        // Module cache lives under /opt/warmup so the warm template
+        // captures it in the COW lower layer and every cloned job gets
+        // it for free.
+        SWIFT_MODULE_CACHE: "/opt/warmup/module-cache",
+
+        // Default flags the warmup script and any swiftc wrapper read.
+        SWIFTC_FLAGS: "-O",
+      },
+      working_directory: "/tmp/worker",
+      warmup: {
+        // Warmup runs on every worker (not just template) so the upper
+        // layer's transient state is also primed.
+        commands: [
+          {
+            argv: [
+              "/opt/warmup/swift-warmup.sh",
+            ],
+            timeout_s: 60,
+          },
+        ],
+
+        // Sanity check after warmup completes.
+        verification: [
+          {
+            argv: [
+              "swift",
+              "--version",
+            ],
+            timeout_s: 5,
+          },
+          {
+            argv: [
+              "/opt/warmup/SwiftWarmup",
+              "1",
+            ],
+            timeout_s: 10,
+          },
+        ],
+
+        // Swift has no runtime "GC" to trigger; reset the per-job dir
+        // instead so any large compile artifacts don't pile up if the
+        // upper layer is ever reused outside of strict COW isolation.
+        post_job_cleanup: [
+          {
+            argv: [
+              "sh",
+              "-c",
+              "rm -rf /tmp/worker/* /tmp/worker/.[!.]* 2>/dev/null || true",
+            ],
+            timeout_s: 10,
+          },
+        ],
+        default_timeout_s: 30,
+      },
+
+      // Cache priming: pre-populate the module cache in the template.
+      cache: {
+        enabled: true,
+        max_bytes: 5368709120, // 5 GB
+        commands: [
+          {
+            argv: [
+              "/opt/warmup/prime-swift-cache.sh",
+            ],
+            timeout_s: 90,
+          },
+        ],
+      },
+      lifecycle: {
+        worker_ttl_seconds: 3600, // 1 hour
+        max_jobs_per_worker: 250,
+        gc_job_frequency: 25,
+      },
+
+      // Per-job COW isolation. Recommended for multi-tenant RBE.
+      isolation: {
+        strategy: "overlayfs",
+        template_cache_path: "/var/lib/nativelink/warm-templates",
+        job_workspace_path: "/var/lib/nativelink/warm-jobs",
+      },
+    },
+  ],
+}

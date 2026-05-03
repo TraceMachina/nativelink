@@ -130,12 +130,29 @@ It compiles a small Java program that simulates tenant A leaving a secret
 on a warm worker and tenant B looking for it. Without isolation the secret
 leaks; with isolation it doesn't. Exits non-zero if the contract regresses.
 
+### Other languages
+
+Same recipe, different image + `language` value. Drop-in pool examples:
+
+| Language | `language` | Image | Reference config |
+|---|---|---|---|
+| Java / Kotlin / Scala | `jvm` | `ghcr.io/tracemachina/nativelink-worker-java` | [`examples/java-typescript-pools.json5`](https://github.com/TraceMachina/nativelink/blob/main/nativelink-crio-worker-pool/examples/java-typescript-pools.json5) |
+| TypeScript / Node | `nodejs` | `ghcr.io/tracemachina/nativelink-worker-node` | [`examples/java-typescript-pools.json5`](https://github.com/TraceMachina/nativelink/blob/main/nativelink-crio-worker-pool/examples/java-typescript-pools.json5) |
+| Swift | `swift` | `ghcr.io/tracemachina/nativelink-worker-swift` | [`examples/swift-pool.json5`](https://github.com/TraceMachina/nativelink/blob/main/nativelink-crio-worker-pool/examples/swift-pool.json5) |
+| Anything else | `custom: "your-name"` | bring your own | - |
+
+The Swift image is built on top of the official `swift:6.0-jammy` base
+and pre-populates `$SWIFT_MODULE_CACHE` at template-creation time, so
+every cloned job inherits a hot module cache through the COW lower layer
+without re-resolving Foundation/Dispatch on each the Swift compiler invocation.
+
 ## When to Use Warm Worker Pools
 
 ### ✅ Use Warm Pools For:
 
 - **Java/JVM builds** (Java, Kotlin, Scala, Groovy)
 - **TypeScript/JavaScript builds** (especially with large codebases)
+- **Swift builds** (the Swift compiler has a heavy front-end + module-cache resolution cost on every cold invocation)
 - **Repeated builds** (CI/CD pipelines with frequent builds)
 - **Large mono repos** with hundreds of targets
 
@@ -365,10 +382,13 @@ The scheduler uses these heuristics to detect language:
 |------------------------|---------------|
 | `lang=java`, `lang=jvm`, `lang=kotlin`, `lang=scala` | `java-pool` |
 | `lang=typescript`, `lang=ts`, `lang=javascript`, `lang=node` | `typescript-pool` |
+| `lang=swift` | `swift-pool` |
 | `toolchain` containing `java` or `jvm` | `java-pool` |
 | `toolchain` containing `node` or `typescript` | `typescript-pool` |
+| `toolchain` containing `swift` | `swift-pool` |
 | `Pool` containing `java` | `java-pool` |
 | `Pool` containing `node` or `typescript` | `typescript-pool` |
+| `Pool` containing `swift` | `swift-pool` |
 
 ### Manual Routing
 
