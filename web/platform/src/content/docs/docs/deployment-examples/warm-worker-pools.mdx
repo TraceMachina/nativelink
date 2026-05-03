@@ -119,16 +119,18 @@ WARN  Failed to acquire warm worker, falling back to standard workers
 jump to [Troubleshooting](#troubleshooting) - usually CRI-O isn't reachable
 on the configured `cri_socket`, or the image hasn't been pre-pulled.
 
-To prove isolation is actually working end-to-end, run the demo bundled in
-the repository:
+To prove isolation is actually working end-to-end, run one of the demos
+bundled in the repository - same model in two languages so you can pick
+whichever your team prefers:
 
 ```bash
-./nativelink-crio-worker-pool/scripts/test_isolation.sh
+./nativelink-crio-worker-pool/scripts/test_isolation.sh        # Java
+./nativelink-crio-worker-pool/scripts/test_isolation_node.sh   # TypeScript
 ```
 
-It compiles a small Java program that simulates tenant A leaving a secret
-on a warm worker and tenant B looking for it. Without isolation the secret
-leaks; with isolation it doesn't. Exits non-zero if the contract regresses.
+Each compiles a small program that simulates tenant A leaving a secret on
+a warm worker and tenant B looking for it. Without isolation the secret
+leaks; with isolation it doesn't. Exit non-zero if the contract regresses.
 
 ### Other languages
 
@@ -137,7 +139,7 @@ Same recipe, different image + `language` value. Drop-in pool examples:
 | Language | `language` | Image | Reference config |
 |---|---|---|---|
 | Java / Kotlin / Scala | `jvm` | `ghcr.io/tracemachina/nativelink-worker-java` | [`examples/java-typescript-pools.json5`](https://github.com/TraceMachina/nativelink/blob/main/nativelink-crio-worker-pool/examples/java-typescript-pools.json5) |
-| TypeScript / Node | `nodejs` | `ghcr.io/tracemachina/nativelink-worker-node` | [`examples/java-typescript-pools.json5`](https://github.com/TraceMachina/nativelink/blob/main/nativelink-crio-worker-pool/examples/java-typescript-pools.json5) |
+| TypeScript / Node | `nodejs` | `ghcr.io/tracemachina/nativelink-worker-node` | [`examples/typescript-pool.json5`](https://github.com/TraceMachina/nativelink/blob/main/nativelink-crio-worker-pool/examples/typescript-pool.json5) |
 | Swift | `swift` | `ghcr.io/tracemachina/nativelink-worker-swift` | [`examples/swift-pool.json5`](https://github.com/TraceMachina/nativelink/blob/main/nativelink-crio-worker-pool/examples/swift-pool.json5) |
 | Anything else | `custom: "your-name"` | bring your own | - |
 

@@ -46,19 +46,22 @@ Measures:
 - Job consistency: ±20% variance
 - Efficiency: >80% with proper pool sizing
 
-### 4. Warm-Worker COW Isolation Test
+### 4. Warm-Worker COW Isolation Tests
 ```bash
-./test_isolation.sh
+./test_isolation.sh        # Java
+./test_isolation_node.sh   # TypeScript / Node.js
 ```
-Pure-Java demo (no CRI-O, no root) of the Copy-on-Write isolation contract
-in `nativelink-crio-worker-pool/src/isolation.rs`. Demonstrates:
+Self-contained demos (no CRI-O, no root) of the Copy-on-Write isolation
+contract in `nativelink-crio-worker-pool/src/isolation.rs`. Each
+demonstrates:
 - The "before" failure mode where a shared warm worker leaks tenant A's
   on-disk secrets into tenant B's job.
 - The "after" behavior where each job acquires a per-job overlay so writes
   are scoped to that job and the warm template stays intact.
 
-Exits non-zero if the isolation contract regresses. Also runs at image
-build time inside `docker/java/Dockerfile`.
+Exit non-zero if the isolation contract regresses. Also run at image
+build time inside `docker/java/Dockerfile` and `docker/typescript/Dockerfile`
+respectively.
 
 ### 5. Full Benchmark Suite
 ```bash

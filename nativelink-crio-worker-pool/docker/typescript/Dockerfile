@@ -12,6 +12,7 @@ RUN apk add --no-cache \
     curl \
     && npm install -g \
         typescript@5.3 \
+        @types/node@20 \
         @bazel/bazelisk \
         esbuild \
     && rm -rf /var/cache/apk/*
@@ -30,7 +31,17 @@ RUN mkdir -p /opt/warmup /tmp/worker /var/log/nativelink
 COPY warmup/nodejs-warmup.sh /opt/warmup/
 COPY warmup/prime-node-cache.sh /opt/warmup/
 COPY warmup/warmup.js /opt/warmup/
+COPY warmup/WarmWorkerIsolationTest.ts /opt/warmup/
 RUN chmod +x /opt/warmup/*.sh
+
+# Compile and run the TypeScript isolation test as a build-time gate.
+# Exits non-zero if the COW isolation contract regresses, which fails
+# the image build - same pattern as docker/java/Dockerfile.
+WORKDIR /opt/warmup
+RUN tsc --target es2022 --module commonjs --strict --esModuleInterop \
+        --moduleResolution node --types node \
+        WarmWorkerIsolationTest.ts && \
+    node WarmWorkerIsolationTest.js
 
 # Install NativeLink worker binary (placeholder - should be copied from build)
 # COPY nativelink-worker /usr/local/bin/

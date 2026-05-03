@@ -1,0 +1,106 @@
+{
+  // Example configuration for a TypeScript / Node.js warm worker pool.
+  //
+  // Pair with the docker image at nativelink-crio-worker-pool/docker/typescript/.
+  // COW isolation is enabled by default - leave it on for any deployment
+  // serving more than one tenant.
+  pools: [
+    {
+      name: "typescript-pool",
+      language: "nodejs",
+      cri_socket: "unix:///var/run/crio/crio.sock",
+      container_image: "ghcr.io/tracemachina/nativelink-worker-node:latest",
+      crictl_binary: "crictl",
+      namespace: "nativelink",
+
+      // Pool sizing. Node.js workers are lighter than the JVM but TypeScript
+      // compilation (tsc, esbuild) still benefits from a hot V8.
+      min_warm_workers: 3,
+      max_workers: 30,
+
+      // Worker process configuration.
+      worker_command: [
+        "/usr/local/bin/nativelink-worker",
+      ],
+      worker_args: [
+        "--config",
+        "/etc/nativelink/worker-config.json",
+      ],
+      env: {
+        RUST_LOG: "info",
+        NODE_ENV: "production",
+
+        // V8 tuning for faster warmup. --expose-gc lets the post-job
+        // cleanup hook trigger a major GC between jobs.
+        NODE_OPTIONS: "--expose-gc --max-old-space-size=4096 --max-semi-space-size=128",
+      },
+      working_directory: "/tmp/worker",
+      warmup: {
+        // Exercises V8 TurboFan and pre-loads the modules a typical
+        // build action touches (fs, crypto, typescript, esbuild).
+        commands: [
+          {
+            argv: [
+              "/opt/warmup/nodejs-warmup.sh",
+            ],
+            timeout_s: 45,
+          },
+        ],
+        verification: [
+          {
+            argv: [
+              "node",
+              "--version",
+            ],
+            timeout_s: 5,
+          },
+          {
+            argv: [
+              "npm",
+              "--version",
+            ],
+            timeout_s: 5,
+          },
+        ],
+
+        // Force GC between jobs so the upper layer doesn't carry
+        // over heap state when isolation: "none" is in use.
+        post_job_cleanup: [
+          {
+            argv: [
+              "node",
+              "-e",
+              "if (global.gc) global.gc();",
+            ],
+            timeout_s: 10,
+          },
+        ],
+        default_timeout_s: 30,
+      },
+      cache: {
+        enabled: true,
+        max_bytes: 5368709120, // 5 GB
+        commands: [
+          {
+            argv: [
+              "/opt/warmup/prime-node-cache.sh",
+            ],
+            timeout_s: 90,
+          },
+        ],
+      },
+      lifecycle: {
+        worker_ttl_seconds: 2700, // 45 minutes
+        max_jobs_per_worker: 300,
+        gc_job_frequency: 30,
+      },
+
+      // Per-job COW isolation. Recommended for multi-tenant RBE.
+      isolation: {
+        strategy: "overlayfs",
+        template_cache_path: "/var/lib/nativelink/warm-templates",
+        job_workspace_path: "/var/lib/nativelink/warm-jobs",
+      },
+    },
+  ],
+}
