@@ -48,9 +48,9 @@ pub mod runtime {
     tonic::include_proto!("runtime.v1");
 }
 
-use runtime::{
-    image_service_client::ImageServiceClient, runtime_service_client::RuntimeServiceClient, *,
-};
+use runtime::image_service_client::ImageServiceClient;
+use runtime::runtime_service_client::RuntimeServiceClient;
+use runtime::*;
 
 /// Native gRPC client for CRI-O.
 ///

@@ -9,8 +9,13 @@ pagefind: true
 
 Warm worker pools are a performance optimization feature in NativeLink that dramatically reduces build times for languages with slow cold-start characteristics (Java, TypeScript, etc.) by maintaining pools of pre-warmed worker containers.
 
-:::caution[Platform Requirements]
-Warm worker pools require **Linux/Unix systems** with CRI-O installed. This feature uses Unix domain sockets for container runtime communication and **isn't available on Windows**.
+:::caution[Platform & runtime requirements]
+- **Container runtime: CRI-O.** NativeLink talks to CRI-O directly over its
+  CRI gRPC socket. Docker Engine and containerd are **not** supported as
+  runtimes - Docker is only ever used to *build* worker images, never to
+  run them.
+- **OS: Linux only.** The CRI socket is a Unix domain socket and the COW
+  isolation layer relies on Linux OverlayFS. Windows isn't supported.
 :::
 
 ### Key Benefits
@@ -36,6 +41,94 @@ Warm worker pools keep containers running and warmed up:
 Warm Start: 50-100ms
   └─ Acquire from pool: 50-100ms
 ```
+
+## Quick start
+
+Three steps to enable safe warm-worker pools for Java on a Linux host with
+CRI-O. Copy the snippets verbatim - no edits required for the default case.
+
+### 1. Install CRI-O and pull the worker image
+
+```bash
+# Ubuntu / Debian (see Prerequisites below for other distros)
+sudo apt-get install -y cri-o cri-tools
+sudo systemctl enable --now crio
+
+# Pre-built Java worker image (already includes JDK 21 + warmup script)
+sudo crictl --runtime-endpoint unix:///var/run/crio/crio.sock \
+  pull ghcr.io/tracemachina/nativelink-worker-java:latest
+```
+
+### 2. Drop this into your scheduler config
+
+This is the **safe default** - COW isolation is on, so tenant state can't
+leak between jobs.
+
+```json5
+{
+  schedulers: {
+    main: {
+      simple: {
+        supported_platform_properties: { lang: "exact" },
+
+        warm_worker_pools: {
+          pools: [
+            {
+              name: "java-pool",
+              language: "jvm",
+              cri_socket: "unix:///var/run/crio/crio.sock",
+              container_image: "ghcr.io/tracemachina/nativelink-worker-java:latest",
+              min_warm_workers: 5,
+              max_workers: 50,
+              warmup: {
+                commands: [{ argv: ["/opt/warmup/jvm-warmup.sh"], timeout_s: 60 }],
+              },
+              lifecycle: {
+                worker_ttl_seconds: 3600,
+                max_jobs_per_worker: 200,
+              },
+              // Per-job COW isolation. Recommended for multi-tenant RBE.
+              // Set strategy: "none" to disable (NOT recommended for prod).
+              isolation: {
+                strategy: "overlayfs",
+                template_cache_path: "/var/lib/nativelink/warm-templates",
+                job_workspace_path: "/var/lib/nativelink/warm-jobs",
+              },
+            },
+          ],
+        },
+      },
+    },
+  },
+}
+```
+
+### 3. Verify it works
+
+Restart NativeLink and run any Java build. Two log lines confirm success:
+
+```text
+INFO  Warm worker pools initialized successfully     pools=1
+DEBUG Acquired warm worker from pool                 pool_name="java-pool"
+```
+
+If you instead see:
+```text
+WARN  Failed to acquire warm worker, falling back to standard workers
+```
+jump to [Troubleshooting](#troubleshooting) - usually CRI-O isn't reachable
+on the configured `cri_socket`, or the image hasn't been pre-pulled.
+
+To prove isolation is actually working end-to-end, run the demo bundled in
+the repository:
+
+```bash
+./nativelink-crio-worker-pool/scripts/test_isolation.sh
+```
+
+It compiles a small Java program that simulates tenant A leaving a secret
+on a warm worker and tenant B looking for it. Without isolation the secret
+leaks; with isolation it doesn't. Exits non-zero if the contract regresses.
 
 ## When to Use Warm Worker Pools
 
@@ -335,54 +428,37 @@ sudo crictl version
 
 ### Worker Images
 
-You need container images with your build tools pre-installed:
+NativeLink runs worker images **through CRI-O**. The Docker CLI is only
+used to *build* the image; CRI-O pulls and runs it via `crictl`.
 
-**Option 1: Use pre-built images** (coming soon):
+**Option 1: Use pre-built images.** Pull straight into CRI-O's image store:
 ```bash
-docker pull ghcr.io/tracemachina/nativelink-worker-java:latest
-docker pull ghcr.io/tracemachina/nativelink-worker-node:latest
+sudo crictl --runtime-endpoint unix:///var/run/crio/crio.sock \
+  pull ghcr.io/tracemachina/nativelink-worker-java:latest
+
+sudo crictl --runtime-endpoint unix:///var/run/crio/crio.sock \
+  pull ghcr.io/tracemachina/nativelink-worker-node:latest
 ```
 
-**Option 2: Build custom images:**
+**Option 2: Build a custom image.** Use the canonical Java image in the
+repository as a starting point - it already has the warmup hook wired up:
 
-Create a `Dockerfile`:
-```dockerfile
-FROM ubuntu:22.04
-
-# Install Java
-RUN apt-get update && apt-get install -y \
-    openjdk-17-jdk \
-    maven \
-    gradle
-
-# Install NativeLink worker (placeholder - adjust for your setup)
-COPY nativelink-worker /usr/local/bin/
-
-# Add warmup script
-COPY jvm-warmup.sh /opt/warmup/
-RUN chmod +x /opt/warmup/jvm-warmup.sh
-
-# Keep container running
-CMD ["/bin/bash", "-c", "sleep infinity"]
-```
-
-Example warmup script (`jvm-warmup.sh`):
 ```bash
-#!/bin/bash
-# Warm up JVM by compiling and running a simple program
-echo "public class Warmup { public static void main(String[] args) { for(int i=0; i<10000; i++) { String s = new String(\"test\" + i); } } }" > Warmup.java
-javac Warmup.java
-for i in {1..100}; do
-  java Warmup
-done
-rm Warmup.java Warmup.class
+cd nativelink-crio-worker-pool/docker/java
+docker build -t nativelink-worker-java:custom .
+
+# Hand the resulting image to CRI-O. Either push to a registry CRI-O can
+# reach, or import directly:
+docker save nativelink-worker-java:custom | \
+  sudo crictl --runtime-endpoint unix:///var/run/crio/crio.sock \
+  load -i /dev/stdin
 ```
 
-Build and make available to CRI-O:
-```bash
-docker build -t nativelink-worker-java:latest .
-# CRI-O can pull from Docker daemon
-```
+The reference Dockerfile lives at
+[`nativelink-crio-worker-pool/docker/java/Dockerfile`](https://github.com/TraceMachina/nativelink/blob/main/nativelink-crio-worker-pool/docker/java/Dockerfile).
+It installs JDK 21, copies `WarmupRunner.java` and `jvm-warmup.sh`, and
+runs the bundled isolation test as a build-time gate so a broken COW
+contract fails the image build.
 
 ## Monitoring
 

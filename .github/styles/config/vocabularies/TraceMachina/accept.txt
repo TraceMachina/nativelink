@@ -9,6 +9,7 @@ Bazelisk
 Cloudflare
 Colab
 composable
+containerd
 CPUs
 [Dd]eduplication
 eviction_policy
