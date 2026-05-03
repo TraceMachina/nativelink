@@ -32,11 +32,15 @@ RUN mkdir -p /opt/warmup /tmp/worker /var/log/nativelink
 COPY warmup/jvm-warmup.sh /opt/warmup/
 COPY warmup/prime-cache.sh /opt/warmup/
 COPY warmup/WarmupRunner.java /opt/warmup/
+COPY warmup/WarmWorkerIsolationTest.java /opt/warmup/
 RUN chmod +x /opt/warmup/*.sh
 
-# Compile warmup Java class
+# Compile warmup Java sources and run the isolation test as a build-time gate.
+# The isolation test exits non-zero if the COW model regresses, so a broken
+# warm-worker isolation contract fails the image build.
 WORKDIR /opt/warmup
-RUN javac WarmupRunner.java
+RUN javac WarmupRunner.java WarmWorkerIsolationTest.java && \
+    java WarmWorkerIsolationTest
 
 # Install NativeLink worker binary (placeholder - should be copied from build)
 # COPY nativelink-worker /usr/local/bin/
