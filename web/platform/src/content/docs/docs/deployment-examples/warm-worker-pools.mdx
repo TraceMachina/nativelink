@@ -214,6 +214,30 @@ Isolation adds minimal overhead compared to cold starts:
 
 **Verdict:** 150ms overhead is negligible compared to 30-45s saved vs cold starts.
 
+### Why this model is safer than traditional remote persistent workers
+
+Other remote-execution systems expose "persistent workers" by keeping the
+build tool's worker *process* (a JVM, a TypeScript compiler, etc.) alive
+across requests and shuttling actions to it over the standard worker IPC
+protocol. That model carries several security cliffs that the COW pool
+design avoids by construction:
+
+| Concern | Traditional remote persistent workers | NativeLink warm-worker pools (with isolation) |
+|---|---|---|
+| **State boundary** | A single long-lived worker *process* serves many tenants. Anything the process keeps in memory, in `/tmp`, or in implicit caches survives across jobs. | Each job runs against a fresh **upper layer** stacked on a read-only template. Process state is reset per job; on-disk writes are confined to the per-job overlay and discarded on cleanup. |
+| **Template integrity** | The worker's filesystem is mutable. A compromised job can patch class files, alter JIT profile data, or plant artifacts that the next tenant will load. | The template is the **lower layer** of the overlay and is structurally read-only to the job. A malicious job can't reach back and corrupt what the next tenant sees. |
+| **Cleanup correctness** | Cleanup is the worker process's responsibility, file by file. Anything the worker forgets to delete leaks. | Cleanup is one `rmdir` of the upper/work directories; "clean" is the default, "leak" requires bypassing the overlay. |
+| **Release-build posture** | Operators are advised to **disable persistent workers** for release builds because reused state introduces non-determinism risk. | Release builds keep the same configuration. Each job sees a fresh template snapshot, so determinism doesn't hinge on whether persistence is on. |
+| **Tenant segmentation** | Requires per-tenant `cache-silo-key`-style platform options to keep cache entries from one tenant from being served to another - this only segments the cache, not the worker process itself. | Isolation happens at the execution boundary, not the cache boundary. Two tenants pinned to the same template still get independent overlays and never share a writable surface. |
+| **Review surface** | Operators are advised to put strict review controls on persistent-worker source/binaries because a worker change is effectively trusted code that runs across many builds. | The trusted surface is the template image (vetted once) plus the COW mount; per-job code never mutates either. |
+| **Windows / non-Linux** | Often unsupported on Windows because the persistent-worker contract assumes Unix-style IPC. | Same story for OverlayFS, but the security model degrades gracefully: with `strategy: "none"` the system behaves like a cache, not like a multi-tenant worker - operators aren't silently exposed. |
+
+In short: the persistent-worker model defends a **process boundary** that
+the same code paths it accelerates can also poison. The warm-worker pool
+model defends a **filesystem boundary** below the workload, so the
+performance benefit and the isolation guarantee are independent of the
+job's behavior.
+
 ## Routing Actions to Warm Pools
 
 NativeLink automatically routes actions to warm pools based on **platform properties**. You don't need to modify your build files in most cases.
