@@ -20,7 +20,6 @@ struct Item: Codable {
     let payload: [String: Int]
 }
 
-@main
 struct SwiftWarmup {
     static func main() {
         let iterations: Int
@@ -78,3 +77,5 @@ struct SwiftWarmup {
         return total + filtered
     }
 }
+
+SwiftWarmup.main()

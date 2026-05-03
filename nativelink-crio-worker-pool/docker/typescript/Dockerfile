@@ -39,7 +39,8 @@ RUN chmod +x /opt/warmup/*.sh
 # the image build - same pattern as docker/java/Dockerfile.
 WORKDIR /opt/warmup
 RUN tsc --target es2022 --module commonjs --strict --esModuleInterop \
-        --moduleResolution node --types node \
+        --moduleResolution node \
+        --typeRoots /usr/local/lib/node_modules/@types \
         WarmWorkerIsolationTest.ts && \
     node WarmWorkerIsolationTest.js
 
