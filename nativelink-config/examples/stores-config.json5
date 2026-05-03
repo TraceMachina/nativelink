@@ -253,6 +253,8 @@
        "endpoints": [
          {"address": "grpc://${CAS_ENDPOINT:-127.0.0.1}:50051"}
        ],
+       "connections_per_endpoint": "5",
+       "rpc_timeout_s": "5m",
        "store_type": "ac"
      }
     },

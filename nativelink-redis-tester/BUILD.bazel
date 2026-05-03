@@ -1,0 +1,57 @@
+load(
+    "@rules_rust//rust:defs.bzl",
+    "rust_doc",
+    "rust_doc_test",
+    "rust_library",
+    "rust_test",
+    "rust_test_suite",
+)
+
+rust_library(
+    name = "nativelink-redis-tester",
+    srcs = [
+        "src/dynamic_fake_redis.rs",
+        "src/fake_redis.rs",
+        "src/lib.rs",
+        "src/pubsub.rs",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//nativelink-util",
+        "@crates//:redis",
+        "@crates//:redis-protocol",
+        "@crates//:redis-test",
+        "@crates//:tokio",
+        "@crates//:tracing",
+    ],
+)
+
+rust_test_suite(
+    name = "integration",
+    timeout = "short",
+    srcs = [
+    ],
+    deps = [
+        ":nativelink-redis-tester",
+    ],
+)
+
+rust_test(
+    name = "unit_test",
+    timeout = "short",
+    crate = ":nativelink-redis-tester",
+    deps = [
+    ],
+)
+
+rust_doc(
+    name = "docs",
+    crate = ":nativelink-redis-tester",
+    visibility = ["//visibility:public"],
+)
+
+rust_doc_test(
+    name = "doc_test",
+    timeout = "short",
+    crate = ":nativelink-redis-tester",
+)

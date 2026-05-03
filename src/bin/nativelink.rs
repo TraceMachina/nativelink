@@ -61,7 +61,8 @@ use nativelink_util::task::TaskExecutor;
 use nativelink_util::telemetry::init_tracing;
 use nativelink_util::{background_spawn, fs, spawn};
 use nativelink_worker::local_worker::new_local_worker;
-use rustls_pemfile::{certs as extract_certs, crls as extract_crls};
+use rustls_pki_types::pem::PemObject;
+use rustls_pki_types::{CertificateRevocationListDer, PrivateKeyDer};
 use tokio::net::TcpListener;
 use tokio::select;
 #[cfg(target_family = "unix")]
@@ -424,7 +425,7 @@ async fn inner_main(
                     std::fs::File::open(cert_file)
                         .err_tip(|| format!("Could not open cert file {cert_file}"))?,
                 );
-                let certs = extract_certs(&mut cert_reader)
+                let certs = CertificateDer::pem_reader_iter(&mut cert_reader)
                     .collect::<Result<Vec<CertificateDer<'_>>, _>>()
                     .err_tip(|| format!("Could not extract certs from file {cert_file}"))?;
                 Ok(certs)
@@ -434,12 +435,12 @@ async fn inner_main(
                 std::fs::File::open(&tls_config.key_file)
                     .err_tip(|| format!("Could not open key file {}", tls_config.key_file))?,
             );
-            let key = match rustls_pemfile::read_one(&mut key_reader)
+            let key = match PrivateKeyDer::from_pem_reader(&mut key_reader)
                 .err_tip(|| format!("Could not extract key(s) from file {}", tls_config.key_file))?
             {
-                Some(rustls_pemfile::Item::Pkcs8Key(key)) => key.into(),
-                Some(rustls_pemfile::Item::Sec1Key(key)) => key.into(),
-                Some(rustls_pemfile::Item::Pkcs1Key(key)) => key.into(),
+                PrivateKeyDer::Pkcs8(key) => key.into(),
+                PrivateKeyDer::Sec1(key) => key.into(),
+                PrivateKeyDer::Pkcs1(key) => key.into(),
                 _ => {
                     return Err(make_err!(
                         Code::Internal,
@@ -448,7 +449,7 @@ async fn inner_main(
                     ));
                 }
             };
-            if let Ok(Some(_)) = rustls_pemfile::read_one(&mut key_reader) {
+            if PrivateKeyDer::from_pem_reader(&mut key_reader).is_ok() {
                 return Err(make_err!(
                     Code::InvalidArgument,
                     "Expected 1 key in file {}",
@@ -467,7 +468,7 @@ async fn inner_main(
                         std::fs::File::open(client_crl_file)
                             .err_tip(|| format!("Could not open CRL file {client_crl_file}"))?,
                     );
-                    extract_crls(&mut crl_reader)
+                    CertificateRevocationListDer::pem_reader_iter(&mut crl_reader)
                         .collect::<Result<_, _>>()
                         .err_tip(|| format!("Could not extract CRLs from file {client_crl_file}"))?
                 } else {

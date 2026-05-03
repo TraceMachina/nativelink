@@ -42,6 +42,10 @@ pub struct ConnectWorkerRequest {
     /// / append this prefix to the assigned worker_id followed by a UUIDv6.
     #[prost(string, tag = "2")]
     pub worker_id_prefix: ::prost::alloc::string::String,
+    /// / Maximum number of inflight tasks this worker can cope with at one time
+    /// / The default (0) means unlimited.
+    #[prost(uint64, tag = "3")]
+    pub max_inflight_tasks: u64,
 }
 /// / The result of an ExecutionRequest.
 #[derive(Clone, PartialEq, ::prost::Message)]

@@ -71,7 +71,11 @@ message ConnectWorkerRequest {
     /// append this prefix to the assigned worker_id followed by a UUIDv6.
     string worker_id_prefix = 2;
 
-    reserved 3; // NextId.
+    /// Maximum number of inflight tasks this worker can cope with at one time
+    /// The default (0) means unlimited.
+    uint64 max_inflight_tasks = 3;
+
+    reserved 4; // NextId.
 }
 
 /// The result of an ExecutionRequest.

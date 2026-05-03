@@ -88,6 +88,7 @@ impl PlatformPropertyManager {
                 )),
                 PropertyType::Exact => Ok(PlatformPropertyValue::Exact(value.to_string())),
                 PropertyType::Priority => Ok(PlatformPropertyValue::Priority(value.to_string())),
+                PropertyType::Ignore => Ok(PlatformPropertyValue::Ignore(value.to_string())),
             };
         }
         Err(make_input_err!("Unknown platform property '{}'", key))

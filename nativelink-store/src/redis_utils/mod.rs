@@ -12,5 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+mod aggregate_types;
 mod ft_aggregate;
-pub(crate) use ft_aggregate::ft_aggregate;
+mod ft_create;
+mod ft_cursor_read;
+pub(crate) use ft_aggregate::{FtAggregateCursor, FtAggregateOptions, ft_aggregate};
+pub(crate) use ft_create::{FtCreateOptions, SearchSchema, ft_create};

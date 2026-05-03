@@ -800,13 +800,6 @@ impl ExperimentalMongoSubscriptionManager {
 impl SchedulerSubscriptionManager for ExperimentalMongoSubscriptionManager {
     type Subscription = ExperimentalMongoSubscription;
 
-    fn notify_for_test(&self, value: String) {
-        let subscribed_keys_mux = self.subscribed_keys.read();
-        subscribed_keys_mux
-            .common_prefix_values(&value)
-            .for_each(ExperimentalMongoSubscriptionPublisher::notify);
-    }
-
     fn subscribe<K>(&self, key: K) -> Result<Self::Subscription, Error>
     where
         K: SchedulerStoreKeyProvider,

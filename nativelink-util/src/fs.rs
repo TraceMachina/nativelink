@@ -27,7 +27,7 @@ use rlimit::increase_nofile_limit;
 pub use tokio::fs::DirEntry;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncWrite, ReadBuf, SeekFrom, Take};
 use tokio::sync::{Semaphore, SemaphorePermit};
-use tracing::{error, info, warn};
+use tracing::{error, info, trace, warn};
 
 use crate::spawn_blocking;
 
@@ -39,6 +39,29 @@ pub struct FileSlot {
     // We hold the permit because once it is dropped it goes back into the queue.
     _permit: SemaphorePermit<'static>,
     inner: tokio::fs::File,
+}
+
+impl FileSlot {
+    /// Advise the kernel to drop page cache for this file's contents.
+    /// Only available on Linux;
+    #[cfg(target_os = "linux")]
+    pub fn advise_dontneed(&self) {
+        use std::os::unix::io::AsRawFd;
+        let fd = self.inner.as_raw_fd();
+        let ret = unsafe { libc::posix_fadvise(fd, 0, 0, libc::POSIX_FADV_DONTNEED) };
+        if ret != 0 {
+            tracing::debug!(
+                fd,
+                ret,
+                "posix_fadvise(DONTNEED) returned non-zero (best-effort, ignoring)",
+            );
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub const fn advise_dontneed(&self) {
+        // No-op: posix_fadvise is not available on Mac or Windows.
+    }
 }
 
 impl AsRef<tokio::fs::File> for FileSlot {
@@ -121,6 +144,10 @@ pub static OPEN_FILE_SEMAPHORE: Semaphore = Semaphore::const_new(DEFAULT_OPEN_FI
 /// Try to acquire a permit from the open file semaphore.
 #[inline]
 pub async fn get_permit() -> Result<SemaphorePermit<'static>, Error> {
+    trace!(
+        available_permits = OPEN_FILE_SEMAPHORE.available_permits(),
+        "getting FS permit"
+    );
     OPEN_FILE_SEMAPHORE
         .acquire()
         .await

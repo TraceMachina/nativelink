@@ -67,9 +67,9 @@ env:
 
 | Metric | Type | Description | Labels |
 |--------|------|-------------|--------|
-| `nativelink_cache_operations` | Counter | Total cache operations | `cache_type`, `cache_operation_name`, `cache_operation_result` |
+| `nativelink_cache_operations_total` | Counter | Total cache operations | `cache_type`, `cache_operation_name`, `cache_operation_result` |
 | `nativelink_cache_operation_duration` | Histogram | Operation latency in milliseconds | `cache_type`, `cache_operation_name` |
-| `nativelink_cache_io` | Counter | Bytes read/written | `cache_type`, `cache_operation_name` |
+| `nativelink_cache_io_total` | Counter | Bytes read/written | `cache_type`, `cache_operation_name` |
 | `nativelink_cache_size` | Gauge | Current cache size in bytes | `cache_type` |
 | `nativelink_cache_entries` | Gauge | Number of cached entries | `cache_type` |
 | `nativelink_cache_item_size` | Histogram | Size distribution of cache entries | `cache_type` |
@@ -95,10 +95,10 @@ env:
 | `nativelink_execution_total_duration` | Histogram | Total execution time from submission to completion | `execution_instance` |
 | `nativelink_execution_queue_time` | Histogram | Time spent waiting in queue | `execution_priority` |
 | `nativelink_execution_active_count` | Gauge | Current actions in each stage | `execution_stage` |
-| `nativelink_execution_completed_count` | Counter | Completed executions | `execution_result`, `execution_action_digest` |
-| `nativelink_execution_stage_transitions` | Counter | Stage transition events | `execution_instance`, `execution_priority` |
+| `nativelink_execution_completed_count_total` | Counter | Completed executions | `execution_result`, `execution_action_digest` |
+| `nativelink_execution_stage_transitions_total` | Counter | Stage transition events | `execution_instance`, `execution_priority` |
 | `nativelink_execution_output_size` | Histogram | Size of execution outputs | - |
-| `nativelink_execution_retry_count` | Counter | Number of retries | - |
+| `nativelink_execution_retry_count_total` | Counter | Number of retries | - |
 
 **Execution Stages:**
 - `unknown`: Initial state
@@ -114,12 +114,9 @@ env:
 - `timeout`: Execution timed out
 - `cache_hit`: Result found in cache
 
-> **Note on Prometheus v3 and OTLP Counters:** When using Prometheus v3 with OTLP ingestion,
-> counter metrics receive a `_total` suffix (for example, `nativelink_execution_completed_count_total`).
-> The included Grafana dashboards use the `_total` suffix for Prometheus v3 compatibility.
-> If using Prometheus v2 or scrape-based collection, you may need to adjust the queries to
-> remove the `_total` suffix. See the [Prometheus OTLP documentation](https://prometheus.io/docs/prometheus/latest/feature_flags/#otlp-receiver)
-> for more details.
+> **Note on Counter Names in Prometheus:** Counter metrics are exposed with a `_total` suffix
+> (for example, `nativelink_execution_completed_count_total`). The Docker Compose quickstart,
+> recording rules, and included dashboards assume `_total` counter names.
 
 ## Configuration
 
@@ -218,14 +215,14 @@ exporters:
 
 **Cache hit rate:**
 ```promql
-sum(rate(nativelink_cache_operations{cache_operation_result="hit"}[5m])) by (cache_type) /
-sum(rate(nativelink_cache_operations{cache_operation_name="read"}[5m])) by (cache_type)
+sum(rate(nativelink_cache_operations_total{cache_operation_result="hit"}[5m])) by (cache_type) /
+sum(rate(nativelink_cache_operations_total{cache_operation_name="read"}[5m])) by (cache_type)
 ```
 
 **Execution success rate:**
 ```promql
-sum(rate(nativelink_execution_completed_count{execution_result="success"}[5m])) /
-sum(rate(nativelink_execution_completed_count[5m]))
+sum(rate(nativelink_execution_completed_count_total{execution_result="success"}[5m])) /
+sum(rate(nativelink_execution_completed_count_total[5m]))
 ```
 
 **Queue depth by priority:**
@@ -250,7 +247,7 @@ count(count by (execution_worker_id) (nativelink_execution_active_count))
 
 Use `target_info` to join resource attributes:
 ```promql
-rate(nativelink_execution_completed_count[5m])
+rate(nativelink_execution_completed_count_total[5m])
 * on (job, instance) group_left (k8s_cluster_name, deployment_environment)
 target_info
 ```
@@ -288,8 +285,8 @@ groups:
       - alert: HighErrorRate
         expr: |
           (1 - (
-            sum(rate(nativelink_execution_completed_count{execution_result="success"}[5m])) /
-            sum(rate(nativelink_execution_completed_count[5m]))
+            sum(rate(nativelink_execution_completed_count_total{execution_result="success"}[5m])) /
+            sum(rate(nativelink_execution_completed_count_total[5m]))
           )) > 0.05
         for: 5m
         labels:
@@ -346,6 +343,10 @@ docker logs otel-collector
 # or
 kubectl logs -l app=otel-collector
 ```
+
+### Cache Metrics Missing
+
+If you see `nativelink_execution_*` metrics but no `nativelink_cache_*` metrics, your NativeLink build may not be emitting store-level cache operation metrics yet. In that case, cache recording rules like `nativelink:cache_hit_rate` won't produce any series.
 
 ### High Memory Usage
 

@@ -315,6 +315,12 @@ impl ConnectionManagerWorker {
         {
             self.provide_channel(channel, tx);
         } else {
+            debug!(
+                available_connections = self.available_connections,
+                available_channels = self.available_channels.len(),
+                waiting_connections = self.waiting_connections.len(),
+                "ConnectionManager: no connection available, request queued",
+            );
             self.waiting_connections.push_back(tx);
         }
     }

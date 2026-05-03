@@ -20,7 +20,7 @@ use futures::future::Future;
 use futures::stream::StreamExt;
 use nativelink_config::stores::{ErrorCode, Retry};
 use nativelink_error::{Code, Error, make_err};
-use tracing::error;
+use tracing::{error, info};
 
 struct ExponentialBackoff {
     current: Duration,
@@ -163,7 +163,11 @@ impl Retrier {
                     }
                     Some(RetryResult::Retry(err)) => {
                         if !self.should_retry(err.code) {
-                            error!(?attempt, ?err, "Not retrying permanent error");
+                            if err.code == Code::NotFound {
+                                info!(?err, "Not found, not retrying");
+                            } else {
+                                error!(?attempt, ?err, "Not retrying permanent error");
+                            }
                             return Err(err);
                         }
                         (self.sleep_fn)(

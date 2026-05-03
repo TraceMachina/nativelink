@@ -132,3 +132,9 @@ sudo
 fs
 Thanos
 Quickwit
+[Mm]iddleware
+queryable
+gRPC
+[Mm]itigations
+[Pp]recompute
+attrs

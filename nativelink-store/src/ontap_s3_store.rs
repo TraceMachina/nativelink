@@ -50,7 +50,8 @@ use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::store_trait::{RemoveItemCallback, StoreDriver, StoreKey, UploadSizeInfo};
 use parking_lot::Mutex;
 use rustls::{ClientConfig, RootCertStore};
-use rustls_pemfile::certs as extract_certs;
+use rustls_pki_types::CertificateDer;
+use rustls_pki_types::pem::PemObject;
 use sha2::{Digest, Sha256};
 use tokio::time::sleep;
 use tracing::{Level, event, warn};
@@ -100,13 +101,11 @@ pub fn load_custom_certs(cert_path: &str) -> Result<Arc<ClientConfig>, Error> {
     // Create a BufReader from the cert file
     let mut cert_reader = BufReader::new(
         File::open(cert_path)
-            .map_err(|e| make_err!(Code::Internal, "Failed to open CA certificate file: {e:?}"))?,
+            .err_tip(|| format!("Failed to open CA certificate file {cert_path}"))?,
     );
 
     // Parse certificates
-    let certs = extract_certs(&mut cert_reader)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| make_err!(Code::Internal, "Failed to parse certificates: {e:?}"))?;
+    let certs = CertificateDer::pem_reader_iter(&mut cert_reader).collect::<Result<Vec<_>, _>>()?;
 
     // Add each certificate to the root store
     for cert in certs {

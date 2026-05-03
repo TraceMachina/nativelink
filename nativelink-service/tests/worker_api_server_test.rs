@@ -45,6 +45,7 @@ use nativelink_util::action_messages::{
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::operation_state_manager::{UpdateOperationType, WorkerStateManager};
+use nativelink_util::platform_properties::PlatformProperties;
 use pretty_assertions::assert_eq;
 use tokio::join;
 use tokio::sync::{Notify, mpsc};
@@ -143,6 +144,14 @@ const fn static_now_fn() -> Result<Duration, Error> {
 }
 
 async fn setup_api_server(worker_timeout: u64, now_fn: NowFn) -> Result<TestContext, Error> {
+    setup_api_server_with_task_limit(worker_timeout, now_fn, 0).await
+}
+
+async fn setup_api_server_with_task_limit(
+    worker_timeout: u64,
+    now_fn: NowFn,
+    max_worker_tasks: u64,
+) -> Result<TestContext, Error> {
     const SCHEDULER_NAME: &str = "DUMMY_SCHEDULE_NAME";
 
     const UUID_SIZE: usize = 36;
@@ -172,7 +181,10 @@ async fn setup_api_server(worker_timeout: u64, now_fn: NowFn) -> Result<TestCont
     )
     .err_tip(|| "Error creating WorkerApiServer")?;
 
-    let connect_worker_request = ConnectWorkerRequest::default();
+    let connect_worker_request = ConnectWorkerRequest {
+        max_inflight_tasks: max_worker_tasks,
+        ..Default::default()
+    };
     let (tx, rx) = mpsc::channel(1);
     tx.send(Update::ConnectWorkerRequest(connect_worker_request))
         .await
@@ -543,5 +555,77 @@ pub async fn execution_response_success_test() -> Result<(), Box<dyn core::error
         };
         assert_eq!(execute_response, client_given_state.into());
     }
+    Ok(())
+}
+
+#[nativelink_test]
+pub async fn workers_only_allow_max_tasks() -> Result<(), Box<dyn core::error::Error>> {
+    let test_context =
+        setup_api_server_with_task_limit(BASE_WORKER_TIMEOUT_S, Box::new(static_now_fn), 1).await?;
+
+    let selected_worker = test_context
+        .scheduler
+        .find_worker_for_action(&PlatformProperties::new(HashMap::new()), true)
+        .await;
+    assert_eq!(
+        selected_worker,
+        Some(test_context.worker_id.clone()),
+        "Expected worker to permit tasks to begin with"
+    );
+
+    let action_digest = DigestInfo::new([7u8; 32], 123);
+    let instance_name = "instance_name".to_string();
+
+    let unique_qualifier = ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+        instance_name: instance_name.clone(),
+        digest_function: DigestHasherFunc::Sha256,
+        digest: action_digest,
+    });
+
+    let action_info = Arc::new(ActionInfo {
+        command_digest: DigestInfo::new([0u8; 32], 0),
+        input_root_digest: DigestInfo::new([0u8; 32], 0),
+        timeout: Duration::MAX,
+        platform_properties: HashMap::new(),
+        priority: 0,
+        load_timestamp: make_system_time(0),
+        insert_timestamp: make_system_time(0),
+        unique_qualifier,
+    });
+
+    let platform_properties = test_context
+        .scheduler
+        .get_platform_property_manager()
+        .make_platform_properties(action_info.platform_properties.clone())
+        .err_tip(|| "Failed to make platform properties in SimpleScheduler::do_try_match")?;
+
+    let expected_operation_id = OperationId::default();
+
+    test_context
+        .scheduler
+        .worker_notify_run_action(
+            test_context.worker_id.clone(),
+            expected_operation_id,
+            ActionInfoWithProps {
+                inner: action_info,
+                platform_properties,
+            },
+        )
+        .await
+        .unwrap();
+
+    let selected_worker = test_context
+        .scheduler
+        .find_worker_for_action(&PlatformProperties::new(HashMap::new()), true)
+        .await;
+    assert_eq!(
+        selected_worker, None,
+        "Expected not to be able to give worker a second task"
+    );
+
+    assert!(logs_contain(
+        "cannot accept work: is_paused=false, is_draining=false, inflight=1/1"
+    ));
+
     Ok(())
 }

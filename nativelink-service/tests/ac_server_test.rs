@@ -117,6 +117,7 @@ async fn empty_store() -> Result<(), Box<dyn core::error::Error>> {
     let err = raw_response.unwrap_err();
     assert_eq!(err.code(), Code::NotFound);
     assert!(err.message().is_empty());
+
     Ok(())
 }
 
@@ -133,6 +134,8 @@ async fn has_single_item() -> Result<(), Box<dyn core::error::Error>> {
 
     insert_into_store(ac_store.as_pin(), HASH1, HASH1_SIZE, &action_result).await?;
     let raw_response = get_action_result(&ac_server, HASH1, HASH1_SIZE).await;
+
+    assert!(!logs_contain(" output_files: ["));
 
     assert!(
         raw_response.is_ok(),

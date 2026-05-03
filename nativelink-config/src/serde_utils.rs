@@ -152,6 +152,43 @@ pub fn convert_string_with_shellexpand<'de, D: Deserializer<'de>>(
     Ok((*(shellexpand::env(&value).map_err(de::Error::custom)?)).to_string())
 }
 
+pub fn convert_boolean_with_shellexpand<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: TryFrom<bool>,
+    <T as TryFrom<bool>>::Error: fmt::Display,
+{
+    struct BooleanExpandVisitor<T: TryFrom<bool>>(PhantomData<T>);
+
+    impl<T> Visitor<'_> for BooleanExpandVisitor<T>
+    where
+        T: TryFrom<bool>,
+        <T as TryFrom<bool>>::Error: fmt::Display,
+    {
+        type Value = T;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a boolean or a shell-expandable string that is a boolean")
+        }
+
+        fn visit_bool<E: de::Error>(self, v: bool) -> Result<Self::Value, E> {
+            T::try_from(v).map_err(de::Error::custom)
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            if v.is_empty() {
+                return Err(de::Error::custom("empty string is not a valid number"));
+            }
+            let expanded = shellexpand::env(v).map_err(de::Error::custom)?;
+            let s = expanded.as_ref().trim().to_lowercase();
+            let parsed = s.parse::<bool>().map_err(de::Error::custom)?;
+            T::try_from(parsed).map_err(de::Error::custom)
+        }
+    }
+
+    deserializer.deserialize_any(BooleanExpandVisitor::<T>(PhantomData))
+}
+
 /// Same as `convert_string_with_shellexpand`, but supports `Vec<String>`.
 ///
 /// # Errors
@@ -247,6 +284,86 @@ where
     }
 
     deserializer.deserialize_any(DataSizeVisitor::<T>(PhantomData))
+}
+
+/// # Errors
+///
+/// Will return `Err` if deserialization fails.
+pub fn convert_optional_data_size_with_shellexpand<'de, D, T>(
+    deserializer: D,
+) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: TryFrom<u128>,
+    <T as TryFrom<u128>>::Error: fmt::Display,
+{
+    struct DataSizeVisitor<T: TryFrom<u128>>(PhantomData<T>);
+
+    impl<'de, T> Visitor<'de> for DataSizeVisitor<T>
+    where
+        T: TryFrom<u128>,
+        <T as TryFrom<u128>>::Error: fmt::Display,
+    {
+        type Value = Option<T>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("an optional number of bytes as an integer, or a string with a data size format (e.g., \"1GB\", \"500MB\", \"1.5TB\")")
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_some<D2: Deserializer<'de>>(
+            self,
+            deserializer: D2,
+        ) -> Result<Self::Value, D2::Error> {
+            deserializer.deserialize_any(self)
+        }
+
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> {
+            T::try_from(u128::from(v))
+                .map(Some)
+                .map_err(de::Error::custom)
+        }
+
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> {
+            if v < 0 {
+                return Err(de::Error::custom("Negative data size is not allowed"));
+            }
+            let v_u128 = u128::try_from(v).map_err(de::Error::custom)?;
+            T::try_from(v_u128).map(Some).map_err(de::Error::custom)
+        }
+
+        fn visit_u128<E: de::Error>(self, v: u128) -> Result<Self::Value, E> {
+            T::try_from(v).map(Some).map_err(de::Error::custom)
+        }
+
+        fn visit_i128<E: de::Error>(self, v: i128) -> Result<Self::Value, E> {
+            if v < 0 {
+                return Err(de::Error::custom("Negative data size is not allowed"));
+            }
+            let v_u128 = u128::try_from(v).map_err(de::Error::custom)?;
+            T::try_from(v_u128).map(Some).map_err(de::Error::custom)
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            let expanded = shellexpand::env(v).map_err(de::Error::custom)?;
+            let s = expanded.as_ref().trim();
+            if v.is_empty() {
+                return Err(de::Error::custom("Missing value in a size field"));
+            }
+            let byte_size = Byte::parse_str(s, true).map_err(de::Error::custom)?;
+            let bytes = byte_size.as_u128();
+            T::try_from(bytes).map(Some).map_err(de::Error::custom)
+        }
+    }
+
+    deserializer.deserialize_option(DataSizeVisitor::<T>(PhantomData))
 }
 
 /// # Errors

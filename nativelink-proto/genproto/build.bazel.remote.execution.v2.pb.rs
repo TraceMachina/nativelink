@@ -600,7 +600,9 @@ pub struct ExecutedActionMetadata {
 /// `ActionResult.execution_metadata.Worker`) have a non-default value, to
 /// ensure that the serialized value is non-empty, which can then be used
 /// as a basic data sanity check.
+#[derive(::derive_more::Debug)]
 #[derive(Clone, PartialEq, ::prost::Message)]
+#[prost(skip_debug)]
 pub struct ActionResult {
     /// The output files of the action. For each output file requested in the
     /// `output_files` or `output_paths` field of the Action, if the corresponding
@@ -614,6 +616,7 @@ pub struct ActionResult {
     /// will be omitted from the list. The server is free to arrange the output
     /// list as desired; clients MUST NOT assume that the output list is sorted.
     #[prost(message, repeated, tag = "2")]
+    #[debug(ignore)]
     pub output_files: ::prost::alloc::vec::Vec<OutputFile>,
     /// The output files of the action that are symbolic links to other files. Those
     /// may be links to other output files, or input files, or even absolute paths

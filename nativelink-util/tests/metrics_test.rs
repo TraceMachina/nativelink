@@ -137,7 +137,7 @@ fn test_action_stage_to_execution_stage_conversion() {
     // Test that Completed variants map to ExecutionStage::Completed
     let action_result = ActionResult::default();
     assert_eq!(
-        ExecutionStage::from(ActionStage::Completed(action_result.clone())),
+        ExecutionStage::from(ActionStage::Completed(action_result)),
         ExecutionStage::Completed
     );
 
@@ -192,7 +192,6 @@ fn test_action_stage_conversion_avoids_clone() {
     // In practice, 10000 conversions should take less than 1ms
     assert!(
         elapsed.as_millis() < 100,
-        "Reference conversion took too long: {:?}",
-        elapsed
+        "Reference conversion took too long: {elapsed:?}"
     );
 }
