@@ -110,10 +110,8 @@ pub fn load_custom_certs(cert_path: &str) -> Result<Arc<ClientConfig>, Error> {
     // Add each certificate to the root store
     for cert in certs {
         root_store.add(cert).map_err(|e| {
-            make_err!(
-                Code::Internal,
-                "Failed to add certificate to root store: {e:?}"
-            )
+            Error::from_std_err(Code::Internal, &e)
+                .append("Failed to add certificate to root store")
         })?;
     }
 
@@ -167,11 +165,11 @@ where
             .app_name(aws_config::AppName::new("nativelink").expect("valid app name"))
             .http_client(http_client)
             .force_path_style(true)
-            .behavior_version(BehaviorVersion::v2025_08_07())
+            .behavior_version(BehaviorVersion::latest())
             .timeout_config(
                 aws_config::timeout::TimeoutConfig::builder()
                     .connect_timeout(Duration::from_secs(30))
-                    .operation_timeout(Duration::from_secs(120))
+                    .operation_timeout(Duration::from_mins(2))
                     .build(),
             )
             .build();
@@ -240,22 +238,21 @@ where
 
                     match result {
                         Ok(head_object_output) => {
-                            if self.consider_expired_after_s != 0 {
-                                if let Some(last_modified) = head_object_output.last_modified {
-                                    let now_s = (self.now_fn)().unix_timestamp() as i64;
-                                    if last_modified.secs() + self.consider_expired_after_s <= now_s
-                                    {
-                                        let remove_callbacks = self.remove_callbacks.lock().clone();
-                                        let mut callbacks: FuturesUnordered<_> = remove_callbacks
-                                            .into_iter()
-                                            .map(|callback| {
-                                                let store_key = local_digest.borrow();
-                                                async move { callback.callback(store_key).await }
-                                            })
-                                            .collect();
-                                        while callbacks.next().await.is_some() {}
-                                        return Some((RetryResult::Ok(None), state));
-                                    }
+                            if self.consider_expired_after_s != 0
+                                && let Some(last_modified) = head_object_output.last_modified
+                            {
+                                let now_s = (self.now_fn)().unix_timestamp() as i64;
+                                if last_modified.secs() + self.consider_expired_after_s <= now_s {
+                                    let remove_callbacks = self.remove_callbacks.lock().clone();
+                                    let mut callbacks: FuturesUnordered<_> = remove_callbacks
+                                        .into_iter()
+                                        .map(|callback| {
+                                            let store_key = local_digest.borrow();
+                                            async move { callback.callback(store_key).await }
+                                        })
+                                        .collect();
+                                    while callbacks.next().await.is_some() {}
+                                    return Some((RetryResult::Ok(None), state));
                                 }
                             }
                             let Some(length) = head_object_output.content_length else {
@@ -396,7 +393,8 @@ where
                                         .customize()
                                         .mutate_request(|req| {req.headers_mut().insert("x-amz-content-sha256", "UNSIGNED-PAYLOAD");})
                                         .send();
-                                    Either::Left(send_res.map_ok_or_else(|e| Err(make_err!(Code::Aborted, "{e:?}")), |_| Ok(())))
+                                    Either::Left(send_res.map_ok_or_else(|e| Err(
+                                        Error::from_std_err(Code::Aborted, &e)), |_| Ok(())))
                                     }
                                 Err(collect_err) => {
                                     async fn make_collect_err(collect_err: Error) -> Result<(), Error> {
@@ -468,10 +466,10 @@ where
                     .await
                     .map_or_else(
                         |e| {
-                            RetryResult::Retry(make_err!(
-                                Code::Aborted,
-                                "Failed to create multipart upload to ONTAP S3: {e:?}"
-                            ))
+                            RetryResult::Retry(
+                                Error::from_std_err(Code::Aborted, &e)
+                                    .append("Failed to create multipart upload to ONTAP S3"),
+                            )
                         },
                         |CreateMultipartUploadOutput { upload_id, .. }| {
                             upload_id.map_or_else(
@@ -529,9 +527,9 @@ where
                                             .map_or_else(
                                                 |e| {
                                                     RetryResult::Retry(
-                                                        make_err!(
-                                                            Code::Aborted,
-                                                            "Failed to upload part {part_number} in ONTAP S3 store: {e:?}"
+                                                        Error::from_std_err(
+                                                            Code::Aborted,&e).append(
+                                                            "Failed to upload part {part_number} in ONTAP S3 store"
                                                         )
                                                     )
                                                 },
@@ -548,11 +546,8 @@ where
                                     })
                                 )
                             ).await
-                            .map_err(|_| {
-                                make_err!(
-                                    Code::Internal,
-                                    "Failed to send part to channel in ontap_s3_store"
-                                )
+                            .map_err(|err| {
+                                Error::from_std_err(Code::Internal, &err).append("Failed to send part to channel in ontap_s3_store")
                             })?;
                     }
                     Result::<_, Error>::Ok(())
@@ -582,8 +577,8 @@ where
 
             completed_parts.sort_unstable_by_key(|part| part.part_number);
 
-            self.retrier.retry(
-                unfold(completed_parts, move |completed_parts| async move {
+            self.retrier
+                .retry(unfold(completed_parts, move |completed_parts| async move {
                     Some((
                         self.s3_client
                             .complete_multipart_upload()
@@ -592,25 +587,25 @@ where
                             .multipart_upload(
                                 CompletedMultipartUploadBuilder::default()
                                     .set_parts(Some(completed_parts.clone()))
-                                    .build()
+                                    .build(),
                             )
                             .upload_id(upload_id)
-                            .send().await
+                            .send()
+                            .await
                             .map_or_else(
                                 |e| {
                                     RetryResult::Retry(
-                                        make_err!(
-                                            Code::Aborted,
-                                            "Failed to complete multipart upload in ONTAP S3 store: {e:?}"
-                                        )
+                                        Error::from_std_err(Code::Aborted, &e).append(
+                                            "Failed to complete multipart upload in ONTAP S3 store",
+                                        ),
                                     )
                                 },
-                                |_| RetryResult::Ok(())
+                                |_| RetryResult::Ok(()),
                             ),
                         completed_parts,
                     ))
-                })
-            ).await
+                }))
+                .await
         };
 
         upload_parts()
@@ -625,10 +620,8 @@ where
                         .await
                         .map_or_else(
                             |e| {
-                                let err = make_err!(
-                                    Code::Aborted,
-                                    "Failed to abort multipart upload in ONTAP S3 store : {e:?}"
-                                );
+                                let err = Error::from_std_err(Code::Aborted, &e)
+                                    .append("Failed to abort multipart upload in ONTAP S3 store");
                                 event!(Level::INFO, ?err, "Multipart upload error");
                                 Err(err)
                             },
@@ -660,7 +653,8 @@ where
 
         self.retrier
             .retry(unfold(writer, move |writer| async move {
-                let result = self.s3_client
+                let result = self
+                    .s3_client
                     .get_object()
                     .bucket(&self.bucket)
                     .key(s3_path)
@@ -694,9 +688,9 @@ where
                                         }
                                         Err(e) => {
                                             return Some((
-                                                RetryResult::Err(make_err!(
-                                                    Code::Aborted,
-                                                    "Error sending bytes to consumer in ONTAP S3: {e}"
+                                                RetryResult::Err(Error::from_std_err(
+                                                    Code::Aborted,&e).append(
+                                                    "Error sending bytes to consumer in ONTAP S3"
                                                 )),
                                                 writer,
                                             ));
@@ -705,10 +699,10 @@ where
                                 }
                                 Err(e) => {
                                     return Some((
-                                        RetryResult::Retry(make_err!(
-                                            Code::Aborted,
-                                            "Bad bytestream element in ONTAP S3: {e}"
-                                        )),
+                                        RetryResult::Retry(
+                                            Error::from_std_err(Code::Aborted, &e)
+                                                .append("Bad bytestream element in ONTAP S3"),
+                                        ),
                                         writer,
                                     ));
                                 }
@@ -718,37 +712,31 @@ where
                         // EOF handling
                         if let Err(e) = writer.send_eof() {
                             return Some((
-                                RetryResult::Err(make_err!(
-                                    Code::Aborted,
-                                    "Failed to send EOF to consumer in ONTAP S3: {e}"
-                                )),
+                                RetryResult::Err(
+                                    Error::from_std_err(Code::Aborted, &e)
+                                        .append("Failed to send EOF to consumer in ONTAP S3"),
+                                ),
                                 writer,
                             ));
                         }
 
                         Some((RetryResult::Ok(()), writer))
                     }
-                    Err(sdk_error) => {
-                        // Clone sdk_error before moving
-                        let error_description = format!("{sdk_error:?}");
-                        match sdk_error.into_service_error() {
-                            GetObjectError::NoSuchKey(e) => {
-                                Some((
-                                    RetryResult::Err(make_err!(
-                                        Code::NotFound,
-                                        "No such key in ONTAP S3: {e}"
-                                    )),
-                                    writer,
-                                ))
-                            }
-                            _ => Some((
-                                RetryResult::Retry(make_err!(
-                                    Code::Unavailable,
-                                    "Unhandled GetObjectError in ONTAP S3: {error_description}"
-                                )),
-                                writer,
-                            )),
-                        }
+                    Err(sdk_error) => match sdk_error.into_service_error() {
+                        GetObjectError::NoSuchKey(e) => Some((
+                            RetryResult::Err(
+                                Error::from_std_err(Code::NotFound, &e)
+                                    .append("No such key in ONTAP S3"),
+                            ),
+                            writer,
+                        )),
+                        other => Some((
+                            RetryResult::Retry(
+                                Error::from_std_err(Code::Unavailable, &other)
+                                    .append("Unhandled GetObjectError in ONTAP S3"),
+                            ),
+                            writer,
+                        )),
                     },
                 }
             }))

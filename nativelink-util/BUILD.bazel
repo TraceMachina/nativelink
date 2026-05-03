@@ -39,7 +39,6 @@ rust_library(
         "src/task.rs",
         "src/telemetry.rs",
         "src/tls_utils.rs",
-        "src/write_counter.rs",
     ],
     proc_macro_deps = [
         "@crates//:async-trait",
@@ -108,6 +107,8 @@ rust_test_suite(
         "tests/proto_stream_utils_test.rs",
         "tests/resource_info_test.rs",
         "tests/retry_test.rs",
+        "tests/store_trait_test.rs",
+        "tests/telemetry_test.rs",
         "tests/tls_utils_test.rs",
     ],
     compile_data = [
@@ -123,7 +124,9 @@ rust_test_suite(
         ":nativelink-util",
         "//nativelink-config",
         "//nativelink-error",
+        "//nativelink-metric",
         "//nativelink-proto",
+        "@crates//:axum",
         "@crates//:bytes",
         "@crates//:futures",
         "@crates//:hex",
@@ -131,6 +134,7 @@ rust_test_suite(
         "@crates//:hyper-1.8.1",
         "@crates//:mock_instant",
         "@crates//:opentelemetry",
+        "@crates//:opentelemetry-http",
         "@crates//:parking_lot",
         "@crates//:pretty_assertions",
         "@crates//:rand",
@@ -141,6 +145,7 @@ rust_test_suite(
         "@crates//:tokio-stream",
         "@crates//:tokio-util",
         "@crates//:tonic",
+        "@crates//:tower",
         "@crates//:tracing",
         "@crates//:tracing-test",
         "@crates//:uuid",
@@ -160,6 +165,7 @@ rust_test(
         "@crates//:rand",
         "@crates//:serde_json",
         "@crates//:tempfile",
+        "@crates//:tracing-test",
     ],
 )
 

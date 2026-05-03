@@ -73,24 +73,20 @@ pub fn endpoint_from(
     endpoint: &str,
     tls_config: Option<tonic::transport::ClientTlsConfig>,
 ) -> Result<tonic::transport::Endpoint, Error> {
-    let endpoint = Uri::try_from(endpoint)
-        .map_err(|e| make_err!(Code::Internal, "Unable to parse endpoint {endpoint}: {e:?}"))?;
+    let endpoint = Uri::try_from(endpoint).map_err(|e| {
+        Error::from_std_err(Code::Internal, &e)
+            .append(format!("Unable to parse endpoint {endpoint}"))
+    })?;
 
     // Tonic uses the TLS configuration if the scheme is "https", so replace
     // grpcs with https.
     let endpoint = if endpoint.scheme_str() == Some("grpcs") {
         let mut parts = endpoint.into_parts();
         parts.scheme = Some("https".parse().map_err(|e| {
-            make_err!(
-                Code::Internal,
-                "https is an invalid scheme apparently? {e:?}"
-            )
+            Error::from_std_err(Code::Internal, &e).append("https is an invalid scheme apparently?")
         })?);
         parts.try_into().map_err(|e| {
-            make_err!(
-                Code::Internal,
-                "Error changing Uri from grpcs to https: {e:?}"
-            )
+            Error::from_std_err(Code::Internal, &e).append("Error changing Uri from grpcs to https")
         })?
     } else {
         endpoint
@@ -110,7 +106,9 @@ pub fn endpoint_from(
         let tls_config = tls_config.domain_name(authority.host());
         tonic::transport::Endpoint::from(endpoint)
             .tls_config(tls_config)
-            .map_err(|e| make_input_err!("Setting mTLS configuration: {e:?}"))?
+            .map_err(|e| {
+                Error::from_std_err(Code::InvalidArgument, &e).append("Setting mTLS configuration")
+            })?
     } else {
         if endpoint.scheme_str() == Some("https") {
             return Err(make_input_err!(

@@ -21,11 +21,11 @@ use nativelink_config::schedulers::{
 use nativelink_config::stores::EvictionPolicy;
 use nativelink_error::{Error, ResultExt, make_input_err};
 use nativelink_proto::com::github::trace_machina::nativelink::events::OriginEvent;
-use nativelink_store::redis_store::RedisStore;
+use nativelink_store::redis_store::{RedisStore, StandardRedisManager};
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::operation_state_manager::ClientStateManager;
-use redis::aio::{ConnectionManager, PubSub};
+use redis::aio::ConnectionManager;
 use tokio::sync::{Notify, mpsc};
 
 use crate::cache_lookup_scheduler::CacheLookupScheduler;
@@ -45,31 +45,36 @@ pub type SchedulerFactoryResults = (
     Option<Arc<dyn WorkerScheduler>>,
 );
 
-pub fn scheduler_factory(
+pub async fn scheduler_factory(
     spec: &SchedulerSpec,
     store_manager: &StoreManager,
     maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
 ) -> Result<SchedulerFactoryResults, Error> {
-    inner_scheduler_factory(spec, store_manager, maybe_origin_event_tx)
+    inner_scheduler_factory(spec, store_manager, maybe_origin_event_tx).await
 }
 
-fn inner_scheduler_factory(
+async fn inner_scheduler_factory(
     spec: &SchedulerSpec,
     store_manager: &StoreManager,
     maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
 ) -> Result<SchedulerFactoryResults, Error> {
     let scheduler: SchedulerFactoryResults = match spec {
         SchedulerSpec::Simple(spec) => {
-            simple_scheduler_factory(spec, store_manager, SystemTime::now, maybe_origin_event_tx)?
+            simple_scheduler_factory(spec, store_manager, SystemTime::now, maybe_origin_event_tx)
+                .await?
         }
         SchedulerSpec::Grpc(spec) => (Some(Arc::new(GrpcScheduler::new(spec)?)), None),
         SchedulerSpec::CacheLookup(spec) => {
             let ac_store = store_manager
                 .get_store(&spec.ac_store)
                 .err_tip(|| format!("'ac_store': '{}' does not exist", spec.ac_store))?;
-            let (action_scheduler, worker_scheduler) =
-                inner_scheduler_factory(&spec.scheduler, store_manager, maybe_origin_event_tx)
-                    .err_tip(|| "In nested CacheLookupScheduler construction")?;
+            let (action_scheduler, worker_scheduler) = Box::pin(inner_scheduler_factory(
+                &spec.scheduler,
+                store_manager,
+                maybe_origin_event_tx,
+            ))
+            .await
+            .err_tip(|| "In nested CacheLookupScheduler construction")?;
             let cache_lookup_scheduler = Arc::new(CacheLookupScheduler::new(
                 ac_store,
                 action_scheduler.err_tip(|| "Nested scheduler is not an action scheduler")?,
@@ -77,9 +82,13 @@ fn inner_scheduler_factory(
             (Some(cache_lookup_scheduler), worker_scheduler)
         }
         SchedulerSpec::PropertyModifier(spec) => {
-            let (action_scheduler, worker_scheduler) =
-                inner_scheduler_factory(&spec.scheduler, store_manager, maybe_origin_event_tx)
-                    .err_tip(|| "In nested PropertyModifierScheduler construction")?;
+            let (action_scheduler, worker_scheduler) = Box::pin(inner_scheduler_factory(
+                &spec.scheduler,
+                store_manager,
+                maybe_origin_event_tx,
+            ))
+            .await
+            .err_tip(|| "In nested PropertyModifierScheduler construction")?;
             let property_modifier_scheduler = Arc::new(PropertyModifierScheduler::new(
                 spec,
                 action_scheduler.err_tip(|| "Nested scheduler is not an action scheduler")?,
@@ -91,7 +100,7 @@ fn inner_scheduler_factory(
     Ok(scheduler)
 }
 
-fn simple_scheduler_factory(
+async fn simple_scheduler_factory(
     spec: &SimpleSpec,
     store_manager: &StoreManager,
     now_fn: fn() -> SystemTime,
@@ -130,7 +139,8 @@ fn simple_scheduler_factory(
             let store = store
                 .into_inner()
                 .as_any_arc()
-                .downcast::<RedisStore<ConnectionManager, PubSub>>()
+                .downcast::<RedisStore<ConnectionManager, StandardRedisManager<ConnectionManager>>>(
+                )
                 .map_err(|_| {
                     make_input_err!(
                         "Could not downcast to redis store in RedisAwaitedActionDb::new"
@@ -142,6 +152,7 @@ fn simple_scheduler_factory(
                 now_fn,
                 Default::default,
             )
+            .await
             .err_tip(|| "In state_manager_factory::redis_state_manager")?;
             let (action_scheduler, worker_scheduler) = SimpleScheduler::new(
                 spec,

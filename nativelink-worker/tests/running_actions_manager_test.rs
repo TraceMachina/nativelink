@@ -27,12 +27,15 @@ mod tests {
     use std::io::{Cursor, Write};
     #[cfg(target_family = "unix")]
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    use std::path::PathBuf;
     use std::sync::{Arc, LazyLock, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use bytes::Bytes;
     use futures::prelude::*;
-    use nativelink_config::cas_server::EnvironmentSource;
+    use nativelink_config::cas_server::{
+        EnvironmentSource, UploadActionResultConfig, UploadCacheResultsStrategy,
+    };
     use nativelink_config::stores::{
         FastSlowSpec, FilesystemSpec, MemorySpec, StoreDirection, StoreSpec,
     };
@@ -63,6 +66,8 @@ mod tests {
     use nativelink_util::common::{DigestInfo, fs};
     use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
     use nativelink_util::store_trait::{Store, StoreLike};
+    #[cfg(target_os = "linux")]
+    use nativelink_worker::namespace_utils;
     use nativelink_worker::running_actions_manager::{
         Callbacks, ExecutionConfiguration, RunningAction, RunningActionImpl, RunningActionsManager,
         RunningActionsManagerArgs, RunningActionsManagerImpl, download_to_directory,
@@ -71,6 +76,7 @@ mod tests {
     use prost::Message;
     use rand::Rng;
     use tokio::sync::oneshot;
+    use tracing::info;
 
     const DEFAULT_MAX_UPLOAD_TIMEOUT: u64 = 600;
 
@@ -93,6 +99,17 @@ mod tests {
             rand::rng().random::<u64>(),
             data
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    fn use_namespaces() -> nativelink_worker::running_actions_manager::UseNamespaces {
+        if namespace_utils::namespaces_supported(true) {
+            nativelink_worker::running_actions_manager::UseNamespaces::YesAndMount
+        } else if namespace_utils::namespaces_supported(false) {
+            nativelink_worker::running_actions_manager::UseNamespaces::Yes
+        } else {
+            nativelink_worker::running_actions_manager::UseNamespaces::No
+        }
     }
 
     async fn setup_stores() -> Result<
@@ -450,16 +467,16 @@ mod tests {
                 cas_store: cas_store.clone(),
                 ac_store: Some(Store::new(ac_store.clone())),
                 historical_store: Store::new(cas_store.clone()),
-                upload_action_result_config:
-                    &nativelink_config::cas_server::UploadActionResultConfig {
-                        upload_ac_results_strategy:
-                            nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
-                        ..Default::default()
-                    },
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -574,16 +591,16 @@ mod tests {
                 cas_store: cas_store.clone(),
                 ac_store: Some(Store::new(ac_store.clone())),
                 historical_store: Store::new(cas_store.clone()),
-                upload_action_result_config:
-                    &nativelink_config::cas_server::UploadActionResultConfig {
-                        upload_ac_results_strategy:
-                            nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
-                        ..Default::default()
-                    },
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -700,16 +717,16 @@ mod tests {
                 cas_store: cas_store.clone(),
                 ac_store: Some(Store::new(ac_store.clone())),
                 historical_store: Store::new(cas_store.clone()),
-                upload_action_result_config:
-                    &nativelink_config::cas_server::UploadActionResultConfig {
-                        upload_ac_results_strategy:
-                            nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
-                        ..Default::default()
-                    },
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -882,16 +899,16 @@ mod tests {
                 cas_store: cas_store.clone(),
                 ac_store: Some(Store::new(ac_store.clone())),
                 historical_store: Store::new(cas_store.clone()),
-                upload_action_result_config:
-                    &nativelink_config::cas_server::UploadActionResultConfig {
-                        upload_ac_results_strategy:
-                            nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
-                        ..Default::default()
-                    },
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -1065,16 +1082,16 @@ mod tests {
                 cas_store: cas_store.clone(),
                 ac_store: Some(Store::new(ac_store.clone())),
                 historical_store: Store::new(cas_store.clone()),
-                upload_action_result_config:
-                    &nativelink_config::cas_server::UploadActionResultConfig {
-                        upload_ac_results_strategy:
-                            nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
-                        ..Default::default()
-                    },
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -1274,16 +1291,16 @@ mod tests {
                 cas_store: cas_store.clone(),
                 ac_store: Some(Store::new(ac_store.clone())),
                 historical_store: Store::new(cas_store.clone()),
-                upload_action_result_config:
-                    &nativelink_config::cas_server::UploadActionResultConfig {
-                        upload_ac_results_strategy:
-                            nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
-                        ..Default::default()
-                    },
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -1410,16 +1427,16 @@ mod tests {
                 cas_store: cas_store.clone(),
                 ac_store: Some(Store::new(ac_store.clone())),
                 historical_store: Store::new(cas_store.clone()),
-                upload_action_result_config:
-                    &nativelink_config::cas_server::UploadActionResultConfig {
-                        upload_ac_results_strategy:
-                            nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
-                        ..Default::default()
-                    },
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
             })?);
 
         #[cfg(target_family = "unix")]
@@ -1433,7 +1450,7 @@ mod tests {
                 vec![
                     "sh".to_string(),
                     "-c".to_string(),
-                    format!("touch {process_started_file} && sleep infinity"),
+                    format!("touch {process_started_file} && sleep 24h"),
                 ],
                 process_started_file,
             )
@@ -1614,16 +1631,16 @@ exit 0
                 cas_store: cas_store.clone(),
                 ac_store: Some(Store::new(ac_store.clone())),
                 historical_store: Store::new(cas_store.clone()),
-                upload_action_result_config:
-                    &nativelink_config::cas_server::UploadActionResultConfig {
-                        upload_ac_results_strategy:
-                            nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
-                        ..Default::default()
-                    },
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
             })?);
         #[cfg(target_family = "unix")]
         let arguments = vec!["printf".to_string(), EXPECTED_STDOUT.to_string()];
@@ -1791,16 +1808,16 @@ exit 0
                 cas_store: cas_store.clone(),
                 ac_store: Some(Store::new(ac_store.clone())),
                 historical_store: Store::new(cas_store.clone()),
-                upload_action_result_config:
-                    &nativelink_config::cas_server::UploadActionResultConfig {
-                        upload_ac_results_strategy:
-                            nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
-                        ..Default::default()
-                    },
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
             })?);
         #[cfg(target_family = "unix")]
         let arguments = vec!["printf".to_string(), EXPECTED_STDOUT.to_string()];
@@ -1962,16 +1979,16 @@ exit 1
                 cas_store: cas_store.clone(),
                 ac_store: Some(Store::new(ac_store.clone())),
                 historical_store: Store::new(cas_store.clone()),
-                upload_action_result_config:
-                    &nativelink_config::cas_server::UploadActionResultConfig {
-                        upload_ac_results_strategy:
-                            nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
-                        ..Default::default()
-                    },
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
             })?);
         let arguments = vec!["true".to_string()];
         let command = Command {
@@ -2047,16 +2064,16 @@ exit 1
                 cas_store: cas_store.clone(),
                 ac_store: Some(Store::new(ac_store.clone())),
                 historical_store: Store::new(cas_store.clone()),
-                upload_action_result_config:
-                    &nativelink_config::cas_server::UploadActionResultConfig {
-                        upload_ac_results_strategy:
-                            nativelink_config::cas_server::UploadCacheResultsStrategy::SuccessOnly,
-                        ..Default::default()
-                    },
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::SuccessOnly,
+                    ..Default::default()
+                },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
             })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
@@ -2123,16 +2140,16 @@ exit 1
                 cas_store: cas_store.clone(),
                 ac_store: Some(Store::new(ac_store.clone())),
                 historical_store: Store::new(cas_store.clone()),
-                upload_action_result_config:
-                    &nativelink_config::cas_server::UploadActionResultConfig {
-                        upload_ac_results_strategy:
-                            nativelink_config::cas_server::UploadCacheResultsStrategy::Everything,
-                        ..Default::default()
-                    },
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Everything,
+                    ..Default::default()
+                },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
             })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
@@ -2198,23 +2215,24 @@ exit 1
                 cas_store: cas_store.clone(),
                 ac_store: Some(Store::new(ac_store.clone())),
                 historical_store: Store::new(cas_store.clone()),
-                upload_action_result_config:
-                    &nativelink_config::cas_server::UploadActionResultConfig {
-                        upload_historical_results_strategy: Some(
-                            nativelink_config::cas_server::UploadCacheResultsStrategy::SuccessOnly,
-                        ),
-                        #[expect(
-                            clippy::literal_string_with_formatting_args,
-                            reason = "passed to `formatx` crate for runtime interpretation"
-                        )]
-                        success_message_template:
-                            "{historical_results_hash}-{historical_results_size}".to_string(),
-                        ..Default::default()
-                    },
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_historical_results_strategy: Some(
+                        UploadCacheResultsStrategy::SuccessOnly,
+                    ),
+                    #[expect(
+                        clippy::literal_string_with_formatting_args,
+                        reason = "passed to `formatx` crate for runtime interpretation"
+                    )]
+                    success_message_template: "{historical_results_hash}-{historical_results_size}"
+                        .to_string(),
+                    ..Default::default()
+                },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
             })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
@@ -2305,19 +2323,20 @@ exit 1
                 cas_store: cas_store.clone(),
                 ac_store: Some(Store::new(ac_store.clone())),
                 historical_store: Store::new(cas_store.clone()),
-                upload_action_result_config:
-                    &nativelink_config::cas_server::UploadActionResultConfig {
-                        upload_historical_results_strategy: Some(
-                            nativelink_config::cas_server::UploadCacheResultsStrategy::SuccessOnly,
-                        ),
-                        success_message_template:
-                            "{historical_results_hash}-{historical_results_size}".to_string(),
-                        ..Default::default()
-                    },
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_historical_results_strategy: Some(
+                        UploadCacheResultsStrategy::SuccessOnly,
+                    ),
+                    success_message_template: "{historical_results_hash}-{historical_results_size}"
+                        .to_string(),
+                    ..Default::default()
+                },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
             })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
@@ -2348,23 +2367,24 @@ exit 1
                 cas_store: cas_store.clone(),
                 ac_store: Some(Store::new(ac_store.clone())),
                 historical_store: Store::new(cas_store.clone()),
-                upload_action_result_config:
-                    &nativelink_config::cas_server::UploadActionResultConfig {
-                        upload_historical_results_strategy: Some(
-                            nativelink_config::cas_server::UploadCacheResultsStrategy::FailuresOnly,
-                        ),
-                        #[expect(
-                            clippy::literal_string_with_formatting_args,
-                            reason = "passed to `formatx` crate for runtime interpretation"
-                        )]
-                        failure_message_template:
-                            "{historical_results_hash}-{historical_results_size}".to_string(),
-                        ..Default::default()
-                    },
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_historical_results_strategy: Some(
+                        UploadCacheResultsStrategy::FailuresOnly,
+                    ),
+                    #[expect(
+                        clippy::literal_string_with_formatting_args,
+                        reason = "passed to `formatx` crate for runtime interpretation"
+                    )]
+                    failure_message_template: "{historical_results_hash}-{historical_results_size}"
+                        .to_string(),
+                    ..Default::default()
+                },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
             })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
@@ -2422,18 +2442,18 @@ exit 1
                 cas_store: cas_store.clone(),
                 ac_store: Some(Store::new(ac_store.clone())),
                 historical_store: Store::new(cas_store.clone()),
-                upload_action_result_config:
-                    &nativelink_config::cas_server::UploadActionResultConfig {
-                        upload_ac_results_strategy:
-                            nativelink_config::cas_server::UploadCacheResultsStrategy::SuccessOnly,
-                        success_message_template: "{action_digest_hash}-{action_digest_size}"
-                            .to_string(),
-                        ..Default::default()
-                    },
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::SuccessOnly,
+                    success_message_template: "{action_digest_hash}-{action_digest_size}"
+                        .to_string(),
+                    ..Default::default()
+                },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
             })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
@@ -2544,16 +2564,16 @@ exit 1
                     cas_store: cas_store.clone(),
                     ac_store: Some(Store::new(ac_store.clone())),
                     historical_store: Store::new(cas_store.clone()),
-                    upload_action_result_config:
-                        &nativelink_config::cas_server::UploadActionResultConfig {
-                            upload_ac_results_strategy:
-                                nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
-                            ..Default::default()
-                        },
+                    upload_action_result_config: &UploadActionResultConfig {
+                        upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                        ..Default::default()
+                    },
                     max_action_timeout: MAX_TIMEOUT_DURATION,
                     max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                     timeout_handled_externally: false,
                     directory_cache: None,
+                    #[cfg(target_os = "linux")]
+                    use_namespaces: use_namespaces(),
                 },
                 Callbacks {
                     now_fn: test_monotonic_clock,
@@ -2632,16 +2652,16 @@ exit 1
                     cas_store: cas_store.clone(),
                     ac_store: Some(Store::new(ac_store.clone())),
                     historical_store: Store::new(cas_store.clone()),
-                    upload_action_result_config:
-                        &nativelink_config::cas_server::UploadActionResultConfig {
-                            upload_ac_results_strategy:
-                                nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
-                            ..Default::default()
-                        },
+                    upload_action_result_config: &UploadActionResultConfig {
+                        upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                        ..Default::default()
+                    },
                     max_action_timeout: MAX_TIMEOUT_DURATION,
                     max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                     timeout_handled_externally: false,
                     directory_cache: None,
+                    #[cfg(target_os = "linux")]
+                    use_namespaces: use_namespaces(),
                 },
                 Callbacks {
                     now_fn: test_monotonic_clock,
@@ -2720,16 +2740,16 @@ exit 1
                     cas_store: cas_store.clone(),
                     ac_store: Some(Store::new(ac_store.clone())),
                     historical_store: Store::new(cas_store.clone()),
-                    upload_action_result_config:
-                        &nativelink_config::cas_server::UploadActionResultConfig {
-                            upload_ac_results_strategy:
-                                nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
-                            ..Default::default()
-                        },
+                    upload_action_result_config: &UploadActionResultConfig {
+                        upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                        ..Default::default()
+                    },
                     max_action_timeout: MAX_TIMEOUT_DURATION,
                     max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                     timeout_handled_externally: false,
                     directory_cache: None,
+                    #[cfg(target_os = "linux")]
+                    use_namespaces: use_namespaces(),
                 },
                 Callbacks {
                     now_fn: test_monotonic_clock,
@@ -2805,16 +2825,16 @@ exit 1
                 cas_store: cas_store.clone(),
                 ac_store: Some(Store::new(ac_store.clone())),
                 historical_store: Store::new(cas_store.clone()),
-                upload_action_result_config:
-                    &nativelink_config::cas_server::UploadActionResultConfig {
-                        upload_ac_results_strategy:
-                            nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
-                        ..Default::default()
-                    },
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -2828,11 +2848,7 @@ exit 1
         )?);
 
         #[cfg(target_family = "unix")]
-        let arguments = vec![
-            "sh".to_string(),
-            "-c".to_string(),
-            "sleep infinity".to_string(),
-        ];
+        let arguments = vec!["sh".to_string(), "-c".to_string(), "sleep 24h".to_string()];
         #[cfg(target_family = "windows")]
         // Windows is weird with timeout, so we use ping. See:
         // https://www.ibm.com/support/pages/timeout-command-run-batch-job-exits-immediately-and-returns-error-input-redirection-not-supported-exiting-process-immediately
@@ -2916,7 +2932,7 @@ exit 1
         assert_eq!(results?.error.unwrap().code, Code::DeadlineExceeded);
 
         #[cfg(target_family = "unix")]
-        let command = "[\"sh\", \"-c\", \"sleep infinity\"]";
+        let command = "[\"sh\", \"-c\", \"sleep 24h\"]";
         #[cfg(target_family = "windows")]
         let command = "[\"cmd\", \"/C\", \"ping -n 99999 127.0.0.1\"]";
 
@@ -2928,7 +2944,7 @@ exit 1
         ));
         #[cfg(target_family = "unix")]
         assert!(logs_contain(
-            "Command timed out seconds=0.0 command=sh -c sleep infinity"
+            "Command timed out seconds=0.0 command=sh -c sleep 24h"
         ));
         #[cfg(target_family = "windows")]
         assert!(logs_contain(
@@ -2958,16 +2974,16 @@ exit 1
                 cas_store: cas_store.clone(),
                 ac_store: Some(Store::new(ac_store.clone())),
                 historical_store: Store::new(cas_store.clone()),
-                upload_action_result_config:
-                    &nativelink_config::cas_server::UploadActionResultConfig {
-                        upload_ac_results_strategy:
-                            nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
-                        ..Default::default()
-                    },
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -2976,11 +2992,7 @@ exit 1
         )?);
 
         #[cfg(target_family = "unix")]
-        let arguments = vec![
-            "sh".to_string(),
-            "-c".to_string(),
-            "sleep infinity".to_string(),
-        ];
+        let arguments = vec!["sh".to_string(), "-c".to_string(), "sleep 24h".to_string()];
         #[cfg(target_family = "windows")]
         // Windows is weird with timeout, so we use ping. See:
         // https://www.ibm.com/support/pages/timeout-command-run-batch-job-exits-immediately-and-returns-error-input-redirection-not-supported-exiting-process-immediately
@@ -3128,16 +3140,16 @@ exit 1
                 ac_store: Some(Store::new(ac_store.clone())),
                 execution_configuration: ExecutionConfiguration::default(),
                 historical_store: Store::new(cas_store.clone()),
-                upload_action_result_config:
-                    &nativelink_config::cas_server::UploadActionResultConfig {
-                        upload_ac_results_strategy:
-                            nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
-                        ..Default::default()
-                    },
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -3229,16 +3241,16 @@ exit 1
                 cas_store: cas_store.clone(),
                 ac_store: Some(Store::new(ac_store.clone())),
                 historical_store: Store::new(cas_store.clone()),
-                upload_action_result_config:
-                    &nativelink_config::cas_server::UploadActionResultConfig {
-                        upload_ac_results_strategy:
-                            nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
-                        ..Default::default()
-                    },
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
             })?);
         let queued_timestamp = make_system_time(1000);
 
@@ -3344,16 +3356,16 @@ exit 1
                 cas_store: cas_store.clone(),
                 ac_store: Some(Store::new(ac_store.clone())),
                 historical_store: Store::new(cas_store.clone()),
-                upload_action_result_config:
-                    &nativelink_config::cas_server::UploadActionResultConfig {
-                        upload_ac_results_strategy:
-                            nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
-                        ..Default::default()
-                    },
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -3525,16 +3537,16 @@ exit 1
                 cas_store: cas_store.clone(),
                 ac_store: Some(Store::new(ac_store.clone())),
                 historical_store: Store::new(cas_store.clone()),
-                upload_action_result_config:
-                    &nativelink_config::cas_server::UploadActionResultConfig {
-                        upload_ac_results_strategy:
-                            nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
-                        ..Default::default()
-                    },
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
             },
             Callbacks {
                 now_fn: test_monotonic_clock,
@@ -3646,16 +3658,16 @@ exit 1
                 cas_store: cas_store.clone(),
                 ac_store: Some(Store::new(ac_store.clone())),
                 historical_store: Store::new(cas_store.clone()),
-                upload_action_result_config:
-                    &nativelink_config::cas_server::UploadActionResultConfig {
-                        upload_ac_results_strategy:
-                            nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
-                        ..Default::default()
-                    },
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
             })?);
 
         // Create a simple action
@@ -3788,16 +3800,16 @@ exit 1
                 cas_store: cas_store.clone(),
                 ac_store: Some(Store::new(ac_store.clone())),
                 historical_store: Store::new(cas_store.clone()),
-                upload_action_result_config:
-                    &nativelink_config::cas_server::UploadActionResultConfig {
-                        upload_ac_results_strategy:
-                            nativelink_config::cas_server::UploadCacheResultsStrategy::Never,
-                        ..Default::default()
-                    },
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 timeout_handled_externally: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
             })?);
 
         // Create a simple action
@@ -3882,6 +3894,274 @@ exit 1
             action2.cleanup().await?;
         }
         fs::remove_dir_all(&root_action_directory).await?;
+        Ok(())
+    }
+
+    #[nativelink_test]
+    async fn test_canonical_path() -> Result<(), Error> {
+        let (_fast_store, slow_store, cas_store, _ac_store) = setup_stores().await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory,
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: cas_store.clone(),
+                ac_store: None,
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                timeout_handled_externally: false,
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            })?);
+        let operation_id = OperationId::default().to_string();
+        let file_content_digest = DigestInfo::new([2u8; 32], 32);
+        slow_store
+            .as_ref()
+            .update_oneshot(file_content_digest, "hello".into())
+            .await?;
+        let command = Command {
+            arguments: vec!["touch".to_string(), "./some/path/test.txt".to_string()],
+            ..Default::default()
+        };
+        let command_digest = serialize_and_upload_message(
+            &command,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let input_root_digest = serialize_and_upload_message(
+            &Directory {
+                directories: vec![DirectoryNode {
+                    name: "some_cwd".to_string(),
+                    digest: Some(
+                        serialize_and_upload_message(
+                            &Directory::default(),
+                            cas_store.as_pin(),
+                            &mut DigestHasherFunc::Sha256.hasher(),
+                        )
+                        .await?
+                        .into(),
+                    ),
+                }],
+                ..Default::default()
+            },
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+
+        let action = Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(input_root_digest.into()),
+            ..Default::default()
+        };
+        let action_digest = serialize_and_upload_message(
+            &action,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let running_action_impl = running_actions_manager
+            .create_and_add_action(
+                "foo_worker_id".to_string(),
+                StartExecute {
+                    execute_request: Some(ExecuteRequest {
+                        action_digest: Some(action_digest.into()),
+                        ..Default::default()
+                    }),
+                    operation_id,
+                    queued_timestamp: None,
+                    platform: action.platform.clone(),
+                    worker_id: "foo_worker_id".to_string(),
+                },
+            )
+            .await?;
+
+        let mut bash_path = which::which("bash")
+            .map_err(|e| Error::from_std_err(Code::Internal, &e))
+            .err_tip(|| "Getting bash path")?;
+        while let Ok(ref new_path) = std::fs::read_link(&bash_path) {
+            bash_path = new_path
+                .to_owned()
+                .canonicalize()
+                .err_tip(|| format!("Canonicalising {}", new_path.display()))?;
+        }
+        let cwd: PathBuf = env::current_dir()?;
+        let relative_bash = pathdiff::diff_paths(&bash_path, &cwd).ok_or_else(|| {
+            Error::new(
+                Code::Internal,
+                format!(
+                    "Getting diff for {} and {}",
+                    bash_path.display(),
+                    cwd.display()
+                ),
+            )
+        })?;
+        info!(?relative_bash, ?cwd, "Canonicalise input");
+        let canonical_path = running_action_impl
+            .canonicalise_path(relative_bash.as_os_str(), &cwd.to_string_lossy().into())
+            .err_tip(|| {
+                format!(
+                    "Canonicalising with {} and {}",
+                    relative_bash.display(),
+                    cwd.display()
+                )
+            })?;
+
+        // Because of how pathdiff works, we get a relative_bash starting with
+        // ../../../bin/bash in many test cases, so /usr/bin/bash is a good answer
+        // But the initial bash path may well be /bin/bash, so permit this case
+        // Note the canonicalisation like this only happens if both paths exist
+        if canonical_path.to_str().unwrap() != "/usr/bin/bash"
+            || bash_path.to_str().unwrap() != "/bin/bash"
+        {
+            // If it's anything else, check
+            assert_eq!(canonical_path, bash_path);
+        }
+        Ok(())
+    }
+
+    #[nativelink_test]
+    #[cfg(target_family = "unix")]
+    async fn test_arg0_is_relative_path() -> Result<(), Box<dyn core::error::Error>> {
+        const WORKER_ID: &str = "foo_worker_id";
+
+        fn test_monotonic_clock() -> SystemTime {
+            static CLOCK: AtomicU64 = AtomicU64::new(0);
+            monotonic_clock(&CLOCK)
+        }
+
+        let (_, slow_store, cas_store, ac_store) = setup_stores().await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
+            RunningActionsManagerArgs {
+                root_action_directory,
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                timeout_handled_externally: false,
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            },
+            Callbacks {
+                now_fn: test_monotonic_clock,
+                sleep_fn: |_duration| Box::pin(future::pending()),
+            },
+        )?);
+
+        // Can't just use /bin/sh because of Nix paths
+        let sh_path = which::which("sh")
+            .map_err(|e| Error::from_std_err(Code::Internal, &e))
+            .err_tip(|| "Getting sh_path path")?
+            .to_string_lossy()
+            .to_string();
+
+        let input_root_digest = serialize_and_upload_message(
+            &Directory {
+                symlinks: vec![SymlinkNode {
+                    name: "my_sh".to_string(),
+                    target: sh_path,
+                    node_properties: None,
+                }],
+                ..Default::default()
+            },
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+
+        let command = Command {
+            arguments: vec![
+                "./my_sh".to_string(),
+                "-c".to_string(),
+                "printf \"%s\" \"$0\" > out.txt".to_string(),
+            ],
+            output_paths: vec!["out.txt".to_string()],
+            environment_variables: vec![EnvironmentVariable {
+                name: "PATH".to_string(),
+                value: env::var("PATH").unwrap(),
+            }],
+            ..Default::default()
+        };
+        let command_digest = serialize_and_upload_message(
+            &command,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+
+        let action = Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(input_root_digest.into()),
+            ..Default::default()
+        };
+        let action_digest = serialize_and_upload_message(
+            &action,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+
+        let running_action_impl = running_actions_manager
+            .create_and_add_action(
+                WORKER_ID.to_string(),
+                StartExecute {
+                    execute_request: Some(ExecuteRequest {
+                        action_digest: Some(action_digest.into()),
+                        ..Default::default()
+                    }),
+                    operation_id: OperationId::default().to_string(),
+                    queued_timestamp: None,
+                    platform: action.platform.clone(),
+                    worker_id: WORKER_ID.to_string(),
+                },
+            )
+            .await?;
+
+        let action_result = run_action(running_action_impl).await?;
+
+        let stderr_content = slow_store
+            .as_ref()
+            .get_part_unchunked(action_result.stderr_digest, 0, None)
+            .await?;
+        assert_eq!(
+            action_result.exit_code,
+            0,
+            "Action should succeed. stderr: {}",
+            from_utf8(&stderr_content).unwrap_or("unreadable stderr")
+        );
+
+        assert_eq!(action_result.output_files.len(), 1);
+        assert_eq!(
+            action_result.output_files[0].name_or_path,
+            NameOrPath::Path("out.txt".to_string())
+        );
+
+        let out_digest = action_result.output_files[0].digest;
+        let out_content = slow_store
+            .as_ref()
+            .get_part_unchunked(out_digest, 0, None)
+            .await?;
+
+        assert_eq!(from_utf8(&out_content)?, "./my_sh");
+
         Ok(())
     }
 }

@@ -17,7 +17,7 @@
     };
     nix2container = {
       # TODO(SchahinRohani): Use a specific commit hash until nix2container is stable.
-      url = "github:nlewo/nix2container/cc96df7c3747c61c584d757cfc083922b4f4b33e";
+      url = "github:nlewo/nix2container/66f4b8a47e92aa744ec43acbb5e9185078983909";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
@@ -118,7 +118,7 @@
           linkerPath =
             if isLinuxBuild && isLinuxTarget
             then "${pkgs.mold}/bin/ld.mold"
-            else "${pkgs.llvmPackages_20.lld}/bin/ld.lld";
+            else "${pkgs.llvmPackages_22.lld}/bin/ld.lld";
 
           linkerEnvVar = "CARGO_TARGET_${pkgs.lib.toUpper (pkgs.lib.replaceStrings ["-"] ["_"] targetArch)}_LINKER";
         in
@@ -132,7 +132,7 @@
             buildInputs =
               [p.cacert]
               ++ pkgs.lib.optionals p.stdenv.targetPlatform.isDarwin [
-                p.darwin.apple_sdk.frameworks.Security
+                p.apple-sdk_14
                 p.libiconv
               ];
             nativeBuildInputs =
@@ -140,23 +140,26 @@
               ++ (
                 if isLinuxBuild
                 then [pkgs.mold]
-                else [pkgs.llvmPackages_20.lld]
+                else [pkgs.llvmPackages_22.lld]
               )
               ++ [p.protobuf] # Required for nativelink-crio-worker-pool proto compilation
               ++ pkgs.lib.optionals p.stdenv.targetPlatform.isDarwin [
-                p.darwin.apple_sdk.frameworks.Security
+                p.apple-sdk_14
                 p.libiconv
               ];
             CARGO_BUILD_TARGET = targetArch;
           }
           // (pkgs.lib.optionalAttrs isLinuxTarget {
             CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
+            TARGET_CC = "${pkgs.lre.clang}/bin/customClang"; # So mimalloc gets the right compiler not defaulting to gcc
+            # FIXME(palfrey): Attempted workaround from https://github.com/llvm/llvm-project/issues/32849#issuecomment-2353071071 but doesn't work
+            # CFLAGS = "-femit-all-decls";
             ${linkerEnvVar} = linkerPath;
           });
 
         # Additional target for external dependencies to simplify caching.
         cargoArtifactsFor = p: (craneLibFor p).buildDepsOnly (commonArgsFor p);
-        nightlyCargoArtifactsFor = p: (craneLibFor p).buildDepsOnly (commonArgsFor p);
+        nightlyCargoArtifactsFor = p: (nightlyCraneLibFor p).buildDepsOnly (commonArgsFor p);
 
         nativelinkFor = p:
           (craneLibFor p).buildPackage ((commonArgsFor p)
@@ -229,7 +232,7 @@
         createWorker = pkgs.nativelink-tools.lib.createWorker self;
 
         buck2-toolchain = let
-          buck2-nightly-rust-version = "2024-04-28";
+          buck2-nightly-rust-version = "2026-03-24";
           buck2-nightly-rust = pkgs.rust-bin.nightly.${buck2-nightly-rust-version};
           buck2-rust = buck2-nightly-rust.default.override {extensions = ["rust-src"];};
         in
@@ -243,14 +246,14 @@
               pkgs.diffutils
               pkgs.gnutar
               pkgs.gzip
-              pkgs.python3Full
+              pkgs.python3
               pkgs.unzip
               pkgs.zstd
               pkgs.cargo-bloat
               pkgs.mold-wrapped
               pkgs.reindeer
-              pkgs.lld_16
-              pkgs.clang_16
+              pkgs.lld_22
+              pkgs.clang_22
               buck2-rust
             ];
           };
@@ -291,26 +294,36 @@
         };
 
         nativelinkCoverageFor = p: let
-          coverageArgs =
-            (commonArgsFor p)
-            // {
-              # TODO(palfrey): For some reason we're triggering an edgecase where
-              #                    mimalloc builds against glibc headers in coverage
-              #                    builds. This leads to nonexistend __memcpy_chk and
-              #                    __memset_chk symbols if fortification is enabled.
-              #                    Our regular builds also have this issue, but we
-              #                    should investigate further.
-              hardeningDisable = ["fortify"];
-            };
+          coverageArgs = commonArgsFor p;
         in
           (nightlyCraneLibFor p).cargoLlvmCov (coverageArgs
             // {
               cargoArtifacts = nightlyCargoArtifactsFor p;
+              preConfigurePhases = ["tempHome"];
+              tempHome = ''
+                # Default home at this point is /homeless-shelter, which doesn't exist and so breaks things like
+                # the Mongo downloader
+                echo "HOME was ''${HOME}"
+                export HOME=$(mktemp -d fake-homeXXXX --tmpdir)
+                echo "HOME is now ''${HOME}"
+
+                # FIXME: This is a giant pile of hacks, as what we should be doing is downloading mongodb and patching it to work with
+                # Nix. Several hours of patchelf rummaging later, hitting issues like "_Unwind_GetRegionStart: symbol not found" we
+                # instead have this hacky workaround. It adds a symlink to a Nix mongod where the extractor code expects to find it,
+                # which will work. This is the wrong version (7.0.16 v.s. 7.0.11 currently, so not so bad) but TBH our codebase is mostly
+                # fairly version agnostic so far and 7.0.11 is picked out of the air as the one we've used elsewhere.
+
+                mkdir -p $HOME/.cache/mongo/extracted/7.0.11/mongodb-linux-x86_64-ubuntu2204-7.0.11/bin
+                touch $HOME/.cache/mongo/extracted/7.0.11/extracted.marker # As needed by nativelink-store/tests/mongo_runner/mod.rs
+                export MONGOD=$HOME/.cache/mongo/extracted/7.0.11/mongodb-linux-x86_64-ubuntu2204-7.0.11/bin/mongod
+                ln -s ${p.mongodb}/bin/mongod ''${MONGOD}
+                ''${MONGOD} --version
+              '';
               cargoExtraArgs = builtins.concatStringsSep " " [
                 "--all"
                 "--locked"
                 "--features nix"
-                "--branch"
+                # "--branch" # FIXME(palfrey): because of https://github.com/llvm/llvm-project/issues/119558
                 "--ignore-filename-regex '.*(genproto|vendor-cargo-deps|crates).*'"
               ];
               cargoLlvmCovExtraArgs = "--html --output-dir $out";
@@ -341,10 +354,6 @@
             type = "app";
             program = "${nativelink}/bin/nativelink";
           };
-          native = {
-            type = "app";
-            program = "${pkgs.nativelink-tools.native-cli}/bin/native";
-          };
         };
         packages =
           rec {
@@ -359,9 +368,20 @@
 
             default = nativelink;
 
+            nativelink-worker-lre-cc = createWorker pkgs.lre.lre-cc.image;
+            lre-java = pkgs.callPackage ./local-remote-execution/lre-java.nix {inherit buildImage;};
+            rbe-autogen-lre-java = pkgs.rbe-autogen lre-java;
+            nativelink-worker-lre-java = createWorker lre-java;
+            nativelink-worker-lre-rs = createWorker pkgs.lre.lre-rs.image;
+            nativelink-worker-siso-chromium = createWorker siso-chromium;
+            nativelink-worker-toolchain-drake = createWorker toolchain-drake;
+            nativelink-worker-toolchain-buck2 = createWorker toolchain-buck2;
+            nativelink-worker-buck2-toolchain = buck2-toolchain;
+            image = nativelink-image;
+
             inherit (pkgs) buildstream buildbox buck2 mongodb wait4x bazelisk;
             buildstream-with-nativelink-test = pkgs.callPackage integration_tests/buildstream/buildstream-with-nativelink-test.nix {
-              inherit nativelink buildstream buildbox;
+              inherit nativelink buildstream;
             };
             mongo-with-nativelink-test = pkgs.callPackage integration_tests/mongo/mongo-with-nativelink-test.nix {
               inherit nativelink mongodb wait4x bazelisk;
@@ -372,7 +392,12 @@
             buck2-with-nativelink-test = pkgs.callPackage integration_tests/buck2/buck2-with-nativelink-test.nix {
               inherit nativelink buck2;
             };
-
+            update-module-hashes = pkgs.callPackage tools/updaters/rewrite-module.nix {
+              python-with-requests = pkgs.python3.withPackages (ps:
+                with ps; [
+                  ps.requests
+                ]);
+            };
             generate-bazel-rc = pkgs.callPackage tools/generate-bazel-rc/build.nix {craneLib = craneLibFor pkgs;};
             generate-stores-config = pkgs.callPackage nativelink-config/generate-stores-config/build.nix {craneLib = craneLibFor pkgs;};
           }
@@ -423,6 +448,7 @@
           hooks = import ./tools/pre-commit-hooks.nix {
             inherit pkgs;
             inherit (packages) generate-bazel-rc generate-stores-config;
+            renovate-patched = pkgs.callPackage ./tools/renovate.nix {};
             nightly-rust = pkgs.rust-bin.nightly.${pkgs.lre.nightly-rust.meta.version};
           };
         };
@@ -476,6 +502,8 @@
               pkgs.pre-commit
               pkgs.git-cliff
               pkgs.buck2
+              packages.update-module-hashes
+              pkgs.python3
 
               # Rust
               bazel
@@ -519,12 +547,11 @@
               pkgs.lre.clang
               pkgs.lre.lre-cc.lre-cc-configs-gen
               pkgs.nativelink-tools.local-image-test
-              pkgs.nativelink-tools.native-cli
               pkgs.nativelink-tools.create-local-image
+              pkgs.attic-client
             ]
             ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
-              pkgs.darwin.apple_sdk.frameworks.CoreFoundation
-              pkgs.darwin.apple_sdk.frameworks.Security
+              pkgs.apple-sdk_14
               pkgs.libiconv
             ]
             ++ pkgs.lib.optionals (pkgs.stdenv.system != "x86_64-darwin") [

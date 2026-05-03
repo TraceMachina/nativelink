@@ -14,18 +14,33 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::SystemTime;
 
+use async_trait::async_trait;
+use futures::stream;
 use nativelink_config::cas_server::{ExecutionConfig, WithInstanceName};
 use nativelink_config::stores::{MemorySpec, StoreSpec};
-use nativelink_error::Error;
+use nativelink_error::{Code, Error, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::execution_server::Execution;
 use nativelink_proto::build::bazel::remote::execution::v2::{ExecuteRequest, digest_function};
+use nativelink_proto::google::longrunning::operations_server::Operations;
+use nativelink_proto::google::longrunning::{
+    CancelOperationRequest, DeleteOperationRequest, GetOperationRequest, ListOperationsRequest,
+    WaitOperationRequest,
+};
 use nativelink_scheduler::mock_scheduler::MockActionScheduler;
 use nativelink_service::execution_server::ExecutionServer;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
-use nativelink_util::operation_state_manager::ClientStateManager;
+use nativelink_util::action_messages::{
+    ActionInfo, ActionResult, ActionStage, ActionState, OperationId,
+};
+use nativelink_util::common::DigestInfo;
+use nativelink_util::operation_state_manager::{
+    ActionStateResult, ActionStateResultStream, ClientStateManager,
+};
+use nativelink_util::origin_event::OriginMetadata;
 use tonic::Request;
 
 const INSTANCE_NAME: &str = "instance_name";
@@ -44,11 +59,13 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
     Ok(store_manager)
 }
 
-fn make_execution_server(store_manager: &StoreManager) -> Result<ExecutionServer, Error> {
+fn make_execution_server(
+    store_manager: &StoreManager,
+) -> Result<(ExecutionServer, Arc<MockActionScheduler>), Error> {
     let mock_scheduler = Arc::new(MockActionScheduler::new());
     let mut action_schedulers: HashMap<String, Arc<dyn ClientStateManager>> = HashMap::new();
-    action_schedulers.insert("main_scheduler".to_string(), mock_scheduler);
-    ExecutionServer::new(
+    action_schedulers.insert("main_scheduler".to_string(), mock_scheduler.clone());
+    let server = ExecutionServer::new(
         &[WithInstanceName {
             instance_name: INSTANCE_NAME.to_string(),
             config: ExecutionConfig {
@@ -58,13 +75,14 @@ fn make_execution_server(store_manager: &StoreManager) -> Result<ExecutionServer
         }],
         &action_schedulers,
         store_manager,
-    )
+    )?;
+    Ok((server, mock_scheduler))
 }
 
 #[nativelink_test]
 async fn instance_name_fail() -> Result<(), Box<dyn core::error::Error>> {
     let store_manager = make_store_manager().await?;
-    let execution_server = make_execution_server(&store_manager)?;
+    let (execution_server, _) = make_execution_server(&store_manager)?;
 
     let raw_response = execution_server
         .execute(Request::new(ExecuteRequest {
@@ -88,5 +106,269 @@ async fn instance_name_fail() -> Result<(), Box<dyn core::error::Error>> {
             panic!("Not expecting ok!");
         }
     }
+    Ok(())
+}
+
+#[nativelink_test]
+async fn operations_list_operations_unimplemented() -> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let (execution_server, _) = make_execution_server(&store_manager)?;
+
+    let err = execution_server
+        .list_operations(Request::new(ListOperationsRequest::default()))
+        .await
+        .unwrap_err();
+
+    assert_eq!(err.code(), Code::Unimplemented);
+    assert_eq!(err.message(), "list_operations not implemented");
+    Ok(())
+}
+
+#[nativelink_test]
+async fn operations_delete_operation_unimplemented() -> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let (execution_server, _) = make_execution_server(&store_manager)?;
+
+    let err = execution_server
+        .delete_operation(Request::new(DeleteOperationRequest::default()))
+        .await
+        .unwrap_err();
+
+    assert_eq!(err.code(), Code::Unimplemented);
+    assert_eq!(err.message(), "delete_operation not implemented");
+    Ok(())
+}
+
+#[nativelink_test]
+async fn operations_cancel_operation_unimplemented() -> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let (execution_server, _) = make_execution_server(&store_manager)?;
+
+    let err = execution_server
+        .cancel_operation(Request::new(CancelOperationRequest::default()))
+        .await
+        .unwrap_err();
+
+    assert_eq!(err.code(), Code::Unimplemented);
+    assert_eq!(err.message(), "cancel_operation not implemented");
+    Ok(())
+}
+
+struct MockActionStateResult {
+    states: Vec<Arc<ActionState>>,
+}
+
+#[async_trait]
+impl ActionStateResult for MockActionStateResult {
+    async fn as_state(&self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error> {
+        Ok((self.states.first().unwrap().clone(), None))
+    }
+
+    async fn changed(&mut self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error> {
+        if self.states.is_empty() {
+            return Err(make_err!(Code::Internal, "No more states"));
+        }
+        let state = self.states.remove(0);
+        Ok((state, None))
+    }
+
+    async fn as_action_info(&self) -> Result<(Arc<ActionInfo>, Option<OriginMetadata>), Error> {
+        Err(make_err!(
+            Code::Unimplemented,
+            "as_action_info not implemented"
+        ))
+    }
+}
+
+#[nativelink_test]
+async fn operations_get_operation() -> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let (execution_server, mock_scheduler) = make_execution_server(&store_manager)?;
+
+    let operation_name = format!("{INSTANCE_NAME}/some_operation_id");
+
+    let action_state = Arc::new(ActionState {
+        client_operation_id: OperationId::from("some_operation_id"),
+        stage: ActionStage::Queued,
+        action_digest: DigestInfo::new([0u8; 32], 0),
+        last_transition_timestamp: SystemTime::UNIX_EPOCH,
+    });
+
+    let mock_action_state_result = MockActionStateResult {
+        states: vec![action_state.clone()],
+    };
+
+    let stream: ActionStateResultStream = Box::pin(stream::once(async move {
+        let result: Box<dyn ActionStateResult> = Box::new(mock_action_state_result);
+        result
+    }));
+
+    let request_fut = execution_server.get_operation(Request::new(GetOperationRequest {
+        name: operation_name.clone(),
+    }));
+
+    let (request_res, filter) = tokio::join!(
+        request_fut,
+        mock_scheduler.expect_filter_operations(Ok(stream)),
+    );
+
+    assert_eq!(
+        filter.client_operation_id,
+        Some(OperationId::from("some_operation_id"))
+    );
+
+    let operation = request_res?.into_inner();
+    assert_eq!(operation.name, operation_name);
+    assert!(!operation.done);
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn operations_get_operation_not_found() -> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let (execution_server, mock_scheduler) = make_execution_server(&store_manager)?;
+
+    let operation_name = format!("{INSTANCE_NAME}/some_operation_id");
+
+    let stream: ActionStateResultStream = Box::pin(stream::empty());
+
+    let request_fut = execution_server.get_operation(Request::new(GetOperationRequest {
+        name: operation_name.clone(),
+    }));
+
+    let (request_res, filter) = tokio::join!(
+        request_fut,
+        mock_scheduler.expect_filter_operations(Ok(stream)),
+    );
+
+    assert_eq!(
+        filter.client_operation_id,
+        Some(OperationId::from("some_operation_id"))
+    );
+
+    let err = request_res.unwrap_err();
+    assert_eq!(err.code(), Code::NotFound);
+    assert_eq!(err.message(), "Failed to find existing task");
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn operations_wait_operation_finishes() -> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let (execution_server, mock_scheduler) = make_execution_server(&store_manager)?;
+
+    let operation_name = format!("{INSTANCE_NAME}/some_operation_id");
+
+    let state1 = Arc::new(ActionState {
+        client_operation_id: OperationId::from("some_operation_id"),
+        stage: ActionStage::Queued,
+        action_digest: DigestInfo::new([0u8; 32], 0),
+        last_transition_timestamp: SystemTime::UNIX_EPOCH,
+    });
+
+    let state2 = Arc::new(ActionState {
+        client_operation_id: OperationId::from("some_operation_id"),
+        stage: ActionStage::Completed(ActionResult::default()),
+        action_digest: DigestInfo::new([0u8; 32], 0),
+        last_transition_timestamp: SystemTime::UNIX_EPOCH,
+    });
+
+    let mock_action_state_result = MockActionStateResult {
+        states: vec![state1.clone(), state2.clone()],
+    };
+
+    let stream: ActionStateResultStream = Box::pin(stream::once(async move {
+        let result: Box<dyn ActionStateResult> = Box::new(mock_action_state_result);
+        result
+    }));
+
+    let request_fut = execution_server.wait_operation(Request::new(WaitOperationRequest {
+        name: operation_name.clone(),
+        timeout: None,
+    }));
+
+    let (request_res, _) = tokio::join!(
+        request_fut,
+        mock_scheduler.expect_filter_operations(Ok(stream)),
+    );
+
+    let operation = request_res?.into_inner();
+    assert_eq!(operation.name, operation_name);
+    assert!(operation.done);
+
+    Ok(())
+}
+
+struct TimeoutActionStateResult {
+    state: Arc<ActionState>,
+    first_called: bool,
+}
+
+#[async_trait]
+impl ActionStateResult for TimeoutActionStateResult {
+    async fn as_state(&self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error> {
+        Ok((self.state.clone(), None))
+    }
+
+    async fn changed(&mut self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error> {
+        if !self.first_called {
+            self.first_called = true;
+            return Ok((self.state.clone(), None));
+        }
+        tokio::time::sleep(core::time::Duration::from_secs(1)).await;
+        Ok((self.state.clone(), None))
+    }
+
+    async fn as_action_info(&self) -> Result<(Arc<ActionInfo>, Option<OriginMetadata>), Error> {
+        Err(make_err!(
+            Code::Unimplemented,
+            "as_action_info not implemented"
+        ))
+    }
+}
+
+#[nativelink_test]
+async fn operations_wait_operation_timeout() -> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let (execution_server, mock_scheduler) = make_execution_server(&store_manager)?;
+
+    let operation_name = format!("{INSTANCE_NAME}/some_operation_id");
+
+    let state1 = Arc::new(ActionState {
+        client_operation_id: OperationId::from("some_operation_id"),
+        stage: ActionStage::Queued,
+        action_digest: DigestInfo::new([0u8; 32], 0),
+        last_transition_timestamp: SystemTime::UNIX_EPOCH,
+    });
+
+    let mock_action_state_result = TimeoutActionStateResult {
+        state: state1.clone(),
+        first_called: false,
+    };
+
+    let stream: ActionStateResultStream = Box::pin(stream::once(async move {
+        let result: Box<dyn ActionStateResult> = Box::new(mock_action_state_result);
+        result
+    }));
+
+    let request_fut = execution_server.wait_operation(Request::new(WaitOperationRequest {
+        name: operation_name.clone(),
+        timeout: Some(prost_types::Duration {
+            seconds: 0,
+            nanos: 10_000_000, // 10ms
+        }),
+    }));
+
+    let (request_res, _) = tokio::join!(
+        request_fut,
+        mock_scheduler.expect_filter_operations(Ok(stream)),
+    );
+
+    let operation = request_res?.into_inner();
+    assert_eq!(operation.name, operation_name);
+    assert!(!operation.done);
+
     Ok(())
 }

@@ -59,6 +59,25 @@ rust_binary(
     ],
 )
 
+rust_binary(
+    name = "cas_speed_check",
+    srcs = [
+        "src/bin/cas_speed_check.rs",
+    ],
+    deps = [
+        "//nativelink-error",
+        "//nativelink-proto",
+        "//nativelink-util",
+        "@crates//:clap",
+        "@crates//:hex",
+        "@crates//:rand",
+        "@crates//:sha2",
+        "@crates//:tokio",
+        "@crates//:tonic",
+        "@crates//:tracing",
+    ],
+)
+
 filegroup(
     name = "docs",
     srcs = [

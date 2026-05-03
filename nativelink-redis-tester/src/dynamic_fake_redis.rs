@@ -94,6 +94,10 @@ impl<S: SubscriptionManagerNotify + Send + 'static + Sync> FakeRedisBackend<S> {
                 };
 
                 let ret: Value = match cmd.as_str() {
+                    "HELLO" => Value::Map(vec![(
+                        Value::SimpleString("server".into()),
+                        Value::SimpleString("redis".into()),
+                    )]),
                     "CLIENT" => {
                         // We can safely ignore these, as it's just setting the library name/version
                         Value::Int(0)
@@ -171,18 +175,15 @@ impl<S: SubscriptionManagerNotify + Send + 'static + Sync> FakeRedisBackend<S> {
                                 .and_then(|s| s.strip_suffix(" }"))
                                 .unwrap_or(value);
                             for fields in self.table.lock().unwrap().values() {
-                                if let Some(key_value) = fields.get(field) {
-                                    if *key_value == Value::BulkString(value.as_bytes().to_vec()) {
-                                        results.push(Value::Array(vec![
-                                            Value::BulkString(b"data".to_vec()),
-                                            fields.get("data").expect("No data field").clone(),
-                                            Value::BulkString(b"version".to_vec()),
-                                            fields
-                                                .get("version")
-                                                .expect("No version field")
-                                                .clone(),
-                                        ]));
-                                    }
+                                if let Some(key_value) = fields.get(field)
+                                    && *key_value == Value::BulkString(value.as_bytes().to_vec())
+                                {
+                                    results.push(Value::Array(vec![
+                                        Value::BulkString(b"data".to_vec()),
+                                        fields.get("data").expect("No data field").clone(),
+                                        Value::BulkString(b"version".to_vec()),
+                                        fields.get("version").expect("No version field").clone(),
+                                    ]));
                                 }
                             }
                         }
@@ -350,7 +351,7 @@ impl<S: SubscriptionManagerNotify + Send + 'static + Sync> FakeRedisBackend<S> {
             }
             output
         };
-        fake_redis_internal(listener, inner).await;
+        fake_redis_internal(listener, vec![inner]).await;
     }
 
     pub async fn run(self) -> u16 {

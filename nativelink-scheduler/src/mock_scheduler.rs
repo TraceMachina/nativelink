@@ -15,7 +15,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use nativelink_error::{Error, make_input_err};
+use nativelink_error::Error;
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_util::action_messages::{ActionInfo, OperationId};
 use nativelink_util::known_platform_property_provider::KnownPlatformPropertyProvider;
@@ -23,6 +23,7 @@ use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, OperationFilter,
 };
 use tokio::sync::{Mutex, mpsc};
+use tonic::Code;
 
 #[allow(
     clippy::large_enum_variant,
@@ -81,7 +82,10 @@ impl MockActionScheduler {
         };
         self.tx_resp
             .send(ActionSchedulerReturns::GetGetKnownProperties(result))
-            .map_err(|_| make_input_err!("Could not send request to mpsc"))
+            .map_err(|err| {
+                Error::from_std_err(Code::InvalidArgument, &err)
+                    .append("Could not send request to mpsc")
+            })
             .unwrap();
         req
     }
@@ -101,7 +105,10 @@ impl MockActionScheduler {
         };
         self.tx_resp
             .send(ActionSchedulerReturns::AddAction(result))
-            .map_err(|_| make_input_err!("Could not send request to mpsc"))
+            .map_err(|err| {
+                Error::from_std_err(Code::InvalidArgument, &err)
+                    .append("Could not send request to mpsc")
+            })
             .unwrap();
         req
     }
@@ -121,7 +128,10 @@ impl MockActionScheduler {
         };
         self.tx_resp
             .send(ActionSchedulerReturns::FilterOperations(result))
-            .map_err(|_| make_input_err!("Could not send request to mpsc"))
+            .map_err(|err| {
+                Error::from_std_err(Code::InvalidArgument, &err)
+                    .append("Could not send request to mpsc")
+            })
             .unwrap();
         req
     }

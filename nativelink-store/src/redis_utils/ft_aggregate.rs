@@ -15,7 +15,6 @@
 use core::fmt::Debug;
 
 use futures::Stream;
-use nativelink_error::Error;
 use redis::aio::ConnectionLike;
 use redis::{Arg, ErrorKind, RedisError, Value};
 use tracing::error;
@@ -43,7 +42,7 @@ pub(crate) async fn ft_aggregate<C>(
     index: String,
     query: String,
     options: FtAggregateOptions,
-) -> Result<impl Stream<Item = Result<Value, RedisError>> + Send, Error>
+) -> Result<impl Stream<Item = Result<Value, RedisError>> + Send, RedisError>
 where
     C: ConnectionLike + Send,
 {
@@ -96,7 +95,7 @@ where
                 ?all_args,
                 "Error calling ft.aggregate"
             );
-            return Err(e.into());
+            return Err(e);
         }
     };
 
@@ -134,7 +133,7 @@ where
 
 fn resp2_data_parse(
     output: &mut RedisCursorData,
-    results_array: &Vec<Value>,
+    results_array: &[Value],
 ) -> Result<(), RedisError> {
     let mut results_iter = results_array.iter();
     match results_iter.next() {
@@ -220,7 +219,7 @@ fn resp3_data_parse(
                     return Err(RedisError::from((
                         ErrorKind::Parse,
                         "Expected STRING format",
-                        format!("{format}"),
+                        format.clone(),
                     )));
                 }
             }
@@ -361,7 +360,7 @@ impl TryFrom<Value> for RedisCursorData {
                     format!("{other:?}"),
                 )));
             }
-        };
+        }
         let Value::Int(cursor) = value.next().unwrap() else {
             return Err(RedisError::from((
                 ErrorKind::Parse,

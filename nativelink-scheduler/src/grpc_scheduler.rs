@@ -63,11 +63,9 @@ impl ActionStateResult for GrpcActionStateResult {
     }
 
     async fn changed(&mut self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error> {
-        self.rx.changed().await.map_err(|_| {
-            make_err!(
-                Code::Internal,
-                "Channel closed in GrpcActionStateResult::changed"
-            )
+        self.rx.changed().await.map_err(|e| {
+            Error::from_std_err(Code::Internal, &e)
+                .append("Channel closed in GrpcActionStateResult::changed")
         })?;
         let mut action_state = self.rx.borrow().clone();
         Arc::make_mut(&mut action_state).client_operation_id = self.client_operation_id.clone();
@@ -216,7 +214,7 @@ impl GrpcScheduler {
             // Not in the cache, lookup the capabilities with the upstream.
             let channel = self
                 .connection_manager
-                .connection()
+                .connection("get_known_properties".into())
                 .await
                 .err_tip(|| "in get_platform_property_manager()")?;
             let capabilities_result = CapabilitiesClient::new(channel)
@@ -274,7 +272,7 @@ impl GrpcScheduler {
             .perform_request(request, |request| async move {
                 let channel = self
                     .connection_manager
-                    .connection()
+                    .connection(format!("add_action: {:?}", request.action_digest))
                     .await
                     .err_tip(|| "in add_action()")?;
                 ExecutionClient::new(channel)
@@ -309,7 +307,7 @@ impl GrpcScheduler {
             .perform_request(request, |request| async move {
                 let channel = self
                     .connection_manager
-                    .connection()
+                    .connection(format!("filter_operations: {}", request.name))
                     .await
                     .err_tip(|| "in find_by_client_operation_id()")?;
                 ExecutionClient::new(channel)

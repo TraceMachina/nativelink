@@ -3,9 +3,10 @@
   nightly-rust,
   generate-bazel-rc,
   generate-stores-config,
+  renovate-patched,
   ...
 }: let
-  excludes = ["nativelink-proto/genproto" "native-cli/vendor"];
+  excludes = ["nativelink-proto/genproto"];
 in {
   # Default hooks
   check-case-conflicts = {
@@ -77,58 +78,8 @@ in {
 
   # General
   typos = {
-    args = ["--force-exclude"];
     enable = true;
-    inherit excludes;
     settings.configPath = "typos.toml";
-  };
-
-  # Go
-  gci = {
-    description = "Fix go imports.";
-    enable = true;
-    entry = "${pkgs.gci}/bin/gci write";
-    inherit excludes;
-    name = "gci";
-    types = ["go"];
-  };
-  gofumpt = {
-    description = "Format Go.";
-    enable = true;
-    entry = "${pkgs.gofumpt}/bin/gofumpt -w -l";
-    inherit excludes;
-    name = "gofumpt";
-    types = ["go"];
-  };
-  # TODO(palfrey): This linter works in the nix developmen environment, but
-  #                    not with `nix flake check`. It's unclear how to fix this.
-  golangci-lint-in-shell = {
-    enable = true;
-    entry = let
-      script = pkgs.writeShellScript "precommit-golangci-lint" ''
-        # TODO(palfrey): This linter works in the nix development
-        #                    environment, but not with `nix flake check`. It's
-        #                    unclear how to fix this.
-        if [ ''${IN_NIX_SHELL} = "impure" ]; then
-          export PATH=${pkgs.go}/bin:$PATH
-          cd native-cli
-          CC=customClang ${pkgs.golangci-lint}/bin/golangci-lint run --modules-download-mode=readonly
-        fi
-      '';
-    in
-      builtins.toString script;
-    inherit excludes;
-    pass_filenames = false;
-    require_serial = true;
-    types = ["go"];
-  };
-  golines = {
-    description = "Shorten Go lines.";
-    enable = true;
-    entry = "${pkgs.golines}/bin/golines --max-len=80 -w";
-    inherit excludes;
-    name = "golines";
-    types = ["go"];
   };
 
   # Nix
@@ -141,6 +92,8 @@ in {
     enable = true;
     packageOverrides.cargo = nightly-rust.cargo;
     packageOverrides.rustfmt = nightly-rust.rustfmt;
+    pass_filenames = true;
+    inherit excludes;
   };
 
   # Taplo fmt
@@ -216,7 +169,7 @@ in {
   renovate = {
     description = "Validate renovate config";
     enable = true;
-    entry = "${pkgs.renovate}/bin/renovate-config-validator";
+    entry = "${renovate-patched}/bin/renovate-config-validator";
     args = ["--strict"];
     files = "renovate.json5";
   };

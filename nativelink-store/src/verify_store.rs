@@ -89,14 +89,14 @@ impl VerifyStore {
                         // Ensure our next chunk is the EOF chunk.
                         // If this was an error it'll be caught on the .recv()
                         // on next cycle.
-                        if let Ok(eof_chunk) = rx.peek().await {
-                            if !eof_chunk.is_empty() {
-                                self.size_verification_failures.inc();
-                                return Err(make_input_err!(
-                                    "Expected EOF chunk when exact size was hit on insert in verify store - {}",
-                                    expected_size,
-                                ));
-                            }
+                        if let Ok(eof_chunk) = rx.peek().await
+                            && !eof_chunk.is_empty()
+                        {
+                            self.size_verification_failures.inc();
+                            return Err(make_input_err!(
+                                "Expected EOF chunk when exact size was hit on insert in verify store - {}",
+                                expected_size,
+                            ));
                         }
                     }
                     core::cmp::Ordering::Less => {}
@@ -105,15 +105,15 @@ impl VerifyStore {
 
             // If is EOF.
             if chunk.is_empty() {
-                if let Some(expected_size) = maybe_expected_digest_size {
-                    if sum_size != expected_size {
-                        self.size_verification_failures.inc();
-                        return Err(make_input_err!(
-                            "Expected size {} but got size {} on insert",
-                            expected_size,
-                            sum_size
-                        ));
-                    }
+                if let Some(expected_size) = maybe_expected_digest_size
+                    && sum_size != expected_size
+                {
+                    self.size_verification_failures.inc();
+                    return Err(make_input_err!(
+                        "Expected size {} but got size {} on insert",
+                        expected_size,
+                        sum_size
+                    ));
                 }
                 if let Some(hasher) = maybe_hasher.as_mut() {
                     let digest = hasher.finalize_digest();
@@ -166,15 +166,16 @@ impl StoreDriver for VerifyStore {
             ));
         };
         let digest_size = digest.size_bytes();
-        if let UploadSizeInfo::ExactSize(expected_size) = size_info {
-            if self.verify_size && expected_size != digest_size {
-                self.size_verification_failures.inc();
-                return Err(make_input_err!(
-                    "Expected size to match. Got {} but digest says {} on update",
-                    expected_size,
-                    digest_size
-                ));
-            }
+        if let UploadSizeInfo::ExactSize(expected_size) = size_info
+            && self.verify_size
+            && expected_size != digest_size
+        {
+            self.size_verification_failures.inc();
+            return Err(make_input_err!(
+                "Expected size to match. Got {} but digest says {} on update",
+                expected_size,
+                digest_size
+            ));
         }
 
         let mut hasher = if self.verify_hash {

@@ -30,7 +30,7 @@ use tracing::info;
 pub async fn make_connect_worker_request<S: BuildHasher>(
     worker_id_prefix: String,
     worker_properties: &HashMap<String, WorkerProperty, S>,
-    extra_envs: &HashMap<String, String>,
+    extra_envs: &HashMap<String, String, S>,
     max_inflight_tasks: u64,
 ) -> Result<ConnectWorkerRequest, Error> {
     let mut futures = vec![];

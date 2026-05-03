@@ -5,8 +5,8 @@ runs:
   using: "composite"
   steps:
     - name: Free disk space
-      uses: >- # v3.1.0
-        endersonmenezes/free-disk-space@e6ed9b02e683a3b55ed0252f1ee469ce3b39a885
+      uses: >- # v3.2.2
+        endersonmenezes/free-disk-space@7901478139cff6e9d44df5972fd8ab8fcade4db1
       with:
         rm_cmd: "rmz" # For speed up
         remove_android: false # Takes too long.
@@ -32,17 +32,3 @@ runs:
           /usr/share/glade*
           /usr/local/share/chromium
           /usr/local/share/powershell
-
-    - name: Delete platform specific items to free up disk space
-      shell: bash
-      run: |
-        if [ "$(uname)" = "Darwin" ]; then
-          echo "Deleting Applications"
-          sudo rm -rf ~/Applications/*
-          echo "Deleting all iOS simulators"
-          xcrun simctl delete all
-          echo "Deleting iOS Simulator caches"
-          sudo rm -rf ~/Library/Developer/CoreSimulator/Caches/*
-        else
-          echo "Nothing to do here."
-        fi

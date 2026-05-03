@@ -1,11 +1,14 @@
-use std::{collections::BTreeSet, env, fs};
-use toml::{Table, Value, map::Map};
+use std::collections::BTreeSet;
+use std::{env, fs};
+
+use toml::map::Map;
+use toml::{Table, Value};
 
 #[derive(PartialEq, PartialOrd, Clone)]
 enum LintLevel {
     Allow,
     Deny,
-    Warn
+    Warn,
 }
 
 impl LintLevel {
@@ -64,8 +67,13 @@ fn get_lints_from_key(lints_table: &Map<String, Value>, key: &str) -> BTreeSet<L
                 level: LintLevel::new_from_str(
                     table["level"].as_str().expect("expected level in table"),
                 ),
-                priority: i8::try_from(table.get("priority").and_then(|p| p.as_integer()).unwrap_or(0))
-                    .expect("Expected small integer for priority"),
+                priority: i8::try_from(
+                    table
+                        .get("priority")
+                        .and_then(|p| p.as_integer())
+                        .unwrap_or(0),
+                )
+                .expect("Expected small integer for priority"),
             });
         } else {
             panic!("{}", value);

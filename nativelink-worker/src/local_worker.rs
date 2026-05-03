@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::hash::BuildHasher;
 use core::pin::Pin;
 use core::str;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -71,8 +72,8 @@ const DEFAULT_ENDPOINT_TIMEOUT_S: f32 = 5.;
 
 /// Default maximum amount of time a task is allowed to run for.
 /// If this value gets modified the documentation in `cas_server.rs` must also be updated.
-const DEFAULT_MAX_ACTION_TIMEOUT: Duration = Duration::from_secs(1200); // 20 mins.
-const DEFAULT_MAX_UPLOAD_TIMEOUT: Duration = Duration::from_secs(600); // 10 mins.
+const DEFAULT_MAX_ACTION_TIMEOUT: Duration = Duration::from_mins(20);
+const DEFAULT_MAX_UPLOAD_TIMEOUT: Duration = Duration::from_mins(10);
 
 struct LocalWorkerImpl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> {
     config: &'a LocalWorkerConfig,
@@ -88,9 +89,9 @@ struct LocalWorkerImpl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsM
     metrics: Arc<Metrics>,
 }
 
-pub async fn preconditions_met(
+pub async fn preconditions_met<H: BuildHasher + Sync>(
     precondition_script: Option<String>,
-    extra_envs: &HashMap<String, String>,
+    extra_envs: &HashMap<String, String, H>,
 ) -> Result<(), Error> {
     let Some(precondition_script) = &precondition_script else {
         // No script means we are always ok to proceed.
@@ -347,15 +348,14 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                     match res {
                                         Ok(mut action_result) => {
                                             // Save in the action cache before notifying the scheduler that we've completed.
-                                            if let Some(digest_info) = action_digest.clone().and_then(|action_digest| action_digest.try_into().ok()) {
-                                                if let Err(err) = running_actions_manager.cache_action_result(digest_info, &mut action_result, digest_hasher).await {
+                                            if let Some(digest_info) = action_digest.clone().and_then(|action_digest| action_digest.try_into().ok()) &&
+                                                let Err(err) = running_actions_manager.cache_action_result(digest_info, &mut action_result, digest_hasher).await {
                                                     error!(
                                                         ?err,
                                                         ?action_digest,
                                                         "Error saving action in store",
                                                     );
                                                 }
-                                            }
                                             let action_stage = ActionStage::Completed(action_result);
                                             grpc_client.execution_response(
                                                 ExecuteResult{
@@ -368,11 +368,34 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                             .err_tip(|| "Error while calling execution_response")?;
                                         },
                                         Err(e) => {
-                                            grpc_client.execution_response(ExecuteResult{
-                                                instance_name,
-                                                operation_id,
-                                                result: Some(execute_result::Result::InternalError(e.into())),
-                                            }).await.err_tip(|| "Error calling execution_response with error")?;
+                                            let is_cas_blob_missing = e.code == Code::NotFound
+                                                && e.message_string().contains("not found in either fast or slow store");
+                                            if is_cas_blob_missing {
+                                                warn!(
+                                                    ?e,
+                                                    "Missing CAS inputs during prepare_action, returning FAILED_PRECONDITION"
+                                                );
+                                                let action_result = ActionResult {
+                                                    error: Some(make_err!(
+                                                        Code::FailedPrecondition,
+                                                        "{}",
+                                                        e.message_string()
+                                                    )),
+                                                    ..ActionResult::default()
+                                                };
+                                                let action_stage = ActionStage::Completed(action_result);
+                                                grpc_client.execution_response(ExecuteResult{
+                                                    instance_name,
+                                                    operation_id,
+                                                    result: Some(execute_result::Result::ExecuteResponse(action_stage.into())),
+                                                }).await.err_tip(|| "Error calling execution_response with missing inputs")?;
+                                            } else {
+                                                grpc_client.execution_response(ExecuteResult{
+                                                    instance_name,
+                                                    operation_id,
+                                                    result: Some(execute_result::Result::InternalError(e.into())),
+                                                }).await.err_tip(|| "Error calling execution_response with error")?;
+                                            }
                                         },
                                     }
                                     Ok(())
@@ -409,7 +432,9 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                                 actions_notify.notify_one();
                                                 core::future::ready(res)
                                             }).boxed())
-                                            .map_err(|_| make_err!(Code::Internal, "LocalWorker could not send future"))?;
+                                            .map_err(|err|
+                                                Error::from_std_err(Code::Internal, &err).append("LocalWorker could not send future")
+                                                )?;
                                         Ok(())
                                     })
                                     .or_else(move |err| {
@@ -432,7 +457,8 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                 complete_msg = shutdown_rx.recv().fuse() => {
                     warn!("Worker loop received shutdown signal. Shutting down worker...",);
                     let mut grpc_client = self.grpc_client.clone();
-                    let shutdown_guard = complete_msg.map_err(|e| make_err!(Code::Internal, "Failed to receive shutdown message: {e:?}"))?;
+                    let shutdown_guard = complete_msg.map_err(|e|
+                        Error::from_std_err(Code::Internal, &e).append("Failed to receive shutdown message"))?;
                     let actions_in_flight = actions_in_flight.clone();
                     let actions_notify = actions_notify.clone();
                     let shutdown_future = async move {
@@ -571,6 +597,52 @@ pub async fn new_local_worker(
         None
     };
 
+    #[cfg(target_os = "linux")]
+    let use_namespaces = if let Some(use_namespaces) = &config.use_namespaces {
+        if *use_namespaces
+            && !crate::namespace_utils::namespaces_supported(
+                config.use_mount_namespace.unwrap_or_default(),
+            )
+        {
+            return Err(make_err!(Code::Unavailable, "Namespaces not supported"));
+        }
+        if !*use_namespaces {
+            crate::running_actions_manager::UseNamespaces::No
+        } else if config.use_mount_namespace.unwrap_or_default() {
+            crate::running_actions_manager::UseNamespaces::YesAndMount
+        } else {
+            crate::running_actions_manager::UseNamespaces::Yes
+        }
+    } else if config
+        .use_mount_namespace
+        .is_some_and(core::convert::identity)
+    {
+        return Err(make_err!(
+            Code::Unavailable,
+            "Mount namespaces not supported"
+        ));
+    } else {
+        crate::running_actions_manager::UseNamespaces::No
+    };
+
+    #[cfg(not(target_os = "linux"))]
+    if config.use_namespaces.is_some_and(core::convert::identity) {
+        return Err(make_err!(
+            Code::Unavailable,
+            "Namespaces not supported on non-Linux OSes"
+        ));
+    }
+    #[cfg(not(target_os = "linux"))]
+    if config
+        .use_mount_namespace
+        .is_some_and(core::convert::identity)
+    {
+        return Err(make_err!(
+            Code::Unavailable,
+            "Mount namespaces not supported on non-Linux OSes"
+        ));
+    }
+
     let running_actions_manager =
         Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
             root_action_directory: config.work_directory.clone(),
@@ -586,6 +658,8 @@ pub async fn new_local_worker(
             max_upload_timeout,
             timeout_handled_externally: config.timeout_handled_externally,
             directory_cache,
+            #[cfg(target_os = "linux")]
+            use_namespaces,
         })?);
     let local_worker = LocalWorker::new_with_connection_factory_and_actions_manager(
         config.clone(),
@@ -603,16 +677,18 @@ pub async fn new_local_worker(
                         .err_tip(|| "Parsing local worker TLS configuration")?;
                 let endpoint =
                     tls_utils::endpoint_from(&config.worker_api_endpoint.uri, tls_config)
-                        .map_err(|e| make_input_err!("Invalid URI for worker endpoint : {e:?}"))?
+                        .map_err(|e| {
+                            Error::from_std_err(Code::InvalidArgument, &e)
+                                .append("Invalid URI for worker endpoint")
+                        })?
                         .connect_timeout(timeout_duration)
                         .timeout(timeout_duration);
 
                 let transport = endpoint.connect().await.map_err(|e| {
-                    make_err!(
-                        Code::Internal,
-                        "Could not connect to endpoint {}: {e:?}",
+                    Error::from_std_err(Code::Internal, &e).append(format!(
+                        "Could not connect to endpoint {}",
                         config.worker_api_endpoint.uri
-                    )
+                    ))
                 })?;
                 Ok(WorkerApiClient::new(transport).into())
             })

@@ -1246,7 +1246,9 @@ pub struct FindMissingBlobsResponse {
 }
 /// A request message for
 /// [ContentAddressableStorage.BatchUpdateBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.BatchUpdateBlobs].
+#[derive(::derive_more::Debug)]
 #[derive(Clone, PartialEq, ::prost::Message)]
+#[prost(skip_debug)]
 pub struct BatchUpdateBlobsRequest {
     /// The instance of the execution system to operate against. A server may
     /// support multiple instances of the execution system (with their own workers,
@@ -1257,6 +1259,7 @@ pub struct BatchUpdateBlobsRequest {
     pub instance_name: ::prost::alloc::string::String,
     /// The individual upload requests.
     #[prost(message, repeated, tag = "2")]
+    #[debug(ignore)]
     pub requests: ::prost::alloc::vec::Vec<batch_update_blobs_request::Request>,
     /// The digest function that was used to compute the digests of the
     /// blobs being uploaded.
@@ -1272,9 +1275,7 @@ pub struct BatchUpdateBlobsRequest {
 /// Nested message and enum types in `BatchUpdateBlobsRequest`.
 pub mod batch_update_blobs_request {
     /// A request corresponding to a single blob that the client wants to upload.
-    #[derive(::derive_more::Debug)]
     #[derive(Clone, PartialEq, ::prost::Message)]
-    #[prost(skip_debug)]
     pub struct Request {
         /// The digest of the blob. This MUST be the digest of `data`. All
         /// digests MUST use the same digest function.
@@ -1282,7 +1283,6 @@ pub mod batch_update_blobs_request {
         pub digest: ::core::option::Option<super::Digest>,
         /// The raw binary data.
         #[prost(bytes = "bytes", tag = "2")]
-        #[debug(ignore)]
         pub data: ::prost::bytes::Bytes,
         /// The format of `data`. Must be `IDENTITY`/unspecified, or one of the
         /// compressors advertised by the
@@ -1294,10 +1294,13 @@ pub mod batch_update_blobs_request {
 }
 /// A response message for
 /// [ContentAddressableStorage.BatchUpdateBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.BatchUpdateBlobs].
+#[derive(::derive_more::Debug)]
 #[derive(Clone, PartialEq, ::prost::Message)]
+#[prost(skip_debug)]
 pub struct BatchUpdateBlobsResponse {
     /// The responses to the requests.
     #[prost(message, repeated, tag = "1")]
+    #[debug(ignore)]
     pub responses: ::prost::alloc::vec::Vec<batch_update_blobs_response::Response>,
 }
 /// Nested message and enum types in `BatchUpdateBlobsResponse`.
@@ -1317,7 +1320,9 @@ pub mod batch_update_blobs_response {
 }
 /// A request message for
 /// [ContentAddressableStorage.BatchReadBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.BatchReadBlobs].
+#[derive(::derive_more::Debug)]
 #[derive(Clone, PartialEq, ::prost::Message)]
+#[prost(skip_debug)]
 pub struct BatchReadBlobsRequest {
     /// The instance of the execution system to operate against. A server may
     /// support multiple instances of the execution system (with their own workers,
@@ -1329,6 +1334,7 @@ pub struct BatchReadBlobsRequest {
     /// The individual blob digests. All digests MUST use the same digest
     /// function.
     #[prost(message, repeated, tag = "2")]
+    #[debug(ignore)]
     pub digests: ::prost::alloc::vec::Vec<Digest>,
     /// A list of acceptable encodings for the returned inlined data, in no
     /// particular order. `IDENTITY` is always allowed even if not specified here.
@@ -1346,25 +1352,25 @@ pub struct BatchReadBlobsRequest {
 }
 /// A response message for
 /// [ContentAddressableStorage.BatchReadBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.BatchReadBlobs].
+#[derive(::derive_more::Debug)]
 #[derive(Clone, PartialEq, ::prost::Message)]
+#[prost(skip_debug)]
 pub struct BatchReadBlobsResponse {
     /// The responses to the requests.
     #[prost(message, repeated, tag = "1")]
+    #[debug(ignore)]
     pub responses: ::prost::alloc::vec::Vec<batch_read_blobs_response::Response>,
 }
 /// Nested message and enum types in `BatchReadBlobsResponse`.
 pub mod batch_read_blobs_response {
     /// A response corresponding to a single blob that the client tried to download.
-    #[derive(::derive_more::Debug)]
     #[derive(Clone, PartialEq, ::prost::Message)]
-    #[prost(skip_debug)]
     pub struct Response {
         /// The digest to which this response corresponds.
         #[prost(message, optional, tag = "1")]
         pub digest: ::core::option::Option<super::Digest>,
         /// The raw binary data.
         #[prost(bytes = "bytes", tag = "2")]
-        #[debug(ignore)]
         pub data: ::prost::bytes::Bytes,
         /// The format the data is encoded in. MUST be `IDENTITY`/unspecified,
         /// or one of the acceptable compressors specified in the `BatchReadBlobsRequest`.

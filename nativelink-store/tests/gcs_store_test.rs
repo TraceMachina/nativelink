@@ -125,6 +125,66 @@ async fn simple_has_object_error() -> Result<(), Error> {
 }
 
 #[nativelink_test]
+async fn has_handles_not_found_error() -> Result<(), Error> {
+    // Create mock GCS operations
+    let mock_ops = Arc::new(MockGcsOperations::new());
+
+    // Set the mock to return a simulated NotFound error
+    mock_ops.set_should_fail(true);
+    mock_ops
+        .set_failure_mode(nativelink_store::gcs_client::mocks::FailureMode::NotFound)
+        .await;
+
+    let store = create_test_store(mock_ops.clone()).await?;
+
+    let digest = DigestInfo::try_new(VALID_HASH1, 100)?;
+    let store_key: StoreKey = to_store_key(digest);
+
+    // Test that a NotFound error from the client is caught and translated into Ok(None)
+    // without indefinitely retrying.
+    let result = store.has(store_key).await?;
+
+    assert_eq!(
+        result, None,
+        "Expected NotFound error to be handled and return None"
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn get_part_handles_not_found_error() -> Result<(), Error> {
+    // Create mock GCS operations
+    let mock_ops = Arc::new(MockGcsOperations::new());
+
+    // Set the mock to return a simulated NotFound error
+    mock_ops.set_should_fail(true);
+    mock_ops
+        .set_failure_mode(nativelink_store::gcs_client::mocks::FailureMode::NotFound)
+        .await;
+
+    let store = create_test_store(mock_ops.clone()).await?;
+
+    let digest = DigestInfo::try_new(VALID_HASH1, 100)?;
+    let store_key: StoreKey = to_store_key(digest);
+    let (mut tx, _rx) = make_buf_channel_pair();
+
+    let store_clone = store.clone();
+    let get_part_fut = nativelink_util::spawn!("get_part_task", async move {
+        store_clone.get_part(store_key, &mut tx, 0, None).await
+    });
+
+    let err = get_part_fut.await?.unwrap_err();
+    assert_eq!(
+        err.code,
+        Code::NotFound,
+        "Expected NotFound error to be propagated immediately"
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
 async fn has_with_results_test() -> Result<(), Error> {
     // Create mock GCS operations
     let mock_ops = Arc::new(MockGcsOperations::new());

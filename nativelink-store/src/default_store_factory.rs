@@ -23,6 +23,7 @@ use nativelink_error::Error;
 use nativelink_util::health_utils::HealthRegistryBuilder;
 use nativelink_util::store_trait::{Store, StoreDriver};
 
+use crate::azure_blob_store::AzureBlobStore;
 use crate::completeness_checking_store::CompletenessCheckingStore;
 use crate::compression_store::CompressionStore;
 use crate::dedup_store::DedupStore;
@@ -63,6 +64,9 @@ pub fn store_factory<'a>(
                 }
                 ExperimentalCloudObjectSpec::Gcs(gcs_config) => {
                     GcsStore::new(gcs_config, SystemTime::now).await?
+                }
+                ExperimentalCloudObjectSpec::Azure(azure_config) => {
+                    AzureBlobStore::new(azure_config, SystemTime::now).await?
                 }
             },
             StoreSpec::RedisStore(spec) => {

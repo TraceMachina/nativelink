@@ -59,7 +59,7 @@ use tonic::{Request, Response, Status, Streaming};
 use tracing::{Instrument, Level, debug, error, error_span, info, instrument, trace, warn};
 
 /// If this value changes update the documentation in the config definition.
-const DEFAULT_PERSIST_STREAM_ON_DISCONNECT_TIMEOUT: Duration = Duration::from_secs(60);
+const DEFAULT_PERSIST_STREAM_ON_DISCONNECT_TIMEOUT: Duration = Duration::from_mins(1);
 
 /// If this value changes update the documentation in the config definition.
 const DEFAULT_MAX_BYTES_PER_STREAM: usize = 64 * 1024;
@@ -431,15 +431,15 @@ impl ByteStreamServer {
                 {
                     let mut uploads = active_uploads.lock();
                     uploads.retain(|uuid, (_, maybe_idle)| {
-                        if let Some(idle_stream) = maybe_idle {
-                            if now.duration_since(idle_stream.idle_since) >= idle_stream_timeout {
-                                info!(
-                                    msg = "Sweeping expired idle stream",
-                                    uuid = format!("{:032x}", uuid)
-                                );
-                                expired_count += 1;
-                                return false; // Remove this entry
-                            }
+                        if let Some(idle_stream) = maybe_idle
+                            && now.duration_since(idle_stream.idle_since) >= idle_stream_timeout
+                        {
+                            info!(
+                                msg = "Sweeping expired idle stream",
+                                uuid = format!("{:032x}", uuid)
+                            );
+                            expired_count += 1;
+                            return false; // Remove this entry
                         }
                         true // Keep this entry
                     });
@@ -1132,14 +1132,13 @@ impl ByteStream for ByteStreamServer {
         // - Resumed streams won't work (no partial progress)
         let use_oneshot = if store.optimized_for(StoreOptimizations::SubscribesToUpdateOneshot)
             && expected_size <= 64 * 1024 * 1024
-            && stream.resource_info.uuid.is_some()
+            && let Some(ref resource_uuid) = stream.resource_info.uuid
         {
             // Check if first message completes the upload (single-shot)
             let is_single_shot = stream.is_first_msg_complete();
 
             if is_single_shot {
-                let uuid_str = stream.resource_info.uuid.as_ref().unwrap();
-                let uuid_key = parse_uuid_to_key(uuid_str);
+                let uuid_key = parse_uuid_to_key(resource_uuid);
                 // Only use oneshot if this UUID is not already being tracked
                 !instance.active_uploads.lock().contains_key(&uuid_key)
             } else {
@@ -1213,16 +1212,15 @@ impl ByteStream for ByteStreamServer {
         let request = grpc_request.into_inner();
 
         // Track query_write_status request - we need to parse the resource name to get the instance
-        if let Ok(resource_info) = ResourceInfo::new(&request.resource_name, true) {
-            if let Some(instance) = self
+        if let Ok(resource_info) = ResourceInfo::new(&request.resource_name, true)
+            && let Some(instance) = self
                 .instance_infos
                 .get(resource_info.instance_name.as_ref())
-            {
-                instance
-                    .metrics
-                    .query_write_status_total
-                    .fetch_add(1, Ordering::Relaxed);
-            }
+        {
+            instance
+                .metrics
+                .query_write_status_total
+                .fetch_add(1, Ordering::Relaxed);
         }
 
         self.inner_query_write_status(&request)

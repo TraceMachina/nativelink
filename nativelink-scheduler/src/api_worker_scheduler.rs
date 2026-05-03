@@ -238,6 +238,14 @@ impl ApiWorkerSchedulerImpl {
         platform_properties: &PlatformProperties,
         full_worker_logging: bool,
     ) -> Option<WorkerId> {
+        // Do a fast check to see if any workers are available at all for work allocation
+        if !self.workers.iter().any(|(_, w)| w.can_accept_work()) {
+            if full_worker_logging {
+                info!("All workers are fully allocated");
+            }
+            return None;
+        }
+
         // Use capability index to get candidate workers that match STATIC properties
         // (Exact, Unknown) and have the required property keys (Priority, Minimum).
         // This reduces complexity from O(W × P) to O(P × log(W)) for exact properties.
@@ -494,7 +502,7 @@ impl ApiWorkerScheduler {
         Arc::new(Self {
             inner: Mutex::new(ApiWorkerSchedulerImpl {
                 workers: Workers(LruCache::unbounded()),
-                worker_state_manager: worker_state_manager.clone(),
+                worker_state_manager,
                 allocation_strategy,
                 worker_change_notify,
                 worker_registry: worker_registry.clone(),

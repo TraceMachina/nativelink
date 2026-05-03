@@ -23,14 +23,21 @@ jobs:
   coverage:
     name: Coverage
     runs-on: xlarge-ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 180
     steps:
       - name: Checkout
-        uses: >- # v4.2.2
-          actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: >- # v6.0.2
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Prepare Worker
         uses: ./.github/actions/prepare-nix
+        with:
+          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
+
+      # Ubuntu 24.04 restricts unprivileged user namespaces by default, which breaks
+      # the worker tests that use namespaces (e.g. for sandboxing).
+      - name: Disable AppArmor namespace restrictions
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
       - name: Generate coverage
         run: |

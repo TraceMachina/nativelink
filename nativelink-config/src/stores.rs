@@ -13,9 +13,12 @@
 // limitations under the License.
 
 use core::time::Duration;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use rand::Rng;
+#[cfg(feature = "dev-schema")]
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::serde_utils::{
@@ -32,6 +35,7 @@ pub type StoreRefName = String;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum ConfigDigestHashFunction {
     /// Use the sha256 hash function.
     /// <https://en.wikipedia.org/wiki/SHA-2>
@@ -44,6 +48,7 @@ pub enum ConfigDigestHashFunction {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum StoreSpec {
     /// Memory store will store all data in a hashmap in memory.
     ///
@@ -105,7 +110,28 @@ pub enum StoreSpec {
     ///   }
     ///   ```
     ///
-    /// 3. **`NetApp` ONTAP S3**
+    /// 3. **Azure Blob Store:**
+    ///    Azure Blob store will use Microsoft's Azure Blob service as a
+    ///    backend to store the files. This configuration can be used to
+    ///    share files across multiple instances.
+    ///
+    ///   **Example JSON Config:**
+    ///   ```json
+    ///   "experimental_cloud_object_store": {
+    ///     "provider": "azure",
+    ///     "account_name": "cloudshell1393657559",
+    ///     "container": "simple-test-container",
+    ///     "key_prefix": "folder/",
+    ///     "retry": {
+    ///         "max_retries": 6,
+    ///         "delay": 0.3,
+    ///         "jitter": 0.5
+    ///     },
+    ///     "multipart_max_concurrent_uploads": 10
+    ///   }
+    ///   ```
+    ///
+    /// 4. **`NetApp` ONTAP S3**
     ///    `NetApp` ONTAP S3 store will use ONTAP's S3-compatible storage as a backend
     ///    to store files. This store is specifically configured for ONTAP's S3 requirements
     ///    including custom TLS configuration, credentials management, and proper vserver
@@ -475,7 +501,16 @@ pub enum StoreSpec {
     ///   ],
     ///   "connections_per_endpoint": "5",
     ///   "rpc_timeout_s": "5m",
-    ///   "store_type": "ac"
+    ///   "store_type": "ac",
+    ///   // Static headers attached to every outgoing request to the upstream
+    ///   // remote cache. Useful for fixed service-account credentials.
+    ///   "headers": {
+    ///     "authorization": "Bearer my-static-token"
+    ///   },
+    ///   // Header names to copy from the inbound client request and forward to
+    ///   // the upstream remote cache. Use this to pass through dynamic
+    ///   // credentials such as a JWT sent by the build client.
+    ///   "forward_headers": ["authorization", "x-custom-token"]
     /// }
     /// ```
     ///
@@ -526,7 +561,8 @@ pub enum StoreSpec {
     ///     "key_prefix": "cas:",
     ///     "read_chunk_size": 65536,
     ///     "max_concurrent_uploads": 10,
-    ///     "enable_change_streams": false
+    ///     "enable_change_streams": false,
+    ///     "max_requests": "100"
     /// }
     /// ```
     ///
@@ -536,6 +572,7 @@ pub enum StoreSpec {
 /// Configuration for an individual shard of the store.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ShardConfig {
     /// Store to shard the data to.
     pub store: StoreSpec,
@@ -551,6 +588,7 @@ pub struct ShardConfig {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ShardSpec {
     /// Stores to shard the data to.
     pub stores: Vec<ShardConfig>,
@@ -558,6 +596,7 @@ pub struct ShardSpec {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct SizePartitioningSpec {
     /// Size to partition the data on.
     #[serde(deserialize_with = "convert_data_size_with_shellexpand")]
@@ -572,6 +611,7 @@ pub struct SizePartitioningSpec {
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct RefSpec {
     /// Name of the store under the root "stores" config object.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
@@ -580,6 +620,7 @@ pub struct RefSpec {
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct FilesystemSpec {
     /// Path on the system where to store the actual content. This is where
     /// the bulk of the data will be placed.
@@ -616,7 +657,7 @@ pub struct FilesystemSpec {
     pub block_size: u64,
 
     /// Maximum number of concurrent write operations allowed.
-    /// Each write involves streaming data to a temp file and calling sync_all(),
+    /// Each write involves streaming data to a temp file and calling `sync_all()`,
     /// which can saturate disk I/O when many writes happen simultaneously.
     /// Limiting concurrency prevents disk saturation from blocking the async
     /// runtime.
@@ -629,6 +670,7 @@ pub struct FilesystemSpec {
 // NetApp ONTAP S3 Spec
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ExperimentalOntapS3Spec {
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub endpoint: String,
@@ -646,6 +688,7 @@ pub struct ExperimentalOntapS3Spec {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct OntapS3ExistenceCacheSpec {
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub index_path: String,
@@ -656,6 +699,7 @@ pub struct OntapS3ExistenceCacheSpec {
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum StoreDirection {
     /// The store operates normally and all get and put operations are
     /// handled by it.
@@ -676,6 +720,7 @@ pub enum StoreDirection {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct FastSlowSpec {
     /// Fast store that will be attempted to be contacted before reaching
     /// out to the `slow` store.
@@ -698,6 +743,7 @@ pub struct FastSlowSpec {
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone, Copy)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct MemorySpec {
     /// Policy used to evict items out of the store. Failure to set this
     /// value will cause items to never be removed from the store causing
@@ -707,6 +753,7 @@ pub struct MemorySpec {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct DedupSpec {
     /// Store used to store the index of each dedup slice. This store
     /// should generally be fast and small.
@@ -762,6 +809,7 @@ pub struct DedupSpec {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ExistenceCacheSpec {
     /// The underlying store wrap around. All content will first flow
     /// through self before forwarding to backend. In the event there
@@ -778,6 +826,7 @@ pub struct ExistenceCacheSpec {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct VerifySpec {
     /// The underlying store wrap around. All content will first flow
     /// through self before forwarding to backend. In the event there
@@ -804,6 +853,7 @@ pub struct VerifySpec {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct CompletenessCheckingSpec {
     /// The underlying store that will have it's results validated before sending to client.
     pub backend: StoreSpec,
@@ -815,6 +865,7 @@ pub struct CompletenessCheckingSpec {
 
 #[derive(Serialize, Deserialize, Debug, Default, PartialEq, Eq, Clone, Copy)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct Lz4Config {
     /// Size of the blocks to compress.
     /// Higher values require more ram, but might yield slightly better
@@ -838,6 +889,7 @@ pub struct Lz4Config {
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum CompressionAlgorithm {
     /// LZ4 compression algorithm is extremely fast for compression and
     /// decompression, however does not perform very well in compression
@@ -851,6 +903,7 @@ pub enum CompressionAlgorithm {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct CompressionSpec {
     /// The underlying store wrap around. All content will first flow
     /// through self before forwarding to backend. In the event there
@@ -869,6 +922,7 @@ pub struct CompressionSpec {
 /// until the store size becomes smaller than `max_bytes`.
 #[derive(Serialize, Deserialize, Debug, Default, Clone, Copy)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct EvictionPolicy {
     /// Maximum number of bytes before eviction takes place.
     /// Default: 0. Zero means never evict based on size.
@@ -896,9 +950,11 @@ pub struct EvictionPolicy {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "provider", rename_all = "snake_case")]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum ExperimentalCloudObjectSpec {
     Aws(ExperimentalAwsSpec),
     Gcs(ExperimentalGcsSpec),
+    Azure(ExperimentalAzureSpec),
     Ontap(ExperimentalOntapS3Spec),
 }
 
@@ -910,6 +966,7 @@ impl Default for ExperimentalCloudObjectSpec {
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ExperimentalAwsSpec {
     /// S3 region. Usually us-east-1, us-west-2, af-south-1, exc...
     #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
@@ -926,6 +983,7 @@ pub struct ExperimentalAwsSpec {
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ExperimentalGcsSpec {
     /// Bucket name to use as the backend.
     #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
@@ -960,6 +1018,34 @@ pub struct ExperimentalGcsSpec {
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct ExperimentalAzureSpec {
+    /// The Azure Storage account name.
+    #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
+    pub account_name: String,
+
+    /// The container name to use as the backend.
+    #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
+    pub container: String,
+
+    /// Common retry and upload configuration.
+    #[serde(flatten)]
+    pub common: CommonObjectSpec,
+
+    /// Connection timeout in milliseconds.
+    /// Default: 3000
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub connection_timeout_s: u64,
+
+    /// Read timeout in milliseconds.
+    /// Default: 3000
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub read_timeout_s: u64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct CommonObjectSpec {
     /// If you wish to prefix the location in the bucket. If None, no prefix will be used.
     #[serde(default)]
@@ -1024,6 +1110,7 @@ pub struct CommonObjectSpec {
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum StoreType {
     /// The store is content addressable storage.
     Cas,
@@ -1032,6 +1119,7 @@ pub enum StoreType {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ClientTlsConfig {
     /// Path to the certificate authority to use to validate the remote.
     ///
@@ -1060,6 +1148,7 @@ pub struct ClientTlsConfig {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct GrpcEndpoint {
     /// The endpoint address (i.e. grpc(s)://example.com:443).
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
@@ -1099,6 +1188,7 @@ pub struct GrpcEndpoint {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct GrpcSpec {
     /// Instance name for GRPC calls. Proxy calls will have the `instance_name` changed to this.
     #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
@@ -1126,16 +1216,57 @@ pub struct GrpcSpec {
     pub connections_per_endpoint: usize,
 
     /// Maximum time (seconds) allowed for a single RPC request (e.g. a
-    /// ByteStream.Write call) before it is cancelled. This prevents
-    /// individual RPCs from hanging forever on dead connections.
+    /// ByteStream.Write call) before it is cancelled.
     ///
-    /// Default: 120 (seconds)
+    /// A value of 0 (the default) disables the per-RPC timeout. Dead
+    /// connections are still detected by the HTTP/2 and TCP keepalive
+    /// mechanisms configured on each endpoint.
+    ///
+    /// For large uploads (multi-GB), either leave this at 0 or set it
+    /// large enough to accommodate the full transfer time.
+    ///
+    /// Default: 0 (disabled)
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub rpc_timeout_s: u64,
+
+    /// Use legacy `ByteStream` resource name format, omitting the digest
+    /// function component from the path.
+    ///
+    /// Modern `NativeLink` generates resource names like:
+    ///   `{instance}/blobs/{digest_function}/{hash}/{size}`
+    ///
+    /// Older backends (e.g. Buildbarn pre-v0.3) expect the original format:
+    ///   `{instance}/blobs/{hash}/{size}`
+    ///
+    /// Set this to `true` when connecting to such backends to avoid
+    /// `InvalidArgument: Unsupported digest function` errors.
+    ///
+    /// Default: false
+    #[serde(default, deserialize_with = "convert_boolean_with_shellexpand")]
+    pub use_legacy_resource_names: bool,
+
+    /// Static headers to attach to every outgoing gRPC request sent to this
+    /// store's upstream endpoints. Useful for fixed authentication tokens
+    /// (e.g. `{"authorization": "Bearer <token>"}`) and other static metadata.
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+
+    /// Header names to forward from the incoming client request to every
+    /// outgoing upstream request. The header value is taken from the client
+    /// request that triggered this store operation. Use this to pass through
+    /// dynamic credentials such as JWT tokens sent by build clients.
+    ///
+    /// Example: `["authorization", "x-custom-token"]`
+    ///
+    /// `NativeLink` also automatically injects the current OpenTelemetry trace
+    /// context (`traceparent` / `tracestate`) into every outgoing request.
+    #[serde(default)]
+    pub forward_headers: Vec<String>,
 }
 
 /// The possible error codes that might occur on an upstream request.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum ErrorCode {
     Cancelled = 1,
     Unknown = 2,
@@ -1157,6 +1288,7 @@ pub enum ErrorCode {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct RedisSpec {
     /// The hostname or IP address of the Redis server.
     /// Ex: `["redis://username:password@redis-server-url:6380/99"]`
@@ -1164,14 +1296,14 @@ pub struct RedisSpec {
     #[serde(deserialize_with = "convert_vec_string_with_shellexpand")]
     pub addresses: Vec<String>,
 
-    /// DEPRECATED: use command_timeout_ms
+    /// DEPRECATED: use `command_timeout_ms`
     /// The response timeout for the Redis connection in seconds.
     ///
     /// Default: 10
     #[serde(default)]
     pub response_timeout_s: u64,
 
-    /// DEPRECATED: use connection_timeout_ms
+    /// DEPRECATED: use `connection_timeout_ms`
     ///
     /// The connection timeout for the Redis connection in seconds.
     ///
@@ -1296,6 +1428,7 @@ pub struct RedisSpec {
 
 #[derive(Debug, Default, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum RedisMode {
     Cluster,
     Sentinel,
@@ -1304,6 +1437,7 @@ pub enum RedisMode {
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct NoopSpec {}
 
 /// Retry configuration. This configuration is exponential and each iteration
@@ -1329,6 +1463,7 @@ pub struct NoopSpec {}
 /// would mean a single request would have a total delay of 9.525s - 15.875s.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct Retry {
     /// Maximum number of retries until retrying stops.
     /// Setting this to zero will always attempt 1 time, but not retry.
@@ -1368,6 +1503,7 @@ pub struct Retry {
 /// Configuration for `ExperimentalMongoDB` store.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ExperimentalMongoSpec {
     /// `ExperimentalMongoDB` connection string.
     /// Example: <mongodb://localhost:27017> or <mongodb+srv://cluster.mongodb.net>
@@ -1399,6 +1535,7 @@ pub struct ExperimentalMongoSpec {
     #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub read_chunk_size: usize,
 
+    /// Deprecated, unused
     /// Maximum number of concurrent uploads allowed.
     /// Default: 10
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
@@ -1438,6 +1575,14 @@ pub struct ExperimentalMongoSpec {
         deserialize_with = "convert_optional_numeric_with_shellexpand"
     )]
     pub write_concern_timeout_ms: Option<u32>,
+
+    /// Limits the number of requests at any one time
+    /// Default: Unlimited
+    #[serde(
+        default,
+        deserialize_with = "convert_optional_numeric_with_shellexpand"
+    )]
+    pub max_requests: Option<usize>,
 }
 
 impl Retry {

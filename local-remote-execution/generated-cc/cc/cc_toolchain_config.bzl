@@ -1608,7 +1608,8 @@ def _impl(ctx):
             ),
         ]
         features = [
-            macos_minimum_os_feature,
+            # FIXME(palfrey): This breaks mimalloc builds
+            # macos_minimum_os_feature,
             macos_default_link_flags_feature,
             runtime_library_search_directories_feature,
             set_install_name_feature,

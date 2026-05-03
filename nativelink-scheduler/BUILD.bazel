@@ -115,6 +115,7 @@ rust_test(
     deps = [
         "@crates//:pretty_assertions",
         "@crates//:redis",
+        "@crates//:tracing-test",
     ],
 )
 

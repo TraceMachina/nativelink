@@ -30,7 +30,7 @@ spec:
   prune: true
   force: true
   retryInterval: 20s
-  # Don't set targetNamespace for this one as OLM mangages this itself.
+  # Don't set targetNamespace for this one as OLM manages this itself.
   wait: true
   sourceRef:
     kind: GitRepository

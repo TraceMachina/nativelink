@@ -52,7 +52,7 @@ impl PushServer {
                 make_input_err!("'push_store': '{}' does not exist", config.push_store)
             })?;
             stores.insert(
-                config.instance_name.to_string(),
+                config.instance_name.clone(),
                 PushStoreInfo {
                     store,
                     read_only: config.read_only,

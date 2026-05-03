@@ -235,7 +235,7 @@ mod body_processing {
     }
 }
 
-struct RequestComponents {
+pub(crate) struct RequestComponents {
     method: Method,
     uri: hyper::Uri,
     version: hyper::Version,

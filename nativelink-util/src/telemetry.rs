@@ -13,8 +13,9 @@
 // limitations under the License.
 
 use core::default::Default;
+use std::collections::HashMap;
 use std::env;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use base64::Engine;
 use base64::prelude::BASE64_STANDARD_NO_PAD;
@@ -202,6 +203,11 @@ const BAZEL_REQUESTMETADATA_HEADER: &str = "build.bazel.remote.execution.v2.requ
 use opentelemetry::baggage::BaggageExt;
 use opentelemetry::context::FutureExt;
 
+/// ASCII headers from an inbound client request, stored in the task context
+/// so that outgoing upstream calls can forward them (e.g. JWT auth tokens).
+#[derive(Clone, Debug, Default)]
+pub struct ClientHeaders(pub Arc<HashMap<String, String>>);
+
 #[derive(Debug, Clone)]
 pub struct OtlpMiddleware<S> {
     inner: S,
@@ -244,6 +250,20 @@ where
         let clone = self.inner.clone();
         let mut inner = core::mem::replace(&mut self.inner, clone);
 
+        // Capture all ASCII-valued request headers before req is consumed, so
+        // they can be forwarded to upstream services (e.g. JWT auth tokens).
+        let client_headers = ClientHeaders(Arc::new(
+            req.headers()
+                .iter()
+                .filter_map(|(name, value)| {
+                    value
+                        .to_str()
+                        .ok()
+                        .map(|v| (name.as_str().to_lowercase(), v.to_string()))
+                })
+                .collect(),
+        ));
+
         let parent_cx = global::get_text_map_propagator(|propagator| {
             propagator.extract(&HeaderExtractor(req.headers()))
         });
@@ -254,22 +274,24 @@ where
             .map(|value| value.as_str().to_string())
             .unwrap_or_default();
 
-        if identity.is_empty() && self.identity_required {
-            return Box::pin(async move {
-                Ok(tonic::Status::failed_precondition(
-                    r"
+        if identity.is_empty() {
+            if self.identity_required {
+                return Box::pin(async move {
+                    Ok(tonic::Status::failed_precondition(
+                        r"
 
 NativeLink instance configured to require this OpenTelemetry Baggage header:
 
     `Baggage: enduser.id=YOUR_IDENTITY`
 
 ",
-                )
-                .into_http())
-            });
+                    )
+                    .into_http())
+                });
+            }
+        } else {
+            debug!("Baggage enduser.id: {identity}");
         }
-
-        debug!("Baggage enduser.id: {identity}");
 
         let tracer = global::tracer("origin_middleware");
         let span = tracer
@@ -279,19 +301,19 @@ NativeLink instance configured to require this OpenTelemetry Baggage header:
 
         let mut cx = parent_cx.with_span(span);
 
-        if let Some(bazel_header) = req.headers().get(BAZEL_REQUESTMETADATA_HEADER) {
-            if let Ok(decoded) = BASE64_STANDARD_NO_PAD.decode(bazel_header.as_bytes()) {
-                if let Ok(metadata) = RequestMetadata::decode(decoded.as_slice()) {
-                    let metadata_str = format!("{metadata:?}");
-                    debug!("Baggage Bazel request metadata: {metadata_str}");
-                    cx = cx.with_baggage(vec![
-                        KeyValue::new(BAZEL_METADATA_KEY, metadata_str),
-                        KeyValue::new(ENDUSER_ID, identity),
-                    ]);
-                }
-            }
+        if let Some(bazel_header) = req.headers().get(BAZEL_REQUESTMETADATA_HEADER)
+            && let Ok(decoded) = BASE64_STANDARD_NO_PAD.decode(bazel_header.as_bytes())
+            && let Ok(metadata) = RequestMetadata::decode(decoded.as_slice())
+        {
+            let metadata_str = format!("{metadata:?}");
+            debug!("Baggage Bazel request metadata: {metadata_str}");
+            cx = cx.with_baggage(vec![
+                KeyValue::new(BAZEL_METADATA_KEY, metadata_str),
+                KeyValue::new(ENDUSER_ID, identity),
+            ]);
         }
 
+        let cx = cx.with_value(client_headers);
         Box::pin(async move { inner.call(req).with_context(cx).await })
     }
 }

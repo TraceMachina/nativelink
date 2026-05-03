@@ -15,6 +15,7 @@
 use core::fmt::{Debug, Formatter};
 use core::pin::Pin;
 use core::sync::atomic::{AtomicU64, Ordering};
+use core::time::Duration;
 use std::borrow::Cow;
 use std::ffi::{OsStr, OsString};
 use std::sync::{Arc, Weak};
@@ -26,7 +27,7 @@ use bytes::{Bytes, BytesMut};
 use futures::stream::{StreamExt, TryStreamExt};
 use futures::{Future, TryFutureExt};
 use nativelink_config::stores::FilesystemSpec;
-use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::background_spawn;
 use nativelink_util::buf_channel::{
@@ -452,9 +453,17 @@ async fn add_files_to_cache<Fe: FileEntry>(
                 key: key.borrow().into_owned(),
             }),
         );
-        let time_since_anchor = anchor_time
-            .duration_since(atime)
-            .map_err(|_| make_input_err!("File access time newer than now"))?;
+        let time_since_anchor = if let Ok(d) = anchor_time.duration_since(atime) {
+            d
+        } else {
+            warn!(
+                %file_name,
+                atime = %humantime::format_rfc3339(atime),
+                anchor_time = %humantime::format_rfc3339(*anchor_time),
+                "File access time newer than FilesystemStore start time",
+            );
+            Duration::ZERO
+        };
         evicting_map
             .insert_with_time(
                 key.into_owned().into(),
@@ -525,7 +534,7 @@ async fn add_files_to_cache<Fe: FileEntry>(
     ) -> Result<(), Error> {
         let file_infos = read_files(None, shared_context).await?;
 
-        let from_path = shared_context.content_path.to_string();
+        let from_path = &shared_context.content_path;
 
         let to_path = format!("{}/{DIGEST_FOLDER}", shared_context.content_path);
 
@@ -758,12 +767,10 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             data_size += data_len as u64;
         }
 
-        let _permit = if let Some(sem) = &self.write_semaphore {
-            Some(
-                sem.acquire()
-                    .await
-                    .map_err(|_| make_err!(Code::Internal, "Write semaphore closed"))?,
-            )
+        let permit = if let Some(sem) = &self.write_semaphore {
+            Some(sem.acquire().await.map_err(|err| {
+                Error::from_std_err(Code::Internal, &err).append("Write semaphore closed")
+            })?)
         } else {
             None
         };
@@ -774,7 +781,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             .await
             .err_tip(|| "Failed to sync_data in filesystem store")?;
 
-        drop(_permit);
+        drop(permit);
 
         temp_file.advise_dontneed();
         trace!(?temp_file, "Dropping file to update_file");
@@ -974,11 +981,9 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         }
 
         let _permit = if let Some(sem) = &self.write_semaphore {
-            Some(
-                sem.acquire()
-                    .await
-                    .map_err(|_| make_err!(Code::Internal, "Write semaphore closed"))?,
-            )
+            Some(sem.acquire().await.map_err(|err| {
+                Error::from_std_err(Code::Internal, &err).append("Write semaphore closed")
+            })?)
         } else {
             None
         };

@@ -37,7 +37,7 @@ use nativelink_util::store_trait::{
 };
 use parking_lot::Mutex;
 use tokio::sync::OnceCell;
-use tracing::{debug, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 // TODO(palfrey) This store needs to be evaluated for more efficient memory usage,
 // there are many copies happening internally.
@@ -103,13 +103,12 @@ impl Drop for LoaderGuard<'_> {
         let mut guard = store.populating_digests.lock();
         if let std::collections::hash_map::Entry::Occupied(occupied_entry) =
             guard.entry(self.key.borrow().into_owned())
+            && Arc::ptr_eq(occupied_entry.get(), &loader)
         {
-            if Arc::ptr_eq(occupied_entry.get(), &loader) {
-                drop(loader);
-                if Arc::strong_count(occupied_entry.get()) == 1 {
-                    // This is the last loader, so remove it.
-                    occupied_entry.remove();
-                }
+            drop(loader);
+            if Arc::strong_count(occupied_entry.get()) == 1 {
+                // This is the last loader, so remove it.
+                occupied_entry.remove();
             }
         }
     }
@@ -468,14 +467,31 @@ impl StoreDriver for FastSlowStore {
 
         let total_elapsed = update_start.elapsed();
         if data_stream_res.is_err() || fast_res.is_err() || slow_res.is_err() {
-            warn!(
-                key = %key_debug,
-                elapsed_ms = total_elapsed.as_millis(),
-                data_stream_ok = data_stream_res.is_ok(),
-                fast_store_ok = fast_res.is_ok(),
-                slow_store_ok = slow_res.is_ok(),
-                "FastSlowStore::update: completed with error(s)",
-            );
+            let all_not_found = [&data_stream_res, &fast_res, &slow_res]
+                .iter()
+                .all(|r| match r {
+                    Ok(()) => true,
+                    Err(e) => e.code == Code::NotFound,
+                });
+            if all_not_found {
+                info!(
+                    key = %key_debug,
+                    elapsed_ms = total_elapsed.as_millis(),
+                    data_stream_ok = data_stream_res.is_ok(),
+                    fast_store_ok = fast_res.is_ok(),
+                    slow_store_ok = slow_res.is_ok(),
+                    "FastSlowStore::update: completed with NotFound error(s)",
+                );
+            } else {
+                warn!(
+                    key = %key_debug,
+                    elapsed_ms = total_elapsed.as_millis(),
+                    data_stream_ok = data_stream_res.is_ok(),
+                    fast_store_ok = fast_res.is_ok(),
+                    slow_store_ok = slow_res.is_ok(),
+                    "FastSlowStore::update: completed with error(s)",
+                );
+            }
         } else {
             trace!(
                 key = %key_debug,

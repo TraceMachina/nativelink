@@ -278,10 +278,10 @@ impl DigestHasher for DigestHasherImpl {
         }
         // If we are a small file, it's faster to just do it the "slow" way.
         // Great read: https://github.com/david-slatinek/c-read-vs.-mmap
-        if let Some(size_hint) = size_hint {
-            if size_hint <= fs::DEFAULT_READ_BUFF_SIZE as u64 {
-                return self.hash_file(file).await;
-            }
+        if let Some(size_hint) = size_hint
+            && size_hint <= fs::DEFAULT_READ_BUFF_SIZE as u64
+        {
+            return self.hash_file(file).await;
         }
         let file_path = file_path.as_ref().to_path_buf();
         match self.hash_func_impl {
@@ -289,7 +289,8 @@ impl DigestHasher for DigestHasherImpl {
             DigestHasherFuncImpl::Blake3(mut hasher) => {
                 spawn_blocking!("digest_for_file", move || {
                     hasher.update_mmap(file_path).map_err(|e| {
-                        make_err!(Code::Internal, "Error in blake3's update_mmap: {e:?}")
+                        Error::from_std_err(Code::Internal, &e)
+                            .append("Error in blake3's update_mmap")
                     })?;
                     Result::<_, Error>::Ok((
                         DigestInfo::new(hasher.finalize().into(), hasher.count()),

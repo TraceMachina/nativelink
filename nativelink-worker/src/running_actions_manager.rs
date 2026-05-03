@@ -167,9 +167,9 @@ pub fn download_to_directory<'a>(
                                 .await
                                 .map_err(|e| {
                                     if e.code == Code::NotFound {
-                                        make_err!(
-                                            Code::Internal,
-                                            "Could not make hardlink, file was likely evicted from cache. {e:?} : {dest}\n\
+                                        e.append(
+                                            format!(
+                                            "Could not make hardlink to {dest}, file was likely evicted from cache.\n\
                                             This error often occurs when the filesystem store's max_bytes is too small for your workload.\n\
                                             To fix this issue:\n\
                                             1. Increase the 'max_bytes' value in your filesystem store configuration\n\
@@ -180,9 +180,9 @@ pub fn download_to_directory<'a>(
                                             If this error persists after increasing max_bytes several times, please report at:\n\
                                             https://github.com/TraceMachina/nativelink/issues\n\
                                             Include your config file and both server and client logs to help us assist you."
-                                        )
+                                        ))
                                     } else {
-                                        make_err!(Code::Internal, "Could not make hardlink, {e:?} : {dest}")
+                                        e.append(format!("Could not make hardlink to {dest}"))
                                     }
                                 })?;
                             }
@@ -643,21 +643,23 @@ async fn process_side_channel_file(
             .err_tip(|| "Error reading side channel file")?;
     }
 
-    let side_channel_info: SideChannelInfo =
-        serde_json5::from_str(&json_contents).map_err(|e| {
-            make_input_err!(
-                "Could not convert contents of side channel file (json) to SideChannelInfo : {e:?}"
-            )
-        })?;
+    let side_channel_info: SideChannelInfo = serde_json5::from_str(&json_contents)
+        .map_err(Error::from)
+        .err_tip(|| "Could not convert contents of side channel file (json) to SideChannelInfo")?;
     Ok(side_channel_info.failure.map(|failure| match failure {
-        SideChannelFailureReason::Timeout => Error::new(
-            Code::DeadlineExceeded,
-            format!(
-                "Command '{}' timed out after {} seconds",
-                args.join(OsStr::new(" ")).to_string_lossy(),
-                timeout.as_secs_f32()
-            ),
-        ),
+        SideChannelFailureReason::Timeout => {
+            let join_args = args.join(OsStr::new(" "));
+            let command = join_args.to_string_lossy();
+            warn!(%command, timeout=timeout.as_secs_f32(), "Side channel timeout for command");
+            Error::new(
+                Code::DeadlineExceeded,
+                format!(
+                    "Command '{}' timed out after {} seconds",
+                    command,
+                    timeout.as_secs_f32()
+                ),
+            )
+        }
     }))
 }
 
@@ -891,6 +893,33 @@ impl RunningActionImpl {
         Ok(self)
     }
 
+    pub fn canonicalise_path(
+        self: &Arc<Self>,
+        arg: &OsStr,
+        working_directory: &String,
+    ) -> Result<PathBuf, Error> {
+        // If the program contains a slash, we treat it as a path and resolve it relative to the work directory.
+        Ok(if Path::new(arg).components().count() > 1 {
+            let canonical_path = PathBuf::from(&self.work_directory)
+                .join(working_directory)
+                .join(arg);
+            if cfg!(target_os = "windows") {
+                // Workaround for https://github.com/rust-lang/rust/issues/42869 using a windows-specific crate
+                dunce::canonicalize(canonical_path)
+            } else {
+                canonical_path.canonicalize()
+            }
+            .err_tip(|| {
+                format!(
+                    "Could not canonicalize path for command root {}.",
+                    arg.to_string_lossy()
+                )
+            })?
+        } else {
+            PathBuf::from(arg)
+        })
+    }
+
     async fn inner_execute(self: Arc<Self>) -> Result<Arc<Self>, Error> {
         let (command_proto, mut kill_channel_rx) = {
             let mut state = self.state.lock();
@@ -928,8 +957,13 @@ impl RunningActionImpl {
         //                    figure out toolchain misconfiguration issues.
         //                    De-bloat the `debug` level by using the `trace`
         //                    level more effectively and adjust this.
-        info!(?args, "Executing command",);
-        let mut command_builder = process::Command::new(args[0]);
+        info!(?args, "Executing command");
+
+        let program = self.canonicalise_path(args[0], &command_proto.working_directory)?;
+
+        let mut command_builder = process::Command::new(program);
+        #[cfg(target_family = "unix")]
+        command_builder.arg0(args[0]);
         command_builder
             .args(&args[1..])
             .kill_on_drop(true)
@@ -1011,6 +1045,31 @@ impl RunningActionImpl {
             command_builder.env(&environment_variable.name, &environment_variable.value);
         }
 
+        // Sandboxing of the command if we are running on Linux, this resolves issues where
+        // children can spawn children and also provides better reproducibility.
+        #[cfg(target_os = "linux")]
+        {
+            let use_namespaces = self.running_actions_manager.use_namespaces;
+            let root_action_directory =
+                std::ffi::CString::new(self.running_actions_manager.root_action_directory.clone())
+                    .err_tip(|| "In RunningActionImpl::inner_execute()")?;
+            let action_directory = std::ffi::CString::new(self.action_directory.clone())
+                .err_tip(|| "In RunningActionImpl::inner_execute()")?;
+
+            // SAFETY: This function is specifically designed to operate in a async-signal-safe
+            // environment.
+            unsafe {
+                command_builder.pre_exec(move || match use_namespaces {
+                    UseNamespaces::No => Ok(()),
+                    _ => crate::namespace_utils::configure_namespace(
+                        matches!(use_namespaces, UseNamespaces::YesAndMount),
+                        &root_action_directory,
+                        &action_directory,
+                    ),
+                });
+            }
+        }
+
         let mut child_process = command_builder
             .spawn()
             .err_tip(|| format!("Could not execute command {args:?}"))?;
@@ -1022,6 +1081,17 @@ impl RunningActionImpl {
             .stderr
             .take()
             .err_tip(|| "Expected stderr to exist on command this should never happen")?;
+
+        #[cfg(target_os = "linux")]
+        // Wrap the child process to send SIGTERM rather than SIGKILL if namespaced to
+        // prevent zombie processes.
+        let child_process = crate::namespace_utils::MaybeNamespacedChild::new(
+            !matches!(
+                self.running_actions_manager.use_namespaces,
+                UseNamespaces::No,
+            ),
+            child_process,
+        );
 
         let mut child_process_guard = guard(child_process, |mut child_process| {
             let result: Result<Option<std::process::ExitStatus>, std::io::Error> =
@@ -1036,7 +1106,7 @@ impl RunningActionImpl {
                         "Child process was not cleaned up before dropping the call to execute(), killing in background spawn."
                     );
                     background_spawn!("running_actions_manager_kill_child_process", async move {
-                        child_process.kill().await
+                        drop(child_process.kill().await);
                     });
                 }
             }
@@ -1545,7 +1615,7 @@ impl RunningAction for RunningActionImpl {
         let stall_warn_fut = async {
             let mut elapsed_secs = 0u64;
             loop {
-                tokio::time::sleep(Duration::from_secs(60)).await;
+                tokio::time::sleep(Duration::from_mins(1)).await;
                 elapsed_secs += 60;
                 warn!(
                     ?operation_id,
@@ -1565,13 +1635,13 @@ impl RunningAction for RunningActionImpl {
             }
         })
         .await
-        .map_err(|_| {
-            make_err!(
-                Code::DeadlineExceeded,
+        .map_err(|err| {
+            warn!(%operation_id, timeout=upload_timeout.as_secs(), "Upload results timeout");
+            Error::from_std_err(Code::DeadlineExceeded, &err).append(format!(
                 "Upload results timed out after {}s for operation {:?}",
                 upload_timeout.as_secs(),
                 operation_id,
-            )
+            ))
         })?;
         if let Err(ref e) = res {
             warn!(?operation_id, ?e, "Error during upload_results");
@@ -1714,18 +1784,18 @@ impl UploadActionResults {
             historical_store,
             success_message_template: Template::new(&config.success_message_template).map_err(
                 |e| {
-                    make_input_err!(
-                        "Could not convert success_message_template to rust template: {} : {e:?}",
+                    Error::from_std_err(Code::InvalidArgument, &e).append(format!(
+                        "Could not convert success_message_template to rust template: {}",
                         config.success_message_template
-                    )
+                    ))
                 },
             )?,
             failure_message_template: Template::new(&config.failure_message_template).map_err(
                 |e| {
-                    make_input_err!(
-                        "Could not convert failure_message_template to rust template: {} : {e:?}",
+                    Error::from_std_err(Code::InvalidArgument, &e).append(format!(
+                        "Could not convert failure_message_template to rust template: {}",
                         config.success_message_template
-                    )
+                    ))
                 },
             )?,
         })
@@ -1779,9 +1849,10 @@ impl UploadActionResults {
             template_str.replace("historical_results_hash", "");
             template_str.replace("historical_results_size", "");
         }
-        template_str
-            .text()
-            .map_err(|e| make_input_err!("Could not convert template to text: {e:?}"))
+        template_str.text().map_err(|e| {
+            Error::from_std_err(Code::InvalidArgument, &e)
+                .append("Could not convert template to text")
+        })
     }
 
     async fn upload_ac_results(
@@ -1903,7 +1974,7 @@ impl UploadActionResults {
         };
 
         // Note: Done in this order because we assume most results will succeed and most configs will
-        // either always upload upload historical results or only upload on filure. In which case
+        // either always upload upload historical results or only upload on failure. In which case
         // we can avoid an extra clone of the protos by doing this last with the above assumption.
         let ac_upload_results = if should_upload_ac_results {
             self.upload_ac_results(
@@ -1921,6 +1992,14 @@ impl UploadActionResults {
     }
 }
 
+#[cfg(target_os = "linux")]
+#[derive(Copy, Clone, Debug)]
+pub enum UseNamespaces {
+    No,
+    Yes,
+    YesAndMount,
+}
+
 #[derive(Debug)]
 pub struct RunningActionsManagerArgs<'a> {
     pub root_action_directory: String,
@@ -1933,6 +2012,8 @@ pub struct RunningActionsManagerArgs<'a> {
     pub max_upload_timeout: Duration,
     pub timeout_handled_externally: bool,
     pub directory_cache: Option<Arc<crate::directory_cache::DirectoryCache>>,
+    #[cfg(target_os = "linux")]
+    pub use_namespaces: UseNamespaces,
 }
 
 struct CleanupGuard {
@@ -1963,6 +2044,8 @@ pub struct RunningActionsManagerImpl {
     max_action_timeout: Duration,
     max_upload_timeout: Duration,
     timeout_handled_externally: bool,
+    #[cfg(target_os = "linux")]
+    use_namespaces: UseNamespaces,
     running_actions: Mutex<HashMap<OperationId, Weak<RunningActionImpl>>>,
     // Note: We don't use Notify because we need to support a .wait_for()-like function, which
     // Notify does not support.
@@ -2024,6 +2107,8 @@ impl RunningActionsManagerImpl {
             cleaning_up_operations: Mutex::new(HashSet::new()),
             cleanup_complete_notify: Arc::new(Notify::new()),
             directory_cache: args.directory_cache,
+            #[cfg(target_os = "linux")]
+            use_namespaces: args.use_namespaces,
         })
     }
 
@@ -2106,6 +2191,7 @@ impl RunningActionsManagerImpl {
 
             if start.elapsed() > Self::MAX_WAIT {
                 self.metrics.cleanup_wait_timeouts.inc();
+                warn!(%operation_id, waited=?start.elapsed(), "Timeout waiting for previous operation cleanup");
                 return Err(make_err!(
                     Code::DeadlineExceeded,
                     "Timeout waiting for previous operation cleanup: {} (waited {:?})",
@@ -2200,13 +2286,13 @@ impl RunningActionsManagerImpl {
             let mut action_state = action.state.lock();
             action_state.kill_channel_tx.take()
         };
-        if let Some(kill_channel_tx) = kill_channel_tx {
-            if kill_channel_tx.send(()).is_err() {
-                error!(
-                    operation_id = ?action.operation_id,
-                    "Error sending kill to running operation",
-                );
-            }
+        if let Some(kill_channel_tx) = kill_channel_tx
+            && kill_channel_tx.send(()).is_err()
+        {
+            error!(
+                operation_id = ?action.operation_id,
+                "Error sending kill to running operation",
+            );
         }
     }
 
@@ -2282,14 +2368,13 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                 {
                     let mut running_actions = self.running_actions.lock();
                     // Check if action already exists and is still alive
-                    if let Some(existing_weak) = running_actions.get(&operation_id) {
-                        if let Some(_existing_action) = existing_weak.upgrade() {
+                    if let Some(existing_weak) = running_actions.get(&operation_id)
+                        && let Some(_existing_action) = existing_weak.upgrade() {
                             return Err(make_err!(
                                 Code::AlreadyExists,
                                 "Action with operation_id {} is already running",
                                 operation_id
                             ));
-                        }
                     }
                     running_actions.insert(operation_id, Arc::downgrade(&running_action));
                 }

@@ -103,9 +103,10 @@ impl WorkerApiServer {
             config,
             schedulers,
             Box::new(move || {
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map_err(|_| make_err!(Code::Internal, "System time is now behind unix epoch"))
+                SystemTime::now().duration_since(UNIX_EPOCH).map_err(|err| {
+                    Error::from_std_err(Code::Internal, &err)
+                        .append("System time is now behind unix epoch")
+                })
             }),
             node_id,
         )

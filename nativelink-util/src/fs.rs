@@ -163,7 +163,9 @@ where
     let permit = get_permit().await?;
     spawn_blocking!("fs_call_with_permit", move || f(permit))
         .await
-        .unwrap_or_else(|e| Err(make_err!(Code::Internal, "background task failed: {e:?}")))
+        .unwrap_or_else(|e| {
+            Err(Error::from_std_err(Code::Internal, &e).append("background task failed"))
+        })
 }
 
 /// Sets the soft nofile limit to `desired_open_file_limit` and adjusts
@@ -174,6 +176,12 @@ where
 /// If any type conversion fails. This can't happen if `usize` is smaller than
 /// `u64`.
 pub fn set_open_file_limit(desired_open_file_limit: usize) {
+    // Tokio semaphores have a max of 2^61 - 1 permits. On some platforms
+    // (e.g. macOS) the kernel reports an "unlimited" file limit that exceeds
+    // this, causing a panic when we try to add permits. Cap at a generous but
+    // safe value.
+    const MAX_SAFE_LIMIT: usize = 1 << 30; // ~1 billion
+
     let new_open_file_limit = {
         match increase_nofile_limit(
             u64::try_from(desired_open_file_limit)
@@ -183,6 +191,7 @@ pub fn set_open_file_limit(desired_open_file_limit: usize) {
                 info!("set_open_file_limit() assigns new open file limit {open_file_limit}.",);
                 usize::try_from(open_file_limit)
                     .expect("open_file_limit is too large to convert to usize.")
+                    .min(MAX_SAFE_LIMIT)
             }
             Err(e) => {
                 error!(

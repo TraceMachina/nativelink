@@ -214,11 +214,9 @@ impl CacheLookupScheduler {
         };
         let (action_listener_rx, scope_guard) = match cache_check_result {
             Ok(action_listener_fut) => {
-                let action_listener = action_listener_fut.await.map_err(|_| {
-                    make_err!(
-                        Code::Internal,
-                        "ActionStateResult tx hung up in CacheLookupScheduler::add_action"
-                    )
+                let action_listener = action_listener_fut.await.map_err(|err| {
+                    Error::from_std_err(Code::Internal, &err)
+                        .append("ActionStateResult tx hung up in CacheLookupScheduler::add_action")
                 })?;
                 return action_listener;
             }
@@ -340,11 +338,9 @@ impl CacheLookupScheduler {
         });
         action_listener_rx
             .await
-            .map_err(|_| {
-                make_err!(
-                    Code::Internal,
-                    "ActionStateResult tx hung up in CacheLookupScheduler::add_action"
-                )
+            .map_err(|err| {
+                Error::from_std_err(Code::Internal, &err)
+                    .append("ActionStateResult tx hung up in CacheLookupScheduler::add_action")
             })?
             .err_tip(|| "In CacheLookupScheduler::add_action")
     }

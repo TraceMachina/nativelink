@@ -200,7 +200,8 @@ stores, but in this example we'll store the raw files.
   "stores": [
     {
       "name": "CAS_MAIN_STORE",
-      "experimental_s3_store": {
+      "experimental_cloud_object_store": {
+        "provider": "aws",
         // Region the bucket lives in.
         "region": "us-west-1",
         // Name of the bucket to upload to.
@@ -217,7 +218,8 @@ stores, but in this example we'll store the raw files.
     },
     {
       "name": "AC_MAIN_STORE",
-      "experimental_s3_store": {
+      "experimental_cloud_object_store": {
+        "provider": "aws",
         "region": "us-west-1",
         "bucket": "some-bucket-name",
         "key_prefix": "ac/",
@@ -259,7 +261,8 @@ the rest will be stored in AWS's S3:
           }
         },
         "slow": {
-          "experimental_s3_store": {
+          "experimental_cloud_object_store": {
+            "provider": "aws",
             "region": "us-west-1",
             "bucket": "some-bucket-name",
             "key_prefix": "cas/",
@@ -279,7 +282,8 @@ the rest will be stored in AWS's S3:
           }
         },
         "slow": {
-          "experimental_s3_store": {
+          "experimental_cloud_object_store": {
+            "provider": "aws",
             "region": "us-west-1",
             "bucket": "some-bucket-name",
             "key_prefix": "ac/",

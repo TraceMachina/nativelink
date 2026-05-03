@@ -49,7 +49,7 @@ export const CommunityPage = component$(() => {
 
   return (
     <main class="pt-36 flex gap-10 bg-black justify-center flex-col items-center px-8 w-screen text-white text-4xl">
-      <div class="relative flex flex-col w-full md:w-[1300px] gap-10 items-start justify-center h-96">
+      <div class="relative flex flex-col w-full md:w-[1000px] gap-10 items-start justify-center h-96">
         {/* Backgrounds */}
         <div class="z-0 absolute inset-0">
           <div class="w-96 h-96 bg-gradient-to-b from-blue-400 to-purple-500 rounded-full blur-3xl opacity-50 absolute -top-40 -left-60 md:top-24 md:-left-96" />

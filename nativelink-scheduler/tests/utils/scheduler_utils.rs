@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use nativelink_error::{Code, Error, make_err};
+use nativelink_error::{Code, Error};
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     UpdateForWorker, update_for_worker,
 };
@@ -86,11 +86,9 @@ impl ActionStateResult for TokioWatchActionStateResult {
     }
 
     async fn changed(&mut self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error> {
-        self.rx.changed().await.map_err(|_| {
-            make_err!(
-                Code::Internal,
-                "Channel closed in TokioWatchActionStateResult::changed"
-            )
+        self.rx.changed().await.map_err(|err| {
+            Error::from_std_err(Code::Internal, &err)
+                .append("Channel closed in TokioWatchActionStateResult::changed")
         })?;
         let mut action_state = self.rx.borrow().clone();
         Arc::make_mut(&mut action_state).client_operation_id = self.client_operation_id.clone();

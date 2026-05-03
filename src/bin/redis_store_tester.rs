@@ -45,7 +45,7 @@ impl SchedulerStoreKeyProvider for TestSchedulerData {
 
 impl SchedulerStoreDataProvider for TestSchedulerData {
     fn try_into_bytes(self) -> Result<Bytes, Error> {
-        Ok(Bytes::from(self.content.into_bytes()))
+        Ok(Bytes::from(self.content))
     }
 
     fn get_indexes(&self) -> Result<Vec<(&'static str, Bytes)>, Error> {

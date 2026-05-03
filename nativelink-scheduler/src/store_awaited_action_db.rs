@@ -22,7 +22,7 @@ use std::time::UNIX_EPOCH;
 
 use bytes::Bytes;
 use futures::{Stream, TryStreamExt};
-use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::action_messages::{
     ActionInfo, ActionStage, ActionUniqueQualifier, OperationId,
@@ -134,9 +134,7 @@ where
 
         // Helper to convert SystemTime to unix timestamp
         let to_unix_ts = |t: std::time::SystemTime| -> u64 {
-            t.duration_since(UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0)
+            t.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
         };
 
         // Check the separate keepalive key for the most recent timestamp.
@@ -195,6 +193,7 @@ where
             OperationSubscriberState::Unsubscribed => {
                 let subscription = store
                     .subscription_manager()
+                    .await
                     .err_tip(|| "In OperationSubscriber::changed::subscription_manager")?
                     .subscribe(self.subscription_key.borrow())
                     .err_tip(|| "In OperationSubscriber::changed::subscribe")?;
@@ -231,10 +230,7 @@ where
             let last_known_keepalive_ts = self.last_known_keepalive_ts.load(Ordering::Acquire);
             if I::from_secs(last_known_keepalive_ts).elapsed() > CLIENT_KEEPALIVE_DURATION {
                 let now = (self.now_fn)().now();
-                let now_ts = now
-                    .duration_since(UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
+                let now_ts = now.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
 
                 if USE_SEPARATE_CLIENT_KEEPALIVE_KEY {
                     let operation_id = self.subscription_key.0.as_ref();
@@ -362,8 +358,9 @@ where
 }
 
 fn awaited_action_decode(version: i64, data: &Bytes) -> Result<AwaitedAction, Error> {
-    let mut awaited_action: AwaitedAction = serde_json::from_slice(data)
-        .map_err(|e| make_input_err!("In AwaitedAction::decode - {e:?}"))?;
+    let mut awaited_action: AwaitedAction = serde_json::from_slice(data).map_err(|e| {
+        Error::from_std_err(Code::InvalidArgument, &e).append("In AwaitedAction::decode")
+    })?;
     awaited_action.set_version(version);
     Ok(awaited_action)
 }
@@ -410,10 +407,9 @@ impl SchedulerStoreDecodeTo for ClientIdToOperationId<'_> {
     type DecodeOutput = OperationId;
     fn decode(_version: i64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
         serde_json::from_slice(&data).map_err(|e| {
-            make_input_err!(
-                "In ClientIdToOperationId::decode - {e:?} (data: {:02x?})",
-                data
-            )
+            Error::from_std_err(Code::InvalidArgument, &e).append(format!(
+                "In ClientIdToOperationId::decode (data: {data:02x?})",
+            ))
         })
     }
 }
@@ -431,10 +427,14 @@ impl SchedulerStoreKeyProvider for ClientKeepaliveKey<'_> {
 impl SchedulerStoreDecodeTo for ClientKeepaliveKey<'_> {
     type DecodeOutput = u64;
     fn decode(_version: i64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
-        let s = core::str::from_utf8(&data)
-            .map_err(|e| make_input_err!("In ClientKeepaliveKey::decode utf8 - {e:?}"))?;
-        s.parse::<u64>()
-            .map_err(|e| make_input_err!("In ClientKeepaliveKey::decode parse - {e:?}"))
+        let s = core::str::from_utf8(&data).map_err(|e| {
+            Error::from_std_err(Code::InvalidArgument, &e)
+                .append("In ClientKeepaliveKey::decode utf8")
+        })?;
+        s.parse::<u64>().map_err(|e| {
+            Error::from_std_err(Code::InvalidArgument, &e)
+                .append("In ClientKeepaliveKey::decode parse")
+        })
     }
 }
 
@@ -514,7 +514,10 @@ impl SchedulerStoreDataProvider for UpdateOperationIdToAwaitedAction {
     fn try_into_bytes(self) -> Result<Bytes, Error> {
         serde_json::to_string(&self.0)
             .map(Bytes::from)
-            .map_err(|e| make_input_err!("Could not convert AwaitedAction to json - {e:?}"))
+            .map_err(|e| {
+                Error::from_std_err(Code::InvalidArgument, &e)
+                    .append("Could not convert AwaitedAction to json")
+            })
     }
     fn get_indexes(&self) -> Result<Vec<(&'static str, Bytes)>, Error> {
         let unique_qualifier = &self.0.action_info().unique_qualifier;
@@ -558,7 +561,10 @@ impl SchedulerStoreDataProvider for UpdateClientIdToOperationId {
     fn try_into_bytes(self) -> Result<Bytes, Error> {
         serde_json::to_string(&self.operation_id)
             .map(Bytes::from)
-            .map_err(|e| make_input_err!("Could not convert OperationId to json - {e:?}"))
+            .map_err(|e| {
+                Error::from_std_err(Code::InvalidArgument, &e)
+                    .append("Could not convert OperationId to json")
+            })
     }
 }
 
@@ -613,7 +619,7 @@ where
     I: InstantWrapper,
     NowFn: Fn() -> I + Send + Sync + Clone + 'static,
 {
-    pub fn new(
+    pub async fn new(
         store: Arc<S>,
         task_change_publisher: Arc<Notify>,
         now_fn: NowFn,
@@ -621,6 +627,7 @@ where
     ) -> Result<Self, Error> {
         let mut subscription = store
             .subscription_manager()
+            .await
             .err_tip(|| "In RedisAwaitedActionDb::new")?
             .subscribe(OperationIdToAwaitedAction(Cow::Owned(OperationId::String(
                 String::new(),
