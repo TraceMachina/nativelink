@@ -23,7 +23,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install --no-instal
     gcc=4:13.2.0-7ubuntu1 \
     g++=4:13.2.0-7ubuntu1 \
     python3=3.12.3-0ubuntu2.1 \
-    curl=8.5.0-2ubuntu10.8 \
+    curl=8.5.0-2ubuntu10.9 \
     ca-certificates=20240203 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
