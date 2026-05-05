@@ -166,23 +166,27 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
     async fn start_keep_alive(&self) -> Result<(), Error> {
         // According to tonic's documentation this call should be cheap and is the same stream.
         let mut grpc_client = self.grpc_client.clone();
+        let timeout = self
+            .config
+            .worker_api_endpoint
+            .timeout
+            .unwrap_or(DEFAULT_ENDPOINT_TIMEOUT_S);
+
+        info!(timeout, "Started KeepAlive");
 
         loop {
-            let timeout = self
-                .config
-                .worker_api_endpoint
-                .timeout
-                .unwrap_or(DEFAULT_ENDPOINT_TIMEOUT_S);
             // We always send 2 keep alive requests per timeout. Http2 should manage most of our
             // timeout issues, this is a secondary check to ensure we can still send data.
             sleep(Duration::from_secs_f32(timeout / 2.)).await;
             if let Err(e) = grpc_client.keep_alive(KeepAliveRequest {}).await {
+                error!(?e, "Failed to send KeepAlive in LocalWorker");
                 return Err(make_err!(
                     Code::Internal,
                     "Failed to send KeepAlive in LocalWorker : {:?}",
                     e
                 ));
             }
+            debug!("Sent KeepAlive");
         }
     }
 
@@ -773,7 +777,7 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
             Some(Update::ConnectionResult(connection_result)) => connection_result.worker_id,
             other => {
                 return Err(make_input_err!(
-                    "Expected first response from scheduler to be a ConnectResult got : {:?}",
+                    "Expected first response from scheduler to be a ConnectionResult got : {:?}",
                     other
                 ));
             }
@@ -805,6 +809,8 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
                     continue; // Try to connect again.
                 }
             };
+
+            debug!("Connected to endpoint");
 
             // Next register our worker with the scheduler.
             let (inner, update_for_worker_stream) = match self.register_worker(&mut client).await {

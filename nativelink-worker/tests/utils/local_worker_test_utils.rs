@@ -19,7 +19,7 @@ use async_lock::Mutex;
 use bytes::Bytes;
 use hyper::body::Frame;
 use nativelink_config::cas_server::{EndpointConfig, LocalWorkerConfig, WorkerProperty};
-use nativelink_error::Error;
+use nativelink_error::{Error, make_err};
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     ConnectWorkerRequest, ExecuteComplete, ExecuteResult, GoingAwayRequest, KeepAliveRequest,
     UpdateForWorker,
@@ -31,7 +31,7 @@ use nativelink_util::task::JoinHandleDropGuard;
 use nativelink_worker::local_worker::LocalWorker;
 use nativelink_worker::worker_api_client_wrapper::WorkerApiClientTrait;
 use tokio::sync::{broadcast, mpsc};
-use tonic::Status;
+use tonic::{Code, Status};
 use tonic::{
     Response,
     Streaming,
@@ -39,6 +39,7 @@ use tonic::{
     codec::CompressionEncoding,
     codec::ProstCodec,
 };
+use tracing::debug;
 
 use super::mock_running_actions_manager::MockRunningActionsManager;
 
@@ -72,6 +73,7 @@ pub(crate) struct MockWorkerApiClient {
     tx_call: mpsc::UnboundedSender<WorkerClientApiCalls>,
     rx_resp: Arc<Mutex<mpsc::UnboundedReceiver<WorkerClientApiReturns>>>,
     tx_resp: mpsc::UnboundedSender<WorkerClientApiReturns>,
+    keep_alives_count: u8,
 }
 
 impl MockWorkerApiClient {
@@ -83,6 +85,7 @@ impl MockWorkerApiClient {
             tx_call,
             rx_resp: Arc::new(Mutex::new(rx_resp)),
             tx_resp,
+            keep_alives_count: 0,
         }
     }
 }
@@ -159,7 +162,13 @@ impl WorkerApiClientTrait for MockWorkerApiClient {
     }
 
     async fn keep_alive(&mut self, _request: KeepAliveRequest) -> Result<(), Error> {
-        unreachable!();
+        debug!("Got KeepAlive");
+        if self.keep_alives_count == 0 {
+            self.keep_alives_count += 1;
+            Ok(())
+        } else {
+            Err(make_err!(Code::Internal, "KeepAlive fail"))
+        }
     }
 
     async fn going_away(&mut self, _request: GoingAwayRequest) -> Result<(), Error> {
