@@ -39,7 +39,7 @@ pub(crate) struct FtAggregateOptions {
 ///
 /// `RediSearch`'s module default (≈500 ms) is far too tight for the
 /// scheduler's awaited-action index under any meaningful load: queries
-/// time out, NativeLink surfaces them as parse errors, and the dedup
+/// time out, `NativeLink` surfaces them as parse errors, and the dedup
 /// lookup fails. When dedup fails the scheduler creates a duplicate
 /// operation for an action that is already in flight — observed as
 /// "two same actions running on different PRs" with each running the
