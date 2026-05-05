@@ -18,11 +18,7 @@ import {
 } from "../../media/icons/icons.tsx";
 import styles from "./header.css?inline";
 
-const Logo =
-  "https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_logo.webp";
-
-const mobileLogo =
-  "https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_logo_mobile.webp";
+const Logo = "/logo-light.svg";
 
 const links = [
   { name: "Home", href: "/" },
@@ -44,13 +40,7 @@ const HeaderLogo = component$(() => {
       <img
         src={Logo}
         loading="lazy"
-        class="w-[160px] hidden md:flex"
-        alt="Nativelink Logo"
-      />
-      <img
-        src={mobileLogo}
-        loading="lazy"
-        class="w-12 md:hidden z-50"
+        class="w-32 md:w-[160px]"
         alt="Nativelink Logo"
       />
     </a>

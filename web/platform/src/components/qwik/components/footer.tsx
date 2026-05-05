@@ -1,8 +1,7 @@
 import { $, component$, useSignal } from "@builder.io/qwik";
 import { BackgroundVideo } from "./video.tsx";
 
-const Logo =
-  "https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_logo.webp";
+const Logo = "/logo-light.svg";
 
 const _links = [
   {
@@ -154,7 +153,7 @@ export const Footer = component$(() => {
                 <img
                   src={Logo}
                   loading="lazy"
-                  class="w-5/12"
+                  class="w-32"
                   alt="Nativelink Logo"
                 />
               </a>
