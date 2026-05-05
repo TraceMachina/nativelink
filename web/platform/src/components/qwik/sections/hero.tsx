@@ -63,7 +63,7 @@ export const Hero = component$(() => {
         </div>
 
         <div class="px-8 text-center md:w-[550px]">
-          Slash cloud spends. Turbocharge builds.
+          AI writes code at machine speed. Builds should too.
         </div>
 
         <div class="w-full p-8 flex flex-row gap-5 justify-center items-center md:flex-row">
