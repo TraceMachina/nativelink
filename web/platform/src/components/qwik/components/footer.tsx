@@ -79,7 +79,7 @@ export const Footer = component$(() => {
         <div class="flex w-full items-center justify-center text-[2.5rem] leading-none tracking-normal md:text-[52px]">
           <div class="w-full flex flex-col items-center">
             <div class="text-center">
-              Lets <span class="font-bold">build</span> together.
+              Build infrastructure for the agentic era
             </div>
           </div>
         </div>
