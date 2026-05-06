@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::time::Duration;
 use std::sync::Arc;
 
@@ -662,6 +662,148 @@ async fn range_multiple_items_test() -> Result<(), Error> {
         let found_values = get_map_range(&evicting_map, KEY2.to_string()..KEY3.to_string()).await;
         assert_eq!(expected_values, found_values);
     }
+
+    Ok(())
+}
+
+// `LenEntry` impl that records every `unref()` invocation so tests can
+// observe whether reads or writes call into eviction paths.
+#[derive(Clone, Debug)]
+struct CountedUnref {
+    size: u64,
+    unref_count: Arc<AtomicU64>,
+}
+
+impl LenEntry for CountedUnref {
+    #[inline]
+    fn len(&self) -> u64 {
+        self.size
+    }
+
+    #[inline]
+    fn is_empty(&self) -> bool {
+        self.size == 0
+    }
+
+    async fn unref(&self) {
+        self.unref_count.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+// Contract: a read of a fresh, present key must not call `unref()` on
+// any other entry. Regression guard against an earlier implementation
+// that ran the full eviction loop inside `get()` when `should_evict`
+// fired at read time, cascading through expired LRU neighbors and
+// billing the reader for their cleanup.
+#[nativelink_test]
+async fn get_does_not_cascade_evict_expired_neighbors() -> Result<(), Error> {
+    let unref_count = Arc::new(AtomicU64::new(0));
+    let entry = || CountedUnref {
+        size: 1,
+        unref_count: unref_count.clone(),
+    };
+
+    let evicting_map = EvictingMap::<DigestInfo, DigestInfo, CountedUnref, MockInstantWrapped>::new(
+        &EvictionPolicy {
+            max_count: 0,
+            max_seconds: 10,
+            max_bytes: 0,
+            evict_bytes: 0,
+        },
+        MockInstantWrapped::default(),
+    );
+
+    let key_fresh = DigestInfo::try_new(HASH1, 0)?;
+    let key_old1 = DigestInfo::try_new(HASH2, 0)?;
+    let key_old2 = DigestInfo::try_new(HASH3, 0)?;
+    let key_old3 = DigestInfo::try_new(HASH4, 0)?;
+
+    // T=0: insert K_fresh first so it's the LRU position, then three more.
+    evicting_map.insert(key_fresh, entry()).await;
+    evicting_map.insert(key_old1, entry()).await;
+    evicting_map.insert(key_old2, entry()).await;
+    evicting_map.insert(key_old3, entry()).await;
+
+    // T=5: touch K_fresh — its atime becomes 5 and it moves to MRU.
+    // K_old1..K_old3 stay at atime=0 and shift to the LRU side.
+    MockClock::advance(Duration::from_secs(5));
+    assert!(evicting_map.get(&key_fresh).await.is_some());
+
+    // T=15: evict_older_than = 15 - 10 = 5.
+    //   K_old*.atime = 0 < 5 → expired-eligible.
+    //   K_fresh.atime = 5; 5 < 5 is false → NOT expired-eligible.
+    MockClock::advance(Duration::from_secs(10));
+
+    let unrefs_before = unref_count.load(Ordering::SeqCst);
+    let result = evicting_map.get(&key_fresh).await;
+    let unrefs_after = unref_count.load(Ordering::SeqCst);
+
+    assert!(result.is_some(), "K_fresh should still be present");
+    assert_eq!(
+        unrefs_after - unrefs_before,
+        0,
+        "get(K_fresh) should not call unref() on any item; got {} unrefs \
+         (cascading eviction of expired neighbors during a read)",
+        unrefs_after - unrefs_before,
+    );
+
+    Ok(())
+}
+
+// Contract: a read of a TTL-expired key reaps exactly that one entry
+// and returns None — no neighbors are touched, even if they are also
+// expired. Pairs with `get_does_not_cascade_evict_expired_neighbors`.
+#[nativelink_test]
+async fn get_of_expired_key_reaps_only_that_key() -> Result<(), Error> {
+    let unref_count = Arc::new(AtomicU64::new(0));
+    let entry = || CountedUnref {
+        size: 1,
+        unref_count: unref_count.clone(),
+    };
+
+    let evicting_map = EvictingMap::<DigestInfo, DigestInfo, CountedUnref, MockInstantWrapped>::new(
+        &EvictionPolicy {
+            max_count: 0,
+            max_seconds: 10,
+            max_bytes: 0,
+            evict_bytes: 0,
+        },
+        MockInstantWrapped::default(),
+    );
+
+    let key_target = DigestInfo::try_new(HASH1, 0)?;
+    let key_neighbor1 = DigestInfo::try_new(HASH2, 0)?;
+    let key_neighbor2 = DigestInfo::try_new(HASH3, 0)?;
+
+    // T=0: insert all three. atime=0 for each.
+    evicting_map.insert(key_target, entry()).await;
+    evicting_map.insert(key_neighbor1, entry()).await;
+    evicting_map.insert(key_neighbor2, entry()).await;
+
+    // T=5: refresh both neighbors so K_target is the only one expired at T=15.
+    MockClock::advance(Duration::from_secs(5));
+    assert!(evicting_map.get(&key_neighbor1).await.is_some());
+    assert!(evicting_map.get(&key_neighbor2).await.is_some());
+
+    // T=15: evict_older_than = 5. K_target.atime=0 < 5 → expired.
+    //       K_neighbor*.atime=5; 5 < 5 is false → fresh.
+    MockClock::advance(Duration::from_secs(10));
+
+    let unrefs_before = unref_count.load(Ordering::SeqCst);
+    let result = evicting_map.get(&key_target).await;
+    let unrefs_after = unref_count.load(Ordering::SeqCst);
+
+    assert!(result.is_none(), "K_target should be reaped as expired");
+    assert_eq!(
+        unrefs_after - unrefs_before,
+        1,
+        "get of an expired key should reap exactly that one entry; got {} unrefs",
+        unrefs_after - unrefs_before,
+    );
+
+    // The fresh neighbors must still be present.
+    assert!(evicting_map.get(&key_neighbor1).await.is_some());
+    assert!(evicting_map.get(&key_neighbor2).await.is_some());
 
     Ok(())
 }

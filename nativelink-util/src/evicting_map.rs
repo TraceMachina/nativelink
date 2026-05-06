@@ -434,42 +434,50 @@ where
         while callbacks.next().await.is_some() {}
     }
 
+    /// Returns the value for `key` if present and not expired, refreshing
+    /// its LRU/atime position. If the entry is present but TTL- or
+    /// count-expired, it is reaped and `None` is returned.
+    ///
+    /// A read never cascades into other entries — only the queried key is
+    /// ever touched. Global eviction (size/count overflow trim) runs on
+    /// inserts; it is not driven by reads, since `sum_store_size` cannot
+    /// grow without an insert.
     pub async fn get(&self, key: &Q) -> Option<T> {
-        // Fast path: Check if we need eviction before acquiring lock for eviction
-        let needs_eviction = {
-            let state = self.state.lock();
-            if let Some((_, peek_entry)) = state.lru.peek_lru() {
-                self.should_evict(
-                    state.lru.len(),
-                    peek_entry,
-                    state.sum_store_size,
-                    self.max_bytes,
-                )
+        // Lazily reap *only* the requested entry if it is itself expired;
+        // leave the rest for inserts (which already run the global eviction
+        // loop).
+        let (data, expired_data, removal_futures) = {
+            let mut state = self.state.lock();
+            let lru_len = state.lru.len();
+            let Some(entry) = state.lru.get_mut(key.borrow()) else {
+                return None;
+            };
+            // Pass `sum_store_size=0` and `max_bytes=u64::MAX` so we only
+            // consult TTL / count predicates — never the global byte budget.
+            // Mirrors the per-key reap path in `sizes_for_keys`.
+            if self.should_evict(lru_len, entry, 0, u64::MAX) {
+                let (popped_key, eviction_item) = state
+                    .lru
+                    .pop_entry(key.borrow())
+                    .expect("entry was just observed via get_mut");
+                info!(?popped_key, "Item expired, evicting");
+                let (data, futures) = state.remove(popped_key.borrow(), &eviction_item, false);
+                (None, Some(data), futures)
             } else {
-                false
+                entry.seconds_since_anchor =
+                    i32::try_from(self.anchor_time.elapsed().as_secs()).unwrap_or(i32::MAX);
+                (Some(entry.data.clone()), None, Vec::new())
             }
         };
 
-        // Perform eviction if needed
-        if needs_eviction {
-            let (items_to_unref, removal_futures) = {
-                let mut state = self.state.lock();
-                self.evict_items(&mut *state)
-            };
-            // Unref items outside of lock
-            let mut callbacks: FuturesUnordered<_> = removal_futures.into_iter().collect();
-            while callbacks.next().await.is_some() {}
-            let mut callbacks: FuturesUnordered<_> =
-                items_to_unref.iter().map(LenEntry::unref).collect();
-            while callbacks.next().await.is_some() {}
+        // Drain remove_callbacks and unref the reaped entry outside the lock.
+        let mut callbacks: FuturesUnordered<_> = removal_futures.into_iter().collect();
+        while callbacks.next().await.is_some() {}
+        if let Some(d) = expired_data {
+            d.unref().await;
         }
 
-        // Now get the item
-        let mut state = self.state.lock();
-        let entry = state.lru.get_mut(key.borrow())?;
-        entry.seconds_since_anchor =
-            i32::try_from(self.anchor_time.elapsed().as_secs()).unwrap_or(i32::MAX);
-        Some(entry.data.clone())
+        data
     }
 
     /// Returns the replaced item if any.

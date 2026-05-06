@@ -43,6 +43,7 @@ rust_library(
         "@crates//:async-lock",
         "@crates//:bytes",
         "@crates//:futures",
+        "@crates//:humantime",
         "@crates//:lru",
         "@crates//:opentelemetry",
         "@crates//:opentelemetry-semantic-conventions",
@@ -70,6 +71,7 @@ rust_test_suite(
         "tests/simple_scheduler_state_manager_test.rs",
         "tests/simple_scheduler_test.rs",
         "tests/worker_capability_index_test.rs",
+        "tests/worker_registry_test.rs",
     ],
     compile_data = [
         "tests/utils/scheduler_utils.rs",

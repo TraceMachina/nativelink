@@ -45,7 +45,7 @@ impl WorkerRegistry {
     pub async fn update_worker_heartbeat(&self, worker_id: &WorkerId, now: SystemTime) {
         let mut workers = self.workers.write().await;
         workers.insert(worker_id.clone(), now);
-        trace!(?worker_id, "FLOW: Worker heartbeat updated in registry");
+        trace!(?worker_id, now = %humantime::format_rfc3339(now), "FLOW: Worker heartbeat updated in registry");
     }
 
     pub async fn register_worker(&self, worker_id: &WorkerId, now: SystemTime) {
@@ -74,7 +74,7 @@ impl WorkerRegistry {
             let is_alive = deadline > now;
             trace!(
                 ?worker_id,
-                ?last_seen,
+                last_seen = %humantime::format_rfc3339(*last_seen),
                 ?timeout,
                 is_alive,
                 "FLOW: Worker liveness check"

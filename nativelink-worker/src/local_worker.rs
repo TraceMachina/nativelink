@@ -44,9 +44,8 @@ use nativelink_util::shutdown_guard::ShutdownGuard;
 use nativelink_util::store_trait::Store;
 use nativelink_util::{spawn, tls_utils};
 use opentelemetry::context::Context;
-use tokio::process;
 use tokio::sync::{broadcast, mpsc};
-use tokio::time::sleep;
+use tokio::{process, time};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::Streaming;
 use tracing::{Level, debug, error, event, info, info_span, instrument, trace, warn};
@@ -166,24 +165,37 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
     async fn start_keep_alive(&self) -> Result<(), Error> {
         // According to tonic's documentation this call should be cheap and is the same stream.
         let mut grpc_client = self.grpc_client.clone();
+        let timeout = self
+            .config
+            .worker_api_endpoint
+            .timeout
+            .unwrap_or(DEFAULT_ENDPOINT_TIMEOUT_S);
 
-        loop {
-            let timeout = self
-                .config
-                .worker_api_endpoint
-                .timeout
-                .unwrap_or(DEFAULT_ENDPOINT_TIMEOUT_S);
-            // We always send 2 keep alive requests per timeout. Http2 should manage most of our
-            // timeout issues, this is a secondary check to ensure we can still send data.
-            sleep(Duration::from_secs_f32(timeout / 2.)).await;
-            if let Err(e) = grpc_client.keep_alive(KeepAliveRequest {}).await {
-                return Err(make_err!(
-                    Code::Internal,
-                    "Failed to send KeepAlive in LocalWorker : {:?}",
-                    e
-                ));
-            }
-        }
+        info!(timeout, "Started KeepAlive");
+
+        // We always send 2 keep alive requests per timeout. Http2 should manage most of our
+        // timeout issues, this is a secondary check to ensure we can still send data.
+        let mut interval = time::interval(Duration::from_secs_f32(timeout) / 2);
+        interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+
+        // Skip the first interval as it happens immediately and we don't need a keep alive until timeout/2 has passed
+        interval.tick().await;
+
+        // Explicitly spawn the keep alive loop so it goes onto a different thread from the execute commands
+        drop(
+            spawn!("keep alives", async move {
+                loop {
+                    interval.tick().await;
+                    if let Err(e) = grpc_client.keep_alive(KeepAliveRequest {}).await {
+                        error!(?e, "Failed to send KeepAlive in LocalWorker");
+                        return;
+                    }
+                    debug!("Sent KeepAlive");
+                }
+            })
+            .await,
+        );
+        Ok(())
     }
 
     async fn run(
@@ -693,7 +705,7 @@ pub async fn new_local_worker(
                 Ok(WorkerApiClient::new(transport).into())
             })
         }),
-        Box::new(move |d| Box::pin(sleep(d))),
+        Box::new(move |d| Box::pin(time::sleep(d))),
     );
     Ok(local_worker)
 }
@@ -773,7 +785,7 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
             Some(Update::ConnectionResult(connection_result)) => connection_result.worker_id,
             other => {
                 return Err(make_input_err!(
-                    "Expected first response from scheduler to be a ConnectResult got : {:?}",
+                    "Expected first response from scheduler to be a ConnectionResult got : {:?}",
                     other
                 ));
             }
@@ -805,6 +817,8 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
                     continue; // Try to connect again.
                 }
             };
+
+            debug!("Connected to endpoint");
 
             // Next register our worker with the scheduler.
             let (inner, update_for_worker_stream) = match self.register_worker(&mut client).await {
