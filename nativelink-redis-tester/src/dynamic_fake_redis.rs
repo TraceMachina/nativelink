@@ -137,9 +137,21 @@ impl<S: SubscriptionManagerNotify + Send + 'static + Sync> FakeRedisBackend<S> {
                             panic!("Aggregate query should be a string: {args:?}");
                         };
                         let query = str::from_utf8(raw_query).unwrap();
+                        // The real ft_aggregate caller now passes an explicit
+                        // `TIMEOUT <ms>` clause before `LOAD`. Tolerate both
+                        // shapes here so this fake doesn't break older callers
+                        // and the LOAD-args check still validates the bit we
+                        // actually care about.
+                        let load_offset = if matches!(args.get(2), Some(OwnedFrame::BulkString(b)) if b == b"TIMEOUT")
+                        {
+                            // Skip "TIMEOUT" and its millisecond argument.
+                            4
+                        } else {
+                            2
+                        };
                         // Lazy implementation making assumptions.
                         assert_eq!(
-                            args[2..6],
+                            args[load_offset..load_offset + 4],
                             vec![
                                 OwnedFrame::BulkString(b"LOAD".to_vec()),
                                 OwnedFrame::BulkString(b"2".to_vec()),
