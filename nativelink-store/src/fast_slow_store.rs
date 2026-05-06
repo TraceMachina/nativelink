@@ -609,19 +609,52 @@ impl StoreDriver for FastSlowStore {
         offset: u64,
         length: Option<u64>,
     ) -> Result<(), Error> {
-        // TODO(palfrey) Investigate if we should maybe ignore errors here instead of
-        // forwarding them up.
+        // The fast store's `has()` is a metadata lookup against its
+        // in-memory eviction map; the actual file may have already been
+        // evicted off disk between `has()` and the subsequent
+        // `get_part()` (or — observed in production — added to the map
+        // by a write whose final rename failed, leaving a phantom
+        // entry). When that happens the filesystem store returns
+        // `NotFound` from `get_part`. Falling through to populate from
+        // the slow store recovers transparently; propagating the error
+        // would surface as `FAILED_PRECONDITION ... not found in
+        // either fast or slow store` to the worker and fail the
+        // action even though the slow store has the blob.
+        //
+        // We only fall through when no bytes have been written to the
+        // caller's `writer` yet — once partial bytes have been streamed
+        // we cannot honour a retry without producing a corrupt result.
         if self.fast_store.has(key.borrow()).await?.is_some() {
-            self.metrics
-                .fast_store_hit_count
-                .fetch_add(1, Ordering::Acquire);
-            self.fast_store
-                .get_part(key, writer.borrow_mut(), offset, length)
-                .await?;
-            self.metrics
-                .fast_store_downloaded_bytes
-                .fetch_add(writer.get_bytes_written(), Ordering::Acquire);
-            return Ok(());
+            let bytes_before = writer.get_bytes_written();
+            match self
+                .fast_store
+                .get_part(key.borrow(), writer.borrow_mut(), offset, length)
+                .await
+            {
+                Ok(()) => {
+                    self.metrics
+                        .fast_store_hit_count
+                        .fetch_add(1, Ordering::Acquire);
+                    self.metrics
+                        .fast_store_downloaded_bytes
+                        .fetch_add(writer.get_bytes_written(), Ordering::Acquire);
+                    return Ok(());
+                }
+                Err(e)
+                    if e.code == Code::NotFound && writer.get_bytes_written() == bytes_before =>
+                {
+                    self.metrics
+                        .fast_store_stale_map_falls_through
+                        .fetch_add(1, Ordering::Acquire);
+                    warn!(
+                        %key,
+                        ?e,
+                        "FastSlowStore::get_part: fast store had a map entry but the file was missing on disk; falling through to slow store",
+                    );
+                    // fall through to the populate path below
+                }
+                Err(e) => return Err(e),
+            }
         }
 
         // If the fast store is noop or read only or update only then bypass it.
@@ -758,6 +791,10 @@ struct FastSlowStoreMetrics {
         help = "Number of times a follower bypassed the populating-digests dedup because the leader exceeded LEADER_WAIT_TIMEOUT"
     )]
     leader_wait_timeouts: AtomicU64,
+    #[metric(
+        help = "Number of times the fast store reported has() == Some but the subsequent get_part returned NotFound (stale eviction-map entry); request fell through to populate from the slow store"
+    )]
+    fast_store_stale_map_falls_through: AtomicU64,
 }
 
 /// Maximum time a follower will wait on the leader-populator before
