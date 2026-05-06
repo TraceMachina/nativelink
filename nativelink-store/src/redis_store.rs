@@ -1100,8 +1100,59 @@ where
         "RedisStore"
     }
 
-    async fn check_health(&self, namespace: Cow<'static, str>) -> HealthStatus {
-        StoreDriver::check_health(Pin::new(self), namespace).await
+    /// Lightweight health check: just `PING` the master, bounded by a
+    /// short physical timeout. The default `StoreDriver::check_health`
+    /// performs a full `update_oneshot` + `has` + `get_part_unchunked`
+    /// roundtrip, which queues behind real production traffic on the
+    /// same connection-permit semaphore and Redis master. When the
+    /// store is even moderately loaded that easily exceeds the
+    /// `HealthServer` per-indicator budget (default 5 s), each
+    /// RedisStore-backed indicator (AC, small-blob CAS, scheduler)
+    /// reports `HealthStatus::Timeout`, and `/status` returns 503 —
+    /// surfaced as a readiness-probe failure that sheds traffic from
+    /// an otherwise-functional pod. A `PING` proves the connection
+    /// is reachable and the master is accepting commands; that is
+    /// the only invariant a kubelet probe needs.
+    async fn check_health(&self, _namespace: Cow<'static, str>) -> HealthStatus {
+        /// Per-check physical ceiling. Tight enough to stay well
+        /// under `HealthServer`'s default per-indicator budget;
+        /// loose enough to absorb a normally-slow PING during a
+        /// `BGSAVE` fork or sentinel rebalance.
+        const PING_TIMEOUT: Duration = Duration::from_secs(2);
+
+        let mut client = match self.get_client().await {
+            Ok(c) => c,
+            Err(e) => {
+                return HealthStatus::new_failed(
+                    self,
+                    format!("RedisStore::check_health: failed to acquire connection: {e}").into(),
+                );
+            }
+        };
+
+        // Hold the `ClientWithPermit` for the duration of the call so
+        // its `Drop` releases the semaphore permit on exit. We just
+        // need a `&mut` to the connection manager underneath.
+        let ping = async {
+            redis::cmd("PING")
+                .query_async::<()>(&mut client.connection_manager)
+                .await
+        };
+        match tokio::time::timeout(PING_TIMEOUT, ping).await {
+            Ok(Ok(())) => HealthStatus::new_ok(self, "RedisStore::check_health: PING ok".into()),
+            Ok(Err(e)) => HealthStatus::new_failed(
+                self,
+                format!("RedisStore::check_health: PING errored: {e}").into(),
+            ),
+            Err(_) => HealthStatus::new_failed(
+                self,
+                format!(
+                    "RedisStore::check_health: PING exceeded {} s timeout",
+                    PING_TIMEOUT.as_secs()
+                )
+                .into(),
+            ),
+        }
     }
 }
 
