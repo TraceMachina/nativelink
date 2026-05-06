@@ -44,9 +44,8 @@ use nativelink_util::shutdown_guard::ShutdownGuard;
 use nativelink_util::store_trait::Store;
 use nativelink_util::{spawn, tls_utils};
 use opentelemetry::context::Context;
-use tokio::process;
 use tokio::sync::{broadcast, mpsc};
-use tokio::time::sleep;
+use tokio::{process, time};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::Streaming;
 use tracing::{Level, debug, error, event, info, info_span, instrument, trace, warn};
@@ -174,10 +173,16 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
 
         info!(timeout, "Started KeepAlive");
 
+        // We always send 2 keep alive requests per timeout. Http2 should manage most of our
+        // timeout issues, this is a secondary check to ensure we can still send data.
+        let mut interval = time::interval(Duration::from_secs_f32(timeout / 2.));
+        interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+
+        // Skip the first interval as it happens immediately and we don't need a keep alive until timeout/2 has passed
+        interval.tick().await;
+
         loop {
-            // We always send 2 keep alive requests per timeout. Http2 should manage most of our
-            // timeout issues, this is a secondary check to ensure we can still send data.
-            sleep(Duration::from_secs_f32(timeout / 2.)).await;
+            interval.tick().await;
             if let Err(e) = grpc_client.keep_alive(KeepAliveRequest {}).await {
                 error!(?e, "Failed to send KeepAlive in LocalWorker");
                 return Err(make_err!(
@@ -697,7 +702,7 @@ pub async fn new_local_worker(
                 Ok(WorkerApiClient::new(transport).into())
             })
         }),
-        Box::new(move |d| Box::pin(sleep(d))),
+        Box::new(move |d| Box::pin(time::sleep(d))),
     );
     Ok(local_worker)
 }
