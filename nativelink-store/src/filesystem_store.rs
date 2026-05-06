@@ -383,13 +383,36 @@ impl LenEntry for FileEntryImpl {
         let to_path = to_full_path_from_key(&encoded_file_path.shared_context.temp_path, &new_key);
 
         if let Err(err) = fs::rename(&from_path, &to_path).await {
-            warn!(
-                key = ?encoded_file_path.key,
-                ?from_path,
-                ?to_path,
-                ?err,
-                "Failed to rename file",
-            );
+            // ENOENT here means the file we expected at `from_path`
+            // was already gone — typically because another thread's
+            // eviction beat us to the unref, or because the entry
+            // ended up in our map without its file ever landing on
+            // disk (the "phantom-map" case the runtime recovers from
+            // via `FastSlowStore::get_part`'s slow-store fallback).
+            // It is benign at this site — there is no file to move
+            // — and historically dominates the log volume of this
+            // store under heavy write+evict concurrency, fast enough
+            // to drown the runtime under sustained pressure. Demote
+            // to `debug` and drop the per-emission path fields so it
+            // stops costing serialization in the hot path.
+            //
+            // Other rename failures (EACCES, EXDEV, EBUSY, …) are
+            // genuinely unexpected and stay at `warn` with full
+            // context.
+            if err.code == Code::NotFound {
+                debug!(
+                    key = ?encoded_file_path.key,
+                    "Failed to rename file (already gone, treating as benign)",
+                );
+            } else {
+                warn!(
+                    key = ?encoded_file_path.key,
+                    ?from_path,
+                    ?to_path,
+                    ?err,
+                    "Failed to rename file",
+                );
+            }
         } else {
             debug!(
                 key = ?encoded_file_path.key,
