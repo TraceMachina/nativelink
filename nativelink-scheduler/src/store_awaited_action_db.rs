@@ -680,8 +680,10 @@ where
         })
     }
 
+    // `pub` so integration tests in `tests/` can drive this directly;
+    // matches the precedent of `inner_update_awaited_action` below.
     #[expect(clippy::future_not_send)] // TODO(jhpratt) remove this
-    async fn try_subscribe(
+    pub async fn try_subscribe(
         &self,
         client_operation_id: &ClientOperationId,
         unique_qualifier: &ActionUniqueQualifier,
@@ -691,20 +693,33 @@ where
         // we should add priority upgrades back in.
         _priority: i32,
     ) -> Result<Option<AwaitedAction>, Error> {
+        // Retry once on miss: closes the RediSearch index-visibility
+        // window where two concurrent `add_action` calls can both see
+        // empty and create duplicate scheduler operations.
+        const SUBSCRIBE_RACE_RETRY_DELAY: Duration = Duration::from_millis(20);
         match unique_qualifier {
             ActionUniqueQualifier::Cacheable(_) => {}
             ActionUniqueQualifier::Uncacheable(_) => return Ok(None),
         }
-        let stream = self
-            .store
-            .search_by_index_prefix(SearchUniqueQualifierToAwaitedAction(unique_qualifier))
-            .await
-            .err_tip(|| "In RedisAwaitedActionDb::try_subscribe")?;
-        tokio::pin!(stream);
-        let maybe_awaited_action = stream
-            .try_next()
-            .await
-            .err_tip(|| "In RedisAwaitedActionDb::try_subscribe")?;
+        let mut maybe_awaited_action: Option<AwaitedAction> = None;
+        for attempt in 0..2_u32 {
+            if attempt > 0 {
+                tokio::time::sleep(SUBSCRIBE_RACE_RETRY_DELAY).await;
+            }
+            let stream = self
+                .store
+                .search_by_index_prefix(SearchUniqueQualifierToAwaitedAction(unique_qualifier))
+                .await
+                .err_tip(|| "In RedisAwaitedActionDb::try_subscribe")?;
+            tokio::pin!(stream);
+            maybe_awaited_action = stream
+                .try_next()
+                .await
+                .err_tip(|| "In RedisAwaitedActionDb::try_subscribe")?;
+            if maybe_awaited_action.is_some() {
+                break;
+            }
+        }
         match maybe_awaited_action {
             Some(awaited_action) => {
                 // TODO(palfrey) We don't support joining completed jobs because we
