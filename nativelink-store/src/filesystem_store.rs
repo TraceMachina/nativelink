@@ -396,6 +396,20 @@ impl LenEntry for FileEntryImpl {
             // to `debug` and drop the per-emission path fields so it
             // stops costing serialization in the hot path.
             //
+            // We also flip `path_type` to `Temp` and adopt the
+            // would-be temp key here. The semantic effect of `unref`
+            // is "this entry no longer owns the content path"; if
+            // the source file is already gone, that postcondition
+            // already holds. Updating the metadata to match has two
+            // payoffs: (1) a subsequent `unref` on the same entry
+            // hits the `path_type == Temp` early-return instead of
+            // racing again on the same vanished path; (2) the
+            // EncodedFilePath::drop logic short-circuits on Content
+            // and would otherwise leak the entry's claim on the
+            // (already-moved) content path. Marking Temp here keeps
+            // the entry consistent with reality even though the
+            // physical move was a no-op.
+            //
             // Other rename failures (EACCES, EXDEV, EBUSY, …) are
             // genuinely unexpected and stay at `warn` with full
             // context.
@@ -404,6 +418,8 @@ impl LenEntry for FileEntryImpl {
                     key = ?encoded_file_path.key,
                     "Failed to rename file (already gone, treating as benign)",
                 );
+                encoded_file_path.path_type = PathType::Temp;
+                encoded_file_path.key = new_key;
             } else {
                 warn!(
                     key = ?encoded_file_path.key,
@@ -1094,10 +1110,22 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         let mut temp_file = entry.read_file_part(offset, read_limit).or_else(|err| async move {
             // If the file is not found, we need to remove it from the eviction map.
             if err.code == Code::NotFound {
-                error!(
+                // The eviction map and on-disk state have diverged
+                // for this digest — the map said the file was at the
+                // content path but `open()` reported ENOENT. The
+                // runtime recovers automatically: `FastSlowStore::get_part`
+                // catches our `NotFound` and falls through to populate
+                // from the slow store (see the
+                // `fast_store_stale_map_falls_through` metric). So
+                // this is observed-but-handled, not catastrophic,
+                // and the original "process probably need restarted"
+                // message is stale — the divergence self-heals via
+                // the map removal below plus the slow-store
+                // re-populate. Demote to `warn` and reword.
+                warn!(
                     ?err,
                     key = ?owned_key,
-                    "Entry was in our map, but not found on disk. Removing from map as a precaution, but process probably need restarted."
+                    "Filesystem store map/disk divergence: removing entry; reader will fall through to slow store",
                 );
                 self.evicting_map.remove(&owned_key).await;
             }
