@@ -677,16 +677,44 @@ where
             ActionUniqueQualifier::Cacheable(_) => {}
             ActionUniqueQualifier::Uncacheable(_) => return Ok(None),
         }
-        let stream = self
-            .store
-            .search_by_index_prefix(SearchUniqueQualifierToAwaitedAction(unique_qualifier))
-            .await
-            .err_tip(|| "In RedisAwaitedActionDb::try_subscribe")?;
-        tokio::pin!(stream);
-        let maybe_awaited_action = stream
-            .try_next()
-            .await
-            .err_tip(|| "In RedisAwaitedActionDb::try_subscribe")?;
+        // Lookup, then on a miss retry once after a brief sleep. The
+        // backing index is `RediSearch`'s secondary index over the
+        // awaited-action hash-set; there is a sub-millisecond-scale
+        // window between a peer's HSET completing on the master and
+        // the index commit becoming visible to a concurrent reader.
+        // Two near-simultaneous `add_action` calls for the same
+        // `unique_qualifier` can both observe an empty result in that
+        // window and each create a separate operation, leading to
+        // duplicate scheduler operations for the same action digest
+        // (observed in production as "two same actions running on
+        // different PRs"). One short retry closes the window without
+        // a heavyweight atomic-claim mechanism.
+        //
+        // Uses real tokio time rather than the configurable `now_fn`
+        // sleep: `MockInstantWrapped::sleep` busy-yields until mock
+        // time advances, which scheduler tests don't do for this
+        // path, and the retry itself is a millisecond-scale physical
+        // wait that should never participate in test-controlled time.
+        const SUBSCRIBE_RACE_RETRY_DELAY: Duration = Duration::from_millis(20);
+        let mut maybe_awaited_action: Option<AwaitedAction> = None;
+        for attempt in 0..2_u32 {
+            if attempt > 0 {
+                tokio::time::sleep(SUBSCRIBE_RACE_RETRY_DELAY).await;
+            }
+            let stream = self
+                .store
+                .search_by_index_prefix(SearchUniqueQualifierToAwaitedAction(unique_qualifier))
+                .await
+                .err_tip(|| "In RedisAwaitedActionDb::try_subscribe")?;
+            tokio::pin!(stream);
+            maybe_awaited_action = stream
+                .try_next()
+                .await
+                .err_tip(|| "In RedisAwaitedActionDb::try_subscribe")?;
+            if maybe_awaited_action.is_some() {
+                break;
+            }
+        }
         match maybe_awaited_action {
             Some(awaited_action) => {
                 // TODO(palfrey) We don't support joining completed jobs because we
