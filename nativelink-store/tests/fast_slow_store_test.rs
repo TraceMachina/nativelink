@@ -13,11 +13,13 @@
 // limitations under the License.
 
 use core::pin::Pin;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::time::Duration;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use futures::future::join_all;
 use nativelink_config::stores::{FastSlowSpec, MemorySpec, NoopSpec, StoreDirection, StoreSpec};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
@@ -25,10 +27,14 @@ use nativelink_metric::MetricsComponent;
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_store::noop_store::NoopStore;
-use nativelink_util::buf_channel::make_buf_channel_pair;
+use nativelink_util::buf_channel::{
+    DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
+};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
-use nativelink_util::store_trait::{RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike};
+use nativelink_util::store_trait::{
+    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+};
 use pretty_assertions::assert_eq;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
@@ -265,8 +271,8 @@ async fn drop_on_eof_completes_store_futures() -> Result<(), Error> {
         async fn update(
             self: Pin<&Self>,
             _digest: StoreKey<'_>,
-            mut reader: nativelink_util::buf_channel::DropCloserReadHalf,
-            _size_info: nativelink_util::store_trait::UploadSizeInfo,
+            mut reader: DropCloserReadHalf,
+            _size_info: UploadSizeInfo,
         ) -> Result<(), Error> {
             // Gets called in the fast store and we don't need to do
             // anything.  Should only complete when drain has finished.
@@ -286,7 +292,7 @@ async fn drop_on_eof_completes_store_futures() -> Result<(), Error> {
         async fn get_part(
             self: Pin<&Self>,
             key: StoreKey<'_>,
-            writer: &mut nativelink_util::buf_channel::DropCloserWriteHalf,
+            writer: &mut DropCloserWriteHalf,
             offset: u64,
             length: Option<u64>,
         ) -> Result<(), Error> {
@@ -592,8 +598,8 @@ fn make_stores_with_lazy_slow() -> (Store, Store, Store) {
         async fn update(
             self: Pin<&Self>,
             digest: StoreKey<'_>,
-            reader: nativelink_util::buf_channel::DropCloserReadHalf,
-            size_info: nativelink_util::store_trait::UploadSizeInfo,
+            reader: DropCloserReadHalf,
+            size_info: UploadSizeInfo,
         ) -> Result<(), Error> {
             Pin::new(self.inner.as_ref())
                 .update(digest, reader, size_info)
@@ -603,7 +609,7 @@ fn make_stores_with_lazy_slow() -> (Store, Store, Store) {
         async fn get_part(
             self: Pin<&Self>,
             key: StoreKey<'_>,
-            writer: &mut nativelink_util::buf_channel::DropCloserWriteHalf,
+            writer: &mut DropCloserWriteHalf,
             offset: u64,
             length: Option<u64>,
         ) -> Result<(), Error> {
@@ -703,5 +709,209 @@ async fn lazy_not_found_syncs_to_fast_store() -> Result<(), Error> {
         fast_store.has(digest).await?.is_some(),
         "Expected data to be synced to fast store"
     );
+    Ok(())
+}
+
+#[derive(MetricsComponent)]
+struct InstrumentedSlowStore {
+    digest: DigestInfo,
+    data: Vec<u8>,
+    get_part_count: AtomicU64,
+    /// If set, awaited at the start of `get_part` before any data flows.
+    gate: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+}
+
+#[async_trait]
+impl StoreDriver for InstrumentedSlowStore {
+    async fn has_with_results(
+        self: Pin<&Self>,
+        keys: &[StoreKey<'_>],
+        results: &mut [Option<u64>],
+    ) -> Result<(), Error> {
+        for (key, result) in keys.iter().zip(results.iter_mut()) {
+            if *key == self.digest.into() {
+                *result = Some(self.digest.size_bytes());
+            }
+        }
+        Ok(())
+    }
+
+    async fn update(
+        self: Pin<&Self>,
+        _key: StoreKey<'_>,
+        mut reader: DropCloserReadHalf,
+        _size_info: UploadSizeInfo,
+    ) -> Result<(), Error> {
+        // Drain anything sent so the writer side does not deadlock.
+        reader.drain().await
+    }
+
+    async fn get_part(
+        self: Pin<&Self>,
+        _key: StoreKey<'_>,
+        writer: &mut DropCloserWriteHalf,
+        _offset: u64,
+        _length: Option<u64>,
+    ) -> Result<(), Error> {
+        self.get_part_count.fetch_add(1, Ordering::Acquire);
+        // If a gate is configured, wait for the test to release it so the
+        // populate can be held in flight long enough to exercise the
+        // dedup paths.
+        let gate = self.gate.lock().unwrap().take();
+        if let Some(rx) = gate {
+            let _ = rx.await;
+        }
+        writer.send(Bytes::copy_from_slice(&self.data)).await?;
+        writer.send_eof()
+    }
+
+    fn inner_store(&self, _key: Option<StoreKey>) -> &'_ dyn StoreDriver {
+        self
+    }
+
+    fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
+        self
+    }
+
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+        self
+    }
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        _callback: Arc<dyn RemoveItemCallback>,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+default_health_status_indicator!(InstrumentedSlowStore);
+
+fn make_fast_slow_with_instrumented_slow(
+    digest: DigestInfo,
+    data: Vec<u8>,
+    gate: Option<tokio::sync::oneshot::Receiver<()>>,
+) -> (Store, Arc<InstrumentedSlowStore>) {
+    let slow = Arc::new(InstrumentedSlowStore {
+        digest,
+        data,
+        get_part_count: AtomicU64::new(0),
+        gate: Mutex::new(gate),
+    });
+    let fast = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let fast_slow = Store::new(FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+        },
+        fast,
+        Store::new(slow.clone()),
+    ));
+    (fast_slow, slow)
+}
+
+/// Many concurrent reads of the same digest must dedup down to a single
+/// `slow_store.get_part` call.
+#[nativelink_test]
+async fn concurrent_reads_dedup_to_a_single_slow_store_call() -> Result<(), Error> {
+    const N_CONCURRENT: usize = 16;
+    let original_data = make_random_data(2048);
+    let digest = DigestInfo::try_new(VALID_HASH, original_data.len()).unwrap();
+
+    let (gate_tx, gate_rx) = tokio::sync::oneshot::channel();
+    let (fast_slow_store, slow) =
+        make_fast_slow_with_instrumented_slow(digest, original_data.clone(), Some(gate_rx));
+
+    let mut handles = Vec::with_capacity(N_CONCURRENT);
+    for _ in 0..N_CONCURRENT {
+        let store = fast_slow_store.clone();
+        handles.push(tokio::spawn(async move {
+            store.get_part_unchunked(digest, 0, None).await
+        }));
+    }
+
+    // Give the spawned tasks a chance to register as followers on the
+    // OnceCell before we let the leader's slow read complete.
+    for _ in 0..32 {
+        tokio::task::yield_now().await;
+    }
+
+    gate_tx
+        .send(())
+        .map_err(|_| make_err!(Code::Internal, "Failed to release slow-store gate"))?;
+
+    let results = join_all(handles).await;
+    for r in results {
+        let bytes = r
+            .map_err(|e| make_err!(Code::Internal, "join error: {e:?}"))?
+            .err_tip(|| "Concurrent get_part_unchunked failed")?;
+        assert_eq!(
+            bytes.as_ref(),
+            original_data.as_slice(),
+            "Every concurrent reader must observe the full, correct payload"
+        );
+    }
+
+    let slow_calls = slow.get_part_count.load(Ordering::Acquire);
+    assert_eq!(
+        slow_calls, 1,
+        "Expected the LoaderGuard dedup to collapse {N_CONCURRENT} concurrent reads to a single slow_store.get_part call, got {slow_calls}",
+    );
+
+    Ok(())
+}
+
+/// Dropping a follower's outer future must not cancel the leader's
+/// populate.
+#[nativelink_test]
+async fn dropping_a_follower_does_not_cancel_the_leader() -> Result<(), Error> {
+    let original_data = make_random_data(1024);
+    let digest = DigestInfo::try_new(VALID_HASH, original_data.len()).unwrap();
+
+    let (gate_tx, gate_rx) = tokio::sync::oneshot::channel();
+    let (fast_slow_store, slow) =
+        make_fast_slow_with_instrumented_slow(digest, original_data.clone(), Some(gate_rx));
+
+    let store_for_a = fast_slow_store.clone();
+    let leader_handle =
+        tokio::spawn(async move { store_for_a.get_part_unchunked(digest, 0, None).await });
+
+    for _ in 0..16 {
+        tokio::task::yield_now().await;
+    }
+
+    let store_for_b = fast_slow_store.clone();
+    let b_result = tokio::time::timeout(
+        Duration::from_millis(50),
+        store_for_b.get_part_unchunked(digest, 0, None),
+    )
+    .await;
+    assert!(
+        b_result.is_err(),
+        "Follower should still be waiting on the leader at this point",
+    );
+
+    gate_tx
+        .send(())
+        .map_err(|_| make_err!(Code::Internal, "Failed to release slow-store gate"))?;
+
+    let leader_bytes = leader_handle
+        .await
+        .map_err(|e| make_err!(Code::Internal, "leader join error: {e:?}"))?
+        .err_tip(|| "Leader's get_part_unchunked failed after follower drop")?;
+    assert_eq!(
+        leader_bytes.as_ref(),
+        original_data.as_slice(),
+        "Leader must observe the full, correct payload after a follower drop",
+    );
+
+    let slow_calls = slow.get_part_count.load(Ordering::Acquire);
+    assert_eq!(
+        slow_calls, 1,
+        "Leader's populate must complete exactly once, got {slow_calls} slow_store.get_part calls",
+    );
+
     Ok(())
 }
