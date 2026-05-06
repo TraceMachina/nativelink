@@ -181,18 +181,23 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
         // Skip the first interval as it happens immediately and we don't need a keep alive until timeout/2 has passed
         interval.tick().await;
 
-        loop {
-            interval.tick().await;
-            if let Err(e) = grpc_client.keep_alive(KeepAliveRequest {}).await {
-                error!(?e, "Failed to send KeepAlive in LocalWorker");
-                return Err(make_err!(
-                    Code::Internal,
-                    "Failed to send KeepAlive in LocalWorker : {:?}",
-                    e
-                ));
+        // Explicitly spawn the keep alive loop so it goes onto a different thread from the execute commands
+        spawn!("keep alives", async move {
+            loop {
+                interval.tick().await;
+                if let Err(e) = grpc_client.keep_alive(KeepAliveRequest {}).await {
+                    error!(?e, "Failed to send KeepAlive in LocalWorker");
+                    return Err(make_err!(
+                        Code::Internal,
+                        "Failed to send KeepAlive in LocalWorker : {:?}",
+                        e
+                    ));
+                }
+                debug!("Sent KeepAlive");
             }
-            debug!("Sent KeepAlive");
-        }
+        })
+        .await
+        .unwrap()
     }
 
     async fn run(
