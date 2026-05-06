@@ -41,10 +41,10 @@ jobs:
       - name: Invoke Bazel build in Nix shell
         run: |
           if [ "$RUNNER_OS" == "Linux" ]; then
-            nix develop --impure --command \
+            nix develop --fallback --impure --command \
             bash -c "bazel test ... --verbose_failures --lockfile_mode=error"
           elif [ "$RUNNER_OS" == "macOS" ]; then
-            nix develop --impure --command \
+            nix develop --fallback --impure --command \
             bash -c "bazel test //... --verbose_failures --lockfile_mode=error"
           else
             echo "Unsupported runner OS: $RUNNER_OS"
@@ -72,7 +72,7 @@ jobs:
 
       - name: Invoke Cargo build in Nix shell
         run: >
-          nix develop --impure --command
+          nix develop --fallback --impure --command
           bash -c "cargo test --all --profile=smol"
 
   installation:

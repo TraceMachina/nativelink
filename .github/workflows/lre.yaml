@@ -46,7 +46,7 @@ jobs:
         env:
           TOOLCHAIN: ${{ matrix.toolchain }}
         run: >
-          nix develop --impure --command
+          nix develop --impure --fallback --command
           bash -c "bazel run \
            --lockfile_mode=error \
            --verbose_failures \
@@ -82,7 +82,7 @@ jobs:
 #           COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
 #           TOOLCHAIN: ${{ matrix.toolchain }}
 #         run: |
-#           nix develop --impure --command bash -c 'cat > kustomization.yaml << EOF
+#           nix develop --fallback --impure --command bash -c 'cat > kustomization.yaml << EOF
 #           apiVersion: kustomize.config.k8s.io/v1beta1
 #           kind: Kustomization
 #           resources:
