@@ -11,7 +11,7 @@ nativelink-metric-macro-derive = { path = "nativelink-metric-macro-derive" }
 
 async-lock = { version = "3.4.0", features = ["std"], default-features = false }
 parking_lot = { version = "0.12.3", default-features = false }
-tokio = { version = "1.44.1", features = [
+tokio = { version = "1.52.2", features = [
   "fs",
   "io-util",
   "rt-multi-thread",

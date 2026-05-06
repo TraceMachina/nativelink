@@ -34,7 +34,7 @@ rand = { version = "0.9.0", default-features = false, features = [
   "thread_rng",
 ] }
 serde_json5 = { version = "0.2.1", default-features = false }
-tokio = { version = "1.44.1", features = [
+tokio = { version = "1.52.2", features = [
   "fs",
   "io-util",
   "rt-multi-thread",
