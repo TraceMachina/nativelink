@@ -27,5 +27,5 @@ runs:
           # Note NATIVELINK_ATTIC_TOKEN is blank for PR builds as they don't have secret access
           ./result/bin/attic login uc1-dev https://attic.uc1.scdev.nativelink.net/ ${{ inputs.nativelink_attic_token }}
           ./result/bin/attic use nativelink
-          ./result/bin/attic watch-store nativelink &
+          ./result/bin/attic watch-store nativelink &> attic-push.log &
         shell: bash

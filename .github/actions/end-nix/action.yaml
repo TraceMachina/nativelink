@@ -1,0 +1,11 @@
+---
+# This should be a post step, but can't do it in composite actions easily. See https://github.com/actions/runner/issues/1478
+name: Teardown Nix
+description: "Common teardown for all runs using Nix."
+runs:
+  using: "composite"
+  steps:
+      - name: Check attic push
+        run: |
+          cat attic-push.log
+        shell: bash

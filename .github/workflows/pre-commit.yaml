@@ -30,3 +30,7 @@ jobs:
 
       - name: Run pre-commit hooks
         run: nix flake check
+
+      - name: Teardown Worker
+        uses: ./.github/actions/end-nix
+        if: always()

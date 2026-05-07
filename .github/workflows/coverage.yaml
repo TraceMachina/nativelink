@@ -50,6 +50,10 @@ jobs:
         with:
           path: result/html
 
+      - name: Teardown Worker
+        uses: ./.github/actions/end-nix
+        if: always()
+
   deploy:
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     name: Deploy Coverage
