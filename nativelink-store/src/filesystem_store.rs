@@ -41,6 +41,7 @@ use nativelink_util::store_trait::{
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt, Take};
 use tokio::sync::Semaphore;
+use tokio::time::timeout;
 use tokio_stream::wrappers::ReadDirStream;
 use tracing::{debug, error, info, trace, warn};
 
@@ -1161,7 +1162,45 @@ impl<Fe: FileEntry> HealthStatusIndicator for FilesystemStore<Fe> {
         "FilesystemStore"
     }
 
-    async fn check_health(&self, namespace: Cow<'static, str>) -> HealthStatus {
-        StoreDriver::check_health(Pin::new(self), namespace).await
+    /// Lightweight probe: `stat()` the `content_path` directory. No
+    /// write-semaphore / eviction-map contention with production
+    /// traffic, and bounded so a hung NFS / EBS mount can't wedge the
+    /// indicator.
+    async fn check_health(&self, _namespace: Cow<'static, str>) -> HealthStatus {
+        const HEALTH_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+
+        let content_path = self.shared_context.content_path.clone();
+        let stat = tokio::fs::metadata(content_path.clone());
+        match timeout(HEALTH_PROBE_TIMEOUT, stat).await {
+            Ok(Ok(meta)) if meta.is_dir() => {
+                HealthStatus::new_ok(self, "FilesystemStore::check_health: ok".into())
+            }
+            Ok(Ok(_)) => HealthStatus::new_failed(
+                self,
+                format!(
+                    "FilesystemStore::check_health: content_path {content_path} is not a directory"
+                )
+                .into(),
+            ),
+            Ok(Err(e)) => {
+                warn!(
+                    ?e,
+                    %content_path,
+                    "FilesystemStore::check_health: stat errored",
+                );
+                HealthStatus::new_failed(
+                    self,
+                    format!("FilesystemStore::check_health: stat errored: {e}").into(),
+                )
+            }
+            Err(_) => HealthStatus::new_failed(
+                self,
+                format!(
+                    "FilesystemStore::check_health: stat of {content_path} exceeded {} s timeout",
+                    HEALTH_PROBE_TIMEOUT.as_secs()
+                )
+                .into(),
+            ),
+        }
     }
 }

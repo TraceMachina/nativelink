@@ -14,6 +14,7 @@
 
 use core::fmt::Debug;
 use core::pin::Pin;
+use core::time::Duration;
 use std::borrow::Cow;
 use std::sync::Arc;
 
@@ -32,7 +33,8 @@ use nativelink_util::store_trait::{
     RemoveItemCallback, StoreDriver, StoreKey, StoreOptimizations, UploadSizeInfo,
 };
 use rand::Rng;
-use tokio::time::sleep;
+use tokio::time::{sleep, timeout};
+use tracing::warn;
 
 use crate::cas_utils::is_zero_digest;
 use crate::gcs_client::client::{GcsClient, GcsOperations};
@@ -92,7 +94,7 @@ where
             .unwrap_or(DEFAULT_CONCURRENT_UPLOADS);
 
         let jitter_amt = spec.common.retry.jitter;
-        let jitter_fn = Arc::new(move |delay: tokio::time::Duration| {
+        let jitter_fn = Arc::new(move |delay: Duration| {
             if jitter_amt == 0.0 {
                 return delay;
             }
@@ -486,7 +488,35 @@ where
         "GcsStore"
     }
 
-    async fn check_health(&self, namespace: Cow<'static, str>) -> HealthStatus {
-        StoreDriver::check_health(Pin::new(self), namespace).await
+    /// Lightweight probe: a single `object_exists` against a fixed
+    /// never-existing path. Shares no resources with production traffic
+    /// and stays well under the `HealthServer` per-indicator budget.
+    async fn check_health(&self, _namespace: Cow<'static, str>) -> HealthStatus {
+        const HEALTH_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+
+        let probe_path = ObjectPath::new(
+            self.bucket.clone(),
+            "__nativelink_health_probe__/does-not-exist",
+        );
+
+        let probe = self.client.object_exists(&probe_path);
+        match timeout(HEALTH_PROBE_TIMEOUT, probe).await {
+            Ok(Ok(_)) => HealthStatus::new_ok(self, "GcsStore::check_health: ok".into()),
+            Ok(Err(e)) => {
+                warn!(?e, "GcsStore::check_health: object_exists errored");
+                HealthStatus::new_failed(
+                    self,
+                    format!("GcsStore::check_health: object_exists errored: {e}").into(),
+                )
+            }
+            Err(_) => HealthStatus::new_failed(
+                self,
+                format!(
+                    "GcsStore::check_health: probe exceeded {} s timeout",
+                    HEALTH_PROBE_TIMEOUT.as_secs()
+                )
+                .into(),
+            ),
+        }
     }
 }
