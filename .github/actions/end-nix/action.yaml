@@ -2,6 +2,9 @@
 # This should be a post step, but can't do it in composite actions easily. See https://github.com/actions/runner/issues/1478
 name: Teardown Nix
 description: "Common teardown for all runs using Nix."
+inputs:
+  nix_name:
+    default: ""
 runs:
   using: "composite"
   steps:
@@ -9,4 +12,11 @@ runs:
         run: |
           cd /tmp
           cat attic-push.log
+        shell: bash
+
+      - name: Attic push
+        if: ${{ inputs.nix_name != '' }}
+        run: |
+          cd /tmp
+          ./result/bin/attic push nativelink $(nix eval --raw ${{ inputs.nix_name }})
         shell: bash

@@ -47,3 +47,5 @@ jobs:
       - name: Teardown Worker
         uses: ./.github/actions/end-nix
         if: always()
+        with:
+          nix_name: .#${{ matrix.image }}
