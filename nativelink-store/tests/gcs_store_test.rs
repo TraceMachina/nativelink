@@ -23,11 +23,12 @@ use nativelink_error::{Code, Error, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_store::cas_utils::ZERO_BYTE_DIGESTS;
 use nativelink_store::gcs_client::client::GcsOperations;
-use nativelink_store::gcs_client::mocks::{MockGcsOperations, MockRequest};
+use nativelink_store::gcs_client::mocks::{FailureMode, MockGcsOperations, MockRequest};
 use nativelink_store::gcs_client::types::{DEFAULT_CONTENT_TYPE, ObjectPath};
 use nativelink_store::gcs_store::GcsStore;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
+use nativelink_util::health_utils::{HealthStatus, HealthStatusIndicator};
 use nativelink_util::instant_wrapper::MockInstantWrapped;
 use nativelink_util::store_trait::{StoreKey, StoreLike, UploadSizeInfo};
 use pretty_assertions::assert_eq;
@@ -131,9 +132,7 @@ async fn has_handles_not_found_error() -> Result<(), Error> {
 
     // Set the mock to return a simulated NotFound error
     mock_ops.set_should_fail(true);
-    mock_ops
-        .set_failure_mode(nativelink_store::gcs_client::mocks::FailureMode::NotFound)
-        .await;
+    mock_ops.set_failure_mode(FailureMode::NotFound).await;
 
     let store = create_test_store(mock_ops.clone()).await?;
 
@@ -159,9 +158,7 @@ async fn get_part_handles_not_found_error() -> Result<(), Error> {
 
     // Set the mock to return a simulated NotFound error
     mock_ops.set_should_fail(true);
-    mock_ops
-        .set_failure_mode(nativelink_store::gcs_client::mocks::FailureMode::NotFound)
-        .await;
+    mock_ops.set_failure_mode(FailureMode::NotFound).await;
 
     let store = create_test_store(mock_ops.clone()).await?;
 
@@ -735,4 +732,42 @@ fn create_object_path(key: &StoreKey) -> ObjectPath {
         BUCKET_NAME.to_string(),
         &format!("{}{}", KEY_PREFIX, key.as_str()),
     )
+}
+
+#[nativelink_test]
+async fn check_health_ok_when_bucket_reachable() -> Result<(), Error> {
+    let ops = Arc::new(MockGcsOperations::new());
+    let store = create_test_store(ops.clone()).await?;
+
+    match HealthStatusIndicator::check_health(&*store, std::borrow::Cow::Borrowed("test")).await {
+        HealthStatus::Ok { .. } => {}
+        other => panic!("expected HealthStatus::Ok, got {other:?}"),
+    }
+    // Sanity: the probe issues exactly one object_exists call.
+    assert_eq!(
+        ops.get_call_counts()
+            .object_exists_calls
+            .load(Ordering::Relaxed),
+        1
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn check_health_failed_on_object_exists_error() -> Result<(), Error> {
+    let ops = Arc::new(MockGcsOperations::new());
+    ops.set_should_fail(true);
+    ops.set_failure_mode(FailureMode::NetworkError).await;
+    let store = create_test_store(ops.clone()).await?;
+
+    match HealthStatusIndicator::check_health(&*store, std::borrow::Cow::Borrowed("test")).await {
+        HealthStatus::Failed { message, .. } => {
+            assert!(
+                message.contains("object_exists errored"),
+                "unexpected failure message: {message}",
+            );
+            Ok(())
+        }
+        other => panic!("expected HealthStatus::Failed, got {other:?}"),
+    }
 }
