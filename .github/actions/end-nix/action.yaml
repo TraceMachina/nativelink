@@ -7,5 +7,6 @@ runs:
   steps:
       - name: Check attic push
         run: |
+          cd /tmp
           cat attic-push.log
         shell: bash
