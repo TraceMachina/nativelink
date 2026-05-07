@@ -53,6 +53,8 @@ jobs:
       - name: Teardown Worker
         uses: ./.github/actions/end-nix
         if: always()
+        with:
+          nix_name: .#nativelinkCoverageForHost
 
   deploy:
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
