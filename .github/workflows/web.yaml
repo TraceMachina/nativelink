@@ -66,3 +66,7 @@ jobs:
             bun prod --project=nativelink --org=nativelink \
             --token=$DENO_DEPLOY_TOKEN \
           "
+
+      - name: Teardown Worker
+        uses: ./.github/actions/end-nix
+        if: always()

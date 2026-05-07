@@ -43,3 +43,7 @@ jobs:
           GHCR_REGISTRY: ghcr.io/${{ github.repository_owner }}
           GHCR_USERNAME: ${{ github.actor }}
           GHCR_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Teardown Worker
+        uses: ./.github/actions/end-nix
+        if: always()

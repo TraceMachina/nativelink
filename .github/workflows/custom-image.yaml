@@ -144,3 +144,7 @@ jobs:
               issue_number: context.payload.issue.number,
               body: `Image built and pushed!\n\n\`\`\`\n${{ steps.upload.outputs.image_tag }}\n\`\`\``
             });
+
+      - name: Teardown Worker
+        uses: ./.github/actions/end-nix
+        if: always()

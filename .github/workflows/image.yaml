@@ -59,3 +59,7 @@ jobs:
         with:
           sarif_file: 'trivy-results.sarif'
         if: github.ref == 'refs/heads/main'
+
+      - name: Teardown Worker
+        uses: ./.github/actions/end-nix
+        if: always()
