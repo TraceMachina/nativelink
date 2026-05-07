@@ -1114,11 +1114,24 @@ where
     /// is reachable and the master is accepting commands; that is
     /// the only invariant a kubelet probe needs.
     async fn check_health(&self, _namespace: Cow<'static, str>) -> HealthStatus {
-        /// Per-check physical ceiling. Tight enough to stay well
-        /// under `HealthServer`'s default per-indicator budget;
-        /// loose enough to absorb a normally-slow PING during a
-        /// `BGSAVE` fork or sentinel rebalance.
-        const PING_TIMEOUT: Duration = Duration::from_secs(2);
+        /// Per-check physical ceiling. The default `HealthServer`
+        /// per-indicator budget is 5 s
+        /// (`DEFAULT_HEALTH_CHECK_TIMEOUT_SECONDS`); this stays a
+        /// margin under that so the wrapper has time to receive our
+        /// answer.
+        ///
+        /// 4 s is the smallest ceiling that absorbs a normally-slow
+        /// PING during the realistic worst case for our deployments:
+        /// a `BGSAVE` `fork()` on a multi-GB Redis instance under
+        /// load (the parent process is briefly paused while the
+        /// kernel sets up copy-on-write page tables; on our
+        /// production sentinel cluster we have observed pauses up
+        /// to ~3 s on an 11 GB master). A tighter ceiling caused
+        /// every `RedisStore` indicator to flap simultaneously
+        /// during routine RDB checkpoints, surfacing as 503s on
+        /// `/status` and probe-failure events even though Redis was
+        /// otherwise healthy.
+        const PING_TIMEOUT: Duration = Duration::from_secs(4);
 
         let mut client = match self.get_client().await {
             Ok(c) => c,
