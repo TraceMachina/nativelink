@@ -739,6 +739,26 @@ pub struct FastSlowSpec {
     /// and you wish to have an upstream read only store.
     #[serde(default)]
     pub slow_direction: StoreDirection,
+
+    /// Reads of blobs at or above this size bypass the populating-digests
+    /// dedup map and stream directly from the slow store, without
+    /// populating the fast tier.
+    ///
+    /// Rationale: the leader/follower dedup is a win for blobs whose
+    /// transfer time is short relative to `LEADER_WAIT_TIMEOUT` — one
+    /// slow-store fetch fills the fast cache, subsequent readers serve
+    /// from fast. For multi-GB blobs (typically container layers) the
+    /// leader's transfer takes minutes; every concurrent follower hits
+    /// the timeout, falls through to the slow store anyway, and the
+    /// fast cache is then evicted aggressively to make room for the
+    /// huge blob — pushing out smaller, more-frequently-read entries.
+    /// Bypassing dedup for huge blobs avoids both pathologies.
+    ///
+    /// Set to 0 (default) to use the built-in default of 256 MiB. Set
+    /// to a very large value (e.g. `u64::MAX`) to disable the bypass
+    /// and always use dedup regardless of size.
+    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
+    pub bypass_dedup_threshold_bytes: u64,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone, Copy)]

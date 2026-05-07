@@ -57,6 +57,10 @@ pub struct FastSlowStore {
     #[metric(group = "slow_store")]
     slow_store: Store,
     slow_direction: StoreDirection,
+    /// Reads of blobs whose digest size is >= this value bypass the
+    /// populating-digests dedup map and stream directly from the slow
+    /// store. See [`FastSlowSpec::bypass_dedup_threshold_bytes`].
+    bypass_dedup_threshold_bytes: u64,
     weak_self: Weak<Self>,
     #[metric]
     metrics: FastSlowStoreMetrics,
@@ -118,15 +122,38 @@ impl Drop for LoaderGuard<'_> {
 
 impl FastSlowStore {
     pub fn new(spec: &FastSlowSpec, fast_store: Store, slow_store: Store) -> Arc<Self> {
+        let bypass_dedup_threshold_bytes = if spec.bypass_dedup_threshold_bytes == 0 {
+            DEFAULT_BYPASS_DEDUP_THRESHOLD_BYTES
+        } else {
+            spec.bypass_dedup_threshold_bytes
+        };
         Arc::new_cyclic(|weak_self| Self {
             fast_store,
             fast_direction: spec.fast_direction,
             slow_store,
             slow_direction: spec.slow_direction,
+            bypass_dedup_threshold_bytes,
             weak_self: weak_self.clone(),
             metrics: FastSlowStoreMetrics::default(),
             populating_digests: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// Returns the digest size in bytes if `key` is a digest key, else `None`.
+    /// Non-digest keys (e.g. action-cache `StoreKey::Str`) carry no inherent
+    /// size and are never subject to the huge-blob bypass.
+    fn digest_size_bytes(key: &StoreKey<'_>) -> Option<u64> {
+        match key {
+            StoreKey::Digest(d) => Some(d.size_bytes()),
+            StoreKey::Str(_) => None,
+        }
+    }
+
+    /// Whether a read of `key` should bypass the populating-digests
+    /// dedup and read directly from the slow store. True only when the
+    /// blob's digest size meets or exceeds the configured threshold.
+    fn should_bypass_dedup(&self, key: &StoreKey<'_>) -> bool {
+        Self::digest_size_bytes(key).is_some_and(|size| size >= self.bypass_dedup_threshold_bytes)
     }
 
     pub const fn fast_store(&self) -> &Store {
@@ -677,6 +704,35 @@ impl StoreDriver for FastSlowStore {
             return Ok(());
         }
 
+        // Huge-blob bypass. The leader/follower dedup is a net loss for
+        // multi-GB blobs: the leader's pull from the slow store takes
+        // long enough that every concurrent follower hits
+        // `LEADER_WAIT_TIMEOUT` and falls through to its own slow-store
+        // read anyway, *and* populating the fast tier with the huge
+        // blob evicts a large number of smaller, more-useful entries.
+        // Stream directly from the slow store and skip the populate.
+        if self.should_bypass_dedup(&key) {
+            self.metrics
+                .huge_blob_dedup_bypasses
+                .fetch_add(1, Ordering::Acquire);
+            self.metrics
+                .slow_store_hit_count
+                .fetch_add(1, Ordering::Acquire);
+            debug!(
+                %key,
+                threshold_bytes = self.bypass_dedup_threshold_bytes,
+                "FastSlowStore::get_part: blob meets huge-blob threshold; bypassing dedup",
+            );
+            self.slow_store
+                .get_part(key, writer.borrow_mut(), offset, length)
+                .await
+                .err_tip(|| "In FastSlowStore::get_part huge-blob bypass")?;
+            self.metrics
+                .slow_store_downloaded_bytes
+                .fetch_add(writer.get_bytes_written(), Ordering::Acquire);
+            return Ok(());
+        }
+
         let mut writer = Some(writer);
 
         // Drive the dedup loader. Two distinct paths:
@@ -795,6 +851,10 @@ struct FastSlowStoreMetrics {
         help = "Number of times the fast store reported has() == Some but the subsequent get_part returned NotFound (stale eviction-map entry); request fell through to populate from the slow store"
     )]
     fast_store_stale_map_falls_through: AtomicU64,
+    #[metric(
+        help = "Number of get_part calls that bypassed the populating-digests dedup because the blob met the huge-blob threshold and were served directly from the slow store"
+    )]
+    huge_blob_dedup_bypasses: AtomicU64,
 }
 
 /// Maximum time a follower will wait on the leader-populator before
@@ -805,5 +865,13 @@ struct FastSlowStoreMetrics {
 /// deadline fired (e.g. Bazel's `--remote_timeout`), turning a
 /// single slow read into a fan-out of `DEADLINE_EXCEEDED` errors.
 const LEADER_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Default value for [`FastSlowStore::bypass_dedup_threshold_bytes`] when
+/// the spec leaves it unset (zero). 256 MiB is large enough that typical
+/// Bazel build outputs (sources, jars, intermediate artifacts) still go
+/// through dedup and benefit from fast-tier caching, but small enough to
+/// catch container-image layers and other multi-hundred-MB blobs whose
+/// dedup-leader transfer reliably exceeds `LEADER_WAIT_TIMEOUT`.
+const DEFAULT_BYPASS_DEDUP_THRESHOLD_BYTES: u64 = 256 * 1024 * 1024;
 
 default_health_status_indicator!(FastSlowStore);
