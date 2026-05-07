@@ -14,6 +14,7 @@
 
 use core::fmt::Debug;
 use core::pin::Pin;
+use core::time::Duration;
 use std::borrow::Cow;
 use std::sync::Arc;
 
@@ -32,7 +33,8 @@ use nativelink_util::store_trait::{
     RemoveItemCallback, StoreDriver, StoreKey, StoreOptimizations, UploadSizeInfo,
 };
 use rand::Rng;
-use tokio::time::sleep;
+use tokio::time::{sleep, timeout};
+use tracing::warn;
 
 use crate::cas_utils::is_zero_digest;
 use crate::gcs_client::client::{GcsClient, GcsOperations};
@@ -486,7 +488,59 @@ where
         "GcsStore"
     }
 
-    async fn check_health(&self, namespace: Cow<'static, str>) -> HealthStatus {
-        StoreDriver::check_health(Pin::new(self), namespace).await
+    /// Lightweight health check: a single `object_exists` call against
+    /// a deterministic, never-existing object path. Proves the bucket
+    /// is reachable, the credentials are valid, and the GCS API is
+    /// answering — without sharing bandwidth, connection pool, or
+    /// upload buffers with in-flight production traffic.
+    ///
+    /// The default `StoreDriver::check_health` performs a full
+    /// `update_oneshot` + `has` + `get_part_unchunked` roundtrip; under
+    /// any meaningful slow-store load (e.g. concurrent multi-GB blob
+    /// pulls saturating the network), that roundtrip queues behind
+    /// production traffic and easily exceeds the per-indicator budget.
+    /// Each timeout shows up at the kubelet as an HTTP 503 on the
+    /// liveness/readiness path even though the pod is otherwise
+    /// functional, eventually triggering a probe-failure restart that
+    /// drops every connected client.
+    ///
+    /// `object_exists` issues a metadata HEAD-equivalent: a few hundred
+    /// bytes on the wire and a single round-trip, independent of the
+    /// store's body-transfer bandwidth. A `false` result is the success
+    /// case (proves the API path works); only an outright `Err`
+    /// indicates an unhealthy slow store.
+    async fn check_health(&self, _namespace: Cow<'static, str>) -> HealthStatus {
+        /// Per-check physical ceiling. Tight enough to stay well under
+        /// the `HealthServer` per-indicator budget, loose enough to
+        /// absorb a slow round-trip during transient network blips.
+        const HEALTH_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+
+        // Path is deliberately fixed and obviously-not-real. The probe
+        // does not depend on the bucket containing any object; it only
+        // depends on GCS answering "no, that doesn't exist."
+        let probe_path = ObjectPath::new(
+            self.bucket.clone(),
+            "__nativelink_health_probe__/does-not-exist",
+        );
+
+        let probe = self.client.object_exists(&probe_path);
+        match timeout(HEALTH_PROBE_TIMEOUT, probe).await {
+            Ok(Ok(_)) => HealthStatus::new_ok(self, "GcsStore::check_health: ok".into()),
+            Ok(Err(e)) => {
+                warn!(?e, "GcsStore::check_health: object_exists errored");
+                HealthStatus::new_failed(
+                    self,
+                    format!("GcsStore::check_health: object_exists errored: {e}").into(),
+                )
+            }
+            Err(_) => HealthStatus::new_failed(
+                self,
+                format!(
+                    "GcsStore::check_health: probe exceeded {} s timeout",
+                    HEALTH_PROBE_TIMEOUT.as_secs()
+                )
+                .into(),
+            ),
+        }
     }
 }

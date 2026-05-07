@@ -41,6 +41,7 @@ use nativelink_util::store_trait::{
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt, Take};
 use tokio::sync::Semaphore;
+use tokio::time::timeout;
 use tokio_stream::wrappers::ReadDirStream;
 use tracing::{debug, error, info, trace, warn};
 
@@ -1186,7 +1187,60 @@ impl<Fe: FileEntry> HealthStatusIndicator for FilesystemStore<Fe> {
         "FilesystemStore"
     }
 
-    async fn check_health(&self, namespace: Cow<'static, str>) -> HealthStatus {
-        StoreDriver::check_health(Pin::new(self), namespace).await
+    /// Lightweight health check: stat the configured `content_path`
+    /// directory. Proves the underlying mount is present and we have
+    /// permission to read it — without writing a probe blob, hashing
+    /// it, and reading it back through the eviction map.
+    ///
+    /// The default `StoreDriver::check_health` performs a full
+    /// `update_oneshot` + `has` + `get_part_unchunked` roundtrip. Each
+    /// of those operations contends on the same write-semaphore and
+    /// eviction-map locks as in-flight production traffic; under load
+    /// (large blob streams, dense eviction churn) the probe queues
+    /// behind real work and overruns the per-indicator budget,
+    /// surfacing as an HTTP 503 even when the disk itself is fine.
+    /// A `metadata` call is a single `stat()` syscall — bounded,
+    /// shared with no production code path, and a strict superset of
+    /// what a kubelet probe needs to know.
+    async fn check_health(&self, _namespace: Cow<'static, str>) -> HealthStatus {
+        /// Per-check physical ceiling. A `stat()` of a healthy local
+        /// directory completes in microseconds; this bound exists only
+        /// so a hung NFS / EBS / persistent-volume mount cannot wedge
+        /// the indicator.
+        const HEALTH_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+
+        let content_path = self.shared_context.content_path.clone();
+        let stat = tokio::fs::metadata(content_path.clone());
+        match timeout(HEALTH_PROBE_TIMEOUT, stat).await {
+            Ok(Ok(meta)) if meta.is_dir() => {
+                HealthStatus::new_ok(self, "FilesystemStore::check_health: ok".into())
+            }
+            Ok(Ok(_)) => HealthStatus::new_failed(
+                self,
+                format!(
+                    "FilesystemStore::check_health: content_path {content_path} is not a directory"
+                )
+                .into(),
+            ),
+            Ok(Err(e)) => {
+                warn!(
+                    ?e,
+                    %content_path,
+                    "FilesystemStore::check_health: stat errored",
+                );
+                HealthStatus::new_failed(
+                    self,
+                    format!("FilesystemStore::check_health: stat errored: {e}").into(),
+                )
+            }
+            Err(_) => HealthStatus::new_failed(
+                self,
+                format!(
+                    "FilesystemStore::check_health: stat of {content_path} exceeded {} s timeout",
+                    HEALTH_PROBE_TIMEOUT.as_secs()
+                )
+                .into(),
+            ),
+        }
     }
 }
