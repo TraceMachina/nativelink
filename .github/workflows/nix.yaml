@@ -110,6 +110,8 @@ jobs:
       - name: Teardown Worker
         uses: ./.github/actions/end-nix
         if: always()
+        with:
+          nix_name: .#nativelink-is-executable-test
 
   integration:
     name: ${{ matrix.test-name }}
@@ -135,3 +137,5 @@ jobs:
       - name: Teardown Worker
         uses: ./.github/actions/end-nix
         if: always()
+        with:
+          nix_name: .#${{ matrix.test-name }}-with-nativelink-test
