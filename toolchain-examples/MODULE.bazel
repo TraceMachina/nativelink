@@ -4,13 +4,13 @@ module(
     compatibility_level = 0,
 )
 
-bazel_dep(name = "platforms", version = "1.0.0")
+bazel_dep(name = "platforms", version = "1.1.0")
 
 # C++
-bazel_dep(name = "rules_cc", version = "0.2.8")
+bazel_dep(name = "rules_cc", version = "0.2.18")
 
 # Java
-bazel_dep(name = "rules_java", version = "8.11.0")
+bazel_dep(name = "rules_java", version = "9.0.3")
 
 java = use_extension("//java:extensions.bzl", "toolchains")
 use_repo(java, "local_jdk")
@@ -34,20 +34,23 @@ python.toolchain(
 use_repo(pip, "pip")
 
 # Go
-bazel_dep(name = "rules_go", version = "0.57.0")
+bazel_dep(name = "rules_go", version = "0.60.0")
 
-# Adds https://github.com/bazel-contrib/rules_go/commit/74199c92e20399b6ef46684b2c6fdd94b50a7892
-# to fix bash issues with Nix
-archive_override(
-    module_name = "rules_go",
-    integrity = "sha256-ukyyC80j4VhRCD7DOaenkk41Vvnmsp7uAfHr4lxdXtQ=",
-    strip_prefix = "rules_go-74199c92e20399b6ef46684b2c6fdd94b50a7892",
-    urls = ["https://github.com/bazel-contrib/rules_go/archive/74199c92e20399b6ef46684b2c6fdd94b50a7892.zip"],
+# Rust
+#
+bazel_dep(name = "rules_rs", version = "0.0.76")
+bazel_dep(name = "llvm", version = "0.7.7")
+
+rust_toolchains = use_extension("@rules_rs//rs/toolchains:module_extension.bzl", "toolchains")
+rust_toolchains.toolchain(
+    edition = "2024",
+    version = "1.93.1",
 )
+use_repo(rust_toolchains, "default_rust_toolchains")
 
-# Rust — see the parent MODULE.bazel for the archive_override that pins
-# rules_rust to the hermeticbuild fork.
-bazel_dep(name = "rules_rust", version = "0.68.1")
+register_toolchains(
+    "@default_rust_toolchains//:all",
+)
 
 # C++ toolchain via zig-cc.
 #
@@ -89,7 +92,7 @@ bazel_dep(name = "curl", version = "8.8.0.bcr.3")
 bazel_dep(name = "zstd", version = "1.5.7")
 
 # Abseil for C++
-bazel_dep(name = "abseil-cpp", version = "20250512.1")
+bazel_dep(name = "abseil-cpp", version = "20250814.1")
 
 # Abseil for python
 bazel_dep(name = "abseil-py", version = "2.1.0")

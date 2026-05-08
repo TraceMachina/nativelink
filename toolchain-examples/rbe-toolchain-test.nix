@@ -26,13 +26,14 @@ writeShellScriptBin "rbe-toolchain-test" ''
 
   LLVM_PLATFORM="--config=llvm --platforms=@toolchains_llvm//platforms:linux-''${CPU_TYPE}"
   ZIG_PLATFORM="--config=zig-cc --platforms @zig_sdk//platform:linux_''${PLATFORM}"
+  RUST_ZIG_PLATFORM="--config=zig-cc --platforms //platforms:linux_''${PLATFORM}_gnu_2_28"
 
   # As per https://nativelink.com/docs/rbe/remote-execution-examples#minimal-example-targets
   COMMANDS=("test //cpp $ZIG_PLATFORM"
             "test //cpp $LLVM_PLATFORM"
             "test //python"
             "test //go $ZIG_PLATFORM"
-            "test //rust $ZIG_PLATFORM"
+            "test //rust $RUST_ZIG_PLATFORM"
             "test //java:HelloWorld --config=java"
             "build @curl//... $ZIG_PLATFORM"
             "build @zstd//... $ZIG_PLATFORM"

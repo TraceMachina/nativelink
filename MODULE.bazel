@@ -10,6 +10,15 @@ bazel_dep(name = "bazel_skylib", version = "1.8.2")
 bazel_dep(name = "rules_python", version = "2.0.0")
 bazel_dep(name = "rules_shell", version = "0.6.1")
 
+# hermetic-llvm: zero-sysroot, fully hermetic LLVM cross-compilation toolchain.
+# Inside Nix, lre.bazelrc registers @local-remote-execution//generated-cc/...
+# via --extra_toolchains, which outranks the MODULE.bazel registration below,
+# so Nix users keep getting LRE-CC unchanged. Outside Nix (no lre.bazelrc),
+# these hermetic toolchains replace the host autodetect path.
+bazel_dep(name = "llvm", version = "0.7.7")
+
+register_toolchains("@llvm//toolchain:all")
+
 # We use the Nix Python install, as per https://rules-python.readthedocs.io/en/latest/toolchains.html#local-toolchain
 # Can't use the rules_python download versions as it breaks with the genrule stuff in nativelink-proto
 # Also, this way around we get a Nix-locked Python binary
