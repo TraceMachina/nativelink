@@ -151,6 +151,7 @@
                     # Explicitly duplicate the host as an execution platform. This way
                     # local execution is treated the same as remote execution.
                     "@local-remote-execution//rust/platforms:${nixExecToRustExec pkgs}"
+                    "@local-remote-execution//rust/platforms:${nixExecToDefaultRustTarget pkgs}"
                   ]
                   ++ lib.optionals pkgs.stdenv.isLinux [
                     # TODO(palfrey): Reimplement rbe-configs-gen for C++ so that we

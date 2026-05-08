@@ -34,6 +34,19 @@ common --@rules_python//python/config_settings:py_linux_libc=musl
 # Don't leak PATH and LD_LIBRARY_PATH into the build.
 build --incompatible_strict_action_env
 
+# hermetic-llvm <-> rules_rs interop. These are harmless when LRE-CC is the
+# active CC toolchain (Nix path) and required when hermetic-llvm provides it
+# (non-Nix path):
+#   - Rust passes -lgcc_s when linking, so libgcc_s must be stubbed.
+#   - cc-rs doesn't honor $AR/$ARFLAGS, so disable llvm-libtool-darwin as the
+#     default macOS archiver.
+# Musl + PIE harmonization (Rust forces -no-pie; hermetic-llvm defaults to
+# -static-pie) is a follow-up: it requires adding @llvm//constraints/pie:off
+# to the lre-rs musl platforms, which are @generated and need a generator-side
+# change.
+build --@llvm//config:experimental_stub_libgcc_s=True
+build --@rules_cc//cc/toolchains/args/archiver_flags:use_libtool_on_macos=False
+
 # Don't use legacy repository rules.
 build --incompatible_disable_native_repo_rules
 
