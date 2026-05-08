@@ -1138,7 +1138,7 @@ where
                 .query_async::<()>(&mut client.connection_manager)
                 .await
         };
-        match tokio::time::timeout(PING_TIMEOUT, ping).await {
+        match timeout(PING_TIMEOUT, ping).await {
             Ok(Ok(())) => HealthStatus::new_ok(self, "RedisStore::check_health: PING ok".into()),
             Ok(Err(e)) => HealthStatus::new_failed(
                 self,
