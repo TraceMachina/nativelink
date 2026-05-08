@@ -779,7 +779,7 @@ async fn test_scheduler_store_operations() -> Result<(), Error> {
         // Update data in the scheduler store
         let version = helper
             .store
-            .update_data(data.clone())
+            .update_data(data.clone(), None)
             .await
             .err_tip(|| "Failed to update scheduler data")?
             .ok_or_else(|| make_err!(Code::Internal, "Expected version from update"))?;
@@ -811,7 +811,7 @@ async fn test_scheduler_store_operations() -> Result<(), Error> {
         // First update
         let version1 = helper
             .store
-            .update_data(data.clone())
+            .update_data(data.clone(), None)
             .await?
             .ok_or_else(|| make_err!(Code::Internal, "Expected version"))?;
 
@@ -820,7 +820,7 @@ async fn test_scheduler_store_operations() -> Result<(), Error> {
         data.version = version1;
         let version2 = helper
             .store
-            .update_data(data.clone())
+            .update_data(data.clone(), None)
             .await?
             .ok_or_else(|| make_err!(Code::Internal, "Expected version"))?;
 
@@ -830,7 +830,7 @@ async fn test_scheduler_store_operations() -> Result<(), Error> {
         // Try update with wrong version (should fail)
         data.content = "This should fail".to_string();
         data.version = version1; // Using old version
-        let result = helper.store.update_data(data.clone()).await;
+        let result = helper.store.update_data(data.clone(), None).await;
 
         assert!(result.is_err(), "Update with old version should fail");
         eprintln!("Correctly rejected update with stale version");
@@ -877,7 +877,7 @@ async fn test_scheduler_store_operations() -> Result<(), Error> {
                 version: 0,
             };
 
-            let version = helper.store.update_data(data).await?;
+            let version = helper.store.update_data(data, None).await?;
             assert_eq!(Some(1), version);
         }
 

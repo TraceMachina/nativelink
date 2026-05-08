@@ -112,7 +112,7 @@ pub struct SimpleSpec {
     /// config.
     pub supported_platform_properties: Option<HashMap<String, PropertyType>>,
 
-    /// The amount of time to retain completed actions in memory for in case
+    /// The amount of time to retain completed actions for in case
     /// a `WaitExecution` is called after the action has completed.
     /// Default: 60 (seconds)
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]

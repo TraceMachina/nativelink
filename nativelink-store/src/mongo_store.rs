@@ -910,13 +910,19 @@ impl SchedulerStore for ExperimentalMongoStore {
         }
     }
 
-    async fn update_data<T>(&self, data: T) -> Result<Option<i64>, Error>
+    async fn update_data<T>(&self, data: T, expiry: Option<Duration>) -> Result<Option<i64>, Error>
     where
         T: SchedulerStoreDataProvider
             + SchedulerStoreKeyProvider
             + SchedulerCurrentVersionProvider
             + Send,
     {
+        if expiry.is_some() {
+            return Err(make_err!(
+                Code::InvalidArgument,
+                "Mongo store doesn't support expiry!"
+            ));
+        }
         let key = data.get_key();
         let encoded_key = self.encode_key(&key);
         let maybe_index = data.get_indexes().map_err(|e| {

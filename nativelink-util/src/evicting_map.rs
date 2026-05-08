@@ -449,9 +449,7 @@ where
         let (data, expired_data, removal_futures) = {
             let mut state = self.state.lock();
             let lru_len = state.lru.len();
-            let Some(entry) = state.lru.get_mut(key.borrow()) else {
-                return None;
-            };
+            let entry = state.lru.get_mut(key.borrow())?;
             // Pass `sum_store_size=0` and `max_bytes=u64::MAX` so we only
             // consult TTL / count predicates — never the global byte budget.
             // Mirrors the per-key reap path in `sizes_for_keys`.

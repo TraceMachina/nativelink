@@ -151,6 +151,7 @@ async fn simple_scheduler_factory(
                 task_change_notify.clone(),
                 now_fn,
                 Default::default,
+                spec.retain_completed_for_s,
             )
             .await
             .err_tip(|| "In state_manager_factory::redis_state_manager")?;

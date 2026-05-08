@@ -840,7 +840,7 @@ async fn concurrent_reads_dedup_to_a_single_slow_store_call() -> Result<(), Erro
 
     gate_tx
         .send(())
-        .map_err(|_| make_err!(Code::Internal, "Failed to release slow-store gate"))?;
+        .map_err(|()| make_err!(Code::Internal, "Failed to release slow-store gate"))?;
 
     let results = join_all(handles).await;
     for r in results {
@@ -895,7 +895,7 @@ async fn dropping_a_follower_does_not_cancel_the_leader() -> Result<(), Error> {
 
     gate_tx
         .send(())
-        .map_err(|_| make_err!(Code::Internal, "Failed to release slow-store gate"))?;
+        .map_err(|()| make_err!(Code::Internal, "Failed to release slow-store gate"))?;
 
     let leader_bytes = leader_handle
         .await

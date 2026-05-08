@@ -244,7 +244,7 @@ async fn run<S: StoreDriver + SchedulerStore>(
                                 version: 0,
                             };
 
-                            store_clone.update_data(data).await?;
+                            store_clone.update_data(data, None).await?;
                         }
                         let search_results: Vec<_> = store_clone
                             .search_by_index_prefix(search_provider)
@@ -265,7 +265,9 @@ async fn run<S: StoreDriver + SchedulerStore>(
                             data.version = existing_data.version + 1;
                         }
 
-                        store_clone.update_data(data).await?;
+                        store_clone
+                            .update_data(data, Some(Duration::from_mins(1)))
+                            .await?;
                     }
                 }
                 Ok(())

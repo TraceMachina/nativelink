@@ -20,6 +20,7 @@ use core::hash::{Hash, Hasher};
 use core::ops::{Bound, RangeBounds};
 use core::pin::Pin;
 use core::ptr::addr_eq;
+use core::time::Duration;
 use std::borrow::Cow;
 use std::collections::hash_map::DefaultHasher as StdHasher;
 use std::ffi::OsString;
@@ -903,7 +904,11 @@ pub trait SchedulerStore: Send + Sync + 'static {
     /// the version in the passed in data.
     /// No guarantees are made about when `Version` is `FalseValue`.
     /// Indexes are guaranteed to be updated atomically with the data.
-    fn update_data<T>(&self, data: T) -> impl Future<Output = Result<Option<i64>, Error>> + Send
+    fn update_data<T>(
+        &self,
+        data: T,
+        expiry: Option<Duration>,
+    ) -> impl Future<Output = Result<Option<i64>, Error>> + Send
     where
         T: SchedulerStoreDataProvider
             + SchedulerStoreKeyProvider
@@ -921,7 +926,8 @@ pub trait SchedulerStore: Send + Sync + 'static {
         >,
     > + Send
     where
-        K: SchedulerIndexProvider + SchedulerStoreDecodeTo + Send;
+        K: SchedulerIndexProvider + SchedulerStoreDecodeTo + Send,
+        <K as SchedulerStoreDecodeTo>::DecodeOutput: Send;
 
     /// Returns data for the provided key with the given version if
     /// `StoreKeyProvider::Versioned` is `TrueValue`.

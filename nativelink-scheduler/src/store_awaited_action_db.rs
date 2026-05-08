@@ -69,6 +69,7 @@ pub struct OperationSubscriber<S: SchedulerStore, I: InstantWrapper, NowFn: Fn()
     // when the state is set to subscribed.  When set it causes the state to be polled
     // as well as listening for the publishing.
     maybe_last_stage: Option<Discriminant<ActionStage>>,
+    retain_completed_for: Duration,
 }
 
 impl<S: SchedulerStore, I: InstantWrapper, NowFn: Fn() -> I + core::fmt::Debug> core::fmt::Debug
@@ -100,6 +101,7 @@ where
         subscription_key: OperationIdToAwaitedAction<'static>,
         weak_store: Weak<S>,
         now_fn: NowFn,
+        retain_completed_for: Duration,
     ) -> Self {
         Self {
             maybe_client_operation_id,
@@ -109,6 +111,7 @@ where
             state: OperationSubscriberState::Unsubscribed,
             now_fn,
             maybe_last_stage: None,
+            retain_completed_for,
         }
     }
 
@@ -235,10 +238,13 @@ where
                 if USE_SEPARATE_CLIENT_KEEPALIVE_KEY {
                     let operation_id = self.subscription_key.0.as_ref();
                     let update_result = store
-                        .update_data(UpdateClientKeepalive {
-                            operation_id,
-                            timestamp: now_ts,
-                        })
+                        .update_data(
+                            UpdateClientKeepalive {
+                                operation_id,
+                                timestamp: now_ts,
+                            },
+                            None,
+                        )
                         .await;
 
                     if let Err(e) = update_result {
@@ -297,7 +303,14 @@ where
                                     != core::mem::discriminant(&awaited_action.state().stage)
                             })
                             .then(|| awaited_action.clone());
-                        match inner_update_awaited_action(store.as_ref(), awaited_action).await {
+                        let expiry = if awaited_action.is_complete() {
+                            Some(self.retain_completed_for)
+                        } else {
+                            None
+                        };
+                        match inner_update_awaited_action(store.as_ref(), awaited_action, expiry)
+                            .await
+                        {
                             Ok(()) => break,
                             err if attempt == MAX_RETRIES_FOR_CLIENT_KEEPALIVE => {
                                 err.err_tip_with_code(|_| {
@@ -498,7 +511,8 @@ const fn get_state_prefix(state: SortedAwaitedActionState) -> &'static str {
     }
 }
 
-struct UpdateOperationIdToAwaitedAction(AwaitedAction);
+#[derive(Debug)]
+pub struct UpdateOperationIdToAwaitedAction(AwaitedAction);
 impl SchedulerCurrentVersionProvider for UpdateOperationIdToAwaitedAction {
     fn current_version(&self) -> i64 {
         self.0.version()
@@ -568,9 +582,10 @@ impl SchedulerStoreDataProvider for UpdateClientIdToOperationId {
     }
 }
 
-async fn inner_update_awaited_action(
+pub async fn inner_update_awaited_action(
     store: &impl SchedulerStore,
     mut new_awaited_action: AwaitedAction,
+    expiry: Option<Duration>,
 ) -> Result<(), Error> {
     let operation_id = new_awaited_action.operation_id().clone();
     if new_awaited_action.state().client_operation_id != operation_id {
@@ -580,7 +595,7 @@ async fn inner_update_awaited_action(
     let _is_finished = new_awaited_action.state().stage.is_finished();
 
     let maybe_version = store
-        .update_data(UpdateOperationIdToAwaitedAction(new_awaited_action))
+        .update_data(UpdateOperationIdToAwaitedAction(new_awaited_action), expiry)
         .await
         .err_tip(|| "In RedisAwaitedActionDb::update_awaited_action")?;
 
@@ -610,6 +625,7 @@ where
     now_fn: NowFn,
     operation_id_creator: F,
     _pull_task_change_subscriber_spawn: JoinHandleDropGuard<()>,
+    retain_completed_for: Duration,
 }
 
 impl<S, F, I, NowFn> StoreAwaitedActionDb<S, F, I, NowFn>
@@ -624,6 +640,7 @@ where
         task_change_publisher: Arc<Notify>,
         now_fn: NowFn,
         operation_id_creator: F,
+        retain_completed_for_s: u32,
     ) -> Result<Self, Error> {
         let mut subscription = store
             .subscription_manager()
@@ -659,6 +676,7 @@ where
             now_fn,
             operation_id_creator,
             _pull_task_change_subscriber_spawn: pull_task_change_subscriber,
+            retain_completed_for: Duration::from_secs(retain_completed_for_s.into()),
         })
     }
 
@@ -786,6 +804,7 @@ where
             OperationIdToAwaitedAction(Cow::Owned(operation_id)),
             Arc::downgrade(&self.store),
             self.now_fn.clone(),
+            self.retain_completed_for,
         )))
     }
 }
@@ -816,11 +835,17 @@ where
             OperationIdToAwaitedAction(Cow::Owned(operation_id.clone())),
             Arc::downgrade(&self.store),
             self.now_fn.clone(),
+            self.retain_completed_for,
         )))
     }
 
     async fn update_awaited_action(&self, new_awaited_action: AwaitedAction) -> Result<(), Error> {
-        inner_update_awaited_action(self.store.as_ref(), new_awaited_action).await
+        let expiry = if new_awaited_action.is_complete() {
+            Some(self.retain_completed_for)
+        } else {
+            None
+        };
+        inner_update_awaited_action(self.store.as_ref(), new_awaited_action, expiry).await
     }
 
     async fn add_action(
@@ -866,9 +891,14 @@ where
             awaited_action.update_client_keep_alive((self.now_fn)().now());
 
             let version = awaited_action.version();
+            let expiry = if awaited_action.is_complete() {
+                Some(self.retain_completed_for)
+            } else {
+                None
+            };
             if self
                 .store
-                .update_data(UpdateOperationIdToAwaitedAction(awaited_action))
+                .update_data(UpdateOperationIdToAwaitedAction(awaited_action), expiry)
                 .await
                 .err_tip(|| "In RedisAwaitedActionDb::add_action")?
                 .is_none()
@@ -883,10 +913,13 @@ where
 
             // Add the client_operation_id to operation_id mapping
             self.store
-                .update_data(UpdateClientIdToOperationId {
-                    client_operation_id: client_operation_id.clone(),
-                    operation_id: operation_id.clone(),
-                })
+                .update_data(
+                    UpdateClientIdToOperationId {
+                        client_operation_id: client_operation_id.clone(),
+                        operation_id: operation_id.clone(),
+                    },
+                    None,
+                )
                 .await
                 .err_tip(|| "In RedisAwaitedActionDb::add_action while adding client mapping")?;
 
@@ -895,6 +928,7 @@ where
                 OperationIdToAwaitedAction(Cow::Owned(operation_id)),
                 Arc::downgrade(&self.store),
                 self.now_fn.clone(),
+                self.retain_completed_for,
             ));
         }
     }
@@ -937,6 +971,7 @@ where
                     OperationIdToAwaitedAction(Cow::Owned(awaited_action.operation_id().clone())),
                     Arc::downgrade(&self.store),
                     self.now_fn.clone(),
+                    self.retain_completed_for,
                 )
             }))
     }
@@ -955,6 +990,7 @@ where
                     OperationIdToAwaitedAction(Cow::Owned(awaited_action.operation_id().clone())),
                     Arc::downgrade(&self.store),
                     self.now_fn.clone(),
+                    self.retain_completed_for,
                 )
             }))
     }

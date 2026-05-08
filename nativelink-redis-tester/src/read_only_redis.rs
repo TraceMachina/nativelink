@@ -26,7 +26,7 @@ use tracing::info;
 
 use crate::fake_redis::{arg_as_string, fake_redis_internal};
 
-const FAKE_SCRIPT_SHA: &str = "b22b9926cbce9dd9ba97fa7ba3626f89feea1ed5";
+const FAKE_SCRIPT_SHA: &str = "5148c724ce419ea27d1971dcb61c111dbbc6b63e";
 
 #[derive(Clone, Debug)]
 pub struct ReadOnlyRedis {
@@ -119,6 +119,16 @@ impl ReadOnlyRedis {
                         }
                     }
                     "EVALSHA" => Either::Left(Value::Array(vec![Value::Int(1), Value::Int(0)])),
+                    "EXPIRE" => {
+                        assert_eq!(args[1], OwnedFrame::BulkString(b"60".to_vec()));
+                        let value = self.readonly_triggered.load(Ordering::Relaxed);
+                        if value {
+                            Either::Left(Value::Int(1))
+                        } else {
+                            self.readonly_triggered.store(true, Ordering::Relaxed);
+                            Either::Right(readonly_err.clone())
+                        }
+                    }
                     actual => {
                         panic!("Mock command not implemented! {actual:?}");
                     }

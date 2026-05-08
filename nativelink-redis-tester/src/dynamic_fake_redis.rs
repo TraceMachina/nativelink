@@ -49,7 +49,7 @@ impl<S: SubscriptionManagerNotify> fmt::Debug for FakeRedisBackend<S> {
     }
 }
 
-const FAKE_SCRIPT_SHA: &str = "b22b9926cbce9dd9ba97fa7ba3626f89feea1ed5";
+const FAKE_SCRIPT_SHA: &str = "5148c724ce419ea27d1971dcb61c111dbbc6b63e";
 
 impl<S: SubscriptionManagerNotify + Send + 'static + Sync> FakeRedisBackend<S> {
     pub fn new() -> Self {
@@ -205,9 +205,9 @@ impl<S: SubscriptionManagerNotify + Send + 'static + Sync> FakeRedisBackend<S> {
                         let mut value: HashMap<_, Value> = HashMap::new();
                         value.insert(
                             "data".into(),
-                            Value::BulkString(args[4].as_bytes().unwrap().to_vec()),
+                            Value::BulkString(args[5].as_bytes().unwrap().to_vec()),
                         );
-                        for pair in args[5..].chunks(2) {
+                        for pair in args[6..].chunks(2) {
                             value.insert(
                                 str::from_utf8(pair[0].as_bytes().expect("Field name not bytes"))
                                     .expect("Unable to parse field name as string")
@@ -225,7 +225,17 @@ impl<S: SubscriptionManagerNotify + Send + 'static + Sync> FakeRedisBackend<S> {
                                 .unwrap()
                                 .parse()
                                 .expect("Unable to parse existing version field");
-                        trace!(%key, %expected_existing_version, ?value, "Want to insert with EVALSHA");
+                        let expiry: i64 = str::from_utf8(args[4].as_bytes().unwrap())
+                            .unwrap()
+                            .parse()
+                            .expect("Unable to parse expiry field");
+                        trace!(
+                            key,
+                            expected_existing_version,
+                            expiry,
+                            ?value,
+                            "Want to insert with EVALSHA"
+                        );
                         let version = match self.table.lock().unwrap().entry(key.clone()) {
                             Entry::Occupied(mut occupied_entry) => {
                                 let version = occupied_entry
