@@ -107,6 +107,8 @@ jobs:
 
       - name: Prepare Worker
         uses: ./.github/actions/prepare-nix
+        with:
+          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
 
       - name: Upload image
         id: upload

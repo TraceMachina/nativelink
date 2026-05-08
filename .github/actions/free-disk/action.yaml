@@ -4,7 +4,8 @@ description: "Free up disk space on workers"
 runs:
   using: "composite"
   steps:
-    - name: Free disk space
+    - if: runner.os == 'Linux' # Only works on Linux
+      name: Free disk space
       uses: >- # v3.2.2
         endersonmenezes/free-disk-space@7901478139cff6e9d44df5972fd8ab8fcade4db1
       with:
@@ -32,3 +33,21 @@ runs:
           /usr/share/glade*
           /usr/local/share/chromium
           /usr/local/share/powershell
+
+    # using hints from https://github.com/actions/runner-images/issues/10511#issuecomment-3984466720
+    - if: runner.os == 'macOS'
+      name: Free Disk space
+      shell: bash
+      run: |
+        df -h /
+
+        # Remove unnecessary pre-installed tools (saves 5-10GB)
+        sudo rm -rf /usr/local/share/powershell
+        sudo rm -rf /usr/local/lib/node_modules
+        sudo rm -rf /Library/Frameworks/Mono.framework
+
+        # Remove unused Xcode simulators (can save 2-5GB each)
+        xcrun simctl delete unavailable
+        xcrun simctl runtime list
+
+        df -h /

@@ -962,6 +962,8 @@ impl RunningActionImpl {
         let program = self.canonicalise_path(args[0], &command_proto.working_directory)?;
 
         let mut command_builder = process::Command::new(program);
+        #[cfg(target_family = "unix")]
+        command_builder.arg0(args[0]);
         command_builder
             .args(&args[1..])
             .kill_on_drop(true)

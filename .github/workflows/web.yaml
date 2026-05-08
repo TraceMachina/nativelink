@@ -45,12 +45,14 @@ jobs:
 
       - name: Prepare Worker
         uses: ./.github/actions/prepare-nix
+        with:
+          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
 
       - name: Test Build
         if: github.event_name == 'pull_request'
         working-directory: web/platform
         run: |
-          nix develop --impure --command bash -c "
+          nix develop --fallback --impure --command bash -c "
             bun setup && bun docs && bun run build
           "
 
@@ -60,7 +62,7 @@ jobs:
         env:
           DENO_DEPLOY_TOKEN: ${{ secrets.DENO_DEPLOY_TOKEN }}
         run: |
-          nix develop --impure --command bash -c "
+          nix develop --fallback --impure --command bash -c "
             bun prod --project=nativelink --org=nativelink \
             --token=$DENO_DEPLOY_TOKEN \
           "

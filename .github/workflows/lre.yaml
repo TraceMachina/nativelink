@@ -39,13 +39,16 @@ jobs:
 
       - name: Prepare Worker
         uses: ./.github/actions/prepare-nix
+        with:
+          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
 
       - name: Build example with ${{ matrix.toolchain }} toolchain
         env:
           TOOLCHAIN: ${{ matrix.toolchain }}
         run: >
-          nix develop --impure --command
+          nix develop --impure --fallback --command
           bash -c "bazel run \
+           --lockfile_mode=error \
            --verbose_failures \
            @local-remote-execution//examples:${TOOLCHAIN}"
 
@@ -65,6 +68,8 @@ jobs:
 
 #       - name: Prepare Worker
 #         uses: ./.github/actions/prepare-nix
+#         with:
+#           nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
 
 #       - name: Start Kubernetes cluster
 #         run: >
@@ -77,7 +82,7 @@ jobs:
 #           COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
 #           TOOLCHAIN: ${{ matrix.toolchain }}
 #         run: |
-#           nix develop --impure --command bash -c 'cat > kustomization.yaml << EOF
+#           nix develop --fallback --impure --command bash -c 'cat > kustomization.yaml << EOF
 #           apiVersion: kustomize.config.k8s.io/v1beta1
 #           kind: Kustomization
 #           resources:

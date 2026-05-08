@@ -3,6 +3,78 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.0](https://github.com/TraceMachina/nativelink/compare/v1.0.0..v1.1.0) - 2026-05-06
+
+
+
+### ⛰️  Features
+
+- Use mount namespace too ([#2248](https://github.com/TraceMachina/nativelink/issues/2248)) - ([d418919](https://github.com/TraceMachina/nativelink/commit/d4189198c6f58bcab53f5f56bbab509b5286e49b))
+- Add attic nix cache ([#2274](https://github.com/TraceMachina/nativelink/issues/2274)) - ([098cf67](https://github.com/TraceMachina/nativelink/commit/098cf676220cdc7c0946fce4822b865f5da6f837))
+- Add request limits for mongo ([#2229](https://github.com/TraceMachina/nativelink/issues/2229)) - ([a65c137](https://github.com/TraceMachina/nativelink/commit/a65c13708caf6445e1ded0840d1e4430499f0aed))
+
+### 🐛 Bug Fixes
+
+- Interval for keepalives ([#2305](https://github.com/TraceMachina/nativelink/issues/2305)) - ([02e038a](https://github.com/TraceMachina/nativelink/commit/02e038aa325b1448f42d3bf08ad30dd676bf80e7))
+- Set arg0 for process. ([#2267](https://github.com/TraceMachina/nativelink/issues/2267)) - ([dbb38fd](https://github.com/TraceMachina/nativelink/commit/dbb38fdf514963b731426afb47ef6631b38cfa69))
+- Add use_legacy_resource_names option to GrpcSpec ([#2285](https://github.com/TraceMachina/nativelink/issues/2285)) - ([03a723e](https://github.com/TraceMachina/nativelink/commit/03a723e6f01771e5de85160834ac7691cb28f1f9))
+- Reconnect when ft_create fails ([#2244](https://github.com/TraceMachina/nativelink/issues/2244)) - ([9b784b7](https://github.com/TraceMachina/nativelink/commit/9b784b7cccdc37d7daa3c5467821c59d4b5adbbb))
+- Fix container-image properties for LRE rust ([#2271](https://github.com/TraceMachina/nativelink/issues/2271)) - ([5e94e9b](https://github.com/TraceMachina/nativelink/commit/5e94e9b9a35068fc07cfb7b8515ba1aac3e050f7))
+- Fix community page scrollbar ([#2250](https://github.com/TraceMachina/nativelink/issues/2250)) - ([0bba2b8](https://github.com/TraceMachina/nativelink/commit/0bba2b878d5f01d4aad54a52771e25d932a91687))
+- Fix ft_create race ([#2246](https://github.com/TraceMachina/nativelink/issues/2246)) - ([11f8285](https://github.com/TraceMachina/nativelink/commit/11f8285935da90b9e28bff1ca6340d655d909a5b))
+- Fix the Not Found Store log level ([#2238](https://github.com/TraceMachina/nativelink/issues/2238)) - ([7fe7348](https://github.com/TraceMachina/nativelink/commit/7fe7348349ef42bbbf11eccde99a2609798825de))
+
+### 📚 Documentation
+
+- Document sandboxing settings ([#2289](https://github.com/TraceMachina/nativelink/issues/2289)) - ([a10ac2f](https://github.com/TraceMachina/nativelink/commit/a10ac2f8cae6dcb33db272a3375484a5e4622c8c))
+- Add docs for tempfs ([#2079](https://github.com/TraceMachina/nativelink/issues/2079)) - ([72e03f4](https://github.com/TraceMachina/nativelink/commit/72e03f49d5e34d4c99501a2b210912fdf87401f4))
+
+### 🧪 Testing & CI
+
+- Forward client headers and OTEL trace context to upstream gRPC stores ([#2288](https://github.com/TraceMachina/nativelink/issues/2288)) - ([c2904d3](https://github.com/TraceMachina/nativelink/commit/c2904d3496c0b9fa940ab9aaafb452c323c9448e))
+- Add get_part tests for legacy resource names ([#2291](https://github.com/TraceMachina/nativelink/issues/2291)) - ([aba12cd](https://github.com/TraceMachina/nativelink/commit/aba12cd1ec2b06092b6752c01d051005fa853658))
+- Add grpc test with an actual gRPC server ([#2287](https://github.com/TraceMachina/nativelink/issues/2287)) - ([ff15e88](https://github.com/TraceMachina/nativelink/commit/ff15e88fa210c97049ea61d853437120cae056e3))
+- Re-enable mongo integration test ([#2284](https://github.com/TraceMachina/nativelink/issues/2284)) - ([b7f3971](https://github.com/TraceMachina/nativelink/commit/b7f397129df91c950370318fac7c106685ee1929))
+
+### ⚙️ Miscellaneous
+
+- Readable last_seen ([#2304](https://github.com/TraceMachina/nativelink/issues/2304)) - ([f50dca8](https://github.com/TraceMachina/nativelink/commit/f50dca8afd48fdc9feb745b905bd2b3321ff3dff))
+- Testing and logging around worker keepalive ([#2302](https://github.com/TraceMachina/nativelink/issues/2302)) - ([d8426b6](https://github.com/TraceMachina/nativelink/commit/d8426b6f724dbcb7fb7cb70529ff72dc721c247b))
+- Curl 8.5.0-2ubuntu10.9 ([#2303](https://github.com/TraceMachina/nativelink/issues/2303)) - ([d26d24f](https://github.com/TraceMachina/nativelink/commit/d26d24f2d8e644ab7ace8e5675ee38fdd70abf12))
+- Detect changes as a result of Bazel runs ([#2294](https://github.com/TraceMachina/nativelink/issues/2294)) - ([48bd42b](https://github.com/TraceMachina/nativelink/commit/48bd42b0c05553e2e506e613196e3974538d4905))
+- If namespacing fails, give clearer errors as to why ([#2290](https://github.com/TraceMachina/nativelink/issues/2290)) - ([3ae7168](https://github.com/TraceMachina/nativelink/commit/3ae7168f92ff9b154a57a51b963436f2c4758520))
+- Retry attic cache setup ([#2295](https://github.com/TraceMachina/nativelink/issues/2295)) - ([64d8de0](https://github.com/TraceMachina/nativelink/commit/64d8de0a5e1038b511eba4caec300a01a3b1a70a))
+- add claude skills ([#2292](https://github.com/TraceMachina/nativelink/issues/2292)) - ([510f443](https://github.com/TraceMachina/nativelink/commit/510f4434b9ab0c71af42cd161f6573b478d4f2ad))
+- gitignore user.bazelrc ([#2282](https://github.com/TraceMachina/nativelink/issues/2282)) - ([533d0da](https://github.com/TraceMachina/nativelink/commit/533d0da7c643133c81f66b725248a5d8474b83d5))
+- Publish lre-rs image ([#2270](https://github.com/TraceMachina/nativelink/issues/2270)) - ([0e0ff9f](https://github.com/TraceMachina/nativelink/commit/0e0ff9f17487169c812e4fd375e87731fc8c3ed2))
+- native-cli is no longer needed ([#2268](https://github.com/TraceMachina/nativelink/issues/2268)) - ([f690481](https://github.com/TraceMachina/nativelink/commit/f690481e18dfcb1074281f62d888863ea02c23ca))
+- Remove Flux from deployment examples ([#2266](https://github.com/TraceMachina/nativelink/issues/2266)) - ([8228d85](https://github.com/TraceMachina/nativelink/commit/8228d85ce1ba48de7af2a14640dcadedc09a2125))
+- Upgrade actions for Node24 ([#2265](https://github.com/TraceMachina/nativelink/issues/2265)) - ([fb0d2fa](https://github.com/TraceMachina/nativelink/commit/fb0d2fad03fc215fae52886f1fa278958d104d0a))
+- Replace experimental_s3_store with experimental_cloud_object_store ([#2263](https://github.com/TraceMachina/nativelink/issues/2263)) - ([a92f15d](https://github.com/TraceMachina/nativelink/commit/a92f15d58e430016bfd1664e65210a9f5a52fcbc))
+- Delete unused WriteCounter code ([#2264](https://github.com/TraceMachina/nativelink/issues/2264)) - ([feb4dcc](https://github.com/TraceMachina/nativelink/commit/feb4dcc1c1a6252583d29ea114e61a56f7bb86b4))
+- Support empty instance name in basic_cas ([#2261](https://github.com/TraceMachina/nativelink/issues/2261)) - ([9402e75](https://github.com/TraceMachina/nativelink/commit/9402e75f642d82f0d29cba582bfef3d22c001919))
+- MacOS 26 doesn't like "sleep infinity" ([#2259](https://github.com/TraceMachina/nativelink/issues/2259)) - ([852c343](https://github.com/TraceMachina/nativelink/commit/852c343cba4ffaca7e70e2e754c8afb12e9b2e48))
+- Various security updates including aws-sdk-* ([#2256](https://github.com/TraceMachina/nativelink/issues/2256)) - ([4365b7f](https://github.com/TraceMachina/nativelink/commit/4365b7fbcfa50ea64eb1f6edcabe039e70e0dad5))
+- Log additional timeout cases ([#2232](https://github.com/TraceMachina/nativelink/issues/2232)) - ([10ed3c5](https://github.com/TraceMachina/nativelink/commit/10ed3c57b2083e568186a2e0c738c6ea21ff4a78))
+- 2026-03-24 flake update ([#2041](https://github.com/TraceMachina/nativelink/issues/2041)) - ([7b62bec](https://github.com/TraceMachina/nativelink/commit/7b62beca7701762d44a052c52e8f1ce69a92e9d6))
+- Upgrade to MacOS 26 on runners ([#2245](https://github.com/TraceMachina/nativelink/issues/2245)) - ([1ffae58](https://github.com/TraceMachina/nativelink/commit/1ffae58d75fd8358aad1ec2ac2c4a26cb85f9f1a))
+- Sandbox execution on Linux ([#2241](https://github.com/TraceMachina/nativelink/issues/2241)) - ([4413daf](https://github.com/TraceMachina/nativelink/commit/4413daf008964ac3fbeb2f2d3da2f8182f9297dd))
+- make local worker execute command with canonicalized path (v2) ([#2237](https://github.com/TraceMachina/nativelink/issues/2237)) - ([65c2600](https://github.com/TraceMachina/nativelink/commit/65c2600ee1e297ffc643c7790dd8340c854067af))
+- Redo make_err calls with Error::from_std_err ([#2239](https://github.com/TraceMachina/nativelink/issues/2239)) - ([05ae27e](https://github.com/TraceMachina/nativelink/commit/05ae27e81f74903330f4ecc60a9d4aa2edd1008f))
+
+### ⬆️ Bumps & Version Updates
+
+- Update dependency rules_python to v2 ([#2286](https://github.com/TraceMachina/nativelink/issues/2286)) - ([53b1f8d](https://github.com/TraceMachina/nativelink/commit/53b1f8dff2ee1f9d2c6019114278a906ede2d3dc))
+- Update rand and rustls-webpki ([#2283](https://github.com/TraceMachina/nativelink/issues/2283)) - ([28dc60c](https://github.com/TraceMachina/nativelink/commit/28dc60ca5503143b35e70de74443493317c0cfa0))
+- Update Rust crate rand to v0.9.4 [SECURITY] ([#2275](https://github.com/TraceMachina/nativelink/issues/2275)) - ([8d84808](https://github.com/TraceMachina/nativelink/commit/8d84808667a4b9eef3202289f3d600ecfc030800))
+- Update Rust crate rand to v0.9.3 [SECURITY] ([#2273](https://github.com/TraceMachina/nativelink/issues/2273)) - ([7aa7286](https://github.com/TraceMachina/nativelink/commit/7aa7286a1e775e94265b6eecd97857813ea18c90))
+- Update github.com/go-git/go-git/v5 and google.golang.org/grpc ([#2258](https://github.com/TraceMachina/nativelink/issues/2258)) - ([694dec5](https://github.com/TraceMachina/nativelink/commit/694dec5a9ecbbfc6ff194903a7012a2f7c220914))
+- Update references to v1.0.0 ([#2260](https://github.com/TraceMachina/nativelink/issues/2260)) - ([b5eaef8](https://github.com/TraceMachina/nativelink/commit/b5eaef8a60aa46a2dbb5469c03538603adc2efe9))
+- Update module google.golang.org/grpc to v1.79.3 [SECURITY] ([#2252](https://github.com/TraceMachina/nativelink/issues/2252)) - ([d7a3eb2](https://github.com/TraceMachina/nativelink/commit/d7a3eb2cc4edda242ace1eb01f1d28ef014deb8a))
+- Update Rust crate aws-sdk-s3 to v1.112.0 [SECURITY] ([#2254](https://github.com/TraceMachina/nativelink/issues/2254)) - ([d835945](https://github.com/TraceMachina/nativelink/commit/d835945a6a9b7ec7de99b2ab7b753d1bb6ea94a6))
+- Update dependency astro to v5.18.1 [SECURITY] ([#2247](https://github.com/TraceMachina/nativelink/issues/2247)) - ([67ae5d4](https://github.com/TraceMachina/nativelink/commit/67ae5d458f90a2b60ea76133309e3c2ca7ac0384))
+- Update dependency typescript to v6 ([#2240](https://github.com/TraceMachina/nativelink/issues/2240)) - ([cc52c3a](https://github.com/TraceMachina/nativelink/commit/cc52c3ac92dd6fff59e61ecd3399e8f6d9ecf2f8))
+
 ## [1.0.0](https://github.com/TraceMachina/nativelink/compare/v0.8.0..v1.0.0) - 2026-03-23
 
 

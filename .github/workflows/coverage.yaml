@@ -31,6 +31,8 @@ jobs:
 
       - name: Prepare Worker
         uses: ./.github/actions/prepare-nix
+        with:
+          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
 
       # Ubuntu 24.04 restricts unprivileged user namespaces by default, which breaks
       # the worker tests that use namespaces (e.g. for sandboxing).

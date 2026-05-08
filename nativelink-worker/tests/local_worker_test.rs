@@ -29,7 +29,7 @@ mod utils {
 }
 
 use hyper::body::Frame;
-use nativelink_config::cas_server::{LocalWorkerConfig, WorkerProperty};
+use nativelink_config::cas_server::{EndpointConfig, LocalWorkerConfig, WorkerProperty};
 use nativelink_config::stores::{
     FastSlowSpec, FilesystemSpec, MemorySpec, StoreDirection, StoreSpec,
 };
@@ -59,6 +59,7 @@ use pretty_assertions::assert_eq;
 use prost::Message;
 use rand::Rng;
 use tokio::io::AsyncWriteExt;
+use tokio::time::sleep;
 use utils::local_worker_test_utils::{
     setup_grpc_stream, setup_local_worker, setup_local_worker_with_config,
 };
@@ -553,7 +554,7 @@ async fn experimental_precondition_script_fails() -> Result<(), Error> {
         std::fs::rename(&precondition_script_tmp, &precondition_script).unwrap();
         // Add a small delay to ensure the file system has fully released the file
         // This helps avoid "Text file busy" errors on some Linux environments
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        sleep(Duration::from_millis(100)).await;
         precondition_script
     };
     #[cfg(target_family = "windows")]
@@ -973,4 +974,56 @@ async fn preconditions_met_extra_envs() -> Result<(), Error> {
     preconditions_met(Some("bash -c \"echo $DEMO_ENV\"".to_string()), &extra_envs).await?;
     assert!(logs_contain("test_value_for_demo_env"));
     Ok(())
+}
+
+#[nativelink_test]
+async fn keep_alive_fail_logs() -> Result<(), Error> {
+    let local_worker_config = LocalWorkerConfig {
+        platform_properties: HashMap::new(),
+        worker_api_endpoint: EndpointConfig {
+            timeout: Some(0.01),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let mut test_context = setup_local_worker_with_config(local_worker_config).await;
+    let streaming_response = test_context.maybe_streaming_response.take().unwrap();
+
+    // Ensure our worker connects and properties were sent.
+    let props = test_context
+        .client
+        .expect_connect_worker(Ok(streaming_response))
+        .await;
+    assert_eq!(props, ConnectWorkerRequest::default());
+
+    // handle connection result to scheduler
+    let tx_stream = test_context.maybe_tx_stream.take().unwrap();
+    tx_stream
+        .send(Frame::data(
+            encode_stream_proto(&UpdateForWorker {
+                update: Some(Update::ConnectionResult(ConnectionResult {
+                    worker_id: "foobar".to_string(),
+                })),
+            })
+            .unwrap(),
+        ))
+        .await
+        .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+
+    for _ in 0..30 {
+        if logs_contain("Started KeepAlive timeout=0.0") // plus some extra digits, because floating point fun
+            && logs_contain("nativelink_worker::local_worker: Sent KeepAlive") // first one succeeds
+            && logs_contain(
+                "Failed to send KeepAlive in LocalWorker e=Error { code: Internal, messages: [\"KeepAlive fail\"] }", // second should fail
+            )
+        {
+            return Ok(());
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
+    Err(make_err!(
+        Code::DeadlineExceeded,
+        "Timed out looking for KeepAlive logs"
+    ))
 }

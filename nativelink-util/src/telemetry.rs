@@ -13,8 +13,9 @@
 // limitations under the License.
 
 use core::default::Default;
+use std::collections::HashMap;
 use std::env;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use base64::Engine;
 use base64::prelude::BASE64_STANDARD_NO_PAD;
@@ -202,6 +203,11 @@ const BAZEL_REQUESTMETADATA_HEADER: &str = "build.bazel.remote.execution.v2.requ
 use opentelemetry::baggage::BaggageExt;
 use opentelemetry::context::FutureExt;
 
+/// ASCII headers from an inbound client request, stored in the task context
+/// so that outgoing upstream calls can forward them (e.g. JWT auth tokens).
+#[derive(Clone, Debug, Default)]
+pub struct ClientHeaders(pub Arc<HashMap<String, String>>);
+
 #[derive(Debug, Clone)]
 pub struct OtlpMiddleware<S> {
     inner: S,
@@ -243,6 +249,20 @@ where
         // See: https://docs.rs/tower/latest/tower/trait.Service.html#be-careful-when-cloning-inner-services
         let clone = self.inner.clone();
         let mut inner = core::mem::replace(&mut self.inner, clone);
+
+        // Capture all ASCII-valued request headers before req is consumed, so
+        // they can be forwarded to upstream services (e.g. JWT auth tokens).
+        let client_headers = ClientHeaders(Arc::new(
+            req.headers()
+                .iter()
+                .filter_map(|(name, value)| {
+                    value
+                        .to_str()
+                        .ok()
+                        .map(|v| (name.as_str().to_lowercase(), v.to_string()))
+                })
+                .collect(),
+        ));
 
         let parent_cx = global::get_text_map_propagator(|propagator| {
             propagator.extract(&HeaderExtractor(req.headers()))
@@ -293,6 +313,7 @@ NativeLink instance configured to require this OpenTelemetry Baggage header:
             ]);
         }
 
+        let cx = cx.with_value(client_headers);
         Box::pin(async move { inner.call(req).with_context(cx).await })
     }
 }

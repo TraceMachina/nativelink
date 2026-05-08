@@ -256,7 +256,7 @@ pub async fn make_fake_redis_with_multiple_responses<
 ) -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    info!("Using port {port}");
+    info!(port, "Fake redis booted");
 
     background_spawn!("listener", async move {
         fake_redis(listener, responses).await;

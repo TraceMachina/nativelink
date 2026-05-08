@@ -134,6 +134,7 @@ rust_test_suite(
         "@crates//:hyper-1.7.0",
         "@crates//:mock_instant",
         "@crates//:opentelemetry",
+        "@crates//:opentelemetry-http",
         "@crates//:parking_lot",
         "@crates//:pretty_assertions",
         "@crates//:rand",

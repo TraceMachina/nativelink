@@ -482,6 +482,7 @@
               pkgs.git-cliff
               pkgs.buck2
               packages.update-module-hashes
+              pkgs.python3
 
               # Rust
               bazel
@@ -525,6 +526,7 @@
               pkgs.lre.lre-cc.lre-cc-configs-gen
               pkgs.nativelink-tools.local-image-test
               pkgs.nativelink-tools.create-local-image
+              pkgs.attic-client
             ]
             ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
               pkgs.apple-sdk_14

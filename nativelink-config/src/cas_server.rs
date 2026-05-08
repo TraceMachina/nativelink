@@ -858,6 +858,11 @@ pub struct LocalWorkerConfig {
     /// on Linux.  It is highly recommended as it avoids a number of issues with
     /// zombie processes and also provides additional hermeticity.  If explicitly set
     /// to true and it is not supported the worker will exit with an error.
+    ///
+    /// Note: this will fail for non-privileged Dockerised workers, as workers in
+    /// Docker don't have permissions to make a new user namespace. Privileged
+    /// containers can do this.
+    ///
     /// Default: False.
     pub use_namespaces: Option<bool>,
 

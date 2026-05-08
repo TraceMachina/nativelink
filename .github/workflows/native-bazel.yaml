@@ -48,10 +48,12 @@ jobs:
         run: |
           if [ "$RUNNER_OS" == "Linux" ] || [ "$RUNNER_OS" == "macOS" ]; then
             bazel test //... \
+              --lockfile_mode=error \
               --extra_toolchains=@rust_toolchains//:all \
               --verbose_failures
           elif [ "$RUNNER_OS" == "Windows" ]; then
             bazel \
+              --lockfile_mode=error \
               --output_user_root=${{ steps.bazel-cache.outputs.mountpoint }} \
               test \
               --config=windows \
@@ -87,6 +89,7 @@ jobs:
       - name: Run Store tester with sentinel
         run: |
           bazel run //:redis_store_tester \
+            --lockfile_mode=error \
             --extra_toolchains=@rust_toolchains//:all \
             --verbose_failures -- --redis-mode sentinel --mode sequential
         env:
@@ -98,6 +101,7 @@ jobs:
       - name: Run Store tester with standard
         run: |
           bazel run //:redis_store_tester \
+            --lockfile_mode=error \
             --extra_toolchains=@rust_toolchains//:all \
             --verbose_failures -- --redis-mode standard --mode sequential
         env:
@@ -109,6 +113,7 @@ jobs:
       - name: Run Store tester with cluster
         run: |
           bazel run //:redis_store_tester \
+            --lockfile_mode=error \
             --extra_toolchains=@rust_toolchains//:all \
             --verbose_failures -- --redis-mode cluster --mode sequential
         env:

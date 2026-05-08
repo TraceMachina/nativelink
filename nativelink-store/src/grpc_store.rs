@@ -22,7 +22,7 @@ use bytes::BytesMut;
 use futures::stream::{FuturesUnordered, unfold};
 use futures::{Future, Stream, StreamExt, TryFutureExt, TryStreamExt, future};
 use nativelink_config::stores::GrpcSpec;
-use nativelink_error::{Error, ResultExt, error_if};
+use nativelink_error::{Error, ResultExt, error_if, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_proto::build::bazel::remote::execution::v2::action_cache_client::ActionCacheClient;
 use nativelink_proto::build::bazel::remote::execution::v2::content_addressable_storage_client::ContentAddressableStorageClient;
@@ -47,14 +47,62 @@ use nativelink_util::proto_stream_utils::{
 use nativelink_util::resource_info::ResourceInfo;
 use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::store_trait::{RemoveItemCallback, StoreDriver, StoreKey, UploadSizeInfo};
+use nativelink_util::telemetry::ClientHeaders;
 use nativelink_util::{default_health_status_indicator, tls_utils};
 use opentelemetry::context::Context;
+use opentelemetry::global;
+use opentelemetry::propagation::Injector;
 use parking_lot::Mutex;
 use prost::Message;
 use tokio::time::sleep;
+use tonic::metadata::{Ascii, MetadataKey, MetadataValue};
 use tonic::{Code, IntoRequest, Request, Response, Status, Streaming};
 use tracing::{error, trace, warn};
 use uuid::Uuid;
+
+struct TonicMetadataInjector<'a>(&'a mut tonic::metadata::MetadataMap);
+
+impl Injector for TonicMetadataInjector<'_> {
+    fn set(&mut self, key: &str, value: String) {
+        if let (Ok(k), Ok(v)) = (
+            MetadataKey::from_bytes(key.as_bytes()),
+            MetadataValue::try_from(&value),
+        ) {
+            self.0.insert(k, v);
+        }
+    }
+}
+
+/// Adds configured static headers, forwards nominated client request headers,
+/// and injects the current OpenTelemetry trace context into an outgoing gRPC
+/// request.
+fn enrich_request<T>(
+    mut request: Request<T>,
+    headers: &[(MetadataKey<Ascii>, MetadataValue<Ascii>)],
+    forward_headers: &[String],
+) -> Request<T> {
+    for (key, value) in headers {
+        request.metadata_mut().insert(key.clone(), value.clone());
+    }
+    if !forward_headers.is_empty()
+        && let Some(client_headers) = Context::current().get::<ClientHeaders>()
+    {
+        for name in forward_headers {
+            if let Some(value) = client_headers.0.get(&name.to_lowercase())
+                && let (Ok(k), Ok(v)) = (
+                    MetadataKey::from_bytes(name.as_bytes()),
+                    MetadataValue::try_from(value.as_str()),
+                )
+            {
+                request.metadata_mut().insert(k, v);
+            }
+        }
+    }
+    global::get_text_map_propagator(|propagator| {
+        propagator.inject(&mut TonicMetadataInjector(request.metadata_mut()));
+    });
+    request
+}
 
 // This store is usually a pass-through store, but can also be used as a CAS store. Using it as an
 // AC store has one major side-effect... The has() function may not give the proper size of the
@@ -68,6 +116,9 @@ pub struct GrpcStore {
     connection_manager: ConnectionManager,
     /// Per-RPC timeout. `Duration::ZERO` means disabled.
     rpc_timeout: Duration,
+    use_legacy_resource_names: bool,
+    headers: Vec<(MetadataKey<Ascii>, MetadataValue<Ascii>)>,
+    forward_headers: Vec<String>,
 }
 
 impl GrpcStore {
@@ -94,6 +145,21 @@ impl GrpcStore {
 
         let rpc_timeout = Duration::from_secs(spec.rpc_timeout_s);
 
+        let mut headers = Vec::with_capacity(spec.headers.len());
+        for (name, value) in &spec.headers {
+            // We lowercase keys as HTTP headers are case-insensitive so we should match all cases
+            let key = MetadataKey::from_bytes(name.to_lowercase().as_bytes()).map_err(|_| {
+                make_err!(Code::InvalidArgument, "Invalid gRPC metadata key: {name}")
+            })?;
+            let val = MetadataValue::try_from(value.as_str()).map_err(|_| {
+                make_err!(
+                    Code::InvalidArgument,
+                    "Invalid gRPC metadata value for key: {name}"
+                )
+            })?;
+            headers.push((key, val));
+        }
+
         Ok(Arc::new(Self {
             instance_name: spec.instance_name.clone(),
             store_type: spec.store_type,
@@ -110,6 +176,14 @@ impl GrpcStore {
                 jitter_fn,
             ),
             rpc_timeout,
+            use_legacy_resource_names: spec.use_legacy_resource_names,
+            headers,
+            // We lowercase keys as HTTP headers are case-insensitive so we should match all cases
+            forward_headers: spec
+                .forward_headers
+                .iter()
+                .map(|s| s.to_lowercase())
+                .collect(),
         }))
     }
 
@@ -163,7 +237,11 @@ impl GrpcStore {
                 .await
                 .err_tip(|| "in find_missing_blobs")?;
             ContentAddressableStorageClient::new(channel)
-                .find_missing_blobs(Request::new(request))
+                .find_missing_blobs(enrich_request(
+                    Request::new(request),
+                    &self.headers,
+                    &self.forward_headers,
+                ))
                 .await
                 .err_tip(|| "in GrpcStore::find_missing_blobs")
         })
@@ -188,7 +266,11 @@ impl GrpcStore {
                 .await
                 .err_tip(|| "in batch_update_blobs")?;
             ContentAddressableStorageClient::new(channel)
-                .batch_update_blobs(Request::new(request))
+                .batch_update_blobs(enrich_request(
+                    Request::new(request),
+                    &self.headers,
+                    &self.forward_headers,
+                ))
                 .await
                 .err_tip(|| "in GrpcStore::batch_update_blobs")
         })
@@ -213,7 +295,11 @@ impl GrpcStore {
                 .await
                 .err_tip(|| "in batch_read_blobs")?;
             ContentAddressableStorageClient::new(channel)
-                .batch_read_blobs(Request::new(request))
+                .batch_read_blobs(enrich_request(
+                    Request::new(request),
+                    &self.headers,
+                    &self.forward_headers,
+                ))
                 .await
                 .err_tip(|| "in GrpcStore::batch_read_blobs")
         })
@@ -238,7 +324,11 @@ impl GrpcStore {
                 .await
                 .err_tip(|| "in get_tree")?;
             ContentAddressableStorageClient::new(channel)
-                .get_tree(Request::new(request))
+                .get_tree(enrich_request(
+                    Request::new(request),
+                    &self.headers,
+                    &self.forward_headers,
+                ))
                 .await
                 .err_tip(|| "in GrpcStore::get_tree")
         })
@@ -265,7 +355,11 @@ impl GrpcStore {
             .await
             .err_tip(|| "in read_internal")?;
         let mut response = ByteStreamClient::new(channel)
-            .read(Request::new(request))
+            .read(enrich_request(
+                Request::new(request),
+                &self.headers,
+                &self.forward_headers,
+            ))
             .await
             .err_tip(|| "in GrpcStore::read")?
             .into_inner();
@@ -354,7 +448,11 @@ impl GrpcStore {
                             let local_state_for_rpc = local_state.clone();
                             async move {
                                 let res = ByteStreamClient::new(channel)
-                                    .write(WriteStateWrapper::new(local_state_for_rpc))
+                                    .write(enrich_request(
+                                        Request::new(WriteStateWrapper::new(local_state_for_rpc)),
+                                        &self.headers,
+                                        &self.forward_headers,
+                                    ))
                                     .await
                                     .err_tip(|| "in GrpcStore::write");
                                 let rpc_elapsed_ms = u64::try_from(rpc_start.elapsed().as_millis())
@@ -464,7 +562,11 @@ impl GrpcStore {
                 .await
                 .err_tip(|| "in query_write_status")?;
             ByteStreamClient::new(channel)
-                .query_write_status(Request::new(request))
+                .query_write_status(enrich_request(
+                    Request::new(request),
+                    &self.headers,
+                    &self.forward_headers,
+                ))
                 .await
                 .err_tip(|| "in GrpcStore::query_write_status")
         })
@@ -484,7 +586,11 @@ impl GrpcStore {
                 .await
                 .err_tip(|| "in get_action_result")?;
             ActionCacheClient::new(channel)
-                .get_action_result(Request::new(request))
+                .get_action_result(enrich_request(
+                    Request::new(request),
+                    &self.headers,
+                    &self.forward_headers,
+                ))
                 .await
                 .err_tip(|| "in GrpcStore::get_action_result")
         })
@@ -504,7 +610,11 @@ impl GrpcStore {
                 .await
                 .err_tip(|| "in update_action_result")?;
             ActionCacheClient::new(channel)
-                .update_action_result(Request::new(request))
+                .update_action_result(enrich_request(
+                    Request::new(request),
+                    &self.headers,
+                    &self.forward_headers,
+                ))
                 .await
                 .err_tip(|| "in GrpcStore::update_action_result")
         })
@@ -676,22 +786,31 @@ impl StoreDriver for GrpcStore {
             return self.update_action_result_from_bytes(digest, reader).await;
         }
 
-        let digest_function = Context::current()
-            .get::<DigestHasherFunc>()
-            .map_or_else(default_digest_hasher_func, |v| *v)
-            .proto_digest_func()
-            .as_str_name()
-            .to_ascii_lowercase();
-
         let mut buf = Uuid::encode_buffer();
-        let resource_name = format!(
-            "{}/uploads/{}/blobs/{}/{}/{}",
-            &self.instance_name,
-            Uuid::new_v4().hyphenated().encode_lower(&mut buf),
-            digest_function,
-            digest.packed_hash(),
-            digest.size_bytes(),
-        );
+        let resource_name = if self.use_legacy_resource_names {
+            format!(
+                "{}/uploads/{}/blobs/{}/{}",
+                &self.instance_name,
+                Uuid::new_v4().hyphenated().encode_lower(&mut buf),
+                digest.packed_hash(),
+                digest.size_bytes(),
+            )
+        } else {
+            let digest_function = Context::current()
+                .get::<DigestHasherFunc>()
+                .map_or_else(default_digest_hasher_func, |v| *v)
+                .proto_digest_func()
+                .as_str_name()
+                .to_ascii_lowercase();
+            format!(
+                "{}/uploads/{}/blobs/{}/{}/{}",
+                &self.instance_name,
+                Uuid::new_v4().hyphenated().encode_lower(&mut buf),
+                digest_function,
+                digest.packed_hash(),
+                digest.size_bytes(),
+            )
+        };
         trace!(
             resource_name = %resource_name,
             digest_hash = %digest.packed_hash(),
@@ -779,20 +898,28 @@ impl StoreDriver for GrpcStore {
             return writer.send_eof();
         }
 
-        let digest_function = Context::current()
-            .get::<DigestHasherFunc>()
-            .map_or_else(default_digest_hasher_func, |v| *v)
-            .proto_digest_func()
-            .as_str_name()
-            .to_ascii_lowercase();
-
-        let resource_name = format!(
-            "{}/blobs/{}/{}/{}",
-            &self.instance_name,
-            digest_function,
-            digest.packed_hash(),
-            digest.size_bytes(),
-        );
+        let resource_name = if self.use_legacy_resource_names {
+            format!(
+                "{}/blobs/{}/{}",
+                &self.instance_name,
+                digest.packed_hash(),
+                digest.size_bytes(),
+            )
+        } else {
+            let digest_function = Context::current()
+                .get::<DigestHasherFunc>()
+                .map_or_else(default_digest_hasher_func, |v| *v)
+                .proto_digest_func()
+                .as_str_name()
+                .to_ascii_lowercase();
+            format!(
+                "{}/blobs/{}/{}/{}",
+                &self.instance_name,
+                digest_function,
+                digest.packed_hash(),
+                digest.size_bytes(),
+            )
+        };
 
         let local_state = LocalState {
             resource_name,

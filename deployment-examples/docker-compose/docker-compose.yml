@@ -55,6 +55,7 @@ services:
 
   nativelink_executor:
     image: trace_machina/nativelink:latest
+    privileged: true # So we can do use_namespaces
     build:
       context: ../..
       dockerfile: ./deployment-examples/docker-compose/Dockerfile

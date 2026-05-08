@@ -4027,4 +4027,141 @@ exit 1
         }
         Ok(())
     }
+
+    #[nativelink_test]
+    #[cfg(target_family = "unix")]
+    async fn test_arg0_is_relative_path() -> Result<(), Box<dyn core::error::Error>> {
+        const WORKER_ID: &str = "foo_worker_id";
+
+        fn test_monotonic_clock() -> SystemTime {
+            static CLOCK: AtomicU64 = AtomicU64::new(0);
+            monotonic_clock(&CLOCK)
+        }
+
+        let (_, slow_store, cas_store, ac_store) = setup_stores().await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
+            RunningActionsManagerArgs {
+                root_action_directory,
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                timeout_handled_externally: false,
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            },
+            Callbacks {
+                now_fn: test_monotonic_clock,
+                sleep_fn: |_duration| Box::pin(future::pending()),
+            },
+        )?);
+
+        // Can't just use /bin/sh because of Nix paths
+        let sh_path = which::which("sh")
+            .map_err(|e| Error::from_std_err(Code::Internal, &e))
+            .err_tip(|| "Getting sh_path path")?
+            .to_string_lossy()
+            .to_string();
+
+        let input_root_digest = serialize_and_upload_message(
+            &Directory {
+                symlinks: vec![SymlinkNode {
+                    name: "my_sh".to_string(),
+                    target: sh_path,
+                    node_properties: None,
+                }],
+                ..Default::default()
+            },
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+
+        let command = Command {
+            arguments: vec![
+                "./my_sh".to_string(),
+                "-c".to_string(),
+                "printf \"%s\" \"$0\" > out.txt".to_string(),
+            ],
+            output_paths: vec!["out.txt".to_string()],
+            environment_variables: vec![EnvironmentVariable {
+                name: "PATH".to_string(),
+                value: env::var("PATH").unwrap(),
+            }],
+            ..Default::default()
+        };
+        let command_digest = serialize_and_upload_message(
+            &command,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+
+        let action = Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(input_root_digest.into()),
+            ..Default::default()
+        };
+        let action_digest = serialize_and_upload_message(
+            &action,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+
+        let running_action_impl = running_actions_manager
+            .create_and_add_action(
+                WORKER_ID.to_string(),
+                StartExecute {
+                    execute_request: Some(ExecuteRequest {
+                        action_digest: Some(action_digest.into()),
+                        ..Default::default()
+                    }),
+                    operation_id: OperationId::default().to_string(),
+                    queued_timestamp: None,
+                    platform: action.platform.clone(),
+                    worker_id: WORKER_ID.to_string(),
+                },
+            )
+            .await?;
+
+        let action_result = run_action(running_action_impl).await?;
+
+        let stderr_content = slow_store
+            .as_ref()
+            .get_part_unchunked(action_result.stderr_digest, 0, None)
+            .await?;
+        assert_eq!(
+            action_result.exit_code,
+            0,
+            "Action should succeed. stderr: {}",
+            from_utf8(&stderr_content).unwrap_or("unreadable stderr")
+        );
+
+        assert_eq!(action_result.output_files.len(), 1);
+        assert_eq!(
+            action_result.output_files[0].name_or_path,
+            NameOrPath::Path("out.txt".to_string())
+        );
+
+        let out_digest = action_result.output_files[0].digest;
+        let out_content = slow_store
+            .as_ref()
+            .get_part_unchunked(out_digest, 0, None)
+            .await?;
+
+        assert_eq!(from_utf8(&out_content)?, "./my_sh");
+
+        Ok(())
+    }
 }
