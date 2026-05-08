@@ -44,6 +44,14 @@ bazel_dep(name = "llvm", version = "0.7.7")
 rust_toolchains = use_extension("@rules_rs//rs/toolchains:module_extension.bzl", "toolchains")
 rust_toolchains.toolchain(
     edition = "2024",
+    extra_exec_rustc_flags = {
+        "aarch64-unknown-linux-gnu": ["-Clink-self-contained=-linker"],
+        "x86_64-unknown-linux-gnu": ["-Clink-self-contained=-linker"],
+    },
+    extra_rustc_flags = {
+        "aarch64-unknown-linux-gnu": ["-Clink-self-contained=-linker"],
+        "x86_64-unknown-linux-gnu": ["-Clink-self-contained=-linker"],
+    },
     version = "1.93.1",
 )
 use_repo(rust_toolchains, "default_rust_toolchains")

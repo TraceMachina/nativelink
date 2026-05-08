@@ -4,9 +4,9 @@ module(
     compatibility_level = 0,
 )
 
-bazel_dep(name = "rules_cc", version = "0.2.8")
-bazel_dep(name = "platforms", version = "1.0.0")
-bazel_dep(name = "bazel_skylib", version = "1.8.2")
+bazel_dep(name = "rules_cc", version = "0.2.18")
+bazel_dep(name = "platforms", version = "1.1.0")
+bazel_dep(name = "bazel_skylib", version = "1.9.0")
 bazel_dep(name = "rules_python", version = "2.0.0")
 bazel_dep(name = "rules_shell", version = "0.6.1")
 

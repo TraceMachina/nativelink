@@ -7,15 +7,16 @@ module(
     compatibility_level = 0,
 )
 
-bazel_dep(name = "platforms", version = "1.0.0")
+bazel_dep(name = "platforms", version = "1.1.0")
 
 # Use the starlark implementation of C++ rules instead of the builtin ones.
-bazel_dep(name = "rules_cc", version = "0.2.8")
+bazel_dep(name = "rules_cc", version = "0.2.18")
 
 # Use the starlark implementation of Java rules instead of the builtin ones.
 bazel_dep(name = "rules_java", version = "8.11.0")
+bazel_dep(name = "rules_rs", version = "0.0.76")
 bazel_dep(name = "rules_rust", version = "0.68.1")
-bazel_dep(name = "bazel_skylib", version = "1.8.2")
+bazel_dep(name = "bazel_skylib", version = "1.9.0")
 # rules_rust is pinned to the hermeticbuild fork in the parent MODULE.bazel via
 # archive_override; this submodule resolves to the same archive automatically.
 
