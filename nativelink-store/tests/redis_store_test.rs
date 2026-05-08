@@ -1321,6 +1321,89 @@ fn test_search_by_index_resp3() -> Result<(), Error> {
 }
 
 #[nativelink_test]
+fn test_search_by_index_skips_int_from_cursor_read() -> Result<(), Error> {
+    fn make_ft_aggregate() -> MockCmd {
+        MockCmd::new(
+            redis::cmd("FT.AGGREGATE")
+                .arg("test:_content_prefix_sort_key_3e762c15")
+                .arg("@content_prefix:{ Searchable }")
+                .arg("LOAD")
+                .arg(2)
+                .arg("data")
+                .arg("version")
+                .arg("WITHCURSOR")
+                .arg("COUNT")
+                .arg(1500)
+                .arg("MAXIDLE")
+                .arg(30000)
+                .arg("SORTBY")
+                .arg(2usize)
+                .arg("@sort_key")
+                .arg("ASC"),
+            // First page: one entry, cursor=42 so the stream issues
+            // FT.CURSOR READ for a second page.
+            Ok(Value::Array(vec![
+                Value::Array(vec![
+                    Value::Int(2),
+                    Value::Array(vec![
+                        Value::BulkString(b"data".to_vec()),
+                        Value::BulkString(b"first".to_vec()),
+                        Value::BulkString(b"version".to_vec()),
+                        Value::BulkString(b"1".to_vec()),
+                    ]),
+                ]),
+                Value::Int(42),
+            ])),
+        )
+    }
+
+    fn make_ft_cursor_read() -> MockCmd {
+        MockCmd::new(
+            redis::cmd("ft.cursor")
+                .arg("read")
+                .arg("test:_content_prefix_sort_key_3e762c15")
+                .cursor_arg(42),
+            Ok(Value::Array(vec![
+                Value::Array(vec![
+                    // Leading integer that the filter must drop.
+                    Value::Int(1),
+                    Value::Array(vec![
+                        Value::BulkString(b"data".to_vec()),
+                        Value::BulkString(b"second".to_vec()),
+                        Value::BulkString(b"version".to_vec()),
+                        Value::BulkString(b"2".to_vec()),
+                    ]),
+                ]),
+                // cursor=0 ends the stream.
+                Value::Int(0),
+            ])),
+        )
+    }
+
+    let store = make_mock_store(vec![make_ft_aggregate(), make_ft_cursor_read()]).await;
+    let search_provider = SearchByContentPrefix {
+        prefix: "Searchable".to_string(),
+    };
+
+    let search_results: Vec<TestSchedulerDataUnversioned> = store
+        .search_by_index_prefix(search_provider)
+        .await
+        .err_tip(|| "Failed to search by index")?
+        .try_collect()
+        .await?;
+
+    assert_eq!(
+        search_results.len(),
+        2,
+        "Both entries should be returned with the leading Int from cursor read filtered out",
+    );
+    assert_eq!(search_results[0].content, "first");
+    assert_eq!(search_results[1].content, "second");
+
+    Ok(())
+}
+
+#[nativelink_test]
 async fn no_items_from_none_subscription_channel() -> Result<(), Error> {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let subscription_manager = RedisSubscriptionManager::new(rx);
