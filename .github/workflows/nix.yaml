@@ -55,6 +55,8 @@ jobs:
       - name: Teardown Worker
         uses: ./.github/actions/end-nix
         if: always()
+        with:
+          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
 
   nix-cargo:
     strategy:
@@ -82,6 +84,8 @@ jobs:
       - name: Teardown Worker
         uses: ./.github/actions/end-nix
         if: always()
+        with:
+          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
 
   installation:
     strategy:
@@ -112,6 +116,7 @@ jobs:
         if: always()
         with:
           nix_name: .#nativelink-is-executable-test
+          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
 
   integration:
     name: ${{ matrix.test-name }}
@@ -138,4 +143,5 @@ jobs:
         uses: ./.github/actions/end-nix
         if: always()
         with:
+          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
           nix_name: .#${{ matrix.test-name }}-with-nativelink-test

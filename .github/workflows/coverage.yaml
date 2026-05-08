@@ -55,6 +55,7 @@ jobs:
         if: always()
         with:
           nix_name: .#nativelinkCoverageForHost
+          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
 
   deploy:
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}

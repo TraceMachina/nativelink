@@ -5,17 +5,20 @@ description: "Common teardown for all runs using Nix."
 inputs:
   nix_name:
     default: ""
+  nativelink_attic_token:
+    required: true
 runs:
   using: "composite"
   steps:
       - name: Check attic push
+        if: ${{ inputs.nativelink_attic_token != '' }}
         run: |
           cd /tmp
           cat attic-push.log
         shell: bash
 
       - name: Attic push
-        if: ${{ inputs.nix_name != '' }}
+        if: ${{ inputs.nix_name != '' && inputs.nativelink_attic_token != '' }}
         run: |
           cd /tmp
           ./result/bin/attic push nativelink $(nix eval --raw ${{ inputs.nix_name }})

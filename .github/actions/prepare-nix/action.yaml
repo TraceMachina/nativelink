@@ -29,13 +29,17 @@ runs:
           ./result/bin/attic login uc1-dev https://attic.uc1.scdev.nativelink.net/ ${{ inputs.nativelink_attic_token }}
           ./result/bin/attic use nativelink
 
-          # Replace with more reliable attic for working around
-          # * https://github.com/zhaofengli/attic/issues/226
-          # * https://github.com/zhaofengli/attic/pull/317
-          # We use the original one first to get caching of this
-          nix build github:TraceMachina/attic
-          RUST_BACKTRACE=full RUST_LOG=debug,hyper_util=info,rustls=info ./result/bin/attic watch-store nativelink &> attic-push.log &
+          if [ -n "${{ inputs.nativelink_attic_token }}" ]; then
+            # If we don't have a token, we can't push!
 
-          # For the cases where we don't have a cache of it, push anyways
-          ./result/bin/attic push nativelink $(nix eval --raw github:TraceMachina/attic)
+            # Replace with more reliable attic for working around
+            # * https://github.com/zhaofengli/attic/issues/226
+            # * https://github.com/zhaofengli/attic/pull/317
+            # We use the original one first to get caching of this
+            nix build github:TraceMachina/attic
+            RUST_BACKTRACE=full RUST_LOG=debug,hyper_util=info,rustls=info ./result/bin/attic watch-store nativelink &> attic-push.log &
+
+            # For the cases where we don't have a cache of it, push it
+            ./result/bin/attic push nativelink $(nix eval --raw github:TraceMachina/attic)
+          fi
         shell: bash

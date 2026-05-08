@@ -48,4 +48,5 @@ jobs:
         uses: ./.github/actions/end-nix
         if: always()
         with:
+          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
           nix_name: .#${{ matrix.image }}
