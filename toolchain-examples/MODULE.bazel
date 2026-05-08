@@ -45,7 +45,8 @@ archive_override(
     urls = ["https://github.com/bazel-contrib/rules_go/archive/74199c92e20399b6ef46684b2c6fdd94b50a7892.zip"],
 )
 
-# Rust
+# Rust — see the parent MODULE.bazel for the archive_override that pins
+# rules_rust to the hermeticbuild fork.
 bazel_dep(name = "rules_rust", version = "0.68.1")
 
 # C++ toolchain via zig-cc.

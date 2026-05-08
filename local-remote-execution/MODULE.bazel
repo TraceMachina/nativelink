@@ -16,6 +16,8 @@ bazel_dep(name = "rules_cc", version = "0.2.8")
 bazel_dep(name = "rules_java", version = "8.11.0")
 bazel_dep(name = "rules_rust", version = "0.68.1")
 bazel_dep(name = "bazel_skylib", version = "1.8.2")
+# rules_rust is pinned to the hermeticbuild fork in the parent MODULE.bazel via
+# archive_override; this submodule resolves to the same archive automatically.
 
 lre_rs = use_extension("//rust:extension.bzl", "lre_rs")
 use_repo(
@@ -28,4 +30,15 @@ use_repo(
     "lre-rs-stable-aarch64-linux",
     "lre-rs-stable-x86_64-darwin",
     "lre-rs-stable-x86_64-linux",
+)
+
+# Register the bootstrap rust toolchains. The non-bootstrap pair is registered
+# via lre.bazelrc (`--extra_toolchains`) on the host side; the bootstrap pair
+# only matches when @rules_rust//rust/private:bootstrap_setting is flipped on,
+# which happens transitively when building the rust-built process_wrapper.
+register_toolchains(
+    "//rust:rust-x86_64-linux-bootstrap",
+    "//rust:rust-aarch64-linux-bootstrap",
+    "//rust:rust-x86_64-darwin-bootstrap",
+    "//rust:rust-aarch64-darwin-bootstrap",
 )
