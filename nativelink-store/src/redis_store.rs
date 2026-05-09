@@ -1335,22 +1335,61 @@ impl Drop for RedisSubscription {
             return; // Already dropped, nothing to do.
         };
         let key = receiver.borrow().clone();
-        // IMPORTANT: This must be dropped before receiver_count() is called.
-        drop(receiver);
         let Some(subscribed_keys) = self.weak_subscribed_keys.upgrade() else {
-            return; // Already dropped, nothing to do.
+            return; // Parent dropped — nothing to do.
         };
+        // Acquire the write lock BEFORE dropping our receiver. Earlier
+        // versions of this Drop dropped the receiver first and then
+        // acquired the lock to decide whether to remove the publisher
+        // entry; under concurrent drops of two subscriptions sharing the
+        // same publisher (e.g. two `WaitExecution` clients on the same
+        // operation_id), both threads decremented their receiver count
+        // before either took the lock, both saw `receiver_count() == 0`
+        // when they finally got in, and the loser of the lock race
+        // logged the spurious
+        //   "Key … was not found in subscribed keys when checking if
+        //    it should be removed."
+        // error against an entry the winner had just removed. Worse,
+        // the desync window could let a fresh `subscribe(same_key)`
+        // re-insert a publisher between the two drops, after which the
+        // second drop would mutate state belonging to *that* fresh
+        // publisher.
+        //
+        // Holding the write lock across the receiver drop closes the
+        // window: no other `subscribe`/`Drop` can interleave with our
+        // count change. We use the "is count == 1 with my receiver
+        // still alive?" predicate instead of the original "is count == 0
+        // after I drop?" — both express "am I the last subscriber",
+        // but the former is decidable while we still hold the receiver
+        // (and therefore can be evaluated under the lock without
+        // requiring the receiver-drop to happen first).
         let mut subscribed_keys = subscribed_keys.write();
-        let Some(value) = subscribed_keys.get(&key) else {
-            error!(
-                "Key {key} was not found in subscribed keys when checking if it should be removed."
+        let Some(publisher) = subscribed_keys.get(&key) else {
+            // Genuinely should not happen with the write lock held —
+            // every removal goes through this same lock. Demoted from
+            // ERROR to WARN: most observed occurrences in production
+            // were the lockless race above, not real corruption, and
+            // we've now eliminated that source. Keep the log so any
+            // *new* path that removes entries without holding the lock
+            // surfaces.
+            warn!(
+                %key,
+                "RedisSubscription::drop: key absent from subscribed_keys under write lock — \
+                 indicates an unexpected removal path",
             );
             return;
         };
-        // If we have no receivers, cleanup the entry from our map.
-        if value.receiver_count() == 0 {
-            subscribed_keys.remove(key);
+        // Count includes our own (still-alive) receiver. If we are the
+        // sole subscriber, remove the publisher entry.
+        if publisher.receiver_count() == 1 {
+            subscribed_keys.remove(&key);
         }
+        // Drop our receiver only after the bookkeeping decision. The
+        // count change becomes visible only here, but by this point
+        // either (a) we already removed the publisher from the map
+        // (count is irrelevant), or (b) other live receivers remain
+        // and the count truthfully drops by one.
+        drop(receiver);
     }
 }
 

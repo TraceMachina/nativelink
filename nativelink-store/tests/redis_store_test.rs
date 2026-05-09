@@ -23,8 +23,8 @@ use nativelink_config::stores::{RedisMode, RedisSpec};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_redis_tester::{
-    ReadOnlyRedis, add_lua_script, fake_redis_sentinel_master_stream, fake_redis_sentinel_stream,
-    fake_redis_stream, make_fake_redis_with_responses,
+    ReadOnlyRedis, SubscriptionManagerNotify, add_lua_script, fake_redis_sentinel_master_stream,
+    fake_redis_sentinel_stream, fake_redis_stream, make_fake_redis_with_responses,
 };
 use nativelink_store::cas_utils::ZERO_BYTE_DIGESTS;
 use nativelink_store::redis_store::{
@@ -36,8 +36,9 @@ use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::HealthStatus;
 use nativelink_util::store_trait::{
     FalseValue, SchedulerCurrentVersionProvider, SchedulerIndexProvider, SchedulerStore,
-    SchedulerStoreDataProvider, SchedulerStoreDecodeTo, SchedulerStoreKeyProvider, StoreKey,
-    StoreLike, TrueValue, UploadSizeInfo,
+    SchedulerStoreDataProvider, SchedulerStoreDecodeTo, SchedulerStoreKeyProvider,
+    SchedulerSubscription, SchedulerSubscriptionManager, StoreKey, StoreLike, TrueValue,
+    UploadSizeInfo,
 };
 use pretty_assertions::assert_eq;
 use redis::{PushInfo, RedisError, Value};
@@ -1388,5 +1389,172 @@ async fn send_messages_to_subscription_channel() -> Result<(), Error> {
     // Because otherwise it gets dropped immediately, and we need it to live to do things
     drop(subscription_manager);
 
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Regression tests for `RedisSubscription::Drop` map-desync.
+//
+// Pre-fix, `Drop` dropped its `watch::Receiver` *before* taking the
+// `subscribed_keys` write lock. With two `RedisSubscription`s sharing
+// a publisher (e.g. two `WaitExecution` clients on the same operation),
+// both threads could race past the receiver-drop and contend for the
+// lock holding stale `receiver_count() == 0` views — the loser would
+// remove an entry that the winner had already removed (or, worse,
+// remove an entry that a fresh `subscribe(same_key)` had already
+// re-inserted). The visible symptom in production was a spurious
+// log:
+//   "Key {key} was not found in subscribed keys when checking if it
+//    should be removed"
+// firing whenever multiple watchers on a hot operation_id were torn
+// down concurrently. The post-fix predicate ("count == 1 with my
+// receiver still alive, evaluated under the write lock") makes the
+// race structurally impossible.
+//
+// The post-fix `Drop` now reaches its warning path *only* if the
+// `subscribed_keys` map gets mutated by a code path that doesn't take
+// the lock — which is what we want it to flag, not the noise the
+// pre-fix code generated. So these tests assert that the post-fix
+// warning is silent under normal subscribe/drop traffic, including
+// concurrent drops.
+
+/// Test key provider that just wraps a string. Reused across the
+/// subscription regression tests below.
+#[derive(Clone)]
+struct TestSubKey(String);
+
+impl SchedulerStoreKeyProvider for TestSubKey {
+    type Versioned = FalseValue;
+    fn get_key(&self) -> StoreKey<'static> {
+        StoreKey::Str(std::borrow::Cow::Owned(self.0.clone()))
+    }
+}
+
+/// Sanity: a single subscriber that drops cleanly produces no warning
+/// and no error.
+#[nativelink_test]
+async fn redis_subscription_single_drop_is_silent() -> Result<(), Error> {
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let manager = RedisSubscriptionManager::new(rx);
+
+    let sub = manager.subscribe(TestSubKey("solo-key".to_string()))?;
+    drop(sub);
+    sleep(Duration::from_millis(10)).await;
+
+    assert!(
+        !logs_contain("key absent from subscribed_keys under write lock"),
+        "single-subscriber drop unexpectedly logged the absence warning",
+    );
+    assert!(!logs_contain("ERROR"));
+
+    drop(manager);
+    Ok(())
+}
+
+/// Two subscribers share a publisher. Dropping the first must leave
+/// the publisher entry in place so the second's `changed()` keeps
+/// firing on `notify_for_test`. Pre-fix this test was *also* clean
+/// because the bug only fires on concurrent drops; this is the
+/// non-racing baseline.
+#[nativelink_test]
+async fn redis_subscription_drop_one_of_two_keeps_publisher() -> Result<(), Error> {
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let manager = RedisSubscriptionManager::new(rx);
+
+    let key = "shared-key";
+    let sub_a = manager.subscribe(TestSubKey(key.to_string()))?;
+    let mut sub_b = manager.subscribe(TestSubKey(key.to_string()))?;
+
+    // Drop the first; the second's subscription must still resolve
+    // when we notify on the same key.
+    drop(sub_a);
+
+    manager.notify_for_test(key.to_string());
+    timeout(Duration::from_secs(2), sub_b.changed())
+        .await
+        .expect("sub_b.changed() did not fire — publisher entry was dropped prematurely")?;
+
+    assert!(
+        !logs_contain("key absent from subscribed_keys under write lock"),
+        "absence warning fired during single drop with another receiver alive",
+    );
+    drop(sub_b);
+    drop(manager);
+    Ok(())
+}
+
+/// **Race regression.** Two subscribers share a publisher; both are
+/// dropped concurrently from separate tasks. Pre-fix this would
+/// occasionally fire the absence warning (the receiver-drop happened
+/// before the lock, so both threads' `receiver_count()` could read 0
+/// inside the lock, and the loser found the entry already removed).
+/// We loop the scenario many times to keep the race window addressed
+/// even on machines where the timing is favourable to the bug.
+#[nativelink_test]
+async fn redis_subscription_concurrent_drops_no_absence_warn() -> Result<(), Error> {
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let manager = RedisSubscriptionManager::new(rx);
+
+    const ITERATIONS: usize = 200;
+    for i in 0..ITERATIONS {
+        let key = format!("race-key-{i}");
+        let sub_a = manager.subscribe(TestSubKey(key.clone()))?;
+        let sub_b = manager.subscribe(TestSubKey(key.clone()))?;
+
+        // `spawn_blocking` puts each Drop on its own thread; with the
+        // pre-fix code's "drop receiver, then take lock" sequence,
+        // both threads can race into the lock with already-decremented
+        // counts. With the post-fix "take lock, then evaluate, then
+        // drop receiver" sequence, the lock serialises the decision
+        // and the warning never fires.
+        let h_a = tokio::task::spawn_blocking(move || drop(sub_a));
+        let h_b = tokio::task::spawn_blocking(move || drop(sub_b));
+        h_a.await.unwrap();
+        h_b.await.unwrap();
+    }
+    sleep(Duration::from_millis(50)).await;
+
+    assert!(
+        !logs_contain("key absent from subscribed_keys under write lock"),
+        "concurrent drops produced the absence warning at least once across {ITERATIONS} \
+         iterations — the Drop ordering regressed",
+    );
+    assert!(!logs_contain("ERROR"));
+
+    drop(manager);
+    Ok(())
+}
+
+/// Subscribe → drop both → re-subscribe to the same key. Post-fix the
+/// re-subscribe must create a fresh publisher (the old entry was
+/// removed by the last drop). We confirm the fresh publisher is
+/// connected by notifying and waiting for `changed()`.
+#[nativelink_test]
+async fn redis_subscription_resubscribe_after_drop_creates_fresh_publisher() -> Result<(), Error> {
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let manager = RedisSubscriptionManager::new(rx);
+
+    let key = "cycle-key";
+    let sub_a = manager.subscribe(TestSubKey(key.to_string()))?;
+    let sub_b = manager.subscribe(TestSubKey(key.to_string()))?;
+    drop(sub_a);
+    drop(sub_b);
+
+    // Re-subscribe to the same key. If the previous drops left the
+    // map in an inconsistent state (stale publisher kept, or a
+    // partially-deconstructed entry), this either reuses a dead
+    // publisher (changed() never fires) or panics inside the
+    // patricia map.
+    let mut sub_c = manager.subscribe(TestSubKey(key.to_string()))?;
+    manager.notify_for_test(key.to_string());
+    timeout(Duration::from_secs(2), sub_c.changed())
+        .await
+        .expect("re-subscribe after drops produced a dead publisher")?;
+
+    assert!(!logs_contain(
+        "key absent from subscribed_keys under write lock"
+    ));
+    drop(sub_c);
+    drop(manager);
     Ok(())
 }
