@@ -23,8 +23,9 @@ use nativelink_config::stores::{RedisMode, RedisSpec};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_redis_tester::{
-    ReadOnlyRedis, SubscriptionManagerNotify, add_lua_script, fake_redis_sentinel_master_stream,
-    fake_redis_sentinel_stream, fake_redis_stream, make_fake_redis_with_responses,
+    ReadOnlyRedis, SubscriptionManagerNotify, add_lua_script, add_to_response,
+    fake_redis_sentinel_master_stream, fake_redis_sentinel_stream, fake_redis_stream,
+    make_fake_redis_with_responses,
 };
 use nativelink_store::cas_utils::ZERO_BYTE_DIGESTS;
 use nativelink_store::redis_store::{
@@ -67,12 +68,10 @@ async fn make_mock_store(
     make_mock_store_with_prefix(commands, String::new()).await
 }
 
+const FAKE_SCRIPT_SHA: &str = "5148c724ce419ea27d1971dcb61c111dbbc6b63e";
+
 fn add_lua_version_script(mut responses: HashMap<String, String>) -> HashMap<String, String> {
-    add_lua_script(
-        &mut responses,
-        LUA_VERSION_SET_SCRIPT,
-        "b22b9926cbce9dd9ba97fa7ba3626f89feea1ed5",
-    );
+    add_lua_script(&mut responses, LUA_VERSION_SET_SCRIPT, FAKE_SCRIPT_SHA);
     responses
 }
 
@@ -93,7 +92,7 @@ async fn make_mock_store_with_prefix(
         0,
         MockCmd::new(
             redis::cmd("SCRIPT").arg("LOAD").arg(LUA_VERSION_SET_SCRIPT),
-            Ok("b22b9926cbce9dd9ba97fa7ba3626f89feea1ed5"),
+            Ok(FAKE_SCRIPT_SHA),
         ),
     );
     let mock_connection = MockRedisConnection::new(commands);
@@ -799,7 +798,10 @@ async fn test_sentinel_connect_and_update_data_unversioned_readonly() {
         content: "Test scheduler data #1".to_string(),
         version: 0,
     };
-    store.update_data(data).await.expect("working update");
+    store
+        .update_data(data, Some(Duration::from_secs(60)))
+        .await
+        .expect("working update");
 }
 
 #[nativelink_test]
@@ -826,7 +828,7 @@ async fn test_sentinel_connect_and_update_data_versioned_readonly() {
         content: "Test scheduler data #1".to_string(),
         version: 0,
     };
-    store.update_data(data).await.expect("working update");
+    store.update_data(data, None).await.expect("working update");
 }
 
 #[nativelink_test]
@@ -1328,6 +1330,91 @@ fn test_search_by_index_resp3() -> Result<(), Error> {
 }
 
 #[nativelink_test]
+fn test_search_by_index_skips_int_from_cursor_read() -> Result<(), Error> {
+    fn make_ft_aggregate() -> MockCmd {
+        MockCmd::new(
+            redis::cmd("FT.AGGREGATE")
+                .arg("test:_content_prefix_sort_key_3e762c15")
+                .arg("@content_prefix:{ Searchable }")
+                .arg("TIMEOUT")
+                .arg(10000_u64)
+                .arg("LOAD")
+                .arg(2)
+                .arg("data")
+                .arg("version")
+                .arg("WITHCURSOR")
+                .arg("COUNT")
+                .arg(1500)
+                .arg("MAXIDLE")
+                .arg(30000)
+                .arg("SORTBY")
+                .arg(2usize)
+                .arg("@sort_key")
+                .arg("ASC"),
+            // First page: one entry, cursor=42 so the stream issues
+            // FT.CURSOR READ for a second page.
+            Ok(Value::Array(vec![
+                Value::Array(vec![
+                    Value::Int(2),
+                    Value::Array(vec![
+                        Value::BulkString(b"data".to_vec()),
+                        Value::BulkString(b"first".to_vec()),
+                        Value::BulkString(b"version".to_vec()),
+                        Value::BulkString(b"1".to_vec()),
+                    ]),
+                ]),
+                Value::Int(42),
+            ])),
+        )
+    }
+
+    fn make_ft_cursor_read() -> MockCmd {
+        MockCmd::new(
+            redis::cmd("ft.cursor")
+                .arg("read")
+                .arg("test:_content_prefix_sort_key_3e762c15")
+                .cursor_arg(42),
+            Ok(Value::Array(vec![
+                Value::Array(vec![
+                    // Leading integer that the filter must drop.
+                    Value::Int(1),
+                    Value::Array(vec![
+                        Value::BulkString(b"data".to_vec()),
+                        Value::BulkString(b"second".to_vec()),
+                        Value::BulkString(b"version".to_vec()),
+                        Value::BulkString(b"2".to_vec()),
+                    ]),
+                ]),
+                // cursor=0 ends the stream.
+                Value::Int(0),
+            ])),
+        )
+    }
+
+    let store = make_mock_store(vec![make_ft_aggregate(), make_ft_cursor_read()]).await;
+    let search_provider = SearchByContentPrefix {
+        prefix: "Searchable".to_string(),
+    };
+
+    let search_results: Vec<TestSchedulerDataUnversioned> = store
+        .search_by_index_prefix(search_provider)
+        .await
+        .err_tip(|| "Failed to search by index")?
+        .try_collect()
+        .await?;
+
+    assert_eq!(
+        search_results.len(),
+        2,
+        "Both entries should be returned with the leading Int from cursor read filtered out",
+    );
+    assert_eq!(search_results[0].content, "first");
+    assert_eq!(search_results[1].content, "second");
+
+    Ok(())
+}
+
+#[nativelink_test]
 async fn no_items_from_none_subscription_channel() -> Result<(), Error> {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let subscription_manager = RedisSubscriptionManager::new(rx);
@@ -1557,4 +1644,103 @@ async fn redis_subscription_resubscribe_after_drop_creates_fresh_publisher() -> 
     drop(sub_c);
     drop(manager);
     Ok(())
+}
+
+async fn core_test_update_data_unversioned_with_expiry(expire_response: i64) {
+    let redis_span = info_span!("redis");
+    let mut responses = add_lua_version_script(fake_redis_stream());
+    add_to_response(
+        &mut responses,
+        redis::cmd("HMSET")
+            .arg("test:scheduler_key_1")
+            .arg("data")
+            .arg("Test scheduler data #1")
+            .arg("test_index")
+            .arg("test_value")
+            .arg("content_prefix")
+            .arg("Test sched"),
+        vec![Value::Okay],
+    );
+    add_to_response(
+        &mut responses,
+        redis::cmd("EXPIRE").arg("test:scheduler_key_1").arg(60),
+        vec![Value::Int(expire_response)],
+    );
+
+    let redis_port = make_fake_redis_with_responses(responses)
+        .instrument(redis_span)
+        .await;
+    let spec = RedisSpec {
+        addresses: vec![format!("redis://127.0.0.1:{redis_port}/")],
+        mode: RedisMode::Standard,
+        ..Default::default()
+    };
+    let mut raw_store =
+        Arc::into_inner(RedisStore::new_standard(spec).await.expect("Working spec")).unwrap();
+    raw_store.replace_temp_name_generator(mock_uuid_generator);
+    let store = Arc::new(raw_store);
+    let data = TestSchedulerDataUnversioned {
+        key: "test:scheduler_key_1".to_string(),
+        content: "Test scheduler data #1".to_string(),
+        version: 0,
+    };
+    store
+        .update_data(data, Some(Duration::from_secs(60)))
+        .await
+        .expect("working update");
+}
+
+#[nativelink_test]
+async fn test_update_data_unversioned_with_expiry() {
+    core_test_update_data_unversioned_with_expiry(1).await;
+    assert!(!logs_contain("Wasn't able to set expiry for Redis key"));
+}
+
+#[nativelink_test]
+async fn test_update_data_unversioned_with_expiry_failure() {
+    core_test_update_data_unversioned_with_expiry(0).await;
+    assert!(logs_contain(
+        "Wasn't able to set expiry for Redis key redis_key=test:scheduler_key_1 seconds=60"
+    ));
+}
+#[nativelink_test]
+async fn test_update_data_versioned_with_expiry() {
+    let redis_span = info_span!("redis");
+    let mut responses = add_lua_version_script(fake_redis_stream());
+    add_to_response(
+        &mut responses,
+        redis::cmd("EVALSHA")
+            .arg(FAKE_SCRIPT_SHA)
+            .arg("1")
+            .arg("test:scheduler_key_1")
+            .arg("0")
+            .arg("60")
+            .arg("Test scheduler data #1")
+            .arg("test_index")
+            .arg("test_value")
+            .arg("content_prefix")
+            .arg("Test sched"),
+        vec![Value::Array(vec![Value::Boolean(true), Value::Int(1)])],
+    );
+    let redis_port = make_fake_redis_with_responses(responses)
+        .instrument(redis_span)
+        .await;
+    let spec = RedisSpec {
+        addresses: vec![format!("redis://127.0.0.1:{redis_port}/")],
+        mode: RedisMode::Standard,
+        ..Default::default()
+    };
+    let mut raw_store =
+        Arc::into_inner(RedisStore::new_standard(spec).await.expect("Working spec")).unwrap();
+    raw_store.replace_temp_name_generator(mock_uuid_generator);
+    let store = Arc::new(raw_store);
+    let data = TestSchedulerDataVersioned {
+        key: "test:scheduler_key_1".to_string(),
+        content: "Test scheduler data #1".to_string(),
+        version: 0,
+    };
+    store
+        .update_data(data, Some(Duration::from_secs(60)))
+        .await
+        .expect("working update");
 }

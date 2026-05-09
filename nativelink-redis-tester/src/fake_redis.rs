@@ -64,6 +64,14 @@ pub(crate) fn arg_as_string(output: &mut String, arg: Value) {
         Value::Nil => {
             write!(output, "_\r\n").unwrap();
         }
+        Value::Boolean(value) => {
+            if value {
+                write!(output, "#t\r\n")
+            } else {
+                write!(output, "#f\r\n")
+            }
+            .unwrap();
+        }
         _ => {
             panic!("No support for {arg:?}")
         }
@@ -249,9 +257,7 @@ where
     fake_redis_internal(listener, funcs).await;
 }
 
-pub async fn make_fake_redis_with_multiple_responses<
-    B: BuildHasher + Clone + Send + 'static + Sync,
->(
+async fn make_fake_redis_with_multiple_responses<B: BuildHasher + Clone + Send + 'static + Sync>(
     responses: Vec<HashMap<String, String, B>>,
 ) -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

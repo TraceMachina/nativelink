@@ -167,6 +167,16 @@ impl AwaitedAction {
         &self.state
     }
 
+    pub fn is_complete(&self) -> bool {
+        match &self.state.stage {
+            ActionStage::Unknown
+            | ActionStage::CacheCheck
+            | ActionStage::Queued
+            | ActionStage::Executing => false,
+            ActionStage::Completed(_) | ActionStage::CompletedFromCache(_) => true,
+        }
+    }
+
     pub(crate) const fn maybe_origin_metadata(&self) -> Option<&OriginMetadata> {
         self.maybe_origin_metadata.as_ref()
     }

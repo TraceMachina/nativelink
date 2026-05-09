@@ -41,16 +41,22 @@ jobs:
       - name: Invoke Bazel build in Nix shell
         run: |
           if [ "$RUNNER_OS" == "Linux" ]; then
-            nix develop --impure --command \
+            nix develop --fallback --impure --command \
             bash -c "bazel test ... --verbose_failures --lockfile_mode=error"
           elif [ "$RUNNER_OS" == "macOS" ]; then
-            nix develop --impure --command \
+            nix develop --fallback --impure --command \
             bash -c "bazel test //... --verbose_failures --lockfile_mode=error"
           else
             echo "Unsupported runner OS: $RUNNER_OS"
             exit 1
           fi
         shell: bash
+
+      - name: Teardown Worker
+        uses: ./.github/actions/end-nix
+        if: always()
+        with:
+          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
 
   nix-cargo:
     strategy:
@@ -72,8 +78,14 @@ jobs:
 
       - name: Invoke Cargo build in Nix shell
         run: >
-          nix develop --impure --command
+          nix develop --fallback --impure --command
           bash -c "cargo test --all --profile=smol"
+
+      - name: Teardown Worker
+        uses: ./.github/actions/end-nix
+        if: always()
+        with:
+          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
 
   installation:
     strategy:
@@ -99,6 +111,13 @@ jobs:
         run: |
           nix run -L .#nativelink-is-executable-test
 
+      - name: Teardown Worker
+        uses: ./.github/actions/end-nix
+        if: always()
+        with:
+          nix_name: .#nativelink-is-executable-test
+          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
+
   integration:
     name: ${{ matrix.test-name }}
     strategy:
@@ -119,3 +138,10 @@ jobs:
       - name: Test ${{ matrix.test-name }} run
         run: |
           nix run -L .#${{ matrix.test-name }}-with-nativelink-test
+
+      - name: Teardown Worker
+        uses: ./.github/actions/end-nix
+        if: always()
+        with:
+          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
+          nix_name: .#${{ matrix.test-name }}-with-nativelink-test

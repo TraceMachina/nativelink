@@ -13,13 +13,16 @@
 // limitations under the License.
 
 use core::pin::Pin;
+use core::time::Duration;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use futures::StreamExt;
 use nativelink_config::cas_server::WithInstanceName;
 use nativelink_config::stores::{MemorySpec, StoreSpec};
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
+use nativelink_metric::MetricsComponent;
 use nativelink_proto::build::bazel::remote::execution::v2::content_addressable_storage_server::ContentAddressableStorage;
 use nativelink_proto::build::bazel::remote::execution::v2::{
     BatchReadBlobsRequest, BatchReadBlobsResponse, BatchUpdateBlobsRequest,
@@ -32,9 +35,13 @@ use nativelink_service::cas_server::CasServer;
 use nativelink_store::ac_utils::serialize_and_upload_message;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
+use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
-use nativelink_util::store_trait::{StoreKey, StoreLike};
+use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
+use nativelink_util::store_trait::{
+    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+};
 use pretty_assertions::assert_eq;
 use prost_types::Timestamp;
 use tonic::{Code, Request};
@@ -664,5 +671,163 @@ async fn batch_update_blobs_two_items_existence_with_third_missing()
         let response = raw_response.unwrap().into_inner();
         assert_eq!(response.missing_blob_digests, vec![missing_digest]);
     }
+    Ok(())
+}
+
+#[derive(Debug, MetricsComponent)]
+struct StallStore {
+    delay: Duration,
+}
+
+#[async_trait]
+impl StoreDriver for StallStore {
+    async fn has_with_results(
+        self: Pin<&Self>,
+        _digests: &[StoreKey<'_>],
+        results: &mut [Option<u64>],
+    ) -> Result<(), Error> {
+        for r in results.iter_mut() {
+            *r = None;
+        }
+        Ok(())
+    }
+
+    async fn update(
+        self: Pin<&Self>,
+        _key: StoreKey<'_>,
+        _reader: DropCloserReadHalf,
+        _size_info: UploadSizeInfo,
+    ) -> Result<(), Error> {
+        tokio::time::sleep(self.delay).await;
+        Ok(())
+    }
+
+    async fn get_part(
+        self: Pin<&Self>,
+        _key: StoreKey<'_>,
+        _writer: &mut DropCloserWriteHalf,
+        _offset: u64,
+        _length: Option<u64>,
+    ) -> Result<(), Error> {
+        tokio::time::sleep(self.delay).await;
+        Ok(())
+    }
+
+    fn inner_store(&self, _digest: Option<StoreKey>) -> &'_ dyn StoreDriver {
+        self
+    }
+
+    fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
+        self
+    }
+
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+        self
+    }
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        _callback: Arc<dyn RemoveItemCallback>,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+default_health_status_indicator!(StallStore);
+
+fn make_cas_server_with_stall_store(delay: Duration) -> Result<CasServer, Error> {
+    let store_manager = Arc::new(StoreManager::new());
+    store_manager.add_store("main_cas", Store::new(Arc::new(StallStore { delay })));
+    CasServer::new(
+        &[WithInstanceName {
+            instance_name: INSTANCE_NAME.to_string(),
+            config: nativelink_config::cas_server::CasStoreConfig {
+                cas_store: "main_cas".to_string(),
+            },
+        }],
+        &store_manager,
+    )
+}
+
+#[nativelink_test(start_paused = true)]
+async fn batch_update_blobs_per_blob_timeout_returns_deadline_exceeded()
+-> Result<(), Box<dyn core::error::Error>> {
+    const VALUE: &str = "1";
+
+    // Stall longer than `BATCH_PER_BLOB_TIMEOUT` (30 s) so the
+    // per-blob timeout fires before the store ever resolves.
+    let cas_server = make_cas_server_with_stall_store(Duration::from_secs(120))?;
+
+    let digest = Digest {
+        hash: HASH1.to_string(),
+        size_bytes: VALUE.len() as i64,
+    };
+    let raw_response = cas_server
+        .batch_update_blobs(Request::new(BatchUpdateBlobsRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            requests: vec![batch_update_blobs_request::Request {
+                digest: Some(digest.clone()),
+                data: VALUE.into(),
+                compressor: compressor::Value::Identity.into(),
+            }],
+            digest_function: digest_function::Value::Sha256.into(),
+        }))
+        .await;
+
+    let response = raw_response.unwrap().into_inner();
+    assert_eq!(response.responses.len(), 1);
+    let entry = &response.responses[0];
+    assert_eq!(entry.digest.as_ref(), Some(&digest));
+    let status = entry.status.as_ref().expect("status set");
+    assert_eq!(
+        status.code,
+        Code::DeadlineExceeded as i32,
+        "expected DeadlineExceeded, got status: {status:?}",
+    );
+    assert!(
+        status.message.contains("BatchUpdateBlobs per-blob timeout"),
+        "unexpected message: {}",
+        status.message,
+    );
+    Ok(())
+}
+
+#[nativelink_test(start_paused = true)]
+async fn batch_read_blobs_per_blob_timeout_returns_deadline_exceeded()
+-> Result<(), Box<dyn core::error::Error>> {
+    let cas_server = make_cas_server_with_stall_store(Duration::from_secs(120))?;
+
+    let digest = Digest {
+        hash: HASH1.to_string(),
+        size_bytes: 1,
+    };
+    let raw_response = cas_server
+        .batch_read_blobs(Request::new(BatchReadBlobsRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            digests: vec![digest.clone()],
+            acceptable_compressors: vec![compressor::Value::Identity.into()],
+            digest_function: digest_function::Value::Sha256.into(),
+        }))
+        .await;
+
+    let response = raw_response.unwrap().into_inner();
+    assert_eq!(response.responses.len(), 1);
+    let entry = &response.responses[0];
+    assert_eq!(entry.digest.as_ref(), Some(&digest));
+    assert!(
+        entry.data.is_empty(),
+        "no data should be returned on timeout"
+    );
+    let status = entry.status.as_ref().expect("status set");
+    assert_eq!(
+        status.code,
+        Code::DeadlineExceeded as i32,
+        "expected DeadlineExceeded, got status: {status:?}",
+    );
+    assert!(
+        status.message.contains("BatchReadBlobs per-blob timeout"),
+        "unexpected message: {}",
+        status.message,
+    );
     Ok(())
 }

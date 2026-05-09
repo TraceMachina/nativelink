@@ -20,8 +20,7 @@ mod read_only_redis;
 pub use dynamic_fake_redis::{FakeRedisBackend, SubscriptionManagerNotify};
 pub use fake_redis::{
     add_lua_script, add_to_response, add_to_response_raw, fake_redis_sentinel_master_stream,
-    fake_redis_sentinel_stream, fake_redis_stream, make_fake_redis_with_multiple_responses,
-    make_fake_redis_with_responses,
+    fake_redis_sentinel_stream, fake_redis_stream, make_fake_redis_with_responses,
 };
 pub use pubsub::MockPubSub;
 pub use read_only_redis::ReadOnlyRedis;

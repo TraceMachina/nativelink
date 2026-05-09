@@ -20,12 +20,26 @@ runs:
       uses: >- # v4
         nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60
       with:
-        timeout_minutes: 10
+        timeout_minutes: 30
         max_attempts: 3
         command: |
+          cd /tmp
           nix build nixpkgs#attic-client
           # Note NATIVELINK_ATTIC_TOKEN is blank for PR builds as they don't have secret access
           ./result/bin/attic login uc1-dev https://attic.uc1.scdev.nativelink.net/ ${{ inputs.nativelink_attic_token }}
           ./result/bin/attic use nativelink
-          ./result/bin/attic watch-store nativelink &
+
+          if [ -n "${{ inputs.nativelink_attic_token }}" ]; then
+            # If we don't have a token, we can't push!
+
+            # Replace with more reliable attic for working around
+            # * https://github.com/zhaofengli/attic/issues/226
+            # * https://github.com/zhaofengli/attic/pull/317
+            # We use the original one first to get caching of this
+            nix build github:TraceMachina/attic
+            RUST_BACKTRACE=full RUST_LOG=debug,hyper_util=info,rustls=info ./result/bin/attic watch-store nativelink &> attic-push.log &
+
+            # For the cases where we don't have a cache of it, push it
+            ./result/bin/attic push nativelink $(nix eval --raw github:TraceMachina/attic)
+          fi
         shell: bash

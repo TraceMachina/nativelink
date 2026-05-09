@@ -4,11 +4,20 @@ module(
     compatibility_level = 0,
 )
 
-bazel_dep(name = "rules_cc", version = "0.2.8")
-bazel_dep(name = "platforms", version = "1.0.0")
-bazel_dep(name = "bazel_skylib", version = "1.8.2")
+bazel_dep(name = "rules_cc", version = "0.2.18")
+bazel_dep(name = "platforms", version = "1.1.0")
+bazel_dep(name = "bazel_skylib", version = "1.9.0")
 bazel_dep(name = "rules_python", version = "2.0.0")
 bazel_dep(name = "rules_shell", version = "0.6.1")
+
+# hermetic-llvm: zero-sysroot, fully hermetic LLVM cross-compilation toolchain.
+# Inside Nix, lre.bazelrc registers @local-remote-execution//generated-cc/...
+# via --extra_toolchains, which outranks the MODULE.bazel registration below,
+# so Nix users keep getting LRE-CC unchanged. Outside Nix (no lre.bazelrc),
+# these hermetic toolchains replace the host autodetect path.
+bazel_dep(name = "llvm", version = "0.7.7")
+
+register_toolchains("@llvm//toolchain:all")
 
 # We use the Nix Python install, as per https://rules-python.readthedocs.io/en/latest/toolchains.html#local-toolchain
 # Can't use the rules_python download versions as it breaks with the genrule stuff in nativelink-proto
@@ -41,47 +50,62 @@ register_toolchains(
     dev_dependency = True,
 )
 
+bazel_dep(name = "rules_rs", version = "0.0.76")
+
+# Pin rules_rust to the hermeticbuild fork (the same commit rules_rs provisions)
+# so all `@rules_rust//...` references resolve to the patched ruleset. The
+# bazel_dep + archive_override is the form that keeps `@rules_rust` visible to
+# subsequent `use_extension(...)` calls in this MODULE.bazel — the alternative
+# (relying solely on use_repo from the rules_rs extension) doesn't expose the
+# repo at the module level.
+#
+# The local musl-platforms patch is still applied because the hermeticbuild
+# fork does not list x86_64/aarch64-unknown-linux-musl as supported triples in
+# rust/platform/triple_mappings.bzl.
 bazel_dep(name = "rules_rust", version = "0.68.1")
 archive_override(
     module_name = "rules_rust",
-    integrity = "sha256-yKqAbPYGZnmsI0YyQe6ArWkiZdrQRl9RERy74wuJA1I=",
+    integrity = "sha256-HG4cSGKVIoZTn0zpUNKhJbGvFfD2UVPJqKRqgTqLOQQ=",
     patch_strip = 1,
     patches = ["//tools:rules_rust-musl-platforms.diff"],
+    strip_prefix = "rules_rust-cf176d81c12d9c8f6420c7d433b0af0f08d2abb1",
     urls = [
-        "https://github.com/bazelbuild/rules_rust/releases/download/0.68.1/rules_rust-0.68.1.tar.gz",
+        "https://github.com/hermeticbuild/rules_rust/archive/cf176d81c12d9c8f6420c7d433b0af0f08d2abb1.tar.gz",
     ],
 )
 
-crate = use_extension("@rules_rust//crate_universe:extension.bzl", "crate")
+# Route any rules_rs internal `@rules_rust` references through the same
+# top-level bazel_dep so the entire build sees one rules_rust.
+rules_rust_ext = use_extension("@rules_rs//rs:rules_rust.bzl", "rules_rust")
+
+override_repo(
+    rules_rust_ext,
+    rules_rust = "rules_rust",
+)
+
+crate = use_extension("@rules_rs//rs:extensions.bzl", "crate")
 crate.from_cargo(
     name = "crates",
-    cargo_lockfile = "//:Cargo.lock",
-    manifests = [
-        "//:Cargo.toml",
-        "//nativelink-config:Cargo.toml",
-        "//nativelink-error:Cargo.toml",
-        "//nativelink-macro:Cargo.toml",
-        "//nativelink-metric:Cargo.toml",
-        "//nativelink-metric/nativelink-metric-macro-derive:Cargo.toml",
-        "//nativelink-proto:Cargo.toml",
-        "//nativelink-scheduler:Cargo.toml",
-        "//nativelink-redis-tester:Cargo.toml",
-        "//nativelink-service:Cargo.toml",
-        "//nativelink-store:Cargo.toml",
-        "//nativelink-util:Cargo.toml",
-        "//nativelink-worker:Cargo.toml",
-    ],
-    supported_platform_triples = [
+    cargo_lock = "//:Cargo.lock",
+    cargo_toml = "//:Cargo.toml",
+    # In legacy-platform-label mode rules_rs collapses every *-musl triple
+    # onto its *-gnu sibling (same label). Listing both produces duplicate
+    # select() keys in the generated BUILD files, so musl is intentionally
+    # omitted here — the underlying linux-gnu deps cover both libc variants
+    # for our crate set, and the LRE musl toolchains still build correctly.
+    platform_triples = [
         "aarch64-apple-darwin",
         "aarch64-unknown-linux-gnu",
-        "aarch64-unknown-linux-musl",
         "arm-unknown-linux-gnueabi",
         "armv7-unknown-linux-gnueabi",
         "x86_64-apple-darwin",
         "x86_64-pc-windows-msvc",
         "x86_64-unknown-linux-gnu",
-        "x86_64-unknown-linux-musl",
     ],
+    # The LRE Rust toolchains in //local-remote-execution/rust still register
+    # against @rules_rust//rust:toolchain_type, so crate_universe must render
+    # selects against legacy @rules_rust//rust/platform:* labels.
+    use_legacy_rules_rust_platforms = True,
 )
 use_repo(crate, "crates")
 

@@ -64,12 +64,20 @@ config_setting(
 
 [
     rust_toolchain(
-        name = "rust-{}-{}_impl".format(channel, nix_system),
+        name = "rust-{}-{}{}_impl".format(channel, nix_system, suffix),
         allocator_library = select({
             "@local-remote-execution//libc:musl": None,
             "//conditions:default": "@rules_rust//ffi/cc/allocator_library",
         }),
         binary_ext = "",
+        # The hermeticbuild fork of rules_rust requires process_wrapper to be
+        # set explicitly on every toolchain. We register two flavors:
+        #   * the regular toolchain uses the rust-built process_wrapper for
+        #     full functionality (env files, stamping, etc.);
+        #   * the bootstrap toolchain (suffix "_bootstrap", bootstrapping = True)
+        #     uses the C++ bootstrap_process_wrapper so it can build the rust
+        #     process_wrapper itself without creating a dependency cycle.
+        bootstrapping = bootstrapping,
         cargo = "@lre-rs-{}-{}//:cargo".format(channel, nix_system),
         cargo_clippy = "@lre-rs-{}-{}//:cargo-clippy".format(channel, nix_system),
         clippy_driver = "@lre-rs-{}-{}//:clippy-driver".format(channel, nix_system),
@@ -119,6 +127,8 @@ config_setting(
             "opt": "3",
         },
         per_crate_rustc_flags = [],
+        process_wrapper =
+            "@rules_rust//util/process_wrapper:bootstrap_process_wrapper" if bootstrapping else "@rules_rust//util/process_wrapper",
         rust_doc = "@lre-rs-{}-{}//:rustdoc".format(channel, nix_system),
         rust_std = "@lre-rs-{}-{}//:rust_std".format(channel, nix_system),
         rustc = "@lre-rs-{}-{}//:rustc".format(channel, nix_system),
@@ -175,6 +185,10 @@ config_setting(
         "x86_64-darwin",
         "aarch64-darwin",
     ]
+    for (suffix, bootstrapping) in [
+        ("", False),
+        ("_bootstrap", True),
+    ]
 ]
 
 [
@@ -189,9 +203,43 @@ config_setting(
             # Linux toolchains can only target other linux systems.
             # Darwin toolchains can target everything.
             ["@platforms//os:linux"] if os == "linux" else [],
+        # Only matched when not bootstrapping process_wrapper. The bootstrap
+        # toolchain below sits behind ":bootstrapping" instead.
+        target_settings = ["@rules_rust//rust/private:bootstrapped"],
         toolchain = select({
             ":stable": ":rust-stable-{}-{}_impl".format(arch, os),
             ":nightly": ":rust-nightly-{}-{}_impl".format(arch, os),
+        }),
+        toolchain_type = "@rules_rust//rust:toolchain_type",
+    )
+    for arch in [
+        "aarch64",
+        "x86_64",
+    ]
+    for os in [
+        "linux",
+        "darwin",
+    ]
+]
+
+# Bootstrap toolchains: only matched when @rules_rust//rust/private:bootstrap_setting
+# is flipped to True (which happens transitively when the build is producing the
+# rust-built process_wrapper). They use bootstrap_process_wrapper so the rust
+# process_wrapper itself can be built without depending on itself.
+[
+    toolchain(
+        name = "rust-{}-{}-bootstrap".format(arch, os),
+        exec_compatible_with = [
+            "@platforms//os:{}".format(os if os == "linux" else "macos"),
+            "@platforms//cpu:{}".format(arch),
+            "@bazel_tools//tools/cpp:clang",
+        ],
+        target_compatible_with =
+            ["@platforms//os:linux"] if os == "linux" else [],
+        target_settings = ["@rules_rust//rust/private:bootstrapping"],
+        toolchain = select({
+            ":stable": ":rust-stable-{}-{}_bootstrap_impl".format(arch, os),
+            ":nightly": ":rust-nightly-{}-{}_bootstrap_impl".format(arch, os),
         }),
         toolchain_type = "@rules_rust//rust:toolchain_type",
     )

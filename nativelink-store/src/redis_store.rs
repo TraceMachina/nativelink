@@ -1151,7 +1151,7 @@ where
                 .query_async::<()>(&mut client.connection_manager)
                 .await
         };
-        match tokio::time::timeout(PING_TIMEOUT, ping).await {
+        match timeout(PING_TIMEOUT, ping).await {
             Ok(Ok(())) => HealthStatus::new_ok(self, "RedisStore::check_health: PING ok".into()),
             Ok(Err(e)) => HealthStatus::new_failed(
                 self,
@@ -1187,8 +1187,9 @@ const INDEX_TTL_S: u64 = 60 * 60 * 24; // 24 hours.
 /// Args:
 ///   KEYS[1]: The key where the version is stored.
 ///   ARGV[1]: The expected version.
-///   ARGV[2]: The new data.
-///   ARGV[3*]: Key-value pairs of additional data to include.
+///   ARGV[2]: TTL in seconds, or 0 for forever
+///   ARGV[3]: The new data.
+///   ARGV[4*]: Key-value pairs of additional data to include.
 /// Returns:
 ///   The new version if the version matches. nil is returned if the
 ///   value was not set.
@@ -1196,7 +1197,8 @@ pub const LUA_VERSION_SET_SCRIPT: &str = formatcp!(
     r"
 local key = KEYS[1]
 local expected_version = tonumber(ARGV[1])
-local new_data = ARGV[2]
+local ttl = tonumber(ARGV[2])
+local new_data = ARGV[3]
 local new_version = redis.call('HINCRBY', key, '{VERSION_FIELD_NAME}', 1)
 local i
 local indexes = {{}}
@@ -1205,10 +1207,10 @@ if new_version-1 ~= expected_version then
     redis.call('HINCRBY', key, '{VERSION_FIELD_NAME}', -1)
     return {{ 0, new_version-1 }}
 end
--- Skip first 2 argvs, as they are known inputs.
+-- Skip first 3 argvs, as they are known inputs.
 -- Remember: Lua is 1-indexed.
-for i=3, #ARGV do
-    indexes[i-2] = ARGV[i]
+for i=4, #ARGV do
+    indexes[i-3] = ARGV[i]
 end
 
 -- In testing we witnessed redis sometimes not update our FT indexes
@@ -1217,6 +1219,9 @@ end
 redis.call('DEL', key)
 redis.call('HSET', key, '{DATA_FIELD_NAME}', new_data, '{VERSION_FIELD_NAME}', new_version, unpack(indexes))
 
+if ttl ~= 0 then
+    redis.call('EXPIRE', key, ttl)
+end
 return {{ 1, new_version }}
 "
 );
@@ -1605,7 +1610,7 @@ where
             .map(Clone::clone)
     }
 
-    async fn update_data<T>(&self, data: T) -> Result<Option<i64>, Error>
+    async fn update_data<T>(&self, data: T, expiry: Option<Duration>) -> Result<Option<i64>, Error>
     where
         T: SchedulerStoreDataProvider
             + SchedulerStoreKeyProvider
@@ -1624,7 +1629,10 @@ where
                 format!("Could not convert value to bytes in RedisStore::update_data::versioned for {redis_key}")
             })?;
             let mut script = self.connection_manager.update_script(redis_key.as_ref());
-            let mut script_invocation = script.arg(format!("{current_version}")).arg(data.to_vec());
+            let mut script_invocation = script
+                .arg(format!("{current_version}"))
+                .arg(expiry.unwrap_or(Duration::ZERO).as_secs())
+                .arg(data.to_vec());
             for (name, value) in maybe_index {
                 script_invocation = script_invocation.arg(name).arg(value.to_vec());
             }
@@ -1701,7 +1709,26 @@ where
                 .hset_multiple::<_, _, _, ()>(redis_key.as_ref(), &fields)
                 .await
             {
-                Ok(v) => v,
+                Ok(_v) => {
+                    if let Some(expiry_v) = expiry {
+                        let seconds =
+                            TryInto::<i64>::try_into(expiry_v.as_secs()).err_tip(|| {
+                                format!("Expiry seconds doesn't map to i64: {expiry_v:#?}")
+                            })?;
+                        let expiry_result: u8 = client
+                            .connection_manager
+                            .expire(redis_key.as_ref(), seconds)
+                            .await
+                            .err_tip(|| {
+                                format!(
+                                    "In RedisStore::update_data::noversion (expiry) for {redis_key}"
+                                )
+                            })?;
+                        if expiry_result != 1 {
+                            warn!(%redis_key, seconds, "Wasn't able to set expiry for Redis key");
+                        }
+                    }
+                }
                 Err(err)
                     if err.kind() == redis::ErrorKind::Server(redis::ServerErrorKind::ReadOnly) =>
                 {
@@ -1710,7 +1737,18 @@ where
                         .connection_manager
                         .hset_multiple::<_, _, _, ()>(redis_key.as_ref(), &fields)
                         .await
-                        .err_tip(|| format!("(after reconnect) In RedisStore::update_data::noversion for {redis_key}"))?;
+                        .err_tip(|| format!("(after reconnect) In RedisStore::update_data::noversion (hset) for {redis_key}"))?;
+                    if let Some(expiry_v) = expiry {
+                        let seconds =
+                            TryInto::<i64>::try_into(expiry_v.as_secs()).err_tip(|| {
+                                format!("Expiry seconds doesn't map to i64: {expiry_v:#?}")
+                            })?;
+                        let expiry_result: u8 = client.connection_manager.expire(redis_key.as_ref(), seconds).await
+                        .err_tip(|| format!("(after reconnect) In RedisStore::update_data::noversion (expiry) for {redis_key}"))?;
+                        if expiry_result != 1 {
+                            warn!(%redis_key, seconds, "Wasn't able to set expiry for Redis key");
+                        }
+                    }
                 }
                 Err(err) => {
                     let mut error: Error = err.into();

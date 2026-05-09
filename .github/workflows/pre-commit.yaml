@@ -30,3 +30,9 @@ jobs:
 
       - name: Run pre-commit hooks
         run: nix flake check
+
+      - name: Teardown Worker
+        uses: ./.github/actions/end-nix
+        if: always()
+        with:
+          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
