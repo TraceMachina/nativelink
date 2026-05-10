@@ -23,7 +23,7 @@ use aws_config::default_provider::credentials;
 use aws_config::provider_config::ProviderConfig;
 use aws_config::{AppName, BehaviorVersion};
 use aws_sdk_s3::Client;
-use aws_sdk_s3::config::Region;
+use aws_sdk_s3::config::{Credentials, Region};
 use aws_sdk_s3::operation::create_multipart_upload::CreateMultipartUploadOutput;
 use aws_sdk_s3::operation::get_object::GetObjectError;
 use aws_sdk_s3::operation::head_object::HeadObjectError;
@@ -106,17 +106,7 @@ where
         let s3_client = {
             let http_client = TlsClient::new(&spec.common.clone());
 
-            let credential_provider = credentials::DefaultCredentialsChain::builder()
-                .configure(
-                    ProviderConfig::without_region()
-                        .with_region(Some(Region::new(Cow::Owned(spec.region.clone()))))
-                        .with_http_client(http_client.clone()),
-                )
-                .build()
-                .await;
-
-            let config = aws_config::defaults(BehaviorVersion::latest())
-                .credentials_provider(credential_provider)
+            let mut config_loader = aws_config::defaults(BehaviorVersion::latest())
                 .app_name(AppName::new("nativelink").expect("valid app name"))
                 .timeout_config(
                     aws_config::timeout::TimeoutConfig::builder()
@@ -124,10 +114,31 @@ where
                         .build(),
                 )
                 .region(Region::new(Cow::Owned(spec.region.clone())))
-                .http_client(http_client)
-                .load()
-                .await;
+                .http_client(http_client.clone());
 
+            if let Some(endpoint) = &spec.endpoint {
+                config_loader = config_loader.endpoint_url(endpoint);
+            }
+
+            // Explicit creds bypass the default chain (which probes IMDS, slow on non-EC2 hosts).
+            // Used by R2 (S3 compatible).
+            config_loader = match (&spec.access_key_id, &spec.secret_access_key) {
+                (Some(key_id), Some(secret)) => config_loader
+                    .credentials_provider(Credentials::new(key_id, secret, None, None, "explicit")),
+                _ => {
+                    let default_chain = credentials::DefaultCredentialsChain::builder()
+                        .configure(
+                            ProviderConfig::without_region()
+                                .with_region(Some(Region::new(Cow::Owned(spec.region.clone()))))
+                                .with_http_client(http_client),
+                        )
+                        .build()
+                        .await;
+                    config_loader.credentials_provider(default_chain)
+                }
+            };
+
+            let config = config_loader.load().await;
             Client::new(&config)
         };
         Self::new_with_client_and_jitter(spec, s3_client, jitter_fn, now_fn)

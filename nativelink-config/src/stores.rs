@@ -686,6 +686,33 @@ pub struct ExperimentalOntapS3Spec {
     pub common: CommonObjectSpec,
 }
 
+// Cloudflare R2 Spec
+#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct ExperimentalR2Spec {
+    /// Cloudflare account ID. Endpoint is derived as
+    /// `https://{account_id}.r2.cloudflarestorage.com`.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub account_id: String,
+
+    /// Bucket name to use as the backend.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub bucket: String,
+
+    /// Explicit R2 access key.
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub access_key_id: Option<String>,
+
+    /// Explicit R2 secret key.
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub secret_access_key: Option<String>,
+
+    /// Retry and upload settings.
+    #[serde(flatten)]
+    pub common: CommonObjectSpec,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
@@ -956,6 +983,7 @@ pub enum ExperimentalCloudObjectSpec {
     Gcs(ExperimentalGcsSpec),
     Azure(ExperimentalAzureSpec),
     Ontap(ExperimentalOntapS3Spec),
+    R2(ExperimentalR2Spec),
 }
 
 impl Default for ExperimentalCloudObjectSpec {
@@ -975,6 +1003,18 @@ pub struct ExperimentalAwsSpec {
     /// Bucket name to use as the backend.
     #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
     pub bucket: String,
+
+    /// Custom endpoint URL for S3-compatible services (eg. R2).
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub endpoint: Option<String>,
+
+    /// Explicit access key.
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub access_key_id: Option<String>,
+
+    /// Explicit secret key.
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub secret_access_key: Option<String>,
 
     /// Common retry and upload configuration
     #[serde(flatten)]
