@@ -32,6 +32,7 @@ pub mod mongo_store;
 pub mod noop_store;
 pub mod ontap_s3_existence_cache_store;
 pub mod ontap_s3_store;
+pub mod r2_store;
 pub mod redis_store;
 mod redis_utils;
 pub mod ref_store;

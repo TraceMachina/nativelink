@@ -233,6 +233,54 @@ stores, but in this example we'll store the raw files.
 }
 ```
 
+### R2 Store
+
+[Cloudflare R2](https://developers.cloudflare.com/r2/) is an S3-compatible
+object store with no egress fees, which makes it attractive for read-heavy
+CAS workloads. The endpoint is derived from your Cloudflare `account_id`;
+credentials are read from env vars via `shellexpand`.
+
+```js
+{
+  "stores": [
+    {
+      "name": "CAS_MAIN_STORE",
+      "experimental_cloud_object_store": {
+        "provider": "r2",
+        "account_id": "your-cloudflare-account-id",
+        "bucket": "nativelink-cas",
+        "access_key_id": "${R2_ACCESS_KEY_ID}",
+        "secret_access_key": "${R2_SECRET_ACCESS_KEY}",
+        "key_prefix": "cas/",
+        "retry": {
+          "max_retries": 6,
+          "delay": 0.3,
+          "jitter": 0.5,
+        }
+      }
+    },
+    {
+      "name": "AC_MAIN_STORE",
+      "experimental_cloud_object_store": {
+        "provider": "r2",
+        "account_id": "your-cloudflare-account-id",
+        "bucket": "nativelink-cas",
+        "access_key_id": "${R2_ACCESS_KEY_ID}",
+        "secret_access_key": "${R2_SECRET_ACCESS_KEY}",
+        "key_prefix": "ac/",
+      }
+    }
+  ],
+  // Place rest of configuration here ...
+}
+```
+
+A complete runnable example with CAS and AC is at
+[`nativelink-config/examples/r2_backend.json5`](https://github.com/TraceMachina/nativelink/blob/main/nativelink-config/examples/r2_backend.json5).
+If `access_key_id` and `secret_access_key` are omitted, NativeLink falls
+back to the standard AWS credential chain (`AWS_*` env vars,
+`~/.aws/credentials`, IMDS).
+
 ### Fast Slow Store
 
 This store will first attempt to read from the `fast` store when reading and if
