@@ -512,3 +512,74 @@ async fn test_orphaned_client_operation_id_returns_none() -> Result<(), Error> {
 
     Ok(())
 }
+
+/// `add_action` must attach a TTL to the cid_* mapping; without one it
+/// outlives its aa_* key and accumulates as a permanent orphan.
+#[nativelink_test]
+async fn add_action_attaches_ttl_to_cid_mapping() -> Result<(), Error> {
+    const CLIENT_OPERATION_ID: &str = "cid_ttl_test_client";
+    const WORKER_OPERATION_ID: &str = "cid_ttl_test_worker";
+    const SUB_CHANNEL: &str = "sub_channel";
+
+    let action_info = Arc::new(ActionInfo {
+        command_digest: DigestInfo::zero_digest(),
+        input_root_digest: DigestInfo::zero_digest(),
+        timeout: Duration::from_secs(1),
+        platform_properties: HashMap::new(),
+        priority: 0,
+        load_timestamp: SystemTime::UNIX_EPOCH,
+        insert_timestamp: SystemTime::UNIX_EPOCH,
+        unique_qualifier: ActionUniqueQualifier::Cacheable(ActionUniqueKey {
+            instance_name: INSTANCE_NAME.to_string(),
+            digest_function: DigestHasherFunc::Sha256,
+            digest: DigestInfo::zero_digest(),
+        }),
+    });
+
+    let fake_redis_backend: FakeRedisBackend<RedisSubscriptionManager> = FakeRedisBackend::new();
+    let fake_redis_port = fake_redis_backend.clone().run().await;
+    let spec = RedisSpec {
+        addresses: vec![format!("redis://127.0.0.1:{fake_redis_port}")],
+        experimental_pub_sub_channel: Some(SUB_CHANNEL.to_string()),
+        ..Default::default()
+    };
+    let store = RedisStore::new_standard(spec).await.expect("Working spec");
+    fake_redis_backend.set_subscription_manager(store.subscription_manager().await.unwrap());
+
+    let notifier = Arc::new(Notify::new());
+    let awaited_action_db = StoreAwaitedActionDb::new(
+        store.clone(),
+        notifier.clone(),
+        MockInstantWrapped::default,
+        move || WORKER_OPERATION_ID.into(),
+        60,
+    )
+    .await
+    .unwrap();
+
+    let _subscription = awaited_action_db
+        .add_action(
+            CLIENT_OPERATION_ID.into(),
+            action_info.clone(),
+            Duration::from_mins(1),
+        )
+        .await
+        .unwrap();
+
+    // The cid_* key must have an EXPIRE attached.
+    let expiries = fake_redis_backend.expiries.lock().unwrap().clone();
+    let cid_key = format!("cid_{CLIENT_OPERATION_ID}");
+    let ttl = expiries.get(&cid_key).copied().unwrap_or_else(|| {
+        panic!(
+            "expected an EXPIRE on {cid_key} after add_action, but none was set. \
+             All recorded expiries: {expiries:?}"
+        )
+    });
+    assert!(
+        ttl > 0,
+        "cid_* TTL must be positive (got {ttl}); a 0 or negative TTL would \
+         immediately evict the mapping and break in-flight WaitExecution calls"
+    );
+
+    Ok(())
+}

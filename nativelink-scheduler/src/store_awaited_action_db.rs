@@ -380,6 +380,10 @@ fn awaited_action_decode(version: i64, data: &Bytes) -> Result<AwaitedAction, Er
 
 const OPERATION_ID_TO_AWAITED_ACTION_KEY_PREFIX: &str = "aa_";
 const CLIENT_ID_TO_OPERATION_ID_KEY_PREFIX: &str = "cid_";
+/// TTL bounding the cid_* mapping's lifetime so it cannot outlive its
+/// aa_* key and accumulate as a permanent orphan (24h safely exceeds
+/// any real action lifetime).
+const CLIENT_ID_MAPPING_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 /// Phase 2: Separate key prefix for client keepalives (non-versioned).
 const CLIENT_KEEPALIVE_KEY_PREFIX: &str = "ck_";
 
@@ -926,14 +930,14 @@ where
                 continue;
             }
 
-            // Add the client_operation_id to operation_id mapping
+            // Bound the cid_* mapping's lifetime (see CLIENT_ID_MAPPING_TTL).
             self.store
                 .update_data(
                     UpdateClientIdToOperationId {
                         client_operation_id: client_operation_id.clone(),
                         operation_id: operation_id.clone(),
                     },
-                    None,
+                    Some(CLIENT_ID_MAPPING_TTL),
                 )
                 .await
                 .err_tip(|| "In RedisAwaitedActionDb::add_action while adding client mapping")?;
