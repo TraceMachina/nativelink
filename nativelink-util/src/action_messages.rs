@@ -843,6 +843,71 @@ impl From<&ActionStage> for execution_stage::Value {
     }
 }
 
+/// `google.rpc.PreconditionFailure` (defined inline to avoid pulling
+/// `tonic-types` and the additional proto-generated module). Bazel's
+/// `RemoteExecutionService` reads this proto out of
+/// `ExecuteResponse.status.details` for `FAILED_PRECONDITION` results
+/// and, for `MISSING` violations, automatically re-uploads the named
+/// blobs and retries the Execute call. Mirrors the schema in
+/// `google/rpc/error_details.proto`.
+mod precondition_failure {
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub(super) struct PreconditionFailure {
+        #[prost(message, repeated, tag = "1")]
+        pub(super) violations: ::prost::alloc::vec::Vec<Violation>,
+    }
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub(super) struct Violation {
+        #[prost(string, tag = "1")]
+        pub(super) r#type: ::prost::alloc::string::String,
+        #[prost(string, tag = "2")]
+        pub(super) subject: ::prost::alloc::string::String,
+        #[prost(string, tag = "3")]
+        pub(super) description: ::prost::alloc::string::String,
+    }
+    pub(super) const TYPE_URL: &str = "type.googleapis.com/google.rpc.PreconditionFailure";
+    pub(super) const VIOLATION_TYPE_MISSING: &str = "MISSING";
+}
+
+const MISSING_BLOB_MARKER: &str = "not found in either fast or slow store";
+
+fn extract_missing_blob_digest(err: &Error) -> Option<(String, i64)> {
+    for msg in &err.messages {
+        if !msg.contains(MISSING_BLOB_MARKER) {
+            continue;
+        }
+        let after_object = msg.find("Object ").map(|i| &msg[i + "Object ".len()..])?;
+        let digest_str = after_object.split(" not found").next()?;
+        let (hash, size) = digest_str.rsplit_once('-')?;
+        let size: i64 = size.parse().ok()?;
+        return Some((hash.to_string(), size));
+    }
+    None
+}
+
+fn missing_blob_failed_precondition_status(err: &Error, hash: &str, size: i64) -> Status {
+    let pf = precondition_failure::PreconditionFailure {
+        violations: vec![precondition_failure::Violation {
+            r#type: precondition_failure::VIOLATION_TYPE_MISSING.to_string(),
+            // REv2-mandated subject format for missing-blob violations.
+            subject: format!("blobs/{hash}/{size}"),
+            description: err.message_string(),
+        }],
+    };
+    let mut buf: Vec<u8> = Vec::with_capacity(pf.encoded_len());
+    pf.encode(&mut buf)
+        .expect("encoding prost message into Vec<u8> cannot fail");
+    let any = Any {
+        type_url: precondition_failure::TYPE_URL.to_string(),
+        value: buf,
+    };
+    Status {
+        code: Code::FailedPrecondition as i32,
+        message: err.message_string(),
+        details: vec![any],
+    }
+}
+
 pub fn to_execute_response(action_result: ActionResult) -> ExecuteResponse {
     fn logs_from(server_logs: HashMap<String, DigestInfo>) -> HashMap<String, LogFile> {
         let mut logs = HashMap::with_capacity(server_logs.len());
@@ -858,11 +923,26 @@ pub fn to_execute_response(action_result: ActionResult) -> ExecuteResponse {
         logs
     }
 
+    // If the action failed because a CAS blob is missing — most often a
+    // `Directory` proto in the input tree (the Execute pre-check only
+    // validates the top-level Action, command_digest, and
+    // input_root_digest; nested Directories are fetched lazily by the
+    // worker) — surface the failure as `FAILED_PRECONDITION` with a
+    // `PreconditionFailure` detail naming the digest. Bazel sees the
+    // detail, re-uploads the missing blob, and retries automatically;
+    // without the detail it gives up and the build fails.
     let status = Some(
         action_result
             .error
             .clone()
-            .map_or_else(Status::default, Into::into),
+            .map(|err| {
+                if let Some((hash, size)) = extract_missing_blob_digest(&err) {
+                    missing_blob_failed_precondition_status(&err, &hash, size)
+                } else {
+                    err.into()
+                }
+            })
+            .unwrap_or_default(),
     );
     let message = action_result.message.clone();
     ExecuteResponse {

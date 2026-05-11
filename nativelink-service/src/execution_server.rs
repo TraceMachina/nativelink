@@ -20,6 +20,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use bytes::Bytes;
 use futures::stream::unfold;
 use futures::{Stream, StreamExt};
 use nativelink_config::cas_server::{ExecutionConfig, InstanceName, WithInstanceName};
@@ -35,6 +36,7 @@ use nativelink_proto::google::longrunning::{
     CancelOperationRequest, DeleteOperationRequest, GetOperationRequest, ListOperationsRequest,
     ListOperationsResponse, Operation, WaitOperationRequest,
 };
+use nativelink_proto::google::rpc::Status as GrpcStatusProto;
 use nativelink_store::ac_utils::get_and_decode_digest;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::action_messages::{
@@ -45,10 +47,86 @@ use nativelink_util::digest_hasher::{DigestHasherFunc, make_ctx_for_hash_func};
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ClientStateManager, OperationFilter,
 };
-use nativelink_util::store_trait::Store;
+use nativelink_util::store_trait::{Store, StoreLike};
 use opentelemetry::context::FutureExt;
-use tonic::{Request, Response, Status};
-use tracing::{Instrument, Level, debug, error, error_span, instrument};
+use prost::Message as _;
+use tonic::{Code, Request, Response, Status};
+use tracing::{Instrument, Level, debug, error, error_span, instrument, warn};
+
+/// Inline definition of `google.rpc.PreconditionFailure`. Bazel's
+/// `RemoteSpawnRunner` inspects this proto in the gRPC `Status.details`
+/// of a `FAILED_PRECONDITION` response and, when violations of type
+/// `MISSING` are present, automatically re-uploads the named blobs and
+/// retries the Execute call. Without this detail Bazel surfaces the
+/// failure as a hard build error — exactly the symptom triggered by an
+/// interrupted previous build leaving partial CAS uploads.
+mod precondition_failure {
+    /// `google.rpc.PreconditionFailure`.
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub(super) struct PreconditionFailure {
+        #[prost(message, repeated, tag = "1")]
+        pub(super) violations: ::prost::alloc::vec::Vec<Violation>,
+    }
+    /// `google.rpc.PreconditionFailure.Violation`.
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub(super) struct Violation {
+        #[prost(string, tag = "1")]
+        pub(super) r#type: ::prost::alloc::string::String,
+        #[prost(string, tag = "2")]
+        pub(super) subject: ::prost::alloc::string::String,
+        #[prost(string, tag = "3")]
+        pub(super) description: ::prost::alloc::string::String,
+    }
+    pub(super) const TYPE_URL: &str = "type.googleapis.com/google.rpc.PreconditionFailure";
+    pub(super) const VIOLATION_TYPE_MISSING: &str = "MISSING";
+}
+
+/// Build a tonic [`Status`] of code `FAILED_PRECONDITION` whose details
+/// carry a `google.rpc.PreconditionFailure` listing the missing CAS
+/// blobs.
+fn missing_blobs_failed_precondition(
+    missing: &[(DigestInfo, &'static str)],
+    summary: &str,
+) -> Status {
+    let pf = precondition_failure::PreconditionFailure {
+        violations: missing
+            .iter()
+            .map(|(d, ctx)| precondition_failure::Violation {
+                r#type: precondition_failure::VIOLATION_TYPE_MISSING.to_string(),
+                // Per REv2, the subject for a missing-blob violation is
+                // `blobs/<hash>/<size>` so the client knows exactly
+                // which digest to re-upload.
+                subject: format!("blobs/{}/{}", d.packed_hash(), d.size_bytes()),
+                description: (*ctx).to_string(),
+            })
+            .collect(),
+    };
+
+    // Wrap PreconditionFailure into a google.protobuf.Any.
+    let mut pf_buf: Vec<u8> = Vec::with_capacity(pf.encoded_len());
+    pf.encode(&mut pf_buf)
+        .expect("encoding prost message into Vec<u8> cannot fail");
+    let any = prost_types::Any {
+        type_url: precondition_failure::TYPE_URL.to_string(),
+        value: pf_buf,
+    };
+
+    let status_proto = GrpcStatusProto {
+        code: Code::FailedPrecondition as i32,
+        message: summary.to_string(),
+        details: vec![any],
+    };
+    let mut status_buf: Vec<u8> = Vec::with_capacity(status_proto.encoded_len());
+    status_proto
+        .encode(&mut status_buf)
+        .expect("encoding prost message into Vec<u8> cannot fail");
+
+    Status::with_details(
+        Code::FailedPrecondition,
+        summary.to_string(),
+        Bytes::from(status_buf),
+    )
+}
 
 type InstanceInfoName = String;
 
@@ -242,7 +320,8 @@ impl ExecutionServer {
     async fn inner_execute(
         &self,
         request: ExecuteRequest,
-    ) -> Result<impl Stream<Item = Result<Operation, Status>> + Send + use<>, Error> {
+    ) -> Result<Result<impl Stream<Item = Result<Operation, Status>> + Send + use<>, Status>, Error>
+    {
         let instance_name = request.instance_name;
 
         let instance_info = self
@@ -261,8 +340,78 @@ impl ExecutionServer {
             .execution_policy
             .map_or(DEFAULT_EXECUTION_PRIORITY, |p| p.priority);
 
-        let action =
-            get_and_decode_digest::<Action>(&instance_info.cas_store, digest.into()).await?;
+        let action = match get_and_decode_digest::<Action>(&instance_info.cas_store, digest.into())
+            .await
+        {
+            Ok(a) => a,
+            Err(e) if e.code == Code::NotFound => {
+                warn!(
+                    %digest,
+                    %e,
+                    "Execute: Action proto missing from CAS; returning FAILED_PRECONDITION with PreconditionFailure detail so Bazel can re-upload"
+                );
+                let summary = format!(
+                    "Action {digest} is missing from CAS; client should re-upload it and retry"
+                );
+                return Ok(Err(missing_blobs_failed_precondition(
+                    &[(digest, "Action")],
+                    &summary,
+                )));
+            }
+            Err(e) => return Err(e).err_tip(|| "Decoding Action proto in Execute")?,
+        };
+
+        let action_command_digest = action
+            .command_digest
+            .as_ref()
+            .map(|d| DigestInfo::try_from(d.clone()))
+            .transpose()
+            .err_tip(|| "Failed to parse command_digest from Action")?;
+        let action_input_root_digest = action
+            .input_root_digest
+            .as_ref()
+            .map(|d| DigestInfo::try_from(d.clone()))
+            .transpose()
+            .err_tip(|| "Failed to parse input_root_digest from Action")?;
+        let mut blobs_to_check: Vec<DigestInfo> = Vec::with_capacity(2);
+        if let Some(d) = action_command_digest {
+            blobs_to_check.push(d);
+        }
+        if let Some(d) = action_input_root_digest {
+            blobs_to_check.push(d);
+        }
+        if !blobs_to_check.is_empty() {
+            let store_keys: Vec<_> = blobs_to_check.iter().map(|d| (*d).into()).collect();
+            let sizes = instance_info
+                .cas_store
+                .has_many(&store_keys)
+                .await
+                .err_tip(|| "Validating Action input blobs in CAS")?;
+            let mut missing: Vec<(DigestInfo, &'static str)> = Vec::new();
+            for ((digest, present), label) in blobs_to_check
+                .iter()
+                .zip(sizes.iter())
+                .zip(["Action.command_digest", "Action.input_root_digest"].iter())
+            {
+                if present.is_none() {
+                    missing.push((*digest, label));
+                }
+            }
+            if !missing.is_empty() {
+                warn!(
+                    ?missing,
+                    %digest,
+                    "Execute pre-check found missing CAS blobs; returning FAILED_PRECONDITION with PreconditionFailure detail so Bazel can re-upload"
+                );
+                let summary = format!(
+                    "{} CAS blob(s) referenced by action {} are missing; client should re-upload them and retry",
+                    missing.len(),
+                    digest,
+                );
+                return Ok(Err(missing_blobs_failed_precondition(&missing, &summary)));
+            }
+        }
+
         let action_info = instance_info
             .build_action_info(
                 instance_name.clone(),
@@ -283,7 +432,7 @@ impl ExecutionServer {
             .await
             .err_tip(|| "Failed to schedule task")?;
 
-        Ok(Box::pin(Self::to_execute_stream(
+        Ok(Ok(Self::to_execute_stream(
             &NativelinkOperationId::new(
                 instance_name,
                 action_listener
@@ -355,7 +504,10 @@ impl Execution for ExecutionServer {
             .await
             .err_tip(|| "Failed on execute() command")?;
 
-        Ok(Response::new(Box::pin(result)))
+        match result {
+            Ok(stream) => Ok(Response::new(Box::pin(stream))),
+            Err(status) => Err(status),
+        }
     }
 
     #[instrument(

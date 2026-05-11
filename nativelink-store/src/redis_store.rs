@@ -1812,12 +1812,23 @@ where
                         }
                         result => (connection_manager, result),
                     };
-                let create_result = result.err_tip(|| {
-                    format!(
-                        "Error with ft_create in RedisStore::search_by_index_prefix({})",
-                        get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY),
-                    )
-                });
+
+                let create_result = match result {
+                    Ok(()) => Ok(()),
+                    Err(ref e)
+                        if e.kind() == redis::ErrorKind::Extension
+                            && e.code() == Some("Index")
+                            && e.detail() == Some("already exists") =>
+                    {
+                        Ok(())
+                    }
+                    Err(_) => result.err_tip(|| {
+                        format!(
+                            "Error with ft_create in RedisStore::search_by_index_prefix({})",
+                            get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY),
+                        )
+                    }),
+                };
 
                 let run_result = run_ft_aggregate(connection_manager).await.err_tip(|| {
                     format!(
