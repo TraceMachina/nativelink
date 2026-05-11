@@ -512,3 +512,89 @@ async fn test_orphaned_client_operation_id_returns_none() -> Result<(), Error> {
 
     Ok(())
 }
+
+/// Regression test for the cid_* orphan accumulation bug.
+///
+/// Pre-fix, `add_action` wrote the `cid_<client_operation_id>` →
+/// `operation_id` pointer with `expiry=None`. PR #2315 later started
+/// attaching `retain_completed_for_s` TTL onto the matching `aa_*`
+/// key on completion. The TTL mismatch meant: aa_* expired after
+/// `retain_completed_for_s`, cid_* lingered forever. A subsequent
+/// `WaitExecution` resolving the stale cid_* hit the orphan path,
+/// returned `NotFound`, and the client (Bazel) restarted Execute,
+/// creating *another* unbounded cid_*. In production this produced
+/// ~3.8M cid_* keys with ~4.5% already orphaned.
+///
+/// This test asserts that `add_action` now writes the cid_* with a
+/// bounded TTL. We don't pin the exact TTL value here (that's an
+/// implementation detail of the fix), only that *some* TTL was
+/// attached — exercising the path that previously passed `None`.
+#[nativelink_test]
+async fn add_action_attaches_ttl_to_cid_mapping() -> Result<(), Error> {
+    const CLIENT_OPERATION_ID: &str = "cid_ttl_test_client";
+    const WORKER_OPERATION_ID: &str = "cid_ttl_test_worker";
+    const SUB_CHANNEL: &str = "sub_channel";
+
+    let action_info = Arc::new(ActionInfo {
+        command_digest: DigestInfo::zero_digest(),
+        input_root_digest: DigestInfo::zero_digest(),
+        timeout: Duration::from_secs(1),
+        platform_properties: HashMap::new(),
+        priority: 0,
+        load_timestamp: SystemTime::UNIX_EPOCH,
+        insert_timestamp: SystemTime::UNIX_EPOCH,
+        unique_qualifier: ActionUniqueQualifier::Cacheable(ActionUniqueKey {
+            instance_name: INSTANCE_NAME.to_string(),
+            digest_function: DigestHasherFunc::Sha256,
+            digest: DigestInfo::zero_digest(),
+        }),
+    });
+
+    let fake_redis_backend: FakeRedisBackend<RedisSubscriptionManager> = FakeRedisBackend::new();
+    let fake_redis_port = fake_redis_backend.clone().run().await;
+    let spec = RedisSpec {
+        addresses: vec![format!("redis://127.0.0.1:{fake_redis_port}")],
+        experimental_pub_sub_channel: Some(SUB_CHANNEL.to_string()),
+        ..Default::default()
+    };
+    let store = RedisStore::new_standard(spec).await.expect("Working spec");
+    fake_redis_backend.set_subscription_manager(store.subscription_manager().await.unwrap());
+
+    let notifier = Arc::new(Notify::new());
+    let awaited_action_db = StoreAwaitedActionDb::new(
+        store.clone(),
+        notifier.clone(),
+        MockInstantWrapped::default,
+        move || WORKER_OPERATION_ID.into(),
+        60,
+    )
+    .await
+    .unwrap();
+
+    let _subscription = awaited_action_db
+        .add_action(
+            CLIENT_OPERATION_ID.into(),
+            action_info.clone(),
+            Duration::from_mins(1),
+        )
+        .await
+        .unwrap();
+
+    // The cid_* key must have an EXPIRE attached. Pre-fix this map
+    // was empty for the cid_ key — the assertion below would fail.
+    let expiries = fake_redis_backend.expiries.lock().unwrap().clone();
+    let cid_key = format!("cid_{CLIENT_OPERATION_ID}");
+    let ttl = expiries.get(&cid_key).copied().unwrap_or_else(|| {
+        panic!(
+            "expected an EXPIRE on {cid_key} after add_action, but none was set. \
+             All recorded expiries: {expiries:?}"
+        )
+    });
+    assert!(
+        ttl > 0,
+        "cid_* TTL must be positive (got {ttl}); a 0 or negative TTL would \
+         immediately evict the mapping and break in-flight WaitExecution calls"
+    );
+
+    Ok(())
+}

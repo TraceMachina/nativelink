@@ -939,14 +939,39 @@ where
                 continue;
             }
 
-            // Add the client_operation_id to operation_id mapping
+            // Add the client_operation_id → operation_id mapping with
+            // a bounded TTL.
+            //
+            // Pre-fix this was written with `None` (no TTL). When
+            // PR #2315 later attaches `retain_completed_for_s` to the
+            // matching `aa_*` on completion, the cid_* survives that
+            // expiry and becomes a permanent orphan: a subsequent
+            // `WaitExecution` resolves cid_* → operation_id whose
+            // `aa_*` is gone, the orphan path returns `NotFound`, and
+            // the client (Bazel) restarts `Execute` — which creates
+            // *another* unbounded cid_*. In production this produced
+            // ~3.8M cid_* keys with ~4.5% already orphaned and
+            // intermittent "lost-action" symptoms in long builds.
+            //
+            // We can't compute the exact correct TTL here because the
+            // action's full lifetime is unknown at insert time (it
+            // depends on queue wait + execute + retain_completed_for).
+            // A generous fixed upper bound keeps orphans from
+            // accumulating indefinitely while staying well above any
+            // realistic single-action runtime. 24h comfortably exceeds
+            // the longest production `max_action_executing_timeout_s +
+            // client_action_timeout_s + retain_completed_for_s`
+            // combinations observed in customer configs (~1500s) and
+            // bounds orphan accumulation to a single day's worth of
+            // builds at most.
+            const CLIENT_ID_MAPPING_TTL: Duration = Duration::from_secs(24 * 60 * 60);
             self.store
                 .update_data(
                     UpdateClientIdToOperationId {
                         client_operation_id: client_operation_id.clone(),
                         operation_id: operation_id.clone(),
                     },
-                    None,
+                    Some(CLIENT_ID_MAPPING_TTL),
                 )
                 .await
                 .err_tip(|| "In RedisAwaitedActionDb::add_action while adding client mapping")?;

@@ -34,6 +34,11 @@ pub trait SubscriptionManagerNotify {
 pub struct FakeRedisBackend<S: SubscriptionManagerNotify> {
     /// Contains a list of all of the Redis keys -> fields.
     pub table: Arc<Mutex<HashMap<String, HashMap<String, Value>>>>,
+    /// TTL (in seconds) attached to each key via `EXPIRE`. Lets tests
+    /// assert that a key was set with a bounded lifetime — needed for
+    /// regression coverage of the cid_* orphan fix, where the original
+    /// bug was the absence of any TTL.
+    pub expiries: Arc<Mutex<HashMap<String, i64>>>,
     subscription_manager: Arc<Mutex<Option<Arc<S>>>>,
 }
 
@@ -55,6 +60,7 @@ impl<S: SubscriptionManagerNotify + Send + 'static + Sync> FakeRedisBackend<S> {
     pub fn new() -> Self {
         Self {
             table: Arc::new(Mutex::new(HashMap::new())),
+            expiries: Arc::new(Mutex::new(HashMap::new())),
             subscription_manager: Arc::new(Mutex::new(None)),
         }
     }
@@ -332,6 +338,30 @@ impl<S: SubscriptionManagerNotify + Send + 'static + Sync> FakeRedisBackend<S> {
                         debug!(%key, ?values, "Inserting with HMSET");
                         self.table.lock().unwrap().insert(key, values);
                         Value::Okay
+                    }
+
+                    "EXPIRE" => {
+                        // `EXPIRE key seconds` — record the TTL so tests
+                        // can assert one was attached. Real Redis
+                        // returns 1 if the key existed (TTL applied) or
+                        // 0 if not.
+                        let key_name =
+                            str::from_utf8(args[0].as_bytes().expect("Key argument is not bytes"))
+                                .expect("Unable to parse key name")
+                                .to_string();
+                        let seconds = str::from_utf8(
+                            args[1].as_bytes().expect("EXPIRE seconds is not bytes"),
+                        )
+                        .expect("EXPIRE seconds is not utf8")
+                        .parse::<i64>()
+                        .expect("EXPIRE seconds is not an integer");
+                        let exists = self.table.lock().unwrap().contains_key(&key_name);
+                        if exists {
+                            self.expiries.lock().unwrap().insert(key_name, seconds);
+                            Value::Int(1)
+                        } else {
+                            Value::Int(0)
+                        }
                     }
 
                     "HMGET" => {
