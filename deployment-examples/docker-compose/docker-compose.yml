@@ -14,7 +14,7 @@
 
 services:
   nativelink_local_cas:
-    image: trace_machina/nativelink:latest
+    image: ${NATIVELINK_IMAGE:-trace_machina/nativelink:latest}
     build:
       context: ../..
       dockerfile: ./deployment-examples/docker-compose/Dockerfile
@@ -30,10 +30,10 @@ services:
       RUST_LOG: ${RUST_LOG:-warn}
     ports: [ "50051:50051/tcp", "127.0.0.1:50061:50061", "50071:50071/tcp", ]
     command: |
-      nativelink /root/local-storage-cas.json5
+      /root/local-storage-cas.json5
 
   nativelink_scheduler:
-    image: trace_machina/nativelink:latest
+    image: ${NATIVELINK_IMAGE:-trace_machina/nativelink:latest}
     build:
       context: ../..
       dockerfile: ./deployment-examples/docker-compose/Dockerfile
@@ -49,12 +49,24 @@ services:
       CAS_ENDPOINT: nativelink_local_cas
     ports: [ "50052:50052/tcp" ]
     command: |
-      nativelink /root/scheduler.json5
+      /root/scheduler.json5
     depends_on:
       - nativelink_local_cas
 
+  executor-init:
+    image: ${NATIVELINK_WORKER_INIT_IMAGE:-trace_machina/nativelink:latest}
+    build:
+      context: ../..
+      dockerfile: ./deployment-examples/docker-compose/Dockerfile
+      network: host
+      args:
+        - ADDITIONAL_SETUP_WORKER_CMD=${ADDITIONAL_SETUP_WORKER_CMD:-}
+    command: /shared
+    volumes:
+      - exec-shared:/shared
+
   nativelink_executor:
-    image: trace_machina/nativelink:latest
+    image: ${NATIVELINK_LRE_IMAGE:-trace_machina/nativelink:latest}
     privileged: true # So we can do use_namespaces
     build:
       context: ../..
@@ -67,12 +79,20 @@ services:
       - type: bind
         source: .
         target: /root
+      - exec-shared:/shared
     environment:
       RUST_LOG: ${RUST_LOG:-warn}
       CAS_ENDPOINT: nativelink_local_cas
       SCHEDULER_ENDPOINT: nativelink_scheduler
     command: |
-      nativelink /root/worker.json5
+      /shared/nativelink /root/worker.json5
     depends_on:
-      - nativelink_local_cas
-      - nativelink_scheduler
+      nativelink_local_cas:
+        condition: service_started
+      nativelink_scheduler:
+        condition: service_started
+      executor-init:
+        condition: service_completed_successfully
+
+volumes:
+  exec-shared:
