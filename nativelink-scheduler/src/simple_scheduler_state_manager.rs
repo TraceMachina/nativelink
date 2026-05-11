@@ -785,7 +785,56 @@ where
                         ActionStage::Queued
                     }
                 }
-                UpdateOperationType::UpdateWithDisconnect => ActionStage::Queued,
+                UpdateOperationType::UpdateWithDisconnect => {
+                    // A worker disconnecting mid-action is functionally
+                    // equivalent to an error from the action's POV: the
+                    // action did not complete on that worker. Pre-fix
+                    // this branch unconditionally re-queued without
+                    // touching `attempts`, so `max_job_retries` never
+                    // tripped. The customer-visible failure mode: a
+                    // worker pod whose resource limits are below the
+                    // peak working set of its action set OOMKills, the
+                    // scheduler re-dispatches the same action set to a
+                    // freshly-spawned worker, that worker OOMs the
+                    // same way, and the loop continues indefinitely.
+                    // Bazel's client-side `--test_timeout` was the
+                    // only thing eventually breaking the cycle, with
+                    // the symptom surfacing to the user as TIMEOUT
+                    // (looks like a slow test) or NO STATUS (looks
+                    // like a stuck dependency) — neither pointing at
+                    // the cluster.
+                    //
+                    // Counting disconnects against `max_job_retries`
+                    // bounds the loop. A transient network blip on a
+                    // single dispatch still has `max_job_retries - 1`
+                    // attempts of headroom (customer-helm sets this
+                    // to 5), so legitimate blips remain harmless;
+                    // sustained crash-loops surface a clean
+                    // backend-attributed failure that names the worker
+                    // disconnect path explicitly.
+                    awaited_action.attempts += 1;
+                    if awaited_action.attempts > self.max_job_retries {
+                        ActionStage::Completed(ActionResult {
+                            execution_metadata: ExecutionMetadata {
+                                worker: maybe_worker_id
+                                    .map_or_else(String::default, ToString::to_string),
+                                ..ExecutionMetadata::default()
+                            },
+                            error: Some(make_err!(
+                                Code::Aborted,
+                                "Worker disconnected {} times (>{} max_job_retries) before \
+                                 completing this action; suspect worker crash loop, e.g. OOM \
+                                 from action working set exceeding pod memory limit. \
+                                 operation_id={operation_id} last_worker={maybe_worker_id:?}",
+                                awaited_action.attempts,
+                                self.max_job_retries,
+                            )),
+                            ..ActionResult::default()
+                        })
+                    } else {
+                        ActionStage::Queued
+                    }
+                }
                 // We shouldn't get here, but we just ignore it if we do.
                 UpdateOperationType::ExecutionComplete => {
                     warn!("inner_update_operation got an ExecutionComplete, that's unexpected.");
