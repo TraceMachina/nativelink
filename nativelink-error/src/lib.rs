@@ -69,7 +69,7 @@ pub enum ErrorContext {
     None,
     /// The error refers to a specific CAS blob that could not be
     /// located. `hash` and `size` together form the digest the client
-    /// should re-upload (REv2 `blobs/{hash}/{size}`).
+    /// should re-upload (`REv2` `blobs/{hash}/{size}`).
     MissingDigest { hash: String, size: i64 },
 }
 
