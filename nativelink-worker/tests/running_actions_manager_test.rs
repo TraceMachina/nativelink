@@ -52,7 +52,9 @@ mod tests {
         HistoricalExecuteResponse, StartExecute,
     };
     use nativelink_proto::google::rpc::Status;
-    use nativelink_store::ac_utils::{get_and_decode_digest, serialize_and_upload_message};
+    use nativelink_store::ac_utils::{
+        compute_buf_digest, get_and_decode_digest, serialize_and_upload_message,
+    };
     use nativelink_store::fast_slow_store::FastSlowStore;
     use nativelink_store::filesystem_store::FilesystemStore;
     use nativelink_store::memory_store::MemoryStore;
@@ -3318,6 +3320,189 @@ exit 1
         assert!(
             dir_stream.as_mut().next_entry().await?.is_none(),
             "Expected empty directory at {root_action_directory}"
+        );
+        Ok(())
+    }
+
+    #[nativelink_test]
+    #[cfg(target_family = "unix")]
+    async fn persistent_worker_reuses_json_worker_between_actions()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const WORKER_ID: &str = "foo_worker_id";
+        const WORKER_SCRIPT_NAME: &str = "worker.sh";
+
+        fn test_monotonic_clock() -> SystemTime {
+            static CLOCK: AtomicU64 = AtomicU64::new(0);
+            monotonic_clock(&CLOCK)
+        }
+
+        async fn create_action(
+            cas_store: &Arc<FastSlowStore>,
+            worker_script_digest: DigestInfo,
+        ) -> Result<(Action, DigestInfo), Error> {
+            let command = Command {
+                arguments: vec![format!("./{WORKER_SCRIPT_NAME}"), "@args.txt".to_string()],
+                output_paths: vec!["count.txt".to_string()],
+                platform: Some(Platform {
+                    properties: vec![
+                        Property {
+                            name: "supports-workers".to_string(),
+                            value: "1".to_string(),
+                        },
+                        Property {
+                            name: "requires-worker-protocol".to_string(),
+                            value: "json".to_string(),
+                        },
+                    ],
+                }),
+                ..Default::default()
+            };
+            let command_digest = serialize_and_upload_message(
+                &command,
+                cas_store.as_pin(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
+            let args_digest = DigestInfo::new([9u8; 32], 0);
+            cas_store.update_oneshot(args_digest, Bytes::new()).await?;
+            let input_root_digest = serialize_and_upload_message(
+                &Directory {
+                    files: vec![
+                        FileNode {
+                            name: WORKER_SCRIPT_NAME.to_string(),
+                            digest: Some(worker_script_digest.into()),
+                            is_executable: true,
+                            node_properties: None,
+                        },
+                        FileNode {
+                            name: "args.txt".to_string(),
+                            digest: Some(args_digest.into()),
+                            is_executable: false,
+                            node_properties: None,
+                        },
+                    ],
+                    ..Default::default()
+                },
+                cas_store.as_pin(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
+            let action = Action {
+                command_digest: Some(command_digest.into()),
+                input_root_digest: Some(input_root_digest.into()),
+                platform: command.platform.clone(),
+                ..Default::default()
+            };
+            let action_digest = serialize_and_upload_message(
+                &action,
+                cas_store.as_pin(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
+            Ok((action, action_digest))
+        }
+
+        async fn run_persistent_action(
+            running_actions_manager: &Arc<RunningActionsManagerImpl>,
+            slow_store: &Arc<MemoryStore>,
+            action: &Action,
+            action_digest: DigestInfo,
+            operation_id: &str,
+        ) -> Result<String, Error> {
+            let running_action_impl = running_actions_manager
+                .create_and_add_action(
+                    WORKER_ID.to_string(),
+                    StartExecute {
+                        execute_request: Some(ExecuteRequest {
+                            action_digest: Some(action_digest.into()),
+                            ..Default::default()
+                        }),
+                        operation_id: operation_id.to_string(),
+                        queued_timestamp: None,
+                        platform: action.platform.clone(),
+                        worker_id: WORKER_ID.to_string(),
+                    },
+                )
+                .await?;
+            let action_result = run_action(running_action_impl).await?;
+            slow_store
+                .as_ref()
+                .get_part_unchunked(action_result.output_files[0].digest, 0, None)
+                .await
+                .and_then(|content| {
+                    String::from_utf8(content.to_vec()).map_err(|err| {
+                        Error::from_std_err(Code::Internal, &err)
+                            .append("Decoding persistent worker count.txt")
+                    })
+                })
+        }
+
+        let (_, slow_store, cas_store, ac_store) = setup_stores().await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
+            RunningActionsManagerArgs {
+                root_action_directory,
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::from_secs(30),
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                timeout_handled_externally: false,
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            },
+            Callbacks {
+                now_fn: test_monotonic_clock,
+                sleep_fn: |_duration| Box::pin(future::pending()),
+            },
+        )?);
+
+        let worker_script = r#"#!/bin/sh
+count=0
+while IFS= read -r request; do
+  count=$((count + 1))
+  sandbox_dir=$(printf '%s' "$request" | sed -n 's/.*"sandboxDir":"\([^"]*\)".*/\1/p')
+  printf '%s' "$count" > "$sandbox_dir/count.txt"
+  printf '{"exitCode":0,"output":"count=%s"}\n' "$count"
+done
+"#;
+        let worker_script_bytes = Bytes::from(worker_script);
+        let worker_script_digest =
+            compute_buf_digest(&worker_script_bytes, &mut DigestHasherFunc::Sha256.hasher());
+        cas_store
+            .update_oneshot(worker_script_digest, worker_script_bytes)
+            .await?;
+        let (action, action_digest) = create_action(&cas_store, worker_script_digest).await?;
+
+        let first = run_persistent_action(
+            &running_actions_manager,
+            &slow_store,
+            &action,
+            action_digest,
+            "persistent_worker_first",
+        )
+        .await?;
+        let second = run_persistent_action(
+            &running_actions_manager,
+            &slow_store,
+            &action,
+            action_digest,
+            "persistent_worker_second",
+        )
+        .await?;
+
+        assert_eq!(first, "1");
+        assert_eq!(
+            second, "2",
+            "second action must reuse the already-running persistent worker"
         );
         Ok(())
     }

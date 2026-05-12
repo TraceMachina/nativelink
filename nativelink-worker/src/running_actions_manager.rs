@@ -82,9 +82,16 @@ use tonic::Request;
 use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
 
+use crate::persistent_worker::{
+    Input as PersistentWorkerInput, PersistentWorkerPool, WireFormat, WorkRequest, WorkerKey,
+};
+
 /// For simplicity we use a fixed exit code for cases when our program is terminated
 /// due to a signal.
 const EXIT_CODE_FOR_SIGNAL: i32 = 9;
+
+const SUPPORTS_WORKERS_PROPERTY: &str = "supports-workers";
+const REQUIRES_WORKER_PROTOCOL_PROPERTY: &str = "requires-worker-protocol";
 
 /// Default strategy for uploading historical results.
 /// Note: If this value changes the config documentation
@@ -109,6 +116,45 @@ enum SideChannelFailureReason {
 struct SideChannelInfo {
     /// If the task should be considered a failure and why.
     failure: Option<SideChannelFailureReason>,
+}
+
+fn action_supports_persistent_workers(
+    action_info: &ActionInfo,
+) -> Option<Result<WireFormat, Error>> {
+    if action_info
+        .platform_properties
+        .get(SUPPORTS_WORKERS_PROPERTY)
+        .is_none_or(|value| value != "1")
+    {
+        return None;
+    }
+
+    let protocol = action_info
+        .platform_properties
+        .get(REQUIRES_WORKER_PROTOCOL_PROPERTY)
+        .map_or("proto", String::as_str);
+    Some(WireFormat::parse(protocol))
+}
+
+fn os_args_to_strings(args: &[&OsStr]) -> Result<Vec<String>, Error> {
+    args.iter()
+        .map(|arg| {
+            arg.to_str().map(str::to_owned).ok_or_else(|| {
+                make_err!(
+                    Code::InvalidArgument,
+                    "Persistent worker command arguments must be valid UTF-8: {arg:?}"
+                )
+            })
+        })
+        .collect()
+}
+
+fn persistent_worker_request_arguments(argv: &[String]) -> Vec<String> {
+    argv.iter()
+        .skip(1)
+        .skip_while(|arg| !arg.starts_with('@'))
+        .cloned()
+        .collect()
 }
 
 /// Aggressively download the digests of files and make a local folder from it. This function
@@ -960,6 +1006,90 @@ impl RunningActionImpl {
         info!(?args, "Executing command");
 
         let program = self.canonicalise_path(args[0], &command_proto.working_directory)?;
+        if let Some(wire_format_result) = action_supports_persistent_workers(&self.action_info) {
+            match wire_format_result {
+                Ok(wire_format) => {
+                    let command_argv = os_args_to_strings(&args)?;
+                    let key = WorkerKey::from_argv(&command_argv, wire_format)?;
+                    let request = WorkRequest {
+                        arguments: persistent_worker_request_arguments(&command_argv),
+                        inputs: Vec::<PersistentWorkerInput>::new(),
+                        request_id: 0,
+                        cancel: false,
+                        verbosity: 0,
+                        sandbox_dir: if command_proto.working_directory.is_empty() {
+                            self.work_directory.clone()
+                        } else {
+                            format!(
+                                "{}/{}",
+                                self.work_directory, command_proto.working_directory
+                            )
+                        },
+                    };
+                    let worker_cwd = PathBuf::from(&request.sandbox_dir);
+
+                    match self
+                        .running_actions_manager
+                        .persistent_worker_pool
+                        .acquire(key.clone(), &program, &worker_cwd)
+                        .await
+                    {
+                        Ok(mut lease) => {
+                            let timer = self.metrics().child_process.begin_timer();
+                            let response = match lease
+                                .worker()
+                                .dispatch_with_timeout(&request, self.timeout)
+                                .await
+                            {
+                                Ok(response) => {
+                                    lease.release(true).await;
+                                    response
+                                }
+                                Err(err) => {
+                                    lease.release(false).await;
+                                    return Err(err).err_tip(|| {
+                                        format!("Dispatching action to persistent worker {key:?}")
+                                    });
+                                }
+                            };
+                            timer.measure();
+
+                            if response.exit_code == 0 {
+                                self.metrics().child_process_success_error_code.inc();
+                            } else {
+                                self.metrics().child_process_failure_error_code.inc();
+                            }
+                            info!(?args, ?key, "Persistent worker command complete");
+                            {
+                                let mut state = self.state.lock();
+                                state.command_proto = Some(command_proto);
+                                state.execution_result = Some(RunningActionImplExecutionResult {
+                                    stdout: Bytes::from(response.output),
+                                    stderr: Bytes::new(),
+                                    exit_code: response.exit_code,
+                                });
+                                state.execution_metadata.execution_completed_timestamp =
+                                    (self.running_actions_manager.callbacks.now_fn)();
+                            }
+                            return Ok(self);
+                        }
+                        Err(err) => {
+                            info!(
+                                ?err,
+                                ?key,
+                                "Falling back to one-shot execution; persistent worker unavailable"
+                            );
+                        }
+                    }
+                }
+                Err(err) => {
+                    info!(
+                        ?err,
+                        "Falling back to one-shot execution; unsupported persistent worker protocol"
+                    );
+                }
+            }
+        }
 
         let mut command_builder = process::Command::new(program);
         #[cfg(target_family = "unix")]
@@ -1192,7 +1322,22 @@ impl RunningActionImpl {
                         )
                     };
 
-                    let exit_code = exit_status.code().map_or(EXIT_CODE_FOR_SIGNAL, |exit_code| {
+                    let exit_code = exit_status.code().map_or_else(|| {
+                        // No exit code means the runner was terminated by a
+                        // signal. SIGKILL on Linux is the kernel OOM killer's
+                        // weapon of choice, so flag this for operators trying
+                        // to correlate action failures with kubectl-top
+                        // memory pressure.
+                        warn!(
+                            ?args,
+                            "Runner subprocess terminated by signal (no exit code); likely OOMKilled \
+                             or externally killed. If this repeats for the same action, raise \
+                             `workers.specs[*].resources.limits.memory` or shrink the action's \
+                             concurrency."
+                        );
+                        self.metrics().child_process_failure_error_code.inc();
+                        EXIT_CODE_FOR_SIGNAL
+                    }, |exit_code| {
                         if exit_code == 0 {
                             self.metrics().child_process_success_error_code.inc();
                         } else {
@@ -2063,6 +2208,7 @@ pub struct RunningActionsManagerImpl {
     /// Optional directory cache for improving performance by caching reconstructed
     /// input directories and using hardlinks.
     directory_cache: Option<Arc<crate::directory_cache::DirectoryCache>>,
+    persistent_worker_pool: PersistentWorkerPool,
 }
 
 impl RunningActionsManagerImpl {
@@ -2107,6 +2253,7 @@ impl RunningActionsManagerImpl {
             cleaning_up_operations: Mutex::new(HashSet::new()),
             cleanup_complete_notify: Arc::new(Notify::new()),
             directory_cache: args.directory_cache,
+            persistent_worker_pool: PersistentWorkerPool::default(),
             #[cfg(target_os = "linux")]
             use_namespaces: args.use_namespaces,
         })

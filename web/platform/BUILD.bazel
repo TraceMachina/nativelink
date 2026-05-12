@@ -1,0 +1,23 @@
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
+sh_binary(
+    name = "check",
+    srcs = ["check.sh"],
+    visibility = ["//visibility:public"],
+)
+
+sh_test(
+    name = "check_test",
+    timeout = "moderate",
+    srcs = ["check.sh"],
+    env_inherit = [
+        "BUN_INSTALL",
+        "HOME",
+        "PATH",
+    ],
+    tags = [
+        "local",
+        "no-sandbox",
+    ],
+)

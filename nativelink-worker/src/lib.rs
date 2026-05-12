@@ -16,6 +16,7 @@ pub mod directory_cache;
 pub mod local_worker;
 #[cfg(target_os = "linux")]
 pub mod namespace_utils;
+pub mod persistent_worker;
 pub mod running_actions_manager;
 pub mod worker_api_client_wrapper;
 pub mod worker_utils;
