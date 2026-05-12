@@ -46,31 +46,10 @@ use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager,
 };
 use nativelink_util::origin_event::OriginMetadata;
+use nativelink_util::precondition_failure;
 use nativelink_util::store_trait::StoreLike;
 use prost::Message as _;
 use tonic::{Code as TonicCode, Request};
-
-/// Local mirror of `google.rpc.PreconditionFailure`, kept here so this
-/// integration test can decode the detail bytes that `ExecutionServer`
-/// places in `grpc-status-details-bin` without depending on the inline
-/// definition inside `execution_server.rs` (which is mod-private).
-mod precondition_failure {
-    #[derive(Clone, PartialEq, ::prost::Message)]
-    pub(super) struct PreconditionFailure {
-        #[prost(message, repeated, tag = "1")]
-        pub(super) violations: ::prost::alloc::vec::Vec<Violation>,
-    }
-    #[derive(Clone, PartialEq, ::prost::Message)]
-    pub(super) struct Violation {
-        #[prost(string, tag = "1")]
-        pub(super) r#type: ::prost::alloc::string::String,
-        #[prost(string, tag = "2")]
-        pub(super) subject: ::prost::alloc::string::String,
-        #[prost(string, tag = "3")]
-        pub(super) description: ::prost::alloc::string::String,
-    }
-    pub(super) const TYPE_URL: &str = "type.googleapis.com/google.rpc.PreconditionFailure";
-}
 
 const INSTANCE_NAME: &str = "instance_name";
 

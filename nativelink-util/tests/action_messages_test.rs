@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::time::SystemTime;
 
 use hex::FromHex;
-use nativelink_error::{Code, Error, ResultExt, make_err};
+use nativelink_error::{Code, Error, ErrorContext, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_util::action_messages::{
     ActionInfo, ActionResult, ActionUniqueKey, ActionUniqueQualifier, ExecutionMetadata,
@@ -10,30 +10,8 @@ use nativelink_util::action_messages::{
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
+use nativelink_util::precondition_failure;
 use prost::Message as _;
-
-/// Local mirror of `google.rpc.PreconditionFailure`, kept here so this
-/// integration test can decode the `details[0].value` bytes that
-/// `to_execute_response` places in the `ExecuteResponse.status` without
-/// depending on the mod-private inline definition inside
-/// `action_messages.rs`.
-mod precondition_failure {
-    #[derive(Clone, PartialEq, ::prost::Message)]
-    pub(super) struct PreconditionFailure {
-        #[prost(message, repeated, tag = "1")]
-        pub(super) violations: ::prost::alloc::vec::Vec<Violation>,
-    }
-    #[derive(Clone, PartialEq, ::prost::Message)]
-    pub(super) struct Violation {
-        #[prost(string, tag = "1")]
-        pub(super) r#type: ::prost::alloc::string::String,
-        #[prost(string, tag = "2")]
-        pub(super) subject: ::prost::alloc::string::String,
-        #[prost(string, tag = "3")]
-        pub(super) description: ::prost::alloc::string::String,
-    }
-    pub(super) const TYPE_URL: &str = "type.googleapis.com/google.rpc.PreconditionFailure";
-}
 
 fn make_key() -> ActionUniqueKey {
     ActionUniqueKey {
@@ -86,6 +64,10 @@ fn make_missing_blob_error(digest: &DigestInfo) -> Error {
             If using multiple workers, ensure all workers share the same CAS storage path.",
         digest,
     )
+    .with_context(ErrorContext::MissingDigest {
+        hash: digest.packed_hash().to_string(),
+        size: digest.size_bytes() as i64,
+    })
 }
 
 fn action_result_with_error(error: Option<Error>) -> ActionResult {
@@ -177,17 +159,18 @@ fn to_execute_response_leaves_non_missing_blob_errors_unchanged() {
 }
 
 #[nativelink_test]
-fn to_execute_response_falls_back_when_digest_cannot_be_parsed() {
+fn to_execute_response_does_not_misclassify_error_without_context() {
+    // Pre-typed-context behavior matched on substrings ("Object … not
+    // found").
     let action_result = action_result_with_error(Some(make_err!(
         Code::NotFound,
-        // Marker present, but no `Object <hash>-<size>` prefix.
-        "the cache returned: not found in either fast or slow store",
+        "Object xyz not found in either fast or slow store",
     )));
     let resp = to_execute_response(action_result);
     let status = resp.status.expect("status must be set");
     assert!(
         status.details.is_empty(),
-        "missing-blob messages that cannot be parsed must not produce a violation",
+        "errors without ErrorContext::MissingDigest must not produce a PreconditionFailure detail",
     );
 }
 

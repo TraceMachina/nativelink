@@ -25,7 +25,7 @@ use std::sync::{Arc, Weak};
 use async_trait::async_trait;
 use futures::{FutureExt, join};
 use nativelink_config::stores::{FastSlowSpec, StoreDirection};
-use nativelink_error::{Code, Error, ResultExt, make_err};
+use nativelink_error::{Code, Error, ErrorContext, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{
     DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
@@ -191,12 +191,20 @@ impl FastSlowStore {
                     .await
                     .err_tip(|| "Failed to run has() on slow store")?
                     .ok_or_else(|| {
-                        make_err!(
+                        let err = make_err!(
                             Code::NotFound,
                             "Object {} not found in either fast or slow store. \
                                 If using multiple workers, ensure all workers share the same CAS storage path.",
                             key.as_str()
-                        )
+                        );
+                        if let StoreKey::Digest(d) = key.borrow() {
+                            err.with_context(ErrorContext::MissingDigest {
+                                hash: d.packed_hash().to_string(),
+                                size: d.size_bytes() as i64,
+                            })
+                        } else {
+                            err
+                        }
                     })?
             )
         };

@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use std::time::SystemTime;
 
 use humantime::format_duration;
-use nativelink_error::{Error, ResultExt, error_if, make_input_err};
+use nativelink_error::{Error, ErrorContext, ResultExt, error_if, make_input_err};
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent, publish,
 };
@@ -843,48 +843,14 @@ impl From<&ActionStage> for execution_stage::Value {
     }
 }
 
-/// `google.rpc.PreconditionFailure` (defined inline to avoid pulling
-/// `tonic-types` and the additional proto-generated module). Bazel's
-/// `RemoteExecutionService` reads this proto out of
-/// `ExecuteResponse.status.details` for `FAILED_PRECONDITION` results
-/// and, for `MISSING` violations, automatically re-uploads the named
-/// blobs and retries the Execute call. Mirrors the schema in
-/// `google/rpc/error_details.proto`.
-mod precondition_failure {
-    #[derive(Clone, PartialEq, ::prost::Message)]
-    pub(super) struct PreconditionFailure {
-        #[prost(message, repeated, tag = "1")]
-        pub(super) violations: ::prost::alloc::vec::Vec<Violation>,
-    }
-    #[derive(Clone, PartialEq, ::prost::Message)]
-    pub(super) struct Violation {
-        #[prost(string, tag = "1")]
-        pub(super) r#type: ::prost::alloc::string::String,
-        #[prost(string, tag = "2")]
-        pub(super) subject: ::prost::alloc::string::String,
-        #[prost(string, tag = "3")]
-        pub(super) description: ::prost::alloc::string::String,
-    }
-    pub(super) const TYPE_URL: &str = "type.googleapis.com/google.rpc.PreconditionFailure";
-    pub(super) const VIOLATION_TYPE_MISSING: &str = "MISSING";
-}
+use crate::precondition_failure;
 
-const MISSING_BLOB_MARKER: &str = "not found in either fast or slow store";
-
-fn extract_missing_blob_digest(err: &Error) -> Option<(String, i64)> {
-    for msg in &err.messages {
-        if !msg.contains(MISSING_BLOB_MARKER) {
-            continue;
-        }
-        let after_object = msg.find("Object ").map(|i| &msg[i + "Object ".len()..])?;
-        let digest_str = after_object.split(" not found").next()?;
-        let (hash, size) = digest_str.rsplit_once('-')?;
-        let size: i64 = size.parse().ok()?;
-        return Some((hash.to_string(), size));
-    }
-    None
-}
-
+/// Build a `google.rpc.Status` of code `FAILED_PRECONDITION` whose
+/// details carry a `PreconditionFailure` naming the missing blob.
+///
+/// This is the worker-side counterpart to `execution_server`'s
+/// `missing_blobs_failed_precondition` — both produce the REv2
+/// subject format `blobs/{hash}/{size}` that Bazel auto-retries on.
 fn missing_blob_failed_precondition_status(err: &Error, hash: &str, size: i64) -> Status {
     let pf = precondition_failure::PreconditionFailure {
         violations: vec![precondition_failure::Violation {
@@ -931,16 +897,21 @@ pub fn to_execute_response(action_result: ActionResult) -> ExecuteResponse {
     // `PreconditionFailure` detail naming the digest. Bazel sees the
     // detail, re-uploads the missing blob, and retries automatically;
     // without the detail it gives up and the build fails.
+    //
+    // The dispatch is on `Error::context` (typed metadata attached at
+    // the production site in `fast_slow_store`), not the message text.
+    // String-matching across crate boundaries silently regresses when
+    // the producing crate reformats its error — see commit history.
     let status = Some(
         action_result
             .error
             .clone()
-            .map(|err| {
-                if let Some((hash, size)) = extract_missing_blob_digest(&err) {
+            .map(|err| match &err.context {
+                ErrorContext::MissingDigest { hash, size } => {
+                    let (hash, size) = (hash.clone(), *size);
                     missing_blob_failed_precondition_status(&err, &hash, size)
-                } else {
-                    err.into()
                 }
+                ErrorContext::None => err.into(),
             })
             .unwrap_or_default(),
     );

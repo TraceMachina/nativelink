@@ -47,43 +47,39 @@ use nativelink_util::digest_hasher::{DigestHasherFunc, make_ctx_for_hash_func};
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ClientStateManager, OperationFilter,
 };
+use nativelink_util::precondition_failure;
 use nativelink_util::store_trait::{Store, StoreLike};
 use opentelemetry::context::FutureExt;
 use prost::Message as _;
 use tonic::{Code, Request, Response, Status};
 use tracing::{Instrument, Level, debug, error, error_span, instrument, warn};
 
-/// Inline definition of `google.rpc.PreconditionFailure`. Bazel's
-/// `RemoteSpawnRunner` inspects this proto in the gRPC `Status.details`
-/// of a `FAILED_PRECONDITION` response and, when violations of type
-/// `MISSING` are present, automatically re-uploads the named blobs and
-/// retries the Execute call. Without this detail Bazel surfaces the
-/// failure as a hard build error — exactly the symptom triggered by an
-/// interrupted previous build leaving partial CAS uploads.
-mod precondition_failure {
-    /// `google.rpc.PreconditionFailure`.
-    #[derive(Clone, PartialEq, ::prost::Message)]
-    pub(super) struct PreconditionFailure {
-        #[prost(message, repeated, tag = "1")]
-        pub(super) violations: ::prost::alloc::vec::Vec<Violation>,
-    }
-    /// `google.rpc.PreconditionFailure.Violation`.
-    #[derive(Clone, PartialEq, ::prost::Message)]
-    pub(super) struct Violation {
-        #[prost(string, tag = "1")]
-        pub(super) r#type: ::prost::alloc::string::String,
-        #[prost(string, tag = "2")]
-        pub(super) subject: ::prost::alloc::string::String,
-        #[prost(string, tag = "3")]
-        pub(super) description: ::prost::alloc::string::String,
-    }
-    pub(super) const TYPE_URL: &str = "type.googleapis.com/google.rpc.PreconditionFailure";
-    pub(super) const VIOLATION_TYPE_MISSING: &str = "MISSING";
+/// Result of a synchronous `Execute` decision before the async
+/// scheduling stream begins. Stream is the happy path; Reject is a
+/// client-facing gRPC `Status` returned without going through NL's
+/// internal Error/instrumentation pipeline.
+enum ExecuteOutcome<S> {
+    Stream(S),
+    Reject(Status),
 }
 
 /// Build a tonic [`Status`] of code `FAILED_PRECONDITION` whose details
 /// carry a `google.rpc.PreconditionFailure` listing the missing CAS
 /// blobs.
+///
+/// The pre-check that calls this is intentionally shallow: it only
+/// validates the top-level Action proto, `command_digest`, and
+/// `input_root_digest`. Nested Directory protos and file contents
+/// under the input root are not walked here — the worker path fetches
+/// those lazily and reports them via the same mechanism (see
+/// `action_messages::to_execute_response`, which dispatches on
+/// `Error::context`).
+///
+/// Race note: the pre-check uses `has_many` then the action is
+/// scheduled; a blob present at check time may be evicted before the
+/// worker fetches it. That case is intentionally not addressed here —
+/// the worker path covers it with the same `FAILED_PRECONDITION`
+/// surfacing, so Bazel retries either way.
 fn missing_blobs_failed_precondition(
     missing: &[(DigestInfo, &'static str)],
     summary: &str,
@@ -320,7 +316,7 @@ impl ExecutionServer {
     async fn inner_execute(
         &self,
         request: ExecuteRequest,
-    ) -> Result<Result<impl Stream<Item = Result<Operation, Status>> + Send + use<>, Status>, Error>
+    ) -> Result<ExecuteOutcome<impl Stream<Item = Result<Operation, Status>> + Send + use<>>, Error>
     {
         let instance_name = request.instance_name;
 
@@ -353,7 +349,7 @@ impl ExecutionServer {
                 let summary = format!(
                     "Action {digest} is missing from CAS; client should re-upload it and retry"
                 );
-                return Ok(Err(missing_blobs_failed_precondition(
+                return Ok(ExecuteOutcome::Reject(missing_blobs_failed_precondition(
                     &[(digest, "Action")],
                     &summary,
                 )));
@@ -408,7 +404,9 @@ impl ExecutionServer {
                     missing.len(),
                     digest,
                 );
-                return Ok(Err(missing_blobs_failed_precondition(&missing, &summary)));
+                return Ok(ExecuteOutcome::Reject(missing_blobs_failed_precondition(
+                    &missing, &summary,
+                )));
             }
         }
 
@@ -432,7 +430,7 @@ impl ExecutionServer {
             .await
             .err_tip(|| "Failed to schedule task")?;
 
-        Ok(Ok(Self::to_execute_stream(
+        Ok(ExecuteOutcome::Stream(Self::to_execute_stream(
             &NativelinkOperationId::new(
                 instance_name,
                 action_listener
@@ -505,8 +503,8 @@ impl Execution for ExecutionServer {
             .err_tip(|| "Failed on execute() command")?;
 
         match result {
-            Ok(stream) => Ok(Response::new(Box::pin(stream))),
-            Err(status) => Err(status),
+            ExecuteOutcome::Stream(stream) => Ok(Response::new(Box::pin(stream))),
+            ExecuteOutcome::Reject(status) => Err(status),
         }
     }
 

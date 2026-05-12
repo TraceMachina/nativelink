@@ -20,7 +20,7 @@ use std::sync::Arc;
 use bytes::{Bytes, BytesMut};
 use futures::TryStreamExt;
 use nativelink_config::stores::{RedisMode, RedisSpec};
-use nativelink_error::{Code, Error, ResultExt, make_err};
+use nativelink_error::{Code, Error, ErrorContext, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_redis_tester::{
     ReadOnlyRedis, add_lua_script, add_to_response, fake_redis_sentinel_master_stream,
@@ -642,7 +642,8 @@ fn test_connection_errors() {
             messages: vec![
                 "Io: timed out".into(),
                 format!("While connecting to redis with url: redis://nativelink.com:6379/")
-            ]
+            ],
+            context: ErrorContext::None,
         },
         err
     );
@@ -741,7 +742,8 @@ async fn test_sentinel_connect_with_bad_master() {
             messages: vec![
                 "MasterNameNotFoundBySentinel: Master with given name not found in sentinel - MasterNameNotFoundBySentinel".into(),
                 format!("While connecting to redis with url: redis+sentinel://127.0.0.1:{port}/")
-            ]
+            ],
+            context: ErrorContext::None,
         },
         RedisStore::new_standard(spec).await.unwrap_err()
     );
@@ -863,7 +865,8 @@ async fn test_redis_connect_timeout() {
             messages: vec![
                 "Io: timed out".into(),
                 format!("While connecting to redis with url: redis://127.0.0.1:{port}/")
-            ]
+            ],
+            context: ErrorContext::None,
         },
         RedisStore::new_standard(spec).await.unwrap_err()
     );
