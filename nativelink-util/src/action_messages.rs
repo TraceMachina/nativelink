@@ -849,7 +849,7 @@ use crate::precondition_failure;
 /// details carry a `PreconditionFailure` naming the missing blob.
 ///
 /// This is the worker-side counterpart to `execution_server`'s
-/// `missing_blobs_failed_precondition` — both produce the REv2
+/// `missing_blobs_failed_precondition` — both produce the `REv2`
 /// subject format `blobs/{hash}/{size}` that Bazel auto-retries on.
 fn missing_blob_failed_precondition_status(err: &Error, hash: &str, size: i64) -> Status {
     let pf = precondition_failure::PreconditionFailure {

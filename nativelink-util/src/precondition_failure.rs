@@ -30,7 +30,7 @@ pub struct PreconditionFailure {
 }
 
 /// `google.rpc.PreconditionFailure.Violation`.
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, Eq, PartialEq, ::prost::Message)]
 pub struct Violation {
     #[prost(string, tag = "1")]
     pub r#type: ::prost::alloc::string::String,
