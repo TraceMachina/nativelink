@@ -324,29 +324,70 @@ async fn read_varint(r: &mut BufReader<ChildStdout>) -> Result<usize, Error> {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write as _;
+
     use nativelink_macro::nativelink_test;
 
     use super::*;
 
-    fn echo_script(working_dir: &Path, body: &str) -> PathBuf {
-        let path = working_dir.join("worker.sh");
-        std::fs::write(&path, body).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    struct TestWorkerProgram {
+        executable: PathBuf,
+        startup_args: Vec<String>,
+    }
+
+    impl TestWorkerProgram {
+        fn startup_args(&self) -> &[String] {
+            &self.startup_args
         }
-        path
+    }
+
+    #[cfg(unix)]
+    fn echo_script(working_dir: &Path, unix_body: &str, _windows_body: &str) -> TestWorkerProgram {
+        let path = working_dir.join("worker.sh");
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.write_all(unix_body.as_bytes()).unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+
+        TestWorkerProgram {
+            executable: PathBuf::from("/bin/sh"),
+            startup_args: vec![path.display().to_string()],
+        }
+    }
+
+    #[cfg(windows)]
+    fn echo_script(working_dir: &Path, _unix_body: &str, windows_body: &str) -> TestWorkerProgram {
+        let path = working_dir.join("worker.ps1");
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.write_all(windows_body.as_bytes()).unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+
+        TestWorkerProgram {
+            executable: PathBuf::from("powershell.exe"),
+            startup_args: vec![
+                "-NoProfile".to_owned(),
+                "-ExecutionPolicy".to_owned(),
+                "Bypass".to_owned(),
+                "-File".to_owned(),
+                path.display().to_string(),
+            ],
+        }
     }
 
     #[nativelink_test]
     async fn shutdown_kills_unresponsive_worker() {
         // A worker that never reads/writes — shutdown grace expires, we SIGKILL.
         let dir = tempfile::tempdir().unwrap();
-        let script = echo_script(dir.path(), "#!/bin/sh\nexec sleep 30\n");
-        let worker = LiveWorker::spawn(&script, &[], WireFormat::Json, dir.path())
-            .await
-            .unwrap();
+        let script = echo_script(dir.path(), "exec sleep 30\n", "Start-Sleep -Seconds 30\n");
+        let worker = LiveWorker::spawn(
+            &script.executable,
+            script.startup_args(),
+            WireFormat::Json,
+            dir.path(),
+        )
+        .await
+        .unwrap();
         let start = Instant::now();
         worker.shutdown(Duration::from_millis(100)).await;
         // SIGKILL should arrive well within a second.
@@ -360,11 +401,17 @@ mod tests {
         let script = echo_script(
             dir.path(),
             // Read one line, ignore it, emit a fixed response. Newline-terminated.
-            "#!/bin/sh\nread line\necho '{\"exitCode\":0,\"output\":\"ok\"}'\n",
+            "read line\necho '{\"exitCode\":0,\"output\":\"ok\"}'\n",
+            "$line = [Console]::In.ReadLine()\n[Console]::Out.WriteLine('{\"exitCode\":0,\"output\":\"ok\"}')\n",
         );
-        let mut worker = LiveWorker::spawn(&script, &[], WireFormat::Json, dir.path())
-            .await
-            .unwrap();
+        let mut worker = LiveWorker::spawn(
+            &script.executable,
+            script.startup_args(),
+            WireFormat::Json,
+            dir.path(),
+        )
+        .await
+        .unwrap();
 
         let req = WorkRequest {
             arguments: vec!["compile".into()],
@@ -382,10 +429,19 @@ mod tests {
     async fn dispatch_timeout_kills_worker() {
         let dir = tempfile::tempdir().unwrap();
         // Worker reads, then sleeps forever instead of responding.
-        let script = echo_script(dir.path(), "#!/bin/sh\nread line\nexec sleep 60\n");
-        let mut worker = LiveWorker::spawn(&script, &[], WireFormat::Json, dir.path())
-            .await
-            .unwrap();
+        let script = echo_script(
+            dir.path(),
+            "read line\nexec sleep 60\n",
+            "$line = [Console]::In.ReadLine()\nStart-Sleep -Seconds 60\n",
+        );
+        let mut worker = LiveWorker::spawn(
+            &script.executable,
+            script.startup_args(),
+            WireFormat::Json,
+            dir.path(),
+        )
+        .await
+        .unwrap();
 
         let req = WorkRequest {
             arguments: vec!["compile".into()],
@@ -404,11 +460,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let script = echo_script(
             dir.path(),
-            "#!/bin/sh\nread line\necho '{\"exitCode\":0}'\n",
+            "read line\necho '{\"exitCode\":0}'\n",
+            "$line = [Console]::In.ReadLine()\n[Console]::Out.WriteLine('{\"exitCode\":0}')\n",
         );
-        let mut worker = LiveWorker::spawn(&script, &[], WireFormat::Json, dir.path())
-            .await
-            .unwrap();
+        let mut worker = LiveWorker::spawn(
+            &script.executable,
+            script.startup_args(),
+            WireFormat::Json,
+            dir.path(),
+        )
+        .await
+        .unwrap();
         let req = WorkRequest {
             request_id: 7,
             ..WorkRequest::default()
