@@ -52,9 +52,7 @@ mod tests {
         HistoricalExecuteResponse, StartExecute,
     };
     use nativelink_proto::google::rpc::Status;
-    use nativelink_store::ac_utils::{
-        compute_buf_digest, get_and_decode_digest, serialize_and_upload_message,
-    };
+    use nativelink_store::ac_utils::{get_and_decode_digest, serialize_and_upload_message};
     use nativelink_store::fast_slow_store::FastSlowStore;
     use nativelink_store::filesystem_store::FilesystemStore;
     use nativelink_store::memory_store::MemoryStore;
