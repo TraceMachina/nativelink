@@ -28,7 +28,7 @@ use futures::executor::block_on;
 use futures::task::Poll;
 use futures::{Future, FutureExt, poll};
 use nativelink_config::stores::{EvictionPolicy, FilesystemSpec};
-use nativelink_error::{Code, Error, ResultExt, make_err};
+use nativelink_error::{Code, Error, ErrorContext, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_store::filesystem_store::{
     DIGEST_FOLDER, EncodedFilePath, FileEntry, FileEntryImpl, FileType, FilesystemStore,
@@ -1458,6 +1458,7 @@ async fn safe_small_safe_eviction() -> Result<(), Error> {
             messages: vec![format!(
                 "{VALID_HASH}-{bytes} not found in filesystem store here"
             )],
+            context: ErrorContext::None,
         }),
         "Expected data to not exist in store, because eviction"
     );

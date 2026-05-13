@@ -424,5 +424,5 @@ otlp:
 
 For issues or questions:
 - File an issue: https://github.com/TraceMachina/nativelink/issues
-- Join our Discord: https://discord.gg/nativelink
+- Join our Slack: https://forms.gle/LtaWSixEC6bYi5xF7
 - Check documentation: https://nativelink.com/docs

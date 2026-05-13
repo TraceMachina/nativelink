@@ -51,11 +51,57 @@ macro_rules! error_if {
     }};
 }
 
-#[derive(Debug, Eq, PartialEq, Clone, Serialize, Deserialize)]
+/// Typed metadata that travels with an [`Error`].
+///
+/// Used in place of string-parsing error messages when the producer
+/// has structured information the consumer needs to act on. The
+/// motivating case is missing-blob errors from `fast_slow_store` —
+/// `to_execute_response` reads [`ErrorContext::MissingDigest`] and
+/// surfaces a `FAILED_PRECONDITION` with a `PreconditionFailure`
+/// detail naming the digest, which Bazel auto-retries on.
+///
+/// Default is [`ErrorContext::None`]; existing call sites that
+/// construct [`Error`] via `make_err!` / `Error::new` do not need to
+/// be updated.
+#[derive(Default, Debug, Eq, PartialEq, Clone, Serialize, Deserialize)]
+pub enum ErrorContext {
+    #[default]
+    None,
+    /// The error refers to a specific CAS blob that could not be
+    /// located. `hash` and `size` together form the digest the client
+    /// should re-upload (`REv2` `blobs/{hash}/{size}`).
+    MissingDigest { hash: String, size: i64 },
+}
+
+#[derive(Eq, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Error {
     #[serde(with = "CodeDef")]
     pub code: Code,
     pub messages: Vec<String>,
+    #[serde(default, skip_serializing_if = "ErrorContext::is_none")]
+    pub context: ErrorContext,
+}
+
+impl core::fmt::Debug for Error {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let mut builder = f.debug_struct("Error");
+        builder.field("code", &self.code);
+        if !self.messages.is_empty() {
+            builder.field("messages", &self.messages);
+        }
+        if !self.context.is_none() {
+            builder.field("context", &self.context);
+        }
+        builder.finish()
+    }
+}
+
+impl ErrorContext {
+    #[inline]
+    #[must_use]
+    pub const fn is_none(&self) -> bool {
+        matches!(self, Self::None)
+    }
 }
 
 impl MetricsComponent for Error {
@@ -71,7 +117,11 @@ impl MetricsComponent for Error {
 impl Error {
     #[must_use]
     pub const fn new_with_messages(code: Code, messages: Vec<String>) -> Self {
-        Self { code, messages }
+        Self {
+            code,
+            messages,
+            context: ErrorContext::None,
+        }
     }
 
     #[must_use]
@@ -98,6 +148,13 @@ impl Error {
     #[must_use]
     pub fn append<S: Into<String>>(mut self, msg: S) -> Self {
         self.messages.push(msg.into());
+        self
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn with_context(mut self, context: ErrorContext) -> Self {
+        self.context = context;
         self
     }
 
@@ -152,6 +209,7 @@ impl From<nativelink_proto::google::rpc::Status> for Error {
         Self {
             code: val.code.into(),
             messages: vec![val.message],
+            context: ErrorContext::None,
         }
     }
 }
@@ -263,6 +321,7 @@ impl From<std::io::Error> for Error {
         Self {
             code: err.kind().into_code(),
             messages: vec![err.to_string()],
+            context: ErrorContext::None,
         }
     }
 }
@@ -440,6 +499,7 @@ impl<T> ResultExt<T> for Option<T> {
             let mut error = Error {
                 code: Code::Internal,
                 messages: vec![],
+                context: ErrorContext::None,
             };
             let (code, message) = tip_fn(&error);
             error.code = code;

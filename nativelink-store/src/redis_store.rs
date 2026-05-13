@@ -1812,11 +1812,25 @@ where
                         }
                         result => (connection_manager, result),
                     };
-                let create_result = result.err_tip(|| {
-                    format!(
-                        "Error with ft_create in RedisStore::search_by_index_prefix({})",
-                        get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY),
-                    )
+
+                // RediSearch returns ErrorKind::Extension with code "Index"
+                // and detail along the lines of "Index already exists" when
+                // FT.CREATE races with another node.
+                let create_result = result.or_else(|e| {
+                    let is_already_exists = e.kind() == redis::ErrorKind::Extension
+                        && e.code() == Some("Index")
+                        && e.detail()
+                            .is_some_and(|d| d.to_ascii_lowercase().contains("already exists"));
+                    if is_already_exists {
+                        Ok(())
+                    } else {
+                        Err(e).err_tip(|| {
+                            format!(
+                                "Error with ft_create in RedisStore::search_by_index_prefix({})",
+                                get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY),
+                            )
+                        })
+                    }
                 });
 
                 let run_result = run_ft_aggregate(connection_manager).await.err_tip(|| {

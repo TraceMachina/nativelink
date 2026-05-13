@@ -23,25 +23,33 @@ use nativelink_config::stores::{MemorySpec, StoreSpec};
 use nativelink_error::{Code, Error, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::execution_server::Execution;
-use nativelink_proto::build::bazel::remote::execution::v2::{ExecuteRequest, digest_function};
+use nativelink_proto::build::bazel::remote::execution::v2::{
+    Action, ExecuteRequest, digest_function,
+};
 use nativelink_proto::google::longrunning::operations_server::Operations;
 use nativelink_proto::google::longrunning::{
     CancelOperationRequest, DeleteOperationRequest, GetOperationRequest, ListOperationsRequest,
     WaitOperationRequest,
 };
+use nativelink_proto::google::rpc::Status as GrpcStatusProto;
 use nativelink_scheduler::mock_scheduler::MockActionScheduler;
 use nativelink_service::execution_server::ExecutionServer;
+use nativelink_store::ac_utils::serialize_and_upload_message;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::action_messages::{
     ActionInfo, ActionResult, ActionStage, ActionState, OperationId,
 };
 use nativelink_util::common::DigestInfo;
+use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager,
 };
 use nativelink_util::origin_event::OriginMetadata;
-use tonic::Request;
+use nativelink_util::precondition_failure;
+use nativelink_util::store_trait::StoreLike;
+use prost::Message as _;
+use tonic::{Code as TonicCode, Request};
 
 const INSTANCE_NAME: &str = "instance_name";
 
@@ -327,6 +335,193 @@ impl ActionStateResult for TimeoutActionStateResult {
             "as_action_info not implemented"
         ))
     }
+}
+
+/// Encodes a digest into the `REv2` missing-blob subject format.
+fn blob_subject(d: &DigestInfo) -> String {
+    format!("blobs/{}/{}", d.packed_hash(), d.size_bytes())
+}
+
+/// Decode the `FAILED_PRECONDITION` detail bytes that the server placed
+/// in `grpc-status-details-bin`. Returns the inner `PreconditionFailure`.
+fn decode_precondition_failure(
+    status: &tonic::Status,
+) -> Result<precondition_failure::PreconditionFailure, Box<dyn core::error::Error>> {
+    let outer = GrpcStatusProto::decode(status.details())?;
+    assert_eq!(
+        outer.code,
+        TonicCode::FailedPrecondition as i32,
+        "inner google.rpc.Status code should match the tonic FAILED_PRECONDITION",
+    );
+    assert_eq!(outer.details.len(), 1, "expected exactly one detail");
+    assert_eq!(
+        outer.details[0].type_url,
+        precondition_failure::TYPE_URL,
+        "detail type_url must match PreconditionFailure",
+    );
+    Ok(precondition_failure::PreconditionFailure::decode(
+        &*outer.details[0].value,
+    )?)
+}
+
+async fn upload_action(
+    cas_store: &nativelink_util::store_trait::Store,
+    action: &Action,
+) -> Result<DigestInfo, Error> {
+    serialize_and_upload_message(
+        action,
+        cas_store.as_pin(),
+        &mut DigestHasherFunc::Sha256.hasher(),
+    )
+    .await
+}
+
+const fn make_fake_digest(byte: u8, size: u64) -> DigestInfo {
+    DigestInfo::new([byte; 32], size)
+}
+
+fn make_execute_request(action_digest: DigestInfo) -> ExecuteRequest {
+    ExecuteRequest {
+        instance_name: INSTANCE_NAME.to_string(),
+        digest_function: digest_function::Value::Sha256.into(),
+        skip_cache_lookup: false,
+        action_digest: Some(action_digest.into()),
+        execution_policy: None,
+        results_cache_policy: None,
+    }
+}
+
+#[nativelink_test]
+async fn execute_missing_action_returns_precondition_failure()
+-> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let (execution_server, _) = make_execution_server(&store_manager)?;
+
+    let action_digest = make_fake_digest(0xaa, 16);
+
+    let Err(status) = execution_server
+        .execute(Request::new(make_execute_request(action_digest)))
+        .await
+    else {
+        panic!("execute should fail when the Action is missing");
+    };
+
+    assert_eq!(status.code(), TonicCode::FailedPrecondition);
+    let pf = decode_precondition_failure(&status)?;
+    assert_eq!(pf.violations.len(), 1);
+    let v = &pf.violations[0];
+    assert_eq!(v.r#type, "MISSING");
+    assert_eq!(v.subject, blob_subject(&action_digest));
+    assert_eq!(v.description, "Action");
+    Ok(())
+}
+
+#[nativelink_test]
+async fn execute_missing_command_returns_precondition_failure()
+-> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let (execution_server, _) = make_execution_server(&store_manager)?;
+    let cas_store = store_manager.get_store("main_cas").unwrap();
+
+    let command_digest = make_fake_digest(0xc1, 8);
+    let input_root = Action::default();
+    let input_root_digest = upload_action(&cas_store, &input_root).await?;
+
+    let action = Action {
+        command_digest: Some(command_digest.into()),
+        input_root_digest: Some(input_root_digest.into()),
+        ..Default::default()
+    };
+    let action_digest = upload_action(&cas_store, &action).await?;
+
+    let Err(status) = execution_server
+        .execute(Request::new(make_execute_request(action_digest)))
+        .await
+    else {
+        panic!("execute should fail when command_digest is missing");
+    };
+
+    assert_eq!(status.code(), TonicCode::FailedPrecondition);
+    let pf = decode_precondition_failure(&status)?;
+    assert_eq!(pf.violations.len(), 1);
+    assert_eq!(pf.violations[0].r#type, "MISSING");
+    assert_eq!(pf.violations[0].subject, blob_subject(&command_digest));
+    assert_eq!(pf.violations[0].description, "Action.command_digest");
+    Ok(())
+}
+
+#[nativelink_test]
+async fn execute_missing_input_root_returns_precondition_failure()
+-> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let (execution_server, _) = make_execution_server(&store_manager)?;
+    let cas_store = store_manager.get_store("main_cas").unwrap();
+
+    // Upload command, omit input_root.
+    let command_proto = nativelink_proto::build::bazel::remote::execution::v2::Command::default();
+    let command_digest = serialize_and_upload_message(
+        &command_proto,
+        cas_store.as_pin(),
+        &mut DigestHasherFunc::Sha256.hasher(),
+    )
+    .await?;
+    let input_root_digest = make_fake_digest(0xd2, 16);
+
+    let action = Action {
+        command_digest: Some(command_digest.into()),
+        input_root_digest: Some(input_root_digest.into()),
+        ..Default::default()
+    };
+    let action_digest = upload_action(&cas_store, &action).await?;
+
+    let Err(status) = execution_server
+        .execute(Request::new(make_execute_request(action_digest)))
+        .await
+    else {
+        panic!("execute should fail when input_root_digest is missing");
+    };
+
+    assert_eq!(status.code(), TonicCode::FailedPrecondition);
+    let pf = decode_precondition_failure(&status)?;
+    assert_eq!(pf.violations.len(), 1);
+    assert_eq!(pf.violations[0].r#type, "MISSING");
+    assert_eq!(pf.violations[0].subject, blob_subject(&input_root_digest));
+    assert_eq!(pf.violations[0].description, "Action.input_root_digest");
+    Ok(())
+}
+
+#[nativelink_test]
+async fn execute_missing_command_and_input_root_returns_both_violations()
+-> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let (execution_server, _) = make_execution_server(&store_manager)?;
+    let cas_store = store_manager.get_store("main_cas").unwrap();
+
+    let command_digest = make_fake_digest(0xe3, 8);
+    let input_root_digest = make_fake_digest(0xf4, 16);
+
+    let action = Action {
+        command_digest: Some(command_digest.into()),
+        input_root_digest: Some(input_root_digest.into()),
+        ..Default::default()
+    };
+    let action_digest = upload_action(&cas_store, &action).await?;
+
+    let Err(status) = execution_server
+        .execute(Request::new(make_execute_request(action_digest)))
+        .await
+    else {
+        panic!("execute should fail when both blobs are missing");
+    };
+
+    assert_eq!(status.code(), TonicCode::FailedPrecondition);
+    let pf = decode_precondition_failure(&status)?;
+    assert_eq!(pf.violations.len(), 2);
+    assert_eq!(pf.violations[0].subject, blob_subject(&command_digest));
+    assert_eq!(pf.violations[0].description, "Action.command_digest");
+    assert_eq!(pf.violations[1].subject, blob_subject(&input_root_digest));
+    assert_eq!(pf.violations[1].description, "Action.input_root_digest");
+    Ok(())
 }
 
 #[nativelink_test]
