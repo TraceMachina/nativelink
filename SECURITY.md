@@ -12,7 +12,7 @@ vulnerabilities. Please send a report if something doesn't look right.
 We support the [most recent tagged version](https://github.com/TraceMachina/nativelink/releases/latest), primarily via
 the Docker images, but also the other install methods listed there. We also publish, but don't directly support per-commit
 Docker images for everything on `main`. For anything more than this, please contact <marcus@tracemachina.com> for commercial
-support, or [join our Discord](https://discord.gg/nativelink) for community support.
+support, or [join our Slack](https://forms.gle/LtaWSixEC6bYi5xF7) for community support.
 <!-- vale Vale.Terms = Yes -->
 
 ## Reporting a vulnerability
