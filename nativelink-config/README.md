@@ -107,9 +107,7 @@ the data is retrieved.
 }
 ```
 
-<!-- vale off -->
 ### Dedup Store
-<!-- vale on -->
 
 In this example we will attempt to de-duplicate our data and compress it before
 storing it. This works by applying the [FastCDC](https://www.usenix.org/system/files/conference/atc16/atc16-paper-xia.pdf)
