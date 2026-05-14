@@ -4,13 +4,13 @@ use std::time::SystemTime;
 use hex::FromHex;
 use nativelink_error::{Code, Error, ErrorContext, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
+use nativelink_proto::google::rpc::PreconditionFailure;
 use nativelink_util::action_messages::{
     ActionInfo, ActionResult, ActionUniqueKey, ActionUniqueQualifier, ExecutionMetadata,
-    INTERNAL_ERROR_EXIT_CODE, to_execute_response,
+    INTERNAL_ERROR_EXIT_CODE, TypeUrl, to_execute_response,
 };
-use nativelink_util::common::DigestInfo;
+use nativelink_util::common::{self, DigestInfo};
 use nativelink_util::digest_hasher::DigestHasherFunc;
-use nativelink_util::precondition_failure;
 use prost::Message as _;
 
 fn make_key() -> ActionUniqueKey {
@@ -105,8 +105,8 @@ fn assert_missing_blob_status(status: &nativelink_proto::google::rpc::Status, di
         "missing-blob errors should be surfaced as FAILED_PRECONDITION",
     );
     assert_eq!(status.details.len(), 1, "expected exactly one detail Any");
-    assert_eq!(status.details[0].type_url, precondition_failure::TYPE_URL);
-    let pf = precondition_failure::PreconditionFailure::decode(&*status.details[0].value)
+    assert_eq!(status.details[0].type_url, PreconditionFailure::TYPE_URL);
+    let pf = PreconditionFailure::decode(&*status.details[0].value)
         .expect("decoding PreconditionFailure must succeed");
     assert_eq!(pf.violations.len(), 1, "expected one MISSING violation");
     assert_eq!(pf.violations[0].r#type, "MISSING");

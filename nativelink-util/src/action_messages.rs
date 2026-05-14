@@ -32,7 +32,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
 };
 use nativelink_proto::google::longrunning::Operation;
 use nativelink_proto::google::longrunning::operation::Result as LongRunningResult;
-use nativelink_proto::google::rpc::Status;
+use nativelink_proto::google::rpc::{PreconditionFailure, Status, precondition_failure};
 use prost::Message;
 use prost::bytes::Bytes;
 use prost_types::Any;
@@ -41,7 +41,7 @@ use serde::{Deserialize, Serialize};
 use tonic::Code;
 use uuid::Uuid;
 
-use crate::common::{DigestInfo, HashMapExt, VecExt};
+use crate::common::{self, DigestInfo, HashMapExt, VecExt};
 use crate::digest_hasher::DigestHasherFunc;
 
 /// Default priority remote execution jobs will get when not provided.
@@ -843,8 +843,6 @@ impl From<&ActionStage> for execution_stage::Value {
     }
 }
 
-use crate::precondition_failure;
-
 /// Build a `google.rpc.Status` of code `FAILED_PRECONDITION` whose
 /// details carry a `PreconditionFailure` naming the missing blob.
 ///
@@ -852,9 +850,9 @@ use crate::precondition_failure;
 /// `missing_blobs_failed_precondition` — both produce the `REv2`
 /// subject format `blobs/{hash}/{size}` that Bazel auto-retries on.
 fn missing_blob_failed_precondition_status(err: &Error, hash: &str, size: i64) -> Status {
-    let pf = precondition_failure::PreconditionFailure {
+    let pf = PreconditionFailure {
         violations: vec![precondition_failure::Violation {
-            r#type: precondition_failure::VIOLATION_TYPE_MISSING.to_string(),
+            r#type: common::VIOLATION_TYPE_MISSING.to_string(),
             // REv2-mandated subject format for missing-blob violations.
             subject: format!("blobs/{hash}/{size}"),
             description: err.message_string(),
@@ -864,7 +862,7 @@ fn missing_blob_failed_precondition_status(err: &Error, hash: &str, size: i64) -
     pf.encode(&mut buf)
         .expect("encoding prost message into Vec<u8> cannot fail");
     let any = Any {
-        type_url: precondition_failure::TYPE_URL.to_string(),
+        type_url: PreconditionFailure::TYPE_URL.to_string(),
         value: buf,
     };
     Status {
@@ -1114,7 +1112,7 @@ impl TryFrom<ExecuteResponse> for ActionStage {
 }
 
 // TODO: Should be able to remove this after tokio-rs/prost#299
-trait TypeUrl: Message {
+pub trait TypeUrl: Message {
     const TYPE_URL: &'static str;
 }
 
@@ -1126,6 +1124,10 @@ impl TypeUrl for ExecuteResponse {
 impl TypeUrl for ExecuteOperationMetadata {
     const TYPE_URL: &'static str =
         "type.googleapis.com/build.bazel.remote.execution.v2.ExecuteOperationMetadata";
+}
+
+impl TypeUrl for PreconditionFailure {
+    const TYPE_URL: &'static str = "type.googleapis.com/google.rpc.PreconditionFailure";
 }
 
 fn from_any<T>(message: &Any) -> Result<T, Error>

@@ -474,3 +474,6 @@ pub fn reseed_rng_for_test() -> Result<(), Error> {
         .reseed()
         .map_err(|e| Error::from_std_err(Code::InvalidArgument, &e).append("Could not reseed RNG"))
 }
+
+// Constant for PreconditionFailure
+pub const VIOLATION_TYPE_MISSING: &str = "MISSING";
