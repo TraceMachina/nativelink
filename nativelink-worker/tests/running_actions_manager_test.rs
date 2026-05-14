@@ -63,7 +63,7 @@ mod tests {
     use nativelink_util::action_messages::{
         ActionResult, ExecutionMetadata, FileInfo, NameOrPath, OperationId,
     };
-    use nativelink_util::common::{DigestInfo, fs};
+    use nativelink_util::common::{DigestInfo, fs, make_temp_path};
     use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
     use nativelink_util::store_trait::{Store, StoreLike};
     #[cfg(target_os = "linux")]
@@ -74,32 +74,10 @@ mod tests {
     };
     use pretty_assertions::assert_eq;
     use prost::Message;
-    use rand::Rng;
     use tokio::sync::oneshot;
     use tracing::info;
 
     const DEFAULT_MAX_UPLOAD_TIMEOUT: u64 = 600;
-
-    /// Get temporary path from either `TEST_TMPDIR` or best effort temp directory if
-    /// not set.
-    fn make_temp_path(data: &str) -> String {
-        #[cfg(target_family = "unix")]
-        return format!(
-            "{}/{}/{}",
-            env::var("TEST_TMPDIR")
-                .unwrap_or_else(|_| env::temp_dir().to_str().unwrap().to_string()),
-            rand::rng().random::<u64>(),
-            data
-        );
-        #[cfg(target_family = "windows")]
-        return format!(
-            "{}\\{}\\{}",
-            env::var("TEST_TMPDIR")
-                .unwrap_or_else(|_| env::temp_dir().to_str().unwrap().to_string()),
-            rand::rng().random::<u64>(),
-            data
-        );
-    }
 
     #[cfg(target_os = "linux")]
     fn use_namespaces() -> nativelink_worker::running_actions_manager::UseNamespaces {

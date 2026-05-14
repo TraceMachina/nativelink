@@ -73,10 +73,10 @@ pub async fn get_size_and_decode_digest<T: Message + Default + 'static>(
         u64::try_from(store_data.len()).err_tip(|| "Could not convert store_data.len() to u64")?;
 
     T::decode(store_data)
-        .err_tip_with_code(|e| {
+        .err_tip_with_code(|_e| {
             (
                 Code::NotFound,
-                format!("Stored value appears to be corrupt: {e} - {key:?}"),
+                format!("Stored value appears to be corrupt for {key:?}"),
             )
         })
         .map(|v| (v, store_data_len))
