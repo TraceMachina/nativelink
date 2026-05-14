@@ -23,7 +23,7 @@
 //! Bazel surfaces the failure as a hard build error.
 
 /// `google.rpc.PreconditionFailure`.
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, Eq, PartialEq, ::prost::Message)]
 pub struct PreconditionFailure {
     #[prost(message, repeated, tag = "1")]
     pub violations: ::prost::alloc::vec::Vec<Violation>,

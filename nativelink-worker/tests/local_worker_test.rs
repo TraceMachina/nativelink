@@ -49,7 +49,7 @@ use nativelink_util::action_messages::{
     ActionInfo, ActionResult, ActionStage, ActionUniqueKey, ActionUniqueQualifier,
     ExecutionMetadata, OperationId,
 };
-use nativelink_util::common::{DigestInfo, encode_stream_proto, fs};
+use nativelink_util::common::{DigestInfo, encode_stream_proto, fs, make_temp_path};
 use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::store_trait::Store;
 use nativelink_worker::local_worker::new_local_worker;
@@ -57,7 +57,6 @@ use nativelink_worker::local_worker::new_local_worker;
 use nativelink_worker::local_worker::preconditions_met;
 use pretty_assertions::assert_eq;
 use prost::Message;
-use rand::Rng;
 use tokio::io::AsyncWriteExt;
 use tokio::time::sleep;
 use utils::local_worker_test_utils::{
@@ -66,17 +65,6 @@ use utils::local_worker_test_utils::{
 use utils::mock_running_actions_manager::MockRunningAction;
 
 const INSTANCE_NAME: &str = "foo";
-
-/// Get temporary path from either `TEST_TMPDIR` or best effort temp directory if
-/// not set.
-fn make_temp_path(data: &str) -> String {
-    format!(
-        "{}/{}/{}",
-        env::var("TEST_TMPDIR").unwrap_or_else(|_| env::temp_dir().to_str().unwrap().to_string()),
-        rand::rng().random::<u64>(),
-        data
-    )
-}
 
 #[nativelink_test]
 #[cfg_attr(feature = "nix", ignore)]

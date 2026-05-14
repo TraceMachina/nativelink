@@ -14,7 +14,8 @@
 
 use core::future::Future;
 use core::pin::Pin;
-use std::path::Path;
+use std::fs::Metadata;
+use std::path::{Path, PathBuf};
 
 use nativelink_error::{Code, Error, ResultExt, error_if, make_err};
 use tokio::fs;
@@ -156,31 +157,29 @@ fn hardlink_directory_tree_recursive<'a>(
 pub async fn set_readonly_recursive(dir: &Path) -> Result<(), Error> {
     error_if!(!dir.exists(), "Directory does not exist: {}", dir.display());
 
-    set_readonly_recursive_impl(dir).await
+    set_perms_recursive_impl(dir.to_path_buf(), set_readonly_one_path).await
 }
 
-fn set_readonly_recursive_impl<'a>(
-    path: &'a Path,
-) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
+/// Sets a directory tree to read-write for the current user recursively.
+/// This is done so we can delete directories we're evicting.
+///
+/// # Arguments
+/// * `dir` - Directory to make read-write
+///
+/// # Platform Notes
+/// - Unix: Sets permissions to 0o755 (rwxr-xr-x)
+/// - Windows: Clears `FILE_ATTRIBUTE_READONLY`
+pub async fn set_readwrite_recursive(dir: &Path) -> Result<(), Error> {
+    error_if!(!dir.exists(), "Directory does not exist: {}", dir.display());
+
+    set_perms_recursive_impl(dir.to_path_buf(), set_readwrite_one_path).await
+}
+
+fn set_readonly_one_path(
+    path: PathBuf,
+    metadata: Metadata,
+) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>> {
     Box::pin(async move {
-        let metadata = fs::metadata(path)
-            .await
-            .err_tip(|| format!("Failed to get metadata for: {}", path.display()))?;
-
-        if metadata.is_dir() {
-            let mut entries = fs::read_dir(path)
-                .await
-                .err_tip(|| format!("Failed to read directory: {}", path.display()))?;
-
-            while let Some(entry) = entries
-                .next_entry()
-                .await
-                .err_tip(|| format!("Failed to get next entry in: {}", path.display()))?
-            {
-                set_readonly_recursive_impl(&entry.path()).await?;
-            }
-        }
-
         // Set the file/directory to read-only
         #[cfg(unix)]
         {
@@ -192,7 +191,7 @@ fn set_readonly_recursive_impl<'a>(
             let mode = if metadata.is_dir() { 0o555 } else { 0o444 };
             perms.set_mode(mode);
 
-            fs::set_permissions(path, perms)
+            fs::set_permissions(&path, perms)
                 .await
                 .err_tip(|| format!("Failed to set permissions for: {}", path.display()))?;
         }
@@ -208,6 +207,73 @@ fn set_readonly_recursive_impl<'a>(
         }
 
         Ok(())
+    })
+}
+
+fn set_readwrite_one_path(
+    path: PathBuf,
+    metadata: Metadata,
+) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>> {
+    Box::pin(async move {
+        // Set the file/directory to read-write for the current user
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = metadata.permissions();
+
+            // If it's a directory, set to rwxr-xr-x (755)
+            // If it's a file, set to rw-r--r-- (644)
+            let mode = if metadata.is_dir() { 0o755 } else { 0o644 };
+            perms.set_mode(mode);
+
+            fs::set_permissions(&path, perms)
+                .await
+                .err_tip(|| format!("Failed to set permissions for: {}", path.display()))?;
+        }
+
+        #[cfg(windows)]
+        {
+            let mut perms = metadata.permissions();
+            perms.set_readonly(false);
+
+            fs::set_permissions(path, perms)
+                .await
+                .err_tip(|| format!("Failed to set permissions for: {}", path.display()))?;
+        }
+
+        Ok(())
+    })
+}
+
+fn set_perms_recursive_impl<'a, F>(
+    path: PathBuf,
+    perms_fn: F,
+) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>>
+where
+    F: Fn(PathBuf, Metadata) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>>
+        + Send
+        + Copy
+        + 'a,
+{
+    Box::pin(async move {
+        let metadata = fs::metadata(&path)
+            .await
+            .err_tip(|| format!("Failed to get metadata for: {}", path.display()))?;
+
+        if metadata.is_dir() {
+            let mut entries = fs::read_dir(&path)
+                .await
+                .err_tip(|| format!("Failed to read directory: {}", path.display()))?;
+
+            while let Some(entry) = entries
+                .next_entry()
+                .await
+                .err_tip(|| format!("Failed to get next entry in: {}", path.display()))?
+            {
+                set_perms_recursive_impl(entry.path(), perms_fn).await?;
+            }
+        }
+        perms_fn(path, metadata).await
     })
 }
 
