@@ -16,8 +16,8 @@ use core::cmp::{Eq, Ordering};
 use core::hash::{BuildHasher, Hash};
 use core::ops::{Deref, DerefMut};
 use std::collections::HashMap;
-use std::fmt;
 use std::io::{Cursor, Write};
+use std::{env, fmt};
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use nativelink_error::{Error, ResultExt, make_input_err};
@@ -26,6 +26,7 @@ use nativelink_metric::{
 };
 use nativelink_proto::build::bazel::remote::execution::v2::Digest;
 use prost::Message;
+use rand::Rng;
 use serde::de::Visitor;
 use serde::ser::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -473,4 +474,23 @@ pub fn reseed_rng_for_test() -> Result<(), Error> {
     rand::rng()
         .reseed()
         .map_err(|e| Error::from_std_err(Code::InvalidArgument, &e).append("Could not reseed RNG"))
+}
+
+/// Get temporary path from either `TEST_TMPDIR` or best effort temp directory if
+/// not set.
+pub fn make_temp_path(data: &str) -> String {
+    #[cfg(target_family = "unix")]
+    return format!(
+        "{}/{}/{}",
+        env::var("TEST_TMPDIR").unwrap_or_else(|_| env::temp_dir().to_str().unwrap().to_string()),
+        rand::rng().random::<u64>(),
+        data
+    );
+    #[cfg(target_family = "windows")]
+    return format!(
+        "{}\\{}\\{}",
+        env::var("TEST_TMPDIR").unwrap_or_else(|_| env::temp_dir().to_str().unwrap().to_string()),
+        rand::rng().random::<u64>(),
+        data
+    );
 }

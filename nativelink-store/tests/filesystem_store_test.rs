@@ -16,7 +16,6 @@ use core::fmt::{Debug, Formatter};
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use core::time::Duration;
-use std::env;
 use std::ffi::{OsStr, OsString};
 use std::path::Path;
 use std::sync::{Arc, LazyLock};
@@ -35,7 +34,7 @@ use nativelink_store::filesystem_store::{
     STR_FOLDER, key_from_file,
 };
 use nativelink_util::buf_channel::make_buf_channel_pair;
-use nativelink_util::common::{DigestInfo, fs};
+use nativelink_util::common::{DigestInfo, fs, make_temp_path};
 use nativelink_util::evicting_map::LenEntry;
 use nativelink_util::store_trait::{Store, StoreKey, StoreLike, UploadSizeInfo};
 use nativelink_util::{background_spawn, spawn};
@@ -198,17 +197,6 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> Drop for TestFileEntry<Hooks
         // At this point we can guarantee our file drop spawn has completed.
         Hooks::on_drop(self);
     }
-}
-
-/// Get temporary path from either `TEST_TMPDIR` or best effort temp directory if
-/// not set.
-fn make_temp_path(data: &str) -> String {
-    format!(
-        "{}/{}/{}",
-        env::var("TEST_TMPDIR").unwrap_or_else(|_| env::temp_dir().to_str().unwrap().to_string()),
-        rand::rng().random::<u64>(),
-        data
-    )
 }
 
 async fn read_file_contents(file_name: &OsStr) -> Result<Vec<u8>, Error> {
