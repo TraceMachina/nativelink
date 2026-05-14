@@ -2,19 +2,10 @@
   nativelink,
   writeShellScriptBin,
   bazelisk,
+  jo,
 }:
 writeShellScriptBin "rbe-toolchain-test" ''
   set -uo pipefail
-
-  cleanup() {
-    local pids=$(jobs -pr)
-    [ -n "$pids" ] && kill $pids
-  }
-  trap "cleanup" INT QUIT TERM EXIT
-
-  NO_COLOR=true ${nativelink}/bin/nativelink -- toolchain-examples/nativelink-config.json5 | tee -i toolchain-examples/nativelink.log &
-
-  CORE_BAZEL_ARGS="--check_direct_dependencies=error --remote_cache=grpc://localhost:50051 --remote_executor=grpc://localhost:50051"
 
   CPU_TYPE=$(uname -m)
 
@@ -29,22 +20,49 @@ writeShellScriptBin "rbe-toolchain-test" ''
   RUST_ZIG_PLATFORM="--config=zig-cc --platforms=//platforms:linux_''${PLATFORM}_gnu_2_28 --host_platform=@rules_rs//:local_gnu_platform --extra_execution_platforms=@rules_rs//:local_gnu_platform"
 
   # As per https://nativelink.com/docs/rbe/remote-execution-examples#minimal-example-targets
-  COMMANDS=("test //cpp $ZIG_PLATFORM"
-            "test //cpp $LLVM_PLATFORM"
-            "test //python"
-            "test //go $ZIG_PLATFORM"
-            "test //rust $RUST_ZIG_PLATFORM"
-            "test //java:HelloWorld --config=java"
-            "build @curl//... $ZIG_PLATFORM"
-            "build @zstd//... $ZIG_PLATFORM"
-            # "test @abseil-cpp//... $ZIG_PLATFORM" # Buggy build due to google_benchmark errors
-            "test @abseil-py//..."
-            "test @circl//... $ZIG_PLATFORM"
-            )
+  declare -A COMMANDS
+  COMMANDS=(
+    [cpp-zig]="test //cpp $ZIG_PLATFORM"
+    [cpp-llvm]="test //cpp $LLVM_PLATFORM"
+    [python]="test //python"
+    [go]="test //go $ZIG_PLATFORM"
+    [rust]="test //rust $RUST_ZIG_PLATFORM"
+    [java]="test //java:HelloWorld --config=java"
+    [curl]="build @curl//... $ZIG_PLATFORM"
+    [zstd]="build @zstd//... $ZIG_PLATFORM"
+    [abseil-py]="test @abseil-py//..."
+    [circl]="test @circl//... $ZIG_PLATFORM"
+  )
+  # "test @abseil-cpp//... $ZIG_PLATFORM" # Buggy build due to google_benchmark errors
+
+  if [ $# -eq 0 ]
+  then
+    echo "No arguments supplied"
+    keys=$(echo ''${!COMMANDS[@]} | xargs -n1 | sort | tr '\n' ' ')
+    echo "Need list, all, or one of $keys"
+    exit 1
+  fi
+
+  if [ $1 == "list" ]
+  then
+    ${jo}/bin/jo -a "''${!COMMANDS[@]}"
+    exit 0
+  fi
+
+  cleanup() {
+    local pids=$(jobs -pr)
+    [ -n "$pids" ] && kill $pids
+  }
+  trap "cleanup" INT QUIT TERM EXIT
+
+  NO_COLOR=true ${nativelink}/bin/nativelink -- toolchain-examples/nativelink-config.json5 | tee -i toolchain-examples/nativelink.log &
+
+  CORE_BAZEL_ARGS="--check_direct_dependencies=error --remote_cache=grpc://localhost:50051 --remote_executor=grpc://localhost:50051"
 
   echo "" > toolchain-examples/cmd.log
-  for cmd in "''${COMMANDS[@]}"
-  do
+
+  run_cmd() {
+    cmd=$1
     FULL_CMD="${bazelisk}/bin/bazelisk $cmd $CORE_BAZEL_ARGS"
     echo $FULL_CMD
     echo -e \\n$FULL_CMD\\n >> toolchain-examples/cmd.log
@@ -60,7 +78,23 @@ writeShellScriptBin "rbe-toolchain-test" ''
         exit 1
       ;;
     esac
-  done
+  }
+
+  if [ $1 == "all" ]
+  then
+    for cmd in "''${COMMANDS[@]}"
+    do
+      run_cmd "$cmd"
+    done
+  else
+    cmd=''${COMMANDS[$1]:-}
+    if [ -z "$cmd" ]
+    then
+      echo "Invalid command: $1"
+      exit 1
+    fi
+    run_cmd "$cmd"
+  fi
 
   nativelink_output=$(cat toolchain-examples/nativelink.log)
 
