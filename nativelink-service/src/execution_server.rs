@@ -36,18 +36,20 @@ use nativelink_proto::google::longrunning::{
     CancelOperationRequest, DeleteOperationRequest, GetOperationRequest, ListOperationsRequest,
     ListOperationsResponse, Operation, WaitOperationRequest,
 };
-use nativelink_proto::google::rpc::Status as GrpcStatusProto;
+use nativelink_proto::google::rpc::{
+    PreconditionFailure, Status as GrpcStatusProto, precondition_failure,
+};
 use nativelink_store::ac_utils::get_and_decode_digest;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::action_messages::{
     ActionInfo, ActionUniqueKey, ActionUniqueQualifier, DEFAULT_EXECUTION_PRIORITY, OperationId,
+    TypeUrl,
 };
-use nativelink_util::common::DigestInfo;
+use nativelink_util::common::{self, DigestInfo};
 use nativelink_util::digest_hasher::{DigestHasherFunc, make_ctx_for_hash_func};
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ClientStateManager, OperationFilter,
 };
-use nativelink_util::precondition_failure;
 use nativelink_util::store_trait::{Store, StoreLike};
 use opentelemetry::context::FutureExt;
 use prost::Message as _;
@@ -84,11 +86,11 @@ fn missing_blobs_failed_precondition(
     missing: &[(DigestInfo, &'static str)],
     summary: &str,
 ) -> Status {
-    let pf = precondition_failure::PreconditionFailure {
+    let pf = PreconditionFailure {
         violations: missing
             .iter()
             .map(|(d, ctx)| precondition_failure::Violation {
-                r#type: precondition_failure::VIOLATION_TYPE_MISSING.to_string(),
+                r#type: common::VIOLATION_TYPE_MISSING.to_string(),
                 // Per REv2, the subject for a missing-blob violation is
                 // `blobs/<hash>/<size>` so the client knows exactly
                 // which digest to re-upload.
@@ -103,7 +105,7 @@ fn missing_blobs_failed_precondition(
     pf.encode(&mut pf_buf)
         .expect("encoding prost message into Vec<u8> cannot fail");
     let any = prost_types::Any {
-        type_url: precondition_failure::TYPE_URL.to_string(),
+        type_url: PreconditionFailure::TYPE_URL.to_string(),
         value: pf_buf,
     };
 

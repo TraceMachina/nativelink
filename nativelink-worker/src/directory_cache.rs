@@ -25,7 +25,9 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
 };
 use nativelink_store::ac_utils::get_and_decode_digest;
 use nativelink_util::common::DigestInfo;
-use nativelink_util::fs_util::{hardlink_directory_tree, set_readonly_recursive};
+use nativelink_util::fs_util::{
+    hardlink_directory_tree, set_readonly_recursive, set_readwrite_recursive,
+};
 use nativelink_util::store_trait::{Store, StoreKey, StoreLike};
 use tokio::fs;
 use tokio::sync::{Mutex, RwLock};
@@ -355,7 +357,16 @@ impl DirectoryCache {
     ) -> Result<(), Error> {
         // Check entry count
         while cache.len() >= self.config.max_entries {
-            self.evict_lru(cache).await?;
+            let evicted_size = self.evict_lru(cache).await?;
+            if evicted_size.is_none() {
+                // nothing evicted, so have to exit
+                warn!(
+                    current_items = cache.len(),
+                    max_entries = self.config.max_entries,
+                    "Unable to evict anything from directory_cache, will exceed max entries"
+                );
+                break;
+            }
         }
 
         // Check total size
@@ -365,7 +376,20 @@ impl DirectoryCache {
 
             while size_after > self.config.max_size_bytes {
                 let evicted_size = self.evict_lru(cache).await?;
-                size_after -= evicted_size;
+                match evicted_size {
+                    None => {
+                        // nothing evicted, so have to exit
+                        warn!(
+                            size_after,
+                            max_size_bytes = self.config.max_size_bytes,
+                            "Unable to evict anything from directory_cache, will exceed max size"
+                        );
+                        break;
+                    }
+                    Some(e_size) => {
+                        size_after -= e_size;
+                    }
+                }
             }
         }
 
@@ -376,7 +400,7 @@ impl DirectoryCache {
     async fn evict_lru(
         &self,
         cache: &mut HashMap<DigestInfo, CachedDirectoryMetadata>,
-    ) -> Result<u64, Error> {
+    ) -> Result<Option<u64>, Error> {
         // Find LRU entry that isn't currently in use
         let to_evict = cache
             .iter()
@@ -389,6 +413,15 @@ impl DirectoryCache {
         {
             debug!(?digest, size = metadata.size, "Evicting cached directory");
 
+            if let Err(e) = set_readwrite_recursive(&metadata.path).await {
+                warn!(
+                    ?digest,
+                    path = ?metadata.path,
+                    error = ?e,
+                    "Unable to mark evicted directory as read/write, will probably fail to remove"
+                );
+            }
+
             // Remove from disk
             if let Err(e) = fs::remove_dir_all(&metadata.path).await {
                 warn!(
@@ -399,10 +432,10 @@ impl DirectoryCache {
                 );
             }
 
-            return Ok(metadata.size);
+            return Ok(Some(metadata.size));
         }
 
-        Ok(0)
+        Ok(None)
     }
 
     /// Gets the cache path for a digest

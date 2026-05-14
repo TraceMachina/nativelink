@@ -64,6 +64,7 @@ rust_test_suite(
     name = "integration",
     timeout = "short",
     srcs = [
+        "tests/directory_cache_test.rs",
         "tests/local_worker_test.rs",
         "tests/namespace_utils_test.rs",
         "tests/running_actions_manager_test.rs",
@@ -93,12 +94,12 @@ rust_test_suite(
         "@crates//:pretty_assertions",
         "@crates//:prost",
         "@crates//:prost-types",
-        "@crates//:rand",
         "@crates//:serial_test",
         "@crates//:tokio",
         "@crates//:tonic",
         "@crates//:tracing",
         "@crates//:tracing-test",
+        "@crates//:uuid",
         "@crates//:which",
     ] + select({
         "@platforms//os:linux": ["@crates//:libc"],
