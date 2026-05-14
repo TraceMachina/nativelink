@@ -494,3 +494,6 @@ pub fn make_temp_path(data: &str) -> String {
         data
     );
 }
+
+// Constant for PreconditionFailure
+pub const VIOLATION_TYPE_MISSING: &str = "MISSING";

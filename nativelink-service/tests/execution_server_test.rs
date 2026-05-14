@@ -31,14 +31,14 @@ use nativelink_proto::google::longrunning::{
     CancelOperationRequest, DeleteOperationRequest, GetOperationRequest, ListOperationsRequest,
     WaitOperationRequest,
 };
-use nativelink_proto::google::rpc::Status as GrpcStatusProto;
+use nativelink_proto::google::rpc::{PreconditionFailure, Status as GrpcStatusProto};
 use nativelink_scheduler::mock_scheduler::MockActionScheduler;
 use nativelink_service::execution_server::ExecutionServer;
 use nativelink_store::ac_utils::serialize_and_upload_message;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::action_messages::{
-    ActionInfo, ActionResult, ActionStage, ActionState, OperationId,
+    ActionInfo, ActionResult, ActionStage, ActionState, OperationId, TypeUrl,
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
@@ -46,7 +46,6 @@ use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager,
 };
 use nativelink_util::origin_event::OriginMetadata;
-use nativelink_util::precondition_failure;
 use nativelink_util::store_trait::StoreLike;
 use prost::Message as _;
 use tonic::{Code as TonicCode, Request};
@@ -346,7 +345,7 @@ fn blob_subject(d: &DigestInfo) -> String {
 /// in `grpc-status-details-bin`. Returns the inner `PreconditionFailure`.
 fn decode_precondition_failure(
     status: &tonic::Status,
-) -> Result<precondition_failure::PreconditionFailure, Box<dyn core::error::Error>> {
+) -> Result<PreconditionFailure, Box<dyn core::error::Error>> {
     let outer = GrpcStatusProto::decode(status.details())?;
     assert_eq!(
         outer.code,
@@ -356,12 +355,10 @@ fn decode_precondition_failure(
     assert_eq!(outer.details.len(), 1, "expected exactly one detail");
     assert_eq!(
         outer.details[0].type_url,
-        precondition_failure::TYPE_URL,
+        PreconditionFailure::TYPE_URL,
         "detail type_url must match PreconditionFailure",
     );
-    Ok(precondition_failure::PreconditionFailure::decode(
-        &*outer.details[0].value,
-    )?)
+    Ok(PreconditionFailure::decode(&*outer.details[0].value)?)
 }
 
 async fn upload_action(

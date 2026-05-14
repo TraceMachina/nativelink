@@ -4,7 +4,6 @@ load(
     "@rules_rust//rust:defs.bzl",
     "rust_binary",
     "rust_doc",
-    "rust_doc_test",
     "rust_library",
 )
 
@@ -98,6 +97,7 @@ genrule(
         "google/protobuf/empty.proto",
         "google/protobuf/timestamp.proto",
         "google/protobuf/wrappers.proto",
+        "google/rpc/error_details.proto",
         "google/rpc/status.proto",
         "src/main/java/com/google/devtools/build/lib/buildeventstream/proto/build_event_stream.proto",
         "src/main/java/com/google/devtools/build/lib/packages/metrics/package_load_metrics.proto",
@@ -185,10 +185,4 @@ rust_doc(
     name = "docs",
     crate = ":nativelink-proto",
     visibility = ["//visibility:public"],
-)
-
-rust_doc_test(
-    name = "doc_test",
-    timeout = "short",
-    crate = ":nativelink-proto",
 )

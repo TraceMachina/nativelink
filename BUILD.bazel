@@ -114,7 +114,6 @@ test_suite(
         "//nativelink-config:doc_test",
         "//nativelink-error:doc_test",
         "//nativelink-macro:doc_test",
-        "//nativelink-proto:doc_test",
         "//nativelink-scheduler:doc_test",
         "//nativelink-service:doc_test",
         "//nativelink-store:doc_test",

@@ -5,6 +5,7 @@ name = "nativelink-proto"
 version = "1.1.0"
 
 [lib]
+doctest = false           # because some of the generated protos have things that look like doctests but break
 name = "nativelink_proto"
 path = "genproto/lib.rs"
 
