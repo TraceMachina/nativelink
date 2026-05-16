@@ -17,6 +17,7 @@ use core::pin::Pin;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
 use nativelink_error::{Code, Error, ResultExt, make_err};
@@ -26,7 +27,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
 use nativelink_store::ac_utils::get_and_decode_digest;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::fs_util::{
-    hardlink_directory_tree, set_readonly_recursive, set_readwrite_recursive,
+    CloneMethod, hardlink_directory_tree, set_readonly_recursive, set_readwrite_recursive,
 };
 use nativelink_util::store_trait::{Store, StoreKey, StoreLike};
 use tokio::fs;
@@ -87,6 +88,11 @@ pub struct DirectoryCache {
     construction_locks: Arc<Mutex<HashMap<DigestInfo, Arc<Mutex<()>>>>>,
     /// CAS store for fetching directories
     cas_store: Store,
+    /// Count of materializations that used APFS `clonefile(2)` (macOS only;
+    /// always zero on other platforms).
+    clonefile_hits: AtomicU64,
+    /// Count of materializations that used per-file `fs::hard_link`.
+    hardlink_hits: AtomicU64,
 }
 
 impl DirectoryCache {
@@ -105,7 +111,18 @@ impl DirectoryCache {
             cache: Arc::new(RwLock::new(HashMap::new())),
             construction_locks: Arc::new(Mutex::new(HashMap::new())),
             cas_store,
+            clonefile_hits: AtomicU64::new(0),
+            hardlink_hits: AtomicU64::new(0),
         })
+    }
+
+    /// Records which kernel mechanism materialized a tree, for observability.
+    fn record_clone_method(&self, method: CloneMethod) {
+        let counter = match method {
+            CloneMethod::Clonefile => &self.clonefile_hits,
+            CloneMethod::Hardlink => &self.hardlink_hits,
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Gets or creates a directory in the cache, then hardlinks it to the destination
@@ -135,7 +152,8 @@ impl DirectoryCache {
 
                 // Try to hardlink from cache
                 match hardlink_directory_tree(&metadata.path, dest_path).await {
-                    Ok(()) => {
+                    Ok(method) => {
+                        self.record_clone_method(method);
                         metadata.ref_count -= 1;
                         return Ok(true);
                     }
@@ -171,7 +189,10 @@ impl DirectoryCache {
             let cache = self.cache.read().await;
             if let Some(metadata) = cache.get(&digest) {
                 return match hardlink_directory_tree(&metadata.path, dest_path).await {
-                    Ok(()) => Ok(true),
+                    Ok(method) => {
+                        self.record_clone_method(method);
+                        Ok(true)
+                    }
                     Err(e) => {
                         warn!(
                             ?digest,
@@ -219,9 +240,10 @@ impl DirectoryCache {
         }
 
         // Hardlink to destination
-        hardlink_directory_tree(&cache_path, dest_path)
+        let method = hardlink_directory_tree(&cache_path, dest_path)
             .await
             .err_tip(|| "Failed to hardlink newly cached directory")?;
+        self.record_clone_method(method);
 
         Ok(false)
     }
@@ -453,6 +475,8 @@ impl DirectoryCache {
             entries: cache.len(),
             total_size_bytes: total_size,
             in_use_entries: in_use,
+            clonefile_hits: self.clonefile_hits.load(Ordering::Relaxed),
+            hardlink_hits: self.hardlink_hits.load(Ordering::Relaxed),
         }
     }
 }
@@ -463,6 +487,10 @@ pub struct CacheStats {
     pub entries: usize,
     pub total_size_bytes: u64,
     pub in_use_entries: usize,
+    /// Materializations that used APFS `clonefile(2)` (macOS).
+    pub clonefile_hits: u64,
+    /// Materializations that used per-file `fs::hard_link`.
+    pub hardlink_hits: u64,
 }
 
 #[cfg(test)]
@@ -557,6 +585,19 @@ mod tests {
         // Verify stats
         let stats = cache.stats().await;
         assert_eq!(stats.entries, 1);
+
+        // Two get_or_create calls succeeded → two materializations were
+        // recorded. On macOS both should be clonefile; on Linux both hardlink.
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(stats.clonefile_hits, 2, "macOS should record 2 clones");
+            assert_eq!(stats.hardlink_hits, 0);
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert_eq!(stats.clonefile_hits, 0);
+            assert_eq!(stats.hardlink_hits, 2, "non-macOS should record 2 hardlinks");
+        }
 
         Ok(())
     }

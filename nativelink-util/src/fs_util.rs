@@ -22,6 +22,21 @@ use tokio::fs;
 #[cfg(target_os = "macos")]
 use tracing::debug;
 
+/// Which kernel mechanism actually materialized the destination tree.
+/// Returned by [`hardlink_directory_tree`] so callers can record per-hit
+/// telemetry and detect when the fast path silently degrades (e.g., a
+/// cross-volume cache layout that forces clonefile to fall through to
+/// per-file hardlinks).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CloneMethod {
+    /// APFS `clonefile(2)` succeeded — O(1) regardless of tree size.
+    /// macOS only.
+    Clonefile,
+    /// Per-file `fs::hard_link` walk — O(N) in file count.
+    /// Used on Linux/Windows always, and on macOS when clonefile fell through.
+    Hardlink,
+}
+
 /// Materializes an entire directory tree from source to destination using the
 /// fastest method the host filesystem supports.
 ///
@@ -30,7 +45,7 @@ use tracing::debug;
 /// * `dst_dir` - Destination directory path (must NOT exist; parent will be created)
 ///
 /// # Returns
-/// * `Ok(())` on success
+/// * `Ok(CloneMethod)` indicating which kernel mechanism was used
 /// * `Err` if materialization fails (e.g., cross-filesystem, unsupported filesystem)
 ///
 /// # Platform Support
@@ -41,8 +56,9 @@ use tracing::debug;
 ///   permissions, and cached subtrees are 0o555 / 0o444. The COW semantics of
 ///   `clonefile(2)` mean writes to the destination do not affect the source.
 /// - Linux: Per-file `fs::hard_link` (directory hardlinks are not supported on
-///   ext4/btrfs without root).
-/// - Windows: Per-file `fs::hard_link` (requires NTFS).
+///   ext4/btrfs without root). Always returns `CloneMethod::Hardlink`.
+/// - Windows: Per-file `fs::hard_link` (requires NTFS). Always returns
+///   `CloneMethod::Hardlink`.
 ///
 /// # Errors
 /// - Source directory doesn't exist
@@ -50,7 +66,10 @@ use tracing::debug;
 /// - Cross-filesystem materialization attempted and fallback also fails
 /// - Filesystem doesn't support hardlinks (Linux/Windows fallback)
 /// - Permission denied
-pub async fn hardlink_directory_tree(src_dir: &Path, dst_dir: &Path) -> Result<(), Error> {
+pub async fn hardlink_directory_tree(
+    src_dir: &Path,
+    dst_dir: &Path,
+) -> Result<CloneMethod, Error> {
     error_if!(
         !src_dir.exists(),
         "Source directory does not exist: {}",
@@ -85,7 +104,7 @@ pub async fn hardlink_directory_tree(src_dir: &Path, dst_dir: &Path) -> Result<(
                 set_readwrite_recursive(dst_dir)
                     .await
                     .err_tip(|| "Failed to make cloned tree writable")?;
-                return Ok(());
+                return Ok(CloneMethod::Clonefile);
             }
             Err(e) => {
                 debug!(
@@ -110,7 +129,8 @@ pub async fn hardlink_directory_tree(src_dir: &Path, dst_dir: &Path) -> Result<(
     })?;
 
     // Recursively hardlink the directory tree
-    hardlink_directory_tree_recursive(src_dir, dst_dir).await
+    hardlink_directory_tree_recursive(src_dir, dst_dir).await?;
+    Ok(CloneMethod::Hardlink)
 }
 
 /// Recursively clones a directory tree using APFS `clonefile(2)`. On success
@@ -457,7 +477,16 @@ mod tests {
         let dst_dir = temp_dir.path().join("test_dst");
 
         // Hardlink the directory
-        hardlink_directory_tree(&src_dir, &dst_dir).await?;
+        let method = hardlink_directory_tree(&src_dir, &dst_dir).await?;
+
+        #[cfg(target_os = "macos")]
+        assert_eq!(method, CloneMethod::Clonefile, "macOS should use clonefile");
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(
+            method,
+            CloneMethod::Hardlink,
+            "non-macOS should use per-file hardlinks"
+        );
 
         // Verify structure
         assert!(dst_dir.join("file1.txt").exists());
