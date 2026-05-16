@@ -25,6 +25,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
     Directory as ProtoDirectory, DirectoryNode, FileNode, SymlinkNode,
 };
 use nativelink_store::ac_utils::get_and_decode_digest;
+use nativelink_store::cas_utils::is_zero_digest;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::fs_util::{
     CloneMethod, hardlink_directory_tree, set_readonly_recursive, set_readwrite_recursive,
@@ -299,17 +300,29 @@ impl DirectoryCache {
 
         trace!(?file_path, ?digest, "Creating file");
 
-        // Fetch file content from CAS
-        let data = self
-            .cas_store
-            .get_part_unchunked(StoreKey::Digest(digest), 0, None)
-            .await
-            .err_tip(|| format!("Failed to fetch file: {}", file_path.display()))?;
+        // Zero-byte files (digest af1349b9...-0) are not stored in
+        // FilesystemStore / many CAS backends, so a get_part_unchunked here
+        // returns NotFound. In Bazel-style trees these show up frequently as
+        // empty marker / config files (.linksearchpaths, empty .env, .toml,
+        // etc.), and a single failure aborts the whole DirectoryCache
+        // construction. Short-circuit and write the empty file directly.
+        if is_zero_digest(digest) {
+            fs::write(&file_path, b"")
+                .await
+                .err_tip(|| format!("Failed to write empty file: {}", file_path.display()))?;
+        } else {
+            // Fetch file content from CAS
+            let data = self
+                .cas_store
+                .get_part_unchunked(StoreKey::Digest(digest), 0, None)
+                .await
+                .err_tip(|| format!("Failed to fetch file: {}", file_path.display()))?;
 
-        // Write to disk
-        fs::write(&file_path, data.as_ref())
-            .await
-            .err_tip(|| format!("Failed to write file: {}", file_path.display()))?;
+            // Write to disk
+            fs::write(&file_path, data.as_ref())
+                .await
+                .err_tip(|| format!("Failed to write file: {}", file_path.display()))?;
+        }
 
         // Set permissions
         #[cfg(unix)]
@@ -598,6 +611,69 @@ mod tests {
             assert_eq!(stats.clonefile_hits, 0);
             assert_eq!(stats.hardlink_hits, 2, "non-macOS should record 2 hardlinks");
         }
+
+        Ok(())
+    }
+
+    /// A Directory containing a zero-byte file must be constructible even when
+    /// the CAS has no entry for the zero-byte digest. In production CAS
+    /// backends (FilesystemStore in particular) refuse to store zero-byte
+    /// blobs, so without the short-circuit this is a NotFound error and 30%+
+    /// of cache constructions fail (per PR #2243).
+    #[nativelink_test]
+    async fn test_directory_cache_zero_byte_file() -> Result<(), Error> {
+        let temp_dir = TempDir::new().unwrap();
+        let cache_root = temp_dir.path().join("cache");
+        let store = Store::new(MemoryStore::new(&MemorySpec::default()));
+
+        // RFC 6234 / Bazel zero-byte SHA-256 digest, hash for b"".
+        let zero_digest = DigestInfo::try_new(
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            0,
+        )
+        .unwrap();
+        // Deliberately do NOT upload the zero-byte blob — that's the whole
+        // point: real CAS backends won't have it.
+
+        let directory = ProtoDirectory {
+            files: vec![FileNode {
+                name: "empty.txt".to_string(),
+                digest: Some(zero_digest.into()),
+                is_executable: false,
+                ..Default::default()
+            }],
+            directories: vec![],
+            symlinks: vec![],
+            ..Default::default()
+        };
+        let mut dir_data = Vec::new();
+        directory.encode(&mut dir_data).unwrap();
+        let dir_digest = DigestInfo::try_new(
+            "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+            dir_data.len() as i64,
+        )
+        .unwrap();
+        store
+            .as_store_driver_pin()
+            .update_oneshot(dir_digest.into(), dir_data.into())
+            .await
+            .unwrap();
+
+        let config = DirectoryCacheConfig {
+            max_entries: 10,
+            max_size_bytes: 1024 * 1024,
+            cache_root,
+        };
+        let cache = DirectoryCache::new(config, store).await?;
+
+        let dest = temp_dir.path().join("dest_empty");
+        let hit = cache.get_or_create(dir_digest, &dest).await?;
+        assert!(!hit, "First construction should be a cache miss");
+
+        let empty_path = dest.join("empty.txt");
+        assert!(empty_path.exists(), "zero-byte file should be created");
+        let metadata = fs::metadata(&empty_path).await.unwrap();
+        assert_eq!(metadata.len(), 0, "zero-byte file must be 0 bytes");
 
         Ok(())
     }
