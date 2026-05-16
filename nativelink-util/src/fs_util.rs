@@ -51,10 +51,14 @@ pub enum CloneMethod {
 /// # Platform Support
 /// - macOS: Tries APFS `clonefile(2)` first (O(1), copy-on-write). On failure
 ///   (e.g., cross-volume EXDEV, or any unexpected errno) falls back to per-file
-///   `fs::hard_link`. After a successful clone, the destination tree is made
-///   writable (0o755 / 0o644) because the clone inherits the source's
-///   permissions, and cached subtrees are 0o555 / 0o444. The COW semantics of
-///   `clonefile(2)` mean writes to the destination do not affect the source.
+///   `fs::hard_link`. After a successful clone, only the destination root is
+///   chmod'd to 0o755 so the worker can create the action's declared output
+///   files inside it. Existing entries inherit the source's read-only mode
+///   (0o555 dirs / 0o444 files) — this matches the hermeticity contract
+///   enforced by Bazel's local sandbox and the REAPI `Action.output_files`
+///   semantics: actions can only write to declared outputs, never mutate
+///   inputs. The COW semantics of `clonefile(2)` mean any writes the worker
+///   does make to the destination do not affect the source.
 /// - Linux: Per-file `fs::hard_link` (directory hardlinks are not supported on
 ///   ext4/btrfs without root). Always returns `CloneMethod::Hardlink`.
 /// - Windows: Per-file `fs::hard_link` (requires NTFS). Always returns
@@ -97,13 +101,17 @@ pub async fn hardlink_directory_tree(src_dir: &Path, dst_dir: &Path) -> Result<C
 
         match try_clonefile(src_dir, dst_dir).await {
             Ok(()) => {
-                // The clone inherits the source's permissions. Cached subtrees
-                // are 0o555 / 0o444, but actions need to write outputs into
-                // their input tree, so make the clone writable. COW means
-                // these writes do not affect the source.
-                set_readwrite_recursive(dst_dir)
+                // Only chmod the destination root so the worker can create
+                // the action's declared output files inside it. Existing
+                // entries (subdirs and files) inherit the source's
+                // read-only mode (0o555 / 0o444) — that's the hermeticity
+                // contract. Skipping the per-file chmod walk avoids an
+                // O(N) syscall sweep that, on real Bazel SwiftCompile
+                // shapes (~2000 inputs), accounts for ~46% of
+                // materialization time.
+                chmod_dir_writable(dst_dir)
                     .await
-                    .err_tip(|| "Failed to make cloned tree writable")?;
+                    .err_tip(|| "Failed to chmod cloned tree root")?;
                 return Ok(CloneMethod::Clonefile);
             }
             Err(e) => {
@@ -176,6 +184,21 @@ async fn try_clonefile(src: &Path, dst: &Path) -> std::io::Result<()> {
     })
     .await
     .map_err(std::io::Error::other)?
+}
+
+/// Sets the directory `dir`'s mode to 0o755 so callers can create new
+/// entries inside it. Used after `clonefile(2)` on the materialized
+/// destination root: the clone inherits the source's read-only mode
+/// (0o555) but the worker needs to drop the action's declared output
+/// files into the root. Existing entries inside `dir` are intentionally
+/// left at their cloned read-only perms — that's the hermeticity
+/// contract.
+#[cfg(target_os = "macos")]
+async fn chmod_dir_writable(dir: &Path) -> Result<(), Error> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755))
+        .await
+        .err_tip(|| format!("Failed to chmod {} to 0o755", dir.display()))
 }
 
 /// Internal recursive function to hardlink directory contents
@@ -590,7 +613,7 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[nativelink_test("crate")]
-    async fn test_clonefile_dest_is_writable() -> Result<(), Error> {
+    async fn test_clonefile_root_writable_inputs_readonly() -> Result<(), Error> {
         use std::os::unix::fs::PermissionsExt;
 
         let (temp_dir, src_dir) = create_test_directory().await?;
@@ -600,6 +623,36 @@ mod tests {
         let dst_dir = temp_dir.path().join("clone_dst");
         hardlink_directory_tree(&src_dir, &dst_dir).await?;
 
+        // Root: writable, so the worker can drop the action's declared
+        // outputs inside it.
+        let root_mode = fs::metadata(&dst_dir).await?.permissions().mode() & 0o777;
+        assert_eq!(root_mode, 0o755, "destination root must be writable");
+
+        // Subdir and existing file: stay read-only. Hermeticity contract —
+        // inputs are not writable. Matches Bazel's local-sandbox model and
+        // REAPI Action.output_files semantics: actions can only write to
+        // declared outputs, not mutate inputs.
+        let dst_subdir_mode = fs::metadata(dst_dir.join("subdir"))
+            .await?
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            dst_subdir_mode, 0o555,
+            "cloned subdirs must inherit source read-only mode"
+        );
+
+        let dst_file_mode = fs::metadata(dst_dir.join("file1.txt"))
+            .await?
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            dst_file_mode, 0o444,
+            "cloned files must inherit source read-only mode"
+        );
+
+        // Source untouched.
         let src_subdir_mode = fs::metadata(src_dir.join("subdir"))
             .await?
             .permissions()
@@ -610,15 +663,49 @@ mod tests {
             "source dir should still be readonly after clone"
         );
 
-        let dst_subdir_mode = fs::metadata(dst_dir.join("subdir"))
-            .await?
-            .permissions()
-            .mode()
-            & 0o777;
-        assert_eq!(
-            dst_subdir_mode, 0o755,
-            "cloned dir should be writable so actions can write outputs"
-        );
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[nativelink_test("crate")]
+    async fn test_clonefile_root_accepts_new_files() -> Result<(), Error> {
+        let (temp_dir, src_dir) = create_test_directory().await?;
+        set_readonly_recursive(&src_dir).await?;
+
+        let dst_dir = temp_dir.path().join("clone_dst");
+        hardlink_directory_tree(&src_dir, &dst_dir).await?;
+
+        // The worker creates declared output files at the action's
+        // working directory root. Verify a new file can be created there
+        // even though everything inside the clone is 0o444 / 0o555.
+        let new_output = dst_dir.join("new_output.bin");
+        fs::write(&new_output, b"action output").await?;
+        assert_eq!(fs::read(&new_output).await?, b"action output");
+
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[nativelink_test("crate")]
+    async fn test_clonefile_input_mutation_fails() -> Result<(), Error> {
+        let (temp_dir, src_dir) = create_test_directory().await?;
+        set_readonly_recursive(&src_dir).await?;
+
+        let dst_dir = temp_dir.path().join("clone_dst");
+        hardlink_directory_tree(&src_dir, &dst_dir).await?;
+
+        // Hermeticity: actions cannot mutate inputs. A write to an input
+        // file in the cloned tree must fail with EACCES, mirroring what
+        // Bazel's linux-sandbox / darwin-sandbox would do.
+        let input_file = dst_dir.join("file1.txt");
+        let err = fs::write(&input_file, b"mutated")
+            .await
+            .expect_err("input file write should fail (file is 0o444)");
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+
+        // Source must be untouched.
+        let src_content = fs::read_to_string(src_dir.join("file1.txt")).await?;
+        assert_eq!(src_content, "Hello, World!");
 
         Ok(())
     }
