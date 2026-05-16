@@ -142,6 +142,11 @@ async fn try_clonefile(src: &Path, dst: &Path) -> std::io::Result<()> {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
 
+    // From <sys/clonefile.h>: don't follow symlinks at the top level. Symlinks
+    // *within* the cloned tree are cloned as symlinks regardless. The `libc`
+    // crate exposes `clonefile` but not this flag constant.
+    const CLONE_NOFOLLOW: u32 = 0x0001;
+
     let src_c = CString::new(src.as_os_str().as_bytes()).map_err(|_| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -155,12 +160,7 @@ async fn try_clonefile(src: &Path, dst: &Path) -> std::io::Result<()> {
         )
     })?;
 
-    // From <sys/clonefile.h>: don't follow symlinks at the top level. Symlinks
-    // *within* the cloned tree are cloned as symlinks regardless. The `libc`
-    // crate exposes `clonefile` but not this flag constant.
-    const CLONE_NOFOLLOW: u32 = 0x0001;
-
-    tokio::task::spawn_blocking(move || {
+    crate::spawn_blocking!("clonefile", move || {
         // SAFETY: clonefile(2) takes two NUL-terminated C strings and a flag
         // word. Both CStrings are owned by this closure for the duration of
         // the call, so the pointers stay valid.
@@ -172,7 +172,7 @@ async fn try_clonefile(src: &Path, dst: &Path) -> std::io::Result<()> {
         }
     })
     .await
-    .map_err(|join_err| std::io::Error::other(join_err))?
+    .map_err(std::io::Error::other)?
 }
 
 /// Internal recursive function to hardlink directory contents

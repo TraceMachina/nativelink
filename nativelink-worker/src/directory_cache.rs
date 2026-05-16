@@ -14,10 +14,10 @@
 
 use core::future::Future;
 use core::pin::Pin;
+use core::sync::atomic::{AtomicU64, Ordering};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
 use nativelink_error::{Code, Error, ResultExt, make_err};
@@ -620,8 +620,8 @@ mod tests {
 
     /// A Directory containing a zero-byte file must be constructible even when
     /// the CAS has no entry for the zero-byte digest. In production CAS
-    /// backends (FilesystemStore in particular) refuse to store zero-byte
-    /// blobs, so without the short-circuit this is a NotFound error and 30%+
+    /// backends (`FilesystemStore` in particular) refuse to store zero-byte
+    /// blobs, so without the short-circuit this is a `NotFound` error and 30%+
     /// of cache constructions fail (per PR #2243).
     #[nativelink_test]
     async fn test_directory_cache_zero_byte_file() -> Result<(), Error> {
