@@ -609,7 +609,10 @@ mod tests {
         #[cfg(not(target_os = "macos"))]
         {
             assert_eq!(stats.clonefile_hits, 0);
-            assert_eq!(stats.hardlink_hits, 2, "non-macOS should record 2 hardlinks");
+            assert_eq!(
+                stats.hardlink_hits, 2,
+                "non-macOS should record 2 hardlinks"
+            );
         }
 
         Ok(())

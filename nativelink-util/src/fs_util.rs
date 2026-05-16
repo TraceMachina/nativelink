@@ -66,10 +66,7 @@ pub enum CloneMethod {
 /// - Cross-filesystem materialization attempted and fallback also fails
 /// - Filesystem doesn't support hardlinks (Linux/Windows fallback)
 /// - Permission denied
-pub async fn hardlink_directory_tree(
-    src_dir: &Path,
-    dst_dir: &Path,
-) -> Result<CloneMethod, Error> {
+pub async fn hardlink_directory_tree(src_dir: &Path, dst_dir: &Path) -> Result<CloneMethod, Error> {
     error_if!(
         !src_dir.exists(),
         "Source directory does not exist: {}",
