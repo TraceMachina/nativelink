@@ -63,17 +63,9 @@ pub fn set_user_initiated() -> bool {
 mod macos_tests {
     use super::set_user_initiated;
 
-    /// Proves the `QoS` call is wired up on macOS and the underlying
-    /// Darwin symbol resolves at link time. A failure here means the
-    /// worker would silently keep running on E-cores.
-    #[test]
-    fn sets_user_initiated_on_current_thread() {
-        assert!(
-            set_user_initiated(),
-            "pthread_set_qos_class_self_np(USER_INITIATED) returned non-zero",
-        );
-
-        // Read it back to confirm the kernel accepted the new class.
+    /// Reads the current thread's `QoS` class via `pthread_get_qos_class_np`.
+    /// Panics with a contextual message on failure (only called from tests).
+    fn current_qos_class() -> libc::qos_class_t {
         let mut class: libc::qos_class_t = libc::qos_class_t::QOS_CLASS_UNSPECIFIED;
         let mut rel_prio: libc::c_int = 0;
         // SAFETY: out-pointers point to stack-allocated, properly sized
@@ -86,12 +78,57 @@ mod macos_tests {
             )
         };
         assert_eq!(ret, 0, "pthread_get_qos_class_np failed: {ret}");
+        class
+    }
+
+    /// Proves the `QoS` call is wired up on macOS and the underlying
+    /// Darwin symbol resolves at link time. A failure here means the
+    /// worker would silently keep running on E-cores.
+    #[test]
+    fn sets_user_initiated_on_current_thread() {
+        assert!(
+            set_user_initiated(),
+            "pthread_set_qos_class_self_np(USER_INITIATED) returned non-zero",
+        );
         // `qos_class_t` is a `#[repr(u32)]` C enum that does not derive
         // `PartialEq` in libc, so compare the underlying discriminants.
         assert_eq!(
-            class as u32,
+            current_qos_class() as u32,
             libc::qos_class_t::QOS_CLASS_USER_INITIATED as u32,
             "`QoS` class did not update; thread will be eligible for E-core scheduling",
+        );
+    }
+
+    /// Validates the load-bearing claim that tokio worker threads created
+    /// with a `Builder::on_thread_start` hook calling `set_user_initiated`
+    /// observe `QOS_CLASS_USER_INITIATED` from inside spawned tasks. This
+    /// mirrors the wiring in `src/bin/nativelink.rs::main`. Without this
+    /// test the entire QoS scheme is unverified at the integration level.
+    #[test]
+    fn tokio_worker_threads_inherit_user_initiated_via_on_thread_start() {
+        // Deliberately build a fresh runtime in-test (do not reuse a
+        // global one) so the hook is exercised on freshly-spawned
+        // worker threads with whatever class they were born with.
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .on_thread_start(|| {
+                assert!(set_user_initiated(), "hook failed in worker thread");
+            })
+            .enable_all()
+            .build()
+            .expect("build tokio runtime");
+
+        let observed: u32 = rt.block_on(async {
+            // Force execution on a worker thread (not the caller).
+            tokio::spawn(async { current_qos_class() as u32 })
+                .await
+                .expect("join spawned task")
+        });
+
+        assert_eq!(
+            observed,
+            libc::qos_class_t::QOS_CLASS_USER_INITIATED as u32,
+            "tokio worker thread did not inherit USER_INITIATED from on_thread_start",
         );
     }
 }
