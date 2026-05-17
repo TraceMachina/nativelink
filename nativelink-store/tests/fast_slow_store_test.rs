@@ -389,8 +389,14 @@ async fn drop_on_eof_completes_store_futures() -> Result<(), Error> {
     get_res.merge(read_res)
 }
 
+// Previously `has()` returned `None` for a blob that was present only in the
+// fast store. That behavior caused redundant work: a worker that had already
+// cached a blob locally would still get NotFound from `has()` and re-fetch
+// (or re-upload) the same data. `has_with_results` now falls back to the
+// fast store when the slow store reports nothing, so a fast-only hit
+// correctly returns the blob's size.
 #[nativelink_test]
-async fn ignore_value_in_fast_store() -> Result<(), Error> {
+async fn fast_store_only_value_is_reported_by_has() -> Result<(), Error> {
     let fast_store = Store::new(MemoryStore::new(&MemorySpec::default()));
     let slow_store = Store::new(MemoryStore::new(&MemorySpec::default()));
     let fast_slow_store = Arc::new(FastSlowStore::new(
@@ -407,9 +413,10 @@ async fn ignore_value_in_fast_store() -> Result<(), Error> {
     fast_store
         .update_oneshot(digest, make_random_data(100).into())
         .await?;
-    assert!(
-        fast_slow_store.has(digest).await?.is_none(),
-        "Expected data to not exist in store"
+    assert_eq!(
+        fast_slow_store.has(digest).await?,
+        Some(100),
+        "Expected fast-store-only blob to be reported as present",
     );
     Ok(())
 }
@@ -911,6 +918,259 @@ async fn dropping_a_follower_does_not_cancel_the_leader() -> Result<(), Error> {
     assert_eq!(
         slow_calls, 1,
         "Leader's populate must complete exactly once, got {slow_calls} slow_store.get_part calls",
+    );
+
+    Ok(())
+}
+
+/// While one writer's slow-store write is in flight, a concurrent `has()`
+/// must report the blob as present so the second writer does not race and
+/// re-upload the same data.
+#[nativelink_test]
+async fn has_sees_in_flight_slow_writes() -> Result<(), Error> {
+    #[derive(MetricsComponent)]
+    struct GatedSlowStore {
+        /// Released by the test to let the in-flight slow write complete.
+        gate: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+        /// Signalled once the slow-store `update` has begun draining.
+        started_tx: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    }
+
+    #[async_trait]
+    impl StoreDriver for GatedSlowStore {
+        async fn has_with_results(
+            self: Pin<&Self>,
+            _keys: &[StoreKey<'_>],
+            _results: &mut [Option<u64>],
+        ) -> Result<(), Error> {
+            // Slow store reports nothing — the in-flight tracking is what
+            // should fill the result in.
+            Ok(())
+        }
+
+        async fn update(
+            self: Pin<&Self>,
+            _key: StoreKey<'_>,
+            mut reader: DropCloserReadHalf,
+            _size_info: UploadSizeInfo,
+        ) -> Result<(), Error> {
+            let started_tx = self.started_tx.lock().unwrap().take();
+            if let Some(tx) = started_tx {
+                let _ = tx.send(());
+            }
+            let gate = self.gate.lock().unwrap().take();
+            if let Some(rx) = gate {
+                let _ = rx.await;
+            }
+            reader.drain().await
+        }
+
+        async fn get_part(
+            self: Pin<&Self>,
+            _key: StoreKey<'_>,
+            writer: &mut DropCloserWriteHalf,
+            _offset: u64,
+            _length: Option<u64>,
+        ) -> Result<(), Error> {
+            writer.send_eof()
+        }
+
+        fn inner_store(&self, _key: Option<StoreKey>) -> &'_ dyn StoreDriver {
+            self
+        }
+
+        fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
+            self
+        }
+
+        fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+            self
+        }
+
+        fn register_remove_callback(
+            self: Arc<Self>,
+            _callback: Arc<dyn RemoveItemCallback>,
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    default_health_status_indicator!(GatedSlowStore);
+
+    let (gate_tx, gate_rx) = tokio::sync::oneshot::channel::<()>();
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel::<()>();
+    let slow = Arc::new(GatedSlowStore {
+        gate: Mutex::new(Some(gate_rx)),
+        started_tx: Mutex::new(Some(started_tx)),
+    });
+    let fast = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let fast_slow = Arc::new(FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+        },
+        fast,
+        Store::new(slow.clone()),
+    ));
+
+    let data = make_random_data(256);
+    let digest = DigestInfo::try_new(VALID_HASH, data.len()).unwrap();
+
+    // Sanity: nothing in flight, slow store has nothing, fast store has
+    // nothing -> NotFound.
+    assert_eq!(
+        fast_slow.has(digest).await?,
+        None,
+        "Pre-condition: blob should be absent before any writer starts",
+    );
+
+    let writer_store = fast_slow.clone();
+    let writer_data = data.clone();
+    let writer = tokio::spawn(async move {
+        writer_store
+            .update_oneshot(digest, writer_data.into())
+            .await
+    });
+
+    // Wait until the slow store's update is actually being driven, which
+    // proves the in-flight registration is live.
+    started_rx
+        .await
+        .map_err(|e| make_err!(Code::Internal, "started signal lost: {e:?}"))?;
+
+    // Concurrent observer: the slow store will return None (its
+    // has_with_results above), so the only way this can be Some is via
+    // the in-flight map.
+    assert_eq!(
+        fast_slow.has(digest).await?,
+        Some(data.len() as u64),
+        "Concurrent has() must see in-flight slow write",
+    );
+
+    // Release the writer and confirm the in-flight tracker is cleaned up.
+    gate_tx
+        .send(())
+        .map_err(|()| make_err!(Code::Internal, "Failed to release slow-store gate"))?;
+    writer
+        .await
+        .map_err(|e| make_err!(Code::Internal, "writer join error: {e:?}"))??;
+
+    // After completion the fast store still has the blob, so has() should
+    // remain Some via the fast-store fallback (the GatedSlowStore still
+    // reports None).
+    assert_eq!(
+        fast_slow.has(digest).await?,
+        Some(data.len() as u64),
+        "Post-write has() should see the blob via fast-store fallback",
+    );
+
+    Ok(())
+}
+
+/// `has()` consults the fast store after the slow store reports `NotFound`.
+/// This is asserted indirectly above by `fast_store_only_value_is_reported_by_has`;
+/// here we additionally assert that when the slow store DOES have the blob,
+/// the fast store is NOT consulted (avoiding the extra round trip).
+#[nativelink_test]
+async fn has_does_not_consult_fast_store_when_slow_store_hits() -> Result<(), Error> {
+    #[derive(MetricsComponent)]
+    struct CountingFastStore {
+        inner: Arc<MemoryStore>,
+        has_calls: Arc<AtomicU64>,
+    }
+
+    #[async_trait]
+    impl StoreDriver for CountingFastStore {
+        async fn has_with_results(
+            self: Pin<&Self>,
+            keys: &[StoreKey<'_>],
+            results: &mut [Option<u64>],
+        ) -> Result<(), Error> {
+            self.has_calls.fetch_add(1, Ordering::Acquire);
+            Pin::new(self.inner.as_ref())
+                .has_with_results(keys, results)
+                .await
+        }
+
+        async fn update(
+            self: Pin<&Self>,
+            key: StoreKey<'_>,
+            reader: DropCloserReadHalf,
+            size_info: UploadSizeInfo,
+        ) -> Result<(), Error> {
+            Pin::new(self.inner.as_ref())
+                .update(key, reader, size_info)
+                .await
+        }
+
+        async fn get_part(
+            self: Pin<&Self>,
+            key: StoreKey<'_>,
+            writer: &mut DropCloserWriteHalf,
+            offset: u64,
+            length: Option<u64>,
+        ) -> Result<(), Error> {
+            Pin::new(self.inner.as_ref())
+                .get_part(key, writer, offset, length)
+                .await
+        }
+
+        fn inner_store(&self, _key: Option<StoreKey>) -> &'_ dyn StoreDriver {
+            self
+        }
+
+        fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
+            self
+        }
+
+        fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+            self
+        }
+
+        fn register_remove_callback(
+            self: Arc<Self>,
+            _callback: Arc<dyn RemoveItemCallback>,
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    default_health_status_indicator!(CountingFastStore);
+
+    let has_calls = Arc::new(AtomicU64::new(0));
+    let fast_inner = MemoryStore::new(&MemorySpec::default());
+    let fast = Store::new(Arc::new(CountingFastStore {
+        inner: fast_inner,
+        has_calls: has_calls.clone(),
+    }));
+    let slow = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let fast_slow = Arc::new(FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+        },
+        fast,
+        slow.clone(),
+    ));
+
+    let data = make_random_data(128);
+    let digest = DigestInfo::try_new(VALID_HASH, data.len()).unwrap();
+    slow.update_oneshot(digest, data.clone().into()).await?;
+
+    let before = has_calls.load(Ordering::Acquire);
+    assert_eq!(
+        fast_slow.has(digest).await?,
+        Some(data.len() as u64),
+        "Slow-store-only blob must be reported via slow lookup",
+    );
+    let after = has_calls.load(Ordering::Acquire);
+    assert_eq!(
+        after, before,
+        "Fast store has() must not be consulted when the slow store already reports the blob",
     );
 
     Ok(())
