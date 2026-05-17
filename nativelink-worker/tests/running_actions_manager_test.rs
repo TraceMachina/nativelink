@@ -4142,4 +4142,348 @@ exit 1
 
         Ok(())
     }
+
+    // Regression test for the reader-side of the emplace_file race
+    // that companion-fixes PR #2341. The writer-side fix in PR #2341
+    // (filesystem_store::emplace_file) holds a write lock across
+    // insert+rename so concurrent writes for the same key serialize
+    // cleanly. This test pins the corresponding reader-side
+    // invariant in `download_to_directory`: the `fs::hard_link` call
+    // must execute INSIDE `FileEntry::get_file_path_locked`'s
+    // closure so the read lock is held for the duration of the
+    // syscall. If a reader extracts the path and releases the lock
+    // before calling `hard_link`, a concurrent writer's `unref()`
+    // (triggered by an insert that replaces the existing entry) can
+    // rename the file out of `content_path` in the gap between the
+    // path read and the syscall, producing the spurious "file was
+    // likely evicted from cache" ENOENT seen in Buildstream CI on
+    // PR #2341.
+    //
+    // Deterministic reproduction strategy:
+    //
+    //   1. Set up `cas_store` with `fast_direction = Update`. This
+    //      makes `FastSlowStore::get_part` bypass the fast store
+    //      for any key not pre-populated and read straight from the
+    //      slow MemoryStore (no fs permits needed). We pre-populate
+    //      ONLY the file in fast; the parent Directory is in slow
+    //      only. As a result, `download_to_directory`'s outer
+    //      `get_and_decode_digest` does not need permits — only
+    //      the per-file `fs::hard_link` does.
+    //
+    //   2. Drain `fs::OPEN_FILE_SEMAPHORE`. Same trick used by
+    //      `upload_with_single_permit` elsewhere in this file. The
+    //      reader's `fs::hard_link` now deterministically parks on
+    //      permit acquisition.
+    //
+    //   3. Spawn the reader: `download_to_directory`. It reads the
+    //      Directory from the slow store (no permits), iterates
+    //      files, gets the file's FileEntry, calls
+    //      `get_file_path_locked`. POST-FIX: the closure body is
+    //      `fs::hard_link(...)`, so the read lock stays held while
+    //      hard_link parks on the semaphore. PRE-FIX: the closure
+    //      body is `Ok(PathBuf::from(src))`, instant, so the read
+    //      lock is released and the reader then parks on
+    //      hard_link's semaphore with NO LOCK HELD.
+    //
+    //   4. Spawn an "evictor" task that calls
+    //      `LenEntry::unref()` directly on the live FileEntry. This
+    //      is exactly what `evicting_map.insert()` calls
+    //      internally when a concurrent write displaces this
+    //      entry. It takes the entry's write lock and renames the
+    //      file from `content_path/<digest>` to
+    //      `temp_path/<temp-key>` (then drop deletes it). POST-FIX:
+    //      `write().await` blocks on the reader's read lock.
+    //      PRE-FIX: it acquires immediately and renames the file.
+    //
+    //   5. Refill `OPEN_FILE_SEMAPHORE`. The reader's hard_link
+    //      wakes. POST-FIX: file still at content path,
+    //      hard_link succeeds. PRE-FIX: file is gone, hard_link
+    //      returns NotFound.
+    //
+    //   6. Assert reader returned Ok. Pre-fix code fails this
+    //      assertion deterministically; post-fix code passes.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test(flavor = "multi_thread")]
+    async fn download_to_directory_holds_lock_across_hard_link()
+    -> Result<(), Box<dyn core::error::Error>> {
+        use nativelink_store::filesystem_store::{DIGEST_FOLDER, FileEntry, FileEntryImpl};
+
+        const FILE_NAME: &str = "file.txt";
+        const FILE_CONTENT: &str = "HELLO-EMPLACE-RACE-READER-SIDE";
+
+        // Build the store directly (not via setup_stores) so we can:
+        //   * compute the on-disk content path for the digest, and
+        //   * set fast_direction=Update so the cas_store's get_part
+        //     for the Directory key (not pre-populated in fast)
+        //     bypasses the fast store and reads from slow
+        //     (MemoryStore), avoiding OPEN_FILE_SEMAPHORE.
+        let content_path = make_temp_path("content_path");
+        let temp_path = make_temp_path("temp_path");
+        let fast_config = FilesystemSpec {
+            content_path: content_path.clone(),
+            temp_path: temp_path.clone(),
+            eviction_policy: None,
+            ..Default::default()
+        };
+        let slow_config = MemorySpec::default();
+        let fast_store: Arc<FilesystemStore<FileEntryImpl>> =
+            FilesystemStore::new(&fast_config).await?;
+        let slow_store = MemoryStore::new(&slow_config);
+        let cas_store = FastSlowStore::new(
+            &FastSlowSpec {
+                fast: StoreSpec::Filesystem(fast_config),
+                slow: StoreSpec::Memory(slow_config),
+                // Update = Get bypasses fast (sends straight to
+                // slow). We still update fast on update_oneshot
+                // (which we use to pre-populate the file).
+                fast_direction: StoreDirection::Update,
+                slow_direction: StoreDirection::default(),
+            },
+            Store::new(fast_store.clone()),
+            Store::new(slow_store.clone()),
+        );
+
+        // Pre-populate the FILE in fast (so the reader's
+        // `get_file_entry_for_digest` finds it without populate)
+        // and in slow (so populate_fast_store has somewhere to
+        // pull from — though it should short-circuit on
+        // fast.has()=Some).
+        let file_digest = DigestInfo::new([7u8; 32], FILE_CONTENT.len() as u64);
+        fast_store
+            .as_ref()
+            .update_oneshot(file_digest, FILE_CONTENT.into())
+            .await?;
+        slow_store
+            .as_ref()
+            .update_oneshot(file_digest, FILE_CONTENT.into())
+            .await?;
+
+        // Build the root Directory in SLOW ONLY. The
+        // fast_direction=Update setting will make cas_store's
+        // get_part bypass fast and read this from slow without
+        // touching fs permits.
+        let root_dir_digest = DigestInfo::new([8u8; 32], 32);
+        let root_directory = Directory {
+            files: vec![FileNode {
+                name: FILE_NAME.to_string(),
+                digest: Some(file_digest.into()),
+                is_executable: false,
+                node_properties: None,
+            }],
+            ..Default::default()
+        };
+        slow_store
+            .as_ref()
+            .update_oneshot(root_dir_digest, root_directory.encode_to_vec().into())
+            .await?;
+
+        let download_dir = make_temp_path("download_dir");
+        fs::create_dir_all(&download_dir).await?;
+
+        let entry = fast_store.get_file_entry_for_digest(&file_digest).await?;
+        let file_on_disk = format!("{content_path}/{DIGEST_FOLDER}/{file_digest}");
+        assert!(
+            std::path::Path::new(&file_on_disk).exists(),
+            "pre-condition: content file must be on disk at {file_on_disk}"
+        );
+
+        // Drain OPEN_FILE_SEMAPHORE so the reader's hard_link
+        // parks on permit acquisition. We use forget_permits so
+        // background spawns that release permits cannot inflate
+        // the count between our drain and the reader's hard_link.
+        let mut total_forgotten =
+            fs::OPEN_FILE_SEMAPHORE.forget_permits(fs::OPEN_FILE_SEMAPHORE.available_permits());
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+            let extra = fs::OPEN_FILE_SEMAPHORE.available_permits();
+            if extra == 0 {
+                break;
+            }
+            total_forgotten += fs::OPEN_FILE_SEMAPHORE.forget_permits(extra);
+        }
+        assert_eq!(0, fs::OPEN_FILE_SEMAPHORE.available_permits());
+
+        // Spawn the reader.
+        let cas_store_clone = cas_store.clone();
+        let fast_store_clone = fast_store.clone();
+        let download_dir_clone = download_dir.clone();
+        let reader_handle = tokio::spawn(async move {
+            download_to_directory(
+                cas_store_clone.as_ref(),
+                fast_store_clone.as_pin(),
+                &root_dir_digest,
+                &download_dir_clone,
+            )
+            .await
+        });
+
+        // Wait until the reader is actually parked inside
+        // `fs::hard_link`'s permit acquisition. The reader's path
+        // before hard_link is: get_and_decode_digest (slow store —
+        // memory, fast), populate_fast_store (early Ok via has()),
+        // get_file_entry_for_digest (sync), get_file_path_locked
+        // (acquires read lock). Once at the closure body, the
+        // reader awaits fs::hard_link's permit which is drained.
+        //
+        // We detect the parked-at-hard_link state by polling
+        // try_write() on the entry's encoded_file_path: in
+        // POST-FIX, the reader's read lock is held during the
+        // hard_link await so try_write fails; in PRE-FIX, the
+        // reader's read lock is released before the await so
+        // try_write succeeds. EITHER way, the reader must FIRST
+        // pass through get_file_path_locked (transient read-lock
+        // acquire) — so on the FIRST try_write failure (or after
+        // a fixed iteration cap as the pre-fix fallback) we know
+        // the reader has reached the lock pattern. We then
+        // proceed with the evictor.
+        let mut poll_iters = 0;
+        loop {
+            tokio::task::yield_now().await;
+            if entry.get_encoded_file_path().try_write().is_none() {
+                // POST-FIX path: reader holds the read lock right now.
+                break;
+            }
+            poll_iters += 1;
+            if poll_iters > 4096 {
+                // PRE-FIX fallback: in pre-fix the read lock is held
+                // for so few nanoseconds that we may never see it
+                // taken. Proceed anyway — the reader is either at
+                // hard_link or earlier. In production behavior,
+                // pre-fix code releases the read lock before
+                // hard_link, so by this point the reader is parked
+                // on the hard_link permit with NO LOCK HELD.
+                break;
+            }
+        }
+        // After this point we know the reader has reached the
+        // get_file_path_locked call site. In post-fix code it is
+        // CURRENTLY holding the read lock (and will continue to do
+        // so while hard_link is parked on the drained semaphore).
+        // In pre-fix code it transiently held the lock during the
+        // closure but has now released it and is parked on the
+        // semaphore with NO LOCK HELD.
+        let _ = poll_iters;
+
+        // Spawn the evictor: take the write lock on the entry's
+        // encoded_file_path (the same lock that
+        // `FileEntry::get_file_path_locked` reads) and rename the
+        // file out from under the reader's captured path. This
+        // simulates the moment in
+        // `filesystem_store::FilesystemStore`'s
+        // `evicting_map.insert()` when it `unref()`s a displaced
+        // entry: that `unref()` ALSO takes this same write lock and
+        // renames the file out of `content_path/<digest>`.
+        //
+        // Important: we use sync `std::fs::rename` rather than the
+        // async `fs::rename` (which `FileEntryImpl::unref` uses)
+        // because the async version acquires its own
+        // OPEN_FILE_SEMAPHORE permit, which we have drained. If
+        // the evictor ALSO blocked on the permit, the post-fix
+        // path would NOT serialize correctly (both reader and
+        // evictor would be parked on permits, and the refill
+        // order would be a tie-breaker). Holding the write lock
+        // synchronously bypasses that and keeps the lock
+        // contention as the sole synchronization mechanism — which
+        // is exactly the production semantics we're testing.
+        //
+        //   * Post-fix: the reader's read lock is held across the
+        //     hard_link await, so this `write().await` blocks
+        //     until the reader's hard_link finishes successfully.
+        //
+        //   * Pre-fix: the reader's read lock was released before
+        //     the hard_link await, so this `write().await`
+        //     acquires immediately, renames the file, and the
+        //     reader's subsequent hard_link fails with NotFound
+        //     against the now-stale path.
+        let entry_for_evictor = entry.clone();
+        let file_on_disk_for_evictor = file_on_disk.clone();
+        let evacuated_path = format!("{temp_path}/evacuated-for-race-test");
+        let evictor_handle = tokio::spawn(async move {
+            let _write_guard = entry_for_evictor.get_encoded_file_path().write().await;
+            std::fs::rename(&file_on_disk_for_evictor, &evacuated_path)
+                .expect("rename should succeed on the live content file");
+        });
+
+        // CRITICAL ORDERING: the pre-fix path needs the evictor's
+        // rename to complete BEFORE the reader's hard_link runs.
+        // Both syscalls execute on different threads under tokio's
+        // multi-thread runtime, so we cannot rely on tokio's
+        // scheduling to give the evictor a head-start — we must
+        // explicitly serialize.
+        //
+        //   * Post-fix: the evictor's `write().await` is BLOCKED
+        //     by the reader's read lock, so it cannot complete
+        //     here. We must wait with a bounded timeout and
+        //     proceed to refill the semaphore. The reader then
+        //     unblocks, completes hard_link successfully, releases
+        //     the read lock, and the evictor then completes its
+        //     rename (harmlessly post-link).
+        //
+        //   * Pre-fix: the evictor's `write().await` is NOT
+        //     blocked. It completes quickly. We can wait for the
+        //     evictor (file renamed) and then refill the
+        //     semaphore. The reader then unblocks, attempts
+        //     hard_link against the now-stale path, and fails
+        //     with NotFound.
+        //
+        // We try to wait for the evictor with a short timeout. If
+        // the timeout fires, we know we're in the post-fix path
+        // (evictor is blocked on the read lock) and we proceed.
+        let _evictor_completed_first = tokio::time::timeout(
+            Duration::from_millis(100),
+            // Wait for the rename to be visible on disk via a
+            // probing loop (more reliable than awaiting the
+            // handle, which we cannot consume yet — we need the
+            // handle later for the final join).
+            async {
+                let evacuated_check = format!("{temp_path}/evacuated-for-race-test");
+                loop {
+                    if std::path::Path::new(&evacuated_check).exists() {
+                        return true;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            },
+        )
+        .await
+        .unwrap_or(false);
+
+        // Refill OPEN_FILE_SEMAPHORE so the reader's hard_link can
+        // make progress.
+        fs::OPEN_FILE_SEMAPHORE.add_permits(total_forgotten);
+
+        // Wait for both with a generous timeout to surface any
+        // deadlock as a failure rather than hanging the test runner.
+        let reader_res = tokio::time::timeout(Duration::from_secs(30), reader_handle)
+            .await
+            .expect("reader did not finish within timeout")
+            .expect("reader task panicked");
+        tokio::time::timeout(Duration::from_secs(30), evictor_handle)
+            .await
+            .expect("evictor did not finish within timeout")
+            .expect("evictor task panicked");
+
+        // Post-fix: the reader must succeed because it held the read
+        // lock across hard_link, serializing against the evictor's
+        // unref. Pre-fix: this assertion reliably fails with
+        // NotFound — see the test comment for the deterministic
+        // ordering.
+        reader_res.map_err(|e| -> Box<dyn core::error::Error> {
+            format!(
+                "hard_link must succeed when the read lock is held across the syscall; \
+                 a NotFound here means the reader-side emplace race has regressed \
+                 (PR #2341 companion fix). Pre-fix code reliably fails this assertion \
+                 with NotFound. Error was: {e:?}"
+            )
+            .into()
+        })?;
+
+        // Confirm the destination is a real link to the original
+        // bytes.
+        let dest_path = format!("{download_dir}/{FILE_NAME}");
+        let dest_content = fs::read(&dest_path).await?;
+        assert_eq!(from_utf8(&dest_content)?, FILE_CONTENT);
+
+        Ok(())
+    }
 }

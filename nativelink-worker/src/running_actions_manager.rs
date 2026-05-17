@@ -161,30 +161,60 @@ pub fn download_to_directory<'a>(
                                 .get_file_entry_for_digest(&digest)
                                 .await
                                 .err_tip(|| "During hard link")?;
-                            // TODO: add a test for #2051: deadlock with large number of files
-                            let src_path = file_entry.get_file_path_locked(|src| async move { Ok(PathBuf::from(src)) }).await?;
-                            fs::hard_link(&src_path, &dest)
-                                .await
-                                .map_err(|e| {
-                                    if e.code == Code::NotFound {
-                                        e.append(
-                                            format!(
-                                            "Could not make hardlink to {dest}, file was likely evicted from cache.\n\
-                                            This error often occurs when the filesystem store's max_bytes is too small for your workload.\n\
-                                            To fix this issue:\n\
-                                            1. Increase the 'max_bytes' value in your filesystem store configuration\n\
-                                            2. Example: Change 'max_bytes: 10000000000' to 'max_bytes: 50000000000' (or higher)\n\
-                                            3. The setting is typically found in your nativelink.json config under:\n\
-                                            stores -> [your_filesystem_store] -> filesystem -> eviction_policy -> max_bytes\n\
-                                            4. Restart NativeLink after making the change\n\n\
-                                            If this error persists after increasing max_bytes several times, please report at:\n\
-                                            https://github.com/TraceMachina/nativelink/issues\n\
-                                            Include your config file and both server and client logs to help us assist you."
-                                        ))
-                                    } else {
-                                        e.append(format!("Could not make hardlink to {dest}"))
+                            // Hold the read lock on the FileEntry across the
+                            // hard_link call. This closes the reader-side of the
+                            // emplace_file race: the writer side
+                            // (filesystem_store::emplace_file) inserts the entry
+                            // into the evicting map BEFORE it has renamed the
+                            // temp file into place, and holds a write lock on
+                            // the same RwLock for the duration of the rename.
+                            // If we extracted the path and released the lock
+                            // before calling hard_link (as the prior code did),
+                            // a concurrent reader could race in between the
+                            // writer's `insert()` and `rename()` and observe a
+                            // path that does not yet exist on disk -> ENOENT.
+                            //
+                            // Re: TODO #2051 (deadlock with large number of
+                            // files): the lock taken here is a per-FileEntry
+                            // read lock, not a global lock. Multiple concurrent
+                            // hard_link calls against DIFFERENT digests do not
+                            // contend, and multiple readers of the SAME digest
+                            // share the read lock. The only contention is
+                            // reader-vs-writer on the same digest, which is
+                            // exactly the contention we need for correctness.
+                            // The outer concurrency cap on `download_to_directory`
+                            // is governed by `fs::hard_link`'s open-file
+                            // semaphore (see nativelink_util::fs), not by this
+                            // RwLock.
+                            // TODO(#2051): revisit if the file-handle semaphore
+                            // proves insufficient under very large fan-outs.
+                            file_entry
+                                .get_file_path_locked(|src| {
+                                    let dest = dest.clone();
+                                    async move {
+                                        fs::hard_link(src, &dest).await.map_err(|e| {
+                                            if e.code == Code::NotFound {
+                                                e.append(
+                                                    format!(
+                                                    "Could not make hardlink to {dest}, file was likely evicted from cache.\n\
+                                                    This error often occurs when the filesystem store's max_bytes is too small for your workload.\n\
+                                                    To fix this issue:\n\
+                                                    1. Increase the 'max_bytes' value in your filesystem store configuration\n\
+                                                    2. Example: Change 'max_bytes: 10000000000' to 'max_bytes: 50000000000' (or higher)\n\
+                                                    3. The setting is typically found in your nativelink.json config under:\n\
+                                                    stores -> [your_filesystem_store] -> filesystem -> eviction_policy -> max_bytes\n\
+                                                    4. Restart NativeLink after making the change\n\n\
+                                                    If this error persists after increasing max_bytes several times, please report at:\n\
+                                                    https://github.com/TraceMachina/nativelink/issues\n\
+                                                    Include your config file and both server and client logs to help us assist you."
+                                                ))
+                                            } else {
+                                                e.append(format!("Could not make hardlink to {dest}"))
+                                            }
+                                        })
                                     }
-                                })?;
+                                })
+                                .await?;
                             }
                         #[cfg(target_family = "unix")]
                         if let Some(unix_mode) = unix_mode {
