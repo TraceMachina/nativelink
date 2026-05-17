@@ -364,6 +364,9 @@ mod tests {
         // which covers a different code path (the input directory cache
         // short-circuit).
         const EMPTY_FILE_NAME: &str = "empty.txt";
+        const SECOND_EMPTY_FILE_NAME: &str = "also_empty.log";
+        const NESTED_EMPTY_FILE_NAME: &str = "nested_empty";
+        const NESTED_DIR_NAME: &str = "subdir";
         const NON_EMPTY_FILE_NAME: &str = "non_empty.txt";
         const NON_EMPTY_CONTENT: &str = "non-empty";
 
@@ -380,11 +383,37 @@ mod tests {
             .update_oneshot(non_empty_digest, NON_EMPTY_CONTENT.into())
             .await?;
 
+        // A nested subdirectory containing yet another zero-digest file —
+        // confirms the recursive download path also takes the empty-file
+        // branch (i.e. NotFound from get_file_entry_for_digest is handled
+        // by every caller, not just the root). The cas_store is a
+        // FastSlowStore, so the subdir Directory proto must live in slow.
+        let nested_dir_digest = DigestInfo::new([9u8; 32], 96);
+        let nested_dir = Directory {
+            files: vec![FileNode {
+                name: NESTED_EMPTY_FILE_NAME.to_string(),
+                digest: Some(zero_digest.into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        slow_store
+            .as_ref()
+            .update_oneshot(nested_dir_digest, nested_dir.encode_to_vec().into())
+            .await?;
+
         let root_directory_digest = DigestInfo::new([8u8; 32], 64);
         let root_directory = Directory {
             files: vec![
                 FileNode {
                     name: EMPTY_FILE_NAME.to_string(),
+                    digest: Some(zero_digest.into()),
+                    ..Default::default()
+                },
+                // Second zero-digest at the same level — proves the path
+                // is not single-use / not dependent on any one filename.
+                FileNode {
+                    name: SECOND_EMPTY_FILE_NAME.to_string(),
                     digest: Some(zero_digest.into()),
                     ..Default::default()
                 },
@@ -394,6 +423,10 @@ mod tests {
                     ..Default::default()
                 },
             ],
+            directories: vec![DirectoryNode {
+                name: NESTED_DIR_NAME.to_string(),
+                digest: Some(nested_dir_digest.into()),
+            }],
             ..Default::default()
         };
         slow_store
@@ -403,6 +436,10 @@ mod tests {
 
         let download_dir = make_temp_path("download_dir");
         fs::create_dir_all(&download_dir).await?;
+        // The whole download succeeding is itself the strongest assertion
+        // that NotFound from get_file_entry_for_digest is HANDLED by the
+        // download_to_directory caller — if NotFound propagated it would
+        // surface as an Err here.
         download_to_directory(
             cas_store.as_ref(),
             fast_store.as_pin(),
@@ -411,13 +448,27 @@ mod tests {
         )
         .await?;
 
-        // Zero-digest file must exist on disk with zero bytes.
-        let empty_path = format!("{download_dir}/{EMPTY_FILE_NAME}");
-        let empty_meta = fs::metadata(&empty_path)
-            .await
-            .err_tip(|| format!("Expected zero-digest file to be materialised at {empty_path}"))?;
-        assert!(empty_meta.is_file(), "{empty_path} must be a regular file");
-        assert_eq!(empty_meta.len(), 0, "{empty_path} must be zero bytes");
+        // All three zero-digest files must exist on disk as regular files
+        // with exactly zero bytes — strict assertions so a silent
+        // regression (missing file, wrong type, non-zero length) is
+        // impossible.
+        for relative in [
+            EMPTY_FILE_NAME.to_string(),
+            SECOND_EMPTY_FILE_NAME.to_string(),
+            format!("{NESTED_DIR_NAME}/{NESTED_EMPTY_FILE_NAME}"),
+        ] {
+            let path = format!("{download_dir}/{relative}");
+            let meta = fs::metadata(&path)
+                .await
+                .err_tip(|| format!("Expected zero-digest file to be materialised at {path}"))?;
+            assert!(meta.is_file(), "{path} must be a regular file");
+            assert!(!meta.is_symlink(), "{path} must not be a symlink");
+            assert_eq!(meta.len(), 0, "{path} must be exactly zero bytes");
+            // Read back to confirm it is actually readable (not a phantom
+            // dirent) and truly empty.
+            let bytes = fs::read(&path).await?;
+            assert!(bytes.is_empty(), "{path} must read back as empty");
+        }
 
         // Sanity-check the non-zero-digest path still works.
         let non_empty_path = format!("{download_dir}/{NON_EMPTY_FILE_NAME}");
@@ -1472,6 +1523,161 @@ mod tests {
         let key: nativelink_util::store_trait::StoreKey<'_> = uploaded.digest.into();
         let blob = slow_store.as_ref().get_part_unchunked(key, 0, None).await?;
         assert_eq!(blob.as_ref(), b"hello-from-outside");
+        Ok(())
+    }
+
+    // Windows does not support symlinks.
+    #[cfg(not(target_family = "windows"))]
+    #[nativelink_test]
+    async fn upload_absolute_symlink_to_directory_uploads_tree()
+    -> Result<(), Box<dyn core::error::Error>> {
+        // Regression test (companion to upload_absolute_symlink_resolves_contents):
+        // exercises the directory branch. When an absolute symlink points
+        // at a directory, the worker must walk it and upload a Tree proto
+        // — NOT preserve the symlink. The previous implementation produced
+        // an OutputType::DirectorySymlink with a worker-local absolute
+        // target that is meaningless on the client.
+        const WORKER_ID: &str = "foo_worker_id";
+
+        fn test_monotonic_clock() -> SystemTime {
+            static CLOCK: AtomicU64 = AtomicU64::new(0);
+            monotonic_clock(&CLOCK)
+        }
+
+        let (_, slow_store, cas_store, ac_store) = setup_stores().await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+
+        // Out-of-tree directory the action will absolute-symlink to.
+        let external_root = make_temp_path("external_dir_payload");
+        fs::create_dir_all(&external_root).await?;
+        tokio::fs::write(format!("{external_root}/inner.txt"), b"inner-payload").await?;
+
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
+            RunningActionsManagerArgs {
+                root_action_directory,
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                timeout_handled_externally: false,
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            },
+            Callbacks {
+                now_fn: test_monotonic_clock,
+                sleep_fn: |_duration| Box::pin(future::pending()),
+            },
+        )?);
+        let queued_timestamp = make_system_time(1000);
+        let action_result = {
+            let command = Command {
+                arguments: vec![
+                    "sh".to_string(),
+                    "-c".to_string(),
+                    format!("ln -s {external_root} resolved_dir"),
+                ],
+                output_paths: vec!["resolved_dir".to_string()],
+                working_directory: ".".to_string(),
+                environment_variables: vec![EnvironmentVariable {
+                    name: "PATH".to_string(),
+                    value: env::var("PATH").unwrap(),
+                }],
+                ..Default::default()
+            };
+            let command_digest = serialize_and_upload_message(
+                &command,
+                cas_store.as_pin(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
+            let input_root_digest = serialize_and_upload_message(
+                &Directory::default(),
+                cas_store.as_pin(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
+            let action = Action {
+                command_digest: Some(command_digest.into()),
+                input_root_digest: Some(input_root_digest.into()),
+                ..Default::default()
+            };
+            let action_digest = serialize_and_upload_message(
+                &action,
+                cas_store.as_pin(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
+            let execute_request = ExecuteRequest {
+                action_digest: Some(action_digest.into()),
+                ..Default::default()
+            };
+            let operation_id = OperationId::default().to_string();
+            let running_action_impl = running_actions_manager
+                .create_and_add_action(
+                    WORKER_ID.to_string(),
+                    StartExecute {
+                        execute_request: Some(execute_request),
+                        operation_id,
+                        queued_timestamp: Some(queued_timestamp.into()),
+                        platform: action.platform.clone(),
+                        worker_id: WORKER_ID.to_string(),
+                    },
+                )
+                .await?;
+            run_action(running_action_impl.clone()).await?
+        };
+
+        // The absolute directory symlink must be resolved into a Tree, not
+        // preserved as DirectorySymlink/FileSymlink.
+        assert_eq!(
+            action_result.output_directory_symlinks.len(),
+            0,
+            "absolute dir symlink must be resolved, not uploaded as DirectorySymlink"
+        );
+        assert_eq!(
+            action_result.output_file_symlinks.len(),
+            0,
+            "absolute dir symlink must not appear as FileSymlink either"
+        );
+        assert_eq!(
+            action_result.output_files.len(),
+            0,
+            "directory target should not surface as an output file"
+        );
+        assert_eq!(
+            action_result.output_folders.len(),
+            1,
+            "absolute dir symlink should produce a single output_folders entry"
+        );
+        let folder = &action_result.output_folders[0];
+        assert_eq!(folder.path, "resolved_dir");
+        // Walk the uploaded Tree and confirm inner.txt is present with
+        // correct content. This proves the directory was actually walked
+        // and uploaded — not a stub.
+        let tree =
+            get_and_decode_digest::<Tree>(slow_store.as_ref(), folder.tree_digest.into()).await?;
+        let root = tree.root.expect("Tree must have a root Directory");
+        let inner = root
+            .files
+            .iter()
+            .find(|f| f.name == "inner.txt")
+            .expect("inner.txt must be in uploaded Tree root");
+        let inner_digest: DigestInfo = inner
+            .digest
+            .clone()
+            .expect("inner.txt must have a digest")
+            .try_into()?;
+        let key: nativelink_util::store_trait::StoreKey<'_> = inner_digest.into();
+        let blob = slow_store.as_ref().get_part_unchunked(key, 0, None).await?;
+        assert_eq!(blob.as_ref(), b"inner-payload");
         Ok(())
     }
 
