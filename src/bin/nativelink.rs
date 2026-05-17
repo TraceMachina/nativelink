@@ -718,8 +718,19 @@ fn get_config() -> Result<CasConfig, Error> {
 }
 
 fn main() -> Result<(), Box<dyn core::error::Error>> {
+    // Set QoS to USER_INITIATED on the main thread *before* the tokio
+    // runtime is built so the spawned worker threads inherit P-core
+    // scheduling preference via pthread QoS inheritance on Apple
+    // Silicon. `on_thread_start` below is a belt-and-suspenders hook
+    // for any thread that misses the inherited class (e.g. tokio
+    // blocking pool threads created lazily). No-op on non-macOS.
+    let _ = nativelink_worker::qos::set_user_initiated();
+
     #[expect(clippy::disallowed_methods, reason = "starting main runtime")]
     let runtime = tokio::runtime::Builder::new_multi_thread()
+        .on_thread_start(|| {
+            let _ = nativelink_worker::qos::set_user_initiated();
+        })
         .enable_all()
         .build()?;
 
