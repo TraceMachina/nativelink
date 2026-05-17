@@ -1175,3 +1175,295 @@ async fn has_does_not_consult_fast_store_when_slow_store_hits() -> Result<(), Er
 
     Ok(())
 }
+
+// Helpers for the gated-slow-store tests below. A `GatedSlowStore2` that
+// blocks `update()` on a oneshot gate and signals when it starts, with
+// `has_with_results` always returning all-None so the in-flight map is the
+// only thing that can satisfy a concurrent `has()`.
+#[derive(MetricsComponent)]
+struct GatedSlowStore2 {
+    gate: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+    started_tx: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+}
+
+#[async_trait]
+impl StoreDriver for GatedSlowStore2 {
+    async fn has_with_results(
+        self: Pin<&Self>,
+        _keys: &[StoreKey<'_>],
+        _results: &mut [Option<u64>],
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn update(
+        self: Pin<&Self>,
+        _key: StoreKey<'_>,
+        mut reader: DropCloserReadHalf,
+        _size_info: UploadSizeInfo,
+    ) -> Result<(), Error> {
+        let started_tx = self.started_tx.lock().unwrap().take();
+        if let Some(tx) = started_tx {
+            let _ = tx.send(());
+        }
+        let gate = self.gate.lock().unwrap().take();
+        if let Some(rx) = gate {
+            let _ = rx.await;
+        }
+        reader.drain().await
+    }
+
+    async fn get_part(
+        self: Pin<&Self>,
+        _key: StoreKey<'_>,
+        writer: &mut DropCloserWriteHalf,
+        _offset: u64,
+        _length: Option<u64>,
+    ) -> Result<(), Error> {
+        writer.send_eof()
+    }
+
+    fn inner_store(&self, _key: Option<StoreKey>) -> &'_ dyn StoreDriver {
+        self
+    }
+    fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
+        self
+    }
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+        self
+    }
+    fn register_remove_callback(
+        self: Arc<Self>,
+        _callback: Arc<dyn RemoveItemCallback>,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+default_health_status_indicator!(GatedSlowStore2);
+
+/// Cancel-safety: if the surrounding `update()` future is dropped before the
+/// slow-store write completes, the `InFlightSlowWriteGuard` must remove the
+/// key from `in_flight_slow_writes`. Otherwise the map would leak entries on
+/// every cancelled upload and `has()` would falsely report cancelled blobs as
+/// present forever.
+///
+/// This test fails against the pre-fix code (which had no guard at all) and
+/// would also fail if the guard's `Drop` impl were removed/broken.
+#[nativelink_test]
+async fn dropping_update_future_cleans_up_in_flight_entry() -> Result<(), Error> {
+    let (gate_tx, gate_rx) = tokio::sync::oneshot::channel::<()>();
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel::<()>();
+    let slow = Arc::new(GatedSlowStore2 {
+        gate: Mutex::new(Some(gate_rx)),
+        started_tx: Mutex::new(Some(started_tx)),
+    });
+    // Use a fast store that holds nothing (NoopStore) AND set fast_direction
+    // to ReadOnly so the update path is `ignore_fast` -> single slow call,
+    // and so the fast-store fallback in `has` returns None. This isolates
+    // the in-flight map as the only signal of presence during the upload.
+    let fast = Store::new(NoopStore::new());
+    let fast_slow = Arc::new(FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Noop(NoopSpec::default()),
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::ReadOnly,
+            slow_direction: StoreDirection::default(),
+        },
+        fast,
+        Store::new(slow.clone()),
+    ));
+
+    let data = make_random_data(64);
+    let digest = DigestInfo::try_new(VALID_HASH, data.len()).unwrap();
+
+    let writer_store = fast_slow.clone();
+    let writer_data = data.clone();
+    let writer = tokio::spawn(async move {
+        writer_store
+            .update_oneshot(digest, writer_data.into())
+            .await
+    });
+
+    // Confirm the writer is parked inside slow_store.update() — at this
+    // point the in-flight guard is alive.
+    started_rx
+        .await
+        .map_err(|e| make_err!(Code::Internal, "started signal lost: {e:?}"))?;
+    assert_eq!(
+        fast_slow.has(digest).await?,
+        Some(data.len() as u64),
+        "Pre-cancel: in-flight slow write must be visible via has()",
+    );
+
+    // Cancel the writer. The guard's Drop should remove the entry.
+    writer.abort();
+    // Awaiting a cancelled JoinHandle resolves; ignore the JoinError.
+    drop(writer.await);
+
+    // The gate is now stale (writer is gone) — drop the receiver explicitly
+    // by releasing the sender to avoid any hang in unrelated code paths.
+    drop(gate_tx);
+
+    assert_eq!(
+        fast_slow.has(digest).await?,
+        None,
+        "Post-cancel: in-flight entry must be removed; \
+         has() must NOT see the cancelled upload",
+    );
+
+    Ok(())
+}
+
+// Two more valid 64-hex-char digests for the multi-key mixed test below.
+const VALID_HASH_B: &str = "0123456789abcdef000000000000000000020000000000000123456789abcdef";
+const VALID_HASH_C: &str = "0123456789abcdef000000000000000000030000000000000123456789abcdef";
+const VALID_HASH_D: &str = "0123456789abcdef000000000000000000040000000000000123456789abcdef";
+
+/// `has_with_results` must independently classify each requested key. With
+/// four keys — one only in the slow store, one with an in-flight slow write,
+/// one only in the fast store, and one absent everywhere — the returned
+/// slice must reflect each key's true state and not e.g. report the
+/// in-flight size for unrelated keys.
+#[nativelink_test]
+async fn has_with_results_handles_mixed_key_sources() -> Result<(), Error> {
+    let (gate_tx, gate_rx) = tokio::sync::oneshot::channel::<()>();
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel::<()>();
+    let slow_inner = Arc::new(GatedSlowStore2 {
+        gate: Mutex::new(Some(gate_rx)),
+        started_tx: Mutex::new(Some(started_tx)),
+    });
+
+    // We wrap the gated slow store so `has_with_results` returns Some for
+    // the "slow-only" key (size 11) and None for the others. The simplest
+    // way: a thin wrapper that pre-populates a map of known sizes.
+    #[derive(MetricsComponent)]
+    struct MapBackedSlow {
+        inner: Arc<GatedSlowStore2>,
+        known: std::collections::HashMap<DigestInfo, u64>,
+    }
+    #[async_trait]
+    impl StoreDriver for MapBackedSlow {
+        async fn has_with_results(
+            self: Pin<&Self>,
+            keys: &[StoreKey<'_>],
+            results: &mut [Option<u64>],
+        ) -> Result<(), Error> {
+            for (k, r) in keys.iter().zip(results.iter_mut()) {
+                if let StoreKey::Digest(d) = k
+                    && let Some(sz) = self.known.get(d)
+                {
+                    *r = Some(*sz);
+                }
+            }
+            Ok(())
+        }
+        async fn update(
+            self: Pin<&Self>,
+            key: StoreKey<'_>,
+            reader: DropCloserReadHalf,
+            size_info: UploadSizeInfo,
+        ) -> Result<(), Error> {
+            // Delegate to the gated inner so timing is controllable.
+            Pin::new(self.inner.as_ref())
+                .update(key, reader, size_info)
+                .await
+        }
+        async fn get_part(
+            self: Pin<&Self>,
+            _k: StoreKey<'_>,
+            w: &mut DropCloserWriteHalf,
+            _o: u64,
+            _l: Option<u64>,
+        ) -> Result<(), Error> {
+            w.send_eof()
+        }
+        fn inner_store(&self, _k: Option<StoreKey>) -> &'_ dyn StoreDriver {
+            self
+        }
+        fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
+            self
+        }
+        fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+            self
+        }
+        fn register_remove_callback(
+            self: Arc<Self>,
+            _cb: Arc<dyn RemoveItemCallback>,
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+    default_health_status_indicator!(MapBackedSlow);
+
+    let slow_only_size: u64 = 11;
+    let in_flight_size: u64 = 22;
+    let fast_only_size: u64 = 33;
+
+    let slow_only_digest = DigestInfo::try_new(VALID_HASH, slow_only_size).unwrap();
+    let in_flight_digest = DigestInfo::try_new(VALID_HASH_B, in_flight_size).unwrap();
+    let fast_only_digest = DigestInfo::try_new(VALID_HASH_C, fast_only_size).unwrap();
+    let missing_digest = DigestInfo::try_new(VALID_HASH_D, 44).unwrap();
+
+    let mut known = std::collections::HashMap::new();
+    known.insert(slow_only_digest, slow_only_size);
+    let slow = Arc::new(MapBackedSlow {
+        inner: slow_inner.clone(),
+        known,
+    });
+
+    let fast = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let fast_slow = Arc::new(FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::ReadOnly,
+            slow_direction: StoreDirection::default(),
+        },
+        fast.clone(),
+        Store::new(slow.clone()),
+    ));
+
+    // Seed the fast store with the fast-only blob directly.
+    fast.update_oneshot(fast_only_digest, make_random_data(fast_only_size as usize).into())
+        .await?;
+
+    // Kick off the in-flight slow write and wait until it's parked.
+    let writer_store = fast_slow.clone();
+    let writer = tokio::spawn(async move {
+        writer_store
+            .update_oneshot(in_flight_digest, make_random_data(in_flight_size as usize).into())
+            .await
+    });
+    started_rx
+        .await
+        .map_err(|e| make_err!(Code::Internal, "started signal lost: {e:?}"))?;
+
+    // Now query all four keys in one call.
+    let keys: [StoreKey<'static>; 4] = [
+        StoreKey::Digest(slow_only_digest),
+        StoreKey::Digest(in_flight_digest),
+        StoreKey::Digest(fast_only_digest),
+        StoreKey::Digest(missing_digest),
+    ];
+    let mut results: [Option<u64>; 4] = [None; 4];
+    fast_slow
+        .as_store_driver_pin()
+        .has_with_results(&keys, &mut results)
+        .await?;
+
+    assert_eq!(results[0], Some(slow_only_size), "slow-only key");
+    assert_eq!(results[1], Some(in_flight_size), "in-flight key");
+    assert_eq!(results[2], Some(fast_only_size), "fast-only key");
+    assert_eq!(results[3], None, "missing key must stay None");
+
+    // Cleanup: release the gated writer.
+    gate_tx
+        .send(())
+        .map_err(|()| make_err!(Code::Internal, "Failed to release slow-store gate"))?;
+    writer
+        .await
+        .map_err(|e| make_err!(Code::Internal, "writer join error: {e:?}"))??;
+
+    Ok(())
+}
