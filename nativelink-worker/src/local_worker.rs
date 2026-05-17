@@ -798,6 +798,14 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
         mut self,
         mut shutdown_rx: broadcast::Receiver<ShutdownGuard>,
     ) -> Result<(), Error> {
+        // Belt-and-suspenders QoS bump: the main binary already calls
+        // this before runtime creation so the tokio worker threads
+        // inherit P-core preference via pthread QoS inheritance, but
+        // any thread that reaches this point should also be tagged in
+        // case it was spawned by a path that bypassed `on_thread_start`.
+        // No-op on non-macOS.
+        let _ = crate::qos::set_user_initiated();
+
         let sleep_fn = self
             .sleep_fn
             .take()
