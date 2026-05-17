@@ -1320,6 +1320,68 @@ const VALID_HASH_B: &str = "0123456789abcdef000000000000000000020000000000000123
 const VALID_HASH_C: &str = "0123456789abcdef000000000000000000030000000000000123456789abcdef";
 const VALID_HASH_D: &str = "0123456789abcdef000000000000000000040000000000000123456789abcdef";
 
+/// Wraps a `GatedSlowStore2` so `has_with_results` returns `Some` for any
+/// digest pre-populated in `known` and `None` otherwise, while still
+/// delegating writes through the gated inner so timing is controllable.
+#[derive(MetricsComponent)]
+struct MapBackedSlow {
+    inner: Arc<GatedSlowStore2>,
+    known: std::collections::HashMap<DigestInfo, u64>,
+}
+#[async_trait]
+impl StoreDriver for MapBackedSlow {
+    async fn has_with_results(
+        self: Pin<&Self>,
+        keys: &[StoreKey<'_>],
+        results: &mut [Option<u64>],
+    ) -> Result<(), Error> {
+        for (k, r) in keys.iter().zip(results.iter_mut()) {
+            if let StoreKey::Digest(d) = k
+                && let Some(sz) = self.known.get(d)
+            {
+                *r = Some(*sz);
+            }
+        }
+        Ok(())
+    }
+    async fn update(
+        self: Pin<&Self>,
+        key: StoreKey<'_>,
+        reader: DropCloserReadHalf,
+        size_info: UploadSizeInfo,
+    ) -> Result<(), Error> {
+        // Delegate to the gated inner so timing is controllable.
+        Pin::new(self.inner.as_ref())
+            .update(key, reader, size_info)
+            .await
+    }
+    async fn get_part(
+        self: Pin<&Self>,
+        _k: StoreKey<'_>,
+        w: &mut DropCloserWriteHalf,
+        _o: u64,
+        _l: Option<u64>,
+    ) -> Result<(), Error> {
+        w.send_eof()
+    }
+    fn inner_store(&self, _k: Option<StoreKey>) -> &'_ dyn StoreDriver {
+        self
+    }
+    fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
+        self
+    }
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+        self
+    }
+    fn register_remove_callback(
+        self: Arc<Self>,
+        _cb: Arc<dyn RemoveItemCallback>,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+}
+default_health_status_indicator!(MapBackedSlow);
+
 /// `has_with_results` must independently classify each requested key. With
 /// four keys — one only in the slow store, one with an in-flight slow write,
 /// one only in the fast store, and one absent everywhere — the returned
@@ -1334,68 +1396,7 @@ async fn has_with_results_handles_mixed_key_sources() -> Result<(), Error> {
         started_tx: Mutex::new(Some(started_tx)),
     });
 
-    // We wrap the gated slow store so `has_with_results` returns Some for
-    // the "slow-only" key (size 11) and None for the others. The simplest
-    // way: a thin wrapper that pre-populates a map of known sizes.
-    #[derive(MetricsComponent)]
-    struct MapBackedSlow {
-        inner: Arc<GatedSlowStore2>,
-        known: std::collections::HashMap<DigestInfo, u64>,
-    }
-    #[async_trait]
-    impl StoreDriver for MapBackedSlow {
-        async fn has_with_results(
-            self: Pin<&Self>,
-            keys: &[StoreKey<'_>],
-            results: &mut [Option<u64>],
-        ) -> Result<(), Error> {
-            for (k, r) in keys.iter().zip(results.iter_mut()) {
-                if let StoreKey::Digest(d) = k
-                    && let Some(sz) = self.known.get(d)
-                {
-                    *r = Some(*sz);
-                }
-            }
-            Ok(())
-        }
-        async fn update(
-            self: Pin<&Self>,
-            key: StoreKey<'_>,
-            reader: DropCloserReadHalf,
-            size_info: UploadSizeInfo,
-        ) -> Result<(), Error> {
-            // Delegate to the gated inner so timing is controllable.
-            Pin::new(self.inner.as_ref())
-                .update(key, reader, size_info)
-                .await
-        }
-        async fn get_part(
-            self: Pin<&Self>,
-            _k: StoreKey<'_>,
-            w: &mut DropCloserWriteHalf,
-            _o: u64,
-            _l: Option<u64>,
-        ) -> Result<(), Error> {
-            w.send_eof()
-        }
-        fn inner_store(&self, _k: Option<StoreKey>) -> &'_ dyn StoreDriver {
-            self
-        }
-        fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
-            self
-        }
-        fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
-            self
-        }
-        fn register_remove_callback(
-            self: Arc<Self>,
-            _cb: Arc<dyn RemoveItemCallback>,
-        ) -> Result<(), Error> {
-            Ok(())
-        }
-    }
-    default_health_status_indicator!(MapBackedSlow);
-
+    // Populate the wrapper so `has_with_results` reports the slow-only key.
     let slow_only_size: u64 = 11;
     let in_flight_size: u64 = 22;
     let fast_only_size: u64 = 33;
@@ -1427,7 +1428,7 @@ async fn has_with_results_handles_mixed_key_sources() -> Result<(), Error> {
     // Seed the fast store with the fast-only blob directly.
     fast.update_oneshot(
         fast_only_digest,
-        make_random_data(fast_only_size as usize).into(),
+        make_random_data(usize::try_from(fast_only_size).unwrap()).into(),
     )
     .await?;
 
@@ -1437,7 +1438,7 @@ async fn has_with_results_handles_mixed_key_sources() -> Result<(), Error> {
         writer_store
             .update_oneshot(
                 in_flight_digest,
-                make_random_data(in_flight_size as usize).into(),
+                make_random_data(usize::try_from(in_flight_size).unwrap()).into(),
             )
             .await
     });
