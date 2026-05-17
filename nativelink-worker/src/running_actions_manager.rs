@@ -153,8 +153,18 @@ pub fn download_to_directory<'a>(
                     .populate_fast_store(digest.into())
                     .and_then(move |()| async move {
                         if is_zero_digest(digest) {
-                            let mut file_slot = fs::create_file(&dest).await?;
-                            file_slot.write_all(&[]).await?;
+                            // Zero-digest files are never persisted by the
+                            // FilesystemStore, so materialise them directly
+                            // in the worker exec dir. Attach context so a
+                            // failure here is diagnosable as a missing
+                            // empty file rather than a generic IO error.
+                            let mut file_slot = fs::create_file(&dest)
+                                .await
+                                .err_tip(|| format!("Could not create zero-digest file at {dest}"))?;
+                            file_slot
+                                .write_all(&[])
+                                .await
+                                .err_tip(|| format!("Could not write zero-digest file at {dest}"))?;
                         }
                         else {
                             let file_entry = filesystem_store

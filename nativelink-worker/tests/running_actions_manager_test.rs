@@ -350,6 +350,82 @@ mod tests {
         Ok(())
     }
 
+    #[nativelink_test]
+    async fn download_to_directory_zero_digest_empty_file_test()
+    -> Result<(), Box<dyn core::error::Error>> {
+        // Regression test: zero-digest files used to fall through a
+        // synthetic FileEntry path that pointed at a non-existent content
+        // path on disk. The worker's prefetched-hardlink path silently
+        // failed to materialise the empty file. Verify that an empty file
+        // declared as part of an input directory now lands on disk at the
+        // expected location with zero bytes — exercising the
+        // FilesystemStore + running_actions_manager output-materialisation
+        // path. Complements PR #2338's DirectoryCache zero-byte test
+        // which covers a different code path (the input directory cache
+        // short-circuit).
+        const EMPTY_FILE_NAME: &str = "empty.txt";
+        const NON_EMPTY_FILE_NAME: &str = "non_empty.txt";
+        const NON_EMPTY_CONTENT: &str = "non-empty";
+
+        let (fast_store, slow_store, cas_store, _ac_store) = setup_stores().await?;
+
+        // SHA-256 of empty content.
+        let zero_digest = DigestInfo::try_new(
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            0,
+        )?;
+        let non_empty_digest = DigestInfo::new([7u8; 32], NON_EMPTY_CONTENT.len() as u64);
+        slow_store
+            .as_ref()
+            .update_oneshot(non_empty_digest, NON_EMPTY_CONTENT.into())
+            .await?;
+
+        let root_directory_digest = DigestInfo::new([8u8; 32], 64);
+        let root_directory = Directory {
+            files: vec![
+                FileNode {
+                    name: EMPTY_FILE_NAME.to_string(),
+                    digest: Some(zero_digest.into()),
+                    ..Default::default()
+                },
+                FileNode {
+                    name: NON_EMPTY_FILE_NAME.to_string(),
+                    digest: Some(non_empty_digest.into()),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        slow_store
+            .as_ref()
+            .update_oneshot(root_directory_digest, root_directory.encode_to_vec().into())
+            .await?;
+
+        let download_dir = make_temp_path("download_dir");
+        fs::create_dir_all(&download_dir).await?;
+        download_to_directory(
+            cas_store.as_ref(),
+            fast_store.as_pin(),
+            &root_directory_digest,
+            &download_dir,
+        )
+        .await?;
+
+        // Zero-digest file must exist on disk with zero bytes.
+        let empty_path = format!("{download_dir}/{EMPTY_FILE_NAME}");
+        let empty_meta = fs::metadata(&empty_path)
+            .await
+            .err_tip(|| format!("Expected zero-digest file to be materialised at {empty_path}"))?;
+        assert!(empty_meta.is_file(), "{empty_path} must be a regular file");
+        assert_eq!(empty_meta.len(), 0, "{empty_path} must be zero bytes");
+
+        // Sanity-check the non-zero-digest path still works.
+        let non_empty_path = format!("{download_dir}/{NON_EMPTY_FILE_NAME}");
+        let non_empty_bytes = fs::read(&non_empty_path).await?;
+        assert_eq!(from_utf8(&non_empty_bytes)?, NON_EMPTY_CONTENT);
+        Ok(())
+    }
+
     // Windows does not support symlinks.
     #[cfg(not(target_family = "windows"))]
     #[nativelink_test]
