@@ -75,6 +75,22 @@ pub struct SharedContext {
     content_path: String,
 }
 
+impl SharedContext {
+    /// Test-only constructor that lets external crates fabricate a context
+    /// matching a FilesystemStore's configured paths so they can build
+    /// synthetic `EncodedFilePath` / `FileEntryImpl` instances for race
+    /// simulations. Production code receives this only via `FilesystemStore`
+    /// construction.
+    #[doc(hidden)]
+    pub const fn new_for_test(temp_path: String, content_path: String) -> Self {
+        Self {
+            active_drop_spawns: AtomicU64::new(0),
+            temp_path,
+            content_path,
+        }
+    }
+}
+
 #[derive(Eq, PartialEq, Debug)]
 enum PathType {
     Content,
@@ -98,6 +114,23 @@ impl EncodedFilePath {
     #[inline]
     fn get_file_path(&self) -> Cow<'_, OsStr> {
         get_file_path_raw(&self.path_type, self.shared_context.as_ref(), &self.key)
+    }
+
+    /// Test-only constructor. Used by races simulation in nativelink-worker
+    /// to fabricate a `FileEntryImpl` pointing at a known-on-disk file under
+    /// the store's content path. Production code must not call this; the
+    /// store constructs its own `EncodedFilePath` values through the
+    /// `make_and_open_file` -> `emplace_file` flow.
+    #[doc(hidden)]
+    pub const fn new_content_for_test(
+        shared_context: Arc<SharedContext>,
+        key: StoreKey<'static>,
+    ) -> Self {
+        Self {
+            shared_context,
+            path_type: PathType::Content,
+            key,
+        }
     }
 }
 
@@ -444,7 +477,13 @@ pub fn key_from_file(file_name: &str, file_type: FileType) -> Result<StoreKey<'_
 /// `add_files_to_cache`.
 const SIMULTANEOUS_METADATA_READS: usize = 200;
 
-type FsEvictingMap<'a, Fe> =
+/// The concrete `EvictingMap` instantiation used by `FilesystemStore`. This
+/// alias is `pub` solely so tests in other crates (e.g. nativelink-worker's
+/// `download_to_directory_retries_when_entry_evicted_between_lookup_and_hardlink`)
+/// can name the type returned by `FilesystemStore::evicting_map_for_test`.
+/// Production code should treat this as an implementation detail.
+#[doc(hidden)]
+pub type FsEvictingMap<'a, Fe> =
     EvictingMap<StoreKeyBorrow, StoreKey<'a>, Arc<Fe>, SystemTime, RemoveItemCallbackHolder>;
 
 async fn add_files_to_cache<Fe: FileEntry>(
@@ -746,6 +785,16 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
 
     pub fn get_arc(&self) -> Option<Arc<Self>> {
         self.weak_self.upgrade()
+    }
+
+    /// Test-only accessor for the internal evicting map. Used by tests that
+    /// need to deterministically simulate concurrent insert/displace races
+    /// (e.g. the loser-entry race exercised by
+    /// `download_to_directory_retries_when_entry_evicted_between_lookup_and_hardlink`
+    /// in nativelink-worker). Production code must not depend on this.
+    #[doc(hidden)]
+    pub const fn evicting_map_for_test(&self) -> &Arc<FsEvictingMap<'static, Fe>> {
+        &self.evicting_map
     }
 
     pub async fn get_file_entry_for_digest(&self, digest: &DigestInfo) -> Result<Arc<Fe>, Error> {

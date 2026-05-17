@@ -157,64 +157,124 @@ pub fn download_to_directory<'a>(
                             file_slot.write_all(&[]).await?;
                         }
                         else {
-                            let file_entry = filesystem_store
-                                .get_file_entry_for_digest(&digest)
-                                .await
-                                .err_tip(|| "During hard link")?;
-                            // Hold the read lock on the FileEntry across the
-                            // hard_link call. This closes the reader-side of the
-                            // emplace_file race: the writer side
-                            // (filesystem_store::emplace_file) inserts the entry
-                            // into the evicting map BEFORE it has renamed the
-                            // temp file into place, and holds a write lock on
-                            // the same RwLock for the duration of the rename.
-                            // If we extracted the path and released the lock
-                            // before calling hard_link (as the prior code did),
-                            // a concurrent reader could race in between the
-                            // writer's `insert()` and `rename()` and observe a
-                            // path that does not yet exist on disk -> ENOENT.
+                            // Bounded retry around the hard_link to close the
+                            // SECOND-PASS reader-side emplace race that the
+                            // earlier read-lock fix (commit a2f4f4ab) did not
+                            // cover.
+                            //
+                            // Race recap (companion fix to PR #2341):
+                            //
+                            //   The first fix held the per-FileEntry read lock
+                            //   across hard_link so that, for the entry the
+                            //   reader has in hand, a writer's `unref()`
+                            //   (write lock on the same RwLock) cannot rename
+                            //   the file out from under the syscall. That
+                            //   correctly protects the WINNER entry mid-rename.
+                            //
+                            //   It does NOT protect against the LOSER-entry
+                            //   case: the reader looks up the digest and gets
+                            //   `Arc<entry_A>`, then a concurrent writer
+                            //   `insert(entry_B)` for the SAME key displaces
+                            //   entry_A and triggers `unref(entry_A)`. The
+                            //   writer's unref takes entry_A's write lock; the
+                            //   reader's read lock request on entry_A may
+                            //   queue behind it. When the reader finally
+                            //   acquires the lock, entry_A's file has been
+                            //   moved to the temp path and the hard_link
+                            //   returns ENOENT. The CAS still has the digest
+                            //   — under entry_B in the map — so re-fetching
+                            //   `get_file_entry_for_digest` returns entry_B,
+                            //   whose file is on disk under the writer's
+                            //   read-lock-protected rename. A single retry
+                            //   resolves the race; we cap at
+                            //   `HARDLINK_MAX_RETRIES` so that genuine
+                            //   eviction-pressure ENOENT (no writer racing,
+                            //   the digest truly is gone) cannot spin.
                             //
                             // Re: TODO #2051 (deadlock with large number of
                             // files): the lock taken here is a per-FileEntry
-                            // read lock, not a global lock. Multiple concurrent
-                            // hard_link calls against DIFFERENT digests do not
-                            // contend, and multiple readers of the SAME digest
-                            // share the read lock. The only contention is
-                            // reader-vs-writer on the same digest, which is
-                            // exactly the contention we need for correctness.
-                            // The outer concurrency cap on `download_to_directory`
-                            // is governed by `fs::hard_link`'s open-file
-                            // semaphore (see nativelink_util::fs), not by this
-                            // RwLock.
-                            // TODO(#2051): revisit if the file-handle semaphore
-                            // proves insufficient under very large fan-outs.
-                            file_entry
-                                .get_file_path_locked(|src| {
-                                    let dest = dest.clone();
-                                    async move {
-                                        fs::hard_link(src, &dest).await.map_err(|e| {
-                                            if e.code == Code::NotFound {
-                                                e.append(
-                                                    format!(
-                                                    "Could not make hardlink to {dest}, file was likely evicted from cache.\n\
-                                                    This error often occurs when the filesystem store's max_bytes is too small for your workload.\n\
-                                                    To fix this issue:\n\
-                                                    1. Increase the 'max_bytes' value in your filesystem store configuration\n\
-                                                    2. Example: Change 'max_bytes: 10000000000' to 'max_bytes: 50000000000' (or higher)\n\
-                                                    3. The setting is typically found in your nativelink.json config under:\n\
-                                                    stores -> [your_filesystem_store] -> filesystem -> eviction_policy -> max_bytes\n\
-                                                    4. Restart NativeLink after making the change\n\n\
-                                                    If this error persists after increasing max_bytes several times, please report at:\n\
-                                                    https://github.com/TraceMachina/nativelink/issues\n\
-                                                    Include your config file and both server and client logs to help us assist you."
-                                                ))
-                                            } else {
-                                                e.append(format!("Could not make hardlink to {dest}"))
-                                            }
-                                        })
+                            // read lock, not a global lock. Multiple
+                            // concurrent hard_link calls against DIFFERENT
+                            // digests do not contend, and multiple readers of
+                            // the SAME digest share the read lock. The only
+                            // contention is reader-vs-writer on the same
+                            // digest, which is exactly the contention we need
+                            // for correctness. The outer concurrency cap on
+                            // `download_to_directory` is governed by
+                            // `fs::hard_link`'s open-file semaphore (see
+                            // nativelink_util::fs), not by this RwLock.
+                            // TODO(#2051): revisit if the file-handle
+                            // semaphore proves insufficient under very large
+                            // fan-outs.
+                            const HARDLINK_MAX_RETRIES: u32 = 3;
+                            // Small backoff between retries gives a racing
+                            // writer's `emplace_file` background spawn time
+                            // to finish renaming the temp file into
+                            // `content_path/<digest>` before the next
+                            // attempt's `get_file_entry_for_digest` returns
+                            // the new entry. Without it, all retries can
+                            // race the same write window microseconds apart
+                            // and all observe ENOENT.
+                            const HARDLINK_RETRY_BACKOFF: Duration =
+                                Duration::from_millis(10);
+                            let mut last_err: Option<Error> = None;
+                            for attempt in 0..HARDLINK_MAX_RETRIES {
+                                if attempt > 0 {
+                                    tokio::time::sleep(HARDLINK_RETRY_BACKOFF).await;
+                                }
+                                let file_entry = filesystem_store
+                                    .get_file_entry_for_digest(&digest)
+                                    .await
+                                    .err_tip(|| "During hard link")?;
+                                let dest_for_attempt = dest.clone();
+                                let result = file_entry
+                                    .get_file_path_locked(|src| {
+                                        let dest = dest_for_attempt.clone();
+                                        async move { fs::hard_link(src, &dest).await }
+                                    })
+                                    .await;
+                                match result {
+                                    Ok(()) => {
+                                        last_err = None;
+                                        break;
                                     }
-                                })
-                                .await?;
+                                    Err(e)
+                                        if e.code == Code::NotFound
+                                            && attempt + 1 < HARDLINK_MAX_RETRIES =>
+                                    {
+                                        // Reader saw a stale entry that was
+                                        // unref'd before we hard_link'd. The
+                                        // evicting map should now have the
+                                        // winning writer's entry — retry
+                                        // after a short backoff (loop
+                                        // continues to the next attempt).
+                                        last_err = Some(e);
+                                    }
+                                    Err(e) => {
+                                        last_err = Some(e);
+                                        break;
+                                    }
+                                }
+                            }
+                            if let Some(e) = last_err {
+                                return Err(if e.code == Code::NotFound {
+                                    e.append(format!(
+                                        "Could not make hardlink to {dest} after {HARDLINK_MAX_RETRIES} attempts, file was likely evicted from cache.\n\
+                                        This error often occurs when the filesystem store's max_bytes is too small for your workload.\n\
+                                        To fix this issue:\n\
+                                        1. Increase the 'max_bytes' value in your filesystem store configuration\n\
+                                        2. Example: Change 'max_bytes: 10000000000' to 'max_bytes: 50000000000' (or higher)\n\
+                                        3. The setting is typically found in your nativelink.json config under:\n\
+                                        stores -> [your_filesystem_store] -> filesystem -> eviction_policy -> max_bytes\n\
+                                        4. Restart NativeLink after making the change\n\n\
+                                        If this error persists after increasing max_bytes several times, please report at:\n\
+                                        https://github.com/TraceMachina/nativelink/issues\n\
+                                        Include your config file and both server and client logs to help us assist you."
+                                    ))
+                                } else {
+                                    e.append(format!("Could not make hardlink to {dest}"))
+                                });
+                            }
                             }
                         #[cfg(target_family = "unix")]
                         if let Some(unix_mode) = unix_mode {

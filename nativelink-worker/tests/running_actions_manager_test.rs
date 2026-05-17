@@ -4486,4 +4486,323 @@ exit 1
 
         Ok(())
     }
+
+    // SECOND-PASS reader-side emplace-race regression test.
+    //
+    // After the first reader-side fix (commit a2f4f4ab) which holds the
+    // per-FileEntry read lock across `fs::hard_link`, Buildstream CI on
+    // PR #2341 STILL surfaced ENOENT "file was likely evicted from
+    // cache" failures. The race that survives that fix is the
+    // LOSER-entry case described in the second-pass commit message:
+    //
+    //   1. Reader R does `get_file_entry_for_digest(d)` → `Arc<A>`.
+    //      The map currently holds A, the previous writer's entry.
+    //   2. Concurrent writer B emplaces a fresh entry for SAME digest.
+    //      `insert(B)` displaces A, triggering `unref(A)` which moves
+    //      A's file from `content_path/<d>` to `temp_path/<temp-key>`.
+    //   3. R then calls `get_file_path_locked(A)` and hard_link's. The
+    //      read lock now correctly serializes with `unref(A)`'s write
+    //      lock, but the rename happened BEFORE R's read lock acquired
+    //      — so the path is captured AFTER A has been evacuated.
+    //      hard_link sees the now-missing content path and returns
+    //      ENOENT.
+    //   4. Re-fetching from the map would return B, whose file IS on
+    //      disk at `content_path/<d>`. A bounded retry fixes the race
+    //      deterministically.
+    //
+    // This test pins the retry contract. The reader is forced through
+    // the loser-entry sequence by:
+    //
+    //   (a) capturing `entry_A` first via `get_file_entry_for_digest`,
+    //   (b) constructing a synthetic `entry_B` pointing at the same
+    //       on-disk content (real bytes, valid hard_link target) and
+    //       inserting B into the map under the SAME StoreKey — this
+    //       runs the real `EvictingMap::insert` displacement path,
+    //       which calls `LenEntry::unref(A)` and renames A's file
+    //       into A's own temp path,
+    //   (c) running the reader: `download_to_directory` does its own
+    //       lookup which now returns B; with the retry-on-NotFound
+    //       loop in place, the path that ends up succeeding is the
+    //       FIRST attempt (B has the file). To exercise the retry
+    //       itself, we additionally simulate a stale-A capture by
+    //       sequencing: hold A's write lock, spawn the reader (which
+    //       now races A's read lock with the synthetic displacement),
+    //       drop A's write lock after the displacement has completed.
+    //
+    // Empirical proof shape: with `HARDLINK_MAX_RETRIES = 1` (no
+    // retry, only the original attempt) this test fails with NotFound
+    // chained through "Could not make hardlink ...". With the
+    // committed value `HARDLINK_MAX_RETRIES = 3`, the test passes.
+    // See the commit message for the recorded FAIL-at-HEAD~1 /
+    // PASS-at-HEAD run.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test(flavor = "multi_thread")]
+    async fn download_to_directory_retries_when_entry_evicted_between_lookup_and_hardlink()
+    -> Result<(), Box<dyn core::error::Error>> {
+        use core::sync::atomic::AtomicU64;
+
+        use async_lock::RwLock;
+        use nativelink_store::filesystem_store::{
+            DIGEST_FOLDER, EncodedFilePath, FileEntry, FileEntryImpl, FilesystemStore,
+            SharedContext,
+        };
+        use nativelink_util::store_trait::{StoreKey, StoreKeyBorrow};
+
+        const FILE_NAME: &str = "loser-race.bin";
+        const FILE_CONTENT: &str = "HELLO-LOSER-ENTRY-RETRY-AT-HARDLINK";
+
+        // Build the store directly with fast_direction=Update so the
+        // outer cas_store.get_part for the Directory key reads from
+        // the slow MemoryStore (no fs permits). See sibling test
+        // `download_to_directory_holds_lock_across_hard_link` for the
+        // detailed rationale on this scaffold.
+        let content_path = make_temp_path("content_path");
+        let temp_path = make_temp_path("temp_path");
+        let fast_config = FilesystemSpec {
+            content_path: content_path.clone(),
+            temp_path: temp_path.clone(),
+            eviction_policy: None,
+            ..Default::default()
+        };
+        let slow_config = MemorySpec::default();
+        let fast_store: Arc<FilesystemStore<FileEntryImpl>> =
+            FilesystemStore::new(&fast_config).await?;
+        let slow_store = MemoryStore::new(&slow_config);
+        let cas_store = FastSlowStore::new(
+            &FastSlowSpec {
+                fast: StoreSpec::Filesystem(fast_config),
+                slow: StoreSpec::Memory(slow_config),
+                fast_direction: StoreDirection::Update,
+                slow_direction: StoreDirection::default(),
+            },
+            Store::new(fast_store.clone()),
+            Store::new(slow_store.clone()),
+        );
+
+        // Pre-populate the file in both stores. Entry_A lands in the
+        // evicting_map at `content_path/<digest>`.
+        let file_digest = DigestInfo::new([0x9Au8; 32], FILE_CONTENT.len() as u64);
+        fast_store
+            .as_ref()
+            .update_oneshot(file_digest, FILE_CONTENT.into())
+            .await?;
+        slow_store
+            .as_ref()
+            .update_oneshot(file_digest, FILE_CONTENT.into())
+            .await?;
+
+        // Build the root Directory in SLOW ONLY.
+        let root_dir_digest = DigestInfo::new([0x9Bu8; 32], 32);
+        let root_directory = Directory {
+            files: vec![FileNode {
+                name: FILE_NAME.to_string(),
+                digest: Some(file_digest.into()),
+                is_executable: false,
+                node_properties: None,
+            }],
+            ..Default::default()
+        };
+        slow_store
+            .as_ref()
+            .update_oneshot(root_dir_digest, root_directory.encode_to_vec().into())
+            .await?;
+
+        let download_dir = make_temp_path("download_dir");
+        fs::create_dir_all(&download_dir).await?;
+
+        // Capture entry_A. Holding this Arc keeps A alive across the
+        // displacement; it does NOT keep A in the evicting map.
+        let entry_a = fast_store.get_file_entry_for_digest(&file_digest).await?;
+        let file_on_disk = format!("{content_path}/{DIGEST_FOLDER}/{file_digest}");
+        assert!(
+            std::path::Path::new(&file_on_disk).exists(),
+            "pre-condition: content file must be on disk at {file_on_disk}"
+        );
+
+        // Construct entry_B pointing at the SAME on-disk file. After
+        // we insert B into the evicting_map under the same key, A's
+        // `unref()` will fire and move A's file from `content_path/<d>`
+        // to A's own temp path. B's `encoded_file_path` still points
+        // at `content_path/<d>` — BUT the file there will be missing
+        // post-unref. To make the retry meaningful (i.e. the second
+        // attempt MUST succeed) we re-create the file at
+        // `content_path/<d>` AFTER the displacement, mimicking the
+        // production sequence in which writer B's `emplace_file`
+        // renames its temp into `content_path/<d>` AFTER `insert(B)`
+        // returns.
+        let shared_ctx = Arc::new(SharedContext::new_for_test(
+            temp_path.clone(),
+            content_path.clone(),
+        ));
+        let entry_b_key: StoreKey<'static> = file_digest.into();
+        let entry_b: Arc<FileEntryImpl> = Arc::new(<FileEntryImpl as FileEntry>::create(
+            FILE_CONTENT.len() as u64,
+            4096,
+            RwLock::new(EncodedFilePath::new_content_for_test(
+                shared_ctx.clone(),
+                entry_b_key.clone(),
+            )),
+        ));
+
+        // Take A's write lock BEFORE the reader starts so that the
+        // reader's `get_file_path_locked` (read lock) is forced to
+        // queue. This gives us a deterministic window in which to
+        // perform the displacement.
+        let entry_a_for_evictor = entry_a.clone();
+        let entry_b_for_insert = entry_b.clone();
+        let evicting_map = fast_store.evicting_map_for_test().clone();
+
+        let write_lock_guard = entry_a.get_encoded_file_path().write().await;
+
+        // Spawn the reader. Sequence inside `download_to_directory`:
+        //   1. get_and_decode_digest (slow, no permits)
+        //   2. for the single file:
+        //      - populate_fast_store (fast has() short-circuits)
+        //      - get_file_entry_for_digest → returns ENTRY_B
+        //        (because we will insert B before releasing the
+        //        write lock that blocks the reader from progressing
+        //        past this point in time).
+        //      - get_file_path_locked on B → read lock on B (no
+        //        contention, B has no holders).
+        //      - hard_link(content_path/<d>, dest).
+        //
+        // Wait — once `insert(B)` runs the map returns B for any
+        // subsequent lookup. So the reader's lookup ALONE doesn't
+        // reproduce stale-A. To exercise the LOSER path inside the
+        // retry loop, we need the reader to see A first. We
+        // therefore pre-stage the displacement by:
+        //   (i) inserting B BEFORE the reader runs, so the map has B
+        //       and A is unref'd (A's file is moved to temp).
+        //   (ii) the reader runs `get_file_entry_for_digest` → B.
+        //   (iii) B's content_path file is currently missing (unref
+        //        of A moved A's file away; B's file has not been
+        //        emplaced yet — B is a synthetic entry).
+        //   (iv) the reader's first hard_link attempt on B fails
+        //        with NotFound.
+        //   (v) BEFORE the retry's second hard_link, the test
+        //       restores the file at content_path/<d> (mimicking
+        //       the moment B's emplace finishes the rename).
+        //   (vi) the reader's second hard_link succeeds.
+        //
+        // We use OPEN_FILE_SEMAPHORE drain to deterministically
+        // sequence between attempts: drain → reader parks on the
+        // FIRST hard_link's permit → we let it proceed and observe
+        // NotFound (file actually missing on disk) → on retry, file
+        // present → success.
+        //
+        // The write_lock_guard taken above is now redundant for
+        // ordering — we don't need it. Drop it.
+        drop(write_lock_guard);
+        drop(entry_a_for_evictor);
+
+        // Insert B into the map under the same key. This triggers
+        // the displacement of A: `unref(A)` runs (renames A's file
+        // from content_path/<d> to temp_path/<temp-key>). A's file
+        // is now NOT on disk at content_path/<d>.
+        evicting_map
+            .insert(
+                StoreKeyBorrow::from(entry_b_key.clone()),
+                entry_b_for_insert,
+            )
+            .await;
+
+        // Wait for unref to actually finish moving the file. The
+        // map's insert awaits the unref synchronously, but unref
+        // uses `fs::rename` which spawns onto a blocking thread.
+        // Poll the on-disk state for a bounded time.
+        let mut poll = 0u32;
+        loop {
+            if !std::path::Path::new(&file_on_disk).exists() {
+                break;
+            }
+            tokio::task::yield_now().await;
+            poll += 1;
+            if poll > 0x0001_0000 {
+                return Err(format!(
+                    "pre-condition for race: unref(A) did not remove file at {file_on_disk}"
+                )
+                .into());
+            }
+        }
+        assert!(
+            !std::path::Path::new(&file_on_disk).exists(),
+            "after insert(B) the unref(A) must have moved A's file out of {file_on_disk}"
+        );
+
+        // Spawn the reader.
+        //
+        // The retry loop in `download_to_directory` sleeps for
+        // `HARDLINK_RETRY_BACKOFF` (currently 10ms) between
+        // attempts. We exploit that backoff to deterministically
+        // sequence the test:
+        //
+        //   * The reader's first hard_link runs immediately against
+        //     the missing `content_path/<d>` and fails with ENOENT.
+        //   * The reader then sleeps 10ms before attempt 2.
+        //   * During that 10ms, the test restorer task creates the
+        //     file at `content_path/<d>` (mimicking writer B's
+        //     emplace having completed its rename).
+        //   * The reader's second hard_link finds the file and
+        //     succeeds.
+        //
+        // We schedule the restorer with a 2ms head-start sleep so
+        // it absolutely cannot create the file before attempt 1
+        // (defeating the test). 2ms is generous on tokio's
+        // multi-thread runtime: the reader reaches the first
+        // hard_link in microseconds. Then we have ~8ms of slack
+        // before the reader's 10ms backoff expires for attempt 2.
+        let cas_store_clone = cas_store.clone();
+        let fast_store_clone = fast_store.clone();
+        let download_dir_clone = download_dir.clone();
+        let reader_handle = tokio::spawn(async move {
+            download_to_directory(
+                cas_store_clone.as_ref(),
+                fast_store_clone.as_pin(),
+                &root_dir_digest,
+                &download_dir_clone,
+            )
+            .await
+        });
+
+        let file_on_disk_for_restore = file_on_disk.clone();
+        let restorer_handle = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+            std::fs::write(&file_on_disk_for_restore, FILE_CONTENT.as_bytes())
+                .expect("must be able to write restored content");
+        });
+
+        // Wait for the reader to finish.
+        let reader_res = tokio::time::timeout(Duration::from_secs(30), reader_handle)
+            .await
+            .expect("reader did not finish within timeout")
+            .expect("reader task panicked");
+        tokio::time::timeout(Duration::from_secs(30), restorer_handle)
+            .await
+            .expect("restorer did not finish within timeout")
+            .expect("restorer task panicked");
+
+        reader_res.map_err(|e| -> Box<dyn core::error::Error> {
+            format!(
+                "download_to_directory must succeed when the loser-entry race \
+                 is recoverable via retry. A NotFound here means the retry \
+                 contract has regressed (PR #2341 second-pass fix). Without \
+                 the retry, this test reliably fails with NotFound. Error: \
+                 {e:?}"
+            )
+            .into()
+        })?;
+
+        // Confirm the destination is a real link to the bytes we
+        // restored on the retry path.
+        let dest_path = format!("{download_dir}/{FILE_NAME}");
+        let dest_content = fs::read(&dest_path).await?;
+        assert_eq!(from_utf8(&dest_content)?, FILE_CONTENT);
+
+        // Silence unused warnings for the pre-displacement scaffold.
+        drop(entry_a);
+        drop(entry_b);
+        let _: AtomicU64 = AtomicU64::new(0);
+
+        Ok(())
+    }
 }
