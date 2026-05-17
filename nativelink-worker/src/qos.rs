@@ -33,30 +33,32 @@
 
 /// Sets the calling thread's `QoS` class to `USER_INITIATED` on macOS.
 ///
-/// On non-macOS targets this is a compile-time no-op (the call site
-/// expands to nothing after monomorphization / dead-code elimination).
-///
-/// Returns `true` if the call succeeded or the platform doesn't need it;
-/// returns `false` only on macOS when the underlying pthread call fails.
+/// Returns `true` if the underlying `pthread_set_qos_class_self_np`
+/// call succeeded; returns `false` if it failed.
 ///
 /// Safe to call from any thread, including tokio runtime worker threads
 /// via `Builder::on_thread_start`.
+#[cfg(target_os = "macos")]
 #[inline]
 pub fn set_user_initiated() -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        // SAFETY: `pthread_set_qos_class_self_np` is a thread-local
-        // setter with no preconditions on the caller; passing a valid
-        // enum variant and relative priority 0 is always defined.
-        let ret = unsafe {
-            libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_USER_INITIATED, 0)
-        };
-        ret == 0
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        true
-    }
+    // SAFETY: `pthread_set_qos_class_self_np` is a thread-local
+    // setter with no preconditions on the caller; passing a valid
+    // enum variant and relative priority 0 is always defined.
+    let ret = unsafe {
+        libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_USER_INITIATED, 0)
+    };
+    ret == 0
+}
+
+/// Compile-time no-op on non-macOS targets.
+///
+/// Always returns `true`. The call site expands to nothing after
+/// inlining / dead-code elimination, so non-macOS builds never emit
+/// a runtime branch or a libc call.
+#[cfg(not(target_os = "macos"))]
+#[inline]
+pub const fn set_user_initiated() -> bool {
+    true
 }
 
 #[cfg(all(test, target_os = "macos"))]
