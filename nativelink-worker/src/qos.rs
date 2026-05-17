@@ -103,8 +103,20 @@ mod macos_tests {
     /// with a `Builder::on_thread_start` hook calling `set_user_initiated`
     /// observe `QOS_CLASS_USER_INITIATED` from inside spawned tasks. This
     /// mirrors the wiring in `src/bin/nativelink.rs::main`. Without this
-    /// test the entire QoS scheme is unverified at the integration level.
+    /// test the entire `QoS` scheme is unverified at the integration level.
+    ///
+    /// This is the one place in the worker crate that must construct a
+    /// fresh `tokio::runtime::Builder::new_multi_thread()` and drive it
+    /// with `block_on` — the unit under test *is* the `on_thread_start`
+    /// hook on a custom-built runtime, which `nativelink-util::task` and
+    /// `#[nativelink_test]` do not expose. The `#[expect]` mirrors the
+    /// same justified escape used in `src/bin/nativelink.rs::main`.
     #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test exercises `Builder::on_thread_start` + `block_on`; \
+                  no util wrapper exposes a custom-built runtime with a thread-start hook"
+    )]
     fn tokio_worker_threads_inherit_user_initiated_via_on_thread_start() {
         // Deliberately build a fresh runtime in-test (do not reuse a
         // global one) so the hook is exercised on freshly-spawned
