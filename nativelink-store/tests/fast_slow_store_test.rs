@@ -1425,14 +1425,20 @@ async fn has_with_results_handles_mixed_key_sources() -> Result<(), Error> {
     ));
 
     // Seed the fast store with the fast-only blob directly.
-    fast.update_oneshot(fast_only_digest, make_random_data(fast_only_size as usize).into())
-        .await?;
+    fast.update_oneshot(
+        fast_only_digest,
+        make_random_data(fast_only_size as usize).into(),
+    )
+    .await?;
 
     // Kick off the in-flight slow write and wait until it's parked.
     let writer_store = fast_slow.clone();
     let writer = tokio::spawn(async move {
         writer_store
-            .update_oneshot(in_flight_digest, make_random_data(in_flight_size as usize).into())
+            .update_oneshot(
+                in_flight_digest,
+                make_random_data(in_flight_size as usize).into(),
+            )
             .await
     });
     started_rx
