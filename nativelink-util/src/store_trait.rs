@@ -99,12 +99,17 @@ pub async fn slow_update_store_with_file<S: StoreDriver + ?Sized>(
     file.rewind()
         .await
         .err_tip(|| "Failed to rewind in upload_file_to_store")?;
+    // Hint to the kernel that we're about to stream the whole file. On Linux
+    // this is `posix_fadvise(SEQUENTIAL)`; on macOS it primes the unified
+    // buffer cache via `F_RDADVISE`. No-op elsewhere.
+    file.advise_sequential();
     let (mut tx, rx) = make_buf_channel_pair();
 
     let update_fut = store
         .update(digest.into(), rx, upload_size)
         .map(|r| r.err_tip(|| "Could not upload data to store in upload_file_to_store"));
     let read_data_fut = async move {
+        let mut current_offset: u64 = 0;
         loop {
             let mut buf = BytesMut::with_capacity(fs::DEFAULT_READ_BUFF_SIZE);
             let read = file
@@ -114,6 +119,10 @@ pub async fn slow_update_store_with_file<S: StoreDriver + ?Sized>(
             if read == 0 {
                 break;
             }
+            current_offset = current_offset.saturating_add(read as u64);
+            // Micro-prefetch the next two chunks while the current one is in
+            // flight to the store.
+            file.advise_willneed(current_offset, fs::DEFAULT_READ_BUFF_SIZE.saturating_mul(2));
             tx.send(buf.freeze())
                 .await
                 .err_tip(|| "Failed to send in upload_file_to_store")?;

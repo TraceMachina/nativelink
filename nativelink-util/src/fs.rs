@@ -62,6 +62,93 @@ impl FileSlot {
     pub const fn advise_dontneed(&self) {
         // No-op: posix_fadvise is not available on Mac or Windows.
     }
+
+    /// Advise the kernel that we will read this file sequentially.
+    ///
+    /// On Linux this issues `posix_fadvise(POSIX_FADV_SEQUENTIAL)` so the
+    /// kernel performs aggressive read-ahead. On macOS there is no direct
+    /// equivalent, so we issue an `F_RDADVISE` over an initial 4 MiB window —
+    /// this primes the unified buffer cache with the same effect for the
+    /// first reads of a sequential scan. Best-effort: errors are ignored.
+    #[cfg(target_os = "linux")]
+    pub fn advise_sequential(&self) {
+        use std::os::unix::io::AsRawFd;
+        let fd = self.inner.as_raw_fd();
+        // Length 0 = "apply to the entire file from offset".
+        let ret = unsafe { libc::posix_fadvise(fd, 0, 0, libc::POSIX_FADV_SEQUENTIAL) };
+        if ret != 0 {
+            tracing::debug!(
+                fd,
+                ret,
+                "posix_fadvise(SEQUENTIAL) returned non-zero (best-effort, ignoring)",
+            );
+        }
+    }
+
+    /// macOS analogue of `POSIX_FADV_SEQUENTIAL`: kick off readahead for
+    /// the first 4 MiB via `F_RDADVISE`.
+    #[cfg(target_os = "macos")]
+    pub fn advise_sequential(&self) {
+        self.advise_willneed(0, 4 * 1024 * 1024);
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    pub const fn advise_sequential(&self) {
+        // No-op: no equivalent advisory on this platform.
+    }
+
+    /// Advise the kernel that we will soon need data at `[offset, offset+len)`.
+    ///
+    /// Linux uses `posix_fadvise(POSIX_FADV_WILLNEED)`; macOS uses
+    /// `fcntl(F_RDADVISE)` with a `radvisory` struct (the documented
+    /// equivalent — see `<sys/fcntl.h>`). Best-effort: errors are silently
+    /// ignored. No-op on other platforms.
+    #[cfg(target_os = "linux")]
+    pub fn advise_willneed(&self, offset: u64, len: usize) {
+        use std::os::unix::io::AsRawFd;
+        let fd = self.inner.as_raw_fd();
+        // posix_fadvise length is a signed off_t — clamp to i64::MAX to avoid
+        // an overflow on 32-bit platforms (unlikely for our targets, but cheap).
+        let len_i64 = i64::try_from(len).unwrap_or(i64::MAX);
+        let offset_i64 = i64::try_from(offset).unwrap_or(i64::MAX);
+        unsafe {
+            libc::posix_fadvise(fd, offset_i64, len_i64, libc::POSIX_FADV_WILLNEED);
+        }
+    }
+
+    /// macOS implementation of `advise_willneed`. The `F_RDADVISE` fcntl takes
+    /// a `radvisory` struct; the kernel uses this hint to start fetching the
+    /// requested byte range into the unified buffer cache.
+    ///
+    /// `F_RDADVISE` is defined as `44` in macOS's `<sys/fcntl.h>` but the
+    /// `libc` crate does not currently expose it, so we declare the constant
+    /// locally. The `radvisory` layout matches `struct radvisory` exactly:
+    /// `off_t ra_offset` followed by `int ra_count`.
+    #[cfg(target_os = "macos")]
+    pub fn advise_willneed(&self, offset: u64, len: usize) {
+        use std::os::unix::io::AsRawFd;
+        const F_RDADVISE: libc::c_int = 44;
+        #[repr(C)]
+        struct Radvisory {
+            ra_offset: libc::off_t, // i64 on Darwin
+            ra_count: libc::c_int,  // i32
+        }
+        let ra = Radvisory {
+            ra_offset: i64::try_from(offset).unwrap_or(i64::MAX),
+            ra_count: i32::try_from(len.min(i32::MAX as usize)).unwrap_or(i32::MAX),
+        };
+        let fd = self.inner.as_raw_fd();
+        // SAFETY: `&ra` is a valid pointer to a properly-aligned `Radvisory`
+        // for the lifetime of this call; the kernel reads but does not retain it.
+        unsafe {
+            libc::fcntl(fd, F_RDADVISE, &ra);
+        }
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    pub const fn advise_willneed(&self, _offset: u64, _len: usize) {
+        // No-op: no equivalent advisory on this platform.
+    }
 }
 
 impl AsRef<tokio::fs::File> for FileSlot {
@@ -448,4 +535,105 @@ fn internal_remove_dir_all(path: impl AsRef<Path>) -> Result<(), Error> {
 pub async fn remove_dir_all(path: impl AsRef<Path>) -> Result<(), Error> {
     let path = path.as_ref().to_owned();
     call_with_permit(move |_| internal_remove_dir_all(path)).await
+}
+
+#[cfg(test)]
+mod advise_tests {
+    //! Tests for the kernel page-cache advisory helpers (`advise_sequential` /
+    //! `advise_willneed`). These exercise the per-platform code path on macOS
+    //! and Linux, and verify that the no-op fallbacks compile and are callable
+    //! on every other target.
+
+    use std::env;
+    use std::io::Write;
+
+    use nativelink_macro::nativelink_test;
+
+    use super::open_file;
+
+    // F_RDADVISE constant used by the macOS direct-syscall test below.
+    // Declared at module scope to satisfy `clippy::items_after_statements`.
+    #[cfg(target_os = "macos")]
+    const TEST_F_RDADVISE: libc::c_int = 44;
+
+    /// Matches the layout of macOS `struct radvisory` from `<sys/fcntl.h>`.
+    /// Used by the direct-syscall test below.
+    #[cfg(target_os = "macos")]
+    #[repr(C)]
+    struct TestRadvisory {
+        ra_offset: libc::off_t,
+        ra_count: libc::c_int,
+    }
+
+    /// Create a temp file with `size` bytes of zeros and return its path.
+    fn make_temp_file(name: &str, size: usize) -> std::path::PathBuf {
+        let dir = env::temp_dir().join("nativelink_advise_tests");
+        // Best-effort: ignore if already exists.
+        drop(std::fs::create_dir_all(&dir));
+        let path = dir.join(name);
+        let mut f = std::fs::File::create(&path).expect("create temp file");
+        if size > 0 {
+            // Write in 64 KiB chunks so we don't allocate the whole buffer at once.
+            #[allow(clippy::decimal_literal_representation)]
+            let chunk_size: usize = 65_536;
+            let chunk = vec![0u8; chunk_size.min(size)];
+            let mut remaining = size;
+            while remaining > 0 {
+                let n = remaining.min(chunk.len());
+                f.write_all(&chunk[..n]).expect("write");
+                remaining -= n;
+            }
+            f.flush().expect("flush");
+        }
+        path
+    }
+
+    /// Cross-platform smoke test: the helpers must be safely callable on every
+    /// platform we build for. On Linux/macOS this hits the real syscall path;
+    /// on other targets it must compile to a no-op.
+    #[nativelink_test("crate")]
+    async fn advise_helpers_are_callable_everywhere() -> Result<(), Box<dyn core::error::Error>> {
+        let path = make_temp_file("advise_xplat.bin", 1024);
+        let file = open_file(&path, 0, u64::MAX)
+            .await
+            .expect("open_file should succeed");
+        // Both helpers are best-effort and must never panic, even on
+        // platforms where they are no-ops.
+        file.get_ref().advise_sequential();
+        file.get_ref().advise_willneed(0, 4096);
+        // Out-of-range offsets / sizes must also be safe.
+        file.get_ref().advise_willneed(u64::MAX, usize::MAX);
+        drop(std::fs::remove_file(&path));
+        Ok(())
+    }
+
+    /// macOS-only test: directly invoke the `F_RDADVISE` syscall path and
+    /// confirm it returns `0` (success). This is the real path we ship for
+    /// Mac-Mini RBE workers.
+    #[cfg(target_os = "macos")]
+    #[nativelink_test("crate")]
+    async fn macos_f_rdadvise_returns_success() -> Result<(), Box<dyn core::error::Error>> {
+        use std::os::unix::io::AsRawFd;
+        // Allocate something large enough for the 4 MiB sequential window to
+        // be meaningful: 8 MiB.
+        let path = make_temp_file("advise_macos.bin", 8 * 1024 * 1024);
+        let file = open_file(&path, 0, u64::MAX)
+            .await
+            .expect("open_file should succeed");
+
+        let ra = TestRadvisory {
+            ra_offset: 0,
+            ra_count: 4 * 1024 * 1024,
+        };
+        // SAFETY: fd is open for the duration of this call; `&ra` is valid
+        // and the kernel does not retain the pointer.
+        let ret = unsafe { libc::fcntl(file.get_ref().inner.as_raw_fd(), TEST_F_RDADVISE, &ra) };
+        assert_eq!(ret, 0, "F_RDADVISE should succeed (errno set otherwise)");
+
+        // And via our wrapper, which must be equally happy.
+        file.get_ref().advise_sequential();
+        file.get_ref().advise_willneed(0, 4 * 1024 * 1024);
+        drop(std::fs::remove_file(&path));
+        Ok(())
+    }
 }

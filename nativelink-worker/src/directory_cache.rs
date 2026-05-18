@@ -137,6 +137,16 @@ impl DirectoryCache {
                 match hardlink_directory_tree(&metadata.path, dest_path).await {
                     Ok(()) => {
                         metadata.ref_count -= 1;
+                        // Fire-and-forget: warm the page cache for all files in
+                        // this freshly-hardlinked tree. The action that triggered
+                        // this materialization is about to read them; doing the
+                        // readahead now lets disk I/O overlap with the
+                        // action-launch overhead. Cheap on Linux (posix_fadvise)
+                        // and macOS (F_RDADVISE); no-op elsewhere.
+                        let warm_path = dest_path.to_path_buf();
+                        tokio::spawn(async move {
+                            warm_page_cache(&warm_path).await;
+                        });
                         return Ok(true);
                     }
                     Err(e) => {
@@ -171,7 +181,15 @@ impl DirectoryCache {
             let cache = self.cache.read().await;
             if let Some(metadata) = cache.get(&digest) {
                 return match hardlink_directory_tree(&metadata.path, dest_path).await {
-                    Ok(()) => Ok(true),
+                    Ok(()) => {
+                        // Same fire-and-forget page-cache warming as the
+                        // fast-path cache hit above.
+                        let warm_path = dest_path.to_path_buf();
+                        tokio::spawn(async move {
+                            warm_page_cache(&warm_path).await;
+                        });
+                        Ok(true)
+                    }
                     Err(e) => {
                         warn!(
                             ?digest,
@@ -453,6 +471,64 @@ impl DirectoryCache {
             entries: cache.len(),
             total_size_bytes: total_size,
             in_use_entries: in_use,
+        }
+    }
+}
+
+/// Walk `root` and hint the kernel to fault every regular file into the page
+/// cache. Best-effort: any I/O or open errors are swallowed, since this is a
+/// performance optimization and not a correctness step.
+///
+/// On Linux this issues `posix_fadvise(POSIX_FADV_WILLNEED)`; on macOS it
+/// issues `fcntl(F_RDADVISE)` over the file's full length (capped at the
+/// `radvisory` `int` ceiling internally). On other platforms the per-file
+/// helper is a no-op, so this entire function effectively reduces to a tree
+/// walk that exits early — cheap.
+async fn warm_page_cache(root: &Path) {
+    // Bound recursion depth to keep stack usage predictable; well under any
+    // reasonable real-world action input tree.
+    const MAX_DEPTH: usize = 64;
+
+    fn walk_blocking(dir: &Path, depth: usize, out: &mut Vec<(PathBuf, u64)>) {
+        if depth >= MAX_DEPTH {
+            return;
+        }
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            let Ok(ft) = entry.file_type() else { continue };
+            if ft.is_dir() {
+                walk_blocking(&path, depth + 1, out);
+            } else if ft.is_file() {
+                let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+                out.push((path, size));
+            }
+        }
+    }
+
+    let root = root.to_path_buf();
+    // Do the directory walk on a blocking thread so we don't stall the runtime.
+    let Ok(files) = tokio::task::spawn_blocking(move || {
+        let mut files = Vec::new();
+        walk_blocking(&root, 0, &mut files);
+        files
+    })
+    .await
+    else {
+        return;
+    };
+
+    for (path, size) in files {
+        // Skip empty files: no pages to warm.
+        if size == 0 {
+            continue;
+        }
+        // `open_file` acquires an FD permit and bounds concurrent opens for us.
+        if let Ok(file) = nativelink_util::fs::open_file(&path, 0, u64::MAX).await {
+            let len_hint = usize::try_from(size).unwrap_or(usize::MAX);
+            file.get_ref().advise_willneed(0, len_hint);
         }
     }
 }

@@ -1104,15 +1104,29 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
             Err(err)
         }).await?;
 
+        // Tell the kernel up-front that we'll be streaming the file end-to-end.
+        // On Linux this is `posix_fadvise(SEQUENTIAL)`; on macOS it issues an
+        // `F_RDADVISE` over the first 4 MiB to start readahead immediately.
+        temp_file.get_ref().advise_sequential();
+
+        // Track the current offset for the micro-prefetch hint below.
+        let mut current_offset = offset;
         loop {
             let mut buf = BytesMut::with_capacity(self.read_buffer_size);
-            temp_file
+            let read = temp_file
                 .read_buf(&mut buf)
                 .await
                 .err_tip(|| "Failed to read data in filesystem store")?;
             if buf.is_empty() {
                 break; // EOF.
             }
+            current_offset = current_offset.saturating_add(read as u64);
+            // Micro-prefetch: ask the kernel to fault in the next two chunks
+            // while this one travels over the network back to the client.
+            // Best-effort and free on platforms without the syscall.
+            temp_file
+                .get_ref()
+                .advise_willneed(current_offset, self.read_buffer_size.saturating_mul(2));
             writer
                 .send(buf.freeze())
                 .await
