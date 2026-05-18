@@ -69,7 +69,6 @@ rust_library(
         "@crates//:azure_storage",
         "@crates//:azure_storage_blobs",
         "@crates//:base64",
-        "@crates//:bincode",
         "@crates//:blake3",
         "@crates//:byteorder",
         "@crates//:bytes",
@@ -109,6 +108,7 @@ rust_library(
         "@crates//:tracing",
         "@crates//:url",
         "@crates//:uuid",
+        "@crates//:wincode",
     ],
 )
 
@@ -166,7 +166,6 @@ rust_test_suite(
         "@crates//:azure_core",
         "@crates//:azure_storage",
         "@crates//:azure_storage_blobs",
-        "@crates//:bincode",
         "@crates//:bytes",
         "@crates//:dirs",
         "@crates//:flate2",
@@ -197,6 +196,7 @@ rust_test_suite(
         "@crates//:tracing",
         "@crates//:tracing-test",
         "@crates//:uuid",
+        "@crates//:wincode",
         "@crates//:zip",
     ],
 )
