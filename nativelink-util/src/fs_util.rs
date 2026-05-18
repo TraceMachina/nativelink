@@ -79,19 +79,22 @@ pub async fn hardlink_directory_tree(src_dir: &Path, dst_dir: &Path) -> Result<C
         dst_dir.display()
     );
 
-    // clonefile(2) requires dst's parent to exist but dst itself must NOT
-    // exist. Make sure the parent is present without creating dst.
-    if let Some(parent) = dst_dir.parent() {
-        fs::create_dir_all(parent).await.err_tip(|| {
-            format!(
-                "Failed to create parent of destination: {}",
-                parent.display()
-            )
-        })?;
-    }
-
     #[cfg(target_os = "macos")]
     {
+        // clonefile(2) requires dst's parent to exist but dst itself must NOT
+        // exist. Make sure the parent is present without creating dst. The
+        // non-macOS fallback path below creates dst (and any missing parents)
+        // itself via `fs::create_dir_all(dst_dir)`, so this pre-step is only
+        // needed for the clonefile case.
+        if let Some(parent) = dst_dir.parent() {
+            fs::create_dir_all(parent).await.err_tip(|| {
+                format!(
+                    "Failed to create parent of destination: {}",
+                    parent.display()
+                )
+            })?;
+        }
+
         match try_clonefile(src_dir, dst_dir).await {
             Ok(()) => {
                 // The clone inherits the source's permissions. Cached subtrees
