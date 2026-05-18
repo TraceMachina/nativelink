@@ -85,6 +85,7 @@ rust_library(
         "@crates//:tracing-subscriber",
         "@crates//:uuid",
         "@crates//:walkdir",
+        "@crates//:wincode",
     ],
 )
 
