@@ -29,6 +29,7 @@ use nativelink_util::fs_util::{
     hardlink_directory_tree, set_readonly_recursive, set_readwrite_recursive,
 };
 use nativelink_util::store_trait::{Store, StoreKey, StoreLike};
+use nativelink_util::{background_spawn, spawn_blocking};
 use tokio::fs;
 use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, trace, warn};
@@ -144,7 +145,7 @@ impl DirectoryCache {
                         // action-launch overhead. Cheap on Linux (posix_fadvise)
                         // and macOS (F_RDADVISE); no-op elsewhere.
                         let warm_path = dest_path.to_path_buf();
-                        tokio::spawn(async move {
+                        background_spawn!("directory_cache_warm_page_cache", async move {
                             warm_page_cache(&warm_path).await;
                         });
                         return Ok(true);
@@ -185,7 +186,7 @@ impl DirectoryCache {
                         // Same fire-and-forget page-cache warming as the
                         // fast-path cache hit above.
                         let warm_path = dest_path.to_path_buf();
-                        tokio::spawn(async move {
+                        background_spawn!("directory_cache_warm_page_cache", async move {
                             warm_page_cache(&warm_path).await;
                         });
                         Ok(true)
@@ -510,7 +511,7 @@ async fn warm_page_cache(root: &Path) {
 
     let root = root.to_path_buf();
     // Do the directory walk on a blocking thread so we don't stall the runtime.
-    let Ok(files) = tokio::task::spawn_blocking(move || {
+    let Ok(files) = spawn_blocking!("directory_cache_warm_page_cache_walk", move || {
         let mut files = Vec::new();
         walk_blocking(&root, 0, &mut files);
         files
