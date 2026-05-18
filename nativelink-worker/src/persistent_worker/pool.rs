@@ -133,7 +133,7 @@ struct CountSlotGuard {
 }
 
 impl CountSlotGuard {
-    fn new(pool: Arc<PoolInner>, key: WorkerKey) -> Self {
+    const fn new(pool: Arc<PoolInner>, key: WorkerKey) -> Self {
         Self {
             pool,
             key,
