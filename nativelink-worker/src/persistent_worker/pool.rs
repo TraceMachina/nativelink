@@ -125,6 +125,42 @@ struct LeaseInner {
     key: WorkerKey,
 }
 
+#[derive(Debug)]
+struct CountSlotGuard {
+    pool: Arc<PoolInner>,
+    key: WorkerKey,
+    active: bool,
+}
+
+impl CountSlotGuard {
+    fn new(pool: Arc<PoolInner>, key: WorkerKey) -> Self {
+        Self {
+            pool,
+            key,
+            active: true,
+        }
+    }
+
+    fn disarm(mut self) {
+        self.active = false;
+    }
+
+    fn decrement_now(mut self) {
+        if self.active {
+            self.pool.decrement_count(&self.key);
+            self.active = false;
+        }
+    }
+}
+
+impl Drop for CountSlotGuard {
+    fn drop(&mut self) {
+        if self.active {
+            self.pool.decrement_count(&self.key);
+        }
+    }
+}
+
 impl Lease {
     pub const fn worker(&mut self) -> &mut LiveWorker {
         &mut self
@@ -158,12 +194,13 @@ impl Drop for Lease {
             let worker = inner.worker;
             let grace = pool.config.shutdown_grace;
             background_spawn!("persistent_worker_lease_drop", async move {
+                let count_slot = CountSlotGuard::new(pool.clone(), key.clone());
                 warn!(
                     ?key,
                     "Lease dropped without release; treating worker as unhealthy"
                 );
                 worker.shutdown(grace).await;
-                pool.decrement_count(&key);
+                count_slot.decrement_now();
             });
         }
     }
@@ -207,6 +244,7 @@ impl PoolInner {
     async fn return_worker(self: Arc<Self>, key: WorkerKey, worker: LiveWorker, healthy: bool) {
         let exceeded_cap = worker.request_count() >= self.config.max_requests_per_worker;
         if !healthy || exceeded_cap {
+            let count_slot = CountSlotGuard::new(self.clone(), key.clone());
             debug!(
                 ?key,
                 request_count = worker.request_count(),
@@ -214,7 +252,7 @@ impl PoolInner {
                 "Retiring persistent worker"
             );
             worker.shutdown(self.config.shutdown_grace).await;
-            self.decrement_count(&key);
+            count_slot.decrement_now();
             return;
         }
         let mut state = self.state.lock();
@@ -251,9 +289,9 @@ impl PersistentWorkerPool {
     /// returns `Err(Code::ResourceExhausted)` — the caller should fall back to
     /// the one-shot subprocess path or wait and retry.
     ///
-    /// `working_dir` is the action's execution directory. v1 reuses it across
-    /// requests for the same `WorkerKey`; v2 will introduce per-request
-    /// sandboxing.
+    /// `working_dir` is a stable worker process directory. Per-request action
+    /// directories are passed through `WorkRequest::sandbox_dir`, because the
+    /// action directory is deleted after each action completes.
     pub async fn acquire(
         &self,
         key: WorkerKey,
@@ -291,6 +329,7 @@ impl PersistentWorkerPool {
         }
 
         // Lock released; spawn outside the critical section.
+        let count_slot = CountSlotGuard::new(self.inner.clone(), key.clone());
         let spawn_result = LiveWorker::spawn(
             executable_path,
             &key.startup_args,
@@ -301,11 +340,10 @@ impl PersistentWorkerPool {
         let worker = match spawn_result {
             Ok(w) => w,
             Err(err) => {
-                // Roll back our reservation on spawn failure.
-                self.inner.decrement_count(&key);
                 return Err(err).err_tip(|| format!("Spawning persistent worker for {key:?}"));
             }
         };
+        count_slot.disarm();
         info!(?key, "Spawned new persistent worker");
         Ok(Lease {
             inner: Some(LeaseInner {
@@ -343,7 +381,31 @@ impl PersistentWorkerPool {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::io::Write as _;
+
+    #[cfg(unix)]
+    use nativelink_macro::nativelink_test;
+
     use super::*;
+
+    #[cfg(unix)]
+    fn shell_script(working_dir: &Path, body: &str) -> PathBuf {
+        let path = working_dir.join("worker.sh");
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.write_all(body.as_bytes()).unwrap();
+        file.sync_all().unwrap();
+        path
+    }
+
+    #[cfg(unix)]
+    fn shell_worker_key(script: &Path) -> WorkerKey {
+        WorkerKey {
+            executable: PathBuf::from("/bin/sh"),
+            startup_args: vec![script.display().to_string()],
+            wire_format: WireFormat::Json,
+        }
+    }
 
     #[test]
     fn worker_key_excludes_argfile_and_later_args() {
@@ -421,5 +483,60 @@ mod tests {
             WorkerKey::from_argv(&["javac", "@a"].map(String::from), WireFormat::Proto).unwrap();
         let b = WorkerKey::from_argv(&["javac", "@a"].map(String::from), WireFormat::Json).unwrap();
         assert_ne!(a, b);
+    }
+
+    #[nativelink_test]
+    #[cfg(unix)]
+    async fn dropping_unhealthy_release_frees_pool_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = shell_script(dir.path(), "exec sleep 60\n");
+        let key = shell_worker_key(&script);
+        let pool = PersistentWorkerPool::new(PoolConfig {
+            max_workers_per_key: 1,
+            shutdown_grace: Duration::from_secs(1),
+            ..PoolConfig::default()
+        });
+
+        let lease = pool
+            .acquire(key.clone(), Path::new("/bin/sh"), dir.path())
+            .await
+            .unwrap();
+        let release_handle = tokio::spawn(lease.release(false));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        release_handle.abort();
+        assert!(release_handle.await.unwrap_err().is_cancelled());
+
+        let next_lease = tokio::time::timeout(
+            Duration::from_secs(2),
+            pool.acquire(key, Path::new("/bin/sh"), dir.path()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        next_lease.release(false).await;
+    }
+
+    #[nativelink_test]
+    #[cfg(unix)]
+    async fn concurrent_acquire_respects_per_key_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = shell_script(dir.path(), "exec sleep 60\n");
+        let key = shell_worker_key(&script);
+        let pool = PersistentWorkerPool::new(PoolConfig {
+            max_workers_per_key: 1,
+            shutdown_grace: Duration::from_millis(100),
+            ..PoolConfig::default()
+        });
+
+        let lease = pool
+            .acquire(key.clone(), Path::new("/bin/sh"), dir.path())
+            .await
+            .unwrap();
+        let err = pool
+            .acquire(key, Path::new("/bin/sh"), dir.path())
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, Code::ResourceExhausted);
+        lease.release(false).await;
     }
 }

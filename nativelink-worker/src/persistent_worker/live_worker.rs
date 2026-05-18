@@ -87,9 +87,10 @@ impl LiveWorker {
             .current_dir(working_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            // Worker stderr is forwarded to ours; Bazel convention puts diagnostic
-            // logs there. We do not capture it on the rust side in v1.
-            .stderr(Stdio::inherit())
+            // WorkResponse.output carries per-action diagnostics. The child
+            // stderr stream is process-lifetime data and cannot be attributed
+            // safely to a single request.
+            .stderr(Stdio::null())
             .kill_on_drop(true);
 
         debug!(

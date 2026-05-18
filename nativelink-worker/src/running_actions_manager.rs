@@ -1026,7 +1026,8 @@ impl RunningActionImpl {
                             )
                         },
                     };
-                    let worker_cwd = PathBuf::from(&request.sandbox_dir);
+                    let worker_cwd =
+                        PathBuf::from(&self.running_actions_manager.root_action_directory);
 
                     match self
                         .running_actions_manager
@@ -1036,20 +1037,52 @@ impl RunningActionImpl {
                     {
                         Ok(mut lease) => {
                             let timer = self.metrics().child_process.begin_timer();
-                            let response = match lease
-                                .worker()
-                                .dispatch_with_timeout(&request, self.timeout)
-                                .await
-                            {
-                                Ok(response) => {
+                            let dispatch_result = {
+                                let dispatch_fut =
+                                    lease.worker().dispatch_with_timeout(&request, self.timeout);
+                                tokio::pin!(dispatch_fut);
+                                tokio::select! {
+                                    result = &mut dispatch_fut => Some(result),
+                                    _ = &mut kill_channel_rx => None,
+                                }
+                            };
+                            let response = match dispatch_result {
+                                Some(Ok(response)) => {
                                     lease.release(true).await;
                                     response
                                 }
-                                Err(err) => {
+                                Some(Err(err)) => {
                                     lease.release(false).await;
                                     return Err(err).err_tip(|| {
                                         format!("Dispatching action to persistent worker {key:?}")
                                     });
+                                }
+                                None => {
+                                    drop(timer);
+                                    lease.release(false).await;
+                                    {
+                                        let mut state = self.state.lock();
+                                        state.error = Error::merge_option(
+                                            state.error.take(),
+                                            Some(Error::new(
+                                                Code::Cancelled,
+                                                format!(
+                                                    "Persistent worker command '{}' was killed by scheduler",
+                                                    args.join(OsStr::new(" ")).to_string_lossy()
+                                                ),
+                                            )),
+                                        );
+                                        state.command_proto = Some(command_proto);
+                                        state.execution_result =
+                                            Some(RunningActionImplExecutionResult {
+                                                stdout: Bytes::new(),
+                                                stderr: Bytes::new(),
+                                                exit_code: EXIT_CODE_FOR_SIGNAL,
+                                            });
+                                        state.execution_metadata.execution_completed_timestamp =
+                                            (self.running_actions_manager.callbacks.now_fn)();
+                                    }
+                                    return Ok(self);
                                 }
                             };
                             timer.measure();
@@ -1064,8 +1097,8 @@ impl RunningActionImpl {
                                 let mut state = self.state.lock();
                                 state.command_proto = Some(command_proto);
                                 state.execution_result = Some(RunningActionImplExecutionResult {
-                                    stdout: Bytes::from(response.output),
-                                    stderr: Bytes::new(),
+                                    stdout: Bytes::new(),
+                                    stderr: Bytes::from(response.output),
                                     exit_code: response.exit_code,
                                 });
                                 state.execution_metadata.execution_completed_timestamp =

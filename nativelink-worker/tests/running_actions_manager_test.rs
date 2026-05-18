@@ -3446,6 +3446,10 @@ exit 1
         let worker_script = r#"#!/bin/sh
 count=0
 while IFS= read -r request; do
+  if ! pwd -P >/dev/null 2>&1; then
+    printf '{"exitCode":1,"output":"worker cwd was removed"}\n'
+    continue
+  fi
   count=$((count + 1))
   sandbox_dir=$(printf '%s' "$request" | sed -n 's/.*"sandboxDir":"\([^"]*\)".*/\1/p')
   printf '%s' "$count" > "$sandbox_dir/count.txt"
