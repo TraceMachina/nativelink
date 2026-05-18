@@ -4,6 +4,11 @@
 
 Expose consistent, low-cardinality cache metrics (CAS/AC/store backends) without needing to implement bespoke instrumentation inside every individual store implementation.
 
+The implementation is intentionally opt-in through the `cache_metrics` store
+wrapper. If a store isn't wrapped, NativeLink constructs the same store graph
+as before and doesn't add timers, attribute allocation, or OpenTelemetry
+recording calls to that store's hot path.
+
 This document focuses on a **wrapper store** (middleware) approach that can be applied to any `StoreDriver`, and compares it with **instrumenting inside each store**.
 
 ## Problem Statement
@@ -20,7 +25,7 @@ These should be queryable and composable with low cognitive overhead and consist
 
 ### A) Wrapper Store (middleware)
 
-Wrap an existing `Arc<dyn StoreDriver>` with a new `StoreDriver` that:
+Wrap an existing `Arc<dyn StoreDriver>` with the `cache_metrics` `StoreDriver` that:
 1. Starts a timer
 2. Calls the inner store method
 3. Classifies the outcome (hit/miss/error/etc)
@@ -142,4 +147,17 @@ To reach that:
 - Ensure `deployment-examples/metrics/prometheus-recording-rules.yml` references `_total` counter names.
 - Keep existing dashboards querying recording rules (for example, `nativelink:cache_hit_rate`) instead of raw high-cardinality series.
 
-If wrapper metrics are **optional/config-gated**, docs may need a small note describing how to enable them; otherwise docs can remain unchanged.
+Wrapper metrics are config-gated. Wrap only the logical store layer you want to
+measure, for example:
+
+```json5
+"cache_metrics": {
+  "cache_type": "cas",
+  "backend": {
+    "filesystem": {
+      "content_path": "~/.cache/nativelink/content_path-cas",
+      "temp_path": "~/.cache/nativelink/tmp_path-cas"
+    }
+  }
+}
+```

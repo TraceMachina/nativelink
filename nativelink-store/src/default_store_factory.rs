@@ -24,6 +24,7 @@ use nativelink_util::health_utils::HealthRegistryBuilder;
 use nativelink_util::store_trait::{Store, StoreDriver};
 
 use crate::azure_blob_store::AzureBlobStore;
+use crate::cache_metrics_store::CacheMetricsStore;
 use crate::completeness_checking_store::CompletenessCheckingStore;
 use crate::compression_store::CompressionStore;
 use crate::dedup_store::DedupStore;
@@ -54,6 +55,10 @@ pub fn store_factory<'a>(
 ) -> Pin<FutureMaybeStore<'a>> {
     Box::pin(async move {
         let store: Arc<dyn StoreDriver> = match backend {
+            StoreSpec::CacheMetrics(spec) => CacheMetricsStore::new(
+                spec,
+                store_factory(&spec.backend, store_manager, None).await?,
+            ),
             StoreSpec::Memory(spec) => MemoryStore::new(spec),
             StoreSpec::ExperimentalCloudObjectStore(spec) => match spec {
                 ExperimentalCloudObjectSpec::Aws(aws_config) => {

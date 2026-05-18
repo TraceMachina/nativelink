@@ -12,6 +12,7 @@ rust_library(
     srcs = [
         "src/ac_utils.rs",
         "src/azure_blob_store.rs",
+        "src/cache_metrics_store.rs",
         "src/callback_utils.rs",
         "src/cas_utils.rs",
         "src/common_s3_utils.rs",
@@ -116,6 +117,7 @@ rust_test_suite(
     srcs = [
         "tests/ac_utils_test.rs",
         "tests/azure_blob_store_test.rs",
+        "tests/cache_metrics_store_test.rs",
         "tests/completeness_checking_store_test.rs",
         "tests/compression_store_test.rs",
         "tests/dedup_store_test.rs",
