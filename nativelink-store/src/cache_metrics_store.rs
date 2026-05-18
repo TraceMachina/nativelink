@@ -144,15 +144,7 @@ impl StoreDriver for CacheMetricsStore {
         range: (Bound<StoreKey<'_>>, Bound<StoreKey<'_>>),
         handler: &mut (dyn for<'a> FnMut(&'a StoreKey) -> bool + Send + Sync + '_),
     ) -> Result<u64, Error> {
-        self.backend
-            .list(
-                (
-                    range.0.map(StoreKey::into_owned),
-                    range.1.map(StoreKey::into_owned),
-                ),
-                handler,
-            )
-            .await
+        self.backend.list(range, handler).await
     }
 
     async fn update(
