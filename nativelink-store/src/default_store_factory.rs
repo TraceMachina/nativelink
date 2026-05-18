@@ -37,6 +37,7 @@ use crate::mongo_store::ExperimentalMongoStore;
 use crate::noop_store::NoopStore;
 use crate::ontap_s3_existence_cache_store::OntapS3ExistenceCache;
 use crate::ontap_s3_store::OntapS3Store;
+use crate::r2_store::R2Store;
 use crate::redis_store::RedisStore;
 use crate::ref_store::RefStore;
 use crate::s3_store::S3Store;
@@ -67,6 +68,9 @@ pub fn store_factory<'a>(
                 }
                 ExperimentalCloudObjectSpec::Azure(azure_config) => {
                     AzureBlobStore::new(azure_config, SystemTime::now).await?
+                }
+                ExperimentalCloudObjectSpec::R2(r2_config) => {
+                    R2Store::new(r2_config, SystemTime::now).await?
                 }
             },
             StoreSpec::RedisStore(spec) => {

@@ -64,7 +64,17 @@ pub fn set_default_digest_size_health_check(size: usize) -> Result<(), Error> {
     })
 }
 
-#[derive(Debug, PartialEq, Eq, Copy, Clone, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    PartialEq,
+    Eq,
+    Copy,
+    Clone,
+    Serialize,
+    Deserialize,
+    wincode::SchemaWrite,
+    wincode::SchemaRead,
+)]
 pub enum UploadSizeInfo {
     /// When the data transfer amount is known to be exact size, this enum should be used.
     /// The receiver store can use this to better optimize the way the data is sent or stored.
