@@ -451,8 +451,8 @@ impl DirectoryCache {
             // CRITICAL: only chmod directories writable, never files. Cached
             // files share an inode with FilesystemStore CAS entries via
             // hardlink (see `download_to_directory` in running_actions_manager).
-            // Calling `set_readwrite_recursive` here would chmod those files
-            // to 0o644, mutating the CAS inode's mode for every other in-flight
+            // A naive recursive chmod here would mutate those files to 0o644,
+            // changing the CAS inode's mode for every other in-flight
             // action that has hardlinked the same blob and causing EACCES on
             // exec (e.g. cc_wrapper.sh) or EPERM on open. Directory write
             // permission is sufficient on unix to unlink files inside.

@@ -294,21 +294,6 @@ pub async fn set_readonly_recursive(dir: &Path) -> Result<(), Error> {
     set_perms_recursive_impl(dir.to_path_buf(), set_readonly_one_path).await
 }
 
-/// Sets a directory tree to read-write for the current user recursively.
-/// This is done so we can delete directories we're evicting.
-///
-/// # Arguments
-/// * `dir` - Directory to make read-write
-///
-/// # Platform Notes
-/// - Unix: Sets permissions to 0o755 (rwxr-xr-x)
-/// - Windows: Clears `FILE_ATTRIBUTE_READONLY`
-pub async fn set_readwrite_recursive(dir: &Path) -> Result<(), Error> {
-    error_if!(!dir.exists(), "Directory does not exist: {}", dir.display());
-
-    set_perms_recursive_impl(dir.to_path_buf(), set_readwrite_one_path).await
-}
-
 /// Sets only the **directories** in a tree to writable for the current user,
 /// leaving files untouched. This is the safe variant for cleanup paths that
 /// need to delete a tree containing CAS-hardlinked files.
@@ -356,41 +341,6 @@ fn set_readonly_one_path(
         {
             let mut perms = metadata.permissions();
             perms.set_readonly(true);
-
-            fs::set_permissions(&path, perms)
-                .await
-                .err_tip(|| format!("Failed to set permissions for: {}", path.display()))?;
-        }
-
-        Ok(())
-    })
-}
-
-fn set_readwrite_one_path(
-    path: PathBuf,
-    metadata: Metadata,
-) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>> {
-    Box::pin(async move {
-        // Set the file/directory to read-write for the current user
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = metadata.permissions();
-
-            // If it's a directory, set to rwxr-xr-x (755)
-            // If it's a file, set to rw-r--r-- (644)
-            let mode = if metadata.is_dir() { 0o755 } else { 0o644 };
-            perms.set_mode(mode);
-
-            fs::set_permissions(&path, perms)
-                .await
-                .err_tip(|| format!("Failed to set permissions for: {}", path.display()))?;
-        }
-
-        #[cfg(windows)]
-        {
-            let mut perms = metadata.permissions();
-            perms.set_readonly(false);
 
             fs::set_permissions(&path, perms)
                 .await
