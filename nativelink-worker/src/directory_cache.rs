@@ -28,7 +28,7 @@ use nativelink_store::ac_utils::get_and_decode_digest;
 use nativelink_store::cas_utils::is_zero_digest;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::fs_util::{
-    CloneMethod, hardlink_directory_tree, set_readonly_recursive, set_readwrite_recursive,
+    CloneMethod, hardlink_directory_tree, set_dir_writable_recursive, set_readonly_recursive,
 };
 use nativelink_util::store_trait::{Store, StoreKey, StoreLike};
 use tokio::fs;
@@ -448,12 +448,20 @@ impl DirectoryCache {
         {
             debug!(?digest, size = metadata.size, "Evicting cached directory");
 
-            if let Err(e) = set_readwrite_recursive(&metadata.path).await {
+            // CRITICAL: only chmod directories writable, never files. Cached
+            // files share an inode with FilesystemStore CAS entries via
+            // hardlink (see `download_to_directory` in running_actions_manager).
+            // Calling `set_readwrite_recursive` here would chmod those files
+            // to 0o644, mutating the CAS inode's mode for every other in-flight
+            // action that has hardlinked the same blob and causing EACCES on
+            // exec (e.g. cc_wrapper.sh) or EPERM on open. Directory write
+            // permission is sufficient on unix to unlink files inside.
+            if let Err(e) = set_dir_writable_recursive(&metadata.path).await {
                 warn!(
                     ?digest,
                     path = ?metadata.path,
                     error = ?e,
-                    "Unable to mark evicted directory as read/write, will probably fail to remove"
+                    "Unable to mark evicted directory as writable, will probably fail to remove"
                 );
             }
 
@@ -677,6 +685,118 @@ mod tests {
         assert!(empty_path.exists(), "zero-byte file should be created");
         let metadata = fs::metadata(&empty_path).await.unwrap();
         assert_eq!(metadata.len(), 0, "zero-byte file must be 0 bytes");
+
+        Ok(())
+    }
+
+    /// Regression test for CAS inode corruption during directory cache
+    /// eviction.
+    ///
+    /// Background: a cached directory's files share an inode (via hardlink)
+    /// with both the `FilesystemStore` CAS entry and every action workspace
+    /// that has consumed this cached directory. The cleanup path that runs
+    /// before `fs::remove_dir_all` used to call `set_readwrite_recursive`,
+    /// which chmods every file in the tree to 0o644 — silently mutating the
+    /// shared inode's mode for every in-flight action holding a hardlink to
+    /// the same blob. In production this surfaced as EACCES on exec for
+    /// `cc_wrapper.sh` (whose CAS mode is 0o555, but eviction turned it into
+    /// 0o644, dropping the +x bit).
+    ///
+    /// This test models the real scenario: a "cached" directory tree whose
+    /// files are hardlinked to a still-active "action workspace" file. The
+    /// eviction cleanup runs on the cached tree, and we assert the active
+    /// workspace file's mode is untouched. Before the fix this test fails
+    /// because `set_readwrite_recursive` chmods the cached-side file, and
+    /// the same inode underlies the workspace file.
+    #[cfg(unix)]
+    #[nativelink_test]
+    async fn test_eviction_cleanup_preserves_hardlinked_file_mode() -> Result<(), Error> {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        use nativelink_util::fs_util::set_dir_writable_recursive;
+
+        let temp_dir = TempDir::new().unwrap();
+
+        // Build a "cached" directory tree mimicking what DirectoryCache
+        // produces: a top-level dir with a nested subdir and an executable
+        // file inside. Mode 0o555 matches the CAS mode of an executable like
+        // `cc_wrapper.sh`.
+        let cache_entry_dir = temp_dir.path().join("cache_entry");
+        let nested_dir = cache_entry_dir.join("nested");
+        fs::create_dir_all(&nested_dir).await.unwrap();
+        let cached_file = nested_dir.join("cc_wrapper.sh");
+        fs::write(&cached_file, b"#!/bin/sh\necho hi\n")
+            .await
+            .unwrap();
+        fs::set_permissions(&cached_file, std::fs::Permissions::from_mode(0o555))
+            .await
+            .unwrap();
+
+        // Mark the cached tree read-only the way DirectoryCache does after
+        // construction (set_readonly_recursive). This drops the file to 0o444
+        // and the directories to 0o555.
+        set_readonly_recursive(&cache_entry_dir).await?;
+
+        // Simulate an in-flight action workspace that has hardlinked the
+        // cached file. This is what `hardlink_directory_tree` does in
+        // `get_or_create` after the cached tree is built and locked down.
+        let action_workspace = temp_dir.path().join("action_workspace");
+        fs::create_dir_all(&action_workspace).await.unwrap();
+        let workspace_file = action_workspace.join("cc_wrapper.sh");
+        fs::hard_link(&cached_file, &workspace_file).await.unwrap();
+
+        // Sanity check: cached file and workspace file share the same inode.
+        let cached_ino = fs::metadata(&cached_file).await.unwrap().ino();
+        let workspace_ino = fs::metadata(&workspace_file).await.unwrap().ino();
+        assert_eq!(
+            cached_ino, workspace_ino,
+            "workspace file must share inode with cached file (hardlinked)",
+        );
+        let workspace_mode_before = fs::metadata(&workspace_file)
+            .await
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(workspace_mode_before, 0o444);
+
+        // Run the cleanup that `evict_lru` runs before removing the tree.
+        // After the fix this only chmods directories; before the fix this
+        // chmoded every file to 0o644, mutating the shared inode.
+        set_dir_writable_recursive(&cache_entry_dir).await?;
+
+        // Critical assertion: the action workspace file's mode (i.e. the
+        // shared inode's mode) MUST be unchanged. If this fails, the cleanup
+        // path corrupted the inode for an in-flight action — that is the
+        // bug we are guarding against.
+        let workspace_mode_after = fs::metadata(&workspace_file)
+            .await
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            workspace_mode_after, workspace_mode_before,
+            "eviction cleanup mutated the inode mode of an active workspace \
+             file (was 0o{workspace_mode_before:o}, now 0o{workspace_mode_after:o}); \
+             this is the CAS inode corruption bug",
+        );
+
+        // We should still be able to remove the cached tree. This proves
+        // directory writability alone is sufficient to unlink files on unix.
+        fs::remove_dir_all(&cache_entry_dir).await.unwrap();
+        assert!(!cache_entry_dir.exists());
+
+        // The workspace's file is still intact and the mode survives even
+        // after the cached tree is gone.
+        assert!(workspace_file.exists());
+        let workspace_mode_after_remove = fs::metadata(&workspace_file)
+            .await
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(workspace_mode_after_remove, workspace_mode_before);
 
         Ok(())
     }
