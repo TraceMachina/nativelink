@@ -1180,6 +1180,15 @@ mod tests {
         let root_action_directory = make_temp_path("root_action_directory");
         fs::create_dir_all(&root_action_directory).await?;
 
+        // Out-of-tree payload that the action will reference via an
+        // *absolute* symlink. Exercises the "resolve absolute symlink and
+        // upload contents" code path alongside the relative-symlink
+        // preservation path below.
+        let external_root = make_temp_path("upload_dir_and_symlink_external");
+        fs::create_dir_all(&external_root).await?;
+        let external_file = format!("{external_root}/empty_payload");
+        tokio::fs::write(&external_file, b"").await?;
+
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
             RunningActionsManagerArgs {
                 root_action_directory,
@@ -1209,18 +1218,27 @@ mod tests {
                 arguments: vec![
                     "sh".to_string(),
                     "-c".to_string(),
-                    concat!(
-                        "mkdir -p dir1/dir2 && ",
-                        "echo foo > dir1/file && ",
-                        "touch dir1/file2 && ",
-                        "ln -s ../file dir1/dir2/sym &&",
-                        // Relative symlink — preserved as a symlink in the
-                        // ActionResult (absolute symlinks are now resolved).
-                        "ln -s dir1/file rel_sym",
-                    )
-                    .to_string(),
+                    format!(
+                        "mkdir -p dir1/dir2 && \
+                         echo foo > dir1/file && \
+                         touch dir1/file2 && \
+                         ln -s ../file dir1/dir2/sym && \
+                         ln -s dir1/file rel_sym && \
+                         ln -s {external_file} empty_sym",
+                    ),
                 ],
-                output_paths: vec!["dir1".to_string(), "rel_sym".to_string()],
+                // `dir1` exercises the directory upload path,
+                // `rel_sym` exercises the relative-symlink-preserved path,
+                // `empty_sym` exercises the absolute-symlink-resolved path
+                // (previously this test asserted `empty_sym` was kept as a
+                // `SymlinkInfo` with target `/dev/null`; that behavior is
+                // now incorrect because absolute symlinks are worker-local
+                // and must be resolved before upload).
+                output_paths: vec![
+                    "dir1".to_string(),
+                    "empty_sym".to_string(),
+                    "rel_sym".to_string(),
+                ],
                 working_directory: ".".to_string(),
                 environment_variables: vec![EnvironmentVariable {
                     name: "PATH".to_string(),
@@ -1336,7 +1354,17 @@ mod tests {
         assert_eq!(
             action_result,
             ActionResult {
-                output_files: vec![],
+                // `empty_sym` was an absolute symlink — the worker resolves
+                // it and uploads the underlying (empty) file. The resulting
+                // digest is the well-known sha256 of zero bytes.
+                output_files: vec![FileInfo {
+                    name_or_path: NameOrPath::Path("empty_sym".to_string()),
+                    digest: DigestInfo::try_new(
+                        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                        0,
+                    )?,
+                    is_executable: false,
+                }],
                 stdout_digest: DigestInfo::try_new(
                     "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
                     0
@@ -1378,7 +1406,11 @@ mod tests {
         Ok(())
     }
 
-    // Windows does not support symlinks.
+    // The fixture is built with the `ln -s` shell builtin (matching the
+    // convention used by `upload_dir_and_symlink_test` above), so this test
+    // only runs on Unix-like platforms. Windows itself does support symlinks
+    // via `std::os::windows::fs::{symlink_file, symlink_dir}`, but creating
+    // them from a shell isn't portable.
     #[cfg(not(target_family = "windows"))]
     #[nativelink_test]
     async fn upload_absolute_symlink_resolves_contents() -> Result<(), Box<dyn core::error::Error>>
@@ -1526,7 +1558,11 @@ mod tests {
         Ok(())
     }
 
-    // Windows does not support symlinks.
+    // The fixture is built with the `ln -s` shell builtin (matching the
+    // convention used by `upload_dir_and_symlink_test` above), so this test
+    // only runs on Unix-like platforms. Windows itself does support symlinks
+    // via `std::os::windows::fs::{symlink_file, symlink_dir}`, but creating
+    // them from a shell isn't portable.
     #[cfg(not(target_family = "windows"))]
     #[nativelink_test]
     async fn upload_absolute_symlink_to_directory_uploads_tree()
