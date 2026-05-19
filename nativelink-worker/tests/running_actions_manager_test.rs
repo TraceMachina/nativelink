@@ -1180,15 +1180,6 @@ mod tests {
         let root_action_directory = make_temp_path("root_action_directory");
         fs::create_dir_all(&root_action_directory).await?;
 
-        // Out-of-tree payload that the action will reference via an
-        // *absolute* symlink. Exercises the "resolve absolute symlink and
-        // upload contents" code path alongside the relative-symlink
-        // preservation path below.
-        let external_root = make_temp_path("upload_dir_and_symlink_external");
-        fs::create_dir_all(&external_root).await?;
-        let external_file = format!("{external_root}/empty_payload");
-        tokio::fs::write(&external_file, b"").await?;
-
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
             RunningActionsManagerArgs {
                 root_action_directory,
@@ -1218,22 +1209,24 @@ mod tests {
                 arguments: vec![
                     "sh".to_string(),
                     "-c".to_string(),
-                    format!(
-                        "mkdir -p dir1/dir2 && \
+                    "mkdir -p dir1/dir2 && \
                          echo foo > dir1/file && \
                          touch dir1/file2 && \
                          ln -s ../file dir1/dir2/sym && \
                          ln -s dir1/file rel_sym && \
-                         ln -s {external_file} empty_sym",
-                    ),
+                         ln -s /dev/null empty_sym"
+                        .to_string(),
                 ],
                 // `dir1` exercises the directory upload path,
                 // `rel_sym` exercises the relative-symlink-preserved path,
                 // `empty_sym` exercises the absolute-symlink-resolved path
-                // (previously this test asserted `empty_sym` was kept as a
-                // `SymlinkInfo` with target `/dev/null`; that behavior is
-                // now incorrect because absolute symlinks are worker-local
-                // and must be resolved before upload).
+                // against `/dev/null`. Pre-fix this test asserted `empty_sym`
+                // was kept as a `SymlinkInfo` with target `/dev/null`; that
+                // behavior is now incorrect because absolute symlinks are
+                // worker-local and must be resolved before upload. Reading
+                // `/dev/null` returns 0 bytes immediately by its character-
+                // device contract, so the worker produces an empty-file
+                // output with the canonical sha256 empty digest.
                 output_paths: vec![
                     "dir1".to_string(),
                     "empty_sym".to_string(),
