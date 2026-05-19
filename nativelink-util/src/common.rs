@@ -35,7 +35,7 @@ use tracing::error;
 
 pub use crate::fs;
 
-#[derive(Default, Clone, Copy, Eq, PartialEq, Hash)]
+#[derive(Default, Clone, Copy, Eq, PartialEq, Hash, wincode::SchemaRead, wincode::SchemaWrite)]
 #[repr(C)]
 pub struct DigestInfo {
     /// Raw hash in packed form.
@@ -334,7 +334,19 @@ impl From<&DigestInfo> for Digest {
 }
 
 #[derive(
-    Debug, Serialize, Deserialize, Default, Clone, Copy, Eq, PartialEq, Hash, PartialOrd, Ord,
+    Debug,
+    Serialize,
+    Deserialize,
+    Default,
+    Clone,
+    Copy,
+    Eq,
+    PartialEq,
+    Hash,
+    PartialOrd,
+    Ord,
+    wincode::SchemaRead,
+    wincode::SchemaWrite,
 )]
 pub struct PackedHash([u8; 32]);
 
