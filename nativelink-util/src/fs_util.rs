@@ -19,30 +19,54 @@ use std::path::{Path, PathBuf};
 
 use nativelink_error::{Code, Error, ResultExt, error_if, make_err};
 use tokio::fs;
+#[cfg(target_os = "macos")]
+use tracing::debug;
 
-/// Hardlinks an entire directory tree from source to destination.
-/// This is much faster than copying for large directory structures.
+/// Which kernel mechanism actually materialized the destination tree.
+/// Returned by [`hardlink_directory_tree`] so callers can record per-hit
+/// telemetry and detect when the fast path silently degrades (e.g., a
+/// cross-volume cache layout that forces clonefile to fall through to
+/// per-file hardlinks).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CloneMethod {
+    /// APFS `clonefile(2)` succeeded — O(1) regardless of tree size.
+    /// macOS only.
+    Clonefile,
+    /// Per-file `fs::hard_link` walk — O(N) in file count.
+    /// Used on Linux/Windows always, and on macOS when clonefile fell through.
+    Hardlink,
+}
+
+/// Materializes an entire directory tree from source to destination using the
+/// fastest method the host filesystem supports.
 ///
 /// # Arguments
 /// * `src_dir` - Source directory path (must exist)
-/// * `dst_dir` - Destination directory path (will be created)
+/// * `dst_dir` - Destination directory path (must NOT exist; parent will be created)
 ///
 /// # Returns
-/// * `Ok(())` on success
-/// * `Err` if hardlinking fails (e.g., cross-filesystem, unsupported filesystem)
+/// * `Ok(CloneMethod)` indicating which kernel mechanism was used
+/// * `Err` if materialization fails (e.g., cross-filesystem, unsupported filesystem)
 ///
 /// # Platform Support
-/// - Linux: Full support via `fs::hard_link`
-/// - macOS: Full support via `fs::hard_link`
-/// - Windows: Requires NTFS filesystem and appropriate permissions
+/// - macOS: Tries APFS `clonefile(2)` first (O(1), copy-on-write). On failure
+///   (e.g., cross-volume EXDEV, or any unexpected errno) falls back to per-file
+///   `fs::hard_link`. After a successful clone, the destination tree is made
+///   writable (0o755 / 0o644) because the clone inherits the source's
+///   permissions, and cached subtrees are 0o555 / 0o444. The COW semantics of
+///   `clonefile(2)` mean writes to the destination do not affect the source.
+/// - Linux: Per-file `fs::hard_link` (directory hardlinks are not supported on
+///   ext4/btrfs without root). Always returns `CloneMethod::Hardlink`.
+/// - Windows: Per-file `fs::hard_link` (requires NTFS). Always returns
+///   `CloneMethod::Hardlink`.
 ///
 /// # Errors
 /// - Source directory doesn't exist
 /// - Destination already exists
-/// - Cross-filesystem hardlinking attempted
-/// - Filesystem doesn't support hardlinks
+/// - Cross-filesystem materialization attempted and fallback also fails
+/// - Filesystem doesn't support hardlinks (Linux/Windows fallback)
 /// - Permission denied
-pub async fn hardlink_directory_tree(src_dir: &Path, dst_dir: &Path) -> Result<(), Error> {
+pub async fn hardlink_directory_tree(src_dir: &Path, dst_dir: &Path) -> Result<CloneMethod, Error> {
     error_if!(
         !src_dir.exists(),
         "Source directory does not exist: {}",
@@ -55,6 +79,47 @@ pub async fn hardlink_directory_tree(src_dir: &Path, dst_dir: &Path) -> Result<(
         dst_dir.display()
     );
 
+    #[cfg(target_os = "macos")]
+    {
+        // clonefile(2) requires dst's parent to exist but dst itself must NOT
+        // exist. Make sure the parent is present without creating dst. The
+        // non-macOS fallback path below creates dst (and any missing parents)
+        // itself via `fs::create_dir_all(dst_dir)`, so this pre-step is only
+        // needed for the clonefile case.
+        if let Some(parent) = dst_dir.parent() {
+            fs::create_dir_all(parent).await.err_tip(|| {
+                format!(
+                    "Failed to create parent of destination: {}",
+                    parent.display()
+                )
+            })?;
+        }
+
+        match try_clonefile(src_dir, dst_dir).await {
+            Ok(()) => {
+                // The clone inherits the source's permissions. Cached subtrees
+                // are 0o555 / 0o444, but actions need to write outputs into
+                // their input tree, so make the clone writable. COW means
+                // these writes do not affect the source.
+                set_readwrite_recursive(dst_dir)
+                    .await
+                    .err_tip(|| "Failed to make cloned tree writable")?;
+                return Ok(CloneMethod::Clonefile);
+            }
+            Err(e) => {
+                debug!(
+                    src = %src_dir.display(),
+                    dst = %dst_dir.display(),
+                    error = %e,
+                    "clonefile failed, falling back to per-file hardlinks"
+                );
+                // clonefile(2) is atomic — on failure dst should not exist —
+                // but be defensive in case a partial tree was left behind.
+                let _cleanup = fs::remove_dir_all(dst_dir).await;
+            }
+        }
+    }
+
     // Create the root destination directory
     fs::create_dir_all(dst_dir).await.err_tip(|| {
         format!(
@@ -64,7 +129,53 @@ pub async fn hardlink_directory_tree(src_dir: &Path, dst_dir: &Path) -> Result<(
     })?;
 
     // Recursively hardlink the directory tree
-    hardlink_directory_tree_recursive(src_dir, dst_dir).await
+    hardlink_directory_tree_recursive(src_dir, dst_dir).await?;
+    Ok(CloneMethod::Hardlink)
+}
+
+/// Recursively clones a directory tree using APFS `clonefile(2)`. On success
+/// the destination shares data blocks with the source via copy-on-write; the
+/// operation is O(1) in tree size regardless of file count.
+///
+/// Returns `Err` on EXDEV (cross-volume), ENOTSUP (filesystem doesn't support
+/// clones), or any other errno; callers are expected to fall back to per-file
+/// hardlinks.
+#[cfg(target_os = "macos")]
+async fn try_clonefile(src: &Path, dst: &Path) -> std::io::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    // From <sys/clonefile.h>: don't follow symlinks at the top level. Symlinks
+    // *within* the cloned tree are cloned as symlinks regardless. The `libc`
+    // crate exposes `clonefile` but not this flag constant.
+    const CLONE_NOFOLLOW: u32 = 0x0001;
+
+    let src_c = CString::new(src.as_os_str().as_bytes()).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "src path contains interior NUL byte",
+        )
+    })?;
+    let dst_c = CString::new(dst.as_os_str().as_bytes()).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "dst path contains interior NUL byte",
+        )
+    })?;
+
+    crate::spawn_blocking!("clonefile", move || {
+        // SAFETY: clonefile(2) takes two NUL-terminated C strings and a flag
+        // word. Both CStrings are owned by this closure for the duration of
+        // the call, so the pointers stay valid.
+        let res = unsafe { libc::clonefile(src_c.as_ptr(), dst_c.as_ptr(), CLONE_NOFOLLOW) };
+        if res == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    })
+    .await
+    .map_err(std::io::Error::other)?
 }
 
 /// Internal recursive function to hardlink directory contents
@@ -366,7 +477,16 @@ mod tests {
         let dst_dir = temp_dir.path().join("test_dst");
 
         // Hardlink the directory
-        hardlink_directory_tree(&src_dir, &dst_dir).await?;
+        let method = hardlink_directory_tree(&src_dir, &dst_dir).await?;
+
+        #[cfg(target_os = "macos")]
+        assert_eq!(method, CloneMethod::Clonefile, "macOS should use clonefile");
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(
+            method,
+            CloneMethod::Hardlink,
+            "non-macOS should use per-file hardlinks"
+        );
 
         // Verify structure
         assert!(dst_dir.join("file1.txt").exists());
@@ -380,8 +500,8 @@ mod tests {
         let content2 = fs::read_to_string(dst_dir.join("subdir/file2.txt")).await?;
         assert_eq!(content2, "Nested file");
 
-        // Verify files are hardlinked (same inode on Unix)
-        #[cfg(unix)]
+        // Linux: per-file hardlinks share inodes with the source.
+        #[cfg(all(unix, not(target_os = "macos")))]
         {
             use std::os::unix::fs::MetadataExt;
             let src_meta = fs::metadata(src_dir.join("file1.txt")).await?;
@@ -392,6 +512,78 @@ mod tests {
                 "Files should have same inode (hardlinked)"
             );
         }
+
+        // macOS: clonefile(2) creates distinct inodes that share data via COW.
+        #[cfg(target_os = "macos")]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let src_meta = fs::metadata(src_dir.join("file1.txt")).await?;
+            let dst_meta = fs::metadata(dst_dir.join("file1.txt")).await?;
+            assert_ne!(
+                src_meta.ino(),
+                dst_meta.ino(),
+                "clonefile should create distinct inodes from source"
+            );
+        }
+
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[nativelink_test("crate")]
+    async fn test_clonefile_dest_is_writable() -> Result<(), Error> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (temp_dir, src_dir) = create_test_directory().await?;
+        // Source mimics the directory cache: 0o555 dirs, 0o444 files.
+        set_readonly_recursive(&src_dir).await?;
+
+        let dst_dir = temp_dir.path().join("clone_dst");
+        hardlink_directory_tree(&src_dir, &dst_dir).await?;
+
+        let src_subdir_mode = fs::metadata(src_dir.join("subdir"))
+            .await?
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            src_subdir_mode, 0o555,
+            "source dir should still be readonly after clone"
+        );
+
+        let dst_subdir_mode = fs::metadata(dst_dir.join("subdir"))
+            .await?
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            dst_subdir_mode, 0o755,
+            "cloned dir should be writable so actions can write outputs"
+        );
+
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[nativelink_test("crate")]
+    async fn test_clonefile_cow_isolation() -> Result<(), Error> {
+        let (temp_dir, src_dir) = create_test_directory().await?;
+        let dst_dir = temp_dir.path().join("clone_dst");
+
+        hardlink_directory_tree(&src_dir, &dst_dir).await?;
+
+        // Mutate the clone and confirm the source is unaffected.
+        let dst_file = dst_dir.join("file1.txt");
+        fs::write(&dst_file, b"mutated by clone").await?;
+
+        let src_content = fs::read_to_string(src_dir.join("file1.txt")).await?;
+        assert_eq!(
+            src_content, "Hello, World!",
+            "source must be untouched after writing to clone (COW)"
+        );
+
+        let dst_content = fs::read_to_string(&dst_file).await?;
+        assert_eq!(dst_content, "mutated by clone");
 
         Ok(())
     }

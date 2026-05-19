@@ -156,10 +156,19 @@ fn persistent_worker_request_arguments(argv: &[String]) -> Vec<String> {
         .cloned()
         .collect()
 }
+/// Maximum number of file-materialization (hardlink) or subdirectory
+/// recursion futures polled concurrently per directory level. Higher values
+/// drown APFS's per-volume metadata lock with `hardlink(2)` syscalls and
+/// regress overall throughput vs lower-contention concurrency.
+///
+/// 64 is well above the inflection point on any modern Linux filesystem,
+/// so this is also a no-op on Linux beyond replacing tokio scheduling
+/// overhead.
+const DOWNLOAD_TO_DIRECTORY_CONCURRENCY: usize = 64;
 
 /// Aggressively download the digests of files and make a local folder from it. This function
-/// will spawn unbounded number of futures to try and get these downloaded. The store itself
-/// should be rate limited if spawning too many requests at once is an issue.
+/// gates each directory level to at most `DOWNLOAD_TO_DIRECTORY_CONCURRENCY`
+/// concurrent in-flight materialization futures.
 /// We require the `FilesystemStore` to be the `fast` store of `FastSlowStore`. This is for
 /// efficiency reasons. We will request the `FastSlowStore` to populate the entry then we will
 /// assume the `FilesystemStore` has the file available immediately after and hardlink the file
@@ -177,7 +186,7 @@ pub fn download_to_directory<'a>(
         let directory = get_and_decode_digest::<ProtoDirectory>(cas_store, digest.into())
             .await
             .err_tip(|| "Converting digest to Directory")?;
-        let mut futures = FuturesUnordered::new();
+        let mut futures = Vec::new();
 
         for file in directory.files {
             let digest: DigestInfo = file
@@ -307,7 +316,15 @@ pub fn download_to_directory<'a>(
             );
         }
 
-        while futures.try_next().await?.is_some() {}
+        // Gate concurrency: at most DOWNLOAD_TO_DIRECTORY_CONCURRENCY futures
+        // polled at once for this directory level. Previously all futures were
+        // pushed into an unbounded FuturesUnordered, which on macOS produced
+        // thousands of parallel hardlink(2) calls fighting APFS's per-volume
+        // metadata lock and regressing throughput vs serial.
+        futures::stream::iter(futures)
+            .buffer_unordered(DOWNLOAD_TO_DIRECTORY_CONCURRENCY)
+            .try_collect::<Vec<_>>()
+            .await?;
         Ok(())
     }
     .boxed()

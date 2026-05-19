@@ -14,6 +14,7 @@
 
 use core::future::Future;
 use core::pin::Pin;
+use core::sync::atomic::{AtomicU64, Ordering};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -24,9 +25,10 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
     Directory as ProtoDirectory, DirectoryNode, FileNode, SymlinkNode,
 };
 use nativelink_store::ac_utils::get_and_decode_digest;
+use nativelink_store::cas_utils::is_zero_digest;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::fs_util::{
-    hardlink_directory_tree, set_readonly_recursive, set_readwrite_recursive,
+    CloneMethod, hardlink_directory_tree, set_readonly_recursive, set_readwrite_recursive,
 };
 use nativelink_util::store_trait::{Store, StoreKey, StoreLike};
 use tokio::fs;
@@ -87,6 +89,11 @@ pub struct DirectoryCache {
     construction_locks: Arc<Mutex<HashMap<DigestInfo, Arc<Mutex<()>>>>>,
     /// CAS store for fetching directories
     cas_store: Store,
+    /// Count of materializations that used APFS `clonefile(2)` (macOS only;
+    /// always zero on other platforms).
+    clonefile_hits: AtomicU64,
+    /// Count of materializations that used per-file `fs::hard_link`.
+    hardlink_hits: AtomicU64,
 }
 
 impl DirectoryCache {
@@ -105,7 +112,18 @@ impl DirectoryCache {
             cache: Arc::new(RwLock::new(HashMap::new())),
             construction_locks: Arc::new(Mutex::new(HashMap::new())),
             cas_store,
+            clonefile_hits: AtomicU64::new(0),
+            hardlink_hits: AtomicU64::new(0),
         })
+    }
+
+    /// Records which kernel mechanism materialized a tree, for observability.
+    fn record_clone_method(&self, method: CloneMethod) {
+        let counter = match method {
+            CloneMethod::Clonefile => &self.clonefile_hits,
+            CloneMethod::Hardlink => &self.hardlink_hits,
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Gets or creates a directory in the cache, then hardlinks it to the destination
@@ -135,7 +153,8 @@ impl DirectoryCache {
 
                 // Try to hardlink from cache
                 match hardlink_directory_tree(&metadata.path, dest_path).await {
-                    Ok(()) => {
+                    Ok(method) => {
+                        self.record_clone_method(method);
                         metadata.ref_count -= 1;
                         return Ok(true);
                     }
@@ -171,7 +190,10 @@ impl DirectoryCache {
             let cache = self.cache.read().await;
             if let Some(metadata) = cache.get(&digest) {
                 return match hardlink_directory_tree(&metadata.path, dest_path).await {
-                    Ok(()) => Ok(true),
+                    Ok(method) => {
+                        self.record_clone_method(method);
+                        Ok(true)
+                    }
                     Err(e) => {
                         warn!(
                             ?digest,
@@ -219,9 +241,10 @@ impl DirectoryCache {
         }
 
         // Hardlink to destination
-        hardlink_directory_tree(&cache_path, dest_path)
+        let method = hardlink_directory_tree(&cache_path, dest_path)
             .await
             .err_tip(|| "Failed to hardlink newly cached directory")?;
+        self.record_clone_method(method);
 
         Ok(false)
     }
@@ -277,17 +300,29 @@ impl DirectoryCache {
 
         trace!(?file_path, ?digest, "Creating file");
 
-        // Fetch file content from CAS
-        let data = self
-            .cas_store
-            .get_part_unchunked(StoreKey::Digest(digest), 0, None)
-            .await
-            .err_tip(|| format!("Failed to fetch file: {}", file_path.display()))?;
+        // Zero-byte files (digest af1349b9...-0) are not stored in
+        // FilesystemStore / many CAS backends, so a get_part_unchunked here
+        // returns NotFound. In Bazel-style trees these show up frequently as
+        // empty marker / config files (.linksearchpaths, empty .env, .toml,
+        // etc.), and a single failure aborts the whole DirectoryCache
+        // construction. Short-circuit and write the empty file directly.
+        if is_zero_digest(digest) {
+            fs::write(&file_path, b"")
+                .await
+                .err_tip(|| format!("Failed to write empty file: {}", file_path.display()))?;
+        } else {
+            // Fetch file content from CAS
+            let data = self
+                .cas_store
+                .get_part_unchunked(StoreKey::Digest(digest), 0, None)
+                .await
+                .err_tip(|| format!("Failed to fetch file: {}", file_path.display()))?;
 
-        // Write to disk
-        fs::write(&file_path, data.as_ref())
-            .await
-            .err_tip(|| format!("Failed to write file: {}", file_path.display()))?;
+            // Write to disk
+            fs::write(&file_path, data.as_ref())
+                .await
+                .err_tip(|| format!("Failed to write file: {}", file_path.display()))?;
+        }
 
         // Set permissions
         #[cfg(unix)]
@@ -453,6 +488,8 @@ impl DirectoryCache {
             entries: cache.len(),
             total_size_bytes: total_size,
             in_use_entries: in_use,
+            clonefile_hits: self.clonefile_hits.load(Ordering::Relaxed),
+            hardlink_hits: self.hardlink_hits.load(Ordering::Relaxed),
         }
     }
 }
@@ -463,6 +500,10 @@ pub struct CacheStats {
     pub entries: usize,
     pub total_size_bytes: u64,
     pub in_use_entries: usize,
+    /// Materializations that used APFS `clonefile(2)` (macOS).
+    pub clonefile_hits: u64,
+    /// Materializations that used per-file `fs::hard_link`.
+    pub hardlink_hits: u64,
 }
 
 #[cfg(test)]
@@ -557,6 +598,85 @@ mod tests {
         // Verify stats
         let stats = cache.stats().await;
         assert_eq!(stats.entries, 1);
+
+        // Two get_or_create calls succeeded → two materializations were
+        // recorded. On macOS both should be clonefile; on Linux both hardlink.
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(stats.clonefile_hits, 2, "macOS should record 2 clones");
+            assert_eq!(stats.hardlink_hits, 0);
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert_eq!(stats.clonefile_hits, 0);
+            assert_eq!(
+                stats.hardlink_hits, 2,
+                "non-macOS should record 2 hardlinks"
+            );
+        }
+
+        Ok(())
+    }
+
+    /// A Directory containing a zero-byte file must be constructible even when
+    /// the CAS has no entry for the zero-byte digest. In production CAS
+    /// backends (`FilesystemStore` in particular) refuse to store zero-byte
+    /// blobs, so without the short-circuit this is a `NotFound` error and 30%+
+    /// of cache constructions fail (per PR #2243).
+    #[nativelink_test]
+    async fn test_directory_cache_zero_byte_file() -> Result<(), Error> {
+        let temp_dir = TempDir::new().unwrap();
+        let cache_root = temp_dir.path().join("cache");
+        let store = Store::new(MemoryStore::new(&MemorySpec::default()));
+
+        // RFC 6234 / Bazel zero-byte SHA-256 digest, hash for b"".
+        let zero_digest = DigestInfo::try_new(
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            0,
+        )
+        .unwrap();
+        // Deliberately do NOT upload the zero-byte blob — that's the whole
+        // point: real CAS backends won't have it.
+
+        let directory = ProtoDirectory {
+            files: vec![FileNode {
+                name: "empty.txt".to_string(),
+                digest: Some(zero_digest.into()),
+                is_executable: false,
+                ..Default::default()
+            }],
+            directories: vec![],
+            symlinks: vec![],
+            ..Default::default()
+        };
+        let mut dir_data = Vec::new();
+        directory.encode(&mut dir_data).unwrap();
+        let dir_digest = DigestInfo::try_new(
+            "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+            dir_data.len() as i64,
+        )
+        .unwrap();
+        store
+            .as_store_driver_pin()
+            .update_oneshot(dir_digest.into(), dir_data.into())
+            .await
+            .unwrap();
+
+        let config = DirectoryCacheConfig {
+            max_entries: 10,
+            max_size_bytes: 1024 * 1024,
+            cache_root,
+        };
+        let cache = DirectoryCache::new(config, store).await?;
+
+        let dest = temp_dir.path().join("dest_empty");
+        let hit = cache.get_or_create(dir_digest, &dest).await?;
+        assert!(!hit, "First construction should be a cache miss");
+
+        let empty_path = dest.join("empty.txt");
+        assert!(empty_path.exists(), "zero-byte file should be created");
+        let metadata = fs::metadata(&empty_path).await.unwrap();
+        assert_eq!(metadata.len(), 0, "zero-byte file must be 0 bytes");
 
         Ok(())
     }
