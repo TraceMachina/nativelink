@@ -286,6 +286,28 @@ pub async fn set_readwrite_recursive(dir: &Path) -> Result<(), Error> {
     set_perms_recursive_impl(dir.to_path_buf(), set_readwrite_one_path).await
 }
 
+/// Sets only the **directories** in a tree to writable for the current user,
+/// leaving files untouched. This is the safe variant for cleanup paths that
+/// need to delete a tree containing CAS-hardlinked files.
+///
+/// On unix, write permission on the parent directory is sufficient to unlink
+/// files inside it — the files' own modes are irrelevant for unlinking. Chmoding
+/// a CAS-hardlinked file would silently mutate the shared inode's permissions
+/// for every other in-flight action that has hardlinked the same blob, leading
+/// to EACCES on exec or EPERM on open in unrelated actions.
+///
+/// # Arguments
+/// * `dir` - Directory whose directories should be made writable
+///
+/// # Platform Notes
+/// - Unix: Sets directory permissions to 0o755 (rwxr-xr-x); files are NOT touched.
+/// - Windows: Clears `FILE_ATTRIBUTE_READONLY` on directories only; files are NOT touched.
+pub async fn set_dir_writable_recursive(dir: &Path) -> Result<(), Error> {
+    error_if!(!dir.exists(), "Directory does not exist: {}", dir.display());
+
+    set_perms_recursive_impl(dir.to_path_buf(), set_dir_writable_one_path).await
+}
+
 fn set_readonly_one_path(
     path: PathBuf,
     metadata: Metadata,
@@ -336,6 +358,43 @@ fn set_readwrite_one_path(
             // If it's a file, set to rw-r--r-- (644)
             let mode = if metadata.is_dir() { 0o755 } else { 0o644 };
             perms.set_mode(mode);
+
+            fs::set_permissions(&path, perms)
+                .await
+                .err_tip(|| format!("Failed to set permissions for: {}", path.display()))?;
+        }
+
+        #[cfg(windows)]
+        {
+            let mut perms = metadata.permissions();
+            perms.set_readonly(false);
+
+            fs::set_permissions(&path, perms)
+                .await
+                .err_tip(|| format!("Failed to set permissions for: {}", path.display()))?;
+        }
+
+        Ok(())
+    })
+}
+
+fn set_dir_writable_one_path(
+    path: PathBuf,
+    metadata: Metadata,
+) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>> {
+    Box::pin(async move {
+        // Files are intentionally skipped here. They may be hardlinked into
+        // the CAS (FilesystemStore); chmoding them would corrupt the shared
+        // inode's mode for every other in-flight action.
+        if !metadata.is_dir() {
+            return Ok(());
+        }
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = metadata.permissions();
+            perms.set_mode(0o755);
 
             fs::set_permissions(&path, perms)
                 .await
