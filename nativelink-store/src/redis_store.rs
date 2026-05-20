@@ -1118,7 +1118,7 @@ where
         /// under `HealthServer`'s default per-indicator budget;
         /// loose enough to absorb a normally-slow PING during a
         /// `BGSAVE` fork or sentinel rebalance.
-        const PING_TIMEOUT: Duration = Duration::from_secs(2);
+        const PING_TIMEOUT: Duration = Duration::from_secs(4);
 
         let mut client = match self.get_client().await {
             Ok(c) => c,
