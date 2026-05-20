@@ -85,11 +85,11 @@ jobs:
       run: |
         set -eu
         mkdir .cache
-        ls -ld .cache
         ls -l .cache
         chmod 777 .cache
+        ls -l .cache
         cd deployment-examples/docker-compose
-        docker compose -f docker-compose-lre.yml up &> docker-compose.log &
+        (docker compose -f docker-compose-lre.yml up 2>&1 | tee -i docker-compose.log) &
         cd ../../
         nix develop --impure --fallback --command \
         bash -c "bazel test //... \
