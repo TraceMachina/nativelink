@@ -71,7 +71,6 @@ services:
       RUST_LOG: ${RUST_LOG:-warn}
       CAS_ENDPOINT: nativelink_local_cas
       SCHEDULER_ENDPOINT: nativelink_scheduler
-    entrypoint: /shared/nativelink
     command: |
       /root/worker.json5
     depends_on:
