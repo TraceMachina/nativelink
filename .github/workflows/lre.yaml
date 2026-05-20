@@ -81,7 +81,7 @@ jobs:
         nix run .#nativelink-worker-init.copyTo docker-daemon:local-worker-init:latest
 
     - name: Compile NativeLink with NativeLink
-      timeout-minutes: 60
+      timeout-minutes: 5 # FIXME: Reset to 60 before merge
       run: |
         set -eu
         mkdir .cache
