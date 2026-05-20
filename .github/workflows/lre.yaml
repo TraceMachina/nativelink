@@ -95,8 +95,7 @@ jobs:
         bash -c "bazel test //... \
            --lockfile_mode=error \
            --verbose_failures \
-           --remote_cache=grpc://127.0.0.1:50051 \
-           --remote_executor=grpc://127.0.0.1:50052"
+           --config self_test --config self_execute"
       env:
           NATIVELINK_IMAGE: local-nativelink:latest
           NATIVELINK_WORKER_INIT_IMAGE: local-worker-init:latest
