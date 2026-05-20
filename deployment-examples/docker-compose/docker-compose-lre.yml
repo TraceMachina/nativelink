@@ -87,8 +87,9 @@ services:
       NL_LOG: json
       CAS_ENDPOINT: nativelink_local_cas
       SCHEDULER_ENDPOINT: nativelink_scheduler
+    entrypoint: /shared/nativelink
     command: |
-      /shared/nativelink /root/worker.json5
+       /root/worker.json5
     depends_on:
       nativelink_local_cas:
         condition: service_started
