@@ -2489,6 +2489,9 @@ exit 1
             result.error.err_tip(|| "Error should exist")?.code,
             Code::DeadlineExceeded
         );
+        assert!(logs_contain(
+            "Command returned non-zero exit code exit_code=1 stdout=\"\" stderr=\"\" command=[\"true\"]"
+        ));
         Ok(())
     }
 
@@ -4601,6 +4604,108 @@ exit 1
 
         assert_eq!(from_utf8(&out_content)?, "./my_sh");
 
+        Ok(())
+    }
+
+    #[nativelink_test]
+    async fn canonicalisation_failure() -> Result<(), Box<dyn core::error::Error>> {
+        const WORKER_ID: &str = "foo_worker_id";
+
+        fn test_monotonic_clock() -> SystemTime {
+            static CLOCK: AtomicU64 = AtomicU64::new(0);
+            monotonic_clock(&CLOCK)
+        }
+
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+
+        let (_, _, cas_store, ac_store) = setup_stores().await?;
+
+        let arguments = vec![
+            "garbage/to-canonicalise".to_string(),
+            "arguments".to_string(),
+            "to test".to_string(),
+        ];
+        let command = Command {
+            arguments,
+            ..Default::default()
+        };
+        let command_digest = serialize_and_upload_message(
+            &command,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let input_root_digest = serialize_and_upload_message(
+            &Directory::default(),
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+
+        let action = Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(input_root_digest.into()),
+            ..Default::default()
+        };
+        let action_digest = serialize_and_upload_message(
+            &action,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
+            RunningActionsManagerArgs {
+                root_action_directory: root_action_directory.clone(),
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::MAX,
+                timeout_handled_externally: false,
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            },
+            Callbacks {
+                now_fn: test_monotonic_clock,
+                sleep_fn: |_duration| Box::pin(future::pending()),
+            },
+        )?);
+
+        let execute_request = ExecuteRequest {
+            action_digest: Some(action_digest.into()),
+            ..Default::default()
+        };
+        let operation_id = OperationId::default().to_string();
+
+        let res = running_actions_manager
+            .create_and_add_action(
+                WORKER_ID.to_string(),
+                StartExecute {
+                    execute_request: Some(execute_request),
+                    operation_id,
+                    queued_timestamp: Some(make_system_time(1000).into()),
+                    platform: action.platform.clone(),
+                    worker_id: WORKER_ID.to_string(),
+                },
+            )
+            .and_then(|action| action.prepare_action().and_then(RunningAction::execute))
+            .await;
+        assert!(res.is_err(), "{res:#?}");
+        assert_eq!(res.unwrap_err(), Error::new_with_messages(Code::NotFound, vec![
+            if cfg!(target_family = "windows") { "The system cannot find the path specified. (os error 3)" } else { "No such file or directory (os error 2)" },
+            "Could not canonicalize path for command root garbage/to-canonicalise.",
+            "Canonicalisation failure. Command=[\n    \"garbage/to-canonicalise\",\n    \"arguments\",\n    \"to test\",\n]"
+            ].into_iter().map(String::from).collect()
+
+        ));
         Ok(())
     }
 }

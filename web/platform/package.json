@@ -3,9 +3,9 @@
   "type": "module",
   "devDependencies": {
     "@astrojs/check": "^0.9.4",
-    "@astrojs/markdown-remark": "^6.3.1",
+    "@astrojs/markdown-remark": "^7.0.0",
     "@astrojs/partytown": "^2.1.4",
-    "@astrojs/react": "^4.2.7",
+    "@astrojs/react": "^5.0.0",
     "@astrojs/sitemap": "^3.3.1",
     "@astrojs/starlight": "^0.34.2",
     "@bazel/bazelisk": "^1.26.0",
