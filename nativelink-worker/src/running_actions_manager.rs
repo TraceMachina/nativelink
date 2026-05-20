@@ -163,8 +163,18 @@ pub fn download_to_directory<'a>(
                     .populate_fast_store(digest.into())
                     .and_then(move |()| async move {
                         if is_zero_digest(digest) {
-                            let mut file_slot = fs::create_file(&dest).await?;
-                            file_slot.write_all(&[]).await?;
+                            // Zero-digest files are never persisted by the
+                            // FilesystemStore, so materialise them directly
+                            // in the worker exec dir. Attach context so a
+                            // failure here is diagnosable as a missing
+                            // empty file rather than a generic IO error.
+                            let mut file_slot = fs::create_file(&dest)
+                                .await
+                                .err_tip(|| format!("Could not create zero-digest file at {dest}"))?;
+                            file_slot
+                                .write_all(&[])
+                                .await
+                                .err_tip(|| format!("Could not write zero-digest file at {dest}"))?;
                         }
                         else {
                             let file_entry = filesystem_store
@@ -977,7 +987,9 @@ impl RunningActionImpl {
         //                    level more effectively and adjust this.
         info!(?args, "Executing command");
 
-        let program = self.canonicalise_path(args[0], &command_proto.working_directory)?;
+        let program = self
+            .canonicalise_path(args[0], &command_proto.working_directory)
+            .err_tip(|| format!("Canonicalisation failure. Command={args:#?}"))?;
 
         let mut command_builder = process::Command::new(program);
         #[cfg(target_family = "unix")]
@@ -1384,34 +1396,124 @@ impl RunningActionImpl {
                         .err_tip(|| format!("Uploading directory {}", full_path.display()))?,
                     ))
                 } else if metadata.is_symlink() {
-                    let output_symlink = upload_symlink(&full_path, work_directory)
-                        .await
-                        .map(|mut symlink_info| {
-                            symlink_info.name_or_path = NameOrPath::Path(entry);
-                            symlink_info
-                        })
-                        .err_tip(|| format!("Uploading symlink {}", full_path.display()))?;
-                    match fs::metadata(&full_path).await {
-                        Ok(metadata) => {
-                            if metadata.is_dir() {
-                                Ok(OutputType::DirectorySymlink(output_symlink))
-                            } else {
-                                // Note: If it's anything but directory we put it as a file symlink.
-                                Ok(OutputType::FileSymlink(output_symlink))
+                    // Resolve the symlink to determine what it points to.
+                    // Symlinks created by DirectoryCache (absolute paths into
+                    // the cache directory) must NOT be uploaded as symlinks —
+                    // the target path is worker-local and meaningless to the
+                    // client. Instead, follow the symlink and upload the
+                    // resolved content (file or directory).
+                    let target = fs::read_link(&full_path).await.err_tip(|| {
+                        format!("Reading symlink target for {}", full_path.display())
+                    })?;
+                    let is_absolute_symlink = Path::new(&target).is_absolute();
+
+                    if is_absolute_symlink {
+                        // Absolute symlink — resolve and upload contents.
+                        match fs::metadata(&full_path).await {
+                            Ok(resolved_meta) => {
+                                if resolved_meta.is_dir() {
+                                    // Upload as directory (Tree proto).
+                                    Ok(OutputType::Directory(
+                                        upload_directory(
+                                            cas_store.as_pin(),
+                                            &full_path,
+                                            work_directory,
+                                            hasher,
+                                            digest_uploaders,
+                                        )
+                                        .and_then(|(root_dir, children)| async move {
+                                            let tree = ProtoTree {
+                                                root: Some(root_dir),
+                                                children: children.into(),
+                                            };
+                                            let tree_digest = serialize_and_upload_message(
+                                                &tree,
+                                                cas_store.as_pin(),
+                                                &mut hasher.hasher(),
+                                            )
+                                            .await
+                                            .err_tip(|| format!("While processing {entry}"))?;
+                                            Ok(DirectoryInfo {
+                                                path: entry,
+                                                tree_digest,
+                                            })
+                                        })
+                                        .await
+                                        .err_tip(|| {
+                                            format!(
+                                                "Uploading symlinked directory {}",
+                                                full_path.display()
+                                            )
+                                        })?,
+                                    ))
+                                } else {
+                                    // Upload as file (follow symlink).
+                                    Ok(OutputType::File(
+                                        upload_file(
+                                            cas_store.as_pin(),
+                                            &full_path,
+                                            hasher,
+                                            resolved_meta,
+                                            digest_uploaders,
+                                        )
+                                        .await
+                                        .map(|mut file_info| {
+                                            file_info.name_or_path = NameOrPath::Path(entry);
+                                            file_info
+                                        })
+                                        .err_tip(|| {
+                                            format!(
+                                                "Uploading symlinked file {}",
+                                                full_path.display()
+                                            )
+                                        })?,
+                                    ))
+                                }
+                            }
+                            Err(e) => {
+                                if e.code != Code::NotFound {
+                                    return Err(e).err_tip(|| {
+                                        format!(
+                                            "While resolving absolute symlink {}",
+                                            full_path.display()
+                                        )
+                                    });
+                                }
+                                Ok(OutputType::None)
                             }
                         }
-                        Err(e) => {
-                            if e.code != Code::NotFound {
-                                return Err(e).err_tip(|| {
-                                    format!(
-                                        "While querying target symlink metadata for {}",
-                                        full_path.display()
-                                    )
-                                });
+                    } else {
+                        // Relative symlink — action intentionally created it.
+                        // Upload as a proper symlink.
+                        let output_symlink = upload_symlink(&full_path, work_directory)
+                            .await
+                            .map(|mut symlink_info| {
+                                symlink_info.name_or_path = NameOrPath::Path(entry);
+                                symlink_info
+                            })
+                            .err_tip(|| format!("Uploading symlink {}", full_path.display()))?;
+                        match fs::metadata(&full_path).await {
+                            Ok(metadata) => {
+                                if metadata.is_dir() {
+                                    Ok(OutputType::DirectorySymlink(output_symlink))
+                                } else {
+                                    // Note: If it's anything but directory we put it as a file symlink.
+                                    Ok(OutputType::FileSymlink(output_symlink))
+                                }
                             }
-                            // If the file doesn't exist, we consider it a file. Even though the
-                            // file doesn't exist we still need to populate an entry.
-                            Ok(OutputType::FileSymlink(output_symlink))
+                            Err(e) => {
+                                if e.code != Code::NotFound {
+                                    return Err(e).err_tip(|| {
+                                        format!(
+                                            "While querying target symlink metadata for {}",
+                                            full_path.display()
+                                        )
+                                    });
+                                }
+                                // If the file doesn't exist, we consider it a file. Even though the
+                                // file doesn't exist we still need to populate an entry.
+                                Ok(OutputType::FileSymlink(output_symlink))
+                            }
                         }
                     }
                 } else {
@@ -1434,6 +1536,7 @@ impl RunningActionImpl {
                 exit_code = ?execution_result.exit_code,
                 stdout = ?stdout[..min(stdout.len(), 1000)],
                 stderr = ?stderr[..min(stderr.len(), 1000)],
+                command = ?command_proto.arguments,
                 "Command returned non-zero exit code",
             );
         }

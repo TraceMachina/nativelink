@@ -1004,7 +1004,20 @@ async fn update_with_zero_digest() -> Result<(), Error> {
 }
 
 #[nativelink_test]
-async fn get_file_entry_for_zero_digest() -> Result<(), Error> {
+async fn get_file_entry_for_zero_digest_returns_not_found() -> Result<(), Error> {
+    // Regression test for: zero-digest blobs have no backing file on disk,
+    // so `get_file_entry_for_digest` previously handed back a synthetic
+    // FileEntry whose content_path did not exist. Downstream callers (the
+    // worker output-materialisation path) would then try to hard_link from
+    // that non-existent source, silently producing missing or empty output
+    // files in worker exec dirs.
+    //
+    // After the fix, `get_file_entry_for_digest` returns NotFound for
+    // zero digests so callers are forced to materialise empty files
+    // directly (e.g. via `fs::create_file`). This complements the
+    // DirectoryCache zero-byte short-circuit (input-fetch path); this
+    // test covers the FilesystemStore API used by the output-upload /
+    // hardlink path.
     let digest = DigestInfo::new(Sha256::new().finalize().into(), 0);
     let content_path = make_temp_path("content_path");
     let temp_path = make_temp_path("temp_path");
@@ -1020,8 +1033,11 @@ async fn get_file_entry_for_zero_digest() -> Result<(), Error> {
     )
     .await?;
 
-    let file_entry = store.get_file_entry_for_digest(&digest).await?;
-    assert!(file_entry.is_empty());
+    let err = store
+        .get_file_entry_for_digest(&digest)
+        .await
+        .expect_err("zero digest must not return a synthetic FileEntry");
+    assert_eq!(err.code, Code::NotFound, "expected NotFound, got: {err:?}");
     Ok(())
 }
 
