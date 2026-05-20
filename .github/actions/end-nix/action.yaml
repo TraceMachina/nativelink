@@ -13,13 +13,11 @@ runs:
       - name: Check attic push
         if: ${{ inputs.nativelink_attic_token != '' }}
         run: |
-          cd /tmp
-          cat attic-push.log
+          cat /tmp/attic-push.log
         shell: bash
 
       - name: Attic push
         if: ${{ inputs.nix_name != '' && inputs.nativelink_attic_token != '' }}
         run: |
-          cd /tmp
-          ./result/bin/attic push nativelink $(nix eval --raw ${{ inputs.nix_name }})
+          /tmp/result/bin/attic push nativelink $(nix eval --raw ${{ inputs.nix_name }})
         shell: bash

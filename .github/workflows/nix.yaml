@@ -122,7 +122,7 @@ jobs:
     name: ${{ matrix.test-name }}
     strategy:
       matrix:
-          test-name: [buildstream, buck2, rbe-toolchain, mongo]
+          test-name: [buildstream, buck2, mongo]
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -145,3 +145,52 @@ jobs:
         with:
           nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
           nix_name: .#${{ matrix.test-name }}-with-nativelink-test
+
+  # rbe-toolchain is slow because it has many subcommands, so split it out
+  generate-rbe-commands:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Checkout
+        uses: >- # v6.0.2
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Prepare Worker
+        uses: ./.github/actions/prepare-nix
+        with:
+          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
+
+      - name: Get commands list
+        run: |
+          COMMANDS=$(nix run .#rbe-toolchain-with-nativelink-test list)
+          echo "matrix={\"command\":${COMMANDS}}" >> $GITHUB_OUTPUT
+        id: set-matrix
+
+  rbe-toolchain:
+    name: rbe ${{ matrix.command}}
+    needs: [generate-rbe-commands]
+    strategy:
+        matrix: ${{fromJson(needs.generate-rbe-commands.outputs.matrix)}}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: >- # v6.0.2
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Prepare Worker
+        uses: ./.github/actions/prepare-nix
+        with:
+          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
+
+      - name: Test ${{ matrix.command }} with rbe
+        run: |
+          nix run -L .#rbe-toolchain-with-nativelink-test ${{ matrix.command }}
+
+      - name: Teardown Worker
+        uses: ./.github/actions/end-nix
+        if: always()
+        with:
+          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
+          nix_name: .#rbe-toolchain-with-nativelink-test

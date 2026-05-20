@@ -17,7 +17,6 @@ use core::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use bincode::serde::{decode_from_slice, encode_to_vec};
 use futures::stream::{self, FuturesOrdered, StreamExt, TryStreamExt};
 use nativelink_config::stores::DedupSpec;
 use nativelink_error::{Code, Error, ResultExt, make_err};
@@ -35,6 +34,7 @@ use tokio_util::io::StreamReader;
 use tracing::warn;
 
 use crate::cas_utils::is_zero_digest;
+use crate::compression_store::WincodeConfig;
 
 // NOTE: If these change update the comments in `stores.rs` to reflect
 // the new defaults.
@@ -43,16 +43,20 @@ const DEFAULT_NORM_SIZE: u64 = 256 * 1024;
 const DEFAULT_MAX_SIZE: u64 = 512 * 1024;
 const DEFAULT_MAX_CONCURRENT_FETCH_PER_GET: usize = 10;
 
-#[derive(Serialize, Deserialize, PartialEq, Eq, Debug, Default, Clone)]
+#[derive(
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    Debug,
+    Default,
+    Clone,
+    wincode::SchemaRead,
+    wincode::SchemaWrite,
+)]
 pub struct DedupIndex {
     pub entries: Vec<DigestInfo>,
 }
-
-type LegacyBincodeConfig = bincode::config::Configuration<
-    bincode::config::LittleEndian,
-    bincode::config::Fixint,
-    bincode::config::NoLimit,
->;
 
 #[derive(MetricsComponent)]
 pub struct DedupStore {
@@ -63,7 +67,7 @@ pub struct DedupStore {
     fast_cdc_decoder: FastCDC,
     #[metric(help = "Maximum number of concurrent fetches per get")]
     max_concurrent_fetch_per_get: usize,
-    bincode_config: LegacyBincodeConfig,
+    wincode_config: WincodeConfig,
 }
 
 impl core::fmt::Debug for DedupStore {
@@ -116,7 +120,7 @@ impl DedupStore {
                 usize::try_from(max_size).err_tip(|| "Could not convert max_size to usize")?,
             ),
             max_concurrent_fetch_per_get,
-            bincode_config: bincode::config::legacy(),
+            wincode_config: WincodeConfig::new(),
         }))
     }
 
@@ -139,8 +143,11 @@ impl DedupStore {
                 Ok(data) => data,
             };
 
-            match decode_from_slice::<DedupIndex, _>(&data, self.bincode_config) {
-                Ok((dedup_index, _)) => dedup_index,
+            match wincode::config::deserialize::<DedupIndex, WincodeConfig>(
+                &data,
+                self.wincode_config,
+            ) {
+                Ok(dedup_index) => dedup_index,
                 Err(err) => {
                     warn!(?key, ?err, "Failed to deserialize index in dedup store",);
                     // We return the equivalent of NotFound here so the client is happy.
@@ -229,11 +236,11 @@ impl StoreDriver for DedupStore {
             .try_collect()
             .await?;
 
-        let serialized_index = encode_to_vec(
+        let serialized_index = wincode::config::serialize(
             &DedupIndex {
                 entries: index_entries,
             },
-            self.bincode_config,
+            self.wincode_config,
         )
         .map_err(|e| {
             make_err!(
@@ -273,15 +280,14 @@ impl StoreDriver for DedupStore {
                 .get_part_unchunked(key, 0, None)
                 .await
                 .err_tip(|| "Failed to read index store in dedup store")?;
-            let (dedup_index, _) = decode_from_slice::<DedupIndex, _>(&data, self.bincode_config)
+            wincode::config::deserialize::<DedupIndex, WincodeConfig>(&data, self.wincode_config)
                 .map_err(|e| {
-                make_err!(
-                    Code::Internal,
-                    "Failed to deserialize index in dedup_store::get_part : {:?}",
-                    e
-                )
-            })?;
-            dedup_index
+                    make_err!(
+                        Code::Internal,
+                        "Failed to deserialize index in dedup_store::get_part : {:?}",
+                        e
+                    )
+                })?
         };
 
         let mut start_byte_in_stream: u64 = 0;

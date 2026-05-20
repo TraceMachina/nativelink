@@ -85,6 +85,7 @@ rust_library(
         "@crates//:tracing-subscriber",
         "@crates//:uuid",
         "@crates//:walkdir",
+        "@crates//:wincode",
     ],
 )
 
@@ -137,6 +138,8 @@ rust_test_suite(
         "@crates//:opentelemetry-http",
         "@crates//:parking_lot",
         "@crates//:pretty_assertions",
+        "@crates//:prost",
+        "@crates//:prost-types",
         "@crates//:rand",
         "@crates//:serde_json",
         "@crates//:sha2",

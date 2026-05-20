@@ -4,7 +4,7 @@ lints.workspace = true
 [package]
 edition = "2024"
 name = "nativelink-store"
-version = "1.1.0"
+version = "1.2.0"
 
 [dependencies]
 nativelink-config = { path = "../nativelink-config" }
@@ -38,10 +38,6 @@ azure_storage_blobs = { version = "0.21.0", default-features = false, features =
   "hmac_rust",
 ] }
 base64 = { version = "0.22.1", default-features = false, features = ["std"] }
-bincode = { version = "2.0.1", default-features = false, features = [
-  "alloc",
-  "serde",
-] }
 blake3 = { version = "1.8.0", default-features = false }
 byteorder = { version = "1.5.0", default-features = false }
 bytes = { version = "1.10.1", default-features = false }
@@ -119,6 +115,10 @@ url = { version = "2.5.7", default-features = false }
 uuid = { version = "1.16.0", default-features = false, features = [
   "serde",
   "v4",
+] }
+wincode = { version = "0.5.4", default-features = false, features = [
+  "alloc",
+  "derive",
 ] }
 
 [dev-dependencies]

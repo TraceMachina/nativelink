@@ -4,7 +4,7 @@ lints.workspace = true
 [package]
 edition = "2024"
 name = "nativelink-util"
-version = "1.1.0"
+version = "1.2.0"
 
 [dependencies]
 nativelink-config = { path = "../nativelink-config" }
@@ -93,6 +93,7 @@ uuid = { version = "1.16.0", default-features = false, features = [
   "v6",
 ] }
 walkdir = { version = "2.5.0", default-features = false }
+wincode = { version = "0.5.4", default-features = false, features = ["derive"] }
 
 [dev-dependencies]
 nativelink-macro = { path = "../nativelink-macro" }

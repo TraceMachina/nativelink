@@ -13,6 +13,7 @@ rust_library(
         "src/directory_cache.rs",
         "src/lib.rs",
         "src/local_worker.rs",
+        "src/qos.rs",
         "src/running_actions_manager.rs",
         "src/worker_api_client_wrapper.rs",
         "src/worker_utils.rs",
@@ -51,6 +52,7 @@ rust_library(
         "@crates//:uuid",
     ] + select({
         "@platforms//os:linux": ["@crates//:libc"],
+        "@platforms//os:macos": ["@crates//:libc"],
         "//conditions:default": [],
     }),
 )
@@ -59,6 +61,7 @@ rust_test_suite(
     name = "integration",
     timeout = "short",
     srcs = [
+        "tests/directory_cache_test.rs",
         "tests/local_worker_test.rs",
         "tests/namespace_utils_test.rs",
         "tests/running_actions_manager_test.rs",
@@ -88,15 +91,16 @@ rust_test_suite(
         "@crates//:pretty_assertions",
         "@crates//:prost",
         "@crates//:prost-types",
-        "@crates//:rand",
         "@crates//:serial_test",
         "@crates//:tokio",
         "@crates//:tonic",
         "@crates//:tracing",
         "@crates//:tracing-test",
+        "@crates//:uuid",
         "@crates//:which",
     ] + select({
         "@platforms//os:linux": ["@crates//:libc"],
+        "@platforms//os:macos": ["@crates//:libc"],
         "//conditions:default": [],
     }),
 )
@@ -112,7 +116,6 @@ rust_test(
         "@crates//:hyper",
         "@crates//:pretty_assertions",
         "@crates//:prost-types",
-        "@crates//:rand",
         "@crates//:serial_test",
         "@crates//:tempfile",
         "@crates//:tracing-test",

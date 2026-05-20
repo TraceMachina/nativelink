@@ -20,7 +20,7 @@ use std::sync::Arc;
 use bytes::{Bytes, BytesMut};
 use futures::TryStreamExt;
 use nativelink_config::stores::{RedisMode, RedisSpec};
-use nativelink_error::{Code, Error, ResultExt, make_err};
+use nativelink_error::{Code, Error, ErrorContext, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_redis_tester::{
     ReadOnlyRedis, add_lua_script, add_to_response, fake_redis_sentinel_master_stream,
@@ -40,7 +40,7 @@ use nativelink_util::store_trait::{
     StoreLike, TrueValue, UploadSizeInfo,
 };
 use pretty_assertions::assert_eq;
-use redis::{PushInfo, RedisError, Value};
+use redis::{PushInfo, RedisError, Value, make_extension_error};
 use redis_test::{MockCmd, MockRedisConnection};
 use tokio::time::{sleep, timeout};
 use tracing::{Instrument, info, info_span};
@@ -642,7 +642,8 @@ fn test_connection_errors() {
             messages: vec![
                 "Io: timed out".into(),
                 format!("While connecting to redis with url: redis://nativelink.com:6379/")
-            ]
+            ],
+            context: ErrorContext::None,
         },
         err
     );
@@ -741,7 +742,8 @@ async fn test_sentinel_connect_with_bad_master() {
             messages: vec![
                 "MasterNameNotFoundBySentinel: Master with given name not found in sentinel - MasterNameNotFoundBySentinel".into(),
                 format!("While connecting to redis with url: redis+sentinel://127.0.0.1:{port}/")
-            ]
+            ],
+            context: ErrorContext::None,
         },
         RedisStore::new_standard(spec).await.unwrap_err()
     );
@@ -863,7 +865,8 @@ async fn test_redis_connect_timeout() {
             messages: vec![
                 "Io: timed out".into(),
                 format!("While connecting to redis with url: redis://127.0.0.1:{port}/")
-            ]
+            ],
+            context: ErrorContext::None,
         },
         RedisStore::new_standard(spec).await.unwrap_err()
     );
@@ -1128,6 +1131,170 @@ fn test_search_by_index_failure() -> Result<(), Error> {
     assert!(logs_contain(
         "Error calling ft.aggregate e=TEST - Client: unexpected command index=\"test:_content_prefix_sort_key_3e762c15\" query=\"*\" options=FtAggregateOptions { load: [\"data\", \"version\"], cursor: FtAggregateCursor { count: 1500, max_idle: 30000 }, sort_by: [\"@sort_key\"] } all_args=[\"FT.AGGREGATE\", \"test:_content_prefix_sort_key_3e762c15\", \"*\", \"LOAD\", \"2\", \"data\", \"version\", \"WITHCURSOR\", \"COUNT\", \"1500\", \"MAXIDLE\", \"30000\", \"SORTBY\", \"2\", \"@sort_key\", \"ASC\"]"
     ));
+
+    Ok(())
+}
+
+/// When `ft_create` races a parallel caller, `RediSearch` returns an
+/// Extension-kind error with code="Index" and detail="already exists".
+/// That outcome is benign — the index is in place, which is the only
+/// postcondition we care about. The race-loser's error must not pollute
+/// the merged error surfaced when the second `ft_aggregate` also fails.
+#[nativelink_test]
+fn test_search_by_index_swallows_already_exists_from_ft_create() -> Result<(), Error> {
+    fn make_ft_aggregate() -> MockCmd {
+        MockCmd::new(
+            redis::cmd("FT.AGGREGATE")
+                .arg("test:_content_prefix_sort_key_3e762c15")
+                .arg("@content_prefix:{ Searchable }")
+                .arg("LOAD")
+                .arg(2)
+                .arg("data")
+                .arg("version")
+                .arg("WITHCURSOR")
+                .arg("COUNT")
+                .arg(1500)
+                .arg("MAXIDLE")
+                .arg(30000)
+                .arg("SORTBY")
+                .arg(2usize)
+                .arg("@sort_key")
+                .arg("ASC"),
+            Err::<Value, _>(make_extension_error(
+                "BUSY".to_string(),
+                Some("Redis is busy running a script".to_string()),
+            )),
+        )
+    }
+    fn make_ft_create_already_exists() -> MockCmd {
+        MockCmd::new(
+            redis::cmd("FT.CREATE")
+                .arg("test:_content_prefix_sort_key_3e762c15")
+                .arg("ON")
+                .arg("HASH")
+                .arg("NOHL")
+                .arg("NOFIELDS")
+                .arg("NOFREQS")
+                .arg("NOOFFSETS")
+                .arg("TEMPORARY")
+                .arg(86400)
+                .arg("PREFIX")
+                .arg(1)
+                .arg("test:")
+                .arg("SCHEMA")
+                .arg("content_prefix")
+                .arg("TAG")
+                .arg("sort_key")
+                .arg("TAG")
+                .arg("SORTABLE"),
+            Err::<Value, _>(make_extension_error(
+                "Index".to_string(),
+                Some("already exists".to_string()),
+            )),
+        )
+    }
+
+    let commands = vec![
+        make_ft_aggregate(),
+        make_ft_create_already_exists(),
+        make_ft_aggregate(),
+    ];
+    let store = make_mock_store(commands).await;
+    let search_provider = SearchByContentPrefix {
+        prefix: "Searchable".to_string(),
+    };
+
+    let Err(error) = store.search_by_index_prefix(search_provider).await else {
+        panic!("Expected error from the second ft_aggregate");
+    };
+
+    let formatted = format!("{error}");
+    assert!(
+        !formatted.contains("already exists"),
+        "merged error must not carry the swallowed ft_create noise; got: {formatted}",
+    );
+    assert!(
+        formatted.contains("second ft_aggregate"),
+        "merged error must carry the second ft_aggregate failure context; got: {formatted}",
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+fn test_search_by_index_preserves_other_ft_create_errors() -> Result<(), Error> {
+    fn make_ft_aggregate() -> MockCmd {
+        MockCmd::new(
+            redis::cmd("FT.AGGREGATE")
+                .arg("test:_content_prefix_sort_key_3e762c15")
+                .arg("@content_prefix:{ Searchable }")
+                .arg("LOAD")
+                .arg(2)
+                .arg("data")
+                .arg("version")
+                .arg("WITHCURSOR")
+                .arg("COUNT")
+                .arg(1500)
+                .arg("MAXIDLE")
+                .arg(30000)
+                .arg("SORTBY")
+                .arg(2usize)
+                .arg("@sort_key")
+                .arg("ASC"),
+            Err::<Value, _>(make_extension_error(
+                "BUSY".to_string(),
+                Some("Redis is busy running a script".to_string()),
+            )),
+        )
+    }
+    fn make_ft_create_other_error() -> MockCmd {
+        MockCmd::new(
+            redis::cmd("FT.CREATE")
+                .arg("test:_content_prefix_sort_key_3e762c15")
+                .arg("ON")
+                .arg("HASH")
+                .arg("NOHL")
+                .arg("NOFIELDS")
+                .arg("NOFREQS")
+                .arg("NOOFFSETS")
+                .arg("TEMPORARY")
+                .arg(86400)
+                .arg("PREFIX")
+                .arg(1)
+                .arg("test:")
+                .arg("SCHEMA")
+                .arg("content_prefix")
+                .arg("TAG")
+                .arg("sort_key")
+                .arg("TAG")
+                .arg("SORTABLE"),
+            // A genuinely surprising ft_create failure that must not be
+            // swallowed by the new typed match.
+            Err::<Value, _>(make_extension_error(
+                "PERM".to_string(),
+                Some("no permission".to_string()),
+            )),
+        )
+    }
+
+    let commands = vec![
+        make_ft_aggregate(),
+        make_ft_create_other_error(),
+        make_ft_aggregate(),
+    ];
+    let store = make_mock_store(commands).await;
+    let search_provider = SearchByContentPrefix {
+        prefix: "Searchable".to_string(),
+    };
+
+    let Err(error) = store.search_by_index_prefix(search_provider).await else {
+        panic!("Expected error");
+    };
+    let formatted = format!("{error}");
+    assert!(
+        formatted.contains("PERM") || formatted.contains("no permission"),
+        "merged error must include the real ft_create failure context; got: {formatted}",
+    );
 
     Ok(())
 }
