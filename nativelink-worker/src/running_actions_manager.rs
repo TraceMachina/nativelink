@@ -987,7 +987,9 @@ impl RunningActionImpl {
         //                    level more effectively and adjust this.
         info!(?args, "Executing command");
 
-        let program = self.canonicalise_path(args[0], &command_proto.working_directory)?;
+        let program = self
+            .canonicalise_path(args[0], &command_proto.working_directory)
+            .err_tip(|| format!("Canonicalisation failure. Command={args:#?}"))?;
 
         let mut command_builder = process::Command::new(program);
         #[cfg(target_family = "unix")]
@@ -1534,6 +1536,7 @@ impl RunningActionImpl {
                 exit_code = ?execution_result.exit_code,
                 stdout = ?stdout[..min(stdout.len(), 1000)],
                 stderr = ?stderr[..min(stderr.len(), 1000)],
+                command = ?command_proto.arguments,
                 "Command returned non-zero exit code",
             );
         }
