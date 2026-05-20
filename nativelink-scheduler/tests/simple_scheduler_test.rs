@@ -2116,6 +2116,126 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
     Ok(())
 }
 
+/// Regression test for the worker-OOM redispatch loop.
+#[nativelink_test]
+async fn worker_retries_on_disconnect_and_fails_test() -> Result<(), Error> {
+    let worker_id = WorkerId("worker_id".to_string());
+
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec {
+            max_job_retries: 1,
+            ..Default::default()
+        },
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+    );
+    let action_digest = DigestInfo::new([42u8; 32], 512);
+
+    let mut rx_from_worker =
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
+    let insert_timestamp = make_system_time(1);
+    let mut action_listener =
+        setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp).await?;
+
+    let operation_id = {
+        let operation_id = match rx_from_worker.recv().await.unwrap().update {
+            Some(update_for_worker::Update::StartAction(exec)) => exec.operation_id,
+            v => panic!("Expected StartAction, got : {v:?}"),
+        };
+        assert_eq!(
+            action_listener.changed().await.unwrap().0.stage,
+            ActionStage::Executing
+        );
+        OperationId::from(operation_id.as_str())
+    };
+
+    // First disconnect: attempts becomes 1, still <= max_job_retries=1,
+    // so the action must re-queue (not yet fail).
+    drop(
+        scheduler
+            .update_action(
+                &worker_id,
+                &operation_id,
+                UpdateOperationType::UpdateWithDisconnect,
+            )
+            .await,
+    );
+
+    {
+        let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
+        assert_eq!(
+            action_state.stage,
+            ActionStage::Queued,
+            "first disconnect must re-queue (attempts=1, max_retries=1)"
+        );
+    }
+
+    // Second worker picks the action up.
+    let mut rx_from_worker =
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
+    {
+        match rx_from_worker.recv().await.unwrap().update {
+            Some(update_for_worker::Update::StartAction(_)) => {}
+            v => panic!("Expected StartAction, got : {v:?}"),
+        }
+        assert_eq!(
+            action_listener.changed().await.unwrap().0.stage,
+            ActionStage::Executing
+        );
+    }
+
+    // Second disconnect: attempts becomes 2, > max_job_retries=1, so
+    // the action must transition to Completed with an error that
+    // names the worker-disconnect failure mode explicitly. Pre-fix
+    // this branch would have just re-queued the action a second time
+    // (no attempts increment), and the loop would continue forever.
+    drop(
+        scheduler
+            .update_action(
+                &worker_id,
+                &operation_id,
+                UpdateOperationType::UpdateWithDisconnect,
+            )
+            .await,
+    );
+
+    {
+        let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
+        let ActionStage::Completed(result) = &action_state.stage else {
+            panic!(
+                "Expected Completed after exceeding max_job_retries on disconnects, \
+                 got: {:?}",
+                action_state.stage
+            );
+        };
+        let err = result
+            .error
+            .as_ref()
+            .expect("disconnect-induced Completed must carry an error");
+        let err_str = err.to_string();
+        assert!(
+            err_str.contains("Worker disconnected"),
+            "error should name the worker-disconnect failure mode for grep-ability; \
+             got: {err_str}",
+        );
+        assert!(
+            err_str.contains("max_job_retries") || err_str.contains("crash loop"),
+            "error should explain the cause (crash loop / max retries exceeded) so \
+             operators don't mistake it for TIMEOUT/NO STATUS; got: {err_str}",
+        );
+    }
+
+    Ok(())
+}
+
 #[nativelink_test]
 async fn ensure_scheduler_drops_inner_spawn() -> Result<(), Error> {
     struct DropChecker {

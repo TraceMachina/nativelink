@@ -785,7 +785,30 @@ where
                         ActionStage::Queued
                     }
                 }
-                UpdateOperationType::UpdateWithDisconnect => ActionStage::Queued,
+                UpdateOperationType::UpdateWithDisconnect => {
+                    awaited_action.attempts += 1;
+                    if awaited_action.attempts > self.max_job_retries {
+                        ActionStage::Completed(ActionResult {
+                            execution_metadata: ExecutionMetadata {
+                                worker: maybe_worker_id
+                                    .map_or_else(String::default, ToString::to_string),
+                                ..ExecutionMetadata::default()
+                            },
+                            error: Some(make_err!(
+                                Code::Aborted,
+                                "Worker disconnected {} times (>{} max_job_retries) before \
+                                 completing this action; suspect worker crash loop, e.g. OOM \
+                                 from action working set exceeding pod memory limit. \
+                                 operation_id={operation_id} last_worker={maybe_worker_id:?}",
+                                awaited_action.attempts,
+                                self.max_job_retries,
+                            )),
+                            ..ActionResult::default()
+                        })
+                    } else {
+                        ActionStage::Queued
+                    }
+                }
                 // We shouldn't get here, but we just ignore it if we do.
                 UpdateOperationType::ExecutionComplete => {
                     warn!("inner_update_operation got an ExecutionComplete, that's unexpected.");
