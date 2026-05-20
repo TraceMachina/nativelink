@@ -749,16 +749,19 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
     }
 
     pub async fn get_file_entry_for_digest(&self, digest: &DigestInfo) -> Result<Arc<Fe>, Error> {
+        // Zero-digest blobs have no backing file on disk (FilesystemStore
+        // never persists zero-byte content). The previous implementation
+        // returned a synthetic FileEntry whose content_path did not exist,
+        // which downstream callers would then try to hard_link from,
+        // silently producing missing or empty output files in worker
+        // execution directories. Return NotFound so callers are forced to
+        // take the explicit zero-digest path (e.g. fs::create_file).
         if is_zero_digest(digest) {
-            return Ok(Arc::new(Fe::create(
-                0,
-                0,
-                RwLock::new(EncodedFilePath {
-                    shared_context: self.shared_context.clone(),
-                    path_type: PathType::Content,
-                    key: digest.into(),
-                }),
-            )));
+            return Err(make_err!(
+                Code::NotFound,
+                "{digest} is a zero-digest; FilesystemStore does not persist zero-byte files. \
+                 Callers must materialise empty files directly rather than going through get_file_entry_for_digest."
+            ));
         }
         self.evicting_map
             .get(&digest.into())
