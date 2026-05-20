@@ -1032,7 +1032,9 @@ impl RunningActionImpl {
         //                    level more effectively and adjust this.
         info!(?args, "Executing command");
 
-        let program = self.canonicalise_path(args[0], &command_proto.working_directory)?;
+        let program = self
+            .canonicalise_path(args[0], &command_proto.working_directory)
+            .err_tip(|| format!("Canonicalisation failure. Command={args:#?}"))?;
         if let Some(wire_format_result) = action_supports_persistent_workers(&self.action_info) {
             match wire_format_result {
                 Ok(wire_format) => {
