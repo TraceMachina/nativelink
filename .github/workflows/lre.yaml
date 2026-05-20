@@ -84,6 +84,7 @@ jobs:
       timeout-minutes: 60
       run: |
         set -eu
+        mkdir .cache
         cd deployment-examples/docker-compose
         docker compose -f docker-compose-lre.yml up &> docker-compose.log &
         cd ../../
@@ -97,6 +98,7 @@ jobs:
           NATIVELINK_IMAGE: local-nativelink:latest
           NATIVELINK_WORKER_INIT_IMAGE: local-worker-init:latest
           NATIVELINK_LRE_IMAGE: local-worker-rs:latest
+          NATIVELINK_DIR: ${{ github.workspace }}/.cache
           RUST_LOG: debug
 
     - name: Check Docker compose
