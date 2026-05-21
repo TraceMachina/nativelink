@@ -1,4 +1,5 @@
 import { defineConfig, passthroughImageService } from "astro/config";
+import type { AstroUserConfig } from "astro";
 
 import { rehypeHeadingIds } from "@astrojs/markdown-remark";
 import react from "@astrojs/react";
@@ -14,6 +15,10 @@ import { rehypeMermaid } from "@beoe/rehype-mermaid"; // "rehype-mermaid";
 import rehypeAutolinkHeadings from "rehype-autolink-headings";
 
 import { starlightConfig } from "./starlight.conf";
+
+type AstroVitePlugins = NonNullable<
+  NonNullable<AstroUserConfig["vite"]>["plugins"]
+>;
 
 // https://astro.build/config
 export default defineConfig({
@@ -74,6 +79,6 @@ export default defineConfig({
     ],
   },
   vite: {
-    plugins: [tailwindcss()],
+    plugins: tailwindcss() as unknown as AstroVitePlugins,
   },
 });
