@@ -1424,6 +1424,12 @@ pub struct RedisSpec {
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub connection_timeout_ms: u64,
 
+    /// Per-call ceiling for the `check_health` PING in milliseconds.
+    ///
+    /// Default: 4000 (4 seconds)
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub health_check_timeout_ms: u64,
+
     /// The amount of data to read from the redis server at a time.
     /// This is used to limit the amount of memory used when reading
     /// large objects from the redis server as well as limiting the

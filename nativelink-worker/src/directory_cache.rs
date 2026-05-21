@@ -451,8 +451,8 @@ impl DirectoryCache {
             // CRITICAL: only chmod directories writable, never files. Cached
             // files share an inode with FilesystemStore CAS entries via
             // hardlink (see `download_to_directory` in running_actions_manager).
-            // Calling `set_readwrite_recursive` here would chmod those files
-            // to 0o644, mutating the CAS inode's mode for every other in-flight
+            // A naive recursive chmod here would mutate those files to 0o644,
+            // changing the CAS inode's mode for every other in-flight
             // action that has hardlinked the same blob and causing EACCES on
             // exec (e.g. cc_wrapper.sh) or EPERM on open. Directory write
             // permission is sufficient on unix to unlink files inside.
@@ -733,8 +733,8 @@ mod tests {
             .unwrap();
 
         // Mark the cached tree read-only the way DirectoryCache does after
-        // construction (set_readonly_recursive). This drops the file to 0o444
-        // and the directories to 0o555.
+        // construction (set_readonly_recursive). This sets every file and
+        // directory to 0o555 (read + execute, no write).
         set_readonly_recursive(&cache_entry_dir).await?;
 
         // Simulate an in-flight action workspace that has hardlinked the
@@ -758,7 +758,7 @@ mod tests {
             .permissions()
             .mode()
             & 0o777;
-        assert_eq!(workspace_mode_before, 0o444);
+        assert_eq!(workspace_mode_before, 0o555);
 
         // Run the cleanup that `evict_lru` runs before removing the tree.
         // After the fix this only chmods directories; before the fix this
