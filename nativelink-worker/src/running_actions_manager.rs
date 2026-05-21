@@ -65,6 +65,7 @@ use nativelink_util::action_messages::{
 };
 use nativelink_util::common::{DigestInfo, fs};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
+use nativelink_util::fs_util::set_dir_writable_recursive;
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime};
 use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
 use nativelink_util::{background_spawn, spawn, spawn_blocking};
@@ -300,6 +301,13 @@ pub fn download_to_directory<'a>(
 ///
 /// This provides a significant performance improvement for repeated builds
 /// with the same input directories.
+///
+/// `work_directory` must already exist and be empty when this is called: the
+/// caller pre-creates it so that, on the fallback path, `download_to_directory`
+/// has a destination to write into. The directory cache, however, materializes
+/// the tree with `hardlink_directory_tree` / APFS `clonefile(2)`, both of which
+/// require the destination to *not* exist — so this function removes the empty
+/// directory before invoking the cache and recreates it if the cache fails.
 pub async fn prepare_action_inputs(
     directory_cache: &Option<Arc<crate::directory_cache::DirectoryCache>>,
     cas_store: &FastSlowStore,
@@ -309,11 +317,29 @@ pub async fn prepare_action_inputs(
 ) -> Result<(), Error> {
     // Try cache first if available
     if let Some(cache) = directory_cache {
+        // `clonefile(2)` and `hardlink_directory_tree` both require the
+        // destination to not exist. Remove the empty directory the caller
+        // pre-created; without this the cache fails its precondition on every
+        // action and silently falls back to the slow download path.
+        fs::remove_dir(work_directory)
+            .await
+            .err_tip(|| format!("Failed to clear pre-created work directory {work_directory}"))?;
         match cache
             .get_or_create(*digest, Path::new(work_directory))
             .await
         {
             Ok(cache_hit) => {
+                // The materialized tree's directories inherit the cache
+                // entry's read-only mode (0o555 on the macOS clonefile path).
+                // Bazel actions declare outputs at paths nested inside input
+                // subdirectories, and creating those files needs write
+                // permission on the parent directory. Make every directory in
+                // the tree writable; files are left read-only — they may be
+                // CAS-hardlinked and chmoding them would corrupt the shared
+                // inode for other in-flight actions.
+                set_dir_writable_recursive(Path::new(work_directory))
+                    .await
+                    .err_tip(|| "Failed to make cached input directories writable")?;
                 trace!(
                     ?digest,
                     work_directory, cache_hit, "Successfully prepared inputs via directory cache"
@@ -326,7 +352,14 @@ pub async fn prepare_action_inputs(
                     ?e,
                     "Directory cache failed, falling back to traditional download"
                 );
-                // Fall through to traditional path
+                // The cache may have materialized a partial tree before
+                // failing. `download_to_directory` needs an existing, empty
+                // destination, so discard any partial state and recreate the
+                // work directory.
+                let _cleanup = fs::remove_dir_all(work_directory).await;
+                fs::create_dir(work_directory)
+                    .await
+                    .err_tip(|| format!("Failed to recreate work directory {work_directory}"))?;
             }
         }
     }

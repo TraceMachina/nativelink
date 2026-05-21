@@ -369,6 +369,13 @@ pub async fn remove_file(path: impl AsRef<Path>) -> Result<(), Error> {
     call_with_permit(move |_| std::fs::remove_file(path).map_err(Into::<Error>::into)).await
 }
 
+/// Removes an empty directory. Errors if the directory is not empty; use
+/// [`remove_dir_all`] when the contents should be removed too.
+pub async fn remove_dir(path: impl AsRef<Path>) -> Result<(), Error> {
+    let path = path.as_ref().to_owned();
+    call_with_permit(move |_| std::fs::remove_dir(path).map_err(Into::<Error>::into)).await
+}
+
 pub async fn canonicalize(path: impl AsRef<Path>) -> Result<PathBuf, Error> {
     let path = path.as_ref().to_owned();
     call_with_permit(move |_| std::fs::canonicalize(path).map_err(Into::<Error>::into)).await

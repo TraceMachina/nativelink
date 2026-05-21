@@ -733,8 +733,8 @@ mod tests {
             .unwrap();
 
         // Mark the cached tree read-only the way DirectoryCache does after
-        // construction (set_readonly_recursive). This drops the file to 0o444
-        // and the directories to 0o555.
+        // construction (set_readonly_recursive). This sets every file and
+        // directory to 0o555 (read + execute, no write).
         set_readonly_recursive(&cache_entry_dir).await?;
 
         // Simulate an in-flight action workspace that has hardlinked the
@@ -758,7 +758,7 @@ mod tests {
             .permissions()
             .mode()
             & 0o777;
-        assert_eq!(workspace_mode_before, 0o444);
+        assert_eq!(workspace_mode_before, 0o555);
 
         // Run the cleanup that `evict_lru` runs before removing the tree.
         // After the fix this only chmods directories; before the fix this
