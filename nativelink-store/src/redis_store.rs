@@ -1327,22 +1327,24 @@ impl Drop for RedisSubscription {
             return; // Already dropped, nothing to do.
         };
         let key = receiver.borrow().clone();
-        // IMPORTANT: This must be dropped before receiver_count() is called.
-        drop(receiver);
         let Some(subscribed_keys) = self.weak_subscribed_keys.upgrade() else {
-            return; // Already dropped, nothing to do.
+            return; // Parent dropped — nothing to do.
         };
         let mut subscribed_keys = subscribed_keys.write();
-        let Some(value) = subscribed_keys.get(&key) else {
-            error!(
-                "Key {key} was not found in subscribed keys when checking if it should be removed."
+        let Some(publisher) = subscribed_keys.get(&key) else {
+            warn!(
+                %key,
+                "RedisSubscription::drop: key absent from subscribed_keys under write lock — \
+                 indicates an unexpected removal path",
             );
             return;
         };
-        // If we have no receivers, cleanup the entry from our map.
-        if value.receiver_count() == 0 {
-            subscribed_keys.remove(key);
+        // Count includes our own (still-alive) receiver. If we are the
+        // sole subscriber, remove the publisher entry.
+        if publisher.receiver_count() == 1 {
+            subscribed_keys.remove(&key);
         }
+        drop(receiver);
     }
 }
 
