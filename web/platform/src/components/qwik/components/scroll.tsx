@@ -5,7 +5,7 @@ export const ScrollTracker = component$((props: { scrolled: boolean }) => {
   const scrolled = useSignal<boolean>(props.scrolled);
 
   useVisibleTask$(() => {
-    const cleanup = scroll((progress) => {
+    const cleanup = scroll((progress: number) => {
       // Progress is a value between 0 and 1
       // Consider scrolled if we're even slightly scrolled down
       const isScrolled = progress > 0;
