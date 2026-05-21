@@ -51,10 +51,14 @@ pub enum CloneMethod {
 /// # Platform Support
 /// - macOS: Tries APFS `clonefile(2)` first (O(1), copy-on-write). On failure
 ///   (e.g., cross-volume EXDEV, or any unexpected errno) falls back to per-file
-///   `fs::hard_link`. After a successful clone, the destination tree is made
-///   writable (0o755 / 0o644) because the clone inherits the source's
-///   permissions, and cached subtrees are 0o555 / 0o444. The COW semantics of
-///   `clonefile(2)` mean writes to the destination do not affect the source.
+///   `fs::hard_link`. After a successful clone, only the destination root is
+///   chmod'd to 0o755 so the worker can create the action's declared output
+///   files inside it. Existing entries inherit the source's read-only mode
+///   (0o555) — this matches the hermeticity contract
+///   enforced by Bazel's local sandbox and the REAPI `Action.output_files`
+///   semantics: actions can only write to declared outputs, never mutate
+///   inputs. The COW semantics of `clonefile(2)` mean any writes the worker
+///   does make to the destination do not affect the source.
 /// - Linux: Per-file `fs::hard_link` (directory hardlinks are not supported on
 ///   ext4/btrfs without root). Always returns `CloneMethod::Hardlink`.
 /// - Windows: Per-file `fs::hard_link` (requires NTFS). Always returns
@@ -97,13 +101,17 @@ pub async fn hardlink_directory_tree(src_dir: &Path, dst_dir: &Path) -> Result<C
 
         match try_clonefile(src_dir, dst_dir).await {
             Ok(()) => {
-                // The clone inherits the source's permissions. Cached subtrees
-                // are 0o555 / 0o444, but actions need to write outputs into
-                // their input tree, so make the clone writable. COW means
-                // these writes do not affect the source.
-                set_readwrite_recursive(dst_dir)
+                // Only chmod the destination root so the worker can create
+                // the action's declared output files inside it. Existing
+                // entries (subdirs and files) inherit the source's
+                // read-only mode (0o555) — that's the hermeticity
+                // contract. Skipping the per-file chmod walk avoids an
+                // O(N) syscall sweep that, on real Bazel SwiftCompile
+                // shapes (~2000 inputs), accounts for ~46% of
+                // materialization time.
+                chmod_dir_writable(dst_dir)
                     .await
-                    .err_tip(|| "Failed to make cloned tree writable")?;
+                    .err_tip(|| "Failed to chmod cloned tree root")?;
                 return Ok(CloneMethod::Clonefile);
             }
             Err(e) => {
@@ -176,6 +184,21 @@ async fn try_clonefile(src: &Path, dst: &Path) -> std::io::Result<()> {
     })
     .await
     .map_err(std::io::Error::other)?
+}
+
+/// Sets the directory `dir`'s mode to 0o755 so callers can create new
+/// entries inside it. Used after `clonefile(2)` on the materialized
+/// destination root: the clone inherits the source's read-only mode
+/// (0o555) but the worker needs to drop the action's declared output
+/// files into the root. Existing entries inside `dir` are intentionally
+/// left at their cloned read-only perms — that's the hermeticity
+/// contract.
+#[cfg(target_os = "macos")]
+async fn chmod_dir_writable(dir: &Path) -> Result<(), Error> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755))
+        .await
+        .err_tip(|| format!("Failed to chmod {} to 0o755", dir.display()))
 }
 
 /// Internal recursive function to hardlink directory contents
@@ -271,21 +294,6 @@ pub async fn set_readonly_recursive(dir: &Path) -> Result<(), Error> {
     set_perms_recursive_impl(dir.to_path_buf(), set_readonly_one_path).await
 }
 
-/// Sets a directory tree to read-write for the current user recursively.
-/// This is done so we can delete directories we're evicting.
-///
-/// # Arguments
-/// * `dir` - Directory to make read-write
-///
-/// # Platform Notes
-/// - Unix: Sets permissions to 0o755 (rwxr-xr-x)
-/// - Windows: Clears `FILE_ATTRIBUTE_READONLY`
-pub async fn set_readwrite_recursive(dir: &Path) -> Result<(), Error> {
-    error_if!(!dir.exists(), "Directory does not exist: {}", dir.display());
-
-    set_perms_recursive_impl(dir.to_path_buf(), set_readwrite_one_path).await
-}
-
 /// Sets only the **directories** in a tree to writable for the current user,
 /// leaving files untouched. This is the safe variant for cleanup paths that
 /// need to delete a tree containing CAS-hardlinked files.
@@ -319,10 +327,14 @@ fn set_readonly_one_path(
             use std::os::unix::fs::PermissionsExt;
             let mut perms = metadata.permissions();
 
-            // If it's a directory, set to r-xr-xr-x (555)
-            // If it's a file, set to r--r--r-- (444)
-            let mode = if metadata.is_dir() { 0o555 } else { 0o444 };
-            perms.set_mode(mode);
+            // Both directories and files get r-xr-xr-x (0o555): read and
+            // execute for everyone, write for no one. Files use 0o555 rather
+            // than 0o444 so the execute bit survives on cached executables —
+            // a stripped +x bit makes an action's interpreter or wrapper
+            // script fail with EACCES once the tree is materialized into a
+            // workspace. The write bit stays cleared, so the hermeticity
+            // contract (inputs are immutable) is unchanged.
+            perms.set_mode(0o555);
 
             fs::set_permissions(&path, perms)
                 .await
@@ -333,41 +345,6 @@ fn set_readonly_one_path(
         {
             let mut perms = metadata.permissions();
             perms.set_readonly(true);
-
-            fs::set_permissions(&path, perms)
-                .await
-                .err_tip(|| format!("Failed to set permissions for: {}", path.display()))?;
-        }
-
-        Ok(())
-    })
-}
-
-fn set_readwrite_one_path(
-    path: PathBuf,
-    metadata: Metadata,
-) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>> {
-    Box::pin(async move {
-        // Set the file/directory to read-write for the current user
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = metadata.permissions();
-
-            // If it's a directory, set to rwxr-xr-x (755)
-            // If it's a file, set to rw-r--r-- (644)
-            let mode = if metadata.is_dir() { 0o755 } else { 0o644 };
-            perms.set_mode(mode);
-
-            fs::set_permissions(&path, perms)
-                .await
-                .err_tip(|| format!("Failed to set permissions for: {}", path.display()))?;
-        }
-
-        #[cfg(windows)]
-        {
-            let mut perms = metadata.permissions();
-            perms.set_readonly(false);
 
             fs::set_permissions(&path, perms)
                 .await
@@ -590,16 +567,46 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[nativelink_test("crate")]
-    async fn test_clonefile_dest_is_writable() -> Result<(), Error> {
+    async fn test_clonefile_root_writable_inputs_readonly() -> Result<(), Error> {
         use std::os::unix::fs::PermissionsExt;
 
         let (temp_dir, src_dir) = create_test_directory().await?;
-        // Source mimics the directory cache: 0o555 dirs, 0o444 files.
+        // Source mimics the directory cache: 0o555 dirs and files.
         set_readonly_recursive(&src_dir).await?;
 
         let dst_dir = temp_dir.path().join("clone_dst");
         hardlink_directory_tree(&src_dir, &dst_dir).await?;
 
+        // Root: writable, so the worker can drop the action's declared
+        // outputs inside it.
+        let root_mode = fs::metadata(&dst_dir).await?.permissions().mode() & 0o777;
+        assert_eq!(root_mode, 0o755, "destination root must be writable");
+
+        // Subdir and existing file: stay read-only. Hermeticity contract —
+        // inputs are not writable. Matches Bazel's local-sandbox model and
+        // REAPI Action.output_files semantics: actions can only write to
+        // declared outputs, not mutate inputs.
+        let dst_subdir_mode = fs::metadata(dst_dir.join("subdir"))
+            .await?
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            dst_subdir_mode, 0o555,
+            "cloned subdirs must inherit source read-only mode"
+        );
+
+        let dst_file_mode = fs::metadata(dst_dir.join("file1.txt"))
+            .await?
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            dst_file_mode, 0o555,
+            "cloned files must inherit source read-only mode"
+        );
+
+        // Source untouched.
         let src_subdir_mode = fs::metadata(src_dir.join("subdir"))
             .await?
             .permissions()
@@ -610,15 +617,49 @@ mod tests {
             "source dir should still be readonly after clone"
         );
 
-        let dst_subdir_mode = fs::metadata(dst_dir.join("subdir"))
-            .await?
-            .permissions()
-            .mode()
-            & 0o777;
-        assert_eq!(
-            dst_subdir_mode, 0o755,
-            "cloned dir should be writable so actions can write outputs"
-        );
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[nativelink_test("crate")]
+    async fn test_clonefile_root_accepts_new_files() -> Result<(), Error> {
+        let (temp_dir, src_dir) = create_test_directory().await?;
+        set_readonly_recursive(&src_dir).await?;
+
+        let dst_dir = temp_dir.path().join("clone_dst");
+        hardlink_directory_tree(&src_dir, &dst_dir).await?;
+
+        // The worker creates declared output files at the action's
+        // working directory root. Verify a new file can be created there
+        // even though everything inside the clone is read-only (0o555).
+        let new_output = dst_dir.join("new_output.bin");
+        fs::write(&new_output, b"action output").await?;
+        assert_eq!(fs::read(&new_output).await?, b"action output");
+
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[nativelink_test("crate")]
+    async fn test_clonefile_input_mutation_fails() -> Result<(), Error> {
+        let (temp_dir, src_dir) = create_test_directory().await?;
+        set_readonly_recursive(&src_dir).await?;
+
+        let dst_dir = temp_dir.path().join("clone_dst");
+        hardlink_directory_tree(&src_dir, &dst_dir).await?;
+
+        // Hermeticity: actions cannot mutate inputs. A write to an input
+        // file in the cloned tree must fail with EACCES, mirroring what
+        // Bazel's linux-sandbox / darwin-sandbox would do.
+        let input_file = dst_dir.join("file1.txt");
+        let err = fs::write(&input_file, b"mutated")
+            .await
+            .expect_err("input file write should fail (file is 0o555, no write bit)");
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+
+        // Source must be untouched.
+        let src_content = fs::read_to_string(src_dir.join("file1.txt")).await?;
+        assert_eq!(src_content, "Hello, World!");
 
         Ok(())
     }
@@ -647,6 +688,50 @@ mod tests {
         Ok(())
     }
 
+    /// Regression test for the clonefile directory-cache path. Bazel actions
+    /// declare outputs at paths nested inside input subdirectories, but
+    /// `hardlink_directory_tree` chmods only the destination *root* writable
+    /// — cloned subdirs keep the source's read-only mode (0o555). This test
+    /// mirrors the two-step `prepare_action_inputs` performs after a cache
+    /// hit (materialize, then `set_dir_writable_recursive`) and proves a
+    /// nested output can be created only after the recursive walk.
+    #[cfg(target_os = "macos")]
+    #[nativelink_test("crate")]
+    async fn test_clonefile_nested_output_after_dir_writable() -> Result<(), Error> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (temp_dir, src_dir) = create_test_directory().await?;
+        set_readonly_recursive(&src_dir).await?;
+
+        let dst_dir = temp_dir.path().join("clone_dst");
+        hardlink_directory_tree(&src_dir, &dst_dir).await?;
+
+        // The clone leaves "subdir" at 0o555, so creating an output nested
+        // inside it fails — this is the gap a root-only chmod ships.
+        let nested_output = dst_dir.join("subdir").join("nested_output.o");
+        let err = fs::write(&nested_output, b"x")
+            .await
+            .expect_err("nested write must fail while the subdir is 0o555");
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+
+        // This is what prepare_action_inputs does after a cache hit: make
+        // every directory in the materialized tree writable.
+        set_dir_writable_recursive(&dst_dir).await?;
+
+        fs::write(&nested_output, b"action output").await?;
+        assert_eq!(fs::read(&nested_output).await?, b"action output");
+
+        // Files inside the tree stay read-only — hermeticity holds.
+        let file_mode = fs::metadata(dst_dir.join("subdir").join("file2.txt"))
+            .await?
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(file_mode, 0o555, "input files must remain read-only");
+
+        Ok(())
+    }
+
     #[nativelink_test("crate")]
     async fn test_set_readonly_recursive() -> Result<(), Error> {
         let (_temp_dir, test_dir) = create_test_directory().await?;
@@ -659,6 +744,37 @@ mod tests {
 
         let metadata = fs::metadata(test_dir.join("subdir/file2.txt")).await?;
         assert!(metadata.permissions().readonly());
+
+        Ok(())
+    }
+
+    /// `set_dir_writable_recursive` must make *every* directory in a tree
+    /// writable — including nested subdirs — so actions can create outputs
+    /// at nested declared-output paths. Files are left read-only because
+    /// they may share a CAS inode via hardlink.
+    #[cfg(unix)]
+    #[nativelink_test("crate")]
+    async fn test_set_dir_writable_recursive_walks_nested_dirs() -> Result<(), Error> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (_temp_dir, test_dir) = create_test_directory().await?;
+        // Lock the tree down the way the directory cache does post-construction.
+        set_readonly_recursive(&test_dir).await?;
+        set_dir_writable_recursive(&test_dir).await?;
+
+        // Every directory — the root and the nested subdir — must be writable.
+        for dir in [test_dir.clone(), test_dir.join("subdir")] {
+            let mode = fs::metadata(&dir).await?.permissions().mode() & 0o777;
+            assert_eq!(mode, 0o755, "{} must be writable", dir.display());
+        }
+
+        // Files stay read-only — chmoding them would corrupt a shared CAS inode.
+        let file_mode = fs::metadata(test_dir.join("subdir/file2.txt"))
+            .await?
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(file_mode, 0o555, "files must remain read-only");
 
         Ok(())
     }
