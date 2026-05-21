@@ -3187,6 +3187,7 @@ dependencies = [
  "relative-path",
  "scopeguard",
  "serde",
+ "serde_json",
  "serde_json5",
  "serial_test",
  "shlex 2.0.1",

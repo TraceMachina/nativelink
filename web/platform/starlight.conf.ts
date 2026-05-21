@@ -1,3 +1,4 @@
+import type { StarlightUserConfig } from "@astrojs/starlight/types";
 import starlightUtils from "@lorenzo_lewis/starlight-utils";
 
 const docsRoot = "/docs";
@@ -116,6 +117,10 @@ export const starlightConfig = {
         {
           label: "Metrics and Observability",
           link: `${docsRoot}/deployment-examples/metrics`,
+        },
+        {
+          label: "Persistent Workers",
+          link: `${docsRoot}/deployment-examples/persistent-workers`,
         },
       ],
     },
@@ -243,4 +248,4 @@ export const starlightConfig = {
       ],
     },
   ],
-};
+} satisfies StarlightUserConfig;

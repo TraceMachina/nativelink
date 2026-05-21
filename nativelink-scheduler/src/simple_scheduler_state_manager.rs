@@ -354,6 +354,20 @@ where
 
         let now = (self.now_fn)().now();
 
+        // Honor the per-action `Action.timeout` from the RBE protocol as a
+        // backend wall-clock deadline. Without this, the only enforcement is
+        // the Bazel client's --test_timeout, which surfaces as TIMEOUT/NO
+        // STATUS instead of a backend signal pointing at the worker.
+        let action_timeout = awaited_action.action_info().timeout;
+        if action_timeout > Duration::ZERO {
+            let executing_started_at = awaited_action.state().last_transition_timestamp;
+            if let Ok(elapsed) = now.duration_since(executing_started_at)
+                && elapsed > action_timeout
+            {
+                return true;
+            }
+        }
+
         let registry_alive = if let Some(ref worker_registry) = self.worker_registry {
             if let Some(worker_id) = awaited_action.worker_id() {
                 worker_registry
@@ -785,7 +799,37 @@ where
                         ActionStage::Queued
                     }
                 }
-                UpdateOperationType::UpdateWithDisconnect => ActionStage::Queued,
+                UpdateOperationType::UpdateWithDisconnect => {
+                    // A worker disconnect (e.g. OOMKill, pod eviction, network
+                    // drop) used to requeue without counting as an attempt,
+                    // which let an action that always crashes its worker loop
+                    // forever until the Bazel client's --test_timeout fired.
+                    // Count disconnects as attempts so max_job_retries caps the
+                    // loop and the client sees a backend-attributable error.
+                    awaited_action.attempts += 1;
+
+                    if awaited_action.attempts > self.max_job_retries {
+                        ActionStage::Completed(ActionResult {
+                            execution_metadata: ExecutionMetadata {
+                                worker: maybe_worker_id
+                                    .map_or_else(String::default, ToString::to_string),
+                                ..ExecutionMetadata::default()
+                            },
+                            error: Some(make_err!(
+                                Code::Internal,
+                                "Worker disconnected repeatedly while executing this action ({} > {} attempts); the runner likely OOMKilled or the pod was evicted. {}",
+                                awaited_action.attempts,
+                                self.max_job_retries,
+                                format!(
+                                    "for operation_id: {operation_id}, maybe_worker_id: {maybe_worker_id:?}"
+                                ),
+                            )),
+                            ..ActionResult::default()
+                        })
+                    } else {
+                        ActionStage::Queued
+                    }
+                }
                 // We shouldn't get here, but we just ignore it if we do.
                 UpdateOperationType::ExecutionComplete => {
                     warn!("inner_update_operation got an ExecutionComplete, that's unexpected.");
