@@ -259,8 +259,12 @@ async fn evict_with_directory_entry() -> Result<(), Error> {
     double_insert_with_data(config, store, encoded_directory.clone(), encoded_directory).await?;
     assert!(!logs_contain("ERROR"));
     assert!(!logs_contain("WARN"));
+    // The cache entry's size is the sum of its FileNode digest sizes (the
+    // single `demo file` node declares size 5); the empty `demo_subdir`
+    // contributes 0. This is digest-derived accounting (OPT #2), not a
+    // filesystem walk, so it reflects the declared digest size.
     assert!(logs_contain(
-        "Evicting cached directory digest=DigestInfo(\"0101010101010101010101010101010101010101010101010101010101010101-5\") size=0"
+        "Evicting cached directory digest=DigestInfo(\"0101010101010101010101010101010101010101010101010101010101010101-5\") size=5"
     ));
     Ok(())
 }
