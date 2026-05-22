@@ -226,31 +226,21 @@ fn hardlink_directory_tree_recursive<'a>(
             })?;
 
             let dst_path = dst.join(&file_name);
+            // `DirEntry::metadata` does NOT traverse symlinks (it has
+            // `symlink_metadata`/lstat semantics), so `is_symlink()` below
+            // correctly identifies symlink entries and the symlink branch
+            // recreates them as symlinks rather than dereferencing them.
             let metadata = entry
                 .metadata()
                 .await
                 .err_tip(|| format!("Failed to get metadata for: {}", entry_path.display()))?;
 
-            if metadata.is_dir() {
-                // Create subdirectory and recurse
-                fs::create_dir(&dst_path)
-                    .await
-                    .err_tip(|| format!("Failed to create directory: {}", dst_path.display()))?;
-
-                hardlink_directory_tree_recursive(&entry_path, &dst_path).await?;
-            } else if metadata.is_file() {
-                // Hardlink the file
-                fs::hard_link(&entry_path, &dst_path)
-                    .await
-                    .err_tip(|| {
-                        format!(
-                            "Failed to hardlink {} to {}. This may occur if the source and destination are on different filesystems",
-                            entry_path.display(),
-                            dst_path.display()
-                        )
-                    })?;
-            } else if metadata.is_symlink() {
-                // Read the symlink target and create a new symlink
+            if metadata.is_symlink() {
+                // Recreate the symlink as a symlink. Checked BEFORE `is_dir()`
+                // / `is_file()` so a symlink that resolves to a directory is
+                // never treated as a real directory and recursed *through*
+                // (which would dereference the link and potentially escape
+                // the tree).
                 let target = fs::read_link(&entry_path)
                     .await
                     .err_tip(|| format!("Failed to read symlink: {}", entry_path.display()))?;
@@ -272,6 +262,24 @@ fn hardlink_directory_tree_recursive<'a>(
                         })?;
                     }
                 }
+            } else if metadata.is_dir() {
+                // Create subdirectory and recurse
+                fs::create_dir(&dst_path)
+                    .await
+                    .err_tip(|| format!("Failed to create directory: {}", dst_path.display()))?;
+
+                hardlink_directory_tree_recursive(&entry_path, &dst_path).await?;
+            } else if metadata.is_file() {
+                // Hardlink the file
+                fs::hard_link(&entry_path, &dst_path)
+                    .await
+                    .err_tip(|| {
+                        format!(
+                            "Failed to hardlink {} to {}. This may occur if the source and destination are on different filesystems",
+                            entry_path.display(),
+                            dst_path.display()
+                        )
+                    })?;
             }
         }
 
@@ -288,6 +296,9 @@ fn hardlink_directory_tree_recursive<'a>(
 /// # Platform Notes
 /// - Unix: Sets permissions to 0o555 (r-xr-xr-x)
 /// - Windows: Sets `FILE_ATTRIBUTE_READONLY`
+///
+/// Symlink entries in the tree are skipped (their own mode is not meaningful
+/// and `chmod` would follow the link) - see `set_perms_recursive_impl`.
 pub async fn set_readonly_recursive(dir: &Path) -> Result<(), Error> {
     error_if!(!dir.exists(), "Directory does not exist: {}", dir.display());
 
@@ -310,6 +321,9 @@ pub async fn set_readonly_recursive(dir: &Path) -> Result<(), Error> {
 /// # Platform Notes
 /// - Unix: Sets directory permissions to 0o755 (rwxr-xr-x); files are NOT touched.
 /// - Windows: Clears `FILE_ATTRIBUTE_READONLY` on directories only; files are NOT touched.
+///
+/// Symlink entries in the tree are skipped (their own mode is not meaningful
+/// and `chmod` would follow the link) - see `set_perms_recursive_impl`.
 pub async fn set_dir_writable_recursive(dir: &Path) -> Result<(), Error> {
     error_if!(!dir.exists(), "Directory does not exist: {}", dir.display());
 
@@ -403,9 +417,30 @@ where
         + 'a,
 {
     Box::pin(async move {
-        let metadata = fs::metadata(&path)
+        // Use `symlink_metadata` (lstat) rather than `metadata` (stat) so the
+        // walk inspects the entry *itself*, never the target a symlink points
+        // at. This matters for input trees containing symlinks - e.g.
+        // `.venv/bin/python3` created by rules_python / rules_apple venv
+        // tooling. With plain `stat`, a symlink to a directory reports
+        // `is_dir() == true` and the walk would recurse *through* the link
+        // (escaping the tree, or descending into an unrelated directory), and
+        // a symlink to a file would have `chmod` applied to it - and `chmod`
+        // follows symlinks, so it mutates the target. A symlink whose target
+        // does not exist (a dangling link, common when a venv points outside
+        // the action's input set) then fails the whole walk with ENOENT -
+        // the cause of directory-cache actions falling back to the slow
+        // download path.
+        let metadata = fs::symlink_metadata(&path)
             .await
             .err_tip(|| format!("Failed to get metadata for: {}", path.display()))?;
+
+        // Symlinks are skipped entirely: their own mode is not meaningful, a
+        // `chmod` on the link path would follow it and touch the target, and
+        // descending into a symlinked directory would walk outside the tree.
+        // The symlink entry itself is left exactly as created.
+        if metadata.is_symlink() {
+            return Ok(());
+        }
 
         if metadata.is_dir() {
             let mut entries = fs::read_dir(&path)
@@ -775,6 +810,171 @@ mod tests {
             .mode()
             & 0o777;
         assert_eq!(file_mode, 0o555, "files must remain read-only");
+
+        Ok(())
+    }
+
+    /// Regression test for the directory-cache fallback bug: input trees
+    /// produced by `rules_python` / `rules_apple` venv tooling contain
+    /// symlinks (e.g. `.venv/bin/python3`). `set_readonly_recursive` walks the
+    /// materialized tree with `chmod`; `chmod` follows symlinks, so a symlink
+    /// to a file would mutate the target and a *dangling* symlink (target
+    /// outside the action's input set) would fail the whole walk with ENOENT
+    /// — pushing the action onto the slow `download_to_directory` fallback.
+    /// The walk must `lstat` and skip the symlink, leaving it intact.
+    #[cfg(unix)]
+    #[nativelink_test("crate")]
+    async fn test_set_readonly_recursive_skips_symlinks() -> Result<(), Error> {
+        let (_temp_dir, test_dir) = create_test_directory().await?;
+
+        // A symlink to a path *inside* the same tree (the realistic
+        // `.venv/bin/python3 -> ../../file1.txt` shape).
+        let internal_link = test_dir.join("link_to_file1");
+        fs::symlink("file1.txt", &internal_link).await?;
+
+        // A symlink with a *relative* target that does not resolve (dangling).
+        // This is the case that previously failed the walk with ENOENT.
+        let dangling_link = test_dir.join("dangling_link");
+        fs::symlink("../does/not/exist", &dangling_link).await?;
+
+        // A symlink that points at a directory inside the tree. With `stat`
+        // the walk would recurse *through* this link; with `lstat` it must
+        // not.
+        let dir_link = test_dir.join("link_to_subdir");
+        fs::symlink("subdir", &dir_link).await?;
+
+        // The walk must succeed despite the symlinks.
+        set_readonly_recursive(&test_dir).await?;
+
+        // Every symlink is preserved as a symlink with its target intact.
+        for (link, expected_target) in [
+            (&internal_link, "file1.txt"),
+            (&dangling_link, "../does/not/exist"),
+            (&dir_link, "subdir"),
+        ] {
+            let link_meta = fs::symlink_metadata(link).await?;
+            assert!(
+                link_meta.is_symlink(),
+                "{} must still be a symlink after the walk",
+                link.display()
+            );
+            assert_eq!(
+                fs::read_link(link).await?,
+                PathBuf::from(expected_target),
+                "{} target must be unchanged",
+                link.display()
+            );
+        }
+
+        // The real files were still made read-only.
+        assert!(
+            fs::metadata(test_dir.join("file1.txt"))
+                .await?
+                .permissions()
+                .readonly()
+        );
+
+        Ok(())
+    }
+
+    /// Companion to the read-only test: `set_dir_writable_recursive` must also
+    /// be symlink-safe. It must not `chmod` a symlink (which would follow the
+    /// link) and must not recurse through a symlinked directory.
+    #[cfg(unix)]
+    #[nativelink_test("crate")]
+    async fn test_set_dir_writable_recursive_skips_symlinks() -> Result<(), Error> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (_temp_dir, test_dir) = create_test_directory().await?;
+
+        // Symlink to a file inside the tree, a dangling relative symlink, and
+        // a symlink pointing at a directory inside the tree.
+        fs::symlink("file1.txt", test_dir.join("link_to_file1")).await?;
+        fs::symlink("../does/not/exist", test_dir.join("dangling_link")).await?;
+        fs::symlink("subdir", test_dir.join("link_to_subdir")).await?;
+
+        // Mirror the directory cache's post-construction sequence.
+        set_readonly_recursive(&test_dir).await?;
+        set_dir_writable_recursive(&test_dir).await?;
+
+        // Symlinks survive both walks untouched.
+        for (link, expected_target) in [
+            ("link_to_file1", "file1.txt"),
+            ("dangling_link", "../does/not/exist"),
+            ("link_to_subdir", "subdir"),
+        ] {
+            let link_path = test_dir.join(link);
+            assert!(
+                fs::symlink_metadata(&link_path).await?.is_symlink(),
+                "{} must still be a symlink",
+                link_path.display()
+            );
+            assert_eq!(
+                fs::read_link(&link_path).await?,
+                PathBuf::from(expected_target),
+                "{} target must be unchanged",
+                link_path.display()
+            );
+        }
+
+        // Real directories were made writable; real files stayed read-only.
+        let dir_mode = fs::metadata(test_dir.join("subdir"))
+            .await?
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(dir_mode, 0o755, "real subdir must be writable");
+        let file_mode = fs::metadata(test_dir.join("subdir/file2.txt"))
+            .await?
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(file_mode, 0o555, "real files must stay read-only");
+
+        Ok(())
+    }
+
+    /// `hardlink_directory_tree` must recreate symlink entries as symlinks at
+    /// the destination (not dereference them), and the subsequent
+    /// `set_readonly_recursive` walk over the materialized tree must succeed.
+    /// This is the end-to-end shape `DirectoryCache::get_or_create` runs.
+    #[cfg(unix)]
+    #[nativelink_test("crate")]
+    async fn test_hardlink_directory_tree_preserves_symlinks() -> Result<(), Error> {
+        let (temp_dir, src_dir) = create_test_directory().await?;
+
+        // Symlink to a sibling file, a dangling relative symlink, and a
+        // symlink to a subdirectory — all inside the source tree.
+        fs::symlink("file1.txt", src_dir.join("link_to_file1")).await?;
+        fs::symlink("../does/not/exist", src_dir.join("dangling_link")).await?;
+        fs::symlink("subdir", src_dir.join("link_to_subdir")).await?;
+
+        let dst_dir = temp_dir.path().join("test_dst");
+        hardlink_directory_tree(&src_dir, &dst_dir).await?;
+
+        // Each symlink is materialized as a symlink with its target intact.
+        for (link, expected_target) in [
+            ("link_to_file1", "file1.txt"),
+            ("dangling_link", "../does/not/exist"),
+            ("link_to_subdir", "subdir"),
+        ] {
+            let link_path = dst_dir.join(link);
+            assert!(
+                fs::symlink_metadata(&link_path).await?.is_symlink(),
+                "{} must be a symlink in the materialized tree",
+                link_path.display()
+            );
+            assert_eq!(
+                fs::read_link(&link_path).await?,
+                PathBuf::from(expected_target),
+                "{} target must be preserved",
+                link_path.display()
+            );
+        }
+
+        // The read-only walk over the materialized tree must not choke on the
+        // symlinks (this is the operation that previously failed the cache).
+        set_readonly_recursive(&dst_dir).await?;
 
         Ok(())
     }
