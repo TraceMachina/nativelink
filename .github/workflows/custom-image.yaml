@@ -114,7 +114,7 @@ jobs:
         id: upload
         run: |
           GIT_HASH=$(git rev-parse --short HEAD)
-          nix run .#publish-ghcr ${{ needs.check-trigger.outputs.image }} "$GIT_HASH"
+          nix run --fallback .#publish-ghcr ${{ needs.check-trigger.outputs.image }} "$GIT_HASH"
 
           IMAGE_NAME=$(nix eval .#${{ needs.check-trigger.outputs.image }}.imageName --raw)
           echo "image_tag=ghcr.io/${{ github.repository_owner }}/${IMAGE_NAME}:${GIT_HASH}" >> $GITHUB_OUTPUT
