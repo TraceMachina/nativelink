@@ -28,6 +28,7 @@ use nativelink_store::ac_utils::get_and_decode_digest;
 use nativelink_store::cas_utils::is_zero_digest;
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::{FileEntry, FilesystemStore};
+use nativelink_util::background_spawn;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::fs_util::{CloneMethod, hardlink_directory_tree, set_dir_writable_recursive};
 use nativelink_util::store_trait::{StoreKey, StoreLike};
@@ -164,43 +165,42 @@ impl DirectoryCache {
     /// * `Ok(false)` - Cache miss (directory was constructed)
     /// * `Err` - Error during construction or hardlinking
     pub async fn get_or_create(&self, digest: DigestInfo, dest_path: &Path) -> Result<bool, Error> {
-        // Fast path: check if already in cache
-        {
-            let mut cache = self.cache.write().await;
-            if let Some(metadata) = cache.get_mut(&digest) {
-                // Update access time and ref count
-                metadata.last_access = SystemTime::now();
-                metadata.ref_count += 1;
-
-                debug!(
-                    ?digest,
-                    path = ?metadata.path,
-                    "Directory cache HIT"
-                );
-
-                // Try to hardlink from cache
-                match hardlink_directory_tree(&metadata.path, dest_path).await {
-                    Ok(method) => {
-                        self.record_clone_method(method);
-                        metadata.ref_count -= 1;
-                        return Ok(true);
-                    }
-                    Err(e) => {
-                        warn!(
-                            ?digest,
-                            error = ?e,
-                            "Failed to hardlink from cache, will reconstruct"
-                        );
-                        metadata.ref_count -= 1;
-                        // Fall through to reconstruction
-                    }
+        // Fast path: check if already in cache.
+        //
+        // The cache write lock is held only long enough to bump `ref_count`
+        // and snapshot the entry's path — NOT across the syscall-heavy
+        // `hardlink_directory_tree`. A global lock held across that
+        // materialization serializes every concurrent `get_or_create`. The
+        // `ref_count` bump is what makes releasing the lock safe: eviction
+        // skips any entry with `ref_count > 0`, so the cache path cannot be
+        // deleted out from under the unlocked materialization.
+        if let Some(cache_path) = self.acquire_entry(&digest).await {
+            debug!(?digest, ?cache_path, "Directory cache HIT");
+            let result = hardlink_directory_tree(&cache_path, dest_path).await;
+            self.release_entry(&digest).await;
+            match result {
+                Ok(method) => {
+                    self.record_clone_method(method);
+                    return Ok(true);
+                }
+                Err(e) => {
+                    warn!(
+                        ?digest,
+                        error = ?e,
+                        "Failed to hardlink from cache, will reconstruct"
+                    );
+                    // Fall through to reconstruction.
                 }
             }
         }
 
         debug!(?digest, "Directory cache MISS");
 
-        // Get or create construction lock to prevent stampede
+        // Single-flight: only one task constructs a given digest at a time.
+        // Concurrent callers for the same digest block on this per-digest
+        // mutex; when the constructor finishes and inserts the entry, the
+        // waiters wake, find it in the cache, and materialize their own
+        // destination from the single shared cache entry.
         let construction_lock = {
             let mut locks = self.construction_locks.lock().await;
             locks
@@ -208,30 +208,46 @@ impl DirectoryCache {
                 .or_insert_with(|| Arc::new(Mutex::new(())))
                 .clone()
         };
-
-        // Only one task constructs at a time for this digest
         let _guard = construction_lock.lock().await;
 
-        // Check again in case another task just constructed it
-        {
-            let cache = self.cache.read().await;
-            if let Some(metadata) = cache.get(&digest) {
-                return match hardlink_directory_tree(&metadata.path, dest_path).await {
-                    Ok(method) => {
-                        self.record_clone_method(method);
-                        Ok(true)
-                    }
-                    Err(e) => {
-                        warn!(
-                            ?digest,
-                            error = ?e,
-                            "Failed to hardlink after construction"
-                        );
-                        // Construct directly at dest_path
-                        self.construct_directory(digest, dest_path).await?;
-                        Ok(false)
-                    }
-                };
+        // Run the construction/materialization under the per-digest guard,
+        // then drop the per-digest mutex from the stampede map regardless of
+        // outcome so it cannot grow unbounded. The guard (`_guard`) is still
+        // held until the end of this function — `forget_construction_lock`
+        // only unmaps the Arc; any waiter already cloned it before blocking.
+        let result = self.construct_and_materialize(digest, dest_path).await;
+        self.forget_construction_lock(&digest).await;
+        result
+    }
+
+    /// The cache-miss body, run while holding the per-digest construction
+    /// guard. Split out so `get_or_create` can unconditionally clean up the
+    /// construction-lock map entry afterwards on every exit path.
+    async fn construct_and_materialize(
+        &self,
+        digest: DigestInfo,
+        dest_path: &Path,
+    ) -> Result<bool, Error> {
+        // Re-check: another task may have just constructed this digest while
+        // we waited on the construction lock.
+        if let Some(cache_path) = self.acquire_entry(&digest).await {
+            let result = hardlink_directory_tree(&cache_path, dest_path).await;
+            self.release_entry(&digest).await;
+            match result {
+                Ok(method) => {
+                    self.record_clone_method(method);
+                    return Ok(true);
+                }
+                Err(e) => {
+                    warn!(
+                        ?digest,
+                        error = ?e,
+                        "Failed to hardlink after construction"
+                    );
+                    // Construct directly at dest_path as a last resort.
+                    self.construct_directory(digest, dest_path).await?;
+                    return Ok(false);
+                }
             }
         }
 
@@ -249,31 +265,77 @@ impl DirectoryCache {
         let cache_path = self.get_cache_path(&digest);
         let size = self.construct_directory(digest, &cache_path).await?;
 
-        // Add to cache
-        {
+        // Insert into the cache. Only the in-memory map mutation runs under
+        // the write lock: `evict_if_needed` selects victims and removes them
+        // from the map here, but their filesystem deletion is dispatched off
+        // the lock so eviction I/O never serializes other callers.
+        //
+        // The new entry is inserted with `ref_count: 1` — pinned. The
+        // hardlink-to-destination below runs unlocked, and a concurrent
+        // `get_or_create` for an unrelated digest could otherwise pick this
+        // brand-new, last-accessed-now entry as an eviction victim and delete
+        // its tree mid-hardlink. The pin blocks that; `release_entry` drops it
+        // to 0 once the hardlink is done.
+        let evicted = {
             let mut cache = self.cache.write().await;
-
-            // Evict if necessary
-            self.evict_if_needed(size, &mut cache).await?;
-
+            let evicted = self.evict_if_needed(size, &mut cache);
             cache.insert(
                 digest,
                 CachedDirectoryMetadata {
                     path: cache_path.clone(),
                     size,
                     last_access: SystemTime::now(),
-                    ref_count: 0,
+                    ref_count: 1,
                 },
             );
-        }
+            evicted
+        };
+        Self::dispatch_evictions(evicted);
 
-        // Hardlink to destination
-        let method = hardlink_directory_tree(&cache_path, dest_path)
-            .await
-            .err_tip(|| "Failed to hardlink newly cached directory")?;
+        // Hardlink to destination (unlocked). The entry is pinned
+        // (`ref_count == 1`) so it cannot be evicted from under this hardlink.
+        let result = hardlink_directory_tree(&cache_path, dest_path).await;
+        self.release_entry(&digest).await;
+        let method = result.err_tip(|| "Failed to hardlink newly cached directory")?;
         self.record_clone_method(method);
 
         Ok(false)
+    }
+
+    /// If `digest` is cached, bumps its `ref_count` (pinning it against
+    /// eviction) and returns a snapshot of its on-disk path. The cache write
+    /// lock is released before returning, so the caller can perform unlocked
+    /// I/O against the returned path. Every successful `acquire_entry` MUST be
+    /// balanced by exactly one `release_entry`.
+    async fn acquire_entry(&self, digest: &DigestInfo) -> Option<PathBuf> {
+        let mut cache = self.cache.write().await;
+        let metadata = cache.get_mut(digest)?;
+        metadata.last_access = SystemTime::now();
+        metadata.ref_count += 1;
+        Some(metadata.path.clone())
+    }
+
+    /// Releases a pin taken by [`Self::acquire_entry`]. Tolerates the entry
+    /// having been removed from the map in the interim (it cannot have been,
+    /// because a non-zero `ref_count` blocks eviction, but be defensive).
+    async fn release_entry(&self, digest: &DigestInfo) {
+        let mut cache = self.cache.write().await;
+        if let Some(metadata) = cache.get_mut(digest) {
+            metadata.ref_count = metadata.ref_count.saturating_sub(1);
+        }
+    }
+
+    /// Drops the per-digest construction mutex from the stampede map once
+    /// construction (or the post-construction recheck) for `digest` is done.
+    /// Without this the map grows unbounded over the worker's lifetime.
+    ///
+    /// Safe to call while holding the construction guard: a concurrent waiter
+    /// already cloned the `Arc<Mutex>` before blocking, so removing the map
+    /// entry only prevents *future* callers from joining this exact mutex —
+    /// they will create a fresh one, re-check the cache, find the entry, and
+    /// take the fast hardlink path. It never causes a redundant construct.
+    async fn forget_construction_lock(&self, digest: &DigestInfo) {
+        self.construction_locks.lock().await.remove(digest);
     }
 
     /// Constructs a directory from the CAS at the given path and returns the
@@ -541,24 +603,35 @@ impl DirectoryCache {
         Ok(())
     }
 
-    /// Evicts entries if cache is too full
-    async fn evict_if_needed(
+    /// Selects and removes victim entries from the in-memory `cache` map until
+    /// it is within the entry-count and size budgets, and returns the on-disk
+    /// paths of the removed entries.
+    ///
+    /// This is a pure in-memory operation — it does NO filesystem I/O and is
+    /// not `async`. The caller runs it under the cache write lock and then,
+    /// after releasing the lock, dispatches the returned paths for deletion
+    /// via [`Self::dispatch_evictions`]. Keeping eviction's `remove_dir_all`
+    /// off the write lock prevents one caller's eviction I/O from serializing
+    /// every other concurrent `get_or_create`.
+    fn evict_if_needed(
         &self,
         incoming_size: u64,
         cache: &mut HashMap<DigestInfo, CachedDirectoryMetadata>,
-    ) -> Result<(), Error> {
+    ) -> Vec<PathBuf> {
+        let mut evicted_paths = Vec::new();
+
         // Check entry count
         while cache.len() >= self.config.max_entries {
-            let evicted_size = self.evict_lru(cache).await?;
-            if evicted_size.is_none() {
-                // nothing evicted, so have to exit
+            let Some((_size, path)) = Self::evict_lru(cache) else {
+                // nothing evictable (all entries pinned) — have to exit
                 warn!(
                     current_items = cache.len(),
                     max_entries = self.config.max_entries,
                     "Unable to evict anything from directory_cache, will exceed max entries"
                 );
                 break;
-            }
+            };
+            evicted_paths.push(path);
         }
 
         // Check total size
@@ -567,75 +640,82 @@ impl DirectoryCache {
             let mut size_after = current_size + incoming_size;
 
             while size_after > self.config.max_size_bytes {
-                let evicted_size = self.evict_lru(cache).await?;
-                match evicted_size {
-                    None => {
-                        // nothing evicted, so have to exit
-                        warn!(
-                            size_after,
-                            max_size_bytes = self.config.max_size_bytes,
-                            "Unable to evict anything from directory_cache, will exceed max size"
-                        );
-                        break;
-                    }
-                    Some(e_size) => {
-                        size_after -= e_size;
-                    }
-                }
+                let Some((e_size, path)) = Self::evict_lru(cache) else {
+                    // nothing evictable (all entries pinned) — have to exit
+                    warn!(
+                        size_after,
+                        max_size_bytes = self.config.max_size_bytes,
+                        "Unable to evict anything from directory_cache, will exceed max size"
+                    );
+                    break;
+                };
+                size_after -= e_size;
+                evicted_paths.push(path);
             }
         }
 
-        Ok(())
+        evicted_paths
     }
 
-    /// Evicts the least recently used entry
-    async fn evict_lru(
-        &self,
+    /// Removes the least-recently-used unpinned entry from the in-memory map
+    /// and returns its `(size, path)`. Entries with `ref_count > 0` are
+    /// in-flight materializations and are never selected — their on-disk tree
+    /// must not be deleted while a caller is hardlinking from it.
+    ///
+    /// Pure in-memory; the actual filesystem deletion is the caller's job.
+    fn evict_lru(
         cache: &mut HashMap<DigestInfo, CachedDirectoryMetadata>,
-    ) -> Result<Option<u64>, Error> {
-        // Find LRU entry that isn't currently in use
+    ) -> Option<(u64, PathBuf)> {
         let to_evict = cache
             .iter()
             .filter(|(_, m)| m.ref_count == 0)
             .min_by_key(|(_, m)| m.last_access)
-            .map(|(digest, _)| *digest);
+            .map(|(digest, _)| *digest)?;
+        let metadata = cache.remove(&to_evict)?;
+        debug!(
+            digest = ?to_evict,
+            size = metadata.size,
+            "Evicting cached directory"
+        );
+        Some((metadata.size, metadata.path))
+    }
 
-        if let Some(digest) = to_evict
-            && let Some(metadata) = cache.remove(&digest)
-        {
-            debug!(?digest, size = metadata.size, "Evicting cached directory");
-
-            // CRITICAL: only chmod directories writable, never files. Cached
-            // files share an inode with FilesystemStore CAS entries via
-            // hardlink (see `download_to_directory` in running_actions_manager).
-            // A naive recursive chmod here would mutate those files to 0o644,
-            // changing the CAS inode's mode for every other in-flight
-            // action that has hardlinked the same blob and causing EACCES on
-            // exec (e.g. cc_wrapper.sh) or EPERM on open. Directory write
-            // permission is sufficient on unix to unlink files inside.
-            if let Err(e) = set_dir_writable_recursive(&metadata.path).await {
-                warn!(
-                    ?digest,
-                    path = ?metadata.path,
-                    error = ?e,
-                    "Unable to mark evicted directory as writable, will probably fail to remove"
-                );
-            }
-
-            // Remove from disk
-            if let Err(e) = fs::remove_dir_all(&metadata.path).await {
-                warn!(
-                    ?digest,
-                    path = ?metadata.path,
-                    error = ?e,
-                    "Failed to remove evicted directory from disk"
-                );
-            }
-
-            return Ok(Some(metadata.size));
+    /// Dispatches filesystem deletion of evicted cache-entry trees onto a
+    /// background task, so eviction I/O never runs under the cache write lock.
+    ///
+    /// Each tree's directories are chmod'd writable first
+    /// (`set_dir_writable_recursive`) — never its files: a cache-entry file
+    /// shares an inode with the `FilesystemStore` CAS blob and every action
+    /// that hardlinked it, so chmoding it would corrupt that shared inode (the
+    /// PR #2347 bug). Directory write permission alone is sufficient to unlink
+    /// files on unix.
+    fn dispatch_evictions(paths: Vec<PathBuf>) {
+        if paths.is_empty() {
+            return;
         }
-
-        Ok(None)
+        background_spawn!("directory_cache_evict", async move {
+            for path in paths {
+                if !path.exists() {
+                    // Already gone (e.g. a prior cleanup, or the cache root
+                    // was torn down). Nothing to do, and not an error.
+                    continue;
+                }
+                if let Err(e) = set_dir_writable_recursive(&path).await {
+                    warn!(
+                        ?path,
+                        error = ?e,
+                        "Unable to mark evicted directory writable, removal may fail"
+                    );
+                }
+                if let Err(e) = fs::remove_dir_all(&path).await {
+                    warn!(
+                        ?path,
+                        error = ?e,
+                        "Failed to remove evicted directory from disk"
+                    );
+                }
+            }
+        });
     }
 
     /// Gets the cache path for a digest
@@ -1426,6 +1506,68 @@ mod tests {
                 0o755,
                 "cache-entry directory {} must be 0o755",
                 dir.display()
+            );
+        }
+
+        Ok(())
+    }
+
+    /// OPT #5: many concurrent `get_or_create` calls for the *same* digest
+    /// must be single-flighted — the directory is constructed exactly once
+    /// and every caller materializes its own destination from that single
+    /// cache entry. Single-flight is observable through the hit/miss return:
+    /// exactly one call sees a miss (`false` — it did the construct), all
+    /// others see a hit (`true`). Every destination must also be correct.
+    ///
+    /// Runs on a multi-threaded runtime so the calls truly race.
+    #[nativelink_test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_concurrent_get_or_create_single_flight() -> Result<(), Error> {
+        use futures::future::join_all;
+
+        let temp_dir = TempDir::new().unwrap();
+        let cache_root = temp_dir.path().join("cache");
+        let (store, dir_digest) = setup_test_store(&temp_dir).await;
+
+        let config = DirectoryCacheConfig {
+            max_entries: 10,
+            max_size_bytes: 1024 * 1024,
+            cache_root,
+        };
+        let cache = Arc::new(DirectoryCache::new(config, store).await?);
+
+        // Fire 16 concurrent requests for the same digest, each to its own
+        // destination.
+        const N: usize = 16;
+        let dests: Vec<PathBuf> = (0..N)
+            .map(|i| temp_dir.path().join(format!("dest_{i}")))
+            .collect();
+        let futures = dests.iter().map(|dest| {
+            let cache = Arc::clone(&cache);
+            let dest = dest.clone();
+            async move { cache.get_or_create(dir_digest, &dest).await }
+        });
+        let results: Vec<bool> = join_all(futures)
+            .await
+            .into_iter()
+            .collect::<Result<_, _>>()?;
+
+        // Exactly one construction (one miss); the rest are cache hits.
+        let misses = results.iter().filter(|hit| !**hit).count();
+        assert_eq!(
+            misses, 1,
+            "exactly one caller should construct the directory (single-flight)"
+        );
+        assert_eq!(results.iter().filter(|hit| **hit).count(), N - 1);
+
+        // The cache holds exactly one entry, and every destination has the
+        // correct, byte-identical content.
+        let stats = cache.stats().await;
+        assert_eq!(stats.entries, 1, "digest must be cached exactly once");
+        for dest in &dests {
+            assert_eq!(
+                fs::read(dest.join("test.txt")).await?,
+                b"Hello, World!",
+                "every concurrently-materialized destination must be correct"
             );
         }
 
