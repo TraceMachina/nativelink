@@ -65,7 +65,6 @@ use nativelink_util::action_messages::{
 };
 use nativelink_util::common::{DigestInfo, fs};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
-use nativelink_util::fs_util::set_dir_writable_recursive;
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime};
 use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
 use nativelink_util::{background_spawn, spawn, spawn_blocking};
@@ -374,17 +373,17 @@ pub async fn prepare_action_inputs(
             .await
         {
             Ok(cache_hit) => {
-                // The materialized tree's directories inherit the cache
-                // entry's read-only mode (0o555 on the macOS clonefile path).
-                // Bazel actions declare outputs at paths nested inside input
-                // subdirectories, and creating those files needs write
-                // permission on the parent directory. Make every directory in
-                // the tree writable; files are left read-only — they may be
-                // CAS-hardlinked and chmoding them would corrupt the shared
-                // inode for other in-flight actions.
-                set_dir_writable_recursive(Path::new(work_directory))
-                    .await
-                    .err_tip(|| "Failed to make cached input directories writable")?;
+                // The materialized tree is already usable. The directory
+                // cache locks each entry down with `set_readonly_recursive`,
+                // which leaves directories writable (0o755) and only makes
+                // files read-only (0o555). The macOS `clonefile(2)` path
+                // copies those modes verbatim and the Linux hardlink walk
+                // creates fresh writable directories, so every directory in
+                // the materialized tree already accepts the nested output
+                // files Bazel actions declare — no separate per-materialize
+                // recursive chmod walk is needed here. Files stay read-only,
+                // preserving the hermeticity contract and the CAS-hardlink
+                // shared-inode invariant.
                 trace!(
                     ?digest,
                     work_directory, cache_hit, "Successfully prepared inputs via directory cache"

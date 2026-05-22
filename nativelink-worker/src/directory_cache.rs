@@ -732,9 +732,9 @@ mod tests {
             .await
             .unwrap();
 
-        // Mark the cached tree read-only the way DirectoryCache does after
-        // construction (set_readonly_recursive). This sets every file and
-        // directory to 0o555 (read + execute, no write).
+        // Lock the cached tree down the way DirectoryCache does after
+        // construction (set_readonly_recursive). This makes every file
+        // read-only (0o555) and leaves every directory writable (0o755).
         set_readonly_recursive(&cache_entry_dir).await?;
 
         // Simulate an in-flight action workspace that has hardlinked the
@@ -797,6 +797,176 @@ mod tests {
             .mode()
             & 0o777;
         assert_eq!(workspace_mode_after_remove, workspace_mode_before);
+
+        Ok(())
+    }
+
+    /// Builds a nested directory tree in the CAS: a root directory containing
+    /// one file plus a subdirectory, and the subdirectory in turn containing a
+    /// file. Returns the store and the root directory's digest. The digests
+    /// are fixed test values — `MemoryStore` keys blobs opaquely and
+    /// `get_and_decode_digest` does not re-verify them.
+    ///
+    /// Only used by `test_materialized_tree_dirs_writable_files_readonly`,
+    /// which is `#[cfg(unix)]`; gated to match so non-unix builds (Windows)
+    /// do not flag this helper as dead code.
+    #[cfg(unix)]
+    async fn setup_nested_test_store() -> (Store, DigestInfo) {
+        let store = Store::new(MemoryStore::new(&MemorySpec::default()));
+
+        // A file shared by both the root and the nested subdirectory.
+        let file_content = b"Hello, World!";
+        let file_digest = DigestInfo::try_new(
+            "dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f",
+            13,
+        )
+        .unwrap();
+        store
+            .as_store_driver_pin()
+            .update_oneshot(file_digest.into(), file_content.to_vec().into())
+            .await
+            .unwrap();
+
+        // The nested subdirectory: contains a single file.
+        let subdir = ProtoDirectory {
+            files: vec![FileNode {
+                name: "nested.txt".to_string(),
+                digest: Some(file_digest.into()),
+                is_executable: false,
+                ..Default::default()
+            }],
+            directories: vec![],
+            symlinks: vec![],
+            ..Default::default()
+        };
+        let mut subdir_data = Vec::new();
+        subdir.encode(&mut subdir_data).unwrap();
+        let subdir_digest = DigestInfo::try_new(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            subdir_data.len() as i64,
+        )
+        .unwrap();
+        store
+            .as_store_driver_pin()
+            .update_oneshot(subdir_digest.into(), subdir_data.into())
+            .await
+            .unwrap();
+
+        // The root directory: one file plus the subdirectory above.
+        let root = ProtoDirectory {
+            files: vec![FileNode {
+                name: "root.txt".to_string(),
+                digest: Some(file_digest.into()),
+                is_executable: false,
+                ..Default::default()
+            }],
+            directories: vec![DirectoryNode {
+                name: "subdir".to_string(),
+                digest: Some(subdir_digest.into()),
+            }],
+            symlinks: vec![],
+            ..Default::default()
+        };
+        let mut root_data = Vec::new();
+        root.encode(&mut root_data).unwrap();
+        let root_digest = DigestInfo::try_new(
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            root_data.len() as i64,
+        )
+        .unwrap();
+        store
+            .as_store_driver_pin()
+            .update_oneshot(root_digest.into(), root_data.into())
+            .await
+            .unwrap();
+
+        (store, root_digest)
+    }
+
+    /// Asserts every directory in `root` (the root itself and every nested
+    /// subdirectory) is writable and every file is read-only.
+    #[cfg(unix)]
+    fn assert_dirs_writable_files_readonly(
+        root: &Path,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + '_>> {
+        Box::pin(async move {
+            use std::os::unix::fs::PermissionsExt;
+
+            let metadata = fs::symlink_metadata(root)
+                .await
+                .err_tip(|| format!("metadata for {}", root.display()))?;
+            let mode = metadata.permissions().mode() & 0o777;
+
+            if metadata.is_dir() {
+                assert_eq!(
+                    mode & 0o200,
+                    0o200,
+                    "directory {} must be writable (mode 0o{mode:o})",
+                    root.display(),
+                );
+                let mut entries = fs::read_dir(root).await?;
+                while let Some(entry) = entries.next_entry().await? {
+                    assert_dirs_writable_files_readonly(&entry.path()).await?;
+                }
+            } else if metadata.is_file() {
+                assert_eq!(
+                    mode & 0o222,
+                    0,
+                    "file {} must be read-only (mode 0o{mode:o})",
+                    root.display(),
+                );
+            }
+            // Symlinks: mode is not meaningful, skip.
+
+            Ok(())
+        })
+    }
+
+    /// After `get_or_create` materializes a tree — on both the fresh
+    /// cache-miss path and the cache-hit path — every directory in the
+    /// destination must be writable (so Bazel actions can create outputs at
+    /// nested declared paths) and every file must be read-only (the file
+    /// inodes are CAS-hardlinked; chmoding them would corrupt the shared
+    /// inode). `prepare_action_inputs` relies on this so it no longer needs a
+    /// separate `set_dir_writable_recursive` post-walk.
+    #[cfg(unix)]
+    #[nativelink_test]
+    async fn test_materialized_tree_dirs_writable_files_readonly() -> Result<(), Error> {
+        let temp_dir = TempDir::new().unwrap();
+        let cache_root = temp_dir.path().join("cache");
+        let (store, root_digest) = setup_nested_test_store().await;
+
+        let config = DirectoryCacheConfig {
+            max_entries: 10,
+            max_size_bytes: 1024 * 1024,
+            cache_root,
+        };
+        let cache = DirectoryCache::new(config, store).await?;
+
+        // Fresh-materialize path (cache miss).
+        let miss_dest = temp_dir.path().join("dest_miss");
+        let hit = cache.get_or_create(root_digest, &miss_dest).await?;
+        assert!(!hit, "first access must be a cache miss");
+        assert!(miss_dest.join("subdir").join("nested.txt").exists());
+        assert_dirs_writable_files_readonly(&miss_dest).await?;
+
+        // A nested output can be created with no separate chmod walk.
+        let nested_output = miss_dest.join("subdir").join("output.o");
+        fs::write(&nested_output, b"action output").await.err_tip(
+            || "creating a nested output must succeed without set_dir_writable_recursive",
+        )?;
+
+        // Cache-hit path: a second materialization of the same digest.
+        let hit_dest = temp_dir.path().join("dest_hit");
+        let hit = cache.get_or_create(root_digest, &hit_dest).await?;
+        assert!(hit, "second access must be a cache hit");
+        assert!(hit_dest.join("subdir").join("nested.txt").exists());
+        assert_dirs_writable_files_readonly(&hit_dest).await?;
+
+        // The cache-hit destination also accepts a nested output directly.
+        fs::write(hit_dest.join("subdir").join("output.o"), b"action output")
+            .await
+            .err_tip(|| "cache-hit destination must accept a nested output directly")?;
 
         Ok(())
     }
