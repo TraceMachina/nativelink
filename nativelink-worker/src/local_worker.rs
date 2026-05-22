@@ -595,7 +595,7 @@ pub async fn new_local_worker(
             cache_root,
         };
 
-        match DirectoryCache::new(worker_cache_config, Store::new(fast_slow_store.clone())).await {
+        match DirectoryCache::new(worker_cache_config, fast_slow_store.clone()).await {
             Ok(cache) => {
                 tracing::info!("Directory cache initialized successfully");
                 Some(Arc::new(cache))
