@@ -235,28 +235,19 @@ impl DirectoryCache {
             }
         }
 
-        // Construct the directory in cache
+        // Construct the directory in cache. `construct_directory` returns the
+        // total tree size accumulated from `FileNode.digest.size_bytes` as it
+        // builds — no post-hoc filesystem walk is needed. It also sets every
+        // cache-entry directory's mode at creation time (0o755), so no
+        // separate permission-fixup walk is needed either.
+        //
+        // The cache entry's *files* are deliberately never chmod'd here:
+        // non-executable files are hardlinks to FilesystemStore CAS blobs (see
+        // `create_file`), and chmoding such a file mutates the inode shared
+        // with the CAS and every other in-flight action that hardlinked the
+        // same blob — the inode-corruption bug PR #2347 fixed.
         let cache_path = self.get_cache_path(&digest);
-        self.construct_directory(digest, &cache_path).await?;
-
-        // Lock the cache entry's *directories* (but never its files) so the
-        // tree cannot be mutated through the cache copy. Files are deliberately
-        // left untouched: non-executable files in a cache entry are hardlinks
-        // to FilesystemStore CAS blobs (see `create_file`), and chmoding such a
-        // file mutates the inode shared with the CAS and every other in-flight
-        // action that hardlinked the same blob — the inode-corruption bug PR
-        // #2347 fixed. Directory write permission is irrelevant for the
-        // hermeticity contract because the materialized destination tree is
-        // a clone/hardlink of this entry and `prepare_action_inputs` sets the
-        // destination's modes independently.
-        set_dir_writable_recursive(&cache_path)
-            .await
-            .err_tip(|| "Failed to normalize cache directory permissions")?;
-
-        // Calculate size
-        let size = nativelink_util::fs_util::calculate_directory_size(&cache_path)
-            .await
-            .err_tip(|| "Failed to calculate directory size")?;
+        let size = self.construct_directory(digest, &cache_path).await?;
 
         // Add to cache
         {
@@ -285,12 +276,22 @@ impl DirectoryCache {
         Ok(false)
     }
 
-    /// Constructs a directory from the CAS at the given path
+    /// Constructs a directory from the CAS at the given path and returns the
+    /// total size of the materialized tree in bytes.
+    ///
+    /// The size is accumulated from `FileNode.digest.size_bytes` in the
+    /// `Directory` protos as the tree is built, rather than walking the
+    /// filesystem afterwards with `fs::metadata` per file. Symlinks contribute
+    /// nothing — a symlink's own inode is negligible and following it could
+    /// double-count a file already counted via its `FileNode`.
+    ///
+    /// Each directory's final mode (0o755) is set at creation time, so no
+    /// separate recursive permission pass is needed after construction.
     fn construct_directory<'a>(
         &'a self,
         digest: DigestInfo,
         dest_path: &'a Path,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<u64, Error>> + Send + 'a>> {
         Box::pin(async move {
             debug!(?digest, ?dest_path, "Constructing directory");
 
@@ -300,19 +301,25 @@ impl DirectoryCache {
                     .await
                     .err_tip(|| format!("Failed to fetch directory digest: {digest:?}"))?;
 
-            // Create the destination directory
-            fs::create_dir_all(dest_path)
-                .await
-                .err_tip(|| format!("Failed to create directory: {}", dest_path.display()))?;
+            // Create the destination directory. It must be writable while it
+            // is being populated; 0o755 is its final mode too, so set it now
+            // (umask-independent) — no post-construction permission walk.
+            self.create_dir_writable(dest_path).await?;
+
+            let mut total_size: u64 = 0;
 
             // Process files
             for file in &directory.files {
                 self.create_file(dest_path, file).await?;
+                if let Some(file_digest) = &file.digest {
+                    // size_bytes is non-negative; clamp defensively.
+                    total_size += u64::try_from(file_digest.size_bytes).unwrap_or(0);
+                }
             }
 
             // Process subdirectories recursively
             for dir_node in &directory.directories {
-                self.create_subdirectory(dest_path, dir_node).await?;
+                total_size += self.create_subdirectory(dest_path, dir_node).await?;
             }
 
             // Process symlinks
@@ -320,8 +327,25 @@ impl DirectoryCache {
                 self.create_symlink(dest_path, symlink).await?;
             }
 
-            Ok(())
+            Ok(total_size)
         })
+    }
+
+    /// Creates `dir` (and any missing parents) and sets its mode to 0o755 so
+    /// that it is writable while the cache entry is being populated and stays
+    /// at a stable, umask-independent final mode afterwards.
+    async fn create_dir_writable(&self, dir: &Path) -> Result<(), Error> {
+        fs::create_dir_all(dir)
+            .await
+            .err_tip(|| format!("Failed to create directory: {}", dir.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755))
+                .await
+                .err_tip(|| format!("Failed to set directory mode: {}", dir.display()))?;
+        }
+        Ok(())
     }
 
     /// Creates a file from a `FileNode` inside a cache entry.
@@ -473,12 +497,13 @@ impl DirectoryCache {
         Ok(())
     }
 
-    /// Creates a subdirectory from a `DirectoryNode`
+    /// Creates a subdirectory from a `DirectoryNode`, returning the total size
+    /// of the subtree it materializes.
     async fn create_subdirectory(
         &self,
         parent: &Path,
         dir_node: &DirectoryNode,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         let dir_path = parent.join(&dir_node.name);
         let digest =
             DigestInfo::try_from(dir_node.digest.clone().ok_or_else(|| {
@@ -1272,6 +1297,137 @@ mod tests {
             b"Hello, World!",
             "materialized content must round-trip the CAS blob exactly"
         );
+
+        Ok(())
+    }
+
+    /// OPT #2: the cache entry's recorded size must equal the sum of
+    /// `FileNode.digest.size_bytes` across the whole (nested) tree —
+    /// accumulated during construction, with no post-hoc filesystem walk.
+    #[nativelink_test]
+    async fn test_size_accounting_from_digest_sizes() -> Result<(), Error> {
+        let temp_dir = TempDir::new().unwrap();
+        let cache_root = temp_dir.path().join("cache");
+        let (cas_store, slow_store) = make_fast_slow_store(&temp_dir).await;
+
+        // Two files at the root, one file in a nested subdir.
+        let f1 = upload_blob(&slow_store, 10, b"aaaaaaaa").await; // 8 bytes
+        let f2 = upload_blob(&slow_store, 11, b"bbb").await; // 3 bytes
+        let f3 = upload_blob(&slow_store, 12, b"ccccc").await; // 5 bytes
+
+        let sub = ProtoDirectory {
+            files: vec![FileNode {
+                name: "nested.bin".to_string(),
+                digest: Some(f3.into()),
+                is_executable: false,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut sub_data = Vec::new();
+        sub.encode(&mut sub_data).unwrap();
+        let sub_digest = upload_blob(&slow_store, 13, &sub_data).await;
+
+        let root = ProtoDirectory {
+            files: vec![
+                FileNode {
+                    name: "a.bin".to_string(),
+                    digest: Some(f1.into()),
+                    is_executable: false,
+                    ..Default::default()
+                },
+                FileNode {
+                    name: "b.bin".to_string(),
+                    digest: Some(f2.into()),
+                    is_executable: false,
+                    ..Default::default()
+                },
+            ],
+            directories: vec![DirectoryNode {
+                name: "sub".to_string(),
+                digest: Some(sub_digest.into()),
+            }],
+            ..Default::default()
+        };
+        let mut root_data = Vec::new();
+        root.encode(&mut root_data).unwrap();
+        let root_digest = upload_blob(&slow_store, 14, &root_data).await;
+
+        let config = DirectoryCacheConfig {
+            max_entries: 10,
+            max_size_bytes: 1024 * 1024,
+            cache_root,
+        };
+        let cache = DirectoryCache::new(config, cas_store).await?;
+
+        let dest = temp_dir.path().join("dest");
+        cache.get_or_create(root_digest, &dest).await?;
+
+        let stats = cache.stats().await;
+        assert_eq!(
+            stats.total_size_bytes,
+            8 + 3 + 5,
+            "cache size must be the sum of all FileNode digest sizes (incl. nested)"
+        );
+
+        Ok(())
+    }
+
+    /// OPT #2: every directory in a cache entry — root and nested — must be
+    /// left at mode 0o755, set at creation time without a separate walk.
+    #[cfg(unix)]
+    #[nativelink_test]
+    async fn test_cache_entry_dirs_are_writable() -> Result<(), Error> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = TempDir::new().unwrap();
+        let cache_root = temp_dir.path().join("cache");
+        let (cas_store, slow_store) = make_fast_slow_store(&temp_dir).await;
+
+        let f = upload_blob(&slow_store, 20, b"data").await;
+        let sub = ProtoDirectory {
+            files: vec![FileNode {
+                name: "leaf.txt".to_string(),
+                digest: Some(f.into()),
+                is_executable: false,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut sub_data = Vec::new();
+        sub.encode(&mut sub_data).unwrap();
+        let sub_digest = upload_blob(&slow_store, 21, &sub_data).await;
+
+        let root = ProtoDirectory {
+            directories: vec![DirectoryNode {
+                name: "sub".to_string(),
+                digest: Some(sub_digest.into()),
+            }],
+            ..Default::default()
+        };
+        let mut root_data = Vec::new();
+        root.encode(&mut root_data).unwrap();
+        let root_digest = upload_blob(&slow_store, 22, &root_data).await;
+
+        let config = DirectoryCacheConfig {
+            max_entries: 10,
+            max_size_bytes: 1024 * 1024,
+            cache_root,
+        };
+        let cache = DirectoryCache::new(config, cas_store).await?;
+        let dest = temp_dir.path().join("dest");
+        cache.get_or_create(root_digest, &dest).await?;
+
+        let entry_root = cache.get_cache_path(&root_digest);
+        for dir in [entry_root.clone(), entry_root.join("sub")] {
+            let mode = fs::metadata(&dir).await?.permissions().mode() & 0o777;
+            assert_eq!(
+                mode,
+                0o755,
+                "cache-entry directory {} must be 0o755",
+                dir.display()
+            );
+        }
 
         Ok(())
     }
