@@ -3,6 +3,38 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.0](https://github.com/TraceMachina/nativelink/compare/v1.2.0..v1.3.0) - 2026-05-21
+
+
+### ⚠️ Compatibility Notes
+
+- Absolute symlink outputs are now resolved to the file or directory contents before upload instead of being returned as worker-local absolute symlink targets. Relative symlinks are still preserved. If a workflow expected the old worker-local target, update it to consume the uploaded file or directory output. ([#2346](https://github.com/TraceMachina/nativelink/issues/2346)) - ([74aa906](https://github.com/TraceMachina/nativelink/commit/74aa90624323ce2a48151e8a6cb0742d68ec6f56))
+
+### ⛰️  Features
+
+- Implement Remote Persistent Workers ([#2323](https://github.com/TraceMachina/nativelink/issues/2323)) - ([78d1232](https://github.com/TraceMachina/nativelink/commit/78d1232ab739f6ac87dcdb3d16f50a9a3d6eee7d))
+- Add Cloudflare R2 support ([#2319](https://github.com/TraceMachina/nativelink/issues/2319)) - ([3d76991](https://github.com/TraceMachina/nativelink/commit/3d76991e282d5609fe04910e70c293674edd6a68))
+- Add improved logging around command failures ([#2351](https://github.com/TraceMachina/nativelink/issues/2351)) - ([0cf6af7](https://github.com/TraceMachina/nativelink/commit/0cf6af7dc414016a72eba288af7f06e3f53cee97))
+
+### 🐛 Bug Fixes
+
+- Fix zero-digest output file uploads ([#2346](https://github.com/TraceMachina/nativelink/issues/2346)) - ([74aa906](https://github.com/TraceMachina/nativelink/commit/74aa90624323ce2a48151e8a6cb0742d68ec6f56))
+- Fix CAS inode corruption: directory cache cleanup must not chmod files ([#2347](https://github.com/TraceMachina/nativelink/issues/2347)) - ([a00bf8c](https://github.com/TraceMachina/nativelink/commit/a00bf8c0e10e49551d857063acc0caba0a9d259c))
+- APFS clonefile fast path + concurrency cap + zero-byte fix for Bazel input materialization ([#2338](https://github.com/TraceMachina/nativelink/issues/2338)) - ([e6def51](https://github.com/TraceMachina/nativelink/commit/e6def517a692487d76e0f7883905bf9a5bce33f1))
+- hold subscribed_keys write lock across receiver drop ([#2353](https://github.com/TraceMachina/nativelink/issues/2353)) - ([41c7789](https://github.com/TraceMachina/nativelink/commit/41c77898b318845e56b46c6204f53e67e2cb922b))
+- has_with_results consults fast store and in-flight slow writes ([#2343](https://github.com/TraceMachina/nativelink/issues/2343)) - ([2f42265](https://github.com/TraceMachina/nativelink/commit/2f422658d663c0df5872db58ca509028ccc3aa01))
+- replace usize counter with Semaphore RAII permit ([#2350](https://github.com/TraceMachina/nativelink/issues/2350)) - ([f25e7ac](https://github.com/TraceMachina/nativelink/commit/f25e7ac7fbf48d8c072f2ad5b45859ce6e4d76bd))
+
+### 🧪 Testing & CI
+
+- prefer macOS P-cores via pthread QoS USER_INITIATED ([#2342](https://github.com/TraceMachina/nativelink/issues/2342)) - ([2410a08](https://github.com/TraceMachina/nativelink/commit/2410a083f5390f0cf3cbfc65609ace395f3abb4f))
+
+### ⚙️ Miscellaneous
+
+- Replace bincode with wincode ([#2345](https://github.com/TraceMachina/nativelink/issues/2345)) - ([13c77ab](https://github.com/TraceMachina/nativelink/commit/13c77abcf32d157e548dcde0ddf51ca9c617cf71))
+- Update astro monorepo ([#2334](https://github.com/TraceMachina/nativelink/issues/2334)) - ([4082867](https://github.com/TraceMachina/nativelink/commit/40828671c88207eb1b6413291fdd108048317f8c))
+- Update Rust crate shlex to v2 ([#2340](https://github.com/TraceMachina/nativelink/issues/2340)) - ([2c04038](https://github.com/TraceMachina/nativelink/commit/2c0403831bc804ce1cd354f305def5fda78fd24e))
+
 ## [1.2.0](https://github.com/TraceMachina/nativelink/compare/v1.1.0..v1.2.0) - 2026-05-14
 
 
