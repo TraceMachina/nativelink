@@ -3,6 +3,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.1](https://github.com/TraceMachina/nativelink/compare/v1.3.0..v1.3.1) - 2026-05-23
+
+
+### 🐛 Bug Fixes
+
+- make permission walks symlink-safe ([#2358](https://github.com/TraceMachina/nativelink/issues/2358)) - ([c40fd10](https://github.com/TraceMachina/nativelink/commit/c40fd10fdc9362d1ee0555626b59056d45308c12))
+- keep directory-cache materialized inputs read-only by storing CAS blobs read-only - ([5b31e1a](https://github.com/TraceMachina/nativelink/commit/5b31e1a19633dc649dcbb63792bf64a4e8592e56))
+
+### ⚙️ Miscellaneous
+
+- make directory-cache entries already-writable ([#2357](https://github.com/TraceMachina/nativelink/issues/2357)) - ([83f7be1](https://github.com/TraceMachina/nativelink/commit/83f7be1aa63bbf2a1f20451a56225804cae0dc46))
+- hardlink CAS blobs in directory-cache construct ([#2359](https://github.com/TraceMachina/nativelink/issues/2359)) - ([bbf086a](https://github.com/TraceMachina/nativelink/commit/bbf086ac0ebe7ae6c0b69b2ec794187c4a0e28cb))
+- drop the two redundant full-tree walks in directory-cache build ([#2359](https://github.com/TraceMachina/nativelink/issues/2359)) - ([7c18e3a](https://github.com/TraceMachina/nativelink/commit/7c18e3a2a89b9a6a0b0c03d4f6311bc169ce8e2a))
+- narrow the directory-cache lock and single-flight construction ([#2359](https://github.com/TraceMachina/nativelink/issues/2359)) - ([73764ad](https://github.com/TraceMachina/nativelink/commit/73764ad0ac2ebd767a362d304bc306dd83bd66db))
+
+### 🧪 Testing & CI
+
+- remove inode stat in test - ([b7c6c9f](https://github.com/TraceMachina/nativelink/commit/b7c6c9f6e758c6eda03ab9650bb6ab4f4c8bae55))
+- Add --fallback to all remaining nix CI commands ([#2360](https://github.com/TraceMachina/nativelink/issues/2360)) - ([590c514](https://github.com/TraceMachina/nativelink/commit/590c514ebae8105ebd567d655245bdca02e79f6c))
+
 ## [1.3.0](https://github.com/TraceMachina/nativelink/compare/v1.2.0..v1.3.0) - 2026-05-21
 
 
