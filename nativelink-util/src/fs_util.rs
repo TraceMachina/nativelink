@@ -320,9 +320,8 @@ fn hardlink_directory_tree_recursive<'a>(
 /// * `dir` - Directory tree to lock down
 ///
 /// # Platform Notes
-/// - Unix: files get 0o555 (r-xr-xr-x); directories get 0o755 (rwxr-xr-x).
-/// - Windows: files get `FILE_ATTRIBUTE_READONLY`; directories are left
-///   writable.
+/// - Unix: Sets permissions to 0o555 (r-xr-xr-x)
+/// - Windows: Sets `FILE_ATTRIBUTE_READONLY`
 ///
 /// Symlink entries in the tree are skipped (their own mode is not meaningful
 /// and `chmod` would follow the link) - see `set_perms_recursive_impl`.
