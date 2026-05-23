@@ -861,6 +861,29 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             );
 
             let from_path = encoded_file_path.get_file_path();
+
+            // Lock the blob down as read-only *before* it lands at its final
+            // content path, so every hardlink of it (the worker directory cache
+            // and `download_to_directory`) inherits an immutable, read-only
+            // inode. This is what preserves the input-tree hermeticity contract
+            // (actions cannot mutate their inputs) without a per-materialization
+            // chmod walk, and it means callers must never `chmod` a hardlinked
+            // blob — anything needing a different mode (e.g. an executable's +x
+            // bit) must take a private copy. Content-addressed blobs are
+            // write-once and replaced by `rename` rather than in-place writes,
+            // and unlink only needs the *parent directory* to be writable, so a
+            // read-only file mode is safe for both overwrite-by-rename and
+            // eviction. Best-effort: a failure here (e.g. the temp file was
+            // already evicted out from under us) must not abort the emplace.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if let Err(err) =
+                    fs::set_permissions(&from_path, std::fs::Permissions::from_mode(0o444)).await
+                {
+                    warn!(?err, ?from_path, "Failed to set CAS blob read-only");
+                }
+            }
             // Internally tokio spawns fs commands onto a blocking thread anyways.
             // Since we are already on a blocking thread, we just need the `fs` wrapper to manage
             // an open-file permit (ensure we don't open too many files at once).

@@ -228,6 +228,38 @@ pub fn download_to_directory<'a>(
                                 .err_tip(|| "During hard link")?;
                             // TODO: add a test for #2051: deadlock with large number of files
                             let src_path = file_entry.get_file_path_locked(|src| async move { Ok(PathBuf::from(src)) }).await?;
+
+                            // CAS blobs are stored read-only and shared between
+                            // actions by hardlink. Any per-file metadata — a
+                            // custom unix_mode (including the executable +x bit)
+                            // or a custom mtime — must be applied to a PRIVATE
+                            // inode; a chmod/utimes on a hardlink would mutate
+                            // the shared CAS inode for every other action that
+                            // hardlinked the same blob (the #2347 corruption
+                            // class). So hardlink only the common metadata-free
+                            // case (zero-copy, inherits the blob's read-only
+                            // mode) and copy into a private inode when mode/mtime
+                            // are applied below.
+                            #[cfg(target_family = "unix")]
+                            let needs_private_inode = unix_mode.is_some() || mtime.is_some();
+                            #[cfg(not(target_family = "unix"))]
+                            let needs_private_inode = mtime.is_some();
+                            if needs_private_inode {
+                                let src = src_path.clone();
+                                let dst = dest.clone();
+                                spawn_blocking!("download_to_directory_private_copy", move || {
+                                    std::fs::copy(&src, &dst).map(|_| ()).map_err(|e| {
+                                        make_err!(
+                                            Code::Internal,
+                                            "Failed to copy CAS blob into a private inode at {dst}: {e:?}"
+                                        )
+                                    })
+                                })
+                                .await
+                                .err_tip(|| {
+                                    "Failed to launch spawn_blocking private copy in download_to_directory"
+                                })??;
+                            } else {
                             fs::hard_link(&src_path, &dest)
                                 .await
                                 .map_err(|e| {
@@ -250,6 +282,7 @@ pub fn download_to_directory<'a>(
                                         e.append(format!("Could not make hardlink to {dest}"))
                                     }
                                 })?;
+                            }
                             }
                         #[cfg(target_family = "unix")]
                         if let Some(unix_mode) = unix_mode {

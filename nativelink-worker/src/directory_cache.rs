@@ -478,7 +478,8 @@ impl DirectoryCache {
         }
 
         // Fallback: fetch the blob and write a private copy. Non-executable,
-        // so no chmod is needed — the copy keeps its default mode.
+        // but still made read-only (0o444) by copy_file_to so the materialized
+        // input is immutable like the hardlink path.
         self.copy_file_to(&digest, &file_path, false).await
     }
 
@@ -520,8 +521,9 @@ impl DirectoryCache {
     }
 
     /// Fetches the blob for `digest` from the CAS and writes a private copy at
-    /// `file_path`. When `executable` is set, the copy is chmod'd `0o555` —
-    /// this is safe because the copy has its own inode, unshared with the CAS.
+    /// `file_path`, then chmods it read-only (`0o555` when `executable`, else
+    /// `0o444`). This is safe because the copy has its own inode, unshared with
+    /// the CAS, so the chmod cannot mutate a shared blob.
     async fn copy_file_to(
         &self,
         digest: &DigestInfo,
@@ -539,19 +541,18 @@ impl DirectoryCache {
             .err_tip(|| format!("Failed to write file: {}", file_path.display()))?;
 
         #[cfg(unix)]
-        if executable {
+        {
             use std::os::unix::fs::PermissionsExt;
-            // 0o555 (r-xr-xr-x): executable, read-only. This file has its own
-            // private inode (just written above), so chmoding it cannot affect
-            // any CAS blob or another action's hardlink.
-            fs::set_permissions(file_path, std::fs::Permissions::from_mode(0o555))
+            // Read-only, matching the hermeticity contract for materialized
+            // inputs: 0o555 (r-xr-xr-x) for executables so the +x bit survives,
+            // 0o444 (r--r--r--) for data files. This file has its own private
+            // inode (just written above), so chmoding it cannot affect any CAS
+            // blob or another action's hardlink — unlike the hardlink path,
+            // where the shared read-only blob must never be chmod'd.
+            let mode = if executable { 0o555 } else { 0o444 };
+            fs::set_permissions(file_path, std::fs::Permissions::from_mode(mode))
                 .await
-                .err_tip(|| {
-                    format!(
-                        "Failed to set executable permissions: {}",
-                        file_path.display()
-                    )
-                })?;
+                .err_tip(|| format!("Failed to set permissions: {}", file_path.display()))?;
         }
         #[cfg(not(unix))]
         let _ = executable;
