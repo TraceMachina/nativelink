@@ -18,13 +18,14 @@ interface VideoCard {
 export const BorderlessCard = component$<BorderlessCard>(
   ({ icon, headline, text }) => {
     return (
-      <div class="flex h-auto w-5/6 flex-col items-start justify-start md:w-[277px] md:gap-0">
-        <div>{icon}</div>
-        <LinearGradient
-          text={headline}
-          class="py-4 pr-8 text-[25px] md:h-[120px] md:px-0 md:py-6"
-        />
-        <span class="w-full text-[#8280A6] md:w-[273px]">{text}</span>
+      <div class="flex h-full w-5/6 flex-col items-start justify-start md:w-[277px] p-6">
+        <div class="mb-4">{icon}</div>
+        <h3 class="text-xl font-bold text-black mb-4 leading-tight">
+          {headline}
+        </h3>
+        <p class="text-base text-[rgb(60,60,60)] leading-relaxed flex-grow">
+          {text}
+        </p>
       </div>
     );
   },
@@ -33,7 +34,7 @@ export const BorderlessCard = component$<BorderlessCard>(
 export const VideoCard = component$<VideoCard>(
   ({ headline, description, link }) => {
     return (
-      <div class="max-w-sm overflow-hidden rounded-xl border border-solid border-primaryBorder text-white shadow-lg">
+      <div class="max-w-sm overflow-hidden rounded-interactive border-2 border-solid border-primaryBorder text-white shadow-lg">
         <div class="relative h-48 w-full">
           <video
             class="h-full w-full object-cover"
@@ -46,9 +47,9 @@ export const VideoCard = component$<VideoCard>(
           </video>
         </div>
         <div class="px-6 py-4">
-          <h2 class="mb-2 flex h-24 items-center justify-start pr-16 text-xl font-bold">
+          <h3 class="mb-2 flex min-h-24 items-center justify-start text-xl font-bold">
             <LinearGradient text={headline} />
-          </h2>
+          </h3>
           <p class="text-base text-gray-400">{description}</p>
         </div>
       </div>
@@ -59,13 +60,18 @@ export const VideoCard = component$<VideoCard>(
 const pricing = [
   {
     title: "Open Source",
-    items: [
-      "Free!",
-      "Community Support",
-    ],
+    items: ["Free!", "Community Support"],
     cta: {
       title: "Get Started",
       link: "/docs/introduction/setup",
+    },
+  },
+  {
+    title: "Cloud",
+    items: ["$1000/month"],
+    cta: {
+      title: "Get Started",
+      link: "https://dev.nativelink.com/",
     },
   },
   {
@@ -84,24 +90,21 @@ const pricing = [
 
 export const PricingCard = component$(() => {
   return (
-    <div class="flex flex-col md:flex-row items-center justify-center gap-6 md:gap-12">
+    <div class="grid md:grid-cols-3 gap-8 max-w-6xl mx-auto">
       {pricing.map((plan) => (
-        <div
-          id="Card"
-          key={plan.title}
-          class="flex flex-col gap-5 items-center justify-between p-6 w-80 rounded-lg bg-glass rounded-xl shadow-lg shadow-glass backdrop-blur-[8px] border border-glassBorder"
-        >
-          <h2 class="text-2xl font-semibold text-white">{plan.title}</h2>
-          <ul class="my-4 text-sm text-gray-200 space-y-2">
+        <div key={plan.title} class="card-warm p-10 flex flex-col gap-6">
+          <h2 class="text-3xl font-bold text-black">{plan.title}</h2>
+          <ul class="flex-1 space-y-3 text-lg text-[rgb(60,60,60)]">
             {plan.items.map((item) => (
-              <li key={item} class="list-disc">
-                {item}
+              <li key={item} class="flex items-start gap-3">
+                <span class="text-black text-xl flex-shrink-0">•</span>
+                <span>{item}</span>
               </li>
             ))}
           </ul>
           <a
             href={plan.cta.link}
-            class="mt-auto px-4 py-2 bg-blue-500 text-white rounded-lg shadow-md hover:bg-blue-600"
+            class="mt-auto bg-black text-white rounded-interactive hover:bg-[rgb(40,40,40)] transition-colors duration-200 px-8 min-h-[48px] flex items-center justify-center border-2 border-black font-semibold no-underline"
           >
             {plan.cta.title}
           </a>

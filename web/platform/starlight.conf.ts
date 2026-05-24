@@ -7,6 +7,8 @@ export const starlightConfig = {
   title: "NativeLink Docs",
   components: {
     PageFrame: "/src/components/starlight/PageFrame.astro",
+    ThemeProvider: "/src/components/starlight/ThemeProvider.astro",
+    ThemeSelect: "/src/components/starlight/ThemeSelect.astro",
   },
   disable404Route: false,
   logo: {

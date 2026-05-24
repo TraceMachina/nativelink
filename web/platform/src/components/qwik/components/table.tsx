@@ -77,31 +77,37 @@ const features = [
 
 export const FeatureTable = component$(() => {
   return (
-    <table class="table-auto w-full font-thin text-left text-sm md:text-base">
-      <thead>
-        <tr class="border-b-2 border-[#2b2b2b]">
-          <th class="p-2 w-[40%] md:w-[30%] border-r-2 border-[#2b2b2b] font-semibold">
-            Feature
-          </th>
-          <th class="p-2 w-[30%] md:w-[35%] border-r border-[#2b2b2b] text-center font-semibold">
-            Open Source
-          </th>
-          <th class="p-2 w-[30%] md:w-[35%] text-center font-semibold">
-            Enterprise
-          </th>
-        </tr>
-      </thead>
-      <tbody>
-        {features.map((item) => (
-          <tr key={item.feature} class="border-b border-[#2b2b2b]">
-            <td class="p-2 border-r-2 border-[#2b2b2b]">{item.feature}</td>
-            <td class="p-2 border-r border-[#2b2b2b] text-center">
-              {item.free}
-            </td>
-            <td class="p-2 text-center">{item.enterprise}</td>
+    <div class="card-warm overflow-hidden">
+      <table class="table-auto w-full text-left text-base">
+        <thead>
+          <tr class="border-b-2 border-[rgb(220,220,220)] bg-white/50">
+            <th class="p-4 w-[40%] md:w-[30%] border-r-2 border-[rgb(220,220,220)] font-bold text-black">
+              Feature
+            </th>
+            <th class="p-4 w-[30%] md:w-[35%] border-r-2 border-[rgb(220,220,220)] text-center font-bold text-black">
+              Open Source
+            </th>
+            <th class="p-4 w-[30%] md:w-[35%] text-center font-bold text-black">
+              Enterprise
+            </th>
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {features.map((item) => (
+            <tr key={item.feature} class="border-b border-[rgb(220,220,220)]">
+              <td class="p-4 border-r-2 border-[rgb(220,220,220)] text-black font-semibold">
+                {item.feature}
+              </td>
+              <td class="p-4 border-r-2 border-[rgb(220,220,220)] text-center text-[rgb(60,60,60)]">
+                {item.free}
+              </td>
+              <td class="p-4 text-center text-[rgb(60,60,60)]">
+                {item.enterprise}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 });

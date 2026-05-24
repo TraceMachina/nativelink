@@ -3,6 +3,7 @@
   "type": "module",
   "devDependencies": {
     "@astrojs/check": "^0.9.4",
+    "@astrojs/cloudflare": "12.6.13",
     "@astrojs/markdown-remark": "^7.0.0",
     "@astrojs/partytown": "^2.1.4",
     "@astrojs/react": "^5.0.0",
@@ -13,7 +14,6 @@
     "@beoe/rehype-mermaid": "^0.4.2",
     "@biomejs/biome": "1.9.4",
     "@builder.io/qwik": "^1.13.0",
-    "@deno/astro-adapter": "^0.2.1",
     "@lhci/cli": "^0.14.0",
     "@lorenzo_lewis/starlight-utils": "^0.3.2",
     "@qwikdev/astro": "^0.7.12",
@@ -22,7 +22,7 @@
     "@react-three/fiber": "^9.1.2",
     "@tailwindcss/vite": "^4.1.5",
     "@types/bun": "^1.2.12",
-    "astro": "5.18.1",
+    "astro": "5.15.9",
     "clsx": "^2.1.1",
     "dotenv": "^17.0.0",
     "framer-motion": "^12.9.4",
@@ -38,8 +38,9 @@
     "remark-stringify": "^11.0.0",
     "tailwind-merge": "^3.2.0",
     "tailwindcss": "^4.1.5",
-    "typescript": "^6.0.0",
-    "unist-util-visit": "^5.0.0"
+    "typescript": "^5.8.3",
+    "unist-util-visit": "^5.0.0",
+    "wrangler": "^4.93.1"
   },
   "patchedDependencies": {
     "@qwikdev/astro@0.7.12": "patches/@qwikdev%2Fastro@0.7.12.patch"
@@ -48,7 +49,7 @@
     "astro": "astro",
     "biome": "biome",
     "build": "bun fix && astro build",
-    "build.docs": "cd ../.. && unset TMPDIR TMP; bazel build --@local-remote-execution//rust:channel=nightly nativelink-config:docs_json && cd web/platform && bun run utils/metaphase_aot.ts",
+    "build.docs": "cd ../.. && unset TMPDIR TMP; bazel build --config=nightly --@local-remote-execution//rust:channel=nightly nativelink-config:docs_json && cd web/platform && bun run utils/metaphase_aot.ts",
     "check": "biome ci . && astro check",
     "check.format": "biome format .",
     "check.lint": "biome check .",

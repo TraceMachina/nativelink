@@ -1,8 +1,4 @@
-import { component$, useVisibleTask$ } from "@builder.io/qwik";
-
-import { Label, LinearGradient } from "../components/text.tsx";
-
-import { BackgroundVideo } from "../components/video.tsx";
+import { component$ } from "@builder.io/qwik";
 
 const _cards = [
   {
@@ -27,99 +23,84 @@ const _cards = [
   },
 ];
 
-const CompanyHero = component$(() => {
-  return (
-    <div class="relative w-full flex flex-col md:flex-row  md:gap-14 justify-center items-center ">
-      <BackgroundVideo class="z-0 absolute inset-0 w-full h-full object-cover" />
-      <div class="absolute inset-0 w-full h-full bg-gradient-to-b from-black via-black/40 to-black opacity-80" />
-
-      <div class="px-8 z-10 gap-10 flex flex-col md:w-[650px] ">
-        <div class="pr-8">
-          <LinearGradient
-            text="NativeLink is built by Trace Machina"
-            class="text-4xl md:text-5xl text-left pr-10"
-          />
-        </div>
-        <span class="text-white! test-base">
-          At Trace Machina, our mission is to revolutionize the development of
-          complex systems by providing cutting-edge tools that drastically
-          reduce costs.
-        </span>
-        <span class="text-sm text-primary">
-          We empower engineers to build the future of technology by making
-          advanced build and simulation processes as intuitive and efficient as
-          web development. Our commitment is to deliver innovative solutions
-          that enable seamless task execution across any environment, ensuring
-          that developers can focus on creating transformative technologies that
-          drive progress and safety.
-        </span>
-      </div>
-      <picture class="z-10 py-14 w-full md:w-[650px] flex justify-center items-center">
-        <img
-          src="https://nativelink-cdn.s3.us-east-1.amazonaws.com/tracemachina_logo.webp"
-          alt=""
-          class="w-3/4"
-        />
-      </picture>
-    </div>
-  );
-});
-
-const CompanyContact = component$(() => {
-  return (
-    <div class="flex px-8 flex-col justify-center items-center gap-5">
-      <Label text="Get in Touch" class="text-base w-1/2" />
-      <div>
-        <LinearGradient
-          text="Have questions or need assistance?"
-          class="text-base text-center"
-        />
-        <LinearGradient
-          text=" Contact us for general inquiries or sales inquiries."
-          class="text-base text-center"
-        />
-      </div>
-    </div>
-  );
-});
-
-const CompanyCards = component$(() => {
-  return (
-    <div class="flex px-8 flex-col justify-start md:justify-stretch items-center gap-5 pb-24">
-      {_cards.map((card) => (
-        <div
-          class="shadow-md w-full md:w-full md:flex-row flex flex-col md:justify-between justify-start md:items-center items-start gap-3 rounded-lg py-8 px-10 border border-solid border-primary/40"
-          key={card.title}
-        >
-          <div class="flex flex-col gap-2">
-            <h2 class="text-2xl font-thin">{card.title}</h2>
-            <p class="text-primary pr-24">{card.description}</p>
-          </div>
-          <a
-            href={card.link}
-            class="text-black no-underline! bg-white px-8 py-2 rounded-xl"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            {card.linkTitle}
-          </a>
-        </div>
-      ))}
-    </div>
-  );
-});
-
 export const CompanyPage = component$(() => {
-  useVisibleTask$(() => {
-    console.info("About Trace Machina");
-  });
-
   return (
-    <main class="flex w-full w-screen flex-col pt-24 items-start justify-start bg-black font-nunito text-white">
-      <div class="gap-10 flex w-full flex-col justify-center items-center">
-        <CompanyHero />
-        <CompanyContact />
-        <CompanyCards />
+    <main class="bg-[rgb(248,247,244)] min-h-screen">
+      {/* Hero Section */}
+      <div class="section-spacing-major section-divider">
+        <div class="max-w-6xl mx-auto px-6">
+          <div class="grid md:grid-cols-2 gap-12 items-center">
+            <div class="flex flex-col gap-8">
+              <h1 class="text-4xl md:text-6xl font-bold text-black leading-tight">
+                NativeLink is built by Trace Machina
+              </h1>
+              <p class="text-xl text-black leading-relaxed">
+                At Trace Machina, our mission is to accelerate the
+                reindustrialization of the world in the machine age.
+              </p>
+              <p class="text-lg text-[rgb(60,60,60)] leading-relaxed">
+                We empower engineers to build the future of technology by making
+                advanced build and simulation processes that can move at machine
+                speed. Our products amplify the rate at which companies can
+                innovate across mission critical industries from Semiconductors,
+                Advanced Robotics, Autonomous Vehicles, Artificial Intelligence
+                Research to Life Sciences and Financial Services. Our commitment
+                is to amplify execution across any environment, ensuring that
+                developers can focus on creating transformative technologies
+                that drive forward progress on behalf of humanity.
+              </p>
+            </div>
+            <div class="flex justify-center items-center">
+              <img
+                src="https://nativelink-cdn.s3.us-east-1.amazonaws.com/tracemachina_logo.webp"
+                alt="Trace Machina Logo"
+                class="w-full max-w-md"
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Contact Section */}
+      <div class="section-spacing-major">
+        <div class="max-w-4xl mx-auto px-6">
+          <div class="text-center mb-12">
+            <p class="text-sm uppercase tracking-wide text-[rgb(100,100,100)] font-semibold mb-4">
+              Get in Touch
+            </p>
+            <h2 class="text-3xl md:text-5xl font-bold text-black mb-4">
+              Have questions or need assistance?
+            </h2>
+            <p class="text-xl text-[rgb(60,60,60)]">
+              Contact us for general inquiries or sales inquiries.
+            </p>
+          </div>
+
+          {/* Contact Cards */}
+          <div class="flex flex-col gap-6">
+            {_cards.map((card) => (
+              <div
+                key={card.title}
+                class="card-warm p-8 flex flex-col md:flex-row md:justify-between md:items-center gap-6"
+              >
+                <div class="flex flex-col gap-3 flex-1">
+                  <h3 class="text-2xl font-bold text-black">{card.title}</h3>
+                  <p class="text-lg text-[rgb(60,60,60)] leading-relaxed">
+                    {card.description}
+                  </p>
+                </div>
+                <a
+                  href={card.link}
+                  class="inline-flex bg-black text-white hover:bg-[rgb(40,40,40)] transition-colors duration-200 px-8 min-h-[48px] rounded-interactive justify-center items-center border-2 border-black font-semibold whitespace-nowrap no-underline"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  {card.linkTitle}
+                </a>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
     </main>
   );
