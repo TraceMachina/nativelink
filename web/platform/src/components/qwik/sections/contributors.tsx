@@ -25,9 +25,9 @@ export const Contributors = component$(() => {
     return () => window.removeEventListener("resize", handleResize);
   });
 
-  const logos_row_width = isMobile.value ? "" : "w-[50vw]"; // Use default width on mobile
-  const logo_width = isMobile.value ? "25vw" : "min(10vw, 300px)";
-  const logos_top_margin = isMobile.value ? "mt-32" : "mt-16";
+  const logos_row_width = isMobile.value ? "" : "max-w-6xl"; // Use default width on mobile
+  const logo_width = isMobile.value ? "25vw" : "min(9vw, 180px)";
+  const logos_top_margin = isMobile.value ? "mt-32" : "mt-12";
   const logos_bottom_margin = isMobile.value ? "-mb-6" : "mb-8";
 
   const companies = [
@@ -52,7 +52,7 @@ export const Contributors = component$(() => {
   ];
 
   return (
-    <div class="flex min-h-fit w-full flex-col items-center justify-center py-16">
+    <div class="flex min-h-fit w-full flex-col items-center justify-center section-spacing-minor section-divider">
       {/* Row 1 - Label */}
       <div class={"flex items-center justify-center"}>
         <Label
@@ -62,7 +62,7 @@ export const Contributors = component$(() => {
       </div>
 
       {/* Row 2 - Empty spacer */}
-      <div class="flex h-[5vh] w-full"> </div>
+      <div class="flex h-[3vh] w-full"> </div>
 
       {/* Row 3 - Display logos */}
       <div

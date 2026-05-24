@@ -6,7 +6,7 @@
  * @link https://github.com/jonsuh/hamburgers
  */
 .hamburger {
-   padding: 15px 15px;
+   padding: 10px 10px;
    display: inline-block;
    cursor: pointer;
    transition-property: opacity, filter;
@@ -17,7 +17,7 @@
    text-transform: none;
    background-color: transparent;
    border: 0;
-   margin-top: 5px;
+   margin-top: 0;
    overflow: visible;
 }
 .hamburger:hover {
@@ -29,12 +29,12 @@
 .hamburger.is-active .hamburger-inner,
 .hamburger.is-active .hamburger-inner::before,
 .hamburger.is-active .hamburger-inner::after {
-   background-color: #fff;
+   background-color: #1a1a1a;
 }
 
 .hamburger-box {
-   width: 40px;
-   height: 24px;
+   width: 24px;
+   height: 18px;
    display: inline-block;
    position: relative;
 }
@@ -42,15 +42,15 @@
 .hamburger-inner {
    display: block;
    top: 50%;
-   margin-top: -2px;
+   margin-top: -1.5px;
 }
 .hamburger-inner,
 .hamburger-inner::before,
 .hamburger-inner::after {
-   width: 40px;
-   height: 4px;
-   background-color: #fff;
-   border-radius: 4px;
+   width: 24px;
+   height: 2px;
+   background-color: #1a1a1a;
+   border-radius: 2px;
    position: absolute;
    transition-property: transform;
    transition-duration: 0.15s;
@@ -62,33 +62,33 @@
    display: block;
 }
 .hamburger-inner::before {
-   top: -10px;
+   top: -8px;
 }
 .hamburger-inner::after {
-   bottom: -10px;
+   bottom: -8px;
 }
 
 /* Slider */
 .hamburger--slider .hamburger-inner {
-   top: 2px;
+   top: 1px;
 }
 .hamburger--slider .hamburger-inner::before {
-   top: 10px;
+   top: 8px;
    transition-property: transform, opacity;
    transition-timing-function: ease;
    transition-duration: 0.15s;
 }
 .hamburger--slider .hamburger-inner::after {
-   top: 20px;
+   top: 16px;
 }
 
 .hamburger--slider.is-active .hamburger-inner {
-   transform: translate3d(0, 10px, 0) rotate(45deg);
+   transform: translate3d(0, 8px, 0) rotate(45deg);
 }
 .hamburger--slider.is-active .hamburger-inner::before {
-   transform: rotate(-45deg) translate3d(-5.71429px, -6px, 0);
+   transform: rotate(-45deg) translate3d(-4px, -5px, 0);
    opacity: 0;
 }
 .hamburger--slider.is-active .hamburger-inner::after {
-   transform: translate3d(0, -20px, 0) rotate(-90deg);
+   transform: translate3d(0, -16px, 0) rotate(-90deg);
 }
