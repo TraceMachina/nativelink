@@ -57,7 +57,10 @@ jobs:
           "
 
       - name: Production deployment
-        if: matrix.os == 'ubuntu-24.04' && github.ref == 'refs/heads/main'
+        if: >-
+          matrix.os == 'ubuntu-24.04'
+          && github.ref == 'refs/heads/main'
+          && env.CLOUDFLARE_API_TOKEN != ''
         working-directory: web/platform
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
