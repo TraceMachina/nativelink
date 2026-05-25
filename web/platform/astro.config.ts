@@ -1,13 +1,13 @@
+import type { ViteUserConfig } from "astro";
 import { defineConfig, passthroughImageService } from "astro/config";
-import type { AstroUserConfig } from "astro";
 
 import { rehypeHeadingIds } from "@astrojs/markdown-remark";
 import react from "@astrojs/react";
 import sitemap from "@astrojs/sitemap";
 import starlight from "@astrojs/starlight";
 
+import cloudflare from "@astrojs/cloudflare";
 import partytown from "@astrojs/partytown";
-import deno from "@deno/astro-adapter";
 import qwik from "@qwikdev/astro";
 import tailwindcss from "@tailwindcss/vite";
 
@@ -16,8 +16,8 @@ import rehypeAutolinkHeadings from "rehype-autolink-headings";
 
 import { starlightConfig } from "./starlight.conf";
 
-type AstroVitePlugins = NonNullable<
-  NonNullable<AstroUserConfig["vite"]>["plugins"]
+const tailwindPlugins = tailwindcss() as unknown as NonNullable<
+  ViteUserConfig["plugins"]
 >;
 
 // https://astro.build/config
@@ -27,10 +27,7 @@ export default defineConfig({
   image: {
     service: passthroughImageService(),
   },
-  adapter: deno({
-    port: 8881,
-    hostname: "localhost",
-  }),
+  adapter: cloudflare(),
   redirects: {
     "/blog/case-study%3A-samsung-internet's-integration-with-nativelink": {
       status: 301,
@@ -79,6 +76,6 @@ export default defineConfig({
     ],
   },
   vite: {
-    plugins: tailwindcss() as unknown as AstroVitePlugins,
+    plugins: tailwindPlugins,
   },
 });

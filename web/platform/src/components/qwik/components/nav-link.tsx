@@ -33,13 +33,18 @@ export const NavLink = component$(
       (toPathname === "/resources" && isBlogOrResources);
 
     return (
-      <li class="relative flex flex-col justify-center items-center gap-10 w-32">
+      <li class="relative flex flex-col justify-center items-center">
         <a
           {...props}
-          class={`${props.class || ""} ${isActive ? activeClass : ""} group transition duration-300`}
+          class={[
+            props.class || "",
+            isActive ? activeClass : "",
+            "px-3 py-2 min-h-[44px] flex items-center justify-center transition-colors duration-200 hover:text-[rgb(40,40,40)] text-sm",
+          ]
+            .filter(Boolean)
+            .join(" ")}
         >
           <Slot />
-          <span class="block max-w-0 group-hover:max-w-full transition-all duration-500 h-0.5 bg-white" />
         </a>
       </li>
     );

@@ -118,11 +118,11 @@ const FAQBox = ({ title, content }: FAQBoxProps) => {
     >
       <div
         className={
-          "flex flex-col justify-center items-start border-b border-[#2b2b2b] w-full"
+          "flex flex-col justify-center items-start border-b border-black/10 w-full"
         }
       >
-        <div className="w-full flex flex-row justify-between py-4 border-b border-[#2b2b2b]">
-          <h3 className="content-title pt-3 sm:pt-0 pr-8 sm:pr-0 bg-gradient-to-r from-white to-[#707098] bg-clip-text leading-none tracking-normal text-transparent">
+        <div className="w-full flex flex-row justify-between py-4 border-b border-black/10">
+          <h3 className="content-title pt-3 sm:pt-0 pr-8 sm:pr-0 text-black leading-none tracking-normal">
             {title}
           </h3>
           <svg
@@ -138,7 +138,7 @@ const FAQBox = ({ title, content }: FAQBoxProps) => {
             <title>Toggle FAQ</title>
             <path
               d="M4.16732 12.5L10.0007 6.66667L15.834 12.5"
-              stroke="#8280a6"
+              stroke="#000000"
               strokeWidth="2"
               strokeLinecap="round"
               strokeLinejoin="round"
@@ -146,10 +146,8 @@ const FAQBox = ({ title, content }: FAQBoxProps) => {
           </svg>
         </div>
         <p
-          className={`text-secondaryText transition-all duration-400 overflow-hidden ${
-            isOpen
-              ? "max-h-96 opacity-100 text-white py-4"
-              : "max-h-0 opacity-0"
+          className={`text-muted transition-all duration-400 overflow-hidden ${
+            isOpen ? "max-h-96 opacity-100 py-4" : "max-h-0 opacity-0"
           }`}
         >
           {content}

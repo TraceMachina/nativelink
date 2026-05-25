@@ -27,6 +27,7 @@ JDK
 JSON
 Kustomization
 Kustomizations
+Justbuild
 LastMile
 LastMileAI
 LLD
@@ -47,10 +48,12 @@ OCI
 onboarding
 OSSF
 protobuf
+Recc
 Reclient
 Rosetta
 [Rr]epository
 [Ss]harding
+Siso
 SPDX
 Starlark
 Tokio
@@ -122,6 +125,11 @@ Brex
 Citrix
 Menlo
 benchmarked
+[Bb]orderless
+CTAs
+keyframe
+[Mm]ockup
+[Mm]onospace
 Thanos
 Quickwit
 [Mm]iddleware
