@@ -1,8 +1,6 @@
 import { $, component$, useSignal } from "@builder.io/qwik";
-import { BackgroundVideo } from "./video.tsx";
 
-const Logo =
-  "https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_logo.webp";
+const Logo = "/logo-light.svg";
 
 const _links = [
   {
@@ -74,119 +72,106 @@ export const Footer = component$(() => {
   });
 
   return (
-    <footer class="relative w-full text-white bg-black py-4 overflow-hidden">
-      <div class="absolute bottom-0 mx-0 left-0 right-0 w-full h-full ">
-        {/* Background Video */}
-        <BackgroundVideo class="absolute bottom-[0] md:bottom-[-20vh] left-0 z-0 h-full md:h-auto object-cover md:w-screen" />
-        {/* <div class="absolute w-[150vw] bottom-0 left-1/2 transform -translate-x-1/2 translate-y-5/12">
-            <Background class="rotate-180 w-full" />
-        </div> */}
-
-        <div class="absolute bottom-0 justify-center items-center overflow-hidden">
-          <div class="bg-black/50 w-screen h-screen" />
-        </div>
-        {/* <div class="absolute flex justify-center items-center overflow-hidden">
-          <div class="bg-black/50 w-screen h-screen" />
-        </div> */}
-        {/* Overlay Image */}
-        {/* <img
-          src={Overlay.src}
-          class="absolute inset-0 h-full w-full object-cover"
-          alt="Overlay"
-        /> */}
-      </div>
-
-      <div class="relative z-10 flex h-full w-full flex-col items-center justify-center gap-6 md:flex-row md:gap-0">
-        <div class="flex w-full items-center justify-center text-[2.5rem] leading-none tracking-normal md:text-[52px] ">
-          <div class="w-full  flex flex-col items-center">
-            <div class="text-center">
-              Lets <span class="text-[#AD96FF]">build</span> together.
-            </div>
+    <footer class="w-full text-black border-t border-[rgb(210,210,210)] bg-[rgb(248,247,244)]">
+      <div class="max-w-6xl mx-auto px-6 md:px-10">
+        {/* ── CTA strip ── */}
+        <div class="py-14 md:py-16 border-b border-[rgb(220,220,220)]">
+          <div class="max-w-2xl">
+            <h2 class="text-2xl md:text-[2rem] font-bold leading-snug tracking-tight mb-2">
+              Let's build at the speed your code is being written.
+            </h2>
+            <p class="text-sm md:text-base text-[rgb(80,80,80)]">
+              Open source. Free cloud tier. Self-host when you&apos;re ready.
+            </p>
           </div>
         </div>
 
-        <div class="flex w-full items-center justify-center ">
-          <div class="flex w-3/4 flex-col items-start gap-10">
+        {/* ── Links + Newsletter grid ── */}
+        <div class="py-12 grid grid-cols-1 md:grid-cols-3 gap-10 border-b border-[rgb(220,220,220)]">
+          {/* Nav links */}
+          <div class="flex flex-col gap-2.5">
+            <p class="text-xs font-semibold uppercase tracking-widest text-[rgb(120,120,120)] mb-1">
+              Product
+            </p>
+            {_links.map((link) => (
+              <a
+                key={link.name}
+                href={link.link}
+                class="text-sm text-[rgb(50,50,50)] hover:text-black transition-colors duration-150 no-underline"
+              >
+                {link.name}
+              </a>
+            ))}
+          </div>
+
+          {/* Legal links */}
+          <div class="flex flex-col gap-2.5">
+            <p class="text-xs font-semibold uppercase tracking-widest text-[rgb(120,120,120)] mb-1">
+              Company
+            </p>
+            {law.map((link) => (
+              <a
+                key={link.name}
+                href={link.link}
+                class="text-sm text-[rgb(50,50,50)] hover:text-black transition-colors duration-150 no-underline"
+              >
+                {link.name}
+              </a>
+            ))}
+          </div>
+
+          {/* Newsletter */}
+          <div class="flex flex-col gap-3">
+            <p class="text-xs font-semibold uppercase tracking-widest text-[rgb(120,120,120)] mb-1">
+              Newsletter
+            </p>
             <form
-              class="py-5 flex w-full max-w-md flex-col items-start justify-center gap-4 md:flex-row md:items-end md:justify-start"
+              class="flex flex-col gap-2.5"
               onSubmit$={(e) => e.preventDefault()}
             >
-              <div class="w-full">
-                <label class="mb-2 block text-lg font-thin" for="email">
-                  Sign up for our newsletter *
-                </label>
-                <input
-                  class="flex focus:shadow-outline w-full bg-white appearance-none rounded-2xl border px-3 py-3 leading-tight text-gray-700 shadow focus:outline-none"
-                  id="email"
-                  name="data.email"
-                  type="email"
-                  placeholder="Enter email address"
-                  bind:value={email}
-                  required={true}
-                  autocomplete="email"
-                />
-                {message.value && (
-                  <div
-                    class={`w-full text-center ${
-                      message.value.toLowerCase().includes("failed")
-                        ? "text-red-500"
-                        : "text-green-500"
-                    }`}
-                  >
-                    {message.value}
-                  </div>
-                )}
-              </div>
-              <div class="w-full flex items-center justify-between">
-                <button
-                  class="focus:shadow-outline w-full rounded-full bg-purple-600 px-4 py-3 font-thin text-white hover:bg-purple-700 focus:outline-none"
-                  type="button"
-                  onClick$={handleSubmit}
+              <label class="text-sm text-[rgb(50,50,50)]" for="footer-email">
+                Stay up to date with NativeLink.
+              </label>
+              <input
+                class="w-full bg-white border border-[rgb(210,210,210)] rounded-lg px-3 py-2.5 text-sm text-black placeholder-[rgb(160,160,160)] focus:outline-none focus:border-[rgb(100,100,100)] transition-colors"
+                id="footer-email"
+                name="data.email"
+                type="email"
+                placeholder="you@example.com"
+                bind:value={email}
+                required={true}
+                autocomplete="email"
+              />
+              {message.value && (
+                <p
+                  class={`text-xs ${
+                    message.value.toLowerCase().includes("failed")
+                      ? "text-red-600"
+                      : "text-green-700"
+                  }`}
                 >
-                  Subscribe
-                </button>
-              </div>
+                  {message.value}
+                </p>
+              )}
+              <button
+                class="w-full rounded-lg bg-black text-white text-sm font-medium py-2.5 px-4 hover:bg-[rgb(30,30,30)] focus:outline-none transition-colors duration-200"
+                type="button"
+                onClick$={handleSubmit}
+              >
+                Subscribe
+              </button>
             </form>
-
-            <div
-              id="footer-links"
-              class="w-full flex flex-col justiy-center gap-2 items-start font-thin"
-            >
-              {_links.map((link, _index) => (
-                <a key={link.name} href={link.link}>
-                  {link.name}
-                </a>
-              ))}
-            </div>
-
-            <div
-              id="footer-links"
-              class="w-full flex flex-col justiy-center gap-2 items-start font-thin"
-            >
-              {law.map((link, _index) => (
-                <a key={link.name} href={link.link}>
-                  {link.name}
-                </a>
-              ))}
-            </div>
-
-            {/* <div class="text-[22px]">
-              <span class="text-[#AD96FF]">Get in touch:</span>{" "}
-              <a href="mailto:hello@nativelink.com">hello@nativelink.com</a>
-            </div> */}
-
-            <div class="flex flex-col">
-              <a href="/" class="z-50">
-                <img
-                  src={Logo}
-                  loading="lazy"
-                  class="w-5/12"
-                  alt="Nativelink Logo"
-                />
-              </a>
-              <span class="text-white! font-thin">© Trace Machina 2025</span>
-            </div>
           </div>
+        </div>
+
+        {/* ── Bottom bar ── */}
+        <div class="py-6 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+          <a href="/" class="shrink-0">
+            <img src={Logo} loading="lazy" class="w-28" alt="Nativelink Logo" />
+          </a>
+          <span class="text-xs text-[rgb(120,120,120)]">
+            © Trace Machina 2026
+          </span>
         </div>
       </div>
     </footer>

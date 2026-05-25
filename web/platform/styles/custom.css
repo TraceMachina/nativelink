@@ -1,68 +1,528 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+   NativeLink Docs — Starlight custom overrides
+   All rules here are scoped to avoid leaking into the main marketing site.
+───────────────────────────────────────────────────────────────────────────── */
+
+/* ── Mermaid diagram theme switching ── */
 html[data-theme="light"] .beoe-dark {
    display: none;
 }
-
 html[data-theme="dark"] .beoe-light {
    display: none;
-}
-
-.sl-markdown-content :is(h1, h2, h3, h4, h5, h6) > a {
-   color: var(--sl-color-white);
-   text-decoration: none;
-
-   &:hover {
-      text-decoration: underline;
-   }
 }
 
 html {
    scroll-behavior: smooth;
 }
 
+/* ── Starlight CSS variable overrides ─────────────────────────────────────── */
+/*
+   Starlight exposes a rich set of CSS custom properties. We set them on
+   :root[data-theme="dark"] and :root[data-theme="light"] so both modes get
+   a cohesive, brand-consistent look.
+*/
+
+/* ── Layout sizing (applies to both themes) ──────────────────────────────── */
+:root {
+   /* Default Starlight content width is 45rem — feels cramped on wide
+      viewports. Bump to 56rem for a more comfortable docs reading column. */
+   --sl-content-width: 56rem;
+   /* Slightly tighter right-sidebar so more of the viewport goes to prose. */
+   --sl-sidebar-width: 16rem;
+   /* Smaller mobile-toc bar so it doesn't dominate the top of the page. */
+   --sl-mobile-toc-height: 2.5rem;
+}
+
+/* Dark mode */
+:root[data-theme="dark"] {
+   /* Backgrounds */
+   --sl-color-bg: #111113;
+   --sl-color-bg-nav: #18181b;
+   --sl-color-bg-sidebar: #18181b;
+   --sl-color-bg-inline-code: rgba(124, 58, 237, 0.12);
+
+   /* Text */
+   --sl-color-text: #e4e4e7;
+   --sl-color-text-accent: #a78bfa;
+   --sl-color-white: #fafafa;
+   --sl-color-black: #09090b;
+
+   /* Grays */
+   --sl-color-gray-1: #e4e4e7;
+   --sl-color-gray-2: #a1a1aa;
+   --sl-color-gray-3: #71717a;
+   --sl-color-gray-4: #3f3f46;
+   --sl-color-gray-5: #27272a;
+   --sl-color-gray-6: #18181b;
+
+   /* Accent (brand purple) */
+   --sl-color-accent: #7c3aed;
+   --sl-color-accent-high: #a78bfa;
+   --sl-color-accent-low: #3b0764;
+
+   /* Borders */
+   --sl-color-hairline: rgba(255, 255, 255, 0.08);
+   --sl-color-hairline-light: rgba(255, 255, 255, 0.05);
+   --sl-color-hairline-shade: rgba(255, 255, 255, 0.04);
+
+   /* Shadows */
+   --sl-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5);
+   --sl-shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+/* Light mode */
+:root[data-theme="light"] {
+   --sl-color-bg: #f8f7f4;
+   --sl-color-bg-nav: rgba(248, 247, 244, 0.96);
+   --sl-color-bg-sidebar: #f8f7f4;
+   --sl-color-bg-inline-code: rgba(124, 58, 237, 0.07);
+
+   --sl-color-text: #18181b;
+   --sl-color-text-accent: #6d28d9;
+   /* In Starlight, --sl-color-white/black are theme-swapped: they mean
+      "foreground / background contrast color" rather than literal white/black.
+      Light mode flips them so foreground text (var(--sl-color-white)) reads
+      as dark on light surfaces. */
+   --sl-color-white: #18181b;
+   --sl-color-black: #fafafa;
+
+   --sl-color-gray-1: #18181b;
+   --sl-color-gray-2: #3f3f46;
+   --sl-color-gray-3: #71717a;
+   --sl-color-gray-4: #a1a1aa;
+   --sl-color-gray-5: #d4d4d8;
+   --sl-color-gray-6: #f4f4f5;
+
+   --sl-color-accent: #7c3aed;
+   --sl-color-accent-high: #5b21b6;
+   --sl-color-accent-low: #ede9fe;
+
+   --sl-color-hairline: rgba(0, 0, 0, 0.14);
+   --sl-color-hairline-light: rgba(0, 0, 0, 0.09);
+   --sl-color-hairline-shade: rgba(0, 0, 0, 0.05);
+}
+
+/* ── Background / layout fills ───────────────────────────────────────────── */
+:root[data-theme="dark"] body,
+:root[data-theme="dark"] .main-frame,
+:root[data-theme="dark"] .main-pane,
+:root[data-theme="dark"] main,
+:root[data-theme="dark"] .content-panel {
+   background-color: var(--sl-color-bg);
+   color: var(--sl-color-text);
+}
+
+:root[data-theme="dark"] .header,
+:root[data-theme="dark"] .sidebar-pane,
+:root[data-theme="dark"] .sidebar-content,
+:root[data-theme="dark"] .right-sidebar-panel,
+:root[data-theme="dark"][data-has-hero] header {
+   background-color: var(--sl-color-bg-nav);
+   border-color: var(--sl-color-hairline);
+}
+
+/* ── Sidebar links ────────────────────────────────────────────────────────── */
+:root[data-theme="dark"] .sidebar-content a:not([aria-current="page"]) {
+   color: var(--sl-color-gray-2);
+}
+:root[data-theme="dark"] .sidebar-content a:not([aria-current="page"]):hover,
+:root[data-theme="dark"] .sidebar-content a:not([aria-current="page"]):focus {
+   color: var(--sl-color-white);
+}
+
+/* Active sidebar item */
+:root[data-theme="dark"] .sidebar-content a[aria-current="page"] {
+   color: var(--sl-color-accent-high);
+   background-color: rgba(124, 58, 237, 0.15);
+   border-radius: 6px;
+}
+:root[data-theme="light"] .sidebar-content a[aria-current="page"] {
+   color: var(--sl-color-accent);
+   background-color: rgba(124, 58, 237, 0.08);
+   border-radius: 6px;
+}
+
+/* ── Right sidebar (ToC) ─────────────────────────────────────────────────── */
+:root[data-theme="dark"] .right-sidebar-panel a {
+   color: var(--sl-color-gray-3);
+   font-size: 0.8125rem;
+}
+:root[data-theme="dark"] .right-sidebar-panel a:hover,
+:root[data-theme="dark"] .right-sidebar-panel a:focus {
+   color: var(--sl-color-white);
+}
+:root[data-theme="dark"] .right-sidebar-panel a[aria-current="true"] {
+   color: var(--sl-color-accent-high);
+   font-weight: 500;
+}
+
+:root[data-theme="light"] .right-sidebar-panel a {
+   color: var(--sl-color-gray-3);
+   font-size: 0.8125rem;
+}
+:root[data-theme="light"] .right-sidebar-panel a:hover,
+:root[data-theme="light"] .right-sidebar-panel a:focus {
+   color: var(--sl-color-text);
+}
+:root[data-theme="light"] .right-sidebar-panel a[aria-current="true"] {
+   color: var(--sl-color-accent);
+   font-weight: 500;
+}
+
+/* ── Content links ─────────────────────────────────────────────────────────  */
+:root[data-theme="dark"] .sl-markdown-content a:not(:where(.not-content *)) {
+   color: var(--sl-color-text-accent);
+   text-underline-offset: 3px;
+}
+:root[data-theme="dark"]
+   .sl-markdown-content
+   a:hover:not(:where(.not-content *)),
+:root[data-theme="dark"]
+   .sl-markdown-content
+   a:focus:not(:where(.not-content *)) {
+   color: var(--sl-color-white);
+}
+
+:root[data-theme="light"] .sl-markdown-content a:not(:where(.not-content *)) {
+   color: var(--sl-color-text-accent);
+   text-underline-offset: 3px;
+}
+
+/* ── Heading anchor links ────────────────────────────────────────────────── */
+.sl-markdown-content :is(h1, h2, h3, h4, h5, h6) > a {
+   color: inherit;
+   text-decoration: none;
+}
+.sl-markdown-content :is(h1, h2, h3, h4, h5, h6) > a:hover {
+   text-decoration: underline;
+   text-underline-offset: 4px;
+}
+
+/* ── Docs content typography ─────────────────────────────────────────────── */
+/*
+   Only scoped to .sl-markdown-content so we never collide with the
+   marketing site's heading scale.
+*/
+.sl-markdown-content h1 {
+   font-size: clamp(1.75rem, 4vw, 2.5rem);
+   font-weight: 700;
+   letter-spacing: -0.02em;
+   line-height: 1.15;
+}
+.sl-markdown-content h2 {
+   font-size: clamp(1.375rem, 2.5vw, 1.75rem);
+   font-weight: 600;
+   letter-spacing: -0.015em;
+   line-height: 1.25;
+   margin-top: 2.5rem;
+   margin-bottom: 0.75rem;
+   padding-bottom: 0.5rem;
+   border-bottom: 1px solid var(--sl-color-hairline);
+}
+.sl-markdown-content h3 {
+   font-size: clamp(1.125rem, 2vw, 1.375rem);
+   font-weight: 600;
+   letter-spacing: -0.01em;
+   line-height: 1.3;
+   margin-top: 2rem;
+   margin-bottom: 0.5rem;
+}
+.sl-markdown-content h4 {
+   font-size: 1.0625rem;
+   font-weight: 600;
+   line-height: 1.4;
+   margin-top: 1.5rem;
+   margin-bottom: 0.375rem;
+}
+.sl-markdown-content p {
+   line-height: 1.75;
+   margin-bottom: 1rem;
+}
+
+/* ── Inline code ─────────────────────────────────────────────────────────── */
+.sl-markdown-content :not(pre) > code {
+   background-color: var(--sl-color-bg-inline-code);
+   border-radius: 4px;
+   padding: 0.15em 0.45em;
+   font-size: 0.875em;
+   font-weight: 500;
+}
+
+/* ── Prev / Next navigation buttons ─────────────────────────────────────── */
+/* Match marketing's .card-warm: 2px border, 4px radius, semi-transparent fill. */
+.pagination-links a {
+   border: 2px solid var(--sl-color-hairline) !important;
+   border-radius: 4px !important;
+   padding: 0.875rem 1.25rem !important;
+   transition: border-color 0.15s, background-color 0.15s !important;
+   text-decoration: none !important;
+}
+:root[data-theme="dark"] .pagination-links a {
+   background-color: rgba(255, 255, 255, 0.02);
+}
+:root[data-theme="light"] .pagination-links a {
+   background-color: rgba(255, 255, 255, 0.5);
+}
+.pagination-links a:hover {
+   border-color: var(--sl-color-accent) !important;
+   background-color: var(--sl-color-accent-low) !important;
+}
+:root[data-theme="dark"] .pagination-links .link-title {
+   color: var(--sl-color-white);
+   font-weight: 600;
+}
+:root[data-theme="light"] .pagination-links .link-title {
+   color: var(--sl-color-text);
+   font-weight: 600;
+}
+
+/* ── Tabs (Nix/Bazelisk etc.) ────────────────────────────────────────────── */
+starlight-tabs [role="tab"][aria-selected="true"] {
+   color: var(--sl-color-accent-high) !important;
+   border-bottom-color: var(--sl-color-accent) !important;
+}
+
+/* ── Shared interactive component buttons (SVG panzoom, etc.) ───────────── */
 .buttons {
    display: flex;
    justify-content: center;
-   gap: 10px;
+   gap: 8px;
 }
-
 .buttons button {
-   background-color: #4a90e2; /* A nice blue color */
-   color: white;
-   font-size: 18px;
-   font-weight: bold;
+   background-color: var(--sl-color-accent);
+   color: #fff;
+   font-size: 15px;
+   font-weight: 600;
    border: none;
    border-radius: 50%;
-   width: 50px;
-   height: 50px;
+   width: 44px;
+   height: 44px;
    cursor: pointer;
-   transition: transform 0.2s ease, background-color 0.2s ease;
-   box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+   transition: transform 0.15s ease, background-color 0.15s ease;
+   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
    display: flex;
    justify-content: center;
    align-items: center;
 }
-
 .buttons button:hover {
-   background-color: #357abd; /* Darker blue on hover */
-   transform: scale(1.1);
+   background-color: var(--sl-color-accent-high);
+   transform: scale(1.08);
 }
-
 .buttons button:active {
-   background-color: #2c6ba1; /* Even darker blue on active */
-   transform: scale(1.05);
+   transform: scale(1.02);
 }
-
-.buttons button:focus {
-   outline: none;
-   box-shadow: 0 0 0 3px rgba(74, 144, 226, 0.5);
+.buttons button:focus-visible {
+   outline: 2px solid var(--sl-color-accent-high);
+   outline-offset: 2px;
+   box-shadow: none;
 }
-
 .buttons button:disabled {
-   background-color: #b0bec5; /* Grey color for disabled state */
+   opacity: 0.4;
    cursor: not-allowed;
    transform: none;
 }
 
-.buttons button:disabled:hover {
-   transform: none;
+/* ── Asides / callouts ───────────────────────────────────────────────────── */
+/* Bring note / tip / caution / danger boxes in line with the marketing
+   .card-warm pattern: 2px tinted border, 4px radius, soft fill. */
+.starlight-aside {
+   border-width: 2px;
+   border-style: solid;
+   border-radius: 4px;
+   padding: 1rem 1.25rem;
+}
+.starlight-aside__title {
+   font-weight: 600;
+   letter-spacing: -0.005em;
+}
+
+:root[data-theme="dark"] .starlight-aside--note {
+   border-color: rgba(124, 58, 237, 0.35);
+   background-color: rgba(124, 58, 237, 0.08);
+}
+:root[data-theme="dark"] .starlight-aside--tip {
+   border-color: rgba(20, 184, 166, 0.35);
+   background-color: rgba(20, 184, 166, 0.08);
+}
+:root[data-theme="dark"] .starlight-aside--caution {
+   border-color: rgba(234, 179, 8, 0.35);
+   background-color: rgba(234, 179, 8, 0.08);
+}
+:root[data-theme="dark"] .starlight-aside--danger {
+   border-color: rgba(239, 68, 68, 0.4);
+   background-color: rgba(239, 68, 68, 0.08);
+}
+
+:root[data-theme="light"] .starlight-aside--note {
+   border-color: rgba(124, 58, 237, 0.3);
+   background-color: rgba(124, 58, 237, 0.06);
+}
+:root[data-theme="light"] .starlight-aside--tip {
+   border-color: rgba(13, 148, 136, 0.3);
+   background-color: rgba(13, 148, 136, 0.06);
+}
+:root[data-theme="light"] .starlight-aside--caution {
+   border-color: rgba(202, 138, 4, 0.3);
+   background-color: rgba(202, 138, 4, 0.06);
+}
+:root[data-theme="light"] .starlight-aside--danger {
+   border-color: rgba(220, 38, 38, 0.3);
+   background-color: rgba(220, 38, 38, 0.06);
+}
+
+/* ── Header: hamburger menu button ───────────────────────────────────────── */
+/* Starlight emits the inner button with `sl-flex md:sl-hidden`, but the
+   compiled CSS ships `.sl-flex` AFTER `.md\:sl-hidden`, so display:flex wins
+   at desktop and the hamburger leaks onto wide viewports. Hide the wrapper
+   at ≥50rem and leave mobile untouched. */
+@media (min-width: 50rem) {
+   starlight-menu-button {
+      display: none !important;
+   }
+}
+
+/* Restyle the mobile hamburger so it doesn't render as a giant white circle
+   in dark mode. Default Starlight uses var(--sl-color-white) for the bg,
+   which our dark theme remaps to #fafafa. Make it a subtle bordered square
+   that fits the rest of the header. */
+starlight-menu-button > button {
+   width: 2rem !important;
+   height: 2rem !important;
+   border-radius: 4px !important;
+   border: 2px solid var(--sl-color-hairline) !important;
+   background-color: transparent !important;
+   color: var(--sl-color-text) !important;
+   box-shadow: none !important;
+   padding: 0.375rem !important;
+}
+starlight-menu-button > button:hover,
+starlight-menu-button > button:focus-visible {
+   border-color: var(--sl-color-accent) !important;
+   background-color: var(--sl-color-accent-low) !important;
+   color: var(--sl-color-text-accent) !important;
+}
+starlight-menu-button[aria-expanded="true"] > button {
+   border-color: var(--sl-color-accent) !important;
+   background-color: var(--sl-color-accent-low) !important;
+   color: var(--sl-color-text-accent) !important;
+}
+
+/* ── Header: social icons (GitHub / Slack) ───────────────────────────────── */
+/* Make social icon colors follow the active theme instead of being locked
+   to a single fill value. */
+.social-icons a,
+.social-icons a svg {
+   color: var(--sl-color-text);
+   fill: currentColor;
+   transition: color 0.15s ease;
+}
+.social-icons a:hover,
+.social-icons a:hover svg,
+.social-icons a:focus,
+.social-icons a:focus svg {
+   color: var(--sl-color-text-accent);
+}
+:root[data-theme="dark"] .social-icons a,
+:root[data-theme="dark"] .social-icons a svg {
+   color: var(--sl-color-gray-2);
+}
+:root[data-theme="light"] .social-icons a,
+:root[data-theme="light"] .social-icons a svg {
+   color: var(--sl-color-gray-2);
+}
+
+/* ── Right sidebar: "On this page" heading ───────────────────────────────── */
+/* The default ToC heading is sized like a full h2 which dwarfs the link
+   list beneath it. Scale it down to a label-style header so the hierarchy
+   matches the sidebar's left-rail. */
+#starlight__on-this-page,
+.right-sidebar-panel h2 {
+   font-size: 0.75rem !important;
+   font-weight: 600 !important;
+   text-transform: uppercase;
+   letter-spacing: 0.08em;
+   margin-bottom: 0.75rem;
+   color: var(--sl-color-gray-2);
+   border-bottom: none;
+   padding-bottom: 0;
+}
+
+.right-sidebar-panel a {
+   font-size: 0.8125rem;
+   line-height: 1.5;
+   padding: 0.25rem 0;
+}
+
+/* ── Pagination: tighten typography + ensure dark-theme contrast ────────── */
+.pagination-links a {
+   font-size: 0.875rem !important;
+   line-height: 1.4 !important;
+}
+.pagination-links .link-title {
+   font-size: 0.9375rem !important;
+   line-height: 1.3 !important;
+}
+.pagination-links a span:first-child {
+   font-size: 0.75rem !important;
+   text-transform: uppercase;
+   letter-spacing: 0.06em;
+   color: var(--sl-color-gray-3);
+   margin-bottom: 0.25rem;
+}
+:root[data-theme="dark"] .pagination-links a {
+   color: var(--sl-color-gray-2);
+}
+:root[data-theme="dark"] .pagination-links a .link-title {
+   color: var(--sl-color-white) !important;
+}
+:root[data-theme="dark"] .pagination-links a:hover .link-title,
+:root[data-theme="dark"] .pagination-links a:focus .link-title {
+   color: var(--sl-color-accent-high) !important;
+}
+
+/* ── Mobile ToC (<details id="starlight__mobile-toc">) ───────────────────── */
+/* Defensively style the mobile "On this page" dropdown so it stays readable
+   in both themes regardless of how --sl-color-white/black resolve. */
+#starlight__mobile-toc summary {
+   background-color: var(--sl-color-bg-nav) !important;
+   color: var(--sl-color-text) !important;
+   padding: 0.375rem 0.75rem !important;
+   font-size: 0.75rem !important;
+   gap: 0.5rem !important;
+}
+#starlight__mobile-toc .toggle {
+   background-color: transparent !important;
+   border-color: var(--sl-color-hairline) !important;
+   color: var(--sl-color-text) !important;
+   padding-block: 0.375rem !important;
+   padding-inline: 0.625rem !important;
+   font-size: 0.75rem !important;
+   border-radius: 4px !important;
+}
+#starlight__mobile-toc[open] .toggle {
+   border-color: var(--sl-color-accent) !important;
+   color: var(--sl-color-text-accent) !important;
+}
+#starlight__mobile-toc .display-current {
+   color: var(--sl-color-text) !important;
+}
+#starlight__mobile-toc nav,
+#starlight__mobile-toc .dropdown {
+   background-color: var(--sl-color-bg-sidebar) !important;
+   color: var(--sl-color-text) !important;
+   border-color: var(--sl-color-hairline) !important;
+}
+#starlight__mobile-toc nav a,
+#starlight__mobile-toc nav li > a,
+#starlight__mobile-toc ul a {
+   color: var(--sl-color-text) !important;
+}
+#starlight__mobile-toc nav a:hover,
+#starlight__mobile-toc nav a:focus {
+   color: var(--sl-color-text-accent) !important;
+   background-color: var(--sl-color-accent-low) !important;
+}
+#starlight__mobile-toc nav a[aria-current="true"] {
+   color: var(--sl-color-text-accent) !important;
+   font-weight: 500;
 }

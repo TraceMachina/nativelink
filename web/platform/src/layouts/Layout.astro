@@ -2,6 +2,7 @@
 import "@styles/global.css";
 import "@styles/tailwind.css";
 
+import { ViewTransitions } from "astro:transitions";
 import ClientRouter from "astro/components/ClientRouter.astro";
 import { ScrollTracker } from "@qwik/components/scroll";
 import { Header } from "@qwik/components/header";
@@ -18,15 +19,15 @@ const scrolled = true;
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <ViewTransitions />
     <GoogleTagManager measurementId={"GTM-NNLLRWGB"} />
     <link rel="sitemap" href="/sitemap-index.xml" />
     <link rel="preconnect" href="https://sc.lfeeder.com" crossorigin>
     <link rel="preconnect" href="https://lf.lfeeder.com" crossorigin>
     <link
       rel="icon"
-      sizes="192x192"
-      type="image/png"
-      href="https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_favicon.png"
+      type="image/svg+xml"
+      href="/favicon.svg"
     />
     <meta
       name="viewport"
@@ -68,7 +69,7 @@ const scrolled = true;
     </script>
     <ClientRouter />
   </head>
-  <body class="bg-black w-screen">
+  <body class="w-screen">
     <BookBanner client:load />
     <ScrollTracker scrolled={scrolled} />
     <Header pathName={Astro.url.pathname} />
