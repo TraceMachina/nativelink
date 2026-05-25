@@ -1311,13 +1311,10 @@ async fn update_with_whole_file_uses_same_inode() -> Result<(), Error> {
     };
 
     let expected_file_name = OsString::from(format!("{content_path}/{DIGEST_FOLDER}/{digest}"));
-    let new_inode = fs::create_file(expected_file_name)
-        .await
-        .unwrap()
-        .as_ref()
-        .metadata()
-        .await?
-        .ino();
+    // Content blobs are stored read-only (0o444), so they cannot be opened for
+    // write (`fs::create_file` opens read+write+truncate). Stat the path
+    // directly to read the inode instead of opening the file.
+    let new_inode = tokio::fs::metadata(&expected_file_name).await?.ino();
     assert_eq!(
         original_inode, new_inode,
         "Expected the same inode for the file"
@@ -1505,6 +1502,103 @@ async fn add_too_early_files() -> Result<(), Error> {
     assert!(logs_contain(
         "File access time newer than FilesystemStore start time file_name=foo atime=20"
     ));
+
+    Ok(())
+}
+
+/// `get_executable_hardlink_source` must return a private **0o555** inode that
+/// is created exactly once: distinct from the read-only **0o444** CAS blob,
+/// stable across calls (so callers hardlink-many), and leaving the CAS blob's
+/// mode/inode untouched. This is what lets the worker materialize executable
+/// inputs by hardlink alone — with no per-action writable fd — which is the
+/// fix for the `ETXTBSY` ("Text file busy") race on executable inputs.
+#[cfg(target_family = "unix")]
+#[nativelink_test]
+async fn executable_hardlink_source_created_once_and_readonly() -> Result<(), Error> {
+    use std::os::unix::fs::MetadataExt;
+
+    let content_path = make_temp_path("content_path");
+    let temp_path = make_temp_path("temp_path");
+    let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
+
+    let store = Box::pin(
+        FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+            content_path: content_path.clone(),
+            temp_path: temp_path.clone(),
+            ..Default::default()
+        })
+        .await?,
+    );
+    store.update_oneshot(digest, VALUE1.into()).await?;
+
+    // The CAS blob itself is stored read-only 0o444.
+    let blob_path = OsString::from(format!("{content_path}/{DIGEST_FOLDER}/{digest}"));
+    let blob_meta = fs::metadata(&blob_path).await?;
+    assert_eq!(
+        blob_meta.mode() & 0o777,
+        0o444,
+        "CAS blob must be stored read-only 0o444"
+    );
+    let blob_ino = blob_meta.ino();
+
+    // First call materializes the executable variant: a separate 0o555 inode
+    // with identical content.
+    let exec1 = store.get_executable_hardlink_source(&digest).await?;
+    let exec_meta1 = fs::metadata(&exec1).await?;
+    assert_eq!(
+        exec_meta1.mode() & 0o777,
+        0o555,
+        "executable variant must be 0o555 (read + execute, no write)"
+    );
+    assert_ne!(
+        exec_meta1.ino(),
+        blob_ino,
+        "executable variant must be a private inode, not the shared CAS blob"
+    );
+    assert_eq!(
+        read_file_contents(exec1.as_os_str()).await?,
+        VALUE1.as_bytes(),
+        "executable variant content must match the CAS blob"
+    );
+
+    // Second call is created-once: same path and same inode (callers hardlink
+    // this one inode many times rather than re-copying per action).
+    let exec2 = store.get_executable_hardlink_source(&digest).await?;
+    assert_eq!(exec1, exec2, "executable variant path must be stable");
+    assert_eq!(
+        fs::metadata(&exec2).await?.ino(),
+        exec_meta1.ino(),
+        "second call must reuse the same variant inode (created once)"
+    );
+
+    // Creating the variant must not have mutated the shared CAS blob.
+    let blob_meta_after = fs::metadata(&blob_path).await?;
+    assert_eq!(
+        blob_meta_after.mode() & 0o777,
+        0o444,
+        "CAS blob mode must be untouched by variant creation"
+    );
+    assert_eq!(
+        blob_meta_after.ino(),
+        blob_ino,
+        "CAS blob inode must be untouched by variant creation"
+    );
+
+    // Hardlinking the variant yields an executable that shares its inode — the
+    // hardlink-only materialization the worker now performs.
+    let dest = OsString::from(format!("{temp_path}/materialized_exec"));
+    fs::hard_link(&exec1, &dest).await?;
+    let dest_meta = fs::metadata(&dest).await?;
+    assert_eq!(
+        dest_meta.ino(),
+        exec_meta1.ino(),
+        "hardlinked executable must share the variant inode"
+    );
+    assert_eq!(
+        dest_meta.mode() & 0o111,
+        0o111,
+        "materialized executable must carry the +x bits"
+    );
 
     Ok(())
 }

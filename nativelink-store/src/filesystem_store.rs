@@ -17,10 +17,14 @@ use core::pin::Pin;
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
 use std::borrow::Cow;
+#[cfg(unix)]
+use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::sync::{Arc, Weak};
 use std::time::SystemTime;
 
+#[cfg(unix)]
+use async_lock::Mutex;
 use async_lock::RwLock;
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
@@ -36,6 +40,8 @@ use nativelink_util::buf_channel::{
 use nativelink_util::common::{DigestInfo, fs};
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
+#[cfg(unix)]
+use nativelink_util::spawn_blocking;
 use nativelink_util::store_trait::{
     RemoveItemCallback, StoreDriver, StoreKey, StoreKeyBorrow, StoreOptimizations, UploadSizeInfo,
 };
@@ -54,6 +60,14 @@ const DEFAULT_BLOCK_SIZE: u64 = 4 * 1024;
 
 pub const STR_FOLDER: &str = "s";
 pub const DIGEST_FOLDER: &str = "d";
+
+/// Suffix for the sibling directory that holds per-digest read-only
+/// **executable** (0o555) variants of CAS blobs (see
+/// [`FilesystemStore::get_executable_hardlink_source`]). It is a sibling of
+/// `content_path` rather than a child so the normal content/temp scan and prune
+/// logic never touches it. Cleared on startup; entries are regenerable.
+#[cfg(unix)]
+const EXECUTABLE_DIR_SUFFIX: &str = ".exec";
 
 #[derive(Clone, Copy, Debug)]
 pub enum FileType {
@@ -671,6 +685,12 @@ pub struct FilesystemStore<Fe: FileEntry = FileEntryImpl> {
     rename_fn: fn(&OsStr, &OsStr) -> Result<(), std::io::Error>,
     /// Limits concurrent write operations to prevent disk I/O saturation.
     write_semaphore: Option<Semaphore>,
+    /// Per-digest single-flight locks guarding creation of the executable
+    /// variant in `{content_path}.exec`, so each variant's writable fd is
+    /// opened exactly once. The outer lock is sync and only ever held to
+    /// get/insert/remove the per-digest async lock — never across I/O.
+    #[cfg(unix)]
+    executable_locks: std::sync::Mutex<HashMap<DigestInfo, Arc<Mutex<()>>>>,
 }
 
 impl<Fe: FileEntry> FilesystemStore<Fe> {
@@ -701,6 +721,21 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
 
         create_subdirs(&spec.temp_path).await?;
         create_subdirs(&spec.content_path).await?;
+
+        // Executable-variant directory: a sibling of `content_path` holding
+        // per-digest 0o555 copies used as hardlink sources for executable
+        // inputs (see `get_executable_hardlink_source`). Cleared on startup —
+        // the variants are regenerable and we never want a stale one to leak
+        // across runs. Unix-only: the executable bit (and the ETXTBSY race it
+        // guards against) does not apply on Windows.
+        #[cfg(unix)]
+        {
+            let executable_dir = format!("{}{EXECUTABLE_DIR_SUFFIX}", spec.content_path);
+            drop(fs::remove_dir_all(&executable_dir).await);
+            fs::create_dir_all(format!("{executable_dir}/{DIGEST_FOLDER}"))
+                .await
+                .err_tip(|| format!("Failed to create executable dir {executable_dir}"))?;
+        }
 
         let shared_context = Arc::new(SharedContext {
             active_drop_spawns: AtomicU64::new(0),
@@ -741,11 +776,159 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             weak_self: weak_self.clone(),
             rename_fn,
             write_semaphore,
+            #[cfg(unix)]
+            executable_locks: std::sync::Mutex::new(HashMap::new()),
         }))
     }
 
     pub fn get_arc(&self) -> Option<Arc<Self>> {
         self.weak_self.upgrade()
+    }
+
+    /// Path of the read-only executable (0o555) variant for `digest`.
+    #[cfg(unix)]
+    fn executable_variant_path(&self, digest: &DigestInfo) -> OsString {
+        format!(
+            "{}{EXECUTABLE_DIR_SUFFIX}/{DIGEST_FOLDER}/{digest}",
+            self.shared_context.content_path
+        )
+        .into()
+    }
+
+    /// Returns the path to a private, read-only **executable** (0o555) copy of
+    /// the blob for `digest`, creating it at most once. Callers **hardlink**
+    /// the returned path into action input trees instead of copying the
+    /// executable per action.
+    ///
+    /// Why this exists: a CAS blob is stored read-only **0o444** and shared
+    /// across actions by hardlink, so it cannot carry the executable bit and
+    /// must never be `chmod`'d (that mutates the shared inode — the #2347
+    /// corruption class). Materializing an executable input therefore needs a
+    /// separate 0o555 inode. Doing that copy *per action* opens a writable fd
+    /// in the worker's hot path; under fork-heavy concurrency a child can
+    /// inherit that fd and a concurrent `execve` of the executable then fails
+    /// with `ETXTBSY` ("Text file busy", os error 26). Creating the 0o555 inode
+    /// **once** — writer fd fsync'd and closed, then atomically renamed into
+    /// place before the inode is ever hardlinked or executed — and hardlinking
+    /// it thereafter keeps the per-action path hardlink-only.
+    #[cfg(unix)]
+    pub async fn get_executable_hardlink_source(
+        &self,
+        digest: &DigestInfo,
+    ) -> Result<OsString, Error> {
+        let variant_path = self.executable_variant_path(digest);
+
+        // Fast path: the variant already exists, so the caller can hardlink it
+        // with no writable fd anywhere in sight.
+        if fs::metadata(&variant_path).await.is_ok() {
+            return Ok(variant_path);
+        }
+
+        // Single-flight: exactly one task ever opens a writable fd for this
+        // variant. Without this, a cold-cache burst of concurrent actions
+        // would each open a writer for the same executable — the very window
+        // ETXTBSY exploits.
+        let lock = {
+            let mut locks = self
+                .executable_locks
+                .lock()
+                .expect("executable_locks poisoned");
+            locks
+                .entry(*digest)
+                .or_insert_with(|| Arc::new(Mutex::new(())))
+                .clone()
+        };
+        let _guard = lock.lock().await;
+
+        // Re-check: another task may have constructed it while we waited.
+        if fs::metadata(&variant_path).await.is_ok() {
+            self.forget_executable_lock(digest);
+            return Ok(variant_path);
+        }
+
+        let result = self.create_executable_variant(digest, &variant_path).await;
+        // Drop the per-digest lock entry regardless of outcome so the map
+        // cannot grow unbounded; a concurrent waiter already cloned the Arc.
+        self.forget_executable_lock(digest);
+        result.map(|()| variant_path)
+    }
+
+    /// Non-unix has no executable bit and no `ETXTBSY`, so just hardlink the
+    /// CAS blob directly.
+    #[cfg(not(unix))]
+    pub async fn get_executable_hardlink_source(
+        &self,
+        digest: &DigestInfo,
+    ) -> Result<OsString, Error> {
+        let file_entry = self.get_file_entry_for_digest(digest).await?;
+        file_entry
+            .get_file_path_locked(|p| async move { Ok(p) })
+            .await
+    }
+
+    #[cfg(unix)]
+    fn forget_executable_lock(&self, digest: &DigestInfo) {
+        self.executable_locks
+            .lock()
+            .expect("executable_locks poisoned")
+            .remove(digest);
+    }
+
+    /// Materializes the 0o555 executable variant for `digest`. Must be called
+    /// under the per-digest single-flight guard.
+    #[cfg(unix)]
+    async fn create_executable_variant(
+        &self,
+        digest: &DigestInfo,
+        variant_path: &OsStr,
+    ) -> Result<(), Error> {
+        // Resolve the on-disk CAS blob (0o444) to copy from. Must be present in
+        // this tier; callers populate the fast store first.
+        let file_entry = self
+            .get_file_entry_for_digest(digest)
+            .await
+            .err_tip(|| "Resolving CAS blob for executable variant")?;
+        let src_path = file_entry
+            .get_file_path_locked(|p| async move { Ok(p) })
+            .await?;
+
+        let variant_owned = variant_path.to_os_string();
+        let mut temp_owned = variant_path.to_os_string();
+        temp_owned.push(".tmp");
+        let rename_fn = self.rename_fn;
+
+        // All of this is blocking std::fs; run it off the async runtime. The
+        // writable fd opened by `copy` is fully closed before the `rename`
+        // publishes the inode, so no reachable hardlink of the variant ever has
+        // an open writer.
+        spawn_blocking!(
+            "filesystem_store_executable_variant",
+            move || -> Result<(), Error> {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::copy(&src_path, &temp_owned).map_err(|e| {
+                    make_err!(Code::Internal, "executable-variant copy failed: {e:?}")
+                })?;
+                std::fs::set_permissions(&temp_owned, std::fs::Permissions::from_mode(0o555))
+                    .map_err(|e| {
+                        make_err!(
+                            Code::Internal,
+                            "executable-variant chmod 0o555 failed: {e:?}"
+                        )
+                    })?;
+                // Reopen read-only purely to fsync the bytes durable before publish.
+                let f = std::fs::File::open(&temp_owned)
+                    .map_err(|e| make_err!(Code::Internal, "executable-variant reopen: {e:?}"))?;
+                f.sync_all()
+                    .map_err(|e| make_err!(Code::Internal, "executable-variant fsync: {e:?}"))?;
+                drop(f);
+                rename_fn(temp_owned.as_os_str(), variant_owned.as_os_str()).map_err(|e| {
+                    make_err!(Code::Internal, "executable-variant rename failed: {e:?}")
+                })?;
+                Ok(())
+            }
+        )
+        .await
+        .err_tip(|| "executable-variant spawn_blocking join failed")?
     }
 
     pub async fn get_file_entry_for_digest(&self, digest: &DigestInfo) -> Result<Arc<Fe>, Error> {
@@ -861,6 +1044,29 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             );
 
             let from_path = encoded_file_path.get_file_path();
+
+            // Lock the blob down as read-only *before* it lands at its final
+            // content path, so every hardlink of it (the worker directory cache
+            // and `download_to_directory`) inherits an immutable, read-only
+            // inode. This is what preserves the input-tree hermeticity contract
+            // (actions cannot mutate their inputs) without a per-materialization
+            // chmod walk, and it means callers must never `chmod` a hardlinked
+            // blob — anything needing a different mode (e.g. an executable's +x
+            // bit) must take a private copy. Content-addressed blobs are
+            // write-once and replaced by `rename` rather than in-place writes,
+            // and unlink only needs the *parent directory* to be writable, so a
+            // read-only file mode is safe for both overwrite-by-rename and
+            // eviction. Best-effort: a failure here (e.g. the temp file was
+            // already evicted out from under us) must not abort the emplace.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if let Err(err) =
+                    fs::set_permissions(&from_path, std::fs::Permissions::from_mode(0o444)).await
+                {
+                    warn!(?err, ?from_path, "Failed to set CAS blob read-only");
+                }
+            }
             // Internally tokio spawns fs commands onto a blocking thread anyways.
             // Since we are already on a blocking thread, we just need the `fs` wrapper to manage
             // an open-file permit (ensure we don't open too many files at once).
