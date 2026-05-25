@@ -195,24 +195,19 @@ pub fn download_to_directory<'a>(
                 .try_into()
                 .err_tip(|| "In Directory::file::digest")?;
             let dest = format!("{}/{}", current_directory, file.name);
-            let (mtime, mut unix_mode) = match file.node_properties {
+            let is_executable = file.is_executable;
+            let (mtime, custom_unix_mode) = match file.node_properties {
                 Some(properties) => (properties.mtime, properties.unix_mode),
                 None => (None, None),
             };
-            #[cfg_attr(target_family = "windows", allow(unused_assignments))]
-            if file.is_executable {
-                unix_mode = Some(unix_mode.unwrap_or(0o444) | 0o111);
-            }
             futures.push(
                 cas_store
                     .populate_fast_store(digest.into())
                     .and_then(move |()| async move {
                         if is_zero_digest(digest) {
                             // Zero-digest files are never persisted by the
-                            // FilesystemStore, so materialise them directly
-                            // in the worker exec dir. Attach context so a
-                            // failure here is diagnosable as a missing
-                            // empty file rather than a generic IO error.
+                            // FilesystemStore, so materialise them directly in
+                            // the worker exec dir.
                             let mut file_slot = fs::create_file(&dest)
                                 .await
                                 .err_tip(|| format!("Could not create zero-digest file at {dest}"))?;
@@ -220,46 +215,56 @@ pub fn download_to_directory<'a>(
                                 .write_all(&[])
                                 .await
                                 .err_tip(|| format!("Could not write zero-digest file at {dest}"))?;
-                        }
-                        else {
+                        } else if custom_unix_mode.is_some() || mtime.is_some() {
+                            // Rare path: per-file metadata (a custom unix_mode or
+                            // an mtime) must land on a PRIVATE inode. A
+                            // chmod/utimes on a hardlink mutates the shared CAS
+                            // inode for every other action that hardlinked it
+                            // (the #2347 corruption class). Copy the blob into a
+                            // private inode, then stamp mode/mtime onto it below.
                             let file_entry = filesystem_store
                                 .get_file_entry_for_digest(&digest)
                                 .await
-                                .err_tip(|| "During hard link")?;
-                            // TODO: add a test for #2051: deadlock with large number of files
-                            let src_path = file_entry.get_file_path_locked(|src| async move { Ok(PathBuf::from(src)) }).await?;
-
-                            // CAS blobs are stored read-only and shared between
-                            // actions by hardlink. Any per-file metadata — a
-                            // custom unix_mode (including the executable +x bit)
-                            // or a custom mtime — must be applied to a PRIVATE
-                            // inode; a chmod/utimes on a hardlink would mutate
-                            // the shared CAS inode for every other action that
-                            // hardlinked the same blob (the #2347 corruption
-                            // class). So hardlink only the common metadata-free
-                            // case (zero-copy, inherits the blob's read-only
-                            // mode) and copy into a private inode when mode/mtime
-                            // are applied below.
-                            #[cfg(target_family = "unix")]
-                            let needs_private_inode = unix_mode.is_some() || mtime.is_some();
-                            #[cfg(not(target_family = "unix"))]
-                            let needs_private_inode = mtime.is_some();
-                            if needs_private_inode {
-                                let src = src_path.clone();
-                                let dst = dest.clone();
-                                spawn_blocking!("download_to_directory_private_copy", move || {
-                                    std::fs::copy(&src, &dst).map(|_| ()).map_err(|e| {
-                                        make_err!(
-                                            Code::Internal,
-                                            "Failed to copy CAS blob into a private inode at {dst}: {e:?}"
-                                        )
-                                    })
+                                .err_tip(|| "During private copy")?;
+                            let src_path = file_entry
+                                .get_file_path_locked(|src| async move { Ok(src) })
+                                .await?;
+                            let dst = dest.clone();
+                            spawn_blocking!("download_to_directory_private_copy", move || {
+                                std::fs::copy(&src_path, &dst).map(|_| ()).map_err(|e| {
+                                    make_err!(
+                                        Code::Internal,
+                                        "Failed to copy CAS blob into a private inode at {dst}: {e:?}"
+                                    )
                                 })
-                                .await
-                                .err_tip(|| {
-                                    "Failed to launch spawn_blocking private copy in download_to_directory"
-                                })??;
+                            })
+                            .await
+                            .err_tip(|| {
+                                "Failed to launch spawn_blocking private copy in download_to_directory"
+                            })??;
+                        } else {
+                            // Hot path: hardlink only — no writable fd is ever
+                            // opened for the materialized inode, so a concurrent
+                            // `execve` of an executable input cannot hit ETXTBSY
+                            // ("Text file busy"). Executables hardlink a
+                            // per-digest 0o555 variant created once off the hot
+                            // path (the 0o444 CAS blob is shared and cannot carry
+                            // +x); non-executables hardlink the 0o444 CAS blob.
+                            let src_path = if is_executable {
+                                filesystem_store
+                                    .get_executable_hardlink_source(&digest)
+                                    .await
+                                    .err_tip(|| "Resolving executable hardlink source")?
                             } else {
+                                let file_entry = filesystem_store
+                                    .get_file_entry_for_digest(&digest)
+                                    .await
+                                    .err_tip(|| "During hard link")?;
+                                // TODO: add a test for #2051: deadlock with large number of files
+                                file_entry
+                                    .get_file_path_locked(|src| async move { Ok(src) })
+                                    .await?
+                            };
                             fs::hard_link(&src_path, &dest)
                                 .await
                                 .map_err(|e| {
@@ -282,26 +287,41 @@ pub fn download_to_directory<'a>(
                                         e.append(format!("Could not make hardlink to {dest}"))
                                     }
                                 })?;
-                            }
-                            }
+                            // Hardlinked inodes are already correct (the 0o444
+                            // blob or the 0o555 executable variant) and carry no
+                            // per-file metadata, so there is nothing to stamp.
+                            return Ok(());
+                        }
+
+                        // Private-inode tail (zero-digest or private copy only):
+                        // stamp the requested mode and mtime. Safe because the
+                        // inode is private to this action.
                         #[cfg(target_family = "unix")]
-                        if let Some(unix_mode) = unix_mode {
-                            fs::set_permissions(&dest, Permissions::from_mode(unix_mode))
-                                .await
-                                .err_tip(|| {
-                                    format!(
-                                        "Could not set unix mode in download_to_directory {dest}"
-                                    )
-                                })?;
+                        {
+                            let mode = if let Some(mode) = custom_unix_mode {
+                                Some(if is_executable { mode | 0o111 } else { mode })
+                            } else if is_executable {
+                                Some(0o555)
+                            } else {
+                                None
+                            };
+                            if let Some(mode) = mode {
+                                fs::set_permissions(&dest, Permissions::from_mode(mode))
+                                    .await
+                                    .err_tip(|| {
+                                        format!("Could not set unix mode in download_to_directory {dest}")
+                                    })?;
+                            }
                         }
                         if let Some(mtime) = mtime {
+                            let dst = dest.clone();
                             spawn_blocking!("download_to_directory_set_mtime", move || {
                                 set_file_mtime(
-                                    &dest,
+                                    &dst,
                                     FileTime::from_unix_time(mtime.seconds, mtime.nanos as u32),
                                 )
                                 .err_tip(|| {
-                                    format!("Failed to set mtime in download_to_directory {dest}")
+                                    format!("Failed to set mtime in download_to_directory {dst}")
                                 })
                             })
                             .await
