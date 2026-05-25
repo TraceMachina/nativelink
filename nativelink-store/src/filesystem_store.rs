@@ -30,7 +30,6 @@ use futures::{Future, TryFutureExt};
 use nativelink_config::stores::FilesystemSpec;
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
-use nativelink_util::background_spawn;
 use nativelink_util::buf_channel::{
     DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
 };
@@ -40,6 +39,7 @@ use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthS
 use nativelink_util::store_trait::{
     RemoveItemCallback, StoreDriver, StoreKey, StoreKeyBorrow, StoreOptimizations, UploadSizeInfo,
 };
+use nativelink_util::{background_spawn, spawn_blocking};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, Take};
 use tokio::sync::Semaphore;
 use tokio_stream::wrappers::ReadDirStream;
@@ -888,31 +888,34 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         // writable fd opened by `copy` is fully closed before the `rename`
         // publishes the inode, so no reachable hardlink of the variant ever has
         // an open writer.
-        tokio::task::spawn_blocking(move || -> Result<(), Error> {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::copy(&src_path, &temp_owned)
-                .map_err(|e| make_err!(Code::Internal, "executable-variant copy failed: {e:?}"))?;
-            std::fs::set_permissions(&temp_owned, std::fs::Permissions::from_mode(0o555)).map_err(
-                |e| {
-                    make_err!(
-                        Code::Internal,
-                        "executable-variant chmod 0o555 failed: {e:?}"
-                    )
-                },
-            )?;
-            // Reopen read-only purely to fsync the bytes durable before publish.
-            let f = std::fs::File::open(&temp_owned)
-                .map_err(|e| make_err!(Code::Internal, "executable-variant reopen: {e:?}"))?;
-            f.sync_all()
-                .map_err(|e| make_err!(Code::Internal, "executable-variant fsync: {e:?}"))?;
-            drop(f);
-            rename_fn(temp_owned.as_os_str(), variant_owned.as_os_str()).map_err(|e| {
-                make_err!(Code::Internal, "executable-variant rename failed: {e:?}")
-            })?;
-            Ok(())
-        })
+        spawn_blocking!(
+            "filesystem_store_executable_variant",
+            move || -> Result<(), Error> {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::copy(&src_path, &temp_owned).map_err(|e| {
+                    make_err!(Code::Internal, "executable-variant copy failed: {e:?}")
+                })?;
+                std::fs::set_permissions(&temp_owned, std::fs::Permissions::from_mode(0o555))
+                    .map_err(|e| {
+                        make_err!(
+                            Code::Internal,
+                            "executable-variant chmod 0o555 failed: {e:?}"
+                        )
+                    })?;
+                // Reopen read-only purely to fsync the bytes durable before publish.
+                let f = std::fs::File::open(&temp_owned)
+                    .map_err(|e| make_err!(Code::Internal, "executable-variant reopen: {e:?}"))?;
+                f.sync_all()
+                    .map_err(|e| make_err!(Code::Internal, "executable-variant fsync: {e:?}"))?;
+                drop(f);
+                rename_fn(temp_owned.as_os_str(), variant_owned.as_os_str()).map_err(|e| {
+                    make_err!(Code::Internal, "executable-variant rename failed: {e:?}")
+                })?;
+                Ok(())
+            }
+        )
         .await
-        .map_err(|e| make_err!(Code::Internal, "executable-variant join failed: {e:?}"))?
+        .err_tip(|| "executable-variant spawn_blocking join failed")?
     }
 
     pub async fn get_file_entry_for_digest(&self, digest: &DigestInfo) -> Result<Arc<Fe>, Error> {
