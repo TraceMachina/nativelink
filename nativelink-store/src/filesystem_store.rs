@@ -17,12 +17,15 @@ use core::pin::Pin;
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
 use std::borrow::Cow;
+#[cfg(unix)]
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::sync::{Arc, Weak};
 use std::time::SystemTime;
 
-use async_lock::{Mutex, RwLock};
+#[cfg(unix)]
+use async_lock::Mutex;
+use async_lock::RwLock;
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use futures::stream::{StreamExt, TryStreamExt};
@@ -30,16 +33,18 @@ use futures::{Future, TryFutureExt};
 use nativelink_config::stores::FilesystemSpec;
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
+use nativelink_util::background_spawn;
 use nativelink_util::buf_channel::{
     DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
 };
 use nativelink_util::common::{DigestInfo, fs};
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
+#[cfg(unix)]
+use nativelink_util::spawn_blocking;
 use nativelink_util::store_trait::{
     RemoveItemCallback, StoreDriver, StoreKey, StoreKeyBorrow, StoreOptimizations, UploadSizeInfo,
 };
-use nativelink_util::{background_spawn, spawn_blocking};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, Take};
 use tokio::sync::Semaphore;
 use tokio_stream::wrappers::ReadDirStream;
@@ -61,6 +66,7 @@ pub const DIGEST_FOLDER: &str = "d";
 /// [`FilesystemStore::get_executable_hardlink_source`]). It is a sibling of
 /// `content_path` rather than a child so the normal content/temp scan and prune
 /// logic never touches it. Cleared on startup; entries are regenerable.
+#[cfg(unix)]
 const EXECUTABLE_DIR_SUFFIX: &str = ".exec";
 
 #[derive(Clone, Copy, Debug)]
@@ -683,6 +689,7 @@ pub struct FilesystemStore<Fe: FileEntry = FileEntryImpl> {
     /// variant in `{content_path}.exec`, so each variant's writable fd is
     /// opened exactly once. The outer lock is sync and only ever held to
     /// get/insert/remove the per-digest async lock — never across I/O.
+    #[cfg(unix)]
     executable_locks: std::sync::Mutex<HashMap<DigestInfo, Arc<Mutex<()>>>>,
 }
 
@@ -719,12 +726,16 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         // per-digest 0o555 copies used as hardlink sources for executable
         // inputs (see `get_executable_hardlink_source`). Cleared on startup —
         // the variants are regenerable and we never want a stale one to leak
-        // across runs.
-        let executable_dir = format!("{}{EXECUTABLE_DIR_SUFFIX}", spec.content_path);
-        drop(fs::remove_dir_all(&executable_dir).await);
-        fs::create_dir_all(format!("{executable_dir}/{DIGEST_FOLDER}"))
-            .await
-            .err_tip(|| format!("Failed to create executable dir {executable_dir}"))?;
+        // across runs. Unix-only: the executable bit (and the ETXTBSY race it
+        // guards against) does not apply on Windows.
+        #[cfg(unix)]
+        {
+            let executable_dir = format!("{}{EXECUTABLE_DIR_SUFFIX}", spec.content_path);
+            drop(fs::remove_dir_all(&executable_dir).await);
+            fs::create_dir_all(format!("{executable_dir}/{DIGEST_FOLDER}"))
+                .await
+                .err_tip(|| format!("Failed to create executable dir {executable_dir}"))?;
+        }
 
         let shared_context = Arc::new(SharedContext {
             active_drop_spawns: AtomicU64::new(0),
@@ -765,6 +776,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             weak_self: weak_self.clone(),
             rename_fn,
             write_semaphore,
+            #[cfg(unix)]
             executable_locks: std::sync::Mutex::new(HashMap::new()),
         }))
     }
@@ -774,6 +786,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
     }
 
     /// Path of the read-only executable (0o555) variant for `digest`.
+    #[cfg(unix)]
     fn executable_variant_path(&self, digest: &DigestInfo) -> OsString {
         format!(
             "{}{EXECUTABLE_DIR_SUFFIX}/{DIGEST_FOLDER}/{digest}",
