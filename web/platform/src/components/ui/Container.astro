@@ -12,9 +12,9 @@ interface Props {
 const { width = "default", class: className, id, as = "div" }: Props = Astro.props;
 
 const widths: Record<NonNullable<Props["width"]>, string> = {
-   default: "max-w-[1280px]",
+   default: "max-w-[1360px]",
    narrow: "max-w-[880px]",
-   wide: "max-w-[1440px]",
+   wide: "max-w-[1500px]",
    prose: "max-w-[680px]",
 };
 

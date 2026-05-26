@@ -220,6 +220,12 @@ body {
    border-radius: 4px;
 }
 
+/* Default interactive cursor for buttons + role=button (links already get it
+   from the browser default). Catches places that forget cursor-pointer. */
+:where(button:not(:disabled), [role="button"]:not([aria-disabled="true"])) {
+   cursor: pointer;
+}
+
 /* Marketing-page anchor defaults — links are colored by default, no underline
    unless requested. Docs/Starlight handle their own. */
 main a:not(.no-style):not(.btn):not([class*="text-"]) {

@@ -96,10 +96,10 @@ const features: Array<{ feature: string; oss: FeatureValue; enterprise: FeatureV
                   <Card
                      tone={tier.featured ? "brand" : "default"}
                      padding="lg"
-                     class="flex flex-col gap-6 relative"
+                     class="flex flex-col gap-6 relative pt-12"
                   >
                      {tier.featured && (
-                        <span class="absolute right-4 top-4 text-eyebrow text-brand">
+                        <span class="absolute right-5 top-5 text-eyebrow text-brand inline-flex items-center gap-2 px-2 py-1 rounded-full border border-border-brand bg-brand/10">
                            Recommended
                         </span>
                      )}
@@ -107,8 +107,8 @@ const features: Array<{ feature: string; oss: FeatureValue; enterprise: FeatureV
                         <h2 class="text-h4 text-fg">{tier.title}</h2>
                         <p class="text-sm text-fg-muted">{tier.tagline}</p>
                      </div>
-                     <div class="flex items-baseline gap-1 pb-4 border-b border-border-subtle">
-                        <span class="text-h2 text-fg font-semibold">
+                     <div class="flex items-baseline gap-1.5 pb-4 border-b border-border-subtle">
+                        <span class="text-h2 text-fg font-semibold leading-none">
                            {tier.price}
                         </span>
                         {tier.priceSub && (
