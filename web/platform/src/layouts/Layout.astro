@@ -5,8 +5,8 @@ import "@styles/tailwind.css";
 import { ViewTransitions } from "astro:transitions";
 import ClientRouter from "astro/components/ClientRouter.astro";
 import { ScrollTracker } from "@qwik/components/scroll";
-import { Header } from "@qwik/components/header";
-import { Footer } from "@qwik/components/footer";
+import SiteHeader from "@components/ui/SiteHeader.astro";
+import SiteFooter from "@components/ui/SiteFooter.astro";
 import { BookBanner } from "@qwik/components/book-banner.tsx";
 import GoogleTagManager from "../thirdParty/GoogleTagManager.astro";
 
@@ -19,11 +19,29 @@ const scrolled = true;
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    {/* Set theme before paint to avoid flash. Defaults to dark; honors stored choice. */}
+    <script is:inline>
+      (function () {
+        try {
+          var stored = localStorage.getItem("nl-theme");
+          var theme = stored === "light" ? "light" : "dark";
+          document.documentElement.setAttribute("data-theme", theme);
+        } catch (_) {
+          document.documentElement.setAttribute("data-theme", "dark");
+        }
+      })();
+    </script>
     <ViewTransitions />
     <GoogleTagManager measurementId={"GTM-NNLLRWGB"} />
     <link rel="sitemap" href="/sitemap-index.xml" />
     <link rel="preconnect" href="https://sc.lfeeder.com" crossorigin>
     <link rel="preconnect" href="https://lf.lfeeder.com" crossorigin>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Geist:wght@100..900&family=Geist+Mono:wght@100..900&display=swap"
+    />
     <link
       rel="icon"
       type="image/svg+xml"
@@ -69,11 +87,13 @@ const scrolled = true;
     </script>
     <ClientRouter />
   </head>
-  <body class="w-screen">
+  <body class="w-screen min-h-screen bg-bg text-fg antialiased">
     <BookBanner client:load />
     <ScrollTracker scrolled={scrolled} />
-    <Header pathName={Astro.url.pathname} />
-    <slot />
-    <Footer />
+    <SiteHeader pathName={Astro.url.pathname} />
+    <main id="main" class="pt-[100px] md:pt-[104px]">
+      <slot />
+    </main>
+    <SiteFooter />
   </body>
 </html>

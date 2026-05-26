@@ -1,0 +1,90 @@
+---
+/**
+ * Button — works as a real <button> or an <a>. Variant-driven, no per-page
+ * overrides allowed. The "arrow" prop appends a → that animates on hover.
+ *
+ *   <Button href="/start" variant="primary" arrow>Get started</Button>
+ *   <Button variant="ghost" size="sm">Cancel</Button>
+ */
+interface Props {
+   variant?: "primary" | "secondary" | "ghost" | "link";
+   size?: "sm" | "md" | "lg";
+   href?: string;
+   type?: "button" | "submit" | "reset";
+   arrow?: boolean;
+   class?: string;
+   id?: string;
+   target?: string;
+   rel?: string;
+   "aria-label"?: string;
+   disabled?: boolean;
+}
+
+const {
+   variant = "primary",
+   size = "md",
+   href,
+   type = "button",
+   arrow = false,
+   class: className,
+   id,
+   target,
+   rel,
+   "aria-label": ariaLabel,
+   disabled,
+}: Props = Astro.props;
+
+const base =
+   "no-style group/btn inline-flex items-center justify-center gap-2 " +
+   "font-sans font-medium leading-none whitespace-nowrap " +
+   "transition-all duration-200 ease-out " +
+   "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-focus-ring)] " +
+   "disabled:opacity-50 disabled:pointer-events-none";
+
+const sizes: Record<NonNullable<Props["size"]>, string> = {
+   sm: "h-9 px-3.5 text-sm rounded-md",
+   md: "h-11 px-5 text-sm rounded-md",
+   lg: "h-12 px-6 text-base rounded-lg",
+};
+
+const variants: Record<NonNullable<Props["variant"]>, string> = {
+   primary:
+      "bg-brand text-fg-on-brand " +
+      "hover:bg-brand-300 hover:shadow-[0_8px_24px_-8px_rgba(52,213,176,0.45)] " +
+      "active:bg-brand-600",
+   secondary:
+      "bg-card text-fg border border-border " +
+      "hover:bg-card-hover hover:border-border-strong " +
+      "active:bg-panel",
+   ghost:
+      "bg-transparent text-fg-muted " +
+      "hover:text-fg hover:bg-card-hover",
+   link:
+      "bg-transparent text-brand hover:text-brand-300 px-0 h-auto",
+};
+
+const Tag = href ? "a" : "button";
+---
+
+<Tag
+   id={id}
+   href={href}
+   type={!href ? type : undefined}
+   target={target}
+   rel={rel}
+   aria-label={ariaLabel}
+   disabled={!href ? disabled : undefined}
+   class:list={[base, sizes[size], variants[variant], className]}
+>
+   <slot />
+   {
+      arrow && (
+         <span
+            aria-hidden="true"
+            class="inline-block transition-transform duration-200 ease-out group-hover/btn:translate-x-0.5"
+         >
+            →
+         </span>
+      )
+   }
+</Tag>

@@ -1,0 +1,33 @@
+---
+/**
+ * Mono uppercase accent label that sits above section headings.
+ *
+ *   <Eyebrow>Remote Build Execution</Eyebrow>
+ *   <Heading as="h2">Builds that finish before you blink.</Heading>
+ */
+interface Props {
+   tone?: "brand" | "muted";
+   class?: string;
+   as?: "div" | "p" | "span";
+}
+const { tone = "brand", class: className, as: Tag = "p" }: Props = Astro.props;
+const tones: Record<NonNullable<Props["tone"]>, string> = {
+   brand: "text-brand",
+   muted: "text-fg-subtle",
+};
+---
+
+<Tag
+   class:list={[
+      "font-mono text-[0.6875rem] font-medium uppercase tracking-[0.14em]",
+      "inline-flex items-center gap-2",
+      tones[tone],
+      className,
+   ]}
+>
+   <span
+      aria-hidden="true"
+      class="inline-block h-px w-6 bg-current opacity-50"
+   ></span>
+   <slot />
+</Tag>

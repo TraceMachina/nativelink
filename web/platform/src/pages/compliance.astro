@@ -1,33 +1,103 @@
 ---
 import Layout from "../layouts/Layout.astro";
+import Container from "@components/ui/Container.astro";
+import Section from "@components/ui/Section.astro";
+import Heading from "@components/ui/Heading.astro";
+import Eyebrow from "@components/ui/Eyebrow.astro";
+import Lead from "@components/ui/Lead.astro";
+import Button from "@components/ui/Button.astro";
+import Card from "@components/ui/Card.astro";
 
-import { LinearGradient } from "@qwik/components/text";
+const lastUpdated = "August 19, 2024";
 ---
 
-<Layout title="NativeLink Compliance">
-    <div class="bg-black px-8 py-24 md:pt-40 gap-5 self-auto flex flex-col justify-center items-center w-screen md:px-[25vw] text-white ">
-        <div class="flex flex-col justify-center items-center py-4 gap-2">
-            <LinearGradient text="Compliance" class="text-5xl mb-4" />
-            <div class="flex flex-col justify-center items-center">
-                <span class="text-sm text-primary">NativeLink Compliance</span>
-                <span class="text-sm text-primary">Last Updated August 19, 2024</span>
-            </div>
-       </div>
-       <div>
-            At Nativelink, our mission is to empower developers to maximize their productivity.
-            Your data security is our top priority,  allowing you to concentrate on what truly matters: creating exceptional products. <br />
-            <br />
-            We are thrilled to announce that Nativelink has achieved SOC 2 certification!
-            This rigorous audit signifies our commitment to the highest standards of security, processing integrity, and risk management. <br />
-            <br />
-            Our SOC 2 Report provides detailed insights into our robust practices, including how we encrypt customer data,
-            manage system access, conduct vulnerability scans, respond to incidents, and much more. <br />
-            <br />
-            We’re more than happy to discuss our security policies in greater detail. For more information,
-            please don’t hesitate to reach out to us at hello@nativelink.com! <br />
-            <br />
-            <a class="underline" href="https://nativelink-cdn.s3.us-east-1.amazonaws.com/tracemachina_soc2_report.pdf">Soc2 Report - Download Here</a>
-       </div>
+<Layout title="Compliance — NativeLink">
+   {/* ── Hero ───────────────────────────────────────────────────────── */}
+   <Section size="lg" tone="brand">
+      <Container width="narrow">
+         <div class="flex flex-col items-start gap-5">
+            <Eyebrow>Compliance</Eyebrow>
+            <Heading as="h1" size="display">
+               Security you can audit, end-to-end.
+            </Heading>
+            <Lead>
+               Your data security is our top priority — so you can focus on
+               creating exceptional products. NativeLink is SOC 2 certified.
+            </Lead>
+            <p class="text-eyebrow text-fg-subtle">
+               Last updated · {lastUpdated}
+            </p>
+         </div>
+      </Container>
+   </Section>
 
-    </div>
+   {/* ── Body ───────────────────────────────────────────────────────── */}
+   <Section size="md">
+      <Container width="narrow">
+         <div class="flex flex-col gap-6 text-fg-muted">
+            <p class="text-lead">
+               At NativeLink, our mission is to empower developers to maximize
+               their productivity. Security underpins everything we build.
+            </p>
+            <p class="text-base leading-relaxed">
+               We are proud to be SOC 2 certified. This independent audit
+               attests to our commitment to the highest standards of security,
+               processing integrity, and risk management.
+            </p>
+            <p class="text-base leading-relaxed">
+               Our SOC 2 report provides detailed insights into our robust
+               practices — including how we encrypt customer data, manage
+               system access, conduct vulnerability scans, and respond to
+               incidents.
+            </p>
+            <p class="text-base leading-relaxed">
+               We are happy to discuss our security posture in greater detail.
+               For more information, reach out at
+               <a href="mailto:hello@nativelink.com">hello@nativelink.com</a>.
+            </p>
+         </div>
+      </Container>
+   </Section>
+
+   {/* ── Resources ──────────────────────────────────────────────────── */}
+   <Section size="lg" tone="elevated">
+      <Container width="default">
+         <div class="grid md:grid-cols-2 gap-6">
+            <Card padding="lg" class="flex flex-col gap-4">
+               <Eyebrow>Report</Eyebrow>
+               <h3 class="text-h4 text-fg">SOC 2 Type II Report</h3>
+               <p class="text-fg-muted text-sm leading-relaxed flex-1">
+                  Full details of our controls, audit findings, and the
+                  attestation letter from our auditor.
+               </p>
+               <Button
+                  href="https://nativelink-cdn.s3.us-east-1.amazonaws.com/tracemachina_soc2_report.pdf"
+                  variant="primary"
+                  size="md"
+                  arrow
+                  target="_blank"
+                  rel="noopener noreferrer"
+               >
+                  Download report
+               </Button>
+            </Card>
+            <Card padding="lg" class="flex flex-col gap-4">
+               <Eyebrow>Talk to us</Eyebrow>
+               <h3 class="text-h4 text-fg">Security review session</h3>
+               <p class="text-fg-muted text-sm leading-relaxed flex-1">
+                  Have a procurement or security team that wants to dig deeper?
+                  We're glad to walk through controls and answer questionnaires.
+               </p>
+               <Button
+                  href="mailto:hello@nativelink.com?subject=Security%20review"
+                  variant="secondary"
+                  size="md"
+                  arrow
+               >
+                  Schedule review
+               </Button>
+            </Card>
+         </div>
+      </Container>
+   </Section>
 </Layout>

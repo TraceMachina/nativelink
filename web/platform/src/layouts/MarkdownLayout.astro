@@ -1,91 +1,194 @@
 ---
+import Container from "@components/ui/Container.astro";
+import Section from "@components/ui/Section.astro";
+import Button from "@components/ui/Button.astro";
+
 const { frontmatter, prevEntry, nextEntry, slug } = Astro.props;
 const pubDate = new Date(frontmatter.pubDate);
-
-const formattedDate = pubDate.toLocaleDateString('en-US', {
-  day: '2-digit',
-  month: 'long',
-  year: 'numeric'
+const formattedDate = pubDate.toLocaleDateString("en-US", {
+   day: "2-digit",
+   month: "long",
+   year: "numeric",
 });
 ---
 
-<div class="bg-[rgb(248,247,244)] min-h-screen text-black">
-  <div class="max-w-4xl mx-auto px-6 py-24">
+<Section size="lg">
+   <Container width="narrow">
+      {/* Breadcrumbs */}
+      <nav class="mb-8" aria-label="Breadcrumb">
+         <ol class="flex items-center gap-2 text-eyebrow text-fg-subtle">
+            <li>
+               <a href="/" class="no-style hover:text-fg transition-colors">
+                  Home
+               </a>
+            </li>
+            <li aria-hidden="true">/</li>
+            <li>
+               <a
+                  href="/resources/blog"
+                  class="no-style hover:text-fg transition-colors"
+               >
+                  Blog
+               </a>
+            </li>
+            <li aria-hidden="true">/</li>
+            <li class="text-fg-muted truncate max-w-[40ch]">{slug}</li>
+         </ol>
+      </nav>
 
-    <!-- Breadcrumbs -->
-    <nav class="mb-8 text-sm">
-      <ul class="flex items-center gap-3 text-[rgb(100,100,100)]">
-        <li>
-          <a href="/" class="hover:text-black transition-colors">Home</a>
-        </li>
-        <li>/</li>
-        <li>
-          <a href="/resources/blog" class="hover:text-black transition-colors">Blog</a>
-        </li>
-        <li>/</li>
-        <li class="text-[rgb(60,60,60)]">
-          {slug}
-        </li>
-      </ul>
-    </nav>
+      <article class="markdown-article">
+         {
+            frontmatter.image && (
+               <img
+                  src={frontmatter.image}
+                  alt={frontmatter.title || ""}
+                  class="w-full rounded-xl border border-border-subtle mb-10 bg-panel"
+               />
+            )
+         }
 
-    <!-- Article Header -->
-    <article class="prose prose-lg max-w-none">
-      {frontmatter.image && (
-        <img
-          src={frontmatter.image}
-          alt={frontmatter.title || "Article image"}
-          class="w-full rounded-interactive border-2 border-[rgb(220,220,220)] mb-8"
-        />
-      )}
+         <h1 class="text-h1 text-fg text-balance mb-4">
+            {frontmatter.title}
+         </h1>
 
-      <h1 class="text-4xl md:text-5xl font-bold text-black mb-4">
-        {frontmatter.title}
-      </h1>
+         <div class="text-eyebrow text-fg-subtle mb-12">
+            {formattedDate}
+            {frontmatter.readTime && (
+               <span>
+                  <span class="mx-2" aria-hidden="true">·</span>
+                  {frontmatter.readTime}
+               </span>
+            )}
+         </div>
 
-      <div class="text-base text-[rgb(100,100,100)] mb-12">
-        {formattedDate} · {frontmatter.readTime}
+         <div class="markdown-body text-fg-muted">
+            <slot />
+         </div>
+      </article>
+
+      {/* Prev / next / back */}
+      <div
+         class="mt-16 pt-10 border-t border-border-subtle flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3"
+      >
+         {
+            prevEntry ? (
+               <Button
+                  href={`/resources/blog/${prevEntry.id}`}
+                  variant="secondary"
+                  size="md"
+                  class="!justify-start"
+               >
+                  ← Previous
+               </Button>
+            ) : (
+               <span />
+            )
+         }
+
+         <Button href="/resources/blog" variant="primary" size="md">
+            Back to blog
+         </Button>
+
+         {
+            nextEntry ? (
+               <Button
+                  href={`/resources/blog/${nextEntry.id}`}
+                  variant="secondary"
+                  size="md"
+                  class="!justify-end"
+               >
+                  Next →
+               </Button>
+            ) : (
+               <span />
+            )
+         }
       </div>
+   </Container>
+</Section>
 
-      <!-- Article Content -->
-      <div class="text-lg text-[rgb(60,60,60)] leading-relaxed">
-        <slot />
-      </div>
-    </article>
-
-    <!-- Navigation -->
-    <div class="mt-16 pt-8 border-t-2 border-[rgb(220,220,220)]">
-      <div class="flex justify-between items-center gap-4">
-        {prevEntry ? (
-          <a
-            href={`/resources/blog/${prevEntry.id}`}
-            class="card-warm px-6 py-3 hover:-translate-y-1 transition-all duration-200 no-underline font-semibold"
-          >
-            ← Previous
-          </a>
-        ) : (
-          <div></div>
-        )}
-
-        <a
-          href="/resources/blog"
-          class="bg-black text-white hover:bg-[rgb(40,40,40)] transition-colors duration-200 px-8 min-h-[48px] rounded-interactive flex items-center justify-center border-2 border-black font-semibold no-underline"
-        >
-          Back to Blog
-        </a>
-
-        {nextEntry ? (
-          <a
-            href={`/resources/blog/${nextEntry.id}`}
-            class="card-warm px-6 py-3 hover:-translate-y-1 transition-all duration-200 no-underline font-semibold"
-          >
-            Next →
-          </a>
-        ) : (
-          <div></div>
-        )}
-      </div>
-    </div>
-
-  </div>
-</div>
+<style is:global>
+   .markdown-body {
+      font-size: 1.0625rem;
+      line-height: 1.75;
+   }
+   .markdown-body h2 {
+      font-size: 1.625rem;
+      font-weight: 600;
+      color: var(--color-fg);
+      margin-top: 2.5rem;
+      margin-bottom: 1rem;
+      letter-spacing: -0.015em;
+   }
+   .markdown-body h3 {
+      font-size: 1.25rem;
+      font-weight: 600;
+      color: var(--color-fg);
+      margin-top: 2rem;
+      margin-bottom: 0.75rem;
+      letter-spacing: -0.012em;
+   }
+   .markdown-body p {
+      margin-block: 1rem;
+   }
+   .markdown-body a {
+      color: var(--color-link);
+      text-decoration: underline;
+      text-underline-offset: 3px;
+      text-decoration-color: rgba(52, 213, 176, 0.4);
+   }
+   .markdown-body a:hover {
+      color: var(--color-link-hover);
+      text-decoration-color: currentColor;
+   }
+   .markdown-body strong {
+      color: var(--color-fg);
+   }
+   .markdown-body code {
+      font-family: var(--font-mono);
+      font-size: 0.9em;
+      background: var(--color-card);
+      border: 1px solid var(--color-border-subtle);
+      padding: 0.1rem 0.4rem;
+      border-radius: 4px;
+   }
+   .markdown-body pre {
+      background: var(--color-card);
+      border: 1px solid var(--color-border-subtle);
+      border-radius: var(--radius-lg);
+      padding: 1rem 1.25rem;
+      overflow-x: auto;
+      margin-block: 1.5rem;
+   }
+   .markdown-body pre code {
+      background: transparent;
+      border: none;
+      padding: 0;
+   }
+   .markdown-body ul,
+   .markdown-body ol {
+      padding-left: 1.5rem;
+      margin-block: 1rem;
+   }
+   .markdown-body ul {
+      list-style-type: disc;
+   }
+   .markdown-body ol {
+      list-style-type: decimal;
+   }
+   .markdown-body li {
+      margin-block: 0.25rem;
+   }
+   .markdown-body blockquote {
+      border-left: 3px solid var(--color-brand);
+      padding-left: 1rem;
+      color: var(--color-fg-muted);
+      font-style: italic;
+      margin-block: 1.5rem;
+   }
+   .markdown-body img {
+      border-radius: var(--radius-lg);
+      border: 1px solid var(--color-border-subtle);
+      margin-block: 1.5rem;
+   }
+</style>

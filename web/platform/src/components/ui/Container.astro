@@ -1,0 +1,33 @@
+---
+/**
+ * Page-width container. Pairs the content max-width with the responsive page
+ * gutters every section should use.
+ */
+interface Props {
+   width?: "default" | "narrow" | "wide" | "prose";
+   class?: string;
+   id?: string;
+   as?: keyof HTMLElementTagNameMap;
+}
+const { width = "default", class: className, id, as = "div" }: Props = Astro.props;
+
+const widths: Record<NonNullable<Props["width"]>, string> = {
+   default: "max-w-[1200px]",
+   narrow: "max-w-[880px]",
+   wide: "max-w-[1360px]",
+   prose: "max-w-[680px]",
+};
+
+const Tag = as;
+---
+
+<Tag
+   class:list={[
+      "mx-auto w-full px-6 sm:px-8 lg:px-10",
+      widths[width],
+      className,
+   ]}
+   id={id}
+>
+   <slot />
+</Tag>

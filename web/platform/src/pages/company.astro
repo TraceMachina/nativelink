@@ -1,9 +1,138 @@
 ---
 import Layout from "../layouts/Layout.astro";
+import Container from "@components/ui/Container.astro";
+import Section from "@components/ui/Section.astro";
+import Heading from "@components/ui/Heading.astro";
+import Eyebrow from "@components/ui/Eyebrow.astro";
+import Lead from "@components/ui/Lead.astro";
+import Button from "@components/ui/Button.astro";
+import Card from "@components/ui/Card.astro";
 
-import { CompanyPage } from "@qwik/pages/company"
+const contactCards = [
+   {
+      title: "Media kit",
+      description:
+         "Download our logos, branding guidelines, and other press resources.",
+      cta: {
+         label: "Download",
+         href: "https://drive.google.com/drive/folders/1fNmr4IpIaaiej6yKr1t0ispbXOaCVVTa?usp=sharing",
+         variant: "secondary" as const,
+      },
+   },
+   {
+      title: "General inquiries",
+      description: "Have a question or comment? We'd love to hear from you.",
+      cta: {
+         label: "Contact us",
+         href: "mailto:contact@nativelink.com",
+         variant: "secondary" as const,
+      },
+   },
+   {
+      title: "Sales inquiries",
+      description:
+         "Want to know if NativeLink is right for your team? Our sales engineers can help.",
+      cta: {
+         label: "Talk to sales",
+         href: "mailto:hello@nativelink.com",
+         variant: "primary" as const,
+      },
+   },
+];
 ---
 
-<Layout title="NativeLink Company">
-  <CompanyPage />
+<Layout title="Company — NativeLink">
+   {/* ── Hero ───────────────────────────────────────────────────────── */}
+   <Section size="lg" tone="brand">
+      <Container width="default">
+         <div class="grid lg:grid-cols-[1.1fr_0.9fr] gap-12 lg:gap-20 items-center">
+            <div class="flex flex-col gap-6">
+               <Eyebrow>Company</Eyebrow>
+               <Heading as="h1" size="display">
+                  NativeLink is built by Trace&nbsp;Machina.
+               </Heading>
+               <Lead>
+                  Our mission is to accelerate the reindustrialization of the
+                  world in the machine age.
+               </Lead>
+            </div>
+            <div class="flex justify-center lg:justify-end">
+               <img
+                  src="https://nativelink-cdn.s3.us-east-1.amazonaws.com/tracemachina_logo.webp"
+                  alt="Trace Machina"
+                  loading="lazy"
+                  class="w-full max-w-sm opacity-95 select-none"
+               />
+            </div>
+         </div>
+      </Container>
+   </Section>
+
+   {/* ── Mission body ───────────────────────────────────────────────── */}
+   <Section size="md">
+      <Container width="narrow">
+         <div class="flex flex-col gap-6 text-fg-muted">
+            <p class="text-lead">
+               We empower engineers to build the future of technology by making
+               advanced build and simulation processes that move at machine
+               speed.
+            </p>
+            <p class="text-base leading-relaxed">
+               Our products amplify the rate at which companies can innovate
+               across mission-critical industries — from semiconductors and
+               advanced robotics to autonomous vehicles, artificial intelligence
+               research, life sciences, and financial services.
+            </p>
+            <p class="text-base leading-relaxed">
+               Our commitment is to amplify execution across any environment,
+               ensuring that developers can focus on creating transformative
+               technologies that drive forward progress on behalf of humanity.
+            </p>
+         </div>
+      </Container>
+   </Section>
+
+   {/* ── Hairline ───────────────────────────────────────────────────── */}
+   <Container width="default">
+      <div class="hairline"></div>
+   </Container>
+
+   {/* ── Contact cards ──────────────────────────────────────────────── */}
+   <Section size="lg">
+      <Container width="default">
+         <div class="flex flex-col items-center text-center gap-3 mb-12">
+            <Eyebrow>Get in touch</Eyebrow>
+            <Heading as="h2" size="h2">
+               Have questions or need assistance?
+            </Heading>
+            <Lead class="mx-auto">
+               Reach out for general inquiries, sales conversations, or anything
+               else — we usually reply within a day.
+            </Lead>
+         </div>
+         <div class="grid md:grid-cols-3 gap-6">
+            {
+               contactCards.map((card) => (
+                  <Card padding="lg" class="flex flex-col gap-5">
+                     <div class="flex flex-col gap-2 flex-1">
+                        <h3 class="text-h5 text-fg">{card.title}</h3>
+                        <p class="text-sm text-fg-muted leading-relaxed">
+                           {card.description}
+                        </p>
+                     </div>
+                     <Button
+                        href={card.cta.href}
+                        variant={card.cta.variant}
+                        size="md"
+                        arrow
+                        class="w-full"
+                     >
+                        {card.cta.label}
+                     </Button>
+                  </Card>
+               ))
+            }
+         </div>
+      </Container>
+   </Section>
 </Layout>

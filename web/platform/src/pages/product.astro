@@ -1,25 +1,35 @@
 ---
 import Layout from "../layouts/Layout.astro";
+import Container from "@components/ui/Container.astro";
+import Section from "@components/ui/Section.astro";
+import Heading from "@components/ui/Heading.astro";
+import Eyebrow from "@components/ui/Eyebrow.astro";
 import { ProductPage } from "@qwik/pages/product";
 import { FAQ } from "@react/faq";
 ---
 
-<Layout title="NativeLink - Product">
-  <ProductPage />
-  <div class="section-spacing-major pb-24">
-    <div class="max-w-5xl mx-auto px-6">
-      <div class="text-center mb-12">
-        <h2 class="text-3xl md:text-5xl font-bold text-black mb-4">
-          Frequently Asked Questions
-        </h2>
-        <p class="text-lg text-[rgb(60,60,60)]">
-          Find answers to the most common questions about NativeLink, from implementation details to support options.
-        </p>
-      </div>
-      <FAQ client:visible />
-      <div class="text-center mt-8 text-sm text-[rgb(100,100,100)]">
-        For more detailed information, refer to the <a href="/docs/introduction/setup" class="text-black underline hover:opacity-70">NativeLink documentation</a>.
-      </div>
-    </div>
-  </div>
+<Layout title="Product — NativeLink">
+   {/* Existing ProductPage Qwik component handles the product overview. */}
+   <ProductPage />
+
+   {/* ── FAQ ────────────────────────────────────────────────────────── */}
+   <Section size="lg" tone="elevated">
+      <Container width="default">
+         <div class="flex flex-col items-center text-center gap-3 mb-12">
+            <Eyebrow>FAQ</Eyebrow>
+            <Heading as="h2" size="h2">Frequently asked questions</Heading>
+            <p class="text-lead text-fg-muted max-w-2xl">
+               Answers to the questions teams ask most often, from
+               implementation details to support options.
+            </p>
+         </div>
+         <FAQ client:visible />
+         <p class="text-sm text-fg-subtle text-center mt-10">
+            For more details, see the{" "}
+            <a href="/docs/introduction/setup" class="text-link">
+               NativeLink documentation
+            </a>.
+         </p>
+      </Container>
+   </Section>
 </Layout>

@@ -1,48 +1,83 @@
 ---
-import { getCollection } from 'astro:content';
+import { getCollection } from "astro:content";
 import Layout from "../../../layouts/Layout.astro";
+import Container from "@components/ui/Container.astro";
+import Section from "@components/ui/Section.astro";
+import Heading from "@components/ui/Heading.astro";
+import Eyebrow from "@components/ui/Eyebrow.astro";
+import Lead from "@components/ui/Lead.astro";
 
 const allPosts = await getCollection("posts");
-const newsPosts = allPosts.filter(post => post.data.tags?.includes('news'));
+const newsPosts = allPosts
+   .filter((p) => p.data.tags?.includes("news"))
+   .sort(
+      (a, b) =>
+         new Date(b.data.pubDate).getTime() -
+         new Date(a.data.pubDate).getTime(),
+   );
+
+const fmtDate = (d: string | Date) =>
+   new Date(d).toLocaleDateString("en-US", {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+   });
 ---
 
-<Layout title="NativeLink News">
-  <main class="bg-[rgb(248,247,244)] min-h-screen text-black">
+<Layout title="Blog — NativeLink">
+   {/* ── Hero ───────────────────────────────────────────────────────── */}
+   <Section size="lg" tone="brand">
+      <Container width="default">
+         <div class="flex flex-col items-start gap-6 max-w-2xl">
+            <Eyebrow>Blog</Eyebrow>
+            <Heading as="h1" size="display">The latest from NativeLink.</Heading>
+            <Lead>
+               Engineering write-ups, release notes, and notes from the field —
+               written by the team building NativeLink.
+            </Lead>
+         </div>
+      </Container>
+   </Section>
 
-    {/* Hero Section */}
-    <div class="section-spacing-major section-divider">
-      <div class="max-w-6xl mx-auto px-6">
-        <h1 class="text-5xl md:text-7xl font-bold text-black">The Latest</h1>
-      </div>
-    </div>
-
-    {/* Blog Posts Grid */}
-    <div class="section-spacing-major">
-      <div class="max-w-6xl mx-auto px-6">
-        <div class="grid md:grid-cols-3 gap-8">
-          {newsPosts
-            .sort((a, b) => new Date(b.data.pubDate).getTime() - new Date(a.data.pubDate).getTime())
-            .map((post) => (
-              <a
-                href={"/resources/blog/" + post.id}
-                class="card-warm flex flex-col overflow-hidden hover:-translate-y-1 transition-all duration-200 no-underline"
-              >
-                {post.data.image && (
-                  <img
-                    src={post.data.image}
-                    alt={post.data.title || "Blog post"}
-                    class="w-full h-48 object-cover"
-                  />
-                )}
-                <div class="p-6 flex flex-col justify-between flex-1">
-                  <h3 class="text-xl font-bold text-black mb-4">{post.data.title}</h3>
-                  <span class="text-lg text-black font-semibold">Read More →</span>
-                </div>
-              </a>
-            ))}
-        </div>
-      </div>
-    </div>
-
-  </main>
+   {/* ── Posts grid ─────────────────────────────────────────────────── */}
+   <Section size="md">
+      <Container width="default">
+         {
+            newsPosts.length === 0 ? (
+               <p class="text-fg-muted">No posts yet — check back soon.</p>
+            ) : (
+               <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {newsPosts.map((post) => (
+                     <a
+                        href={"/resources/blog/" + post.id}
+                        class="no-style group/post flex flex-col overflow-hidden rounded-xl border border-border-subtle bg-card hover:border-border-strong hover:-translate-y-0.5 transition-all duration-300"
+                     >
+                        {post.data.image && (
+                           <img
+                              src={post.data.image}
+                              alt=""
+                              class="w-full h-48 object-cover bg-panel"
+                              loading="lazy"
+                           />
+                        )}
+                        <div class="p-6 flex flex-col gap-3 flex-1">
+                           {post.data.pubDate && (
+                              <p class="text-eyebrow text-fg-subtle">
+                                 {fmtDate(post.data.pubDate)}
+                              </p>
+                           )}
+                           <h3 class="text-h5 text-fg leading-snug">
+                              {post.data.title}
+                           </h3>
+                           <span class="mt-auto text-eyebrow text-brand inline-flex items-center gap-2 group-hover/post:translate-x-0.5 transition-transform">
+                              Read post →
+                           </span>
+                        </div>
+                     </a>
+                  ))}
+               </div>
+            )
+         }
+      </Container>
+   </Section>
 </Layout>

@@ -1,160 +1,228 @@
 ---
 import Layout from "../../layouts/Layout.astro";
+import Container from "@components/ui/Container.astro";
+import Section from "@components/ui/Section.astro";
+import Heading from "@components/ui/Heading.astro";
+import Eyebrow from "@components/ui/Eyebrow.astro";
+import Lead from "@components/ui/Lead.astro";
+import Button from "@components/ui/Button.astro";
+import Card from "@components/ui/Card.astro";
 import { getCollection } from "astro:content";
 
 const allPosts = await getCollection("posts");
-const announcements = allPosts.filter(post => post.data.tags?.includes('announcements'));
-const caseStudies = allPosts.filter(post => post.data.tags?.includes('case-studies'));
-const blogPosts = allPosts.filter(post => post.data.tags?.includes('blog-posts'));
+const announcements = allPosts.filter((p) => p.data.tags?.includes("announcements"));
+const caseStudies = allPosts.filter((p) => p.data.tags?.includes("case-studies"));
+const blogPosts = allPosts.filter((p) => p.data.tags?.includes("blog-posts"));
 
-const pageTitle = "NativeLink Resources | Blog, Case Studies, Changelog";
+const byDateDesc = (a: typeof allPosts[number], b: typeof allPosts[number]) =>
+   new Date(b.data.pubDate).getTime() - new Date(a.data.pubDate).getTime();
 ---
 
-<Layout title={pageTitle}>
-  <main class="bg-[rgb(248,247,244)] min-h-screen text-black">
+<Layout title="Resources — NativeLink">
+   {/* ── Hero ───────────────────────────────────────────────────────── */}
+   <Section size="lg" tone="brand">
+      <Container width="default">
+         <div class="flex flex-col items-start gap-6 max-w-2xl">
+            <Eyebrow>Resources</Eyebrow>
+            <Heading as="h1" size="display">
+               Deep-tech writing for engineers who build the builds.
+            </Heading>
+            <Lead>
+               Case studies, conference talks, and write-ups from the team
+               building NativeLink — plus highlights from the broader community.
+            </Lead>
+         </div>
+      </Container>
+   </Section>
 
-    {/* Hero Section */}
-    <div class="section-spacing-major section-divider">
-      <div class="max-w-6xl mx-auto px-6">
-        <h1 class="text-5xl md:text-7xl font-bold text-black">Resources</h1>
-      </div>
-    </div>
+   {/* ── Books ──────────────────────────────────────────────────────── */}
+   <Section size="md">
+      <Container width="default">
+         <div class="flex items-end justify-between gap-4 mb-8">
+            <div class="flex flex-col gap-2">
+               <Eyebrow>Books</Eyebrow>
+               <Heading as="h2" size="h2">Books &amp; publications</Heading>
+            </div>
+         </div>
+         <Card
+            href="/resources/oreilly-bazel-book"
+            interactive
+            padding="lg"
+            class="max-w-3xl"
+         >
+            <div class="flex flex-col sm:flex-row gap-6 items-start sm:items-center">
+               <div
+                  class="shrink-0 inline-flex h-16 w-16 items-center justify-center rounded-xl bg-brand/10 text-3xl"
+                  aria-hidden="true"
+               >
+                  📘
+               </div>
+               <div class="flex flex-col gap-2 flex-1">
+                  <Eyebrow tone="muted">O'Reilly · Free</Eyebrow>
+                  <h3 class="text-h4 text-fg">
+                     Extending Bazel to its full potential
+                  </h3>
+                  <p class="text-fg-muted text-sm leading-relaxed">
+                     Leveraging cloud and parallelization to ship reliable code
+                     faster.
+                  </p>
+               </div>
+               <span class="text-eyebrow text-brand whitespace-nowrap">
+                  Download →
+               </span>
+            </div>
+         </Card>
+      </Container>
+   </Section>
 
-    {/* Books & Publications */}
-    <div class="section-spacing-major section-divider">
-      <div class="max-w-6xl mx-auto px-6">
-        <h2 class="text-3xl md:text-5xl font-bold text-black mb-12">Books & Publications</h2>
+   {/* ── Announcements: featured video + recent ─────────────────────── */}
+   <Section size="lg" tone="elevated">
+      <Container width="default">
+         <div class="flex flex-col gap-3 mb-10">
+            <Eyebrow>Announcements</Eyebrow>
+            <Heading as="h2" size="h2">From the team</Heading>
+            <Lead>
+               A talk from one of Trace Machina's lead engineers, Aaron Mondal,
+               plus the latest news from NativeLink.
+            </Lead>
+         </div>
 
-        <a
-          href="/resources/oreilly-bazel-book"
-          class="card-warm p-8 flex flex-col md:flex-row gap-8 items-center hover:-translate-y-1 transition-all duration-200 no-underline max-w-3xl"
-        >
-          <div class="text-8xl flex-shrink-0">📘</div>
-          <div class="flex flex-col gap-3">
-            <h3 class="text-2xl font-bold text-black">Extending Bazel to Its Full Potential</h3>
-            <p class="text-lg text-[rgb(60,60,60)]">Leveraging Cloud and Parallelization to Ship Reliable Code Faster</p>
-            <span class="text-lg text-black font-semibold">Download Now →</span>
-          </div>
-        </a>
-      </div>
-    </div>
+         {/* Featured video */}
+         <Card padding="none" class="overflow-hidden mb-8 max-w-4xl">
+            <div class="aspect-video w-full">
+               <iframe
+                  title="Hermetic Toolchain Creation with Local Remote Execution (LRE) & Nix"
+                  class="w-full h-full"
+                  src="https://www.youtube-nocookie.com/embed/uokjTev8myk?rel=0"
+                  referrerpolicy="strict-origin-when-cross-origin"
+                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen"
+               ></iframe>
+            </div>
+         </Card>
 
-    {/* Case Studies */}
-    <div class="section-spacing-major section-divider">
-      <div class="max-w-6xl mx-auto px-6">
-        <h2 class="text-3xl md:text-5xl font-bold text-black mb-12">Case Studies</h2>
+         {/* Announcement cards */}
+         {
+            announcements.length > 0 && (
+               <div class="flex gap-5 overflow-x-auto pb-4 snap-x snap-mandatory -mx-6 px-6 sm:mx-0 sm:px-0">
+                  {announcements.sort(byDateDesc).map((post) => (
+                     <a
+                        href={"/resources/blog/" + post.id}
+                        class="no-style group/post shrink-0 w-72 sm:w-80 snap-start rounded-xl overflow-hidden border border-border-subtle bg-card hover:border-border-strong hover:-translate-y-0.5 transition-all duration-300"
+                     >
+                        {post.data.image && (
+                           <img
+                              src={post.data.image}
+                              alt=""
+                              class="w-full h-44 object-cover bg-panel"
+                              loading="lazy"
+                           />
+                        )}
+                        <div class="p-5 flex flex-col gap-3">
+                           <h3 class="text-h6 text-fg leading-snug line-clamp-2">
+                              {post.data.title}
+                           </h3>
+                           <span class="text-eyebrow text-brand group-hover/post:translate-x-0.5 transition-transform">
+                              Read post →
+                           </span>
+                        </div>
+                     </a>
+                  ))}
+               </div>
+            )
+         }
+      </Container>
+   </Section>
 
-        <div class="flex gap-6 overflow-x-auto pb-4 snap-x snap-mandatory">
-          {caseStudies
-            .sort((a, b) => new Date(b.data.pubDate).getTime() - new Date(a.data.pubDate).getTime())
-            .map((post) => (
-              <a
-                href={"/resources/blog/" + post.id}
-                class="card-warm flex-shrink-0 w-80 flex flex-col overflow-hidden hover:-translate-y-1 transition-all duration-200 no-underline snap-center"
-              >
-                {post.data.image && (
-                  <img
-                    src={post.data.image}
-                    alt={post.data.title || "Case study"}
-                    class="w-full h-48 object-contain bg-white"
-                  />
-                )}
-                <div class="p-6 flex flex-col justify-between flex-1">
-                  <h3 class="text-xl font-bold text-black mb-4">{post.data.title}</h3>
-                  <span class="text-lg text-black font-semibold">Read More →</span>
-                </div>
-              </a>
-            ))}
-        </div>
-      </div>
-    </div>
+   {/* ── Case studies ───────────────────────────────────────────────── */}
+   {
+      caseStudies.length > 0 && (
+         <Section size="md">
+            <Container width="default">
+               <div class="flex flex-col gap-3 mb-8">
+                  <Eyebrow>Case studies</Eyebrow>
+                  <Heading as="h2" size="h2">In production</Heading>
+               </div>
+               <div class="flex gap-5 overflow-x-auto pb-4 snap-x snap-mandatory -mx-6 px-6 sm:mx-0 sm:px-0">
+                  {caseStudies.sort(byDateDesc).map((post) => (
+                     <a
+                        href={"/resources/blog/" + post.id}
+                        class="no-style group/post shrink-0 w-72 sm:w-80 snap-start rounded-xl overflow-hidden border border-border-subtle bg-card hover:border-border-strong hover:-translate-y-0.5 transition-all duration-300"
+                     >
+                        {post.data.image && (
+                           <img
+                              src={post.data.image}
+                              alt=""
+                              class="w-full h-44 object-cover bg-panel"
+                              loading="lazy"
+                           />
+                        )}
+                        <div class="p-5 flex flex-col gap-3">
+                           <h3 class="text-h6 text-fg leading-snug line-clamp-2">
+                              {post.data.title}
+                           </h3>
+                           <span class="text-eyebrow text-brand group-hover/post:translate-x-0.5 transition-transform">
+                              Read study →
+                           </span>
+                        </div>
+                     </a>
+                  ))}
+               </div>
+            </Container>
+         </Section>
+      )
+   }
 
-    {/* Blog Posts */}
-    <div class="section-spacing-major section-divider">
-      <div class="max-w-6xl mx-auto px-6">
-        <h2 class="text-3xl md:text-5xl font-bold text-black mb-12">Blog Posts</h2>
-
-        <div class="flex gap-6 overflow-x-auto pb-4 snap-x snap-mandatory">
-          {blogPosts
-            .sort((a, b) => new Date(b.data.pubDate).getTime() - new Date(a.data.pubDate).getTime())
-            .map((post) => (
-              <a
-                href={"/resources/blog/" + post.id}
-                class="card-warm flex-shrink-0 w-80 flex flex-col overflow-hidden hover:-translate-y-1 transition-all duration-200 no-underline snap-center"
-              >
-                {post.data.image && (
-                  <img
-                    src={post.data.image}
-                    alt={post.data.title || "Blog post"}
-                    class="w-full h-48 object-cover"
-                  />
-                )}
-                <div class="p-6 flex flex-col justify-between flex-1">
-                  <h3 class="text-xl font-bold text-black mb-4">{post.data.title}</h3>
-                  <span class="text-lg text-black font-semibold">Read More →</span>
-                </div>
-              </a>
-            ))}
-        </div>
-      </div>
-    </div>
-
-    {/* Announcements */}
-    <div class="section-spacing-major">
-      <div class="max-w-6xl mx-auto px-6">
-        <h2 class="text-3xl md:text-5xl font-bold text-black mb-8">Announcements</h2>
-
-        {/* Featured Video */}
-        <div class="mb-12">
-          <p class="text-lg text-[rgb(60,60,60)] mb-6">
-            An awesome talk from one of TraceMachina's leading engineers Aaron Mondal
-          </p>
-          <div class="w-full max-w-4xl aspect-video border-2 border-[rgb(220,220,220)] rounded-interactive overflow-hidden">
-            <iframe
-              title="Hermetic Toolchain Creation with Local Remote Execution (LRE) & Nix - Aaron Mondal, NativeLink"
-              class="w-full h-full"
-              src="https://www.youtube-nocookie.com/embed/uokjTev8myk?rel=0"
-              referrerpolicy="strict-origin-when-cross-origin"
-              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen"
-            ></iframe>
-          </div>
-        </div>
-
-        {/* Announcement Cards */}
-        <div class="flex gap-6 overflow-x-auto pb-4 snap-x snap-mandatory mb-12">
-          {announcements
-            .sort((a, b) => new Date(b.data.pubDate).getTime() - new Date(a.data.pubDate).getTime())
-            .map((post) => (
-              <a
-                href={"/resources/blog/" + post.id}
-                class="card-warm flex-shrink-0 w-80 flex flex-col overflow-hidden hover:-translate-y-1 transition-all duration-200 no-underline snap-center"
-              >
-                {post.data.image && (
-                  <img
-                    src={post.data.image}
-                    alt={post.data.title || "Announcement"}
-                    class="w-full h-48 object-cover"
-                  />
-                )}
-                <div class="p-6 flex flex-col justify-between flex-1">
-                  <h3 class="text-xl font-bold text-black mb-4">{post.data.title}</h3>
-                  <span class="text-lg text-black font-semibold">Read More →</span>
-                </div>
-              </a>
-            ))}
-        </div>
-
-        {/* CTA Button */}
-        <div class="flex justify-center">
-          <a
-            href="/resources/blog"
-            class="inline-flex bg-black text-white hover:bg-[rgb(40,40,40)] transition-colors duration-200 px-12 min-h-[48px] rounded-interactive justify-center items-center border-2 border-black font-semibold no-underline"
-          >
-            Go to Blog
-          </a>
-        </div>
-      </div>
-    </div>
-
-  </main>
+   {/* ── Blog ───────────────────────────────────────────────────────── */}
+   {
+      blogPosts.length > 0 && (
+         <Section size="md" tone="elevated">
+            <Container width="default">
+               <div class="flex items-end justify-between gap-4 mb-8">
+                  <div class="flex flex-col gap-2">
+                     <Eyebrow>Blog</Eyebrow>
+                     <Heading as="h2" size="h2">Recent writing</Heading>
+                  </div>
+                  <Button href="/resources/blog" variant="secondary" arrow>
+                     All posts
+                  </Button>
+               </div>
+               <div class="flex gap-5 overflow-x-auto pb-4 snap-x snap-mandatory -mx-6 px-6 sm:mx-0 sm:px-0">
+                  {blogPosts.sort(byDateDesc).map((post) => (
+                     <a
+                        href={"/resources/blog/" + post.id}
+                        class="no-style group/post shrink-0 w-72 sm:w-80 snap-start rounded-xl overflow-hidden border border-border-subtle bg-card hover:border-border-strong hover:-translate-y-0.5 transition-all duration-300"
+                     >
+                        {post.data.image && (
+                           <img
+                              src={post.data.image}
+                              alt=""
+                              class="w-full h-44 object-cover bg-panel"
+                              loading="lazy"
+                           />
+                        )}
+                        <div class="p-5 flex flex-col gap-3">
+                           <h3 class="text-h6 text-fg leading-snug line-clamp-2">
+                              {post.data.title}
+                           </h3>
+                           <span class="text-eyebrow text-brand group-hover/post:translate-x-0.5 transition-transform">
+                              Read post →
+                           </span>
+                        </div>
+                     </a>
+                  ))}
+               </div>
+            </Container>
+         </Section>
+      )
+   }
 </Layout>
+
+<style>
+   /* Two-line clamp for card titles */
+   .line-clamp-2 {
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+   }
+</style>

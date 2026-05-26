@@ -1,0 +1,338 @@
+---
+/**
+ * Site header — replaces the legacy Qwik Header. Pure Astro + a tiny inline
+ * script for the mobile drawer and theme toggle.
+ */
+import Button from "./Button.astro";
+
+interface Props {
+   pathName: string;
+}
+const { pathName } = Astro.props;
+
+const links = [
+   { name: "Product", href: "/product" },
+   { name: "Community", href: "/community" },
+   { name: "Company", href: "/company" },
+   { name: "Resources", href: "/resources" },
+   { name: "Docs", href: "/docs/introduction/setup" },
+   { name: "Pricing", href: "/pricing" },
+] as const;
+
+const isActive = (href: string) => {
+   if (href === "/") return pathName === "/";
+   return pathName.startsWith(href);
+};
+---
+
+{/* Skip link */}
+<a
+   href="#main"
+   class="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[100] focus:bg-bg focus:text-fg focus:px-3 focus:py-2 focus:rounded-md focus:border focus:border-border"
+>
+   Skip to content
+</a>
+
+<header
+   id="site-header"
+   data-scrolled="true"
+   class="
+      fixed left-0 right-0 top-8 z-30 h-14
+      flex items-center
+      transition-[background-color,border-color,backdrop-filter] duration-300 ease-out
+      data-[scrolled=true]:bg-bg/72 data-[scrolled=true]:backdrop-blur-xl
+      data-[scrolled=true]:border-b data-[scrolled=true]:border-border-subtle
+   "
+>
+   <div class="mx-auto w-full max-w-[1360px] px-6 sm:px-8 lg:px-10 flex items-center gap-4">
+      {/* Logo */}
+      <a
+         href="/"
+         class="no-style group/logo flex h-full shrink-0 items-center gap-2"
+         aria-label="NativeLink home"
+      >
+         <img
+            src="/logo-light.svg"
+            alt=""
+            loading="eager"
+            class="h-7 w-auto opacity-95 group-hover/logo:opacity-100 transition-opacity"
+         />
+      </a>
+
+      {/* Desktop nav */}
+      <nav class="hidden md:flex flex-1 items-center justify-center" aria-label="Primary">
+         <ul class="flex items-center gap-1 rounded-full border border-border-subtle bg-panel/60 backdrop-blur px-1.5 h-10">
+            {
+               links.map((link) => (
+                  <li>
+                     <a
+                        href={link.href}
+                        class:list={[
+                           "no-style inline-flex items-center h-7 px-3 rounded-full text-sm leading-none",
+                           "text-fg-muted hover:text-fg transition-colors",
+                           isActive(link.href) &&
+                              "bg-card text-fg shadow-[inset_0_0_0_1px_var(--color-border-subtle)]",
+                        ]}
+                     >
+                        {link.name}
+                     </a>
+                  </li>
+               ))
+            }
+         </ul>
+      </nav>
+
+      {/* Right cluster */}
+      <div class="flex items-center gap-1 ml-auto">
+         <a
+            href="https://forms.gle/LtaWSixEC6bYi5xF7"
+            target="_blank"
+            rel="noreferrer"
+            aria-label="Join NativeLink Slack"
+            class="no-style hidden sm:inline-flex h-9 w-9 items-center justify-center rounded-md text-fg-muted hover:text-fg hover:bg-card-hover transition-colors"
+         >
+            <svg
+               class="h-4 w-4"
+               viewBox="0 0 24 24"
+               fill="none"
+               stroke="currentColor"
+               stroke-width="1.75"
+               stroke-linecap="round"
+               stroke-linejoin="round"
+               aria-hidden="true"
+            >
+               <rect x="3" y="11" width="6" height="2" rx="1" />
+               <rect x="11" y="15" width="2" height="6" rx="1" />
+               <rect x="15" y="11" width="6" height="2" rx="1" />
+               <rect x="11" y="3" width="2" height="6" rx="1" />
+               <path d="M9 9h2v2H9zM13 13h2v2h-2z" />
+            </svg>
+         </a>
+         <a
+            href="https://github.com/tracemachina/nativelink"
+            target="_blank"
+            rel="noreferrer"
+            aria-label="NativeLink GitHub repository"
+            class="no-style hidden sm:inline-flex h-9 w-9 items-center justify-center rounded-md text-fg-muted hover:text-fg hover:bg-card-hover transition-colors"
+         >
+            <svg
+               class="h-4 w-4"
+               viewBox="0 0 24 24"
+               fill="currentColor"
+               aria-hidden="true"
+            >
+               <path
+                  d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.56v-2.01c-3.2.7-3.87-1.36-3.87-1.36-.52-1.34-1.28-1.69-1.28-1.69-1.05-.71.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.76 2.7 1.25 3.36.96.1-.74.4-1.25.73-1.54-2.55-.29-5.23-1.28-5.23-5.68 0-1.25.45-2.28 1.19-3.08-.12-.29-.51-1.46.11-3.04 0 0 .97-.31 3.18 1.18.92-.26 1.91-.39 2.89-.39s1.97.13 2.89.39c2.21-1.49 3.18-1.18 3.18-1.18.62 1.58.23 2.75.11 3.04.74.8 1.19 1.83 1.19 3.08 0 4.41-2.69 5.39-5.25 5.67.41.36.78 1.06.78 2.14v3.17c0 .31.21.68.8.56 4.57-1.52 7.86-5.83 7.86-10.91C23.5 5.65 18.35.5 12 .5Z"
+               />
+            </svg>
+         </a>
+
+         {/* Theme toggle */}
+         <button
+            id="theme-toggle"
+            type="button"
+            aria-label="Toggle color theme"
+            class="no-style inline-flex h-9 w-9 items-center justify-center rounded-md text-fg-muted hover:text-fg hover:bg-card-hover transition-colors"
+         >
+            {/* Sun icon — visible in dark mode */}
+            <svg
+               class="h-4 w-4 hidden dark:block"
+               viewBox="0 0 24 24"
+               fill="none"
+               stroke="currentColor"
+               stroke-width="1.75"
+               stroke-linecap="round"
+               stroke-linejoin="round"
+               aria-hidden="true"
+            >
+               <circle cx="12" cy="12" r="4" />
+               <path
+                  d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"
+               ></path>
+            </svg>
+            {/* Moon icon — visible in light mode */}
+            <svg
+               class="h-4 w-4 dark:hidden"
+               viewBox="0 0 24 24"
+               fill="none"
+               stroke="currentColor"
+               stroke-width="1.75"
+               stroke-linecap="round"
+               stroke-linejoin="round"
+               aria-hidden="true"
+            >
+               <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+            </svg>
+         </button>
+
+         <Button
+            href="/docs/introduction/setup#-quickstart"
+            variant="primary"
+            size="sm"
+            arrow
+            class="ml-2 hidden md:inline-flex"
+         >
+            Get started
+         </Button>
+
+         {/* Mobile menu trigger */}
+         <button
+            id="mobile-nav-toggle"
+            type="button"
+            aria-label="Open menu"
+            aria-expanded="false"
+            aria-controls="mobile-nav-panel"
+            class="no-style md:hidden inline-flex h-9 w-9 items-center justify-center rounded-md text-fg-muted hover:text-fg hover:bg-card-hover transition-colors"
+         >
+            <svg
+               class="h-5 w-5"
+               viewBox="0 0 24 24"
+               fill="none"
+               stroke="currentColor"
+               stroke-width="2"
+               stroke-linecap="round"
+               stroke-linejoin="round"
+               aria-hidden="true"
+            >
+               <path d="M3 6h18M3 12h18M3 18h18" />
+            </svg>
+         </button>
+      </div>
+   </div>
+</header>
+
+{/* Mobile nav drawer */}
+<div
+   id="mobile-nav-panel"
+   data-open="false"
+   class="
+      fixed inset-0 z-40 md:hidden
+      pointer-events-none opacity-0
+      data-[open=true]:pointer-events-auto data-[open=true]:opacity-100
+      transition-opacity duration-200
+   "
+   aria-hidden="true"
+>
+   <div
+      id="mobile-nav-backdrop"
+      class="absolute inset-0 bg-overlay backdrop-blur-md"
+   ></div>
+   <nav
+      class="
+         absolute right-0 top-0 bottom-0 w-[88vw] max-w-sm
+         bg-panel border-l border-border-subtle
+         flex flex-col p-6 gap-1
+         translate-x-full transition-transform duration-300 ease-out
+         data-[open=true]:translate-x-0
+      "
+      data-open="false"
+      aria-label="Mobile"
+   >
+      <div class="flex items-center justify-between mb-6">
+         <span class="text-eyebrow">Menu</span>
+         <button
+            id="mobile-nav-close"
+            type="button"
+            aria-label="Close menu"
+            class="no-style inline-flex h-9 w-9 items-center justify-center rounded-md text-fg-muted hover:text-fg hover:bg-card-hover transition-colors"
+         >
+            <svg
+               class="h-5 w-5"
+               viewBox="0 0 24 24"
+               fill="none"
+               stroke="currentColor"
+               stroke-width="2"
+               stroke-linecap="round"
+               stroke-linejoin="round"
+               aria-hidden="true"
+            >
+               <path d="M18 6 6 18M6 6l12 12" />
+            </svg>
+         </button>
+      </div>
+      <ul class="flex flex-col">
+         {
+            links.map((link) => (
+               <li>
+                  <a
+                     href={link.href}
+                     class:list={[
+                        "no-style block py-3 text-lg",
+                        isActive(link.href)
+                           ? "text-fg font-medium"
+                           : "text-fg-muted",
+                     ]}
+                  >
+                     {link.name}
+                  </a>
+               </li>
+            ))
+         }
+      </ul>
+      <div class="mt-auto pt-6">
+         <Button
+            href="/docs/introduction/setup#-quickstart"
+            variant="primary"
+            size="md"
+            arrow
+            class="w-full"
+         >
+            Get started
+         </Button>
+      </div>
+   </nav>
+</div>
+
+<script is:inline>
+   (function () {
+      // ── Theme toggle ─────────────────────────────────────────────────
+      const root = document.documentElement;
+      const toggle = document.getElementById("theme-toggle");
+      const applyTheme = (t) => {
+         root.setAttribute("data-theme", t);
+         try {
+            localStorage.setItem("nl-theme", t);
+         } catch (_) {}
+         // Toggle a `dark` class so Tailwind dark: variants work too.
+         if (t === "dark") root.classList.add("dark");
+         else root.classList.remove("dark");
+      };
+      // Initial sync from data-theme set by the head script
+      applyTheme(root.getAttribute("data-theme") || "dark");
+      if (toggle) {
+         toggle.addEventListener("click", () => {
+            const current = root.getAttribute("data-theme") || "dark";
+            applyTheme(current === "dark" ? "light" : "dark");
+         });
+      }
+
+      // ── Mobile drawer ────────────────────────────────────────────────
+      const panel = document.getElementById("mobile-nav-panel");
+      const toggleBtn = document.getElementById("mobile-nav-toggle");
+      const closeBtn = document.getElementById("mobile-nav-close");
+      const backdrop = document.getElementById("mobile-nav-backdrop");
+      const setOpen = (v) => {
+         if (!panel) return;
+         const drawer = panel.querySelector("nav");
+         panel.setAttribute("data-open", v ? "true" : "false");
+         panel.setAttribute("aria-hidden", v ? "false" : "true");
+         drawer && drawer.setAttribute("data-open", v ? "true" : "false");
+         toggleBtn && toggleBtn.setAttribute("aria-expanded", v ? "true" : "false");
+         document.body.style.overflow = v ? "hidden" : "";
+      };
+      toggleBtn && toggleBtn.addEventListener("click", () => setOpen(true));
+      closeBtn && closeBtn.addEventListener("click", () => setOpen(false));
+      backdrop && backdrop.addEventListener("click", () => setOpen(false));
+      // Close on route change in Astro view transitions
+      document.addEventListener("astro:after-swap", () => setOpen(false));
+
+      // ── Scrolled state ───────────────────────────────────────────────
+      const header = document.getElementById("site-header");
+      const onScroll = () => {
+         if (!header) return;
+         header.setAttribute("data-scrolled", window.scrollY > 8 ? "true" : "false");
+      };
+      window.addEventListener("scroll", onScroll, { passive: true });
+      onScroll();
+   })();
+</script>

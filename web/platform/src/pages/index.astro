@@ -1,9 +1,253 @@
 ---
 import Layout from "../layouts/Layout.astro";
+import Container from "@components/ui/Container.astro";
+import Section from "@components/ui/Section.astro";
+import Heading from "@components/ui/Heading.astro";
+import Eyebrow from "@components/ui/Eyebrow.astro";
+import Lead from "@components/ui/Lead.astro";
+import Button from "@components/ui/Button.astro";
+import Card from "@components/ui/Card.astro";
 
-import { LandingPage } from "@qwik/pages/home"
+const features = [
+   {
+      title: "Faster builds. Lower compute bills.",
+      body:
+         "Cache and parallelize Bazel, Buck2, Reclient, and Pants across your fleet. Cut build wall-time without provisioning a fleet of CI runners.",
+   },
+   {
+      title: "Scale past one machine.",
+      body:
+         "Distribute work across hundreds of cores on commodity infra. Pay only for what you use — the scheduler decides.",
+   },
+   {
+      title: "Memory-safe by design.",
+      body:
+         "Written in Rust. No garbage collector to stall your hot path. Over a billion build requests a month in production.",
+   },
+   {
+      title: "Open source, batteries included.",
+      body:
+         "MIT-licensed. Self-host on your infra in minutes — or let us run it for you. Same engine either way.",
+   },
+];
+
+const stats = [
+   { value: "1B+", label: "Build requests/month" },
+   { value: "10×", label: "Cache hit speedup" },
+   { value: "<10m", label: "To first cache hit" },
+   { value: "100%", label: "Open source core" },
+];
+
+const industries = [
+   "Robotics & autonomous systems",
+   "Semiconductors & EDA",
+   "Consumer electronics & mobile",
+   "AI & ML research",
+   "Financial services",
+   "Life sciences",
+];
+
+const integrations = [
+   { name: "Bazel", href: "/docs/introduction/setup" },
+   { name: "Buck2", href: "/docs/introduction/setup" },
+   { name: "Reclient", href: "/docs/introduction/setup" },
+   { name: "Pants", href: "/docs/introduction/setup" },
+];
 ---
 
-<Layout title="NativeLink">
-  <LandingPage />
+<Layout title="NativeLink — Remote build execution & caching, engineered for scale">
+   {/* ── Hero ───────────────────────────────────────────────────────── */}
+   <Section size="xl" tone="brand">
+      <div class="absolute inset-0 bg-grid pointer-events-none" aria-hidden="true"></div>
+      <Container width="default" class="relative">
+         <div class="flex flex-col items-center text-center gap-7 max-w-4xl mx-auto">
+            <Eyebrow>Remote build execution &amp; caching</Eyebrow>
+            <Heading as="h1" size="display">
+               Builds that finish before you can blink.
+            </Heading>
+            <Lead class="mx-auto">
+               NativeLink caches and parallelizes Bazel, Buck2, Reclient, and
+               Pants at infrastructure scale. Written in Rust. Open source.
+               Battle-tested on over a billion build requests a month.
+            </Lead>
+            <div class="flex flex-wrap items-center justify-center gap-3 mt-2">
+               <Button
+                  href="/docs/introduction/setup#-quickstart"
+                  variant="primary"
+                  size="lg"
+                  arrow
+               >
+                  Get started
+               </Button>
+               <Button href="/docs/introduction/setup" variant="secondary" size="lg">
+                  Read the docs
+               </Button>
+            </div>
+            <p class="text-eyebrow text-fg-subtle mt-4">
+               Free forever · Self-host or cloud · No credit card
+            </p>
+         </div>
+
+         {/* Terminal-style demo block */}
+         <div class="mt-16 max-w-3xl mx-auto">
+            <Card padding="none" tone="elevated" class="overflow-hidden">
+               <div class="flex items-center gap-2 px-4 py-2.5 border-b border-border-subtle bg-panel/60">
+                  <span class="h-2.5 w-2.5 rounded-full bg-danger/70"></span>
+                  <span class="h-2.5 w-2.5 rounded-full bg-warning/70"></span>
+                  <span class="h-2.5 w-2.5 rounded-full bg-success/70"></span>
+                  <span class="text-eyebrow text-fg-subtle ml-3">shell · quickstart</span>
+               </div>
+               <pre class="font-mono text-sm text-fg p-5 overflow-x-auto leading-relaxed"><code><span class="text-fg-subtle"># 1. Run NativeLink locally</span>
+<span class="text-brand">$</span> curl -fsSL nativelink.com/install | sh
+
+<span class="text-fg-subtle"># 2. Point Bazel at it</span>
+<span class="text-brand">$</span> bazel build --remote_cache=grpc://localhost:50051 //...
+INFO: Build completed successfully.
+INFO: Remote cache hits: <span class="text-brand">432 / 487 (89%)</span>
+INFO: Elapsed time: <span class="text-brand">12.4s</span>
+</code></pre>
+            </Card>
+         </div>
+      </Container>
+   </Section>
+
+   {/* ── Stats strip ────────────────────────────────────────────────── */}
+   <Section size="sm" tone="elevated">
+      <Container width="default">
+         <div class="grid grid-cols-2 md:grid-cols-4 gap-x-6 gap-y-8">
+            {
+               stats.map((s) => (
+                  <div class="flex flex-col items-start gap-1">
+                     <p class="text-h2 text-fg font-semibold tracking-tight">
+                        {s.value}
+                     </p>
+                     <p class="text-eyebrow text-fg-muted">{s.label}</p>
+                  </div>
+               ))
+            }
+         </div>
+      </Container>
+   </Section>
+
+   {/* ── Features ───────────────────────────────────────────────────── */}
+   <Section size="lg">
+      <Container width="default">
+         <div class="flex flex-col gap-3 mb-12 max-w-2xl">
+            <Eyebrow>Why NativeLink</Eyebrow>
+            <Heading as="h2" size="h1">
+               Build infrastructure that disappears.
+            </Heading>
+            <Lead>
+               The fastest builds are the ones you don't notice. NativeLink runs
+               quietly behind your existing build system, doing the work so your
+               engineers don't have to wait.
+            </Lead>
+         </div>
+
+         <div class="grid md:grid-cols-2 gap-6">
+            {
+               features.map((f) => (
+                  <Card padding="lg" class="flex flex-col gap-3">
+                     <div class="flex items-center gap-3">
+                        <span
+                           class="h-2 w-2 rounded-full bg-brand shrink-0"
+                           aria-hidden="true"
+                        />
+                        <h3 class="text-h5 text-fg">{f.title}</h3>
+                     </div>
+                     <p class="text-fg-muted text-base leading-relaxed">
+                        {f.body}
+                     </p>
+                  </Card>
+               ))
+            }
+         </div>
+      </Container>
+   </Section>
+
+   {/* ── Integrations ───────────────────────────────────────────────── */}
+   <Section size="md" tone="elevated">
+      <Container width="default">
+         <div class="flex flex-col items-center text-center gap-4 mb-10">
+            <Eyebrow>Drop-in</Eyebrow>
+            <Heading as="h2" size="h2">Works with your build system.</Heading>
+            <Lead class="mx-auto">
+               NativeLink speaks the standard remote-execution APIs. If your
+               build system supports remote cache or remote execution, it works
+               — no rewrites required.
+            </Lead>
+         </div>
+         <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {
+               integrations.map((i) => (
+                  <a
+                     href={i.href}
+                     class="no-style group/int flex items-center justify-center h-20 rounded-xl border border-border-subtle bg-card text-fg-muted hover:text-fg hover:border-border-strong transition-all"
+                  >
+                     <span class="font-mono text-lg group-hover/int:text-brand transition-colors">
+                        {i.name}
+                     </span>
+                  </a>
+               ))
+            }
+         </div>
+      </Container>
+   </Section>
+
+   {/* ── Industries ─────────────────────────────────────────────────── */}
+   <Section size="md">
+      <Container width="default">
+         <div class="grid lg:grid-cols-[1fr_1.4fr] gap-12 items-start">
+            <div class="flex flex-col gap-3">
+               <Eyebrow>Who uses NativeLink</Eyebrow>
+               <Heading as="h2" size="h2">Built for industries that can't wait.</Heading>
+               <p class="text-fg-muted">
+                  From semiconductor verification to autonomous-vehicle
+                  simulation, the teams shipping at machine speed run NativeLink
+                  under the hood.
+               </p>
+            </div>
+            <ul class="grid sm:grid-cols-2 gap-3">
+               {
+                  industries.map((i) => (
+                     <li class="flex items-center gap-3 text-fg">
+                        <svg
+                           class="h-4 w-4 shrink-0 text-brand"
+                           viewBox="0 0 24 24"
+                           fill="none"
+                           stroke="currentColor"
+                           stroke-width="2.5"
+                           stroke-linecap="round"
+                           stroke-linejoin="round"
+                           aria-hidden="true"
+                        >
+                           <path d="M20 6 9 17l-5-5" />
+                        </svg>
+                        <span>{i}</span>
+                     </li>
+                  ))
+               }
+            </ul>
+         </div>
+      </Container>
+   </Section>
+
+   {/* ── Quote / Social proof ───────────────────────────────────────── */}
+   <Section size="md" tone="elevated">
+      <Container width="narrow">
+         <figure class="flex flex-col gap-6">
+            <Eyebrow>Demonstrated on LLVM</Eyebrow>
+            <blockquote class="text-h3 text-fg text-balance leading-snug">
+               "Engineered for the world's largest C++ codebases — and yours."
+            </blockquote>
+            <figcaption class="text-fg-muted text-sm">
+               Production-tested on LLVM, one of the largest open-source
+               codebases in the world.
+            </figcaption>
+         </figure>
+      </Container>
+   </Section>
+
+   {/* The footer's built-in CTA strip ("Let's build at the speed your code
+       is being written.") handles the final close on every page. */}
 </Layout>

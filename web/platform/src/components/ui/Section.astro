@@ -1,0 +1,49 @@
+---
+/**
+ * Vertical-rhythm section wrapper. Pairs with Container; Section owns the
+ * top/bottom padding so every page has consistent rhythm.
+ *
+ *   <Section size="xl" tone="elevated">
+ *      <Container> ... </Container>
+ *   </Section>
+ */
+interface Props {
+   size?: "sm" | "md" | "lg" | "xl";
+   tone?: "default" | "elevated" | "panel" | "brand";
+   class?: string;
+   id?: string;
+   as?: string;
+}
+const {
+   size = "lg",
+   tone = "default",
+   class: className,
+   id,
+   as = "section",
+}: Props = Astro.props;
+
+const sizes: Record<NonNullable<Props["size"]>, string> = {
+   sm: "py-12 sm:py-16",
+   md: "py-16 sm:py-20 lg:py-24",
+   lg: "py-20 sm:py-28 lg:py-32",
+   xl: "py-28 sm:py-36 lg:py-44",
+};
+
+const tones: Record<NonNullable<Props["tone"]>, string> = {
+   default: "bg-bg",
+   elevated: "bg-bg-elevated",
+   panel: "bg-panel",
+   brand:
+      "bg-bg relative overflow-hidden " +
+      "[background-image:radial-gradient(ellipse_60%_50%_at_50%_0%,rgba(52,213,176,0.10),transparent_70%)]",
+};
+
+const Tag = as as keyof HTMLElementTagNameMap;
+---
+
+<Tag
+   class:list={["relative", sizes[size], tones[tone], className]}
+   id={id}
+>
+   <slot />
+</Tag>

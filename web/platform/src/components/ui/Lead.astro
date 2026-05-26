@@ -1,0 +1,18 @@
+---
+/**
+ * Lead paragraph: large body copy that sits right below a hero heading.
+ */
+interface Props {
+   class?: string;
+}
+const { class: className }: Props = Astro.props;
+---
+
+<p
+   class:list={[
+      "text-lead text-fg-muted max-w-prose text-pretty",
+      className,
+   ]}
+>
+   <slot />
+</p>

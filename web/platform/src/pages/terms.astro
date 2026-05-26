@@ -1,39 +1,47 @@
 ---
 import Layout from "../layouts/Layout.astro";
+import Container from "@components/ui/Container.astro";
+import Section from "@components/ui/Section.astro";
+import Heading from "@components/ui/Heading.astro";
+import Eyebrow from "@components/ui/Eyebrow.astro";
 
 import { termsOfUse } from "../content/data/terms_of_use.ts";
-
-import { LinearGradient } from "@qwik/components/text";
 ---
 
-<Layout title="NativeLink Terms of Use">
-    <div class="bg-black px-8 py-24 md:pt-40 w-screen md:px-[25vw] text-white flex flex-col justify-center items-center gap-8">
-        <div class="flex flex-col gap-5">
-             <LinearGradient text="Terms and Privacy" class="text-3xl md:text-5xl mb-0 md:mb-4" />
-             <div class="flex flex-col gap-2 justify-center items-center">
-                 <p class="text-sm text-primary font-thin"> NativeLink Terms of Use</p>
-                 <p class="text-sm text-primary font-thin">Last Updated July 12, 2024</p>
-                </div>
-        </div>
+<Layout title="Terms & Privacy — NativeLink">
+    <Section size="lg" tone="brand">
+        <Container width="narrow">
+            <div class="flex flex-col items-start gap-5">
+                <Eyebrow>Legal</Eyebrow>
+                <Heading as="h1" size="h1">Terms &amp; Privacy</Heading>
+                <p class="text-eyebrow text-fg-subtle">
+                    NativeLink Terms of Use · Last updated July 12, 2024
+                </p>
+            </div>
+        </Container>
+    </Section>
 
+    <Section size="md">
+      <Container width="narrow">
+        <div class="prose-legal flex flex-col gap-12 text-fg-muted">
         <!-- Terms of Use  -->
         <section class="flex flex-col gap-8">
             {termsOfUse.map((term, index) => (
               <div class="flex flex-col gap-4">
                 {index === 0 ? (
-                  <h2 class="text-2xl font-thin">{term.section}</h2>
+                  <h2 class="text-h3 text-fg">{term.section}</h2>
                 ) : (
-                  <h3 class="text-xl font-semibold">{term.section}</h3>
+                  <h3 class="text-h5 text-fg mt-4">{term.section}</h3>
                 )}
-                <p>{term.content}</p>
+                <p class="leading-relaxed">{term.content}</p>
               </div>
             ))}
         </section>
 
         <!-- Privacy Policy Section -->
-        <section class="flex flex-col gap-8 mt-12">
-            <h2 class="text-2xl font-semibold">Privacy Policy</h2>
-            <p class="text-sm text-primary">Updated July 12, 2024</p>
+        <section class="flex flex-col gap-8 mt-12 pt-12 border-t border-border-subtle">
+            <h2 class="text-h2 text-fg">Privacy Policy</h2>
+            <p class="text-eyebrow text-fg-subtle">Updated July 12, 2024</p>
 
             <p>Your trust is important to us, and we want to ensure that your personal information is protected. This Privacy Policy explains how we collect and use your personal information in relation to NativeLink products, services, events, and websites or applications that link to this Policy (together, the “NativeLink Products”). It also describes how you can control or exercise your rights related to your personal information.</p>
 
@@ -255,6 +263,41 @@ or                contact us at:
 
 
         </section>
-    </div>
-
+        </div>
+      </Container>
+    </Section>
 </Layout>
+
+<style is:global>
+   .prose-legal h2,
+   .prose-legal h3 {
+      color: var(--color-fg);
+      font-weight: 600;
+   }
+   .prose-legal h2 { margin-top: 1.5rem; }
+   .prose-legal h3 { margin-top: 1rem; }
+   .prose-legal p {
+      line-height: 1.7;
+      color: var(--color-fg-muted);
+   }
+   .prose-legal a {
+      color: var(--color-link);
+      text-decoration: underline;
+      text-underline-offset: 3px;
+   }
+   .prose-legal a:hover {
+      color: var(--color-link-hover);
+   }
+   .prose-legal ul {
+      padding-left: 1.5rem;
+      list-style-type: disc;
+   }
+   .prose-legal ul li {
+      margin-block: 0.5rem;
+      line-height: 1.65;
+   }
+   .prose-legal strong {
+      color: var(--color-fg);
+      font-weight: 600;
+   }
+</style>
