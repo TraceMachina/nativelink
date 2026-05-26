@@ -36,7 +36,7 @@ export const Hero = component$(() => {
             Start free
           </a>
           <a
-            href="/contact"
+            href="mailto:contact@nativelink.com"
             class="w-full md:w-auto h-11 px-7 flex items-center bg-transparent justify-center text-[rgb(80,80,80)] transition-colors duration-200 hover:text-black rounded-lg font-medium text-sm underline-offset-4"
           >
             Talk to us
