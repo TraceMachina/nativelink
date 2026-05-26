@@ -18,13 +18,13 @@ export const CTA = component$(() => {
             Clone the repo
           </a>
           <a
-            href="https://nativelink.com/cloud"
+            href="https://dev.nativelink.com"
             class="w-full md:w-auto h-12 px-8 flex items-center bg-transparent justify-center border-black border-2 border-solid text-black transition-all duration-200 hover:bg-[rgb(248,247,244)] rounded-interactive font-medium no-underline"
           >
             Start free
           </a>
           <a
-            href="/contact"
+            href="mailto:contact@nativelink.com"
             class="w-full md:w-auto h-12 px-8 flex items-center bg-transparent justify-center border-black border-2 border-solid text-black transition-all duration-200 hover:bg-[rgb(248,247,244)] rounded-interactive font-medium no-underline"
           >
             Talk to us
