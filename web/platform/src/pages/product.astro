@@ -4,32 +4,262 @@ import Container from "@components/ui/Container.astro";
 import Section from "@components/ui/Section.astro";
 import Heading from "@components/ui/Heading.astro";
 import Eyebrow from "@components/ui/Eyebrow.astro";
-import { ProductPage } from "@qwik/pages/product";
+import Lead from "@components/ui/Lead.astro";
+import Button from "@components/ui/Button.astro";
+import Card from "@components/ui/Card.astro";
 import { FAQ } from "@react/faq";
+
+const videoMockUp =
+   "https://nativelink-cdn.s3.us-east-1.amazonaws.com/Walkthrough+of+Nativelink+Cloud.mp4";
+const videoPoster =
+   "https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_dashboard.webp";
+
+const pillars = [
+   {
+      eyebrow: "Remote cache",
+      title: "Cache once. Reuse forever.",
+      body:
+         "Content-addressable storage deduplicates every artifact your team produces. If a teammate, your CI, or an agent has already built it, you get it back in milliseconds. Drops into Bazel, Buck2, Reclient, Pants, Goma — and CMake via recc.",
+      footnote:
+         "Proof point: over a billion build requests served per month, in production.",
+   },
+   {
+      eyebrow: "Remote build execution",
+      title: "Distribute across every core you have.",
+      body:
+         "Offload compilation and tests to a worker fleet that scales horizontally — on AWS, GCP, or bare metal. Hermetic by design, deterministic by default. Specialized hardware (GPUs, ARM, Apple Silicon) supported natively.",
+   },
+   {
+      eyebrow: "Cloud & self-host",
+      title: "Hosted by us. Or run by you.",
+      body:
+         "Start free on NativeLink Cloud in ten minutes. Move to dedicated infrastructure when your scale demands it. Or self-host the open-source release with one Docker command. Same code path. Same performance.",
+   },
+   {
+      eyebrow: "Built on Rust",
+      title: "Performance that doesn't stall.",
+      body:
+         "No garbage collector. No race conditions at scale. No mystery latency spikes. Memory safety without the runtime tax — which is why NativeLink can serve a billion requests a month on infrastructure that would buckle other systems.",
+   },
+];
+
+const security = {
+   eyebrow: "Security & provenance",
+   title: "Trust at every hop. Provenance at every step.",
+   paragraphs: [
+      "SSO/SAML, signed worker inputs and outputs, packet integrity, end-to-end TLS. Build artifacts are content-addressed and tamper-evident by design. Hermetic execution means no surprise dependencies pulled in mid-build — every input explicit, every output verifiable.",
+      "Because builds are programmable, your security and observability tools plug straight into the data: dependency graphs, execution metadata, artifact provenance — queryable, exportable, auditable. Critical when humans are committing code. Existential when agents are.",
+   ],
+};
+
+const integrations = [
+   {
+      title: "AI coding platforms",
+      items: "Claude Code, GitHub Copilot Workspace, Devin, Cursor, Windsurf, and more.",
+   },
+   {
+      title: "Languages",
+      items: "C++, Rust, Python, Go, Java, Kotlin, Swift, and more.",
+   },
+   {
+      title: "Build systems",
+      items: "Bazel, Buck2, Reclient, Soong, Pants, Goma — and CMake via recc.",
+   },
+   { title: "Cloud", items: "AWS, GCP, and Azure." },
+   { title: "CI", items: "GitHub Actions, GitLab CI, Buildkite, Jenkins." },
+];
 ---
 
 <Layout title="Product — NativeLink">
-   {/* Existing ProductPage Qwik component handles the product overview. */}
-   <ProductPage />
+   {/* ── Hero ───────────────────────────────────────────────────────── */}
+   <Section size="lg" tone="brand">
+      <div class="absolute inset-0 bg-grid pointer-events-none" aria-hidden="true"></div>
+      <Container width="default" class="relative">
+         <div class="flex flex-col items-center text-center gap-6 max-w-4xl mx-auto">
+            <Eyebrow>Product</Eyebrow>
+            <Heading as="h1" size="display">
+               One platform. Every build. Every machine.
+            </Heading>
+            <Lead class="mx-auto">
+               NativeLink unifies remote caching, remote execution, and
+               observability into a single Rust-native platform — built to keep
+               up with codebases that grow faster than you can provision them.
+            </Lead>
+            <div class="flex flex-wrap items-center justify-center gap-3 mt-2">
+               <Button
+                  href="/docs/introduction/setup"
+                  variant="primary"
+                  size="lg"
+                  arrow
+               >
+                  Start in 10 minutes
+               </Button>
+               <Button href="mailto:contact@nativelink.com" variant="secondary" size="lg">
+                  Talk to us
+               </Button>
+            </div>
+
+            {/* Video / dashboard demo */}
+            <Card
+               padding="none"
+               tone="elevated"
+               class="w-full max-w-4xl overflow-hidden mt-10"
+            >
+               <video
+                  src={videoMockUp}
+                  class="w-full h-auto block"
+                  poster={videoPoster}
+                  controls
+                  loop
+                  muted
+                  preload="metadata"
+               />
+            </Card>
+         </div>
+      </Container>
+   </Section>
+
+   {/* ── Pillars ────────────────────────────────────────────────────── */}
+   <Section size="lg">
+      <Container width="default">
+         <div class="grid md:grid-cols-2 gap-6">
+            {
+               pillars.map((p) => (
+                  <Card padding="lg" class="flex flex-col gap-4">
+                     <Eyebrow>{p.eyebrow}</Eyebrow>
+                     <h3 class="text-h3 text-fg text-balance">{p.title}</h3>
+                     <p class="text-fg-muted leading-relaxed">{p.body}</p>
+                     {p.footnote && (
+                        <p class="text-eyebrow text-fg-subtle pt-2 border-t border-border-subtle">
+                           {p.footnote}
+                        </p>
+                     )}
+                  </Card>
+               ))
+            }
+         </div>
+      </Container>
+   </Section>
+
+   {/* ── Security ───────────────────────────────────────────────────── */}
+   <Section size="lg" tone="elevated">
+      <Container width="default">
+         <div class="grid lg:grid-cols-[0.9fr_1.1fr] gap-10 lg:gap-16">
+            <div class="flex flex-col gap-4">
+               <Eyebrow>{security.eyebrow}</Eyebrow>
+               <Heading as="h2" size="h2">
+                  {security.title}
+               </Heading>
+            </div>
+            <div class="flex flex-col gap-5 text-fg-muted">
+               {security.paragraphs.map((p) => (
+                  <p class="leading-relaxed">{p}</p>
+               ))}
+            </div>
+         </div>
+      </Container>
+   </Section>
+
+   {/* ── Integrations ───────────────────────────────────────────────── */}
+   <Section size="lg">
+      <Container width="default">
+         <div class="flex flex-col gap-3 mb-12 max-w-2xl">
+            <Eyebrow>Integrations</Eyebrow>
+            <Heading as="h2" size="h2">Works with your stack.</Heading>
+            <Lead>
+               NativeLink speaks the standard remote-execution APIs — if it
+               builds your code today, it'll build it on NativeLink tomorrow.
+            </Lead>
+         </div>
+         <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {
+               integrations.map((i) => (
+                  <Card padding="lg" class="flex flex-col gap-2">
+                     <h3 class="text-h5 text-fg">{i.title}</h3>
+                     <p class="text-fg-muted">{i.items}</p>
+                  </Card>
+               ))
+            }
+         </div>
+      </Container>
+   </Section>
+
+   {/* ── Case study ─────────────────────────────────────────────────── */}
+   <Section size="lg" tone="elevated">
+      <Container width="narrow">
+         <div class="flex flex-col gap-5">
+            <Eyebrow>Proof at scale</Eyebrow>
+            <Heading as="h2" size="h2">
+               LLVM builds 4× faster on NativeLink.
+            </Heading>
+            <p class="text-lead text-fg-muted leading-relaxed">
+               LLVM contributors are using NativeLink with CMake and recc to
+               distribute builds of clang and the LLVM toolchain — cutting
+               full-project compile time from 17 minutes to 4. No build-system
+               migration. No proprietary client. Just your existing CMake setup,
+               pointed at NativeLink.
+            </p>
+            <div class="mt-2">
+               <Button
+                  href="https://reidkleckner.dev/posts/llvm-recc-nativelink/"
+                  variant="link"
+                  arrow
+                  target="_blank"
+                  rel="noreferrer"
+               >
+                  Read the write-up
+               </Button>
+            </div>
+         </div>
+      </Container>
+   </Section>
 
    {/* ── FAQ ────────────────────────────────────────────────────────── */}
-   <Section size="lg" tone="elevated">
+   <Section size="lg">
       <Container width="default">
          <div class="flex flex-col items-center text-center gap-3 mb-12">
             <Eyebrow>FAQ</Eyebrow>
             <Heading as="h2" size="h2">Frequently asked questions</Heading>
-            <p class="text-lead text-fg-muted max-w-2xl">
+            <Lead class="mx-auto">
                Answers to the questions teams ask most often, from
                implementation details to support options.
-            </p>
+            </Lead>
          </div>
          <FAQ client:visible />
          <p class="text-sm text-fg-subtle text-center mt-10">
-            For more details, see the{" "}
-            <a href="/docs/introduction/setup" class="text-link">
-               NativeLink documentation
-            </a>.
+            For more details, see the <a href="/docs/introduction/setup" class="text-link">NativeLink documentation</a>.
          </p>
+      </Container>
+   </Section>
+
+   {/* ── CTA ────────────────────────────────────────────────────────── */}
+   <Section size="lg" tone="brand">
+      <Container width="default">
+         <div class="flex flex-col items-center text-center gap-6 max-w-3xl mx-auto">
+            <Heading as="h2" size="h1">Try it in 10 minutes.</Heading>
+            <div class="flex flex-wrap items-center justify-center gap-3 mt-2">
+               <Button
+                  href="https://github.com/tracemachina/nativelink"
+                  variant="primary"
+                  size="lg"
+                  arrow
+                  target="_blank"
+                  rel="noreferrer"
+               >
+                  Clone the repo
+               </Button>
+               <Button
+                  href="https://dev.nativelink.com"
+                  variant="secondary"
+                  size="lg"
+               >
+                  Start free
+               </Button>
+               <Button href="mailto:contact@nativelink.com" variant="ghost" size="lg">
+                  Talk to us
+               </Button>
+            </div>
+         </div>
       </Container>
    </Section>
 </Layout>

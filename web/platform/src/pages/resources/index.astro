@@ -48,7 +48,6 @@ const byDateDesc = (a: typeof allPosts[number], b: typeof allPosts[number]) =>
             href="/resources/oreilly-bazel-book"
             interactive
             padding="lg"
-            class="max-w-3xl"
          >
             <div class="flex flex-col sm:flex-row gap-6 items-start sm:items-center">
                <div
@@ -103,11 +102,11 @@ const byDateDesc = (a: typeof allPosts[number], b: typeof allPosts[number]) =>
          {/* Announcement cards */}
          {
             announcements.length > 0 && (
-               <div class="flex gap-5 overflow-x-auto pb-4 snap-x snap-mandatory -mx-6 px-6 sm:mx-0 sm:px-0">
+               <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
                   {announcements.sort(byDateDesc).map((post) => (
                      <a
                         href={"/resources/blog/" + post.id}
-                        class="no-style group/post shrink-0 w-72 sm:w-80 snap-start rounded-xl overflow-hidden border border-border-subtle bg-card hover:border-border-strong hover:-translate-y-0.5 transition-all duration-300"
+                        class="no-style group/post flex flex-col rounded-xl overflow-hidden border border-border-subtle bg-card hover:border-border-strong hover:-translate-y-0.5 transition-all duration-300"
                      >
                         {post.data.image && (
                            <img
@@ -117,11 +116,11 @@ const byDateDesc = (a: typeof allPosts[number], b: typeof allPosts[number]) =>
                               loading="lazy"
                            />
                         )}
-                        <div class="p-5 flex flex-col gap-3">
+                        <div class="p-5 flex flex-col gap-3 flex-1">
                            <h3 class="text-h6 text-fg leading-snug line-clamp-2">
                               {post.data.title}
                            </h3>
-                           <span class="text-eyebrow text-brand group-hover/post:translate-x-0.5 transition-transform">
+                           <span class="mt-auto text-eyebrow text-brand inline-flex items-center gap-2 group-hover/post:translate-x-0.5 transition-transform">
                               Read post →
                            </span>
                         </div>
@@ -142,11 +141,11 @@ const byDateDesc = (a: typeof allPosts[number], b: typeof allPosts[number]) =>
                   <Eyebrow>Case studies</Eyebrow>
                   <Heading as="h2" size="h2">In production</Heading>
                </div>
-               <div class="flex gap-5 overflow-x-auto pb-4 snap-x snap-mandatory -mx-6 px-6 sm:mx-0 sm:px-0">
+               <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
                   {caseStudies.sort(byDateDesc).map((post) => (
                      <a
                         href={"/resources/blog/" + post.id}
-                        class="no-style group/post shrink-0 w-72 sm:w-80 snap-start rounded-xl overflow-hidden border border-border-subtle bg-card hover:border-border-strong hover:-translate-y-0.5 transition-all duration-300"
+                        class="no-style group/post flex flex-col rounded-xl overflow-hidden border border-border-subtle bg-card hover:border-border-strong hover:-translate-y-0.5 transition-all duration-300"
                      >
                         {post.data.image && (
                            <img
@@ -156,11 +155,11 @@ const byDateDesc = (a: typeof allPosts[number], b: typeof allPosts[number]) =>
                               loading="lazy"
                            />
                         )}
-                        <div class="p-5 flex flex-col gap-3">
+                        <div class="p-5 flex flex-col gap-3 flex-1">
                            <h3 class="text-h6 text-fg leading-snug line-clamp-2">
                               {post.data.title}
                            </h3>
-                           <span class="text-eyebrow text-brand group-hover/post:translate-x-0.5 transition-transform">
+                           <span class="mt-auto text-eyebrow text-brand inline-flex items-center gap-2 group-hover/post:translate-x-0.5 transition-transform">
                               Read study →
                            </span>
                         </div>
@@ -186,11 +185,11 @@ const byDateDesc = (a: typeof allPosts[number], b: typeof allPosts[number]) =>
                      All posts
                   </Button>
                </div>
-               <div class="flex gap-5 overflow-x-auto pb-4 snap-x snap-mandatory -mx-6 px-6 sm:mx-0 sm:px-0">
+               <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
                   {blogPosts.sort(byDateDesc).map((post) => (
                      <a
                         href={"/resources/blog/" + post.id}
-                        class="no-style group/post shrink-0 w-72 sm:w-80 snap-start rounded-xl overflow-hidden border border-border-subtle bg-card hover:border-border-strong hover:-translate-y-0.5 transition-all duration-300"
+                        class="no-style group/post flex flex-col rounded-xl overflow-hidden border border-border-subtle bg-card hover:border-border-strong hover:-translate-y-0.5 transition-all duration-300"
                      >
                         {post.data.image && (
                            <img
@@ -200,11 +199,11 @@ const byDateDesc = (a: typeof allPosts[number], b: typeof allPosts[number]) =>
                               loading="lazy"
                            />
                         )}
-                        <div class="p-5 flex flex-col gap-3">
+                        <div class="p-5 flex flex-col gap-3 flex-1">
                            <h3 class="text-h6 text-fg leading-snug line-clamp-2">
                               {post.data.title}
                            </h3>
-                           <span class="text-eyebrow text-brand group-hover/post:translate-x-0.5 transition-transform">
+                           <span class="mt-auto text-eyebrow text-brand inline-flex items-center gap-2 group-hover/post:translate-x-0.5 transition-transform">
                               Read post →
                            </span>
                         </div>

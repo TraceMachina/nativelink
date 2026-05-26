@@ -4,6 +4,7 @@
  * script for the mobile drawer and theme toggle.
  */
 import Button from "./Button.astro";
+import Logo from "./Logo.astro";
 
 interface Props {
    pathName: string;
@@ -48,14 +49,12 @@ const isActive = (href: string) => {
       {/* Logo */}
       <a
          href="/"
-         class="no-style group/logo flex h-full shrink-0 items-center gap-2"
+         class="no-style group/logo flex h-full shrink-0 items-center"
          aria-label="NativeLink home"
       >
-         <img
-            src="/logo-light.svg"
-            alt=""
-            loading="eager"
-            class="h-7 w-auto opacity-95 group-hover/logo:opacity-100 transition-opacity"
+         <Logo
+            size="md"
+            class="opacity-95 group-hover/logo:opacity-100 transition-opacity"
          />
       </a>
 
@@ -284,55 +283,93 @@ const isActive = (href: string) => {
 </div>
 
 <script is:inline>
+   // Rebind on every navigation: `astro:page-load` fires after view-transition
+   // swap AND on first load, so the same handler runs in both cases.
    (function () {
-      // ── Theme toggle ─────────────────────────────────────────────────
-      const root = document.documentElement;
-      const toggle = document.getElementById("theme-toggle");
-      const applyTheme = (t) => {
+      function applyTheme(t) {
+         const root = document.documentElement;
          root.setAttribute("data-theme", t);
-         try {
-            localStorage.setItem("nl-theme", t);
-         } catch (_) {}
-         // Toggle a `dark` class so Tailwind dark: variants work too.
          if (t === "dark") root.classList.add("dark");
          else root.classList.remove("dark");
-      };
-      // Initial sync from data-theme set by the head script
-      applyTheme(root.getAttribute("data-theme") || "dark");
-      if (toggle) {
-         toggle.addEventListener("click", () => {
-            const current = root.getAttribute("data-theme") || "dark";
-            applyTheme(current === "dark" ? "light" : "dark");
-         });
+         try { localStorage.setItem("nl-theme", t); } catch (_) {}
       }
 
-      // ── Mobile drawer ────────────────────────────────────────────────
-      const panel = document.getElementById("mobile-nav-panel");
-      const toggleBtn = document.getElementById("mobile-nav-toggle");
-      const closeBtn = document.getElementById("mobile-nav-close");
-      const backdrop = document.getElementById("mobile-nav-backdrop");
-      const setOpen = (v) => {
+      // Use a body-level delegated listener so it survives DOM re-renders
+      // (Astro view transitions re-attach the header, but document body stays).
+      // Marked with a flag so we don't double-bind on re-runs.
+      if (!window.__nlHeaderDelegated) {
+         window.__nlHeaderDelegated = true;
+
+         document.addEventListener("click", (ev) => {
+            const root = document.documentElement;
+            const target = ev.target;
+            if (!(target instanceof Element)) return;
+
+            // Theme toggle (matches any element inside #theme-toggle)
+            if (target.closest("#theme-toggle")) {
+               const current = root.getAttribute("data-theme") || "dark";
+               applyTheme(current === "dark" ? "light" : "dark");
+               return;
+            }
+
+            // Mobile drawer triggers
+            if (target.closest("#mobile-nav-toggle")) {
+               setDrawer(true);
+               return;
+            }
+            if (
+               target.closest("#mobile-nav-close") ||
+               target.closest("#mobile-nav-backdrop")
+            ) {
+               setDrawer(false);
+               return;
+            }
+         });
+
+         // Scroll-aware header (single listener for lifetime of the page).
+         window.addEventListener(
+            "scroll",
+            () => {
+               const h = document.getElementById("site-header");
+               if (h)
+                  h.setAttribute(
+                     "data-scrolled",
+                     window.scrollY > 8 ? "true" : "false",
+                  );
+            },
+            { passive: true },
+         );
+      }
+
+      function setDrawer(open) {
+         const panel = document.getElementById("mobile-nav-panel");
          if (!panel) return;
          const drawer = panel.querySelector("nav");
-         panel.setAttribute("data-open", v ? "true" : "false");
-         panel.setAttribute("aria-hidden", v ? "false" : "true");
-         drawer && drawer.setAttribute("data-open", v ? "true" : "false");
-         toggleBtn && toggleBtn.setAttribute("aria-expanded", v ? "true" : "false");
-         document.body.style.overflow = v ? "hidden" : "";
-      };
-      toggleBtn && toggleBtn.addEventListener("click", () => setOpen(true));
-      closeBtn && closeBtn.addEventListener("click", () => setOpen(false));
-      backdrop && backdrop.addEventListener("click", () => setOpen(false));
-      // Close on route change in Astro view transitions
-      document.addEventListener("astro:after-swap", () => setOpen(false));
+         panel.setAttribute("data-open", open ? "true" : "false");
+         panel.setAttribute("aria-hidden", open ? "false" : "true");
+         drawer && drawer.setAttribute("data-open", open ? "true" : "false");
+         const trigger = document.getElementById("mobile-nav-toggle");
+         trigger && trigger.setAttribute("aria-expanded", open ? "true" : "false");
+         document.body.style.overflow = open ? "hidden" : "";
+      }
 
-      // ── Scrolled state ───────────────────────────────────────────────
-      const header = document.getElementById("site-header");
-      const onScroll = () => {
-         if (!header) return;
-         header.setAttribute("data-scrolled", window.scrollY > 8 ? "true" : "false");
-      };
-      window.addEventListener("scroll", onScroll, { passive: true });
-      onScroll();
+      // Per-page setup that has to run after every navigation
+      function onPageReady() {
+         // Sync data-theme to whatever the head script set (defensive — view
+         // transitions swap the <html> attribute set on first load away).
+         const root = document.documentElement;
+         let theme;
+         try {
+            theme = localStorage.getItem("nl-theme");
+         } catch (_) {}
+         applyTheme(theme === "light" ? "light" : "dark");
+
+         // Close drawer if a navigation just landed us on a new page.
+         setDrawer(false);
+      }
+
+      // First load + every view-transition page swap.
+      onPageReady();
+      document.addEventListener("astro:page-load", onPageReady);
    })();
 </script>

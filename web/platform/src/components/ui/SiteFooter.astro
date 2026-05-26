@@ -8,6 +8,7 @@ import Container from "./Container.astro";
 import Heading from "./Heading.astro";
 import Eyebrow from "./Eyebrow.astro";
 import Button from "./Button.astro";
+import Logo from "./Logo.astro";
 
 const product = [
    { name: "Product", href: "/product" },
@@ -79,7 +80,7 @@ const year = new Date().getFullYear();
                class="no-style inline-flex items-center"
                aria-label="NativeLink home"
             >
-               <img src="/logo-light.svg" alt="" class="h-7 w-auto" />
+               <Logo size="md" />
             </a>
             <p class="text-sm text-fg-muted max-w-[18rem]">
                Open source remote build execution and caching, engineered for

@@ -1,0 +1,48 @@
+---
+/**
+ * Brand mark — combines the hex icon (from favicon.svg) with a typeset
+ * "nativelink" wordmark. The wordmark uses `currentColor`, so it adapts to
+ * `text-fg` in both themes (no separate light/dark logo file needed).
+ */
+interface Props {
+   size?: "sm" | "md" | "lg";
+   class?: string;
+   wordmark?: boolean;
+}
+const { size = "md", class: className, wordmark = true }: Props = Astro.props;
+
+const iconSizes: Record<NonNullable<Props["size"]>, string> = {
+   sm: "h-5 w-5",
+   md: "h-6 w-6",
+   lg: "h-8 w-8",
+};
+const textSizes: Record<NonNullable<Props["size"]>, string> = {
+   sm: "text-base",
+   md: "text-lg",
+   lg: "text-xl",
+};
+---
+
+<span class:list={["inline-flex items-center gap-2", className]} aria-hidden="false">
+   <img
+      src="/favicon.svg"
+      alt=""
+      class:list={[iconSizes[size], "shrink-0"]}
+      width="32"
+      height="32"
+      loading="eager"
+      decoding="async"
+   />
+   {
+      wordmark && (
+         <span
+            class:list={[
+               textSizes[size],
+               "font-semibold tracking-tight text-fg select-none",
+            ]}
+         >
+            nativelink
+         </span>
+      )
+   }
+</span>
