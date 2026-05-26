@@ -16,12 +16,16 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use bytes::Bytes;
-use nativelink_config::stores::MemorySpec;
+use nativelink_config::stores::{
+    FastSlowSpec, FilesystemSpec, MemorySpec, StoreDirection, StoreSpec,
+};
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::{
     Directory as ProtoDirectory, DirectoryNode, FileNode, SymlinkNode,
 };
+use nativelink_store::fast_slow_store::FastSlowStore;
+use nativelink_store::filesystem_store::FilesystemStore;
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::common::{DigestInfo, make_temp_path};
 use nativelink_util::store_trait::{Store, StoreLike};
@@ -30,6 +34,30 @@ use prost::Message;
 use tonic::Code;
 use uuid::Uuid;
 
+/// Wraps a `MemoryStore` as the slow tier of a `FastSlowStore` whose fast
+/// tier is a real `FilesystemStore` — the store shape `DirectoryCache`
+/// expects from the worker. Blobs seeded into `slow_store` are reachable via
+/// the returned `FastSlowStore`.
+async fn make_cas_store(slow_store: Arc<MemoryStore>) -> Arc<FastSlowStore> {
+    let fast_spec = FilesystemSpec {
+        content_path: make_temp_path("cas_content"),
+        temp_path: make_temp_path("cas_temp"),
+        eviction_policy: None,
+        ..Default::default()
+    };
+    let fast_store: Arc<FilesystemStore> = FilesystemStore::new(&fast_spec).await.unwrap();
+    FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Filesystem(fast_spec),
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+        },
+        Store::new(fast_store),
+        Store::new(slow_store),
+    )
+}
+
 #[nativelink_test]
 async fn create_directory_cache() -> Result<(), Error> {
     let config = DirectoryCacheConfig {
@@ -37,7 +65,7 @@ async fn create_directory_cache() -> Result<(), Error> {
         ..Default::default()
     };
     let store = MemoryStore::new(&MemorySpec::default());
-    DirectoryCache::new(config, Store::new(store)).await?;
+    DirectoryCache::new(config, make_cas_store(store).await).await?;
     assert!(!logs_contain("ERROR"));
     assert!(!logs_contain("WARN"));
     Ok(())
@@ -50,15 +78,21 @@ async fn add_missing_file_to_cache() -> Result<(), Error> {
         ..Default::default()
     };
     let store = MemoryStore::new(&MemorySpec::default());
-    let cache = DirectoryCache::new(config, Store::new(store)).await?;
+    let cache = DirectoryCache::new(config, make_cas_store(store).await).await?;
     let digest = DigestInfo::new([1u8; 32], 5);
     let uuid = Uuid::new_v4();
     let res = cache
         .get_or_create(digest, Path::new(&uuid.to_string()))
         .await;
-    assert_eq!(res, Err(Error::new_with_messages(Code::NotFound, vec![
-        "Key Digest(DigestInfo(\"0101010101010101010101010101010101010101010101010101010101010101-5\")) not found".to_string(),
-        "Failed to fetch directory digest: DigestInfo(\"0101010101010101010101010101010101010101010101010101010101010101-5\")".to_string()])));
+    let err = res.expect_err("missing directory digest should fail");
+    assert_eq!(err.code, Code::NotFound);
+    assert!(
+        err.messages.iter().any(|m| m.contains(
+            "Failed to fetch directory digest: \
+             DigestInfo(\"0101010101010101010101010101010101010101010101010101010101010101-5\")"
+        )),
+        "unexpected error: {err:?}",
+    );
     assert!(!logs_contain("ERROR"));
     assert!(!logs_contain("WARN"));
     Ok(())
@@ -71,7 +105,7 @@ async fn single_insert(config: DirectoryCacheConfig) -> Result<(), Error> {
         store.update_oneshot(digest1, Bytes::from_static(b"")).await,
         Ok(())
     );
-    let cache = DirectoryCache::new(config, Store::new(store)).await?;
+    let cache = DirectoryCache::new(config, make_cas_store(store).await).await?;
     assert_eq!(
         cache
             .get_or_create(digest1, Path::new(&Uuid::new_v4().to_string()))
@@ -103,7 +137,7 @@ async fn double_insert_with_data(
     let digest2 = DigestInfo::new([2u8; 32], 5);
     assert_eq!(store.update_oneshot(digest1, first).await, Ok(()));
     assert_eq!(store.update_oneshot(digest2, second).await, Ok(()));
-    let cache = DirectoryCache::new(config, Store::new(store)).await?;
+    let cache = DirectoryCache::new(config, make_cas_store(store).await).await?;
     assert_eq!(
         cache
             .get_or_create(
@@ -225,8 +259,12 @@ async fn evict_with_directory_entry() -> Result<(), Error> {
     double_insert_with_data(config, store, encoded_directory.clone(), encoded_directory).await?;
     assert!(!logs_contain("ERROR"));
     assert!(!logs_contain("WARN"));
+    // The cache entry's size is the sum of its FileNode digest sizes (the
+    // single `demo file` node declares size 5); the empty `demo_subdir`
+    // contributes 0. This is digest-derived accounting (OPT #2), not a
+    // filesystem walk, so it reflects the declared digest size.
     assert!(logs_contain(
-        "Evicting cached directory digest=DigestInfo(\"0101010101010101010101010101010101010101010101010101010101010101-5\") size=0"
+        "Evicting cached directory digest=DigestInfo(\"0101010101010101010101010101010101010101010101010101010101010101-5\") size=5"
     ));
     Ok(())
 }

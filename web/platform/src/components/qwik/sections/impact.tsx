@@ -15,13 +15,13 @@ export const Impact = component$(() => {
           Your browser does not support the video tag.
         </video>
         <div class="relative z-10 flex h-32 flex-col items-center justify-center gap-4 md:flex-row">
-          <h2 class="flex h-full items-center justify-center bg-gradient-to-r from-white to-[#707098] bg-clip-text text-4xl  text-[55px] text-transparent">
+          <h2 class="flex h-full items-center justify-center bg-gradient-to-r from-white to-[#707098] bg-clip-text text-4xl text-[58px] text-transparent">
             Saving Lives.
           </h2>
-          <h2 class="flex h-full items-center justify-center bg-gradient-to-r from-white to-[#707098] bg-clip-text text-4xl  text-[55px] text-transparent">
+          <h2 class="flex h-full items-center justify-center bg-gradient-to-r from-white to-[#707098] bg-clip-text text-4xl text-[58px] text-transparent">
             Saving Time.
           </h2>
-          <h2 class="flex h-full items-center justify-center bg-gradient-to-r from-white to-[#707098] bg-clip-text text-4xl  text-[55px] text-transparent">
+          <h2 class="flex h-full items-center justify-center bg-gradient-to-r from-white to-[#707098] bg-clip-text text-4xl text-[58px] text-transparent">
             Saving Money.
           </h2>
         </div>
