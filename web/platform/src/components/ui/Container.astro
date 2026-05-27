@@ -1,33 +1,49 @@
 ---
 /**
- * Page-width container. Pairs the content max-width with the responsive page
- * gutters every section should use.
+ * Fluid page-width container.
+ *
+ * The default container is full-width with clamp-based horizontal padding
+ * — content scales with the viewport instead of sitting in a fixed-pixel
+ * band. On a 13" MacBook (~1512px) you get ~76px gutters; on a 27" 4K
+ * display (~2560px) you get ~128px gutters; both feel proportionate.
+ *
+ *   <Container>...full-width section with fluid padding...</Container>
+ *   <Container width="prose">...narrow column for legal/long-form text...</Container>
+ *
+ * For internal text-line readability inside a default container, add
+ * `max-w-2xl` / `max-w-3xl` directly on the heading or paragraph — NOT
+ * on the outer container.
  */
 interface Props {
-   width?: "default" | "narrow" | "wide" | "prose";
+   width?: "default" | "narrow" | "prose";
    class?: string;
    id?: string;
    as?: keyof HTMLElementTagNameMap;
 }
-const { width = "default", class: className, id, as = "div" }: Props = Astro.props;
+const {
+   width = "default",
+   class: className,
+   id,
+   as = "div",
+}: Props = Astro.props;
+
+/* clamp(min, preferred, max):
+ *   min 24px — phones
+ *   preferred 5vw — smoothly scales with viewport
+ *   max 128px — wide displays, prevents content stranding in the middle
+ */
+const fluidPadding =
+   "[padding-left:clamp(1.5rem,5vw,8rem)] [padding-right:clamp(1.5rem,5vw,8rem)]";
 
 const widths: Record<NonNullable<Props["width"]>, string> = {
-   default: "max-w-[1360px]",
-   narrow: "max-w-[880px]",
-   wide: "max-w-[1500px]",
-   prose: "max-w-[680px]",
+   default: `w-full ${fluidPadding}`,
+   narrow: `w-full max-w-[68rem] mx-auto ${fluidPadding}`,
+   prose: `w-full max-w-[44rem] mx-auto ${fluidPadding}`,
 };
 
 const Tag = as;
 ---
 
-<Tag
-   class:list={[
-      "mx-auto w-full px-6 sm:px-8 lg:px-10",
-      widths[width],
-      className,
-   ]}
-   id={id}
->
+<Tag class:list={[widths[width], className]} id={id}>
    <slot />
 </Tag>
