@@ -28,7 +28,7 @@ worker fetches inputs from the content-addressed store, runs the
 command in a sandbox, uploads outputs back to the store, and reports
 the result.
 
-The cache from [remote caching](/docs/faq/caching) sits underneath
+The cache from [remote caching](/faq/caching) sits underneath
 all of this — actions hit it first; only misses get executed.
 
 ## Why ship the work elsewhere
@@ -58,5 +58,5 @@ plugs in with no code changes.
 
 The flow looks like the diagram above, with NativeLink as the
 scheduler + worker fleet. See
-[Architecture](/docs/explanations/architecture) for the full
+[Architecture](/explanations/architecture) for the full
 walkthrough.

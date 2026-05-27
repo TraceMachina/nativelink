@@ -4,7 +4,7 @@ description: The NativeLink cluster shape that survives a real team — sharded 
 ---
 
 What changes between the
-[basic single-node](/docs/configuration/basic) and a cluster you'd
+[basic single-node](/configuration/basic) and a cluster you'd
 trust with your team's working day:
 
 - The CAS is durable and shareable.
@@ -152,7 +152,7 @@ workers: [{
 Drive worker count from queue depth — every common autoscaler
 (Kubernetes HPA on a custom metric, AWS Auto Scaling on a CloudWatch
 alarm) can read NativeLink's Prometheus output and scale accordingly.
-The [Kubernetes deployment guide](/docs/deployment/kubernetes) has a
+The [Kubernetes deployment guide](/deployment/kubernetes) has a
 working HPA config.
 
 ## TLS and authentication
@@ -207,7 +207,7 @@ What's worth alerting on:
 - `nativelink_worker_connected_count` — sudden drops indicate
   scheduler-side issues.
 
-The [Metrics deployment guide](/docs/deployment/metrics) has a Grafana
+The [Metrics deployment guide](/deployment/metrics) has a Grafana
 dashboard JSON file you can import.
 
 ## A reference production config

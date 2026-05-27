@@ -34,7 +34,7 @@ deliberate work.
   <li>
     **Use the sandbox you trust.** On Linux: `linux-sandbox`. On
     macOS: `darwin-sandbox`. For maximum isolation, run actions in a
-    container or under [LRE](/docs/explanations/lre).
+    container or under [LRE](/explanations/lre).
   </li>
   <li>
     **Declare every header.** Strict include-checking
@@ -58,11 +58,11 @@ actions show up as cache misses where there should be hits, or, worse,
 as nondeterministic action results.
 
 The fastest way to find leaks: enable
-[LRE](/docs/explanations/lre), build the same target twice on the
+[LRE](/explanations/lre), build the same target twice on the
 same machine, and compare outputs. Anything that differs is a leak.
 
 ## Further reading
 
-- [What are toolchains?](/docs/faq/toolchains)
-- [What is Nix?](/docs/faq/nix)
-- [LRE](/docs/explanations/lre) — the easiest way to get there.
+- [What are toolchains?](/faq/toolchains)
+- [What is Nix?](/faq/nix)
+- [LRE](/explanations/lre) — the easiest way to get there.

@@ -4,7 +4,7 @@ description: Architecture patterns for self-hosted NativeLink — what to deploy
 ---
 
 The
-[on-prem getting-started guide](/docs/getting-started/on-prem)
+[on-prem getting-started guide](/getting-started/on-prem)
 covers *why* you'd self-host. This page covers the
 **reference architectures** — the deployment shapes that have
 survived contact with real workloads.
@@ -30,7 +30,7 @@ their own per-runner cache.
 afternoon.
 
 **Config shape:**
-[Basic / filesystem-backed](/docs/configuration/basic#filesystem-backed-cache).
+[Basic / filesystem-backed](/configuration/basic#filesystem-backed-cache).
 
 ### Shape B — Cache cluster + remote workers
 
@@ -66,7 +66,7 @@ Redis.
 with strict data residency).
 
 **Config shape:**
-[Production configurations](/docs/configuration/production).
+[Production configurations](/configuration/production).
 
 ### Shape C — Multi-region, regulated
 
@@ -97,7 +97,7 @@ contracts; truly global teams.
 
 | Substrate          | Notes                                                    |
 | ------------------ | -------------------------------------------------------- |
-| Kubernetes         | The richest deployment story. See [Kubernetes](/docs/deployment/kubernetes). |
+| Kubernetes         | The richest deployment story. See [Kubernetes](/deployment/kubernetes). |
 | Bare VMs + systemd | Lowest operational complexity if you already do this.    |
 | Docker Compose     | Reasonable for ≤ 5 devs.                                 |
 | Bare metal         | Best price/perf at scale.                                |
@@ -120,9 +120,9 @@ CAS storage is the dominant cost. Plan accordingly.
 
 ## What's next
 
-- [Kubernetes](/docs/deployment/kubernetes) — working Helm chart.
-- [Persistent workers](/docs/deployment/persistent-workers) — warm
+- [Kubernetes](/deployment/kubernetes) — working Helm chart.
+- [Persistent workers](/deployment/persistent-workers) — warm
   JVM / Bazel-style worker pools.
-- [Metrics](/docs/deployment/metrics) — Prometheus and Grafana.
-- [Chromium](/docs/deployment/chromium) — full reference of the
+- [Metrics](/deployment/metrics) — Prometheus and Grafana.
+- [Chromium](/deployment/chromium) — full reference of the
   largest open-source consumer.

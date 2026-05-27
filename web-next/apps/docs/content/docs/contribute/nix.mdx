@@ -6,7 +6,7 @@ description: The official dev shell — hermetic by construction, identical to w
 The NativeLink flake provisions a complete dev shell — the exact Rust
 toolchain, the exact Bazel version, `protoc`, `mold`, every binary
 the build invokes. Use this if you want absolute reproducibility, or
-if you're working on [LRE](/docs/explanations/lre) (which requires
+if you're working on [LRE](/explanations/lre) (which requires
 Nix).
 
 ## Install Nix
@@ -45,8 +45,8 @@ Inside the shell you have:
 
 ## Running things inside the shell
 
-Anything from the [Bazel](/docs/contribute/bazel) or
-[Cargo](/docs/contribute/cargo) workflow works inside `nix develop`.
+Anything from the [Bazel](/contribute/bazel) or
+[Cargo](/contribute/cargo) workflow works inside `nix develop`.
 The shell just guarantees the tooling is the version we tested.
 
 ## LRE-specific helpers
@@ -61,7 +61,7 @@ nix run .#nativelink-lre
 nix develop .#lre
 ```
 
-See [Explanations → LRE](/docs/explanations/lre) for what these are
+See [Explanations → LRE](/explanations/lre) for what these are
 doing.
 
 ## When Nix isn't worth it

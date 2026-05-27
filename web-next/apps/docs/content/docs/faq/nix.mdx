@@ -10,7 +10,7 @@ Two machines running the same Nix flake produce bit-identical
 artifacts.
 
 That property — hash-pinned, content-addressed everything — is what
-NativeLink needs for [LRE](/docs/explanations/lre) and is why we use
+NativeLink needs for [LRE](/explanations/lre) and is why we use
 Nix to provision toolchains.
 
 ## What it gives you, concretely
@@ -46,4 +46,4 @@ nix develop
 You're now in a shell with the exact toolchain CI uses — Rust, Bazel,
 mold, `protoc`, the works.
 
-For a full LRE setup, see [Explanations → LRE](/docs/explanations/lre).
+For a full LRE setup, see [Explanations → LRE](/explanations/lre).

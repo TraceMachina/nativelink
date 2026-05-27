@@ -69,4 +69,13 @@
     background-color: rgb(var(--nl-color-brand) / 0.22);
     color: var(--color-foreground);
   }
+  /* Tailwind v4 dropped the default cursor:pointer on buttons. Fumadocs
+   * components don't always set it either. Restore for every interactive
+   * element so hover affordances feel right. */
+  a, button, [role="button"], summary, label[for] {
+    cursor: pointer;
+  }
+  button:disabled, [aria-disabled="true"] {
+    cursor: not-allowed;
+  }
 }

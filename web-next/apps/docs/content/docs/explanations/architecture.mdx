@@ -10,8 +10,7 @@ real clusters run them together.
 
 ## The four roles
 
-```mermaid
-sequenceDiagram
+<Mermaid>{`sequenceDiagram
     participant client as Client (Bazel / Buck2 / Reclient)
     participant sched as Scheduler
     participant worker as Worker
@@ -27,7 +26,7 @@ sequenceDiagram
     sched->>cas: store ActionResult
     sched->>client: ActionResult
     client->>cas: fetch output blobs
-```
+`}</Mermaid>
 
 ### CAS — Content-Addressable Storage
 
@@ -143,9 +142,9 @@ sustain over a billion build requests a month on modest hardware.
 
 ## What's next
 
-- [Local Remote Execution](/docs/explanations/lre) — running the same
+- [Local Remote Execution](/explanations/lre) — running the same
   hermetic build locally without a remote cluster.
-- [Configuration → Production](/docs/configuration/production) — the
+- [Configuration → Production](/configuration/production) — the
   cluster shape for serving a real team.
-- [History](/docs/explanations/history) — why this exists and what
+- [History](/explanations/history) — why this exists and what
   came before.

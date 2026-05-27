@@ -1,33 +1,16 @@
 import { Logo } from "@nativelink/ui";
 import type { BaseLayoutProps } from "fumadocs-ui/layouts/shared";
 
-/** Cross-origin links back to the marketing site. In dev, the web app
- * rewrites these paths to the docs server, so unprefixed paths just work. */
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "";
-const link = (path: string) => `${SITE_URL}${path}`;
-
 export const baseOptions: BaseLayoutProps = {
   nav: {
     title: <Logo size="md" />,
-    url: link("/"),
+    url: "/",
     transparentMode: "top",
   },
+  // Only the GitHub icon in the top-nav. Cross-app links back to marketing
+  // (/product, /pricing, /resources) were removed — they 404'd inside the
+  // docs basePath and clutter a docs-focused nav.
   links: [
-    {
-      text: "Product",
-      url: link("/product"),
-      active: "none",
-    },
-    {
-      text: "Pricing",
-      url: link("/pricing"),
-      active: "none",
-    },
-    {
-      text: "Resources",
-      url: link("/resources"),
-      active: "none",
-    },
     {
       type: "icon",
       icon: (
