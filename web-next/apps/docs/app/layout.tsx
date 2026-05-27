@@ -26,12 +26,17 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       className={`${GeistSans.variable} ${GeistMono.variable}`}
     >
       <body className="flex min-h-screen flex-col bg-background text-foreground antialiased">
-        {/* RootProvider configures the theme via next-themes. We point it
-         * at our data-theme attribute (matching marketing) and share the
-         * same localStorage key so the theme persists across both apps. */}
+        {/* RootProvider configures the theme via next-themes. Setting BOTH
+         * "class" and "data-theme" attributes is intentional:
+         *   - .dark class drives Fumadocs's built-in Shiki dual-theme code
+         *     blocks (the CSS keys off html.dark, not data-theme)
+         *   - data-theme="dark" drives our @nativelink/tokens brand vars
+         *     used everywhere else in the UI.
+         * Same localStorage key as marketing so the toggle persists across
+         * both apps. */}
         <RootProvider
           theme={{
-            attribute: "data-theme",
+            attribute: ["class", "data-theme"],
             defaultTheme: "dark",
             enableSystem: true,
             storageKey: "nl-theme",
