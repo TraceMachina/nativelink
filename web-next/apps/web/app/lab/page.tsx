@@ -12,11 +12,15 @@ import {
   Section,
 } from "@nativelink/ui";
 import type { Metadata } from "next";
+import { notFound } from "next/navigation";
 
 export const metadata: Metadata = {
   title: "UI Lab",
   robots: { index: false, follow: false },
 };
+
+// Dev-only: the design-system catalog has no place in the production bundle.
+const IS_PROD = process.env.NODE_ENV === "production";
 
 function Group({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -29,6 +33,7 @@ function Group({ label, children }: { label: string; children: React.ReactNode }
 }
 
 export default function LabPage() {
+  if (IS_PROD) notFound();
   return (
     <Section width="default" className="pt-16 pb-32">
       <header className="mb-12">
