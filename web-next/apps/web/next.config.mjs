@@ -2,9 +2,11 @@
 const nextConfig = {
   reactStrictMode: true,
   transpilePackages: ["@nativelink/ui"],
-  experimental: {
-    // Enable typed routes once we add real routing.
-    // typedRoutes: true,
+  images: {
+    remotePatterns: [
+      { protocol: "https", hostname: "avatars.githubusercontent.com" },
+      { protocol: "https", hostname: "github.com" },
+    ],
   },
 };
 

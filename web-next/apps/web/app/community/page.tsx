@@ -1,4 +1,5 @@
 import { Badge, Button, Counter, Eyebrow, Reveal, Section } from "@nativelink/ui";
+import Image from "next/image";
 import { getContributors, getRepoStats } from "@/lib/github";
 
 export const metadata = { title: "Community" };
@@ -194,12 +195,12 @@ export default async function CommunityPage() {
                   title={`${c.login} — ${c.contributions} contributions`}
                   className="group relative overflow-hidden rounded-full border-2 border-border bg-surface transition-all hover:-translate-y-0.5 hover:border-brand"
                 >
-                  <img
+                  <Image
                     src={c.avatar_url}
                     alt={c.login}
                     width={56}
                     height={56}
-                    loading="lazy"
+                    unoptimized={false}
                     className="block h-14 w-14"
                   />
                 </a>

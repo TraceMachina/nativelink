@@ -152,8 +152,8 @@ export function HeroVisual({ className }: HeroVisualProps) {
             >
               <span className="inline-block h-1.5 w-1.5 rounded-full bg-success" />
               <span>cache hit</span>
-              <span className="text-foreground/40">bazel build //src/...</span>
-              <span className="ml-auto text-foreground/40">4.2s</span>
+              <span className="text-muted-foreground">bazel build //src/...</span>
+              <span className="ml-auto text-muted">4.2s</span>
             </motion.div>
             <motion.div
               initial={{ opacity: 0, x: -8 }}
@@ -164,8 +164,8 @@ export function HeroVisual({ className }: HeroVisualProps) {
             >
               <span className="inline-block h-1.5 w-1.5 rounded-full bg-brand" />
               <span>remote exec</span>
-              <span className="text-foreground/40">cargo test --release</span>
-              <span className="ml-auto text-foreground/40">12.8s</span>
+              <span className="text-muted-foreground">cargo test --release</span>
+              <span className="ml-auto text-muted">12.8s</span>
             </motion.div>
             <motion.div
               initial={{ opacity: 0, x: -8 }}
@@ -176,8 +176,8 @@ export function HeroVisual({ className }: HeroVisualProps) {
             >
               <span className="inline-block h-1.5 w-1.5 rounded-full bg-success" />
               <span>cache hit</span>
-              <span className="text-foreground/40">buck2 build :app</span>
-              <span className="ml-auto text-foreground/40">0.9s</span>
+              <span className="text-muted-foreground">buck2 build :app</span>
+              <span className="ml-auto text-muted">0.9s</span>
             </motion.div>
           </div>
         </div>

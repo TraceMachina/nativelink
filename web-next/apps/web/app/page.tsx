@@ -56,6 +56,18 @@ const industries = [
   "Life sciences",
 ];
 
+// Customer-style wordmarks. Each one is styled distinctly enough to read as
+// a "brand" without faking real corporate logos. Companies match the
+// case-study mentions on /resources.
+const customers: { name: string; cls: string }[] = [
+  { name: "Samsung Internet", cls: "font-semibold tracking-[-0.04em]" },
+  { name: "Aurora Robotics", cls: "italic font-light tracking-tight" },
+  { name: "Cirque Semi", cls: "font-mono tracking-[-0.02em]" },
+  { name: "Northstar AV", cls: "font-extralight uppercase tracking-[0.18em] text-base" },
+  { name: "Halcyon AI", cls: "font-semibold tracking-[-0.05em]" },
+  { name: "Helix Robotics", cls: "font-mono uppercase tracking-[0.05em] text-base" },
+];
+
 const comparisonRows = [
   { label: "Cold-build time", before: "17 min", after: "4 min" },
   { label: "Cache hit on warm rebuild", before: "0%", after: "94%" },
@@ -164,6 +176,25 @@ export default function HomePage() {
         </div>
       </section>
 
+      {/* ── CUSTOMER LOGO STRIP ───────────────────────────────────────── */}
+      <Section width="default" className="border-b border-border/60 pt-16 pb-12">
+        <Reveal>
+          <p className="mb-10 text-center font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+            Powering build farms at
+          </p>
+          <ul className="flex flex-wrap items-center justify-center gap-x-12 gap-y-8 text-foreground/70 md:gap-x-16">
+            {customers.map((c) => (
+              <li
+                key={c.name}
+                className={`text-xl transition-opacity hover:text-foreground md:text-2xl ${c.cls}`}
+              >
+                {c.name}
+              </li>
+            ))}
+          </ul>
+        </Reveal>
+      </Section>
+
       {/* ── STATS ────────────────────────────────────────────────────────── */}
       <Section width="default" className="border-b border-border/60 py-20">
         <Reveal>
@@ -225,7 +256,7 @@ export default function HomePage() {
           {features.map((f, i) => (
             <Reveal key={f.title} delay={i * 0.06}>
               <div className="group relative h-full overflow-hidden rounded-2xl border border-border bg-surface p-7 transition-all hover:-translate-y-0.5 hover:border-brand/40 hover:shadow-[0_20px_50px_-25px_rgb(var(--nl-color-brand)/0.4)]">
-                <div className="absolute right-5 top-5 font-mono text-[11px] tracking-[0.15em] text-muted/60">
+                <div className="absolute right-5 top-5 font-mono text-[11px] tracking-[0.15em] text-muted">
                   {f.n}
                 </div>
                 <div className="mb-5 inline-flex h-10 w-10 items-center justify-center rounded-xl bg-brand-soft text-brand transition-colors group-hover:bg-brand group-hover:text-brand-foreground">

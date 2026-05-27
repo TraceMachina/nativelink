@@ -98,7 +98,7 @@ export function ContactForm() {
             placeholder="What are you building? Where does NativeLink fit?"
             className={cn(
               "rounded-lg border bg-surface px-3 py-3 text-[15px] leading-relaxed text-foreground transition-colors",
-              "placeholder:text-muted/70 focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/30",
+              "placeholder:text-muted focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/30",
               "disabled:cursor-wait",
               err?.message ? "border-amber-500/60" : "border-border",
             )}
@@ -153,7 +153,7 @@ function Field({ label, name, error, ...props }: FieldProps) {
         name={name}
         className={cn(
           "h-11 rounded-lg border bg-surface px-3 text-[15px] text-foreground transition-colors",
-          "placeholder:text-muted/70 focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/30",
+          "placeholder:text-muted focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/30",
           error ? "border-amber-500/60" : "border-border",
         )}
         {...props}
