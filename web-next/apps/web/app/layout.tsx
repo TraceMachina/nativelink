@@ -1,11 +1,11 @@
-import { SiteFooter, SiteHeader } from "@nativelink/ui";
+import { FinalCTA, SiteFooter, SiteHeader } from "@nativelink/ui";
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import "./globals.css";
 
 export const metadata: Metadata = {
   title: {
-    default: "NativeLink",
+    default: "NativeLink — Remote build execution & caching",
     template: "%s — NativeLink",
   },
   description:
@@ -22,6 +22,14 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <main id="main" className="flex-1">
           {children}
         </main>
+        <FinalCTA
+          title="Let's build at the speed your code is being written."
+          body="Open source. Free cloud tier. Self-host the moment your team is ready."
+          primaryLabel="Get started"
+          primaryHref="/docs"
+          secondaryLabel="See pricing"
+          secondaryHref="/pricing"
+        />
         <SiteFooter />
       </body>
     </html>
