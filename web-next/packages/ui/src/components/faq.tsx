@@ -30,7 +30,7 @@ export function FAQ({ items, defaultOpenIndex, className }: FAQProps) {
               aria-expanded={isOpen}
               onClick={() => setOpen(isOpen ? null : i)}
               className={cn(
-                "flex w-full items-center justify-between gap-4 px-6 py-5 text-left transition-colors",
+                "flex w-full cursor-pointer items-center justify-between gap-4 px-6 py-5 text-left transition-colors",
                 "hover:bg-foreground/[0.02]",
                 isOpen && "bg-brand-soft/30",
               )}

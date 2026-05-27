@@ -4,9 +4,9 @@ import * as React from "react";
 import { cn } from "../lib/cn";
 
 const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap font-medium " +
+  "inline-flex cursor-pointer items-center justify-center gap-2 whitespace-nowrap font-medium " +
     "transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background " +
-    "disabled:pointer-events-none disabled:opacity-50 min-h-[44px] " +
+    "disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 min-h-[44px] " +
     "tracking-[-0.005em]",
   {
     variants: {

@@ -7,6 +7,10 @@
 
 @import "@nativelink/tokens/src/index.css";
 
+/* Dark variant follows our explicit data-theme attribute, not the media query.
+ * The ThemeProvider toggles this on <html>. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
 @theme {
   /* Surface */
   --color-background: rgb(var(--nl-color-background));

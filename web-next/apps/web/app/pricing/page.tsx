@@ -1,4 +1,5 @@
 import { Badge, Button, Eyebrow, Reveal, Section, cn } from "@nativelink/ui";
+import { Fragment } from "react";
 
 export const metadata = { title: "Pricing" };
 
@@ -259,8 +260,8 @@ export default function PricingPage() {
               </thead>
               <tbody>
                 {comparison.map((group) => (
-                  <>
-                    <tr key={group.section}>
+                  <Fragment key={group.section}>
+                    <tr>
                       <td colSpan={4} className="border-t border-border bg-foreground/[0.015] px-6 py-3 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
                         {group.section}
                       </td>
@@ -273,7 +274,7 @@ export default function PricingPage() {
                         <td className="px-6 py-4"><Cell value={row.ent} /></td>
                       </tr>
                     ))}
-                  </>
+                  </Fragment>
                 ))}
               </tbody>
             </table>
