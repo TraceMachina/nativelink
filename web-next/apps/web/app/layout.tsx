@@ -1,4 +1,6 @@
 import { FinalCTA, SiteFooter, SiteHeader } from "@nativelink/ui";
+import { GeistMono } from "geist/font/mono";
+import { GeistSans } from "geist/font/sans";
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import "./globals.css";
@@ -16,8 +18,8 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en">
-      <body className="flex min-h-screen flex-col">
+    <html lang="en" className={`${GeistSans.variable} ${GeistMono.variable}`}>
+      <body className="flex min-h-screen flex-col bg-background text-foreground antialiased">
         <SiteHeader />
         <main id="main" className="flex-1">
           {children}

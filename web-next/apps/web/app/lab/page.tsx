@@ -68,7 +68,8 @@ export default function LabPage() {
         <Badge>Default</Badge>
         <Badge variant="solid">Solid</Badge>
         <Badge variant="outline">Outline</Badge>
-        <Badge variant="accent">Accent</Badge>
+        <Badge variant="brand">Brand</Badge>
+        <Badge variant="success">Success</Badge>
       </Group>
 
       <Group label="Cards">

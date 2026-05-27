@@ -4,15 +4,21 @@ import { cn } from "../lib/cn";
 interface StatProps extends React.HTMLAttributes<HTMLDivElement> {
   value: React.ReactNode;
   label: React.ReactNode;
+  accent?: boolean;
 }
 
-export function Stat({ value, label, className, ...props }: StatProps) {
+export function Stat({ value, label, accent = false, className, ...props }: StatProps) {
   return (
     <div className={cn("flex flex-col gap-2", className)} {...props}>
-      <div className="font-mono text-3xl font-bold leading-none tracking-tight md:text-4xl">
+      <div
+        className={cn(
+          "font-mono text-3xl font-semibold leading-none tracking-tight md:text-4xl",
+          accent ? "text-brand" : "text-foreground",
+        )}
+      >
         {value}
       </div>
-      <div className="font-mono text-sm text-muted">{label}</div>
+      <div className="text-sm leading-relaxed text-muted">{label}</div>
     </div>
   );
 }

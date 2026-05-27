@@ -20,7 +20,7 @@ export function FAQ({ items, defaultOpenIndex, className }: FAQProps) {
   );
 
   return (
-    <ul className={cn("divide-y-2 divide-border border-y-2 border-border", className)}>
+    <ul className={cn("divide-y divide-border overflow-hidden rounded-xl border border-border bg-surface/40", className)}>
       {items.map((item, i) => {
         const isOpen = open === i;
         return (
@@ -29,16 +29,25 @@ export function FAQ({ items, defaultOpenIndex, className }: FAQProps) {
               type="button"
               aria-expanded={isOpen}
               onClick={() => setOpen(isOpen ? null : i)}
-              className="flex w-full items-center justify-between gap-4 py-5 text-left transition-colors hover:bg-foreground/[0.02]"
+              className={cn(
+                "flex w-full items-center justify-between gap-4 px-6 py-5 text-left transition-colors",
+                "hover:bg-foreground/[0.02]",
+                isOpen && "bg-brand-soft/30",
+              )}
             >
-              <span className="font-mono text-base font-medium text-foreground md:text-lg">
+              <span className={cn(
+                "text-base font-medium md:text-lg",
+                isOpen ? "text-foreground" : "text-foreground/90",
+              )}>
                 {item.q}
               </span>
               <span
                 aria-hidden="true"
                 className={cn(
-                  "shrink-0 font-mono text-base text-muted transition-transform",
-                  isOpen && "rotate-45",
+                  "flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs transition-all",
+                  isOpen
+                    ? "rotate-45 bg-brand text-brand-foreground"
+                    : "bg-foreground/5 text-muted-foreground",
                 )}
               >
                 +
@@ -51,7 +60,7 @@ export function FAQ({ items, defaultOpenIndex, className }: FAQProps) {
               )}
             >
               <div className="min-h-0">
-                <div className="max-w-[68ch] text-base leading-relaxed text-muted-foreground">
+                <div className="max-w-[68ch] px-6 text-[15px] leading-relaxed text-muted-foreground">
                   {item.a}
                 </div>
               </div>

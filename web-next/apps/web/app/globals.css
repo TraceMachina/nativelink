@@ -1,22 +1,47 @@
 @import "tailwindcss";
 @import "@nativelink/config/tailwind/preset.css";
 
+@source "../../../packages/ui/src/**/*.{ts,tsx}";
+
 @layer base {
   html {
-    background-color: rgb(var(--nl-color-background));
-    color: rgb(var(--nl-color-foreground));
+    background-color: var(--color-background);
+    color: var(--color-foreground);
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
   }
   body {
-    font-family: var(--nl-font-mono);
+    font-family: var(--nl-font-sans);
     text-wrap: pretty;
   }
   h1, h2, h3, h4, h5, h6 {
     text-wrap: balance;
+    letter-spacing: -0.02em;
+  }
+  code, kbd, pre, samp {
+    font-family: var(--nl-font-mono);
+  }
+  ::selection {
+    background-color: rgb(var(--nl-color-brand) / 0.22);
+    color: var(--color-foreground);
   }
   :focus-visible {
-    outline: 2px solid rgb(var(--nl-color-foreground));
+    outline: 2px solid var(--color-brand);
     outline-offset: 2px;
+    border-radius: 4px;
   }
+}
+
+/* Reusable backdrop glow — used in heroes + the final CTA strip */
+@utility bg-brand-glow {
+  background-image:
+    radial-gradient(ellipse 800px 400px at 70% -10%, rgb(var(--nl-color-brand) / 0.10), transparent 60%),
+    radial-gradient(ellipse 600px 400px at 0% 50%, rgb(var(--nl-color-brand) / 0.04), transparent 60%);
+}
+
+@utility bg-grid {
+  background-image:
+    linear-gradient(to right, rgb(var(--nl-color-border) / 0.4) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(var(--nl-color-border) / 0.4) 1px, transparent 1px);
+  background-size: 32px 32px;
 }

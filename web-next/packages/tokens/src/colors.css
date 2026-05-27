@@ -1,26 +1,49 @@
 :root {
-  --nl-color-background: 248 247 244;     /* Warm off-white */
-  --nl-color-surface: 255 255 255;         /* Card surface (semi-transparent in use) */
-  --nl-color-foreground: 0 0 0;            /* Maximum-contrast body text */
-  --nl-color-muted: 100 100 100;           /* Secondary text */
-  --nl-color-muted-foreground: 60 60 60;   /* Subtler body copy */
-  --nl-color-border: 220 220 220;          /* 2px card borders, dividers */
-  --nl-color-accent: 0 0 0;                /* CTA fill */
-  --nl-color-accent-hover: 40 40 40;       /* CTA hover */
-  --nl-color-accent-line: 180 180 180;     /* 1px section dividers */
+  /* Surface */
+  --nl-color-background: 250 248 245;       /* Warm off-white */
+  --nl-color-surface: 255 255 255;           /* Card surface */
+  --nl-color-surface-elevated: 252 250 247;  /* Subtle tint for nested surfaces */
+
+  /* Text */
+  --nl-color-foreground: 17 17 19;           /* Near-black, slight warm tint */
+  --nl-color-muted: 102 105 115;             /* Secondary text */
+  --nl-color-muted-foreground: 70 73 82;     /* Darker muted — body copy */
+
+  /* Border */
+  --nl-color-border: 226 224 218;            /* Warm light border */
+  --nl-color-border-strong: 200 197 188;     /* Emphasis dividers */
+  --nl-color-accent-line: 226 224 218;       /* Subtle section dividers */
+
+  /* Brand — electric purple (from the legacy NativeLink mark) */
+  --nl-color-brand: 114 71 255;
+  --nl-color-brand-strong: 88 50 220;        /* Hover / active */
+  --nl-color-brand-soft: 235 228 255;        /* Lavender tint background */
+  --nl-color-brand-foreground: 255 255 255;  /* Text on brand */
+
+  /* Success — mint teal (used in the legacy footer accent gradient) */
+  --nl-color-success: 39 168 137;
+  --nl-color-success-soft: 220 240 232;
+
+  /* Neutral accent — strong action surface (CTA on light backgrounds) */
+  --nl-color-accent: 17 17 19;               /* Same as foreground */
+  --nl-color-accent-hover: 38 38 42;
 }
 
-/* Dark scheme placeholder. Not active until we build the dark variant. */
-@media (prefers-color-scheme: dark) {
-  :root[data-theme="dark"] {
-    --nl-color-background: 10 10 10;
-    --nl-color-surface: 18 18 18;
-    --nl-color-foreground: 248 247 244;
-    --nl-color-muted: 160 160 160;
-    --nl-color-muted-foreground: 200 200 200;
-    --nl-color-border: 38 38 38;
-    --nl-color-accent: 248 247 244;
-    --nl-color-accent-hover: 220 220 220;
-    --nl-color-accent-line: 60 60 60;
-  }
+/* Dark scheme — opt-in via [data-theme="dark"]. Not active yet; tokens stubbed
+ * so the toggle in phase 4 can flip a single attribute. */
+:root[data-theme="dark"] {
+  --nl-color-background: 12 12 14;
+  --nl-color-surface: 22 22 26;
+  --nl-color-surface-elevated: 30 30 36;
+  --nl-color-foreground: 245 244 240;
+  --nl-color-muted: 155 158 168;
+  --nl-color-muted-foreground: 200 202 210;
+  --nl-color-border: 42 42 48;
+  --nl-color-border-strong: 64 64 72;
+  --nl-color-accent-line: 42 42 48;
+  --nl-color-brand: 140 102 255;
+  --nl-color-brand-strong: 167 137 255;
+  --nl-color-brand-soft: 42 32 86;
+  --nl-color-accent: 245 244 240;
+  --nl-color-accent-hover: 220 218 210;
 }

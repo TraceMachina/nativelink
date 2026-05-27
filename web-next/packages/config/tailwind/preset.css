@@ -1,27 +1,47 @@
-/* Tailwind v4 shared preset for all apps.
- * Pulls design tokens from @nativelink/tokens and exposes them
- * as Tailwind theme values via @theme.
+/* Tailwind v4 shared preset.
+ *
+ * Pulls raw RGB triplets from @nativelink/tokens and exposes them through
+ * @theme as full rgb() values so utilities + opacity modifiers work
+ * end-to-end (color-mix needs a valid color argument).
  */
 
 @import "@nativelink/tokens/src/index.css";
 
 @theme {
-  /* Colors — bound to CSS vars from @nativelink/tokens */
-  --color-background: var(--nl-color-background);
-  --color-foreground: var(--nl-color-foreground);
-  --color-muted: var(--nl-color-muted);
-  --color-muted-foreground: var(--nl-color-muted-foreground);
-  --color-border: var(--nl-color-border);
-  --color-accent: var(--nl-color-accent);
-  --color-accent-hover: var(--nl-color-accent-hover);
-  --color-accent-line: var(--nl-color-accent-line);
-  --color-surface: var(--nl-color-surface);
+  /* Surface */
+  --color-background: rgb(var(--nl-color-background));
+  --color-surface: rgb(var(--nl-color-surface));
+  --color-surface-elevated: rgb(var(--nl-color-surface-elevated));
+
+  /* Text */
+  --color-foreground: rgb(var(--nl-color-foreground));
+  --color-muted: rgb(var(--nl-color-muted));
+  --color-muted-foreground: rgb(var(--nl-color-muted-foreground));
+
+  /* Border */
+  --color-border: rgb(var(--nl-color-border));
+  --color-border-strong: rgb(var(--nl-color-border-strong));
+  --color-accent-line: rgb(var(--nl-color-accent-line));
+
+  /* Brand */
+  --color-brand: rgb(var(--nl-color-brand));
+  --color-brand-strong: rgb(var(--nl-color-brand-strong));
+  --color-brand-soft: rgb(var(--nl-color-brand-soft));
+  --color-brand-foreground: rgb(var(--nl-color-brand-foreground));
+
+  /* Success */
+  --color-success: rgb(var(--nl-color-success));
+  --color-success-soft: rgb(var(--nl-color-success-soft));
+
+  /* Neutral accent (CTA fill) */
+  --color-accent: rgb(var(--nl-color-accent));
+  --color-accent-hover: rgb(var(--nl-color-accent-hover));
 
   /* Typography */
+  --font-sans: var(--nl-font-sans);
   --font-mono: var(--nl-font-mono);
-  --font-sans: var(--nl-font-mono);
 
-  /* Type scale (1.333 ratio, perfect fourth) */
+  /* Type scale */
   --text-xs: var(--nl-text-xs);
   --text-sm: var(--nl-text-sm);
   --text-base: var(--nl-text-base);
@@ -34,9 +54,10 @@
   --text-6xl: var(--nl-text-6xl);
 
   /* Radii */
-  --radius-sm: 2px;
-  --radius-md: 4px;
-  --radius-lg: 8px;
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 20px;
 
   /* Animations */
   --animate-fade-in: fadeIn 0.6s ease-out forwards;

@@ -4,11 +4,12 @@
 @import "@nativelink/config/tailwind/preset.css";
 
 @source "../node_modules/fumadocs-ui/dist/**/*.js";
+@source "../../../packages/ui/src/**/*.{ts,tsx}";
 
 @layer base {
   html {
-    background-color: rgb(var(--nl-color-background));
-    color: rgb(var(--nl-color-foreground));
+    background-color: var(--color-background);
+    color: var(--color-foreground);
     -webkit-font-smoothing: antialiased;
   }
   body {
