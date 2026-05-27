@@ -45,13 +45,23 @@ const isActive = (href: string) => {
       data-[scrolled=true]:border-b data-[scrolled=true]:border-border-subtle
    "
 >
+   {/*
+     3-column grid keeps the nav pill geometrically centered under the
+     viewport regardless of how wide the logo or right cluster get. A flex
+     `justify-center` would center the nav between its siblings, not in the
+     viewport — visually off by half the size-asymmetry of those siblings.
+   */}
    <div
-      class="w-full max-w-[1440px] mx-auto flex items-center gap-6 px-6 sm:px-8 lg:px-10"
+      class="
+         w-full max-w-[1440px] mx-auto
+         grid grid-cols-[1fr_auto_1fr] items-center gap-4 sm:gap-6
+         px-6 sm:px-8 lg:px-10
+      "
    >
-      {/* Logo */}
+      {/* Logo — col 1, hugs left */}
       <a
          href="/"
-         class="no-style group/logo flex h-full shrink-0 items-center"
+         class="no-style group/logo inline-flex items-center justify-self-start"
          aria-label="NativeLink home"
       >
          <Logo
@@ -60,8 +70,8 @@ const isActive = (href: string) => {
          />
       </a>
 
-      {/* Desktop nav */}
-      <nav class="hidden md:flex flex-1 items-center justify-center" aria-label="Primary">
+      {/* Desktop nav — col 2, justify-self-center is the default for `auto` */}
+      <nav class="hidden md:flex items-center" aria-label="Primary">
          <ul class="flex items-center gap-1 rounded-full border border-border-subtle bg-panel/60 backdrop-blur px-1.5 h-10">
             {
                links.map((link) => (
@@ -83,8 +93,8 @@ const isActive = (href: string) => {
          </ul>
       </nav>
 
-      {/* Right cluster */}
-      <div class="flex items-center gap-1 ml-auto">
+      {/* Right cluster — col 3, hugs right */}
+      <div class="flex items-center gap-1 justify-self-end">
          <a
             href="https://forms.gle/LtaWSixEC6bYi5xF7"
             target="_blank"
