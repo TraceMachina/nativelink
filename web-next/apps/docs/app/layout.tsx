@@ -31,7 +31,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       </head>
       <body className="flex min-h-screen flex-col bg-background text-foreground antialiased">
         <ThemeProvider>
-          <RootProvider>
+          <RootProvider search={{ options: { api: "/docs/api/search" } }}>
             <DocsLayout tree={source.pageTree} {...baseOptions}>
               {children}
             </DocsLayout>
