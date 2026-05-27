@@ -10,19 +10,10 @@ import {
 
 import { NavLink } from "./nav-link.tsx";
 
-import {
-  GitHub,
-  GitHubIcon,
-  Slack,
-  SlackIcon,
-} from "../../media/icons/icons.tsx";
+import { GitHubIcon, SlackIcon } from "../../media/icons/icons.tsx";
 import styles from "./header.css?inline";
 
-const Logo =
-  "https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_logo.webp";
-
-const mobileLogo =
-  "https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_logo_mobile.webp";
+const Logo = "/logo-light.svg";
 
 const links = [
   { name: "Home", href: "/" },
@@ -40,17 +31,12 @@ interface URL {
 
 const HeaderLogo = component$(() => {
   return (
-    <a href="/" class="h-full w-[25vw] z-50 flex justify-center items-center">
+    <a href="/" class="h-full shrink-0 z-50 flex items-center">
       <img
         src={Logo}
-        loading="lazy"
-        class="w-[179px] hidden md:flex"
-        alt="Nativelink Logo"
-      />
-      <img
-        src={mobileLogo}
-        loading="lazy"
-        class="w-12 md:hidden z-50"
+        loading="eager"
+        fetchPriority="high"
+        class="w-44 md:w-[200px]"
         alt="Nativelink Logo"
       />
     </a>
@@ -59,20 +45,17 @@ const HeaderLogo = component$(() => {
 
 interface DesktopNavProps {
   url: URL;
-  scrolled: Signal<boolean>;
 }
-const DesktopNav = component$<DesktopNavProps>(({ url, scrolled }) => {
+const DesktopNav = component$<DesktopNavProps>(({ url }) => {
   return (
-    <nav
-      class={`w-[50vw] h-14 hidden md:flex justify-center items-center z-40 transition-all duration-300 ${scrolled.value ? "" : ""}`}
-    >
-      <ul class="hidden md:flex w-full backdrop-filter backdrop-blur-md text-white px-4 border-white/10 z-60 gap-6 rounded-2xl bg-white/10 border h-12 justify-center items-center">
+    <nav class="flex-1 max-w-3xl hidden md:flex justify-center items-center z-40">
+      <ul class="flex w-full text-black px-3 border border-[rgb(210,210,210)] gap-0.5 rounded-lg bg-white/90 h-10 justify-center items-center text-sm">
         {links.map((link) => (
           <NavLink
             key={link.name}
             pathName={url.pathName}
             href={link.href}
-            activeClass="font-bold"
+            activeClass="bg-[rgb(240,238,235)] font-medium rounded-md"
           >
             {link.name}
           </NavLink>
@@ -90,17 +73,17 @@ interface MobileNavProps {
 const MobileNav = component$<MobileNavProps>(({ url, navState }) => {
   return (
     <nav
-      class={`fixed top-0 h-full z-40 right-0 w-[100svw] bg-black transition-transform duration-300 ease-in-out ${
+      class={`fixed top-0 h-full z-40 right-0 w-[100svw] bg-[rgb(248,247,244)] transition-transform duration-300 ease-in-out ${
         navState.value ? "translate-x-0" : "translate-x-full"
       } md:hidden`}
     >
-      <ul class="text-white w-full h-full flex flex-col justify-center items-center gap-10">
+      <ul class="text-black w-full h-full flex flex-col justify-center items-center gap-8 text-lg">
         {links.map((link) => (
           <NavLink
             key={link.name}
             pathName={url.pathName}
             href={link.href}
-            activeClass="font-bold border rounded-full border-white/20 px-4 py-2"
+            activeClass="font-semibold"
           >
             {link.name}
           </NavLink>
@@ -138,41 +121,25 @@ const Hamburger = component$<Hamburger>(({ navState }) => {
 const Widgets = component$(() => {
   useStylesScoped$(styles);
   return (
-    <div class="w-1/2 md:w-[25vw] flex flex-row items-center justify-center gap-2 text-[16px]">
-      <div class="z-60 flex flex-row gap-3">
+    <div class="shrink-0 flex flex-row items-center justify-end gap-2 text-[16px]">
+      <div class="z-60 flex flex-row gap-2 items-center">
         <a
           target="_blank"
-          class="md:hidden"
+          class="w-10 h-10 flex items-center justify-center hover:opacity-70 transition-opacity duration-200"
           href="https://forms.gle/LtaWSixEC6bYi5xF7"
           rel="noreferrer"
           aria-label="Nativelink Slack channel"
-        >
-          <Slack />
-        </a>
-        <a
-          target="_blank"
-          class="hidden md:flex hover:rotate-360 transition-all duration-300"
-          href="https://forms.gle/LtaWSixEC6bYi5xF7"
-          rel="noreferrer"
-          aria-label="Nativelink Slack channel"
+          title="Join our Slack"
         >
           <SlackIcon />
         </a>
         <a
-          class="md:hidden"
+          class="w-10 h-10 flex items-center justify-center hover:opacity-70 transition-opacity duration-200"
           href="https://github.com/tracemachina/nativelink"
           target="_blank"
           rel="noreferrer"
           aria-label="Nativelink GitHub repository"
-        >
-          <GitHub />
-        </a>
-        <a
-          class="hidden md:flex hover:rotate-360 transition-all duration-300"
-          href="https://github.com/tracemachina/nativelink"
-          target="_blank"
-          rel="noreferrer"
-          aria-label="Nativelink GitHub repository"
+          title="Clone the Repo"
         >
           <GitHubIcon />
         </a>
@@ -181,7 +148,7 @@ const Widgets = component$(() => {
         id="button"
         href="/docs/introduction/setup#-quickstart"
         target="_blank"
-        class="hidden md:flex bg-white text-black hover:bg-gray-200 transition-colors duration-300 px-4 h-8 rounded-xl justify-center items-center"
+        class="hidden md:flex bg-black text-white hover:bg-[rgb(30,30,30)] transition-colors duration-200 px-5 h-9 rounded-lg justify-center items-center whitespace-nowrap text-sm font-medium tracking-tight"
         rel="noreferrer"
       >
         Get Started
@@ -207,12 +174,12 @@ export const Header = component$((url: URL) => {
 
   return (
     <header
-      class={`${scrolled.value ? "bg-black" : "bg-transparent"}
-    fixed top-0 z-30 flex h-14 py-10 md:px-0 transition-all duration-500
-    w-full justify-between flex-row items-center`}
+      class={`${scrolled.value ? "bg-[rgb(248,247,244)]/96 backdrop-blur-md shadow-[0_1px_0_rgb(210,210,210)]" : "bg-transparent"}
+        fixed left-0 right-0 top-8 z-30 flex h-14 px-4 md:px-8 transition-all duration-300
+        w-full justify-between flex-row items-center gap-3`}
     >
       <HeaderLogo />
-      <DesktopNav url={url} scrolled={scrolled} />
+      <DesktopNav url={url} />
       <Widgets />
       <Hamburger navState={navState} />
       <MobileNav url={url} navState={navState} />

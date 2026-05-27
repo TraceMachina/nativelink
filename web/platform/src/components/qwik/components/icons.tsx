@@ -1,8 +1,11 @@
-import { _jsxQ, _jsxS, component$ } from "@builder.io/qwik";
+import {
+  type QwikIntrinsicElements,
+  _jsxQ,
+  _jsxS,
+  component$,
+} from "@builder.io/qwik";
 
-type IconProps = Record<string, unknown>;
-
-const HiCheckSolid = (props: IconProps) =>
+const HiCheckSolid = (props: QwikIntrinsicElements["svg"]) =>
   /* @__PURE__ */ _jsxS(
     "svg",
     {
@@ -41,7 +44,7 @@ export const Checkmark = component$(() => {
   );
 });
 
-const HiXMarkSolid = (props: IconProps) =>
+const HiXMarkSolid = (props: QwikIntrinsicElements["svg"]) =>
   /* @__PURE__ */ _jsxS(
     "svg",
     {

@@ -1,103 +1,59 @@
-import { component$, useSignal, useVisibleTask$ } from "@builder.io/qwik";
-import { Background } from "../../media/icons/icons.tsx";
-import { BackgroundVideo } from "../components/video.tsx";
-
-const _MockUp =
-  "https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_dashboard.webp";
-
-const videoMockUp =
-  "https://nativelink-cdn.s3.us-east-1.amazonaws.com/Walkthrough+of+Nativelink+Cloud.mp4";
+import { component$ } from "@builder.io/qwik";
 
 export const Hero = component$(() => {
-  const rotatingText = useSignal("Accelerating Advanced CI");
-
-  useVisibleTask$(() => {
-    const options = [
-      { text: "Hermiticity is Simplicity®", duration: 15000 },
-      { text: "Accelerating Advanced CI", duration: 5000 },
-      { text: "Remote Execution in Bazel", duration: 5000 },
-      { text: "Remote Execution in Buck2", duration: 5000 },
-      { text: "Faster Chromium Builds", duration: 5000 },
-      { text: "Accelrating CMake", duration: 5000 },
-      { text: "Robotics Policy Evaluation", duration: 3000 },
-      { text: "Simulation for Semiconductors", duration: 3000 },
-    ];
-
-    let index = 0;
-    const updateText = () => {
-      const option = options[index];
-      if (option) {
-        rotatingText.value = option.text;
-        setTimeout(() => {
-          index = (index + 1) % options.length;
-          updateText();
-        }, option.duration);
-      }
-    };
-
-    updateText();
-  });
-
   return (
-    <div class="relative flex w-full flex-col items-center justify-evenly gap-5 pb-10 text-white overflow-hidden">
-      {/* Background Video */}
-      <BackgroundVideo class="absolute top-10 md:top-[-20vh] left-0 z-0 w-full object-cover" />
-
-      <div class="absolute md:hidden flex justify-center items-center overflow-hidden">
-        <Background class="w-[200vw]" />
-      </div>
-      <div class="absolute hidden md:flex justify-center items-center overflow-hidden">
-        <div class="bg-black/50 w-screen h-screen" />
-      </div>
-
-      {/* Overlay Image */}
-      {/* <img
-        src={Overlay.src}
-        class="absolute left-0 right-0 top-0 z-10 mx-auto h-auto w-full object-cover"
-        alt="Overlay"
-      /> */}
-
-      {/* Content */}
-      <div class="relative z-20 flex w-full flex-col items-center justify-evenly gap-2 pb-10 pt-36 text-white md:w-[850px]">
-        <div class="px-12 md:px-0 md:py-12">
-          <div class="flex flex-col items-center gap-2 text-center">
-            <h1 class="text-4xl md:text-8xl font-bold">
-              The Parallel Compute Platform
-            </h1>
-            <p class="text-xl md:text-3xl h-[2.5em] transition-opacity duration-500">
-              {rotatingText.value}
-            </p>
-          </div>
+    <div class="relative flex w-full flex-col items-center justify-evenly gap-5 pb-16 text-black overflow-hidden">
+      {/* Content — pt accounts for: 32px minimised banner + 56px header + 32px breathing room */}
+      <div class="relative z-20 flex w-full flex-col items-center justify-evenly gap-4 pb-10 pt-[152px] text-black md:w-[860px] px-6 md:px-0">
+        <div class="flex flex-col items-center gap-5 text-center">
+          <p class="text-xs md:text-sm uppercase tracking-widest text-[rgb(110,110,110)] font-semibold animate-fade-in">
+            Build infrastructure for the agentic era
+          </p>
+          <h1 class="text-[2.5rem] md:text-[4rem] lg:text-[4.5rem] font-bold leading-[1.1] tracking-tight animate-fade-in-up animation-delay-100">
+            When agents write your code, your build system is the bottleneck.
+          </h1>
+          <p class="text-base md:text-lg text-[rgb(65,65,65)] max-w-[680px] leading-relaxed animate-fade-in-up animation-delay-200">
+            NativeLink is the parallel compute platform that keeps builds fast
+            while your codebase — and your agents — multiply. Rust-powered. Open
+            source. Trusted in production by thousands of developers.
+          </p>
         </div>
 
-        <div class="px-8 text-center md:w-[550px]">
-          Slash cloud spends. Turbocharge builds.
-        </div>
-
-        <div class="w-full p-8 flex flex-row gap-5 justify-center items-center md:flex-row">
+        <div class="w-full pt-4 flex flex-col md:flex-row gap-3 justify-center items-center animate-fade-in-up animation-delay-300">
           <a
             id="button"
-            href="/docs/introduction/setup"
-            class="w-1/2 h-10 flex items-center bg-black justify-center rounded-xl border-white/80 border border-solid text-white transition-all duration-200 hover:border-white hover:text-white md:h-[37px] md:w-[193px]"
+            href="https://github.com/tracemachina/nativelink"
+            target="_blank"
+            rel="noreferrer"
+            class="w-full md:w-auto h-11 px-7 flex items-center bg-black justify-center text-white transition-colors duration-200 hover:bg-[rgb(30,30,30)] rounded-lg font-medium text-sm"
           >
             Clone the repo
           </a>
+          <a
+            href="/docs/introduction/setup#-quickstart"
+            class="w-full md:w-auto h-11 px-7 flex items-center bg-transparent justify-center border border-[rgb(180,180,180)] text-black transition-colors duration-200 hover:border-black rounded-lg font-medium text-sm"
+          >
+            Start free
+          </a>
+          <a
+            href="mailto:contact@nativelink.com"
+            class="w-full md:w-auto h-11 px-7 flex items-center bg-transparent justify-center text-[rgb(80,80,80)] transition-colors duration-200 hover:text-black rounded-lg font-medium text-sm underline-offset-4"
+          >
+            Talk to us
+          </a>
         </div>
-        <div class="w-full flex justify-center items-center">
-          <div class="w-9/11 relative">
-            <video
-              src={videoMockUp}
-              class="w-full h-full object-contain self-center shadow-[0px_0px_50px_0px_rgba(96,80,230,0.3)]"
-              autoplay={false}
-              loop={true}
-              muted={true}
-              poster={_MockUp}
-              controls={true}
-              preload="metadata"
+
+        <div class="w-full pt-6 flex justify-center items-center animate-fade-in animation-delay-400">
+          <div class="w-full md:w-10/11 relative aspect-video">
+            <iframe
+              class="absolute top-0 left-0 w-full h-full rounded-xl border border-[rgb(210,210,210)] shadow-[0_8px_40px_rgba(124,58,237,0.18)]"
+              src="https://www.youtube.com/embed/f7kR1woFqcU"
+              title="NativeLink Demo"
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+              allowFullscreen={true}
             />
           </div>
         </div>
-        {/* <img alt="Nativelink UI" src={MockUp} class="w-[80vw] md:w-full" /> */}
       </div>
     </div>
   );

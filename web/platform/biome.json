@@ -17,6 +17,7 @@
       "dist",
       "node_modules",
       "deno.d.ts",
+      ".wrangler",
       ".lighthouseci"
     ]
   },
@@ -33,6 +34,11 @@
       "Timer",
       "React"
     ]
+  },
+  "json": {
+    "formatter": {
+      "lineWidth": 1
+    }
   },
   "linter": {
     "enabled": true,
