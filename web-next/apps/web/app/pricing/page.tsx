@@ -13,67 +13,96 @@ const tiers = [
       "Community support on Slack",
       "Distributed scheduler & remote caching",
       "All build systems (Bazel, Buck2, Reclient, Pants)",
+      "All major cloud providers",
     ],
-    cta: { label: "Get started", href: "/docs", variant: "outline" as const },
-    featured: false,
+    cta: { label: "Get started", href: "/docs" },
+    variant: "ghost" as const,
   },
   {
     name: "Cloud",
     price: "$1,000",
-    cadence: "per month",
+    cadence: "/ month",
     tagline: "Managed NativeLink. We run the infra, you ship.",
     features: [
       "Fully managed cluster",
       "Automatic scaling & failover",
       "Production SLAs",
       "Onboarding support",
+      "Dashboard & live build feed",
+      "Multi-region deployment",
     ],
-    cta: { label: "Start free trial", href: "https://dev.nativelink.com/", variant: "primary" as const },
-    featured: true,
+    cta: { label: "Start free trial", href: "https://dev.nativelink.com/" },
+    variant: "featured" as const,
+    badge: "Most popular",
   },
   {
     name: "Enterprise",
     price: "Custom",
-    cadence: "billed annually",
+    cadence: "annually",
     tagline: "On-prem deployment with dedicated engineering.",
     features: [
       "Single-tenant on-prem deployment",
-      "Dedicated engineer",
+      "Dedicated solutions engineer",
       "Custom SLAs & security review",
       "Autoscaling, GUI, build breakdown",
+      "Procurement support",
+      "Priority feature requests",
     ],
-    cta: { label: "Request quote", href: "mailto:hello@nativelink.com", variant: "outline" as const },
-    featured: false,
+    cta: { label: "Request quote", href: "mailto:hello@nativelink.com" },
+    variant: "ghost" as const,
   },
 ];
 
-const comparison: { label: string; oss: string | boolean; ent: string | boolean }[] = [
-  { label: "Hosting", oss: "Self-hosted", ent: "Self-hosted or managed" },
-  { label: "Support", oss: "Community", ent: "Dedicated engineer" },
+const comparison: { section: string; rows: { label: string; oss: string | boolean; cloud: string | boolean; ent: string | boolean }[] }[] = [
   {
-    label: "Supported build systems",
-    oss: "Bazel · Buck2 · Reclient · Pants",
-    ent: "Bazel · Buck2 · Reclient · Pants",
+    section: "Platform",
+    rows: [
+      { label: "Hosting", oss: "Self-hosted", cloud: "Managed by us", ent: "On-prem or managed" },
+      { label: "Distributed scheduler", oss: true, cloud: true, ent: true },
+      { label: "Remote caching", oss: true, cloud: true, ent: true },
+      { label: "Remote execution", oss: true, cloud: true, ent: true },
+      { label: "Cross-compilation", oss: true, cloud: true, ent: true },
+      { label: "External storage (S3, Redis)", oss: true, cloud: true, ent: true },
+      { label: "Autoscaling", oss: false, cloud: true, ent: true },
+      { label: "Multi-region", oss: "DIY", cloud: true, ent: true },
+    ],
   },
-  { label: "Operating systems", oss: "Linux, macOS", ent: "Linux, macOS, Windows" },
-  { label: "Org-wide sharing", oss: true, ent: true },
-  { label: "Distributed scheduler", oss: true, ent: true },
-  { label: "Remote caching", oss: true, ent: true },
-  { label: "Cross-compilation", oss: true, ent: true },
-  { label: "External storage (S3, Redis)", oss: true, ent: true },
-  { label: "Remote execution", oss: true, ent: true },
-  { label: "Autoscaling", oss: false, ent: true },
-  { label: "GUI dashboard", oss: false, ent: true },
-  { label: "Build action breakdown", oss: false, ent: true },
-  { label: "Live build updates", oss: false, ent: true },
+  {
+    section: "Compatibility",
+    rows: [
+      { label: "Supported build systems", oss: "All", cloud: "All", ent: "All + custom" },
+      { label: "Operating systems", oss: "Linux, macOS", cloud: "Linux, macOS, Windows", ent: "Linux, macOS, Windows" },
+      { label: "Org-wide sharing", oss: true, cloud: true, ent: true },
+    ],
+  },
+  {
+    section: "Operations",
+    rows: [
+      { label: "GUI dashboard", oss: false, cloud: true, ent: true },
+      { label: "Build action breakdown", oss: false, cloud: true, ent: true },
+      { label: "Live build updates", oss: false, cloud: true, ent: true },
+      { label: "Audit logs / SSO", oss: false, cloud: true, ent: true },
+    ],
+  },
+  {
+    section: "Support",
+    rows: [
+      { label: "Channel", oss: "Community Slack", cloud: "Email + Slack", ent: "Dedicated engineer" },
+      { label: "SLA", oss: false, cloud: "99.9%", ent: "Custom" },
+      { label: "Onboarding", oss: false, cloud: true, ent: "White-glove" },
+    ],
+  },
 ];
 
-function CheckCell({ value }: { value: string | boolean }) {
+function Cell({ value }: { value: string | boolean }) {
   if (typeof value === "boolean") {
     return (
       <span
         aria-label={value ? "Included" : "Not included"}
-        className={cn("inline-block font-mono text-base", !value && "text-muted")}
+        className={cn(
+          "inline-flex h-5 w-5 items-center justify-center rounded-full font-mono text-[11px]",
+          value ? "bg-brand-soft text-brand" : "bg-foreground/[0.04] text-muted",
+        )}
       >
         {value ? "✓" : "—"}
       </span>
@@ -86,89 +115,75 @@ export default function PricingPage() {
   return (
     <>
       {/* HERO */}
-      <Section width="default" className="pt-24 pb-12 md:pt-32">
-        <Reveal>
-          <div className="mx-auto max-w-[820px] text-center">
-            <Eyebrow className="mb-5">Pricing</Eyebrow>
-            <h1 className="text-balance text-4xl font-bold leading-[1.1] tracking-tight md:text-6xl">
-              Built to scale with your infrastructure.
-            </h1>
-            <p className="mx-auto mt-6 max-w-[600px] text-lg leading-relaxed text-muted">
-              Start free, self-host, or let us run your build farm. Three tiers that
-              grow with your team — no hidden fees, no per-user pricing.
-            </p>
-          </div>
-        </Reveal>
-      </Section>
+      <section className="relative overflow-hidden">
+        <div className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-[500px] bg-[radial-gradient(ellipse_900px_500px_at_50%_-10%,rgb(var(--nl-color-brand)/0.15),transparent_70%)]" />
+        <Section width="default" className="pt-24 pb-10 md:pt-32">
+          <Reveal>
+            <div className="mx-auto max-w-[820px] text-center">
+              <Eyebrow className="mb-5">Pricing</Eyebrow>
+              <h1 className="text-balance text-[44px] font-semibold leading-[1.02] tracking-[-0.04em] md:text-[68px]">
+                Built to{" "}
+                <span className="bg-gradient-to-r from-brand to-brand-strong bg-clip-text text-transparent">
+                  scale with your infrastructure
+                </span>
+                .
+              </h1>
+              <p className="mx-auto mt-6 max-w-[640px] text-[17px] leading-relaxed text-muted-foreground md:text-lg">
+                Start free, self-host, or let us run your build farm. Three tiers that
+                grow with your team — no hidden fees, no per-user pricing.
+              </p>
+            </div>
+          </Reveal>
+        </Section>
+      </section>
 
       {/* TIERS */}
       <Section width="default" className="pb-24">
-        <div className="grid gap-6 md:grid-cols-3">
+        <div className="grid gap-5 md:grid-cols-3">
           {tiers.map((tier, i) => (
-            <Reveal key={tier.name} delay={i * 0.05}>
+            <Reveal key={tier.name} delay={i * 0.06}>
               <div
                 className={cn(
-                  "relative flex h-full flex-col rounded-md border-2 p-8",
-                  tier.featured
-                    ? "border-foreground bg-foreground text-background"
-                    : "border-border bg-surface/50",
+                  "relative flex h-full flex-col rounded-2xl p-8",
+                  tier.variant === "featured"
+                    ? "border-2 border-brand bg-brand-soft/30 shadow-[0_30px_80px_-30px_rgb(var(--nl-color-brand)/0.5)]"
+                    : "border border-border bg-surface",
                 )}
               >
-                {tier.featured && (
-                  <Badge
-                    variant="outline"
-                    className="absolute -top-3 left-8 border-foreground bg-background text-foreground"
-                  >
-                    Recommended
-                  </Badge>
+                {tier.variant === "featured" && tier.badge && (
+                  <div className="absolute -top-3 left-1/2 -translate-x-1/2">
+                    <Badge variant="solid" className="bg-brand text-brand-foreground border-brand">
+                      {tier.badge}
+                    </Badge>
+                  </div>
                 )}
-                <h3
-                  className={cn(
-                    "font-mono text-sm uppercase tracking-widest",
-                    tier.featured ? "text-background/70" : "text-muted",
-                  )}
-                >
+                <h3 className="font-mono text-xs uppercase tracking-[0.18em] text-muted">
                   {tier.name}
                 </h3>
-                <div className="mt-4 flex items-baseline gap-2">
-                  <span className="text-4xl font-bold leading-none md:text-5xl">
+                <div className="mt-5 flex items-baseline gap-2">
+                  <span className="text-[44px] font-semibold leading-none tracking-tight text-foreground">
                     {tier.price}
                   </span>
-                  <span
-                    className={cn(
-                      "font-mono text-sm",
-                      tier.featured ? "text-background/70" : "text-muted",
-                    )}
-                  >
-                    {tier.cadence}
-                  </span>
+                  <span className="font-mono text-sm text-muted">{tier.cadence}</span>
                 </div>
-                <p
-                  className={cn(
-                    "mt-3 text-base leading-relaxed",
-                    tier.featured ? "text-background/80" : "text-muted-foreground",
-                  )}
-                >
+                <p className="mt-3 text-[15px] leading-relaxed text-muted-foreground">
                   {tier.tagline}
                 </p>
-                <ul
-                  className={cn(
-                    "mt-8 flex flex-col gap-3 text-sm",
-                    tier.featured ? "text-background" : "text-foreground",
-                  )}
-                >
+                <ul className="mt-8 flex flex-col gap-3 text-sm">
                   {tier.features.map((f) => (
                     <li key={f} className="flex items-start gap-3">
                       <span
                         aria-hidden="true"
                         className={cn(
-                          "mt-1 font-mono text-xs",
-                          tier.featured ? "text-background/70" : "text-muted",
+                          "mt-0.5 inline-flex h-4 w-4 items-center justify-center rounded-full text-[10px]",
+                          tier.variant === "featured"
+                            ? "bg-brand text-brand-foreground"
+                            : "bg-brand-soft text-brand",
                         )}
                       >
                         ✓
                       </span>
-                      {f}
+                      <span className="text-foreground">{f}</span>
                     </li>
                   ))}
                 </ul>
@@ -176,13 +191,8 @@ export default function PricingPage() {
                   <Button
                     asChild
                     size="lg"
-                    variant={
-                      tier.featured ? "outline" : tier.cta.variant === "primary" ? "primary" : "outline"
-                    }
-                    className={cn(
-                      "w-full",
-                      tier.featured && "border-background bg-background text-foreground hover:bg-background/90",
-                    )}
+                    variant={tier.variant === "featured" ? "primary" : "outline"}
+                    className="w-full"
                   >
                     <a href={tier.cta.href}>{tier.cta.label}</a>
                   </Button>
@@ -193,57 +203,77 @@ export default function PricingPage() {
         </div>
       </Section>
 
+      {/* TRUST STRIP */}
+      <Section width="default" className="border-y border-border/60 bg-surface-elevated/40 py-12">
+        <Reveal>
+          <div className="grid grid-cols-2 gap-y-6 text-center md:grid-cols-4">
+            <div>
+              <div className="text-2xl font-semibold tracking-tight text-foreground">99.99%</div>
+              <div className="mt-1 text-xs text-muted">Cloud uptime, 12-mo trailing</div>
+            </div>
+            <div>
+              <div className="text-2xl font-semibold tracking-tight text-foreground">&lt;1ms</div>
+              <div className="mt-1 text-xs text-muted">p99 cache lookup</div>
+            </div>
+            <div>
+              <div className="text-2xl font-semibold tracking-tight text-foreground">SOC 2</div>
+              <div className="mt-1 text-xs text-muted">In progress — Q3</div>
+            </div>
+            <div>
+              <div className="text-2xl font-semibold tracking-tight text-foreground">30 days</div>
+              <div className="mt-1 text-xs text-muted">No-questions trial on Cloud</div>
+            </div>
+          </div>
+        </Reveal>
+      </Section>
+
       {/* COMPARISON */}
-      <Section
-        width="default"
-        className="border-t border-[rgb(var(--nl-color-accent-line))]/40 py-24"
-      >
+      <Section width="default" className="py-28">
         <Reveal>
           <div className="mx-auto mb-12 max-w-[680px] text-center">
             <Eyebrow className="mb-4">Compare</Eyebrow>
-            <h2 className="text-3xl font-bold leading-[1.15] md:text-5xl">
+            <h2 className="text-balance text-4xl font-semibold leading-[1.05] tracking-[-0.03em] md:text-5xl">
               Feature-for-feature comparison
             </h2>
-            <p className="mt-5 text-base leading-relaxed text-muted md:text-lg">
-              Everything that ships with each tier, side-by-side. Open Source and
-              Enterprise share the same engine; Enterprise adds operational tooling on
-              top.
-            </p>
           </div>
         </Reveal>
+
         <Reveal>
-          <div className="mx-auto max-w-[920px] overflow-hidden rounded-md border-2 border-border">
-            <table className="w-full border-collapse text-left text-sm">
+          <div className="mx-auto max-w-[980px] overflow-hidden rounded-2xl border border-border bg-surface">
+            <table className="w-full border-collapse text-left">
               <thead>
-                <tr className="border-b-2 border-border bg-surface/50">
-                  <th className="px-5 py-4 font-mono text-xs uppercase tracking-widest text-muted">
+                <tr>
+                  <th className="w-[40%] bg-surface-elevated px-6 py-4 font-mono text-[10px] uppercase tracking-widest text-muted">
                     Feature
                   </th>
-                  <th className="px-5 py-4 font-mono text-xs uppercase tracking-widest text-muted">
+                  <th className="bg-surface-elevated px-6 py-4 font-mono text-[10px] uppercase tracking-widest text-muted">
                     Open Source
                   </th>
-                  <th className="px-5 py-4 font-mono text-xs uppercase tracking-widest text-muted">
+                  <th className="bg-brand-soft/40 px-6 py-4 font-mono text-[10px] uppercase tracking-widest text-brand">
+                    Cloud
+                  </th>
+                  <th className="bg-surface-elevated px-6 py-4 font-mono text-[10px] uppercase tracking-widest text-muted">
                     Enterprise
                   </th>
                 </tr>
               </thead>
               <tbody>
-                {comparison.map((row, i) => (
-                  <tr
-                    key={row.label}
-                    className={cn(
-                      "border-b border-border last:border-b-0",
-                      i % 2 === 1 && "bg-foreground/[0.02]",
-                    )}
-                  >
-                    <td className="px-5 py-4 font-medium text-foreground">{row.label}</td>
-                    <td className="px-5 py-4">
-                      <CheckCell value={row.oss} />
-                    </td>
-                    <td className="px-5 py-4">
-                      <CheckCell value={row.ent} />
-                    </td>
-                  </tr>
+                {comparison.map((group) => (
+                  <>
+                    <tr key={group.section}>
+                      <td colSpan={4} className="border-t border-border bg-foreground/[0.015] px-6 py-3 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+                        {group.section}
+                      </td>
+                    </tr>
+                    {group.rows.map((row) => (
+                      <tr key={row.label} className="border-t border-border">
+                        <td className="px-6 py-4 text-[15px] text-foreground">{row.label}</td>
+                        <td className="px-6 py-4"><Cell value={row.oss} /></td>
+                        <td className="bg-brand-soft/15 px-6 py-4"><Cell value={row.cloud} /></td>
+                        <td className="px-6 py-4"><Cell value={row.ent} /></td>
+                      </tr>
+                    ))}
+                  </>
                 ))}
               </tbody>
             </table>
@@ -251,16 +281,13 @@ export default function PricingPage() {
         </Reveal>
       </Section>
 
-      {/* CONTACT */}
-      <Section
-        width="narrow"
-        className="border-t border-[rgb(var(--nl-color-accent-line))]/40 py-24 text-center"
-      >
+      {/* BOTTOM CONTACT */}
+      <Section width="narrow" className="border-t border-border/60 py-24 text-center">
         <Reveal>
-          <h2 className="text-balance text-3xl font-bold leading-[1.15] md:text-5xl">
+          <h2 className="text-balance text-4xl font-semibold leading-[1.05] tracking-[-0.03em] md:text-5xl">
             Have a question?
           </h2>
-          <p className="mx-auto mt-5 max-w-[560px] text-base leading-relaxed text-muted md:text-lg">
+          <p className="mx-auto mt-5 max-w-[560px] text-base leading-relaxed text-muted-foreground md:text-lg">
             Our team is happy to walk through pricing for your team or workload.
           </p>
           <div className="mt-8 flex flex-wrap justify-center gap-3">

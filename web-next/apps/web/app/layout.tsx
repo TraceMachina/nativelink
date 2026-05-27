@@ -1,4 +1,10 @@
-import { FinalCTA, SiteFooter, SiteHeader } from "@nativelink/ui";
+import {
+  FinalCTA,
+  SiteFooter,
+  SiteHeader,
+  ThemeProvider,
+  themeInitScript,
+} from "@nativelink/ui";
 import { GeistMono } from "geist/font/mono";
 import { GeistSans } from "geist/font/sans";
 import type { Metadata } from "next";
@@ -18,21 +24,26 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en" className={`${GeistSans.variable} ${GeistMono.variable}`}>
+    <html lang="en" suppressHydrationWarning className={`${GeistSans.variable} ${GeistMono.variable}`}>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
+      </head>
       <body className="flex min-h-screen flex-col bg-background text-foreground antialiased">
-        <SiteHeader />
-        <main id="main" className="flex-1">
-          {children}
-        </main>
-        <FinalCTA
-          title="Let's build at the speed your code is being written."
-          body="Open source. Free cloud tier. Self-host the moment your team is ready."
-          primaryLabel="Get started"
-          primaryHref="/docs"
-          secondaryLabel="See pricing"
-          secondaryHref="/pricing"
-        />
-        <SiteFooter />
+        <ThemeProvider>
+          <SiteHeader />
+          <main id="main" className="flex-1">
+            {children}
+          </main>
+          <FinalCTA
+            title="Let's build at the speed your code is being written."
+            body="Open source. Free cloud tier. Self-host the moment your team is ready."
+            primaryLabel="Get started"
+            primaryHref="/docs"
+            secondaryLabel="See pricing"
+            secondaryHref="/pricing"
+          />
+          <SiteFooter />
+        </ThemeProvider>
       </body>
     </html>
   );

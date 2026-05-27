@@ -1,49 +1,83 @@
-:root {
+:root,
+:root[data-theme="light"] {
   /* Surface */
-  --nl-color-background: 250 248 245;       /* Warm off-white */
-  --nl-color-surface: 255 255 255;           /* Card surface */
-  --nl-color-surface-elevated: 252 250 247;  /* Subtle tint for nested surfaces */
+  --nl-color-background: 250 248 245;
+  --nl-color-surface: 255 255 255;
+  --nl-color-surface-elevated: 252 250 247;
 
   /* Text */
-  --nl-color-foreground: 17 17 19;           /* Near-black, slight warm tint */
-  --nl-color-muted: 102 105 115;             /* Secondary text */
-  --nl-color-muted-foreground: 70 73 82;     /* Darker muted — body copy */
+  --nl-color-foreground: 17 17 19;
+  --nl-color-muted: 102 105 115;
+  --nl-color-muted-foreground: 70 73 82;
 
   /* Border */
-  --nl-color-border: 226 224 218;            /* Warm light border */
-  --nl-color-border-strong: 200 197 188;     /* Emphasis dividers */
-  --nl-color-accent-line: 226 224 218;       /* Subtle section dividers */
+  --nl-color-border: 226 224 218;
+  --nl-color-border-strong: 200 197 188;
+  --nl-color-accent-line: 226 224 218;
 
-  /* Brand — electric purple (from the legacy NativeLink mark) */
+  /* Brand — electric purple */
   --nl-color-brand: 114 71 255;
-  --nl-color-brand-strong: 88 50 220;        /* Hover / active */
-  --nl-color-brand-soft: 235 228 255;        /* Lavender tint background */
-  --nl-color-brand-foreground: 255 255 255;  /* Text on brand */
+  --nl-color-brand-strong: 88 50 220;
+  --nl-color-brand-soft: 235 228 255;
+  --nl-color-brand-foreground: 255 255 255;
 
-  /* Success — mint teal (used in the legacy footer accent gradient) */
+  /* Success — mint teal */
   --nl-color-success: 39 168 137;
   --nl-color-success-soft: 220 240 232;
 
-  /* Neutral accent — strong action surface (CTA on light backgrounds) */
-  --nl-color-accent: 17 17 19;               /* Same as foreground */
+  /* Accent (CTA fill) */
+  --nl-color-accent: 17 17 19;
   --nl-color-accent-hover: 38 38 42;
 }
 
-/* Dark scheme — opt-in via [data-theme="dark"]. Not active yet; tokens stubbed
- * so the toggle in phase 4 can flip a single attribute. */
+/* Dark scheme — tuned for luminous brand purple on a deep purple-tinted
+ * near-black. Activated via [data-theme="dark"] on <html>. */
 :root[data-theme="dark"] {
-  --nl-color-background: 12 12 14;
-  --nl-color-surface: 22 22 26;
-  --nl-color-surface-elevated: 30 30 36;
-  --nl-color-foreground: 245 244 240;
-  --nl-color-muted: 155 158 168;
-  --nl-color-muted-foreground: 200 202 210;
-  --nl-color-border: 42 42 48;
-  --nl-color-border-strong: 64 64 72;
-  --nl-color-accent-line: 42 42 48;
-  --nl-color-brand: 140 102 255;
-  --nl-color-brand-strong: 167 137 255;
-  --nl-color-brand-soft: 42 32 86;
-  --nl-color-accent: 245 244 240;
-  --nl-color-accent-hover: 220 218 210;
+  --nl-color-background: 10 9 14;
+  --nl-color-surface: 18 17 24;
+  --nl-color-surface-elevated: 26 24 34;
+
+  --nl-color-foreground: 245 244 248;
+  --nl-color-muted: 148 150 162;
+  --nl-color-muted-foreground: 188 190 202;
+
+  --nl-color-border: 38 36 50;
+  --nl-color-border-strong: 60 58 78;
+  --nl-color-accent-line: 38 36 50;
+
+  --nl-color-brand: 156 124 255;
+  --nl-color-brand-strong: 188 162 255;
+  --nl-color-brand-soft: 38 28 70;
+  --nl-color-brand-foreground: 250 248 255;
+
+  --nl-color-success: 88 220 178;
+  --nl-color-success-soft: 22 50 42;
+
+  --nl-color-accent: 245 244 248;
+  --nl-color-accent-hover: 220 218 228;
+}
+
+/* If user has no saved preference and system prefers dark, default dark.
+ * The init-script in <head> handles this at runtime so SSR matches; this
+ * block is the no-JS fallback. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --nl-color-background: 10 9 14;
+    --nl-color-surface: 18 17 24;
+    --nl-color-surface-elevated: 26 24 34;
+    --nl-color-foreground: 245 244 248;
+    --nl-color-muted: 148 150 162;
+    --nl-color-muted-foreground: 188 190 202;
+    --nl-color-border: 38 36 50;
+    --nl-color-border-strong: 60 58 78;
+    --nl-color-accent-line: 38 36 50;
+    --nl-color-brand: 156 124 255;
+    --nl-color-brand-strong: 188 162 255;
+    --nl-color-brand-soft: 38 28 70;
+    --nl-color-brand-foreground: 250 248 255;
+    --nl-color-success: 88 220 178;
+    --nl-color-success-soft: 22 50 42;
+    --nl-color-accent: 245 244 248;
+    --nl-color-accent-hover: 220 218 228;
+  }
 }

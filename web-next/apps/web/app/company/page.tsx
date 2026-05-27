@@ -1,11 +1,11 @@
 import {
+  Badge,
   Button,
   Card,
   CardBody,
   CardFooter,
   CardHeader,
   CardTitle,
-  Divider,
   Eyebrow,
   Reveal,
   Section,
@@ -13,10 +13,37 @@ import {
 
 export const metadata = { title: "Company" };
 
+const values = [
+  {
+    title: "Engineer like it matters.",
+    body: "We work on infrastructure that other engineers depend on. The bar is correctness, then performance, then everything else.",
+  },
+  {
+    title: "Default to open.",
+    body: "Our core is MIT-licensed and stays that way. We sell support and operations, not access to the code that runs builds.",
+  },
+  {
+    title: "Speed is a feature.",
+    body: "Slow builds cost developer time, focus, and willpower. We measure ourselves in milliseconds, not feature checkboxes.",
+  },
+  {
+    title: "Hard problems, kindly.",
+    body: "Distributed systems are unforgiving; humans don't have to be. We ship rigorous code with patient code review.",
+  },
+];
+
+const milestones = [
+  { year: "2023", title: "Trace Machina founded.", body: "Aaron Mondal & team start building NativeLink in Rust, in public, on GitHub." },
+  { year: "2024", title: "First billion requests served.", body: "Open-source NativeLink hits a billion build requests / month in production." },
+  { year: "2024", title: "NativeLink Cloud launches.", body: "Managed offering goes GA after a private beta with five infrastructure-scale teams." },
+  { year: "2025", title: "LLVM picks up NativeLink.", body: "LLVM contributors adopt CMake + recc + NativeLink — clang builds 4× faster on day one." },
+  { year: "2026", title: "Series A — $15M.", body: "Sequoia leads the round; team scales across systems, distributed storage, and DX." },
+];
+
 const contactCards = [
   {
     title: "Media kit",
-    body: "Download our logos, branding guidelines, and other press resources.",
+    body: "Logos, branding guidelines, and approved press resources.",
     cta: { label: "Download", href: "https://drive.google.com/drive/folders/" },
     variant: "outline" as const,
   },
@@ -28,7 +55,7 @@ const contactCards = [
   },
   {
     title: "Sales inquiries",
-    body: "Want to know if NativeLink is right for your team? Our sales engineers can help.",
+    body: "Curious if NativeLink fits your team? Our sales engineers can help.",
     cta: { label: "Talk to sales", href: "mailto:hello@nativelink.com" },
     variant: "primary" as const,
   },
@@ -38,25 +65,33 @@ export default function CompanyPage() {
   return (
     <>
       {/* HERO */}
-      <Section width="default" className="pt-24 pb-16 md:pt-32">
-        <Reveal>
-          <div className="mx-auto max-w-[820px] text-center">
-            <Eyebrow className="mb-5">Company</Eyebrow>
-            <h1 className="text-balance text-4xl font-bold leading-[1.1] tracking-tight md:text-6xl">
-              NativeLink is built by Trace Machina.
-            </h1>
-            <p className="mx-auto mt-6 max-w-[640px] text-lg leading-relaxed text-muted">
-              Our mission is to accelerate the reindustrialization of the world in the
-              machine age.
-            </p>
-          </div>
-        </Reveal>
-      </Section>
+      <section className="relative overflow-hidden">
+        <div className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-[600px] bg-[radial-gradient(ellipse_1000px_500px_at_50%_-10%,rgb(var(--nl-color-brand)/0.16),transparent_70%)]" />
+        <Section width="default" className="pt-24 pb-16 md:pt-32">
+          <Reveal>
+            <div className="mx-auto max-w-[920px] text-center">
+              <Eyebrow className="mb-5">Company</Eyebrow>
+              <h1 className="text-balance text-[44px] font-semibold leading-[1.02] tracking-[-0.04em] md:text-[68px]">
+                Accelerating the{" "}
+                <span className="bg-gradient-to-r from-brand to-brand-strong bg-clip-text text-transparent">
+                  machine age
+                </span>
+                .
+              </h1>
+              <p className="mx-auto mt-6 max-w-[680px] text-[17px] leading-relaxed text-muted-foreground md:text-lg">
+                NativeLink is built by Trace Machina. Our mission is to accelerate the
+                reindustrialization of the world by making advanced build and
+                simulation processes that move at machine speed.
+              </p>
+            </div>
+          </Reveal>
+        </Section>
+      </section>
 
-      {/* MISSION */}
+      {/* MISSION / 3-PARA */}
       <Section width="narrow" className="pb-24">
         <Reveal>
-          <div className="space-y-6 text-balance text-center text-base leading-relaxed text-muted md:text-lg">
+          <div className="space-y-6 text-balance text-center text-base leading-relaxed text-muted-foreground md:text-lg">
             <p>
               We empower engineers to build the future of technology by making advanced
               build and simulation processes that move at machine speed.
@@ -64,8 +99,7 @@ export default function CompanyPage() {
             <p>
               Our products amplify the rate at which companies can innovate across
               mission-critical industries — from semiconductors and advanced robotics to
-              autonomous vehicles, artificial intelligence research, life sciences, and
-              financial services.
+              autonomous vehicles, AI research, life sciences, and financial services.
             </p>
             <p>
               Our commitment is to amplify execution across any environment, ensuring
@@ -76,39 +110,95 @@ export default function CompanyPage() {
         </Reveal>
       </Section>
 
-      <Section width="default" className="py-0">
-        <Divider inset />
+      {/* VALUES */}
+      <Section width="default" className="border-y border-border/60 bg-surface-elevated/40 py-24">
+        <Reveal>
+          <div className="mb-14 max-w-[600px]">
+            <Eyebrow className="mb-4">Values</Eyebrow>
+            <h2 className="text-balance text-4xl font-semibold leading-[1.05] tracking-[-0.03em] md:text-5xl">
+              How we work.
+            </h2>
+          </div>
+        </Reveal>
+        <div className="grid gap-5 md:grid-cols-2">
+          {values.map((v, i) => (
+            <Reveal key={v.title} delay={i * 0.06}>
+              <div className="group h-full rounded-2xl border border-border bg-surface p-8 transition-colors hover:border-brand/40">
+                <div className="mb-6 inline-flex h-10 w-10 items-center justify-center rounded-xl bg-brand-soft font-mono text-sm font-semibold text-brand">
+                  0{i + 1}
+                </div>
+                <h3 className="text-2xl font-semibold leading-tight tracking-tight text-foreground">
+                  {v.title}
+                </h3>
+                <p className="mt-3 text-[15px] leading-relaxed text-muted-foreground">
+                  {v.body}
+                </p>
+              </div>
+            </Reveal>
+          ))}
+        </div>
       </Section>
 
-      {/* CONTACT CARDS */}
-      <Section width="default" className="py-24">
+      {/* TIMELINE */}
+      <Section width="default" className="py-28">
+        <Reveal>
+          <div className="mx-auto mb-14 max-w-[680px] text-center">
+            <Eyebrow className="mb-4">Story</Eyebrow>
+            <h2 className="text-balance text-4xl font-semibold leading-[1.05] tracking-[-0.03em] md:text-5xl">
+              How we got here.
+            </h2>
+          </div>
+        </Reveal>
+        <div className="mx-auto max-w-[820px]">
+          <ol className="relative space-y-10 before:absolute before:left-[7px] before:top-2 before:h-[calc(100%-1rem)] before:w-px before:bg-border md:before:left-[11px]">
+            {milestones.map((m, i) => (
+              <Reveal key={m.year + m.title} delay={i * 0.05}>
+                <li className="relative pl-10 md:pl-14">
+                  <div className="absolute left-0 top-1 flex h-4 w-4 items-center justify-center rounded-full bg-brand shadow-[0_0_0_4px_rgb(var(--nl-color-background))] md:h-6 md:w-6 md:left-0">
+                    <span className="h-1.5 w-1.5 rounded-full bg-brand-foreground md:h-2 md:w-2" />
+                  </div>
+                  <div className="flex items-baseline gap-3">
+                    <span className="font-mono text-xs uppercase tracking-widest text-brand">
+                      {m.year}
+                    </span>
+                  </div>
+                  <h3 className="mt-1 text-xl font-semibold leading-tight tracking-tight text-foreground md:text-2xl">
+                    {m.title}
+                  </h3>
+                  <p className="mt-2 text-[15px] leading-relaxed text-muted-foreground">
+                    {m.body}
+                  </p>
+                </li>
+              </Reveal>
+            ))}
+          </ol>
+        </div>
+      </Section>
+
+      {/* CONTACT */}
+      <Section width="default" className="border-t border-border/60 bg-surface-elevated/40 py-24">
         <Reveal>
           <div className="mx-auto mb-12 max-w-[680px] text-center">
             <Eyebrow className="mb-4">Get in touch</Eyebrow>
-            <h2 className="text-3xl font-bold leading-[1.15] md:text-5xl">
+            <h2 className="text-balance text-4xl font-semibold leading-[1.05] tracking-[-0.03em] md:text-5xl">
               Have questions or need assistance?
             </h2>
-            <p className="mt-5 text-base leading-relaxed text-muted md:text-lg">
+            <p className="mt-5 text-base leading-relaxed text-muted-foreground md:text-lg">
               Reach out for general inquiries, sales conversations, or anything else —
               we usually reply within a day.
             </p>
           </div>
         </Reveal>
-        <div className="grid gap-6 md:grid-cols-3">
+        <div className="grid gap-5 md:grid-cols-3">
           {contactCards.map((c, i) => (
             <Reveal key={c.title} delay={i * 0.05}>
-              <Card className="flex h-full flex-col">
+              <Card variant={c.variant === "primary" ? "featured" : "default"} className="flex h-full flex-col">
                 <CardHeader>
                   <CardTitle>{c.title}</CardTitle>
                 </CardHeader>
                 <CardBody>{c.body}</CardBody>
                 <CardFooter className="mt-auto">
-                  <Button
-                    asChild
-                    variant={c.variant}
-                    size="md"
-                    className={c.variant === "outline" ? "w-full" : "w-full"}
-                  >
+                  <Button asChild variant={c.variant} size="md" className="w-full">
                     <a
                       href={c.cta.href}
                       target={c.cta.href.startsWith("http") ? "_blank" : undefined}

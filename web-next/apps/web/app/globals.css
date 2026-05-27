@@ -7,6 +7,7 @@
   html {
     background-color: var(--color-background);
     color: var(--color-foreground);
+    color-scheme: light dark;
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
   }
@@ -32,16 +33,27 @@
   }
 }
 
+@keyframes marquee {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
+}
+
 /* Reusable backdrop glow — used in heroes + the final CTA strip */
 @utility bg-brand-glow {
   background-image:
     radial-gradient(ellipse 800px 400px at 70% -10%, rgb(var(--nl-color-brand) / 0.10), transparent 60%),
-    radial-gradient(ellipse 600px 400px at 0% 50%, rgb(var(--nl-color-brand) / 0.04), transparent 60%);
+    radial-gradient(ellipse 600px 400px at 0% 50%, rgb(var(--nl-color-brand) / 0.05), transparent 60%);
 }
 
 @utility bg-grid {
   background-image:
-    linear-gradient(to right, rgb(var(--nl-color-border) / 0.4) 1px, transparent 1px),
-    linear-gradient(to bottom, rgb(var(--nl-color-border) / 0.4) 1px, transparent 1px);
-  background-size: 32px 32px;
+    linear-gradient(to right, rgb(var(--nl-color-border) / 0.45) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(var(--nl-color-border) / 0.45) 1px, transparent 1px);
+  background-size: 36px 36px;
+}
+
+@utility bg-dot-grid {
+  background-image: radial-gradient(rgb(var(--nl-color-border)) 1px, transparent 1px);
+  background-size: 22px 22px;
+  background-position: 0 0;
 }
