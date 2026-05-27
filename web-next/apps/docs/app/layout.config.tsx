@@ -3,7 +3,10 @@ import type { BaseLayoutProps } from "fumadocs-ui/layouts/shared";
 
 export const baseOptions: BaseLayoutProps = {
   nav: {
-    title: <Logo size="md" />,
+    // basePath="/docs" so the logo SVG resolves under the docs server's
+    // basePath. Without this, <img src="/logo-light.svg"> 404s when the
+    // docs app is hit directly.
+    title: <Logo size="md" basePath="/docs" />,
     url: "/",
     transparentMode: "top",
   },
