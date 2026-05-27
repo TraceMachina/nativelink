@@ -1,17 +1,39 @@
 "use client";
 
 import * as React from "react";
-import { useTheme } from "@nativelink/ui";
 
 interface MermaidProps {
   children: React.ReactNode;
 }
 
+/** Read the active theme by inspecting <html data-theme> — works regardless
+ *  of which theme provider sets it (our @nativelink/ui ThemeProvider on
+ *  marketing, next-themes via Fumadocs in docs). */
+function useThemeAttribute(): "light" | "dark" {
+  const [theme, setTheme] = React.useState<"light" | "dark">("dark");
+
+  React.useEffect(() => {
+    const read = () => {
+      const value = document.documentElement.getAttribute("data-theme");
+      setTheme(value === "light" ? "light" : "dark");
+    };
+    read();
+    const observer = new MutationObserver(read);
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-theme"],
+    });
+    return () => observer.disconnect();
+  }, []);
+
+  return theme;
+}
+
 /** Renders a Mermaid diagram from its source. Themed to match the docs UI
- *  in both light and dark modes. Loads the mermaid library lazily so it
- *  doesn't bloat pages that don't use a diagram. */
+ *  in both light and dark modes; the mermaid runtime is lazy-imported so
+ *  it only ships on pages that have a diagram. */
 export function Mermaid({ children }: MermaidProps) {
-  const { theme } = useTheme();
+  const theme = useThemeAttribute();
   const reactId = React.useId().replace(/[^a-z0-9]/gi, "");
   const [svg, setSvg] = React.useState<string>("");
   const [error, setError] = React.useState<string | null>(null);
@@ -87,7 +109,6 @@ export function Mermaid({ children }: MermaidProps) {
       role="img"
       aria-label="Diagram"
       className="my-8 flex justify-center overflow-x-auto rounded-xl border border-border bg-surface-elevated/40 p-6 [&_svg]:max-w-full [&_svg]:h-auto"
-      // svg from mermaid is trusted (we control the input via MDX content)
       dangerouslySetInnerHTML={{ __html: svg }}
     />
   );

@@ -11,6 +11,9 @@ export function Steps({
   return (
     <ol
       className={cn(
+        // Suppress the default 1./2. markers — we render our own badge
+        // via the [&>li]:before pseudo-element below.
+        "list-none [&_li::marker]:content-none",
         // Vertical rail on the left, counter-reset for numbering.
         "my-8 ml-3 border-l-2 border-border pl-8 [counter-reset:step]",
         // Per-step spacing + numbering badge.
