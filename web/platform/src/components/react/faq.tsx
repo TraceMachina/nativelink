@@ -1,7 +1,7 @@
 /** @jsxImportSource react */
-// biome-ignore-all lint/correctness/useImportType: pragma must be first
-import { useEffect, useState } from "react";
+
 import { motion } from "framer-motion";
+import { useEffect, useState } from "react";
 
 const FAQData = [
   {
