@@ -6,13 +6,67 @@
 @source "../node_modules/fumadocs-ui/dist/**/*.js";
 @source "../../../packages/ui/src/**/*.{ts,tsx}";
 
+/* Map Fumadocs's color system to our brand tokens so the docs UI inherits the
+ * same warmth, brand purple, and surface treatment as the marketing site. */
+:root,
+:root[data-theme="light"] {
+  --color-fd-background: rgb(var(--nl-color-background));
+  --color-fd-foreground: rgb(var(--nl-color-foreground));
+  --color-fd-muted: rgb(var(--nl-color-surface-elevated));
+  --color-fd-muted-foreground: rgb(var(--nl-color-muted));
+  --color-fd-popover: rgb(var(--nl-color-surface));
+  --color-fd-popover-foreground: rgb(var(--nl-color-foreground));
+  --color-fd-card: rgb(var(--nl-color-surface));
+  --color-fd-card-foreground: rgb(var(--nl-color-foreground));
+  --color-fd-border: rgb(var(--nl-color-border));
+  --color-fd-primary: rgb(var(--nl-color-brand));
+  --color-fd-primary-foreground: rgb(var(--nl-color-brand-foreground));
+  --color-fd-secondary: rgb(var(--nl-color-surface-elevated));
+  --color-fd-secondary-foreground: rgb(var(--nl-color-foreground));
+  --color-fd-accent: rgb(var(--nl-color-brand-soft));
+  --color-fd-accent-foreground: rgb(var(--nl-color-brand-strong));
+  --color-fd-ring: rgb(var(--nl-color-brand));
+}
+
+:root[data-theme="dark"] {
+  --color-fd-background: rgb(var(--nl-color-background));
+  --color-fd-foreground: rgb(var(--nl-color-foreground));
+  --color-fd-muted: rgb(var(--nl-color-surface-elevated));
+  --color-fd-muted-foreground: rgb(var(--nl-color-muted));
+  --color-fd-popover: rgb(var(--nl-color-surface));
+  --color-fd-popover-foreground: rgb(var(--nl-color-foreground));
+  --color-fd-card: rgb(var(--nl-color-surface));
+  --color-fd-card-foreground: rgb(var(--nl-color-foreground));
+  --color-fd-border: rgb(var(--nl-color-border));
+  --color-fd-primary: rgb(var(--nl-color-brand));
+  --color-fd-primary-foreground: rgb(var(--nl-color-brand-foreground));
+  --color-fd-secondary: rgb(var(--nl-color-surface-elevated));
+  --color-fd-secondary-foreground: rgb(var(--nl-color-foreground));
+  --color-fd-accent: rgb(var(--nl-color-brand-soft));
+  --color-fd-accent-foreground: rgb(var(--nl-color-brand-strong));
+  --color-fd-ring: rgb(var(--nl-color-brand));
+}
+
 @layer base {
   html {
     background-color: var(--color-background);
     color: var(--color-foreground);
+    color-scheme: light dark;
     -webkit-font-smoothing: antialiased;
   }
   body {
+    font-family: var(--nl-font-sans);
+    text-wrap: pretty;
+  }
+  h1, h2, h3, h4, h5, h6 {
+    text-wrap: balance;
+    letter-spacing: -0.02em;
+  }
+  code, kbd, pre, samp {
     font-family: var(--nl-font-mono);
+  }
+  ::selection {
+    background-color: rgb(var(--nl-color-brand) / 0.22);
+    color: var(--color-foreground);
   }
 }

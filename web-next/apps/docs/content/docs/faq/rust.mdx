@@ -1,0 +1,17 @@
+---
+title: Why Rust?
+description: Memory safety without garbage collection, plus the throughput we needed.
+---
+
+Three reasons:
+
+1. **No GC pauses.** Build infrastructure runs under load constantly. A
+   garbage collector inserts unpredictable latency exactly where you don't
+   want it.
+2. **Memory safety.** A miscompiled binary that ships across an org is a
+   serious problem. Rust eliminates an entire class of bugs at compile
+   time.
+3. **Throughput.** A single NativeLink instance handles a billion+ requests
+   a month on modest hardware.
+
+Content coming.

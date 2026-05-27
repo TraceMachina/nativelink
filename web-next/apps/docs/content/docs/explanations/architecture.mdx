@@ -1,0 +1,18 @@
+---
+title: Architecture
+description: How NativeLink's scheduler, CAS, action cache, and worker fleet fit together.
+---
+
+NativeLink is composed of four pieces, each of which can scale independently:
+
+- **CAS** (Content-Addressable Storage) — every build artifact stored by its
+  hash, deduplicated across the entire org.
+- **Action Cache (AC)** — maps `Action → ActionResult`. Lets you skip work
+  whose inputs haven't changed.
+- **Scheduler** — receives execution requests and dispatches them to workers.
+- **Workers** — sandboxed processes that run actions and report results
+  back.
+
+Each lives behind a gRPC interface defined by the [Remote Execution API](https://github.com/bazelbuild/remote-apis).
+
+Content coming.

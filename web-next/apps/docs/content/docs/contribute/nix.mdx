@@ -1,0 +1,14 @@
+---
+title: Develop with Nix
+description: The official dev shell, hermetic by construction.
+---
+
+NativeLink ships a Nix flake that provisions every tool you need to develop —
+the exact Rust toolchain CI uses, Bazel, protoc, mold, the works.
+
+```bash
+nix develop      # drop into the dev shell
+bazel test //... # or whatever
+```
+
+Content coming.

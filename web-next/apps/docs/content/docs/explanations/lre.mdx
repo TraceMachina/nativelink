@@ -1,0 +1,15 @@
+---
+title: Local Remote Execution
+description: Hermetic builds on your laptop — no Docker, no containers, no surprise dependencies.
+---
+
+Local Remote Execution (LRE) is NativeLink's answer to "how do I get the
+hermeticity guarantees of remote execution without giving up the iteration
+speed of building locally?"
+
+The short version: NativeLink runs a remote-execution worker on your machine
+and routes every action through it. Inputs are content-addressed, the
+toolchain is pinned by Nix, and the result is bit-for-bit reproducible across
+machines.
+
+Content coming. See also: [Why Nix?](/docs/faq/nix), [Hermeticity FAQ](/docs/faq/hermeticity).

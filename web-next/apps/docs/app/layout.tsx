@@ -1,6 +1,12 @@
+import { ThemeProvider, themeInitScript } from "@nativelink/ui";
 import { RootProvider } from "fumadocs-ui/provider";
+import { GeistMono } from "geist/font/mono";
+import { GeistSans } from "geist/font/sans";
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
+import { DocsLayout } from "fumadocs-ui/layouts/docs";
+import { source } from "@/lib/source";
+import { baseOptions } from "./layout.config";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -8,15 +14,29 @@ export const metadata: Metadata = {
     default: "NativeLink Docs",
     template: "%s — NativeLink Docs",
   },
-  description: "Documentation for NativeLink — high-performance remote build cache & execution.",
+  description:
+    "Documentation for NativeLink — high-performance remote build cache & execution.",
   metadataBase: new URL("https://nativelink.com"),
 };
 
-export default function Layout({ children }: { children: ReactNode }) {
+export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en" suppressHydrationWarning>
-      <body>
-        <RootProvider>{children}</RootProvider>
+    <html
+      lang="en"
+      suppressHydrationWarning
+      className={`${GeistSans.variable} ${GeistMono.variable}`}
+    >
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
+      </head>
+      <body className="flex min-h-screen flex-col bg-background text-foreground antialiased">
+        <ThemeProvider>
+          <RootProvider>
+            <DocsLayout tree={source.pageTree} {...baseOptions}>
+              {children}
+            </DocsLayout>
+          </RootProvider>
+        </ThemeProvider>
       </body>
     </html>
   );

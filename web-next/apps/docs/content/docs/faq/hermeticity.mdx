@@ -1,0 +1,17 @@
+---
+title: How do I make my Bazel setup hermetic?
+description: Eliminate every "it works on my machine" by pinning every input.
+---
+
+A hermetic build is one where every input is declared and every output is
+reproducible. Same inputs, same outputs, every time, on every machine.
+
+Bazel can be hermetic; out of the box, it isn't. This page covers the
+practical steps to get there:
+
+- Pinning the toolchain.
+- Locking dependency sources.
+- Eliminating environment variable leaks.
+- Using a sandbox you trust.
+
+Content coming.

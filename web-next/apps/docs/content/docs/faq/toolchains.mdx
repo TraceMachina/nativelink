@@ -1,0 +1,16 @@
+---
+title: What are toolchains?
+description: How NativeLink represents compilers, linkers, and tooling.
+---
+
+A toolchain is the bundle of binaries and configuration NativeLink needs to
+run an action — the C++ compiler, the linker, the standard library headers,
+and the rules that wire them together.
+
+NativeLink supports a few toolchain providers:
+
+- **Nix** — fully reproducible, hash-pinned.
+- **Bazel rules_cc / rules_rust** — the standard Bazel toolchain abstraction.
+- **System** — use whatever's on `$PATH` (least hermetic, easiest to set up).
+
+Content coming.

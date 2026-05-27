@@ -1,0 +1,13 @@
+---
+title: What is Nix?
+description: A purely functional package manager that gives NativeLink its hermeticity guarantees.
+---
+
+Nix is a package manager that builds every package in isolation, with a hash
+that encodes every input — source, dependencies, build flags. Two machines
+running the same Nix flake produce bit-identical artifacts.
+
+NativeLink uses Nix to pin toolchains for [Local Remote Execution](/docs/explanations/lre),
+and the official dev shell.
+
+Content coming.

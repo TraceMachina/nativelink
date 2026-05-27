@@ -1,0 +1,14 @@
+---
+title: Develop with Bazel
+description: Build, test, and run NativeLink with Bazel.
+---
+
+The Bazel-based dev loop is the same one our CI runs. Useful if you want
+hermetic builds locally without leaving the host:
+
+```bash
+bazel test //...
+bazel run //nativelink -- /path/to/config.json5
+```
+
+Content coming.

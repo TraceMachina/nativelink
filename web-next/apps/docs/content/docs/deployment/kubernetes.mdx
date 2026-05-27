@@ -1,0 +1,14 @@
+---
+title: Kubernetes
+description: Deploy NativeLink on Kubernetes with Helm or raw manifests.
+---
+
+A reference NativeLink deployment on Kubernetes:
+
+- StatefulSet for the scheduler + CAS.
+- Deployment for the action-cache reader replicas.
+- HPA-driven worker pool with cluster-autoscaler integration.
+- Optional: external storage class for warm CAS tiers.
+
+Content coming. The repository ships a working Helm chart under
+`/deployment-examples/kubernetes`.

@@ -1,0 +1,23 @@
+---
+title: Configuration introduction
+description: How NativeLink's JSON5 configuration is structured — stores, services, schedulers, workers.
+---
+
+Every NativeLink cluster is described by a single JSON5 file. The same file
+covers single-node development, a multi-region production cluster, and
+everything in between.
+
+## Top-level shape
+
+```json5
+{
+  stores: { /* CAS + action-cache backends */ },
+  servers: [ /* gRPC + HTTP listeners */ ],
+  schedulers: { /* action dispatch */ },
+  workers: [ /* execution targets */ ],
+}
+```
+
+The full schema lives in [Reference → Configuration](/docs/reference/nativelink-config).
+
+Content coming.

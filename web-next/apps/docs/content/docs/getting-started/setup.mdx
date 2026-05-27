@@ -1,0 +1,46 @@
+---
+title: Setup
+description: Install NativeLink and point your build system at it in under 10 minutes.
+---
+
+This tutorial walks you from zero to your first cached build.
+
+<Callout type="info" title="Prerequisites">
+  Docker (or a Rust toolchain if you're building from source), and a build
+  tool that speaks the Remote Execution API — Bazel, Buck2, Reclient, or
+  Pants will do.
+</Callout>
+
+## Quickstart
+
+<Steps>
+  <li>
+    **Install NativeLink** — the one-liner pulls the latest release and
+    starts a local cluster bound to `localhost:50051`.
+
+    ```bash
+    curl -fsSL https://nativelink.com/install | sh
+    nativelink config/basic.json5
+    ```
+  </li>
+  <li>
+    **Point your build system at it.** For Bazel:
+
+    ```bash
+    bazel build \
+      --remote_cache=grpc://localhost:50051 \
+      --remote_executor=grpc://localhost:50051 \
+      //...
+    ```
+  </li>
+  <li>
+    **Verify cache hits.** Re-run the same build — every action that hasn't
+    changed should report `(remote cache hit)`.
+  </li>
+</Steps>
+
+## Next steps
+
+Content coming. In the meantime see
+[Basic configurations](/docs/configuration/basic) and
+[On-prem deployment](/docs/getting-started/on-prem).
