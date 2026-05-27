@@ -18,18 +18,25 @@ const defaultColumns: FooterColumn[] = [
     links: [
       { label: "Product", href: "/product" },
       { label: "Pricing", href: "/pricing" },
-      { label: "Community", href: "/community" },
       { label: "Docs", href: "/docs" },
+      { label: "Status", href: "/status" },
     ],
   },
   {
     title: "Company",
     links: [
       { label: "About", href: "/company" },
+      { label: "Community", href: "/community" },
       { label: "Resources", href: "/resources" },
+      { label: "Contact", href: "/contact" },
+    ],
+  },
+  {
+    title: "Legal",
+    links: [
       { label: "Terms & Privacy", href: "/terms" },
       { label: "Compliance", href: "/compliance" },
-      { label: "Contact", href: "mailto:contact@nativelink.com" },
+      { label: "Security", href: "mailto:security@nativelink.com" },
     ],
   },
   {
@@ -37,7 +44,7 @@ const defaultColumns: FooterColumn[] = [
     links: [
       { label: "GitHub", href: "https://github.com/TraceMachina/nativelink" },
       { label: "Slack", href: "https://forms.gle/LtaWSixEC6bYi5xF7" },
-      { label: "Status", href: "/status" },
+      { label: "Email", href: "mailto:contact@nativelink.com" },
     ],
   },
 ];
@@ -50,8 +57,8 @@ export function SiteFooter({
   const year = new Date().getFullYear();
   return (
     <footer className={cn("border-t border-border/60 bg-background", className)}>
-      <div className="mx-auto grid w-full max-w-[1200px] grid-cols-2 gap-10 px-6 py-16 sm:grid-cols-4 sm:gap-8">
-        <div className="col-span-2 flex flex-col gap-4 sm:col-span-1">
+      <div className="mx-auto grid w-full max-w-[1200px] grid-cols-2 gap-10 px-6 py-16 sm:grid-cols-3 sm:gap-8 lg:grid-cols-5">
+        <div className="col-span-2 flex flex-col gap-4 sm:col-span-3 lg:col-span-2">
           <a href="/" aria-label="NativeLink — home" className="inline-flex">
             <Logo size="md" />
           </a>
@@ -84,10 +91,16 @@ export function SiteFooter({
       <div className="border-t border-border/60">
         <div className="mx-auto flex w-full max-w-[1200px] flex-col items-start justify-between gap-3 px-6 py-6 sm:flex-row sm:items-center">
           <p className="font-mono text-xs text-muted">© Trace Machina {year}</p>
-          <p className="flex items-center gap-1.5 font-mono text-xs text-muted">
-            <span className="inline-block h-1.5 w-1.5 rounded-full bg-success" />
+          <a
+            href="/status"
+            className="flex items-center gap-1.5 font-mono text-xs text-muted transition-colors hover:text-foreground"
+          >
+            <span className="relative flex h-2 w-2">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-60" />
+              <span className="relative inline-flex h-2 w-2 rounded-full bg-success" />
+            </span>
             All systems operational
-          </p>
+          </a>
         </div>
       </div>
     </footer>

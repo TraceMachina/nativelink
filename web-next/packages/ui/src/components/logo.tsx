@@ -30,18 +30,18 @@ export function Logo({ size = "md", className, ...props }: LogoProps) {
       style={{ height: h, width: w }}
       {...props}
     >
-      {/* Light theme — show the dark-text logo */}
+      {/* Light theme — logo file is named after the theme it serves */}
       <img
-        src="/logo-dark.svg"
+        src="/logo-light.svg"
         alt="NativeLink"
         width={w}
         height={h}
         className="block h-full w-full dark:hidden"
         draggable={false}
       />
-      {/* Dark theme — show the light-text logo */}
+      {/* Dark theme */}
       <img
-        src="/logo-light.svg"
+        src="/logo-dark.svg"
         alt="NativeLink"
         width={w}
         height={h}

@@ -1,4 +1,5 @@
 import { Badge, Button, Counter, Eyebrow, Reveal, Section } from "@nativelink/ui";
+import { getContributors, getRepoStats } from "@/lib/github";
 
 export const metadata = { title: "Community" };
 
@@ -46,22 +47,13 @@ const channels = [
   },
 ];
 
-const contributors = [
-  { name: "AM", color: "from-purple-500/80 to-purple-700/80" },
-  { name: "BL", color: "from-pink-500/80 to-pink-700/80" },
-  { name: "CK", color: "from-indigo-500/80 to-indigo-700/80" },
-  { name: "DR", color: "from-emerald-500/80 to-emerald-700/80" },
-  { name: "EM", color: "from-rose-500/80 to-rose-700/80" },
-  { name: "FY", color: "from-cyan-500/80 to-cyan-700/80" },
-  { name: "GH", color: "from-amber-500/80 to-amber-700/80" },
-  { name: "HI", color: "from-violet-500/80 to-violet-700/80" },
-  { name: "JK", color: "from-fuchsia-500/80 to-fuchsia-700/80" },
-  { name: "LM", color: "from-sky-500/80 to-sky-700/80" },
-  { name: "NP", color: "from-orange-500/80 to-orange-700/80" },
-  { name: "QR", color: "from-teal-500/80 to-teal-700/80" },
-];
+export default async function CommunityPage() {
+  const [{ contributors, total }, stats] = await Promise.all([
+    getContributors(),
+    getRepoStats(),
+  ]);
+  const starsK = stats.stars / 1000;
 
-export default function CommunityPage() {
   return (
     <>
       {/* HERO */}
@@ -93,27 +85,31 @@ export default function CommunityPage() {
           <div className="grid grid-cols-2 gap-y-6 text-center md:grid-cols-4">
             <div>
               <div className="font-mono text-3xl font-semibold tracking-tight text-foreground md:text-4xl">
-                <Counter to={4.2} decimals={1} suffix="k" />
+                {starsK >= 1 ? (
+                  <Counter to={starsK} decimals={1} suffix="k" />
+                ) : (
+                  <Counter to={stats.stars} />
+                )}
               </div>
               <div className="mt-1 text-xs text-muted">GitHub stars</div>
             </div>
             <div>
               <div className="font-mono text-3xl font-semibold tracking-tight text-brand md:text-4xl">
-                <Counter to={184} />
+                <Counter to={total} />
               </div>
               <div className="mt-1 text-xs text-muted">Contributors</div>
             </div>
             <div>
               <div className="font-mono text-3xl font-semibold tracking-tight text-foreground md:text-4xl">
-                <Counter to={2.8} decimals={1} suffix="k" />
+                <Counter to={stats.forks} />
               </div>
-              <div className="mt-1 text-xs text-muted">Slack members</div>
+              <div className="mt-1 text-xs text-muted">Forks</div>
             </div>
             <div>
               <div className="font-mono text-3xl font-semibold tracking-tight text-foreground md:text-4xl">
-                <Counter to={612} />
+                <Counter to={stats.openIssues} />
               </div>
-              <div className="mt-1 text-xs text-muted">PRs merged</div>
+              <div className="mt-1 text-xs text-muted">Open issues</div>
             </div>
           </div>
         </Reveal>
@@ -168,31 +164,59 @@ export default function CommunityPage() {
             <Eyebrow className="mb-4">Thank you</Eyebrow>
             <h2 className="text-balance text-4xl font-semibold leading-[1.05] tracking-[-0.03em] md:text-5xl">
               We love our{" "}
-              <span className="text-brand">184 contributors</span>.
+              <span className="text-brand">{total} contributors</span>.
             </h2>
             <p className="mt-5 text-base leading-relaxed text-muted-foreground md:text-lg">
               From kernel-level optimizations to typo fixes — every PR gets reviewed
-              and credited.
+              and credited. Pulled live from{" "}
+              <a
+                href="https://github.com/TraceMachina/nativelink/graphs/contributors"
+                target="_blank"
+                rel="noreferrer"
+                className="text-brand underline-offset-4 hover:underline"
+              >
+                GitHub
+              </a>
+              .
             </p>
           </div>
         </Reveal>
 
         <Reveal>
-          <div className="mx-auto max-w-[860px]">
-            <div className="grid grid-cols-6 gap-3 sm:grid-cols-8 md:grid-cols-12">
-              {contributors.map((c, i) => (
-                <div
-                  key={c.name + i}
-                  className={`flex aspect-square items-center justify-center rounded-full bg-gradient-to-br ${c.color} font-mono text-xs font-semibold text-white shadow-[inset_0_1px_2px_rgb(255_255_255_/_0.2)]`}
+          <div className="mx-auto max-w-[920px]">
+            <div className="flex flex-wrap justify-center gap-3">
+              {contributors.slice(0, 24).map((c) => (
+                <a
+                  key={c.login}
+                  href={c.html_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  title={`${c.login} — ${c.contributions} contributions`}
+                  className="group relative overflow-hidden rounded-full border-2 border-border bg-surface transition-all hover:-translate-y-0.5 hover:border-brand"
                 >
-                  {c.name}
-                </div>
+                  <img
+                    src={c.avatar_url}
+                    alt={c.login}
+                    width={56}
+                    height={56}
+                    loading="lazy"
+                    className="block h-14 w-14"
+                  />
+                </a>
               ))}
-              <div className="flex aspect-square items-center justify-center rounded-full border-2 border-dashed border-border-strong font-mono text-xs text-muted">
-                +172
-              </div>
+              {total > 24 ? (
+                <a
+                  href="https://github.com/TraceMachina/nativelink/graphs/contributors"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex h-14 w-14 items-center justify-center rounded-full border-2 border-dashed border-border-strong font-mono text-xs text-muted-foreground transition-colors hover:border-brand hover:text-brand"
+                >
+                  +{total - 24}
+                </a>
+              ) : null}
             </div>
-            <div className="mt-12 rounded-2xl border border-border bg-surface p-8 text-center">
+
+            <div className="mt-14 rounded-2xl border border-border bg-surface p-8 text-center">
               <Badge variant="brand" className="mb-4">
                 Contributor program
               </Badge>
