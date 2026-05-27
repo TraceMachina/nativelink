@@ -1,12 +1,12 @@
-import { Button, Card, CardBody, CardHeader, CardTitle, Section } from "@nativelink/ui";
+import { Badge, Button, Card, CardBody, CardHeader, CardTitle, Section } from "@nativelink/ui";
 
 export default function HomePage() {
   return (
-    <main className="min-h-screen">
+    <>
       <Section width="narrow" className="pt-[120px] pb-20 text-center">
-        <p className="mb-6 font-mono text-sm uppercase tracking-widest text-muted">
-          web-next scaffold
-        </p>
+        <Badge variant="outline" className="mb-6">
+          web-next · phase 2
+        </Badge>
         <h1 className="text-5xl font-bold leading-[1.15] tracking-tight md:text-6xl">
           When agents write your code,
           <br />
@@ -17,47 +17,50 @@ export default function HomePage() {
           for Bazel and beyond. Cut CI by 90%, ship 10× faster.
         </p>
         <div className="mt-10 flex flex-wrap justify-center gap-4">
-          <Button size="lg">Get started</Button>
-          <Button size="lg" variant="outline">
-            View docs
+          <Button size="lg" asChild>
+            <a href="/docs">Get started</a>
+          </Button>
+          <Button size="lg" variant="outline" asChild>
+            <a href="/product">View product</a>
           </Button>
         </div>
       </Section>
 
       <Section divider className="border-t border-[rgb(var(--nl-color-accent-line))]/40">
         <h2 className="mb-12 text-center text-3xl font-bold md:text-4xl">
-          Phase 1 scaffold checklist
+          Phase 2 — design system primitives
         </h2>
         <div className="grid gap-6 md:grid-cols-3">
           <Card>
             <CardHeader>
-              <CardTitle>Design tokens</CardTitle>
+              <CardTitle>Header & footer</CardTitle>
             </CardHeader>
             <CardBody>
-              Ported from DESIGN.md into <code>@nativelink/tokens</code>. Tailwind v4 reads
-              every var via the preset.
+              Site chrome ships with primary nav, GitHub link, CTA, and a three-column
+              footer with brand mark and contact links.
             </CardBody>
           </Card>
           <Card>
             <CardHeader>
-              <CardTitle>UI primitives</CardTitle>
+              <CardTitle>Logo + Badge + Divider</CardTitle>
             </CardHeader>
             <CardBody>
-              Button, Card, Section, Prose in <code>@nativelink/ui</code>. shadcn-style,
-              theme-driven, accessible.
+              Three more primitives backed by the same token system. Browse the full
+              catalog at <a className="underline" href="/lab">/lab</a>.
             </CardBody>
           </Card>
           <Card>
             <CardHeader>
-              <CardTitle>Two apps, one repo</CardTitle>
+              <CardTitle>Coming in phase 3</CardTitle>
             </CardHeader>
             <CardBody>
-              <code>apps/web</code> for marketing, <code>apps/docs</code> for Fumadocs.
-              Turborepo orchestrates.
+              Marketing page ports — Home, Product, Pricing, Company, Resources,
+              Community — with a light copy refresh and Motion-powered entrance
+              animations.
             </CardBody>
           </Card>
         </div>
       </Section>
-    </main>
+    </>
   );
 }

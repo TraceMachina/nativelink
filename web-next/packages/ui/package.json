@@ -15,11 +15,16 @@
   },
   "exports": {
     ".": "./src/index.ts",
+    "./badge": "./src/components/badge.tsx",
     "./button": "./src/components/button.tsx",
     "./card": "./src/components/card.tsx",
     "./cn": "./src/lib/cn.ts",
+    "./divider": "./src/components/divider.tsx",
+    "./logo": "./src/components/logo.tsx",
     "./prose": "./src/components/prose.tsx",
-    "./section": "./src/components/section.tsx"
+    "./section": "./src/components/section.tsx",
+    "./site-footer": "./src/components/site-footer.tsx",
+    "./site-header": "./src/components/site-header.tsx"
   },
   "peerDependencies": {
     "react": "^19.0.0",
