@@ -1,4 +1,4 @@
-# Deploying `web-next`
+# Deploying `web`
 
 Two Vercel projects, one repo. The marketing app at the apex
 (`nativelink.com`) proxies `/docs/*` to the docs app via a Next.js
@@ -29,7 +29,7 @@ The marketing project needs the docs URL as an env var, so deploy docs
 first.
 
 1. **Vercel → New Project → Import Git Repository**, pick this repo.
-2. **Root Directory**: `web-next/apps/docs`.
+2. **Root Directory**: `web/apps/docs`.
 3. **Framework Preset**: Next.js (auto-detected).
 4. **Build Command**: leave as default. Vercel runs the project's `build`
    script in the workspace root with `bun install` and `bun --filter
@@ -43,7 +43,7 @@ Verify: open `https://<docs-url>/docs` — should show the docs index.
 ### 2. Create the marketing project
 
 1. **Vercel → New Project**, same repo.
-2. **Root Directory**: `web-next/apps/web`.
+2. **Root Directory**: `web/apps/web`.
 3. **Framework Preset**: Next.js.
 4. **Environment Variables** — add one:
    - `DOCS_URL` = `https://<docs-url-from-step-1>` (no trailing slash).
@@ -72,7 +72,7 @@ The marketing app's `next.config.mjs` rewrites `/docs/*` to the local
 docs server in dev:
 
 ```bash
-# from web-next/
+# from web/
 bun dev                          # both apps via Turbo
 # → http://localhost:3000/docs  (proxied to localhost:3001/docs)
 ```

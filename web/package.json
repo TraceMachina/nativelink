@@ -1,5 +1,5 @@
 {
-  "name": "nativelink-web-next",
+  "name": "nativelink-web",
   "type": "module",
   "devDependencies": {
     "@biomejs/biome": "1.9.4",

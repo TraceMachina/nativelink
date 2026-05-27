@@ -217,6 +217,11 @@ EDA
 [Pp]roxied
 [Pp]roxying
 [Pp]roxies
+Orama
+Shiki
+[Pp]rerender
+[Pp]rerendered
+[Tt]ypecheck
 [Ww]hatever
 Btrfs
 GC'd
