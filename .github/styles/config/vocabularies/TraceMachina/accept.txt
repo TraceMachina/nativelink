@@ -214,6 +214,9 @@ EDA
 [Aa]utoscaling
 [Aa]utoscaler
 [Aa]utoscaled
+[Pp]roxied
+[Pp]roxying
+[Pp]roxies
 [Ww]hatever
 Btrfs
 GC'd
