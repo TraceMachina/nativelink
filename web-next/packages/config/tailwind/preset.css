@@ -1,0 +1,63 @@
+/* Tailwind v4 shared preset for all apps.
+ * Pulls design tokens from @nativelink/tokens and exposes them
+ * as Tailwind theme values via @theme.
+ */
+
+@import "@nativelink/tokens/src/index.css";
+
+@theme {
+  /* Colors — bound to CSS vars from @nativelink/tokens */
+  --color-background: var(--nl-color-background);
+  --color-foreground: var(--nl-color-foreground);
+  --color-muted: var(--nl-color-muted);
+  --color-muted-foreground: var(--nl-color-muted-foreground);
+  --color-border: var(--nl-color-border);
+  --color-accent: var(--nl-color-accent);
+  --color-accent-hover: var(--nl-color-accent-hover);
+  --color-accent-line: var(--nl-color-accent-line);
+  --color-surface: var(--nl-color-surface);
+
+  /* Typography */
+  --font-mono: var(--nl-font-mono);
+  --font-sans: var(--nl-font-mono);
+
+  /* Type scale (1.333 ratio, perfect fourth) */
+  --text-xs: var(--nl-text-xs);
+  --text-sm: var(--nl-text-sm);
+  --text-base: var(--nl-text-base);
+  --text-lg: var(--nl-text-lg);
+  --text-xl: var(--nl-text-xl);
+  --text-2xl: var(--nl-text-2xl);
+  --text-3xl: var(--nl-text-3xl);
+  --text-4xl: var(--nl-text-4xl);
+  --text-5xl: var(--nl-text-5xl);
+  --text-6xl: var(--nl-text-6xl);
+
+  /* Radii */
+  --radius-sm: 2px;
+  --radius-md: 4px;
+  --radius-lg: 8px;
+
+  /* Animations */
+  --animate-fade-in: fadeIn 0.6s ease-out forwards;
+  --animate-fade-in-up: fadeInUp 0.6s ease-out forwards;
+
+  @keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  @keyframes fadeInUp {
+    from { opacity: 0; transform: translateY(12px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

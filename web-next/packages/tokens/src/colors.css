@@ -1,0 +1,26 @@
+:root {
+  --nl-color-background: 248 247 244;     /* Warm off-white */
+  --nl-color-surface: 255 255 255;         /* Card surface (semi-transparent in use) */
+  --nl-color-foreground: 0 0 0;            /* Maximum-contrast body text */
+  --nl-color-muted: 100 100 100;           /* Secondary text */
+  --nl-color-muted-foreground: 60 60 60;   /* Subtler body copy */
+  --nl-color-border: 220 220 220;          /* 2px card borders, dividers */
+  --nl-color-accent: 0 0 0;                /* CTA fill */
+  --nl-color-accent-hover: 40 40 40;       /* CTA hover */
+  --nl-color-accent-line: 180 180 180;     /* 1px section dividers */
+}
+
+/* Dark scheme placeholder. Not active until we build the dark variant. */
+@media (prefers-color-scheme: dark) {
+  :root[data-theme="dark"] {
+    --nl-color-background: 10 10 10;
+    --nl-color-surface: 18 18 18;
+    --nl-color-foreground: 248 247 244;
+    --nl-color-muted: 160 160 160;
+    --nl-color-muted-foreground: 200 200 200;
+    --nl-color-border: 38 38 38;
+    --nl-color-accent: 248 247 244;
+    --nl-color-accent-hover: 220 220 220;
+    --nl-color-accent-line: 60 60 60;
+  }
+}

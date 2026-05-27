@@ -175,3 +175,8 @@ rules_scala
 [Tt]oolchainized
 [Vv]endored
 dev_dependency
+Fumadocs
+Turborepo
+Vercel
+Biome
+Tailwind

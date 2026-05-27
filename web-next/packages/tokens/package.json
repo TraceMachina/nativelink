@@ -1,0 +1,16 @@
+{
+  "name": "@nativelink/tokens",
+  "type": "module",
+  "exports": {
+    "./src/colors.css": "./src/colors.css",
+    "./src/index.css": "./src/index.css",
+    "./src/motion.css": "./src/motion.css",
+    "./src/spacing.css": "./src/spacing.css",
+    "./src/typography.css": "./src/typography.css"
+  },
+  "files": [
+    "src"
+  ],
+  "private": true,
+  "version": "0.0.0"
+}

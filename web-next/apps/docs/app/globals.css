@@ -1,0 +1,17 @@
+@import "tailwindcss";
+@import "fumadocs-ui/css/neutral.css";
+@import "fumadocs-ui/css/preset.css";
+@import "@nativelink/config/tailwind/preset.css";
+
+@source "../node_modules/fumadocs-ui/dist/**/*.js";
+
+@layer base {
+  html {
+    background-color: rgb(var(--nl-color-background));
+    color: rgb(var(--nl-color-foreground));
+    -webkit-font-smoothing: antialiased;
+  }
+  body {
+    font-family: var(--nl-font-mono);
+  }
+}

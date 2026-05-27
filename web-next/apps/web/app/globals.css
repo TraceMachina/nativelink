@@ -1,0 +1,22 @@
+@import "tailwindcss";
+@import "@nativelink/config/tailwind/preset.css";
+
+@layer base {
+  html {
+    background-color: rgb(var(--nl-color-background));
+    color: rgb(var(--nl-color-foreground));
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  body {
+    font-family: var(--nl-font-mono);
+    text-wrap: pretty;
+  }
+  h1, h2, h3, h4, h5, h6 {
+    text-wrap: balance;
+  }
+  :focus-visible {
+    outline: 2px solid rgb(var(--nl-color-foreground));
+    outline-offset: 2px;
+  }
+}

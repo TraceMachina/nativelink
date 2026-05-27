@@ -1,0 +1,20 @@
+:root {
+  --nl-font-mono: ui-monospace, "SF Mono", Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
+
+  /* Type scale — 1.333 (perfect fourth) starting from 16px base.
+   * Values match DESIGN.md, with sensible line-heights baked in via Tailwind utilities.
+   */
+  --nl-text-xs:   0.75rem;     /* 12px */
+  --nl-text-sm:   0.875rem;    /* 14px */
+  --nl-text-base: 1rem;        /* 16px */
+  --nl-text-lg:   1.25rem;     /* 20px */
+  --nl-text-xl:   1.5rem;      /* 24px */
+  --nl-text-2xl:  1.875rem;    /* 30px — h5 */
+  --nl-text-3xl:  2.53125rem;  /* 40.5px — h4 */
+  --nl-text-4xl:  3.375rem;    /* 54px — h3 */
+  --nl-text-5xl:  4.5rem;      /* 72px — h2 */
+  --nl-text-6xl:  6rem;        /* 96px — h1 desktop */
+
+  /* Mobile h1/h2 overrides apply via @media in component layer. */
+}
