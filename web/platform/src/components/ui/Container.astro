@@ -1,18 +1,23 @@
 ---
 /**
- * Fluid page-width container.
+ * Container — the centered content band inside a full-bleed Section.
  *
- * The default container is full-width with clamp-based horizontal padding
- * — content scales with the viewport instead of sitting in a fixed-pixel
- * band. On a 13" MacBook (~1512px) you get ~76px gutters; on a 27" 4K
- * display (~2560px) you get ~128px gutters; both feel proportionate.
+ *   <Section>           ← full-bleed: background, padding-y, no width cap
+ *      <Container>      ← max-width 1440px, centered with mx-auto
+ *         ... cards / hero text / grids ...
+ *      </Container>
+ *   </Section>
  *
- *   <Container>...full-width section with fluid padding...</Container>
- *   <Container width="prose">...narrow column for legal/long-form text...</Container>
+ * The Section provides the surface (background colour / gradient / divider)
+ * that runs edge-to-edge of the viewport. Container holds the content in a
+ * comfortable centered band — wide enough to feel intentional on 14"–27"
+ * displays, narrow enough that cards don't stretch into long lines on a 4K
+ * monitor.
  *
- * For internal text-line readability inside a default container, add
- * `max-w-2xl` / `max-w-3xl` directly on the heading or paragraph — NOT
- * on the outer container.
+ * For internal text-line readability (hero leads, paragraphs of body copy),
+ * use the `narrow` or `prose` variants on a wrapping element OR add a
+ * `max-w-2xl` etc. directly on the heading or paragraph — that way the
+ * cards/grids around it still use the full Container width.
  */
 interface Props {
    width?: "default" | "narrow" | "prose";
@@ -27,18 +32,15 @@ const {
    as = "div",
 }: Props = Astro.props;
 
-/* clamp(min, preferred, max):
- *   min 24px — phones
- *   preferred 5vw — smoothly scales with viewport
- *   max 128px — wide displays, prevents content stranding in the middle
- */
-const fluidPadding =
-   "[padding-left:clamp(1.5rem,5vw,8rem)] [padding-right:clamp(1.5rem,5vw,8rem)]";
+/* Internal padding scales with viewport so content doesn't slam against
+ * the edges on narrow screens. On wide screens the max-width takes over
+ * and the empty margin is just `(viewport - max-width) / 2`. */
+const innerPadding = "px-6 sm:px-8 lg:px-10";
 
 const widths: Record<NonNullable<Props["width"]>, string> = {
-   default: `w-full ${fluidPadding}`,
-   narrow: `w-full max-w-[68rem] mx-auto ${fluidPadding}`,
-   prose: `w-full max-w-[44rem] mx-auto ${fluidPadding}`,
+   default: `w-full max-w-[1440px] mx-auto ${innerPadding}`,
+   narrow: `w-full max-w-[64rem] mx-auto ${innerPadding}`, /* ~1024px */
+   prose: `w-full max-w-[44rem] mx-auto ${innerPadding}`, /* ~704px */
 };
 
 const Tag = as;
