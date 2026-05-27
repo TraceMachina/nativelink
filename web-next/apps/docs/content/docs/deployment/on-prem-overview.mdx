@@ -1,13 +1,128 @@
 ---
 title: On-prem overview
-description: Architecture patterns for self-hosted NativeLink deployments.
+description: Architecture patterns for self-hosted NativeLink — what to deploy, where, and how it fits together.
 ---
 
-NativeLink ships in a single binary. Production deployments compose it into
-larger systems — typically a control plane on durable storage and a worker
-fleet that can scale to zero.
+The
+[on-prem getting-started guide](/docs/getting-started/on-prem)
+covers *why* you'd self-host. This page covers the
+**reference architectures** — the deployment shapes that have
+survived contact with real workloads.
 
-This section walks through reference architectures for the most common
-hosting environments.
+## Three common shapes
 
-Content coming.
+### Shape A — Single-node cache
+
+One machine, one binary, one config. The cache lives on local disk
+(or compressed local disk). No remote execution.
+
+```
+              ┌──────────────────────┐
+   Bazel ───▶ │   nativelink         │
+   Buck2 ───▶ │   cas + ac + server  │ ──▶ /var/lib/nativelink
+              └──────────────────────┘
+```
+
+**Good for:** ≤ 10 developers sharing a cache. CI workers that host
+their own per-runner cache.
+
+**Not for:** Anything where the cache restarting wipes your team's
+afternoon.
+
+**Config shape:**
+[Basic / filesystem-backed](/docs/configuration/basic#filesystem-backed-cache).
+
+### Shape B — Cache cluster + remote workers
+
+A few control-plane VMs run CAS/AC/scheduler behind a load balancer.
+A separate, autoscaling worker fleet runs actions. Storage is S3 +
+Redis.
+
+```
+                ┌──────────────┐
+                │   load LB    │
+                └──────┬───────┘
+              ┌────────┼────────┐
+              ▼        ▼        ▼
+         [server]  [server]  [server]    ◀── stateless
+              │        │        │
+              ▼        ▼        ▼
+            ┌──────────────────────┐
+            │   Redis (hot tier)   │
+            ├──────────────────────┤
+            │      S3 (durable)    │
+            └──────────────────────┘
+                       ▲
+                       │
+              ┌────────┴────────┐
+              ▼                 ▼
+          [worker]          [worker]      ◀── autoscaling
+          [worker]          [worker]
+```
+
+**Good for:** Most production deployments. 50-500 engineers.
+
+**Not for:** Truly massive scale (multi-region, regulated workloads
+with strict data residency).
+
+**Config shape:**
+[Production configurations](/docs/configuration/production).
+
+### Shape C — Multi-region, regulated
+
+Per-region clusters with their own data plane; one global control
+plane for cross-region scheduling decisions. mTLS everywhere. Storage
+pinned to a region.
+
+```
+   ┌─────────────────┐         ┌─────────────────┐
+   │   us-east-1     │   ╳     │     eu-west-1   │
+   │                 │   ╳     │                 │
+   │  full cluster   │   ╳     │  full cluster   │
+   │                 │   ╳     │                 │
+   └─────────────────┘   ╳     └─────────────────┘
+        ▲                            ▲
+        │      ╳ ── data-residency boundary ── ╳
+        │                            │
+        └──────── clients ───────────┘
+                  (region-aware)
+```
+
+**Good for:** Regulated industries; orgs with strict residency
+contracts; truly global teams.
+
+**Cost:** Engineering. Plan for a small platform team.
+
+## What to deploy on
+
+| Substrate          | Notes                                                    |
+| ------------------ | -------------------------------------------------------- |
+| Kubernetes         | The richest deployment story. See [Kubernetes](/docs/deployment/kubernetes). |
+| Bare VMs + systemd | Lowest operational complexity if you already do this.    |
+| Docker Compose     | Reasonable for ≤ 5 devs.                                 |
+| Bare metal         | Best price/perf at scale.                                |
+
+## Capacity rules of thumb
+
+Numbers we've seen in production. Yours will vary — these are the
+order-of-magnitude starting points:
+
+| Resource              | Per active developer / week     |
+| --------------------- | ------------------------------- |
+| CAS storage (C++)     | 15-20 GB                        |
+| CAS storage (Go/Rust) | 5-10 GB                         |
+| Cache reads           | 5-10 GB                         |
+| Worker CPU            | 1 vCPU per concurrent action    |
+| Scheduler memory      | 100 MB per 1000 in-flight       |
+
+When the cluster is healthy, the scheduler is the cheapest piece and
+CAS storage is the dominant cost. Plan accordingly.
+
+## What's next
+
+- [Kubernetes](/docs/deployment/kubernetes) — working Helm chart.
+- [Persistent workers](/docs/deployment/persistent-workers) — warm
+  JVM / Bazel-style worker pools.
+- [Metrics](/docs/deployment/metrics) — Prometheus and Grafana.
+- [Chromium](/docs/deployment/chromium) — full reference of the
+  largest open-source consumer.

@@ -1,18 +1,81 @@
 ---
 title: Glossary
-description: The terms you need to read the rest of the docs.
+description: The vocabulary you need to read the rest of the docs.
 ---
 
-- **Action** — a build step. Inputs (sources, tools), command, expected
-  outputs.
-- **ActionResult** — what an action produces. Outputs, exit code, stderr,
-  timing.
-- **CAS** — Content-Addressable Storage. Every artifact stored by hash.
-- **Action Cache (AC)** — `Action → ActionResult` lookup.
-- **Scheduler** — dispatches actions to workers.
-- **Worker** — sandboxed process that runs an action.
-- **LRE** — Local Remote Execution. Hermetic builds on your machine.
-- **Hermeticity** — the property of a build whose outputs depend only on its
-  declared inputs.
+## Action
 
-Content coming.
+A single unit of build work. Encodes a command line, input file
+digests, the platform requirements, and the expected outputs. Hashing
+an action produces a stable identifier; identical actions have
+identical hashes.
+
+## ActionResult
+
+What an action produces. Output file digests, exit code, captured
+stdout/stderr, timing metadata.
+
+## Action Cache (AC)
+
+A keyed store: `hash(Action) → ActionResult`. Cache hits skip the
+work entirely.
+
+## CAS — Content-Addressable Storage
+
+Stores every blob (source file, intermediate output, final binary)
+under its SHA-256 hash. The same byte sequence stored from anywhere
+collapses to one entry.
+
+## Digest
+
+A content hash plus a size. Used everywhere instead of file paths.
+
+## Hermetic build
+
+A build whose outputs depend only on its declared inputs. Same
+inputs → same outputs, on any machine, any time. See
+[How do I make my Bazel setup hermetic?](/docs/faq/hermeticity).
+
+## Instance name
+
+A namespace inside a NativeLink cluster. Action hashes from different
+instance names never collide. Lets one cluster serve multiple
+isolated environments.
+
+## LRE — Local Remote Execution
+
+NativeLink running on `localhost`, with a Nix-pinned toolchain, so
+local builds are bit-identical to remote ones. See
+[LRE](/docs/explanations/lre).
+
+## Platform properties
+
+Key/value tags attached to an action ("this action needs Linux,
+x86_64, a GPU") and to a worker ("this worker has Linux, x86_64, a
+GPU"). The scheduler matches them.
+
+## Remote Execution API (RE-API)
+
+The standard gRPC protocol every supported build system speaks.
+[Spec](https://github.com/bazelbuild/remote-apis).
+
+## Scheduler
+
+The dispatcher. Receives `Execute` calls, picks workers, tracks
+in-flight actions.
+
+## Worker
+
+The process that runs an action. Fetches inputs from CAS, runs the
+command in a sandbox, uploads outputs to CAS.
+
+## Sandbox
+
+The isolated environment a worker runs an action in. On Linux,
+typically `bwrap` or `landlock`; on macOS, `sandbox-exec`. The
+sandbox makes hermeticity enforceable.
+
+## Toolchain
+
+The bundle of binaries an action needs to run — compiler, linker,
+standard library, etc. See [What are toolchains?](/docs/faq/toolchains).

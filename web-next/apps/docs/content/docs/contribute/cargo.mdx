@@ -1,14 +1,83 @@
 ---
 title: Developing with Cargo
-description: Pure Cargo workflow for NativeLink contributors who prefer it.
+description: Pure Cargo workflow for NativeLink contributors who'd rather not run Bazel.
 ---
 
-If you'd rather work with Cargo than Bazel, every crate compiles cleanly:
+Every NativeLink crate compiles cleanly with plain Cargo. Use this
+workflow if you want a smaller dev shell, faster incremental builds
+during iteration, or just don't have Bazel installed.
+
+## Prerequisites
+
+- A recent stable Rust toolchain. The exact version is pinned in
+  `rust-toolchain.toml`; `rustup` will pick it up automatically.
+- `protoc` 3+ on `$PATH` (for the gRPC proto generation step).
+- On Linux: `mold` is automatic if installed.
+
+## First build
 
 ```bash
+git clone https://github.com/TraceMachina/nativelink
+cd nativelink
 cargo build --workspace
-cargo test --workspace
-cargo run -p nativelink -- /path/to/config.json5
 ```
 
-Content coming.
+First build is a few minutes (dependency compilation); subsequent
+incremental builds are typically a few seconds.
+
+## Common commands
+
+```bash
+# Build everything.
+cargo build --workspace
+
+# Run all tests.
+cargo test --workspace
+
+# Run a specific crate's tests.
+cargo test -p nativelink-store
+
+# Run the server.
+cargo run -p nativelink -- /path/to/config.json5
+
+# Format.
+cargo fmt --all
+
+# Lint (CI runs this too).
+cargo clippy --all-targets -- -D warnings
+```
+
+## Faster incremental builds
+
+A few flags that help:
+
+- `mold` as linker (Linux):
+
+  ```toml
+  # ~/.cargo/config.toml
+  [target.x86_64-unknown-linux-gnu]
+  linker = "clang"
+  rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+  ```
+
+- `CARGO_TARGET_DIR` set to a shared directory across checkouts to
+  reuse incremental artifacts.
+
+- Pointing Cargo at a `sccache` backed by NativeLink:
+
+  ```bash
+  export RUSTC_WRAPPER=sccache
+  export SCCACHE_BUCKET_URL=grpc://localhost:50051
+  ```
+
+## Caveats
+
+- Some Bazel-only crates (the LRE flake outputs, the
+  Bazel-generated proto bindings) don't have Cargo equivalents. If
+  you're touching those, you'll need Bazel.
+- The CI image runs Bazel — your Cargo build passing doesn't
+  guarantee CI passes. Run `bazel test //...` (or `nix develop`-
+  based equivalent) before submitting.
+
+For the Bazel-based workflow, see
+[Develop with Bazel](/docs/contribute/bazel).

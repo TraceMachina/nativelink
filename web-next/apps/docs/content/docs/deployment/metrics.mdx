@@ -1,16 +1,105 @@
 ---
 title: Metrics & observability
-description: Wire NativeLink into your observability stack — Prometheus, Grafana, OpenTelemetry.
+description: Wire NativeLink into Prometheus + Grafana + OpenTelemetry — what to scrape, what to alert on, what to chart.
 ---
 
-NativeLink emits OpenTelemetry traces and Prometheus metrics out of the box:
+NativeLink emits Prometheus metrics and OpenTelemetry traces out of
+the box. This page covers what's exposed, what's worth alerting on,
+and a starter Grafana dashboard.
 
-- Per-action latency histograms.
-- Cache-hit ratio by store.
-- Worker queue depth and dispatch latency.
-- Per-cluster connection counts.
+## Enable the metrics endpoint
 
-This page shows a working Grafana dashboard and the Prometheus scrape config
-to back it.
+Add to the `global` block of your config:
 
-Content coming.
+```json5
+global: {
+  metrics: {
+    prometheus: {
+      listen_address: "0.0.0.0:9090",
+    },
+  },
+  tracing: {
+    otlp: {
+      endpoint: "http://otel-collector.observability:4317",
+    },
+    sample_rate: 0.05,
+  },
+}
+```
+
+Restart, point Prometheus at `:9090/metrics`, and metrics start
+flowing.
+
+## Metrics worth knowing
+
+The full list is on the `/metrics` endpoint itself. These are the
+ones we use day-to-day:
+
+### Latency
+
+- `nativelink_cas_request_duration_seconds` — histogram of
+  `GetCapabilities` / `Read` / `Write` latencies.
+- `nativelink_ac_request_duration_seconds` — Action Cache
+  lookups + writes.
+- `nativelink_scheduler_dispatch_latency_seconds` — time from
+  `Execute` arrival to worker assignment.
+
+### Throughput
+
+- `nativelink_cas_bytes_read_total` / `_written_total`
+- `nativelink_ac_hits_total` / `_misses_total`
+- `nativelink_actions_completed_total{status="success|failure"}`
+
+### Health
+
+- `nativelink_worker_connected_count` — how many workers the
+  scheduler currently sees.
+- `nativelink_scheduler_queue_depth` — actions waiting to dispatch.
+- `nativelink_cas_storage_bytes` — used storage per backend.
+
+## Alerts we run
+
+A starting set; tune thresholds for your latency budget.
+
+| Alert                                | Threshold                       | Notes                              |
+| ------------------------------------ | ------------------------------- | ---------------------------------- |
+| `CASLatencyHigh`                     | `p99 > 50ms` for 5 min          | Page — something's wrong.          |
+| `ACMissRateAnomaly`                  | hit ratio drops by 30%+ in 1h   | Toolchain change or cache wipe.    |
+| `WorkerCountDropped`                 | `< 50%` of expected for 2 min   | Page — scheduler or LB issue.     |
+| `QueueDepthGrowing`                  | `> 100` for 10 min              | Workers can't keep up; scale.      |
+| `StorageHighWater`                   | `> 85%` of capacity             | Eviction policy isn't keeping up.  |
+
+The
+[`deployment-examples/`](https://github.com/TraceMachina/nativelink)
+directory in the source ships a `prometheus-rules.yaml` with these
+rules pre-configured.
+
+## Grafana dashboard
+
+A reference dashboard JSON lives at
+[`deployment-examples/metrics/grafana-dashboard.json`](https://github.com/TraceMachina/nativelink/tree/main/deployment-examples/metrics).
+Import it via Grafana's UI:
+
+1. Dashboards → New → Import.
+2. Paste the JSON.
+3. Pick your Prometheus data source.
+
+The dashboard ships with four rows:
+
+- **Overview** — connected workers, queue depth, request rate.
+- **Latency** — `p50` / `p99` histograms per service.
+- **Cache effectiveness** — hit/miss ratios, top miss reasons.
+- **Storage** — used bytes per backend, eviction rate.
+
+## Tracing
+
+NativeLink emits OpenTelemetry spans for every RPC. With the
+sample rate set to `0.05` (5%), you get useful debug visibility
+without flooding the collector.
+
+The most useful trace is `Execute` → `worker_assigned` →
+`action_started` → `action_completed` — it shows you where time
+goes when something feels slow.
+
+Wire spans into your existing OTLP collector (Jaeger, Tempo,
+Honeycomb, whatever) via the `tracing.otlp.endpoint` config above.

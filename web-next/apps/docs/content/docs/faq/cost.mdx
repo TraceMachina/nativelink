@@ -1,16 +1,44 @@
 ---
 title: Is NativeLink free?
-description: The open-source core is free forever. Cloud and Enterprise are paid offerings.
+description: Yes — the open-source core is MIT-licensed and free forever. Cloud and Enterprise are paid offerings.
 ---
 
-**Yes — the open-source release is MIT-licensed and free forever.** You can
-self-host it on any infrastructure you want, modify it, redistribute it.
+**Yes — the open-source release is MIT-licensed and free forever.**
+You can self-host it on any infrastructure you control, modify it,
+redistribute it, run it for as many users as you want.
 
-If you want us to run it for you, there are two paid tiers:
+If you'd rather pay someone to run it for you, two paid tiers exist:
 
-- **Cloud** — managed multi-tenant cluster, $1,000/month flat.
-- **Enterprise** — single-tenant, on-prem, custom contracts.
+- **Cloud** — managed multi-tenant cluster, flat $1,000/month. Full
+  SLA, autoscaling, dashboard.
+- **Enterprise** — single-tenant deployment, dedicated solutions
+  engineer, on-prem or managed. Custom contracts.
 
-See the [pricing page](https://nativelink.com/pricing) for the full breakdown.
+The
+[pricing page](https://nativelink.com/pricing) has the feature
+comparison.
 
-Content coming.
+## What does "free" actually cover
+
+- The full RE-API server: CAS, AC, scheduler, worker.
+- Every storage backend: filesystem, S3, Redis, GCS, Azure Blob.
+- Every supported build client: Bazel, Buck2, Reclient, Pants, Goma.
+- The CLI tooling and Helm chart.
+
+No artificial limits on cache size, action count, worker count, or
+team size. The open-source build is the same build we run in
+production — minus the operational tooling and dedicated support that
+Cloud and Enterprise add.
+
+## What you'd pay for instead
+
+Hosting NativeLink yourself costs:
+
+- Compute for the control plane (typically a few small VMs).
+- Storage for the CAS (S3 / equivalent, sized for ~5-20 GB per active
+  developer per week).
+- Worker compute (variable; this is the part Cloud rents to you).
+- Engineer hours running it.
+
+For most teams under 30 engineers, self-host is cheaper. Past that,
+Cloud usually wins on engineer-time alone.

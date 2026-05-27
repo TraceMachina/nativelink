@@ -1,17 +1,82 @@
 ---
 title: Contribution guidelines
-description: How to land code in NativeLink — what we accept, what we don't, how reviews work.
+description: How to land code in NativeLink — what we accept, how reviews work, what good PRs look like.
 ---
 
-NativeLink is open source. We accept contributions from anyone willing to
-follow these guidelines:
+NativeLink is open source, MIT-licensed, and accepts contributions
+from anyone willing to follow these guidelines. We try to make the
+process predictable.
 
-- **One change per PR.** Small PRs land. Big PRs get split or rejected.
-- **Tests for new behaviour.** Bug fixes need a regression test; features
-  need both unit and integration coverage.
-- **Commit messages matter.** First line: imperative, ≤72 characters. Body:
-  *why*, not *what*.
-- **Discuss design first** for any change touching public APIs, scheduler
-  policy, or storage format.
+## What we accept
 
-Content coming.
+- **Bug fixes** with a regression test.
+- **Performance improvements** with reproducible benchmark numbers.
+- **New storage backends, schedulers, worker types** discussed in an
+  issue first.
+- **Documentation improvements** — including fixing the page you're
+  reading. Smaller is better.
+- **Tooling** that makes development or operations easier.
+
+## What we don't
+
+- **Breaking changes to the Remote Execution API surface.** We track
+  the upstream spec; changes go there first.
+- **Vendor-specific code paths** that only one customer can use.
+- **"Refactoring for its own sake"** PRs. Refactor as part of a real
+  change.
+
+## Before opening a PR
+
+<Steps>
+  <li>
+    **Open an issue first** for anything bigger than a typo fix.
+    Describe the problem and the rough approach. We'll comment within
+    a business day.
+  </li>
+  <li>
+    **Run the test suite locally.** `bazel test //...` or
+    `cargo test --workspace`. Both should pass.
+  </li>
+  <li>
+    **Run the formatter and linter.** `cargo fmt --all` and
+    `cargo clippy --all-targets`. CI will reject anything that
+    doesn't.
+  </li>
+  <li>
+    **Sign your commits.** We require DCO (Developer Certificate of
+    Origin) on every commit — `git commit -s`.
+  </li>
+</Steps>
+
+## What good PRs look like
+
+- **One change per PR.** Small PRs land. Big PRs get split or
+  bounced.
+- **Title in the imperative.** "Fix scheduler retry loop on
+  disconnect" — not "Fixes" or "Fixing."
+- **Body answers *why*, not *what*.** The diff shows what; the body
+  explains the constraint or incident that motivated it.
+- **Tests for new behaviour.** Bug fix → regression test. Feature →
+  unit + integration coverage.
+
+## Review process
+
+- **First response within 2 business days.** If it's longer, ping us
+  in the PR.
+- **Two reviewers for non-trivial changes.** One for typo fixes.
+- **Squash on merge.** Every merged PR is one commit on `main`.
+
+## License
+
+By submitting a PR you agree your contribution is licensed under the
+project's MIT license. The DCO sign-off in your commit is the
+formal declaration.
+
+## What's next
+
+Pick the dev environment that fits how you work:
+
+- [Develop with Bazel](/docs/contribute/bazel) — the CI-canonical
+  setup.
+- [Develop with Cargo](/docs/contribute/cargo) — plain Rust workflow.
+- [Develop with Nix](/docs/contribute/nix) — fully hermetic shell.

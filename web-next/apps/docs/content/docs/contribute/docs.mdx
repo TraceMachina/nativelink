@@ -3,13 +3,101 @@ title: Working on documentation
 description: Edit, preview, and ship changes to nativelink.com/docs.
 ---
 
-The docs you're reading live in `web-next/apps/docs/content/docs/`. Edits are
-plain MDX — frontmatter + content. Local preview runs alongside the
-marketing site:
+The docs live in this repo at
+[`web-next/apps/docs/content/docs/`](https://github.com/TraceMachina/nativelink/tree/main/web-next/apps/docs/content/docs).
+Each page is an MDX file: frontmatter at the top, Markdown plus
+embedded JSX below. No build step beyond `bun dev`.
+
+## Develop locally
 
 ```bash
 cd web-next
-bun dev:docs   # docs only — http://localhost:3001/docs
+bun install
+bun dev:docs        # docs only — http://localhost:3001/docs
 ```
 
-Content coming.
+Edit any `.mdx` file under `apps/docs/content/docs/`. The dev server
+picks up changes on save.
+
+To preview marketing + docs together (since marketing rewrites `/docs`
+to the docs app in dev):
+
+```bash
+bun dev             # both apps in parallel
+# → http://localhost:3000/docs
+```
+
+## Page frontmatter
+
+Every page needs at least `title` and `description`:
+
+```mdx
+---
+title: My Page
+description: One short sentence Google can show in search results.
+---
+```
+
+Optional fields:
+
+- `full: true` — kill the right-side TOC for this page. Useful for
+  reference pages and landing pages.
+
+## Sidebar order
+
+Each section has a `meta.json` that controls the order:
+
+```json5
+{
+  "title": "Section name",
+  "pages": ["first", "second", "third"]
+}
+```
+
+The top-level
+[`content/docs/meta.json`](https://github.com/TraceMachina/nativelink)
+controls section order and uses `---Label---` entries to insert
+visual dividers in the sidebar.
+
+## Custom MDX components
+
+Two project-specific components, available without import:
+
+```mdx
+<Callout type="info" title="Optional title">
+  Body markdown.
+</Callout>
+
+<Steps>
+  <li>First step.</li>
+  <li>Second step.</li>
+</Steps>
+```
+
+`Callout` tones: `info`, `warn`, `success`, `error`.
+
+For tabbed content, use Fumadocs's `Tabs` and `Tab`:
+
+```mdx
+<Tabs items={["A", "B"]}>
+  <Tab value="A">Content A</Tab>
+  <Tab value="B">Content B</Tab>
+</Tabs>
+```
+
+## Style
+
+- **Prefer plain English** over jargon. If you have to use jargon,
+  link to its definition.
+- **One idea per paragraph.** Long paragraphs are easier to skim
+  when broken up.
+- **Code blocks include the language tag** — Markdown needs it for
+  syntax highlighting.
+- **Em-dashes get spaces around them** — like this. The Vale config
+  disables the Microsoft "no spaces" rule.
+
+## Submitting a PR
+
+Same flow as any other change — see
+[Contribution guidelines](/docs/contribute/guidelines). Small docs
+PRs land same-day in most cases.

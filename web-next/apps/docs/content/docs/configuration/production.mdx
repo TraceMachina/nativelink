@@ -1,14 +1,218 @@
 ---
 title: Production configurations
-description: Multi-region NativeLink clusters with autoscaling, signed artifacts, and full observability.
+description: The NativeLink cluster shape that survives a real team — sharded CAS, autoscaling workers, mTLS, observability.
 ---
 
-What a production-grade NativeLink cluster actually looks like:
+What changes between the
+[basic single-node](/docs/configuration/basic) and a cluster you'd
+trust with your team's working day:
 
-- Sharded CAS backed by S3 + Redis for hot-key absorption.
-- Multi-region scheduler with deterministic worker assignment.
-- Autoscaling worker pools driven by queue depth.
-- Prometheus / OpenTelemetry pipelines.
-- mTLS between every hop; signed action results.
+- The CAS is durable and shareable.
+- Workers are stateless and replaceable.
+- The control plane is HA.
+- Every hop is encrypted and authenticated.
+- The whole thing emits metrics you can dashboard.
 
-Content coming.
+This page is a tour of those concerns. Pick what you need; the bits
+that don't apply (e.g. multi-region if you only have one) just stay
+out.
+
+## CAS: sharded S3 + Redis
+
+The recommended shape for any multi-node deployment. S3 (or
+compatible) is the durable backing store; Redis sits in front as a
+hot-key cache.
+
+```json5
+stores: [
+  // Redis tier — fast, ephemeral, hot keys.
+  {
+    name: "CAS_REDIS",
+    redis_store: {
+      addresses: ["redis://redis.svc.cluster.local:6379"],
+      key_prefix: "cas:",
+      response_timeout_ms: 200,
+    },
+  },
+
+  // S3 tier — durable, slower, cold storage.
+  {
+    name: "CAS_S3",
+    experimental_s3_store: {
+      region: "us-east-1",
+      bucket: "nativelink-prod-cas",
+      key_prefix: "cas/",
+      retry: { max_retries: 5, delay: 0.1, jitter: 0.5 },
+    },
+  },
+
+  // Two-tier composite: read fast, fall through to S3.
+  {
+    name: "CAS_TIERED",
+    fast_slow: {
+      fast: { ref_store: { name: "CAS_REDIS" } },
+      slow: { ref_store: { name: "CAS_S3" } },
+    },
+  },
+
+  // Compress + shard the tiered store. Now we're production.
+  {
+    name: "CAS_MAIN_STORE",
+    shard: {
+      stores: [
+        // 16 evenly-weighted shards. Pick a power of 2.
+        { store: { ref_store: { name: "CAS_TIERED" } }, weight: 1 },
+        // ... repeat 15 more times, or generate at deploy time ...
+      ],
+    },
+  },
+],
+```
+
+The shard layer hashes by blob digest, so reads and writes from
+different clients land on the same shard. The fast/slow layer
+guarantees the hot path is sub-millisecond.
+
+<Callout type="info" title="Redis sizing">
+  Aim for Redis to hold the last 24-48 hours of artifacts. For a team
+  doing 1 TB of build traffic a day, that's ~20-40 GiB of Redis —
+  trivially affordable. Anything older falls through to S3.
+</Callout>
+
+## Action Cache: durable but disposable
+
+The AC is small (typically &lt;1% of CAS by bytes), but losing it means
+re-running every build until it warms back up. Run two replicas in
+front of a durable store:
+
+```json5
+{
+  name: "AC_MAIN_STORE",
+  experimental_s3_store: {
+    region: "us-east-1",
+    bucket: "nativelink-prod-ac",
+    key_prefix: "ac/",
+  },
+},
+```
+
+If your AC is on the same S3 cluster as your CAS, prefix-segment them.
+S3 LIST cost matters at scale.
+
+## Scheduler: HA with sticky workers
+
+Schedulers themselves are stateless — run two or three behind a load
+balancer, restart at will. The state that matters is the in-flight
+action queue, which lives in the scheduler's memory and gets restored
+from the AC on restart.
+
+```json5
+schedulers: {
+  MAIN_SCHEDULER: {
+    simple: {
+      supported_platform_properties: {
+        OSFamily:        "exact",
+        container_image: "exact",
+        cpu_count:       "minimum",
+        gpu:             "exact",
+      },
+      max_job_retries: 3,
+      worker_timeout_s: 300,
+    },
+  },
+},
+```
+
+`supported_platform_properties` is how the scheduler matches actions
+to workers. An action requesting `gpu: "nvidia-a100"` will only be
+dispatched to workers tagged with that exact value.
+
+## Workers: autoscaling, stateless
+
+Production workers run on a separate fleet from the control plane.
+Each worker process advertises its platform properties; the scheduler
+sends matching actions.
+
+```json5
+workers: [{
+  local: {
+    worker_api_endpoint: { uri: "grpc://scheduler.svc.cluster.local:50051" },
+    cas_fast_slow_store: "CAS_MAIN_STORE",
+    upload_action_result: { upload_action_result: { ac_store: "AC_MAIN_STORE" } },
+    max_action_timeout: 3600,
+    platform_properties: {
+      OSFamily:        { values: ["linux"] },
+      container_image: { query_cmd: "cat /etc/nativelink/image-tag" },
+      cpu_count:       { values: ["8"] },
+    },
+  },
+}],
+```
+
+Drive worker count from queue depth — every common autoscaler
+(Kubernetes HPA on a custom metric, AWS Auto Scaling on a CloudWatch
+alarm) can read NativeLink's Prometheus output and scale accordingly.
+The [Kubernetes deployment guide](/docs/deployment/kubernetes) has a
+working HPA config.
+
+## TLS and authentication
+
+In production, every hop runs over mTLS:
+
+```json5
+servers: [{
+  listener: {
+    http: {
+      socket_address: "0.0.0.0:50051",
+      tls: {
+        cert_file: "/etc/nativelink/tls/server.crt",
+        key_file:  "/etc/nativelink/tls/server.key",
+        client_ca_file: "/etc/nativelink/tls/clients-ca.crt",
+      },
+    },
+  },
+  services: { /* ... */ },
+}],
+```
+
+Clients present a certificate; the scheduler matches the certificate's
+identity against an allow-list. Worker→scheduler connections use the
+same mTLS pattern.
+
+For org-wide SSO/SAML, the
+[`compliance` page](https://nativelink.com/compliance) covers the
+provider list.
+
+## Observability
+
+NativeLink emits OpenTelemetry traces and Prometheus metrics out of
+the box. Enable them in the config:
+
+```json5
+global: {
+  metrics: { prometheus: { listen_address: "0.0.0.0:9090" } },
+  tracing: {
+    otlp: { endpoint: "http://otel-collector:4317" },
+    sample_rate: 0.05,
+  },
+},
+```
+
+What's worth alerting on:
+
+- `nativelink_cas_request_duration_seconds_p99` — sub-millisecond on
+  a healthy cluster. Anything over 50ms is page-worthy.
+- `nativelink_scheduler_queue_depth` — should drop quickly when
+  workers are healthy.
+- `nativelink_worker_connected_count` — sudden drops indicate
+  scheduler-side issues.
+
+The [Metrics deployment guide](/docs/deployment/metrics) has a Grafana
+dashboard JSON file you can import.
+
+## A reference production config
+
+A working complete production config (CAS + AC + scheduler + workers,
+mTLS, metrics) lives at
+[`nativelink-config/examples/production.json5`](https://github.com/TraceMachina/nativelink/tree/main/nativelink-config/examples).
+Start from there; trim what you don't need.

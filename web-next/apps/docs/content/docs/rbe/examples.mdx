@@ -1,14 +1,121 @@
 ---
 title: Classic RBE examples
-description: Walk through realistic remote-execution scenarios on NativeLink.
+description: Three realistic remote-execution patterns you can run against a NativeLink cluster.
 ---
 
-Hands-on examples for the most common remote-execution patterns:
+The
+[`deployment-examples/`](https://github.com/TraceMachina/nativelink/tree/main/deployment-examples)
+directory in the source has runnable examples for every shape
+described here. This page is the tour.
 
-- **Cache-only** — every action runs locally, results are stored remotely.
-- **Cache + execution** — actions ship to the worker fleet; outputs come
-  back.
-- **Hybrid** — local for fast actions, remote for everything else, driven by
-  policy.
+## Pattern A — Cache-only
 
-Content coming.
+Every action runs locally; results land in the shared cache. The
+fastest pattern to set up because no worker fleet is needed.
+
+```
+[ client ] ── execute locally ─▶ outputs
+     │
+     └────── upload to ────────▶ [ CAS / AC ]
+```
+
+With Bazel, just point `--remote_cache` at the cluster:
+
+```bash
+bazel build //... \
+  --remote_cache=grpc://nativelink.internal:50051 \
+  --remote_instance_name=main
+```
+
+Use this when:
+
+- You have a single CI environment that builds the same things
+  repeatedly (each commit changes a small subset).
+- You want shared caching across developer laptops without setting
+  up workers.
+- You're evaluating NativeLink and want to see cache hits before
+  building out the worker plane.
+
+## Pattern B — Cache + execution
+
+Actions ship to a worker fleet. The fleet runs them; outputs come
+back. The cache layer underneath stores everything.
+
+```
+[ client ] ── Execute() ─▶ [ scheduler ] ─▶ [ worker pool ]
+                                                 │
+                                                 ▼
+                                          [ CAS / AC ]
+```
+
+Bazel config:
+
+```bash
+bazel build //... \
+  --remote_cache=grpc://nativelink.internal:50051 \
+  --remote_executor=grpc://nativelink.internal:50051 \
+  --remote_instance_name=main \
+  --jobs=200
+```
+
+The `--jobs=200` is the key change — without it Bazel only dispatches
+as many actions as your laptop has cores. With remote execution, the
+limiting factor is the worker pool size.
+
+Use this when:
+
+- You want full builds to complete in minutes instead of hours.
+- You have a CI fleet you're trying to shrink.
+- You want hermetic, reproducible builds across machines.
+
+## Pattern C — Hybrid
+
+Local for short actions, remote for everything else. Bazel decides
+which side runs each action based on policy.
+
+```
+                       ┌──▶ run locally (fast actions)
+[ client ] ── policy ──┤
+                       └──▶ Execute() ─▶ [ scheduler ] ─▶ workers
+```
+
+Bazel config:
+
+```bash
+bazel build //... \
+  --remote_cache=grpc://nativelink.internal:50051 \
+  --remote_executor=grpc://nativelink.internal:50051 \
+  --remote_instance_name=main \
+  --modify_execution_info=Javac=+no-remote-exec \
+  --strategy=Javac=local
+```
+
+This forces all `Javac` actions local (because for very small
+files the network round-trip dominates) while everything else goes
+remote.
+
+Use this when:
+
+- Your workload has a mix of fast and slow actions.
+- Network latency to the worker fleet is high enough that small
+  actions are slower remote than local.
+- You're tuning a production setup and want fine-grained control.
+
+## Comparing patterns
+
+| Pattern   | Setup cost | Build speedup    | Cost          |
+| --------- | ---------- | ---------------- | ------------- |
+| Cache-only| Low        | 1.5-3×           | Storage only  |
+| Full RE   | Medium     | 5-10×            | + worker compute |
+| Hybrid    | High       | 6-12× (tuned)    | + worker compute |
+
+Start with cache-only. Move to full RE when the team feels the local
+build CPU bottleneck. Move to hybrid only when you have telemetry
+showing where time goes.
+
+## What's next
+
+- [Nix templates](/docs/rbe/nix-templates) — runnable testbeds for
+  every pattern.
+- [Configuration → Production](/docs/configuration/production) — the
+  cluster shape that backs full RE in practice.

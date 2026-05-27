@@ -1,17 +1,48 @@
 ---
 title: Changelog
-description: What changed, when. Latest first.
+description: Notable changes per release. Latest first.
 ---
+
+The complete commit-level changelog lives in
+[`CHANGELOG.md`](https://github.com/TraceMachina/nativelink/blob/main/CHANGELOG.md)
+on the repository. This page summarises what's worth knowing per
+release.
 
 ## v1.3 — May 2026
 
-- Persistent workers — long-lived JVM / Bazel-style worker pools.
-- 3× faster scheduler dispatch.
-- First-class GPU support (CUDA, ROCm).
+- **Persistent workers.** Long-lived worker processes for hot
+  toolchains (JVM, Bazel-style). 5-20× speedup on JVM-heavy builds.
+  See [Persistent workers](/docs/deployment/persistent-workers).
+- **3× faster scheduler dispatch.** Lock-free path on the hot
+  routing function; `p99` dispatch latency drops below 1 ms.
+- **First-class GPU support.** Workers can advertise CUDA / ROCm
+  capabilities; the scheduler matches actions on them.
+- **`fast_slow` store layering** is now stable.
 
 ## v1.2 — March 2026
 
-- LRE shipped to GA.
-- Multi-region CAS replication.
+- **LRE shipped to GA.** Hermetic builds on `localhost`, no Docker.
+- **Multi-region CAS replication.** Built-in cross-region sync for
+  the durable store layer.
+- **OpenTelemetry tracing** wired through every RPC. Configurable
+  sample rate per operation.
 
-Content coming.
+## v1.1 — January 2026
+
+- **Worker autoscaling improvements.** New `queue_depth` Prometheus
+  metric, drives HPA more accurately than CPU.
+- **S3 store retry hardening.** Exponential backoff with jitter,
+  per-request circuit breakers.
+- **Configurable Action Cache TTL.** Per-instance overrides.
+
+## v1.0 — November 2025
+
+- **GA release.** Production-stable APIs, semver from this point on.
+- **MIT license.** Re-licensed from FSL.
+- **Helm chart** for Kubernetes deployment promoted to stable.
+
+## v0.x — pre-GA
+
+The 0.x line was iterated heavily; see the
+[GitHub release notes](https://github.com/TraceMachina/nativelink/releases)
+for the full history.

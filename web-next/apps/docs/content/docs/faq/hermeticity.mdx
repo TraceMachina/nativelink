@@ -1,17 +1,68 @@
 ---
 title: How do I make my Bazel setup hermetic?
-description: Eliminate every "it works on my machine" by pinning every input.
+description: Eliminate every "it works on my machine" by declaring every input.
 ---
 
-A hermetic build is one where every input is declared and every output is
-reproducible. Same inputs, same outputs, every time, on every machine.
+A hermetic build is one where every input is declared, every output
+is reproducible, and the result depends only on the declared inputs.
+Same recipe, same ingredients, same dish, every time.
 
-Bazel can be hermetic; out of the box, it isn't. This page covers the
-practical steps to get there:
+Bazel **can** produce hermetic builds. Out of the box, it doesn't —
+most Bazel projects depend implicitly on system tooling, environment
+variables, and the host OS. Reaching real hermeticity takes
+deliberate work.
 
-- Pinning the toolchain.
-- Locking dependency sources.
-- Eliminating environment variable leaks.
-- Using a sandbox you trust.
+## The hermeticity checklist
 
-Content coming.
+<Steps>
+  <li>
+    **Pin the toolchain.** Don't rely on `/usr/bin/cc`. Use
+    `rules_cc`'s toolchain abstraction or a Nix-provided toolchain;
+    register the platform in `MODULE.bazel`.
+  </li>
+  <li>
+    **Lock dependency sources.** Every `http_archive` should pin both
+    the URL and the sha256. Module dependencies should pin a version,
+    not a range.
+  </li>
+  <li>
+    **Forbid `$PATH` leaks.** Add
+    `build --incompatible_strict_action_env` to your `.bazelrc`.
+    Bazel will now only forward an explicitly-allowed set of env
+    vars.
+  </li>
+  <li>
+    **Use the sandbox you trust.** On Linux: `linux-sandbox`. On
+    macOS: `darwin-sandbox`. For maximum isolation, run actions in a
+    container or under [LRE](/docs/explanations/lre).
+  </li>
+  <li>
+    **Declare every header.** Strict include-checking
+    (`--features=layering_check`) catches the headers your `cc_library`
+    silently transitively depends on.
+  </li>
+  <li>
+    **Compare action hashes across machines.** If the same target
+    produces different hashes on two laptops, something is leaking.
+    `bazel aquery 'mnemonic("CppCompile", //target:label)' --output=text`
+    shows you the action's full input set.
+  </li>
+</Steps>
+
+## How NativeLink helps
+
+A hermetic build maps directly to a content-addressed cache: same
+inputs = same hash = same cached result. NativeLink doesn't *make*
+your build hermetic, but it surfaces failures fast — non-hermetic
+actions show up as cache misses where there should be hits, or, worse,
+as nondeterministic action results.
+
+The fastest way to find leaks: enable
+[LRE](/docs/explanations/lre), build the same target twice on the
+same machine, and compare outputs. Anything that differs is a leak.
+
+## Further reading
+
+- [What are toolchains?](/docs/faq/toolchains)
+- [What is Nix?](/docs/faq/nix)
+- [LRE](/docs/explanations/lre) — the easiest way to get there.
