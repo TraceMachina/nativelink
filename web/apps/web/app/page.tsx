@@ -16,56 +16,49 @@ export const metadata = {
 const features = [
   {
     n: "01",
-    title: "Faster builds. Lower compute bills.",
-    body: "Cache and parallelize Bazel, Buck2, Reclient, and Pants across your fleet. Cut build wall-time without provisioning a fleet of CI runners.",
+    title: "Written in Rust. Built for scale.",
+    body: "Memory-safe, race-free, no garbage collector to stall your hot path. Over a billion build requests a month, in production.",
   },
   {
     n: "02",
-    title: "Scale past one machine.",
-    body: "Distribute work across hundreds of cores on commodity infra. Pay only for what you use — the scheduler decides.",
+    title: "Ten minutes to your first cache hit.",
+    body: "One Docker command. Drops into your existing Bazel, Buck2, Reclient, or CMake setup with zero rewrites.",
   },
   {
     n: "03",
-    title: "Memory-safe by design.",
-    body: "Written in Rust. No garbage collector to stall your hot path. Over a billion build requests a month in production.",
+    title: "Works with what you've got.",
+    body: "C++, Rust, Python, Go, and more. Bazel, Buck2, Reclient, and CMake. AWS, GCP, or your own hardware. No lock-in.",
   },
   {
     n: "04",
-    title: "Open source, batteries included.",
-    body: "MIT-licensed. Self-host on your infra in minutes — or let us run it for you. Same engine either way.",
+    title: "Open source. Hosted or self-run.",
+    body: "Start free on the open-source release, or let us operate it for you on NativeLink Cloud. Same engine either way.",
   },
 ];
 
-const integrations = [
-  "Bazel",
-  "Buck2",
-  "Reclient",
-  "Pants",
-  "Goma",
-  "CMake",
-  "Cargo",
-  "Soong",
-];
+const integrations = ["Bazel", "Buck2", "Reclient", "CMake", "Goma", "Pants"];
 
+// Real industries NativeLink serves (from the production homepage).
 const industries = [
-  "Robotics & autonomous systems",
+  "Robotics & Autonomous Systems",
   "Semiconductors & EDA",
-  "Consumer electronics & mobile",
-  "AI & ML research",
-  "Financial services",
-  "Life sciences",
+  "Consumer Electronics & Mobile",
+  "Developer Infrastructure & OS",
+  "AI/ML Platforms",
+  "Browsers & Web Platforms",
+  "Healthcare & Life Sciences",
+  "Financial Infrastructure",
 ];
 
-// Customer-style wordmarks. Each one is styled distinctly enough to read as
-// a "brand" without faking real corporate logos. Companies match the
-// case-study mentions on /resources.
+// Real customers running NativeLink in production. Rendered as monochrome
+// wordmarks — we don't bundle third-party logo art.
 const customers: { name: string; cls: string }[] = [
-  { name: "Samsung Internet", cls: "font-semibold tracking-[-0.04em]" },
-  { name: "Aurora Robotics", cls: "italic font-light tracking-tight" },
-  { name: "Cirque Semi", cls: "font-mono tracking-[-0.02em]" },
-  { name: "Northstar AV", cls: "font-extralight uppercase tracking-[0.18em] text-base" },
-  { name: "Halcyon AI", cls: "font-semibold tracking-[-0.05em]" },
-  { name: "Helix Robotics", cls: "font-mono uppercase tracking-[0.05em] text-base" },
+  { name: "Samsung", cls: "font-semibold tracking-[-0.04em]" },
+  { name: "Rocky Linux", cls: "font-mono tracking-[-0.02em]" },
+  { name: "Menlo Security", cls: "font-light tracking-tight" },
+  { name: "Chromium", cls: "font-semibold tracking-[-0.03em]" },
+  { name: "Brave", cls: "font-extrabold uppercase tracking-[0.04em] text-base" },
+  { name: "Electron", cls: "font-mono uppercase tracking-[0.06em] text-base" },
 ];
 
 const comparisonRows = [
@@ -201,34 +194,34 @@ export default function HomePage() {
           <div className="grid grid-cols-2 gap-x-8 gap-y-10 md:grid-cols-4">
             <div className="flex flex-col gap-2">
               <div className="font-mono text-4xl font-semibold leading-none tracking-tight text-brand md:text-5xl">
+                4–15×
+              </div>
+              <div className="text-sm leading-relaxed text-muted">
+                Faster builds
+              </div>
+            </div>
+            <div className="flex flex-col gap-2">
+              <div className="font-mono text-4xl font-semibold leading-none tracking-tight text-foreground md:text-5xl">
                 <Counter to={1} suffix="B+" />
               </div>
               <div className="text-sm leading-relaxed text-muted">
-                Build requests served per month
+                Build requests per month
               </div>
             </div>
             <div className="flex flex-col gap-2">
               <div className="font-mono text-4xl font-semibold leading-none tracking-tight text-foreground md:text-5xl">
-                <Counter to={10} suffix="×" />
+                <Counter to={10} suffix=" min" />
               </div>
               <div className="text-sm leading-relaxed text-muted">
-                Cache hit speedup vs cold build
-              </div>
-            </div>
-            <div className="flex flex-col gap-2">
-              <div className="font-mono text-4xl font-semibold leading-none tracking-tight text-foreground md:text-5xl">
-                &lt;<Counter to={10} suffix="m" />
-              </div>
-              <div className="text-sm leading-relaxed text-muted">
-                From clone to first cache hit
+                To your first cache hit
               </div>
             </div>
             <div className="flex flex-col gap-2">
               <div className="font-mono text-4xl font-semibold leading-none tracking-tight text-brand md:text-5xl">
-                <Counter to={100} suffix="%" />
+                Zero
               </div>
               <div className="text-sm leading-relaxed text-muted">
-                Open source core (MIT)
+                Build-system rewrites
               </div>
             </div>
           </div>
@@ -390,34 +383,20 @@ export default function HomePage() {
         <div className="pointer-events-none absolute inset-0 -z-10 bg-[radial-gradient(ellipse_at_center,rgb(var(--nl-color-brand)/0.12),transparent_60%)]" />
         <Section width="narrow" className="py-28 text-center">
           <Reveal>
-            <Eyebrow className="mb-6">Demonstrated on LLVM</Eyebrow>
+            <Eyebrow className="mb-6">In production</Eyebrow>
             <blockquote className="text-balance text-3xl font-semibold leading-[1.2] tracking-[-0.02em] md:text-[44px]">
-              "Engineered for the world's largest C++ codebases —{" "}
+              "Running NativeLink in production with{" "}
               <span className="bg-gradient-to-r from-brand to-brand-strong bg-clip-text text-transparent">
-                and yours.
-              </span>
-              "
+                great results.
+              </span>{" "}
+              Great work folks."
             </blockquote>
             <p className="mt-6 text-sm text-muted-foreground">
-              Production-tested on LLVM, one of the largest open-source codebases in the world.
+              Mustafa Gezen · Rocky Linux
             </p>
             <div className="mt-8 flex flex-wrap justify-center gap-2">
-              <Badge variant="brand">
-                <Counter to={4} />× faster builds
-              </Badge>
-              <Badge variant="outline">17 min → 4 min</Badge>
-              <Badge variant="outline">CMake + recc</Badge>
-            </div>
-            <div className="mt-10 flex justify-center">
-              <Button variant="link" asChild>
-                <a
-                  href="https://reidkleckner.dev/posts/llvm-recc-nativelink/"
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Read the full write-up <span aria-hidden="true">→</span>
-                </a>
-              </Button>
+              <Badge variant="brand">1B+ requests / month</Badge>
+              <Badge variant="outline">Trusted by Samsung, Brave & Chromium</Badge>
             </div>
           </Reveal>
         </Section>
