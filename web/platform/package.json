@@ -3,7 +3,7 @@
   "type": "module",
   "devDependencies": {
     "@astrojs/check": "^0.9.4",
-    "@astrojs/cloudflare": "12.6.13",
+    "@astrojs/cloudflare": "13.1.10",
     "@astrojs/markdown-remark": "^7.0.0",
     "@astrojs/partytown": "^2.1.4",
     "@astrojs/react": "^5.0.0",
