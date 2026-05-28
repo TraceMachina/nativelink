@@ -177,6 +177,7 @@ pub struct CacheMetricAttrs {
     read_hit: Vec<KeyValue>,
     read_miss: Vec<KeyValue>,
     read_expired: Vec<KeyValue>,
+    read_error: Vec<KeyValue>,
 
     // Write operation attributes
     write_success: Vec<KeyValue>,
@@ -210,6 +211,7 @@ impl CacheMetricAttrs {
             read_hit: make_attrs(CacheOperationName::Read, CacheOperationResult::Hit),
             read_miss: make_attrs(CacheOperationName::Read, CacheOperationResult::Miss),
             read_expired: make_attrs(CacheOperationName::Read, CacheOperationResult::Expired),
+            read_error: make_attrs(CacheOperationName::Read, CacheOperationResult::Error),
 
             write_success: make_attrs(CacheOperationName::Write, CacheOperationResult::Success),
             write_error: make_attrs(CacheOperationName::Write, CacheOperationResult::Error),
@@ -235,6 +237,10 @@ impl CacheMetricAttrs {
     #[must_use]
     pub fn read_expired(&self) -> &[KeyValue] {
         &self.read_expired
+    }
+    #[must_use]
+    pub fn read_error(&self) -> &[KeyValue] {
+        &self.read_error
     }
     #[must_use]
     pub fn write_success(&self) -> &[KeyValue] {
