@@ -50,6 +50,28 @@ pub enum ConfigDigestHashFunction {
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum StoreSpec {
+    /// Cache metrics store wraps another store and emits low-cardinality
+    /// OpenTelemetry cache operation metrics for the wrapped store.
+    ///
+    /// This wrapper is opt-in. Stores that are not explicitly wrapped by
+    /// `cache_metrics` are constructed exactly as they are without this
+    /// wrapper and do not pay its hot-path timing or recording cost.
+    ///
+    /// **Example JSON Config:**
+    /// ```json
+    /// "cache_metrics": {
+    ///   "cache_type": "cas",
+    ///   "backend": {
+    ///     "filesystem": {
+    ///       "content_path": "~/.cache/nativelink/content_path-cas",
+    ///       "temp_path": "~/.cache/nativelink/tmp_path-cas"
+    ///     }
+    ///   }
+    /// }
+    /// ```
+    ///
+    CacheMetrics(Box<CacheMetricsSpec>),
+
     /// Memory store will store all data in a hashmap in memory.
     ///
     /// **Example JSON Config:**
@@ -592,6 +614,18 @@ pub struct ShardConfig {
 pub struct ShardSpec {
     /// Stores to shard the data to.
     pub stores: Vec<ShardConfig>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct CacheMetricsSpec {
+    /// Low-cardinality cache type label for metrics, for example `cas` or `ac`.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub cache_type: String,
+
+    /// Store to wrap with cache operation metrics.
+    pub backend: StoreSpec,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

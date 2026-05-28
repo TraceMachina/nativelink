@@ -4,17 +4,22 @@ description: 'Configure OpenTelemetry metrics collection for NativeLink'
 ---
 import { Tabs, TabItem } from '@astrojs/starlight/components';
 
-NativeLink provides comprehensive metrics through OpenTelemetry (OTEL), enabling deep insights into cache performance, remote execution pipelines, and system health.
+NativeLink provides metrics through OpenTelemetry (OTEL), enabling insight into remote execution pipelines and system health. Cache operation metrics are available when the relevant store is explicitly wrapped with the opt-in `cache_metrics` store wrapper.
 
 ## Overview
 
-NativeLink automatically exports metrics when configured with OTEL environment variables. The metrics cover:
+NativeLink automatically exports execution metrics when configured with OTEL environment variables. Cache metrics require an explicit store wrapper. The metrics cover:
 
-- **Cache Operations**: Hit rates, latencies, evictions
+- **Cache Operations**: Hit rates and latencies when `cache_metrics` is enabled
 - **Execution Pipeline**: Queue depths, stage durations, success rates
 - **System Health**: Worker utilization, throughput, error rates
 
 ## Quick Start
+
+NativeLink doesn't expose a Prometheus scrape endpoint directly. It emits OTLP metrics. To view those metrics in Prometheus, use one of these paths:
+
+1. NativeLink sends OTLP to an OpenTelemetry Collector, and Prometheus scrapes the Collector's Prometheus exporter endpoint.
+2. NativeLink sends OTLP/HTTP metrics directly to Prometheus with Prometheus' OTLP receiver enabled.
 
 <Tabs>
 <TabItem label="Docker Compose">
@@ -37,10 +42,31 @@ export OTEL_RESOURCE_ATTRIBUTES="deployment.environment=dev"
 nativelink /path/to/config.json
 ```
 
+To emit `nativelink_cache_*` metrics, wrap the CAS and/or AC store you want to measure:
+
+```json5
+{
+  "name": "CAS_MAIN_STORE",
+  "cache_metrics": {
+    "cache_type": "cas",
+    "backend": {
+      "filesystem": {
+        "content_path": "~/.cache/nativelink/content_path-cas",
+        "temp_path": "~/.cache/nativelink/tmp_path-cas"
+      }
+    }
+  }
+}
+```
+
+If `cache_metrics` is absent, NativeLink constructs the same store graph as it would without cache metrics. The disabled path doesn't add a wrapper, timer, attribute allocation, or OpenTelemetry recording call to cache operations.
+
 Access the services:
 - Prometheus: http://localhost:9091
 - Grafana: http://localhost:3000 (admin/admin)
 - OTEL Collector: http://localhost:8888/metrics
+
+In this flow, NativeLink sends OTLP to the Collector on `:4317`. The Collector serves Prometheus-format metrics on its Prometheus exporter endpoint, and Prometheus scrapes that endpoint.
 
 </TabItem>
 <TabItem label="Kubernetes">
@@ -124,11 +150,35 @@ processors:
     send_batch_size: 1024
 ```
 
+To make Prometheus scrape the Collector, configure a Prometheus exporter in the Collector and a matching scrape job in Prometheus:
+
+```yaml
+# otel-collector.yaml
+exporters:
+  prometheus:
+    endpoint: "0.0.0.0:9090"
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [prometheus]
+```
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: otel-collector
+    static_configs:
+      - targets: ["otel-collector:9090"]
+```
+
 ## Metrics Reference
 
 ### Cache Metrics
 
-Monitor cache performance and efficiency:
+Monitor cache performance and efficiency. These series are emitted only for stores wrapped with `cache_metrics`; configuring OTEL alone doesn't enable them.
 
 | Metric | Description | Key Labels |
 |--------|-------------|------------|
