@@ -33,7 +33,7 @@
 
 NativeLink is an efficient, high-performance build cache and remote execution system that accelerates software compilation and testing while reducing infrastructure costs. It optimizes build processes for projects of all sizes by intelligently caching build artifacts and distributing tasks across multiple machines.
 
-NativeLink is trusted in production environments to reduce costs and developer iteration times--handling over **one billion requests** per month for its customers, including large corporations such as **Samsung**.
+NativeLink is trusted in production environments to reduce costs and developer iteration times--handling over **billions of requests** per month for its customers, including large corporations such as **Samsung**.
 
 <p align="center">
   <a href="https://www.youtube.com/watch?v=WLpqFuyLMUQ">
