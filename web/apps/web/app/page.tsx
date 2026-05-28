@@ -1,4 +1,5 @@
 import { AnimatedTerminal } from "@/components/animated-terminal";
+import { ArchitectureDiagram } from "@/components/architecture-diagram";
 import { Badge, Button, Eyebrow, HeroVisual, Marquee, Reveal, Section } from "@nativelink/ui";
 
 export const metadata = {
@@ -305,6 +306,11 @@ export default function HomePage() {
                 for. At agent speed.
               </p>
             </div>
+          </div>
+        </Reveal>
+        <Reveal delay={0.12}>
+          <div className="mx-auto mt-14 max-w-[940px]">
+            <ArchitectureDiagram />
           </div>
         </Reveal>
       </Section>
