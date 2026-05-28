@@ -1,4 +1,4 @@
-import * as React from "react";
+import type * as React from "react";
 import { cn } from "../lib/cn";
 
 interface StatProps extends React.HTMLAttributes<HTMLDivElement> {
@@ -23,17 +23,8 @@ export function Stat({ value, label, accent = false, className, ...props }: Stat
   );
 }
 
-export function StatGrid({
-  className,
-  ...props
-}: React.HTMLAttributes<HTMLDivElement>) {
+export function StatGrid({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
   return (
-    <div
-      className={cn(
-        "grid grid-cols-2 gap-x-8 gap-y-10 md:grid-cols-4",
-        className,
-      )}
-      {...props}
-    />
+    <div className={cn("grid grid-cols-2 gap-x-8 gap-y-10 md:grid-cols-4", className)} {...props} />
   );
 }

@@ -65,7 +65,14 @@ export default async function OpenGraphImage() {
             boxShadow: "0 12px 32px -8px rgba(156,124,255,0.55)",
           }}
         >
-          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          {/* biome-ignore lint/a11y/noSvgWithoutTitle: rendered to a PNG by satori; there is no accessibility tree in the output image */}
+          <svg
+            width="40"
+            height="40"
+            viewBox="0 0 24 24"
+            fill="none"
+            xmlns="http://www.w3.org/2000/svg"
+          >
             <path
               d="M5.6 6.5 H8.3 V13.8 L15.2 6.5 H18.4 V17.5 H15.7 V10.2 L8.8 17.5 H5.6 Z"
               fill="#0A090E"

@@ -1,6 +1,6 @@
+import { getContributors, getRepoStats } from "@/lib/github";
 import { Badge, Button, Counter, Eyebrow, Reveal, Section } from "@nativelink/ui";
 import Image from "next/image";
-import { getContributors, getRepoStats } from "@/lib/github";
 
 export const metadata = { title: "Community" };
 
@@ -12,8 +12,17 @@ const channels = [
     label: "Open docs",
     accent: "default" as const,
     icon: (
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
-        <path d="M4 4h10a2 2 0 0 1 2 2v14H6a2 2 0 0 1-2-2V4Z M16 6h4v14h-12" strokeLinejoin="round" />
+      <svg
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        aria-hidden="true"
+      >
+        <path
+          d="M4 4h10a2 2 0 0 1 2 2v14H6a2 2 0 0 1-2-2V4Z M16 6h4v14h-12"
+          strokeLinejoin="round"
+        />
         <path d="M8 9h6M8 13h6M8 17h4" strokeLinecap="round" />
       </svg>
     ),
@@ -49,10 +58,7 @@ const channels = [
 ];
 
 export default async function CommunityPage() {
-  const [{ contributors, total }, stats] = await Promise.all([
-    getContributors(),
-    getRepoStats(),
-  ]);
+  const [{ contributors, total }, stats] = await Promise.all([getContributors(), getRepoStats()]);
   const starsK = stats.stars / 1000;
 
   return (
@@ -72,8 +78,8 @@ export default async function CommunityPage() {
                 .
               </h1>
               <p className="mx-auto mt-6 max-w-[600px] text-[17px] leading-relaxed text-muted-foreground md:text-lg">
-                Operators, contributors, and the engineers who build NativeLink — all in
-                the same room.
+                Operators, contributors, and the engineers who build NativeLink — all in the same
+                room.
               </p>
             </div>
           </Reveal>
@@ -148,7 +154,10 @@ export default async function CommunityPage() {
                 </p>
                 <span className="mt-8 inline-flex items-center gap-1.5 font-mono text-sm text-brand">
                   {c.label}{" "}
-                  <span aria-hidden="true" className="transition-transform group-hover:translate-x-1">
+                  <span
+                    aria-hidden="true"
+                    className="transition-transform group-hover:translate-x-1"
+                  >
                     →
                   </span>
                 </span>
@@ -164,12 +173,11 @@ export default async function CommunityPage() {
           <div className="mx-auto mb-12 max-w-[680px] text-center">
             <Eyebrow className="mb-4">Thank you</Eyebrow>
             <h2 className="text-balance text-4xl font-semibold leading-[1.05] tracking-[-0.03em] md:text-5xl">
-              We love our{" "}
-              <span className="text-brand">{total} contributors</span>.
+              We love our <span className="text-brand">{total} contributors</span>.
             </h2>
             <p className="mt-5 text-base leading-relaxed text-muted-foreground md:text-lg">
-              From kernel-level optimizations to typo fixes — every PR gets reviewed
-              and credited. Pulled live from{" "}
+              From kernel-level optimizations to typo fixes — every PR gets reviewed and credited.
+              Pulled live from{" "}
               <a
                 href="https://github.com/TraceMachina/nativelink/graphs/contributors"
                 target="_blank"
@@ -225,16 +233,12 @@ export default async function CommunityPage() {
                 Send us your handle, we'll send you swag.
               </h3>
               <p className="mx-auto mt-3 max-w-[480px] text-[15px] text-muted-foreground">
-                Merged a PR? Helped someone on Slack? Wrote a tutorial? Fill out the
-                form and our team will be in touch.
+                Merged a PR? Helped someone on Slack? Wrote a tutorial? Fill out the form and our
+                team will be in touch.
               </p>
               <div className="mt-6 flex justify-center">
                 <Button size="lg" asChild>
-                  <a
-                    href="https://forms.gle/LtaWSixEC6bYi5xF7"
-                    target="_blank"
-                    rel="noreferrer"
-                  >
+                  <a href="https://forms.gle/LtaWSixEC6bYi5xF7" target="_blank" rel="noreferrer">
                     Fill out the form
                   </a>
                 </Button>

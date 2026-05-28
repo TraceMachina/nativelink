@@ -1,10 +1,7 @@
-import * as React from "react";
+import type * as React from "react";
 import { cn } from "../lib/cn";
 
-export function Prose({
-  className,
-  ...props
-}: React.HTMLAttributes<HTMLDivElement>) {
+export function Prose({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
   return (
     <div
       className={cn(

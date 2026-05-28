@@ -1,4 +1,4 @@
-import * as React from "react";
+import type * as React from "react";
 import { cn } from "../lib/cn";
 
 interface LogoProps extends React.HTMLAttributes<HTMLSpanElement> {
@@ -16,12 +16,7 @@ const sizeMap: Record<NonNullable<LogoProps["size"]>, number> = {
   xl: 44,
 };
 
-export function Logo({
-  size = "md",
-  className,
-  basePath = "",
-  ...props
-}: LogoProps) {
+export function Logo({ size = "md", className, basePath = "", ...props }: LogoProps) {
   const h = sizeMap[size];
   const w = Math.round(h * 6.105);
   return (

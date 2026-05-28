@@ -36,10 +36,7 @@ export function TerminalDemo({
           {lines.map((line, i) => (
             <div
               key={`${i}-${line.children.slice(0, 8)}`}
-              className={cn(
-                line.comment && "text-background/45",
-                line.info && "text-[#7df0c5]",
-              )}
+              className={cn(line.comment && "text-background/45", line.info && "text-[#7df0c5]")}
             >
               {line.prompt && <span className="text-background/40">$ </span>}
               {line.children}

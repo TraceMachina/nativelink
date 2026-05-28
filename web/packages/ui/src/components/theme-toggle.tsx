@@ -1,6 +1,6 @@
 "use client";
 
-import * as React from "react";
+import type * as React from "react";
 import { cn } from "../lib/cn";
 import { useTheme } from "./theme-provider";
 
@@ -10,9 +10,7 @@ export function ThemeToggle({ className, ...props }: ThemeToggleProps) {
   const { theme, toggle, mounted } = useTheme();
 
   // Render a placeholder same-shape button before mount so the layout doesn't shift.
-  const label = mounted
-    ? `Switch to ${theme === "dark" ? "light" : "dark"} theme`
-    : "Toggle theme";
+  const label = mounted ? `Switch to ${theme === "dark" ? "light" : "dark"} theme` : "Toggle theme";
 
   return (
     <button

@@ -10,13 +10,43 @@ type Health = "operational" | "degraded" | "outage" | "maintenance";
 const overall: Health = "operational";
 
 const components: { name: string; description: string; status: Health; uptime: string }[] = [
-  { name: "Cache (CAS)", description: "Content-addressed storage", status: "operational", uptime: "99.998%" },
-  { name: "Action Cache", description: "Action result lookups", status: "operational", uptime: "99.997%" },
-  { name: "Scheduler", description: "Build dispatch & coordination", status: "operational", uptime: "99.995%" },
-  { name: "Workers (us-east)", description: "Execution fleet — US East", status: "operational", uptime: "99.99%" },
-  { name: "Workers (eu-west)", description: "Execution fleet — Europe", status: "operational", uptime: "99.99%" },
+  {
+    name: "Cache (CAS)",
+    description: "Content-addressed storage",
+    status: "operational",
+    uptime: "99.998%",
+  },
+  {
+    name: "Action Cache",
+    description: "Action result lookups",
+    status: "operational",
+    uptime: "99.997%",
+  },
+  {
+    name: "Scheduler",
+    description: "Build dispatch & coordination",
+    status: "operational",
+    uptime: "99.995%",
+  },
+  {
+    name: "Workers (us-east)",
+    description: "Execution fleet — US East",
+    status: "operational",
+    uptime: "99.99%",
+  },
+  {
+    name: "Workers (eu-west)",
+    description: "Execution fleet — Europe",
+    status: "operational",
+    uptime: "99.99%",
+  },
   { name: "Dashboard", description: "Web console & APIs", status: "operational", uptime: "99.99%" },
-  { name: "Webhooks", description: "Outbound event delivery", status: "operational", uptime: "99.97%" },
+  {
+    name: "Webhooks",
+    description: "Outbound event delivery",
+    status: "operational",
+    uptime: "99.97%",
+  },
 ];
 
 const incidents = [
@@ -57,13 +87,15 @@ const statusTone: Record<Health, { dot: string; label: string; text: string }> =
 function UptimeBar() {
   return (
     <div className="flex h-7 items-end gap-[2px]">
-      {Array.from({ length: 60 }).map((_, i) => (
-        <span
-          key={i}
-          className="block w-full rounded-[1.5px] bg-success/85"
-          style={{ height: `${60 + (i % 7) * 5}%` }}
-        />
-      ))}
+      {Array.from({ length: 60 }, (_, i) => ({ id: `day-${i}`, h: 60 + (i % 7) * 5 })).map(
+        (bar) => (
+          <span
+            key={bar.id}
+            className="block w-full rounded-[1.5px] bg-success/85"
+            style={{ height: `${bar.h}%` }}
+          />
+        ),
+      )}
     </div>
   );
 }
@@ -96,7 +128,12 @@ export default function StatusPage() {
                   />
                   <span className={cn("relative inline-flex h-2 w-2 rounded-full", ov.dot)} />
                 </span>
-                <span className={cn("font-mono text-xs font-semibold uppercase tracking-[0.14em]", ov.text)}>
+                <span
+                  className={cn(
+                    "font-mono text-xs font-semibold uppercase tracking-[0.14em]",
+                    ov.text,
+                  )}
+                >
                   All systems operational
                 </span>
               </div>
@@ -104,9 +141,12 @@ export default function StatusPage() {
                 Live status of NativeLink Cloud.
               </h1>
               <p className="mx-auto mt-5 max-w-[600px] text-base leading-relaxed text-muted-foreground md:text-lg">
-                Component-level health, 90-day uptime, and the last few incidents.
-                Subscribe to incident updates by email at{" "}
-                <a href="mailto:status@nativelink.com" className="text-brand underline-offset-4 hover:underline">
+                Component-level health, 90-day uptime, and the last few incidents. Subscribe to
+                incident updates by email at{" "}
+                <a
+                  href="mailto:status@nativelink.com"
+                  className="text-brand underline-offset-4 hover:underline"
+                >
                   status@nativelink.com
                 </a>
                 .
@@ -121,16 +161,17 @@ export default function StatusPage() {
         <Reveal>
           <div className="overflow-hidden rounded-2xl border border-border bg-surface">
             <div className="flex items-center justify-between border-b border-border px-6 py-4">
-              <p className="font-mono text-xs uppercase tracking-[0.18em] text-muted">
-                Components
-              </p>
+              <p className="font-mono text-xs uppercase tracking-[0.18em] text-muted">Components</p>
               <p className="font-mono text-xs text-muted">Last 60 days</p>
             </div>
             <ul className="divide-y divide-border">
               {components.map((c) => {
                 const tone = statusTone[c.status];
                 return (
-                  <li key={c.name} className="grid grid-cols-[1.5fr_2fr_auto] items-center gap-6 px-6 py-5">
+                  <li
+                    key={c.name}
+                    className="grid grid-cols-[1.5fr_2fr_auto] items-center gap-6 px-6 py-5"
+                  >
                     <div>
                       <p className="text-[15px] font-medium text-foreground">{c.name}</p>
                       <p className="mt-0.5 text-xs text-muted">{c.description}</p>
@@ -194,9 +235,7 @@ export default function StatusPage() {
                 <h3 className="mt-3 text-lg font-semibold tracking-tight text-foreground">
                   {inc.title}
                 </h3>
-                <p className="mt-2 text-[15px] leading-relaxed text-muted-foreground">
-                  {inc.body}
-                </p>
+                <p className="mt-2 text-[15px] leading-relaxed text-muted-foreground">{inc.body}</p>
               </li>
             </Reveal>
           ))}

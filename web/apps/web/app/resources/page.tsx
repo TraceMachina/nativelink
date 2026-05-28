@@ -1,12 +1,4 @@
-import {
-  Badge,
-  Button,
-  Eyebrow,
-  Reveal,
-  Section,
-  YouTubeEmbed,
-  cn,
-} from "@nativelink/ui";
+import { Badge, Button, Eyebrow, Reveal, Section, YouTubeEmbed, cn } from "@nativelink/ui";
 
 // (Badge is used in featured + announcement cards below.)
 
@@ -26,7 +18,8 @@ const announcements = [
   {
     tag: "Announcement",
     title: "NativeLink v1.3 — Persistent workers, faster scheduling, GPU support.",
-    excerpt: "The biggest release this quarter. Workers stay warm between actions, the scheduler dispatches 3× faster, and we now ship first-class CUDA/ROCm support.",
+    excerpt:
+      "The biggest release this quarter. Workers stay warm between actions, the scheduler dispatches 3× faster, and we now ship first-class CUDA/ROCm support.",
     date: "May 02, 2026",
     readingTime: "5 min",
     accent: "brand" as const,
@@ -34,7 +27,8 @@ const announcements = [
   {
     tag: "Talk",
     title: "Hermetic toolchain creation with LRE & Nix",
-    excerpt: "Aaron Mondal walks through Local Remote Execution — running fully hermetic Bazel builds on your own laptop, no Docker required.",
+    excerpt:
+      "Aaron Mondal walks through Local Remote Execution — running fully hermetic Bazel builds on your own laptop, no Docker required.",
     date: "April 18, 2026",
     readingTime: "32 min video",
     accent: "default" as const,
@@ -42,7 +36,8 @@ const announcements = [
   {
     tag: "Announcement",
     title: "Trace Machina raises $15M to build the Bazel-grade cache for everyone.",
-    excerpt: "Sequoia leads the round with participation from Lux. We're hiring across systems, distributed storage, and developer experience.",
+    excerpt:
+      "Sequoia leads the round with participation from Lux. We're hiring across systems, distributed storage, and developer experience.",
     date: "March 28, 2026",
     readingTime: "3 min",
     accent: "default" as const,
@@ -53,19 +48,22 @@ const caseStudies = [
   {
     company: "Samsung Internet",
     tagline: "Browser builds, 6× faster.",
-    summary: "Samsung's Chromium-based browser team adopted NativeLink to cut their per-commit CI wall-time from 38 minutes to under 7.",
+    summary:
+      "Samsung's Chromium-based browser team adopted NativeLink to cut their per-commit CI wall-time from 38 minutes to under 7.",
     metric: "6×",
   },
   {
     company: "Aurora Robotics",
     tagline: "Simulation that keeps up with the road.",
-    summary: "Replay-driven sim that used to chew through nightly fleets now finishes during code review — and the cache survives every rebase.",
+    summary:
+      "Replay-driven sim that used to chew through nightly fleets now finishes during code review — and the cache survives every rebase.",
     metric: "94%",
   },
   {
     company: "Cirque Semi",
     tagline: "Verification across 4,000 cores.",
-    summary: "An EDA shop with a notoriously hot Verilog regression suite now hands every job to NativeLink's scheduler. Tape-out velocity 2.3× higher.",
+    summary:
+      "An EDA shop with a notoriously hot Verilog regression suite now hands every job to NativeLink's scheduler. Tape-out velocity 2.3× higher.",
     metric: "2.3×",
   },
 ];
@@ -74,25 +72,29 @@ const blogPosts = [
   {
     tag: "Engineering",
     title: "Why we rewrote our scheduler in async Rust.",
-    excerpt: "How we shaved p99 latency from 24ms to 1.8ms by ditching threads, embracing tokio, and being honest about lock contention.",
+    excerpt:
+      "How we shaved p99 latency from 24ms to 1.8ms by ditching threads, embracing tokio, and being honest about lock contention.",
     date: "Apr 21",
   },
   {
     tag: "Deep dive",
     title: "Content-addressed storage at a billion requests a month.",
-    excerpt: "Sharding strategy, hot-key handling, and the surprising thing that happens when half your fleet asks for the same blob at once.",
+    excerpt:
+      "Sharding strategy, hot-key handling, and the surprising thing that happens when half your fleet asks for the same blob at once.",
     date: "Apr 04",
   },
   {
     tag: "Tutorial",
     title: "Migrate a Bazel monorepo to remote execution in an afternoon.",
-    excerpt: "A step-by-step playbook with real configs, common pitfalls, and the diff between a 12-minute build and an 80-second one.",
+    excerpt:
+      "A step-by-step playbook with real configs, common pitfalls, and the diff between a 12-minute build and an 80-second one.",
     date: "Mar 19",
   },
   {
     tag: "Engineering",
     title: "Hermetic builds without Docker — how LRE works.",
-    excerpt: "Nix profiles + content-addressed inputs let you reproduce CI exactly on your laptop. No containers, no Dockerfiles, no surprises.",
+    excerpt:
+      "Nix profiles + content-addressed inputs let you reproduce CI exactly on your laptop. No containers, no Dockerfiles, no surprises.",
     date: "Mar 05",
   },
 ];
@@ -115,8 +117,8 @@ export default function ResourcesPage() {
                 .
               </h1>
               <p className="mx-auto mt-6 max-w-[640px] text-[17px] leading-relaxed text-muted-foreground md:text-lg">
-                Case studies, conference talks, and write-ups from the team building
-                NativeLink — plus highlights from the broader community.
+                Case studies, conference talks, and write-ups from the team building NativeLink —
+                plus highlights from the broader community.
               </p>
             </div>
           </Reveal>
@@ -150,7 +152,10 @@ export default function ResourcesPage() {
                 </div>
                 <div className="mt-8 inline-flex items-center gap-1.5 font-mono text-sm text-brand">
                   Read the write-up{" "}
-                  <span aria-hidden="true" className="transition-transform group-hover:translate-x-1">
+                  <span
+                    aria-hidden="true"
+                    className="transition-transform group-hover:translate-x-1"
+                  >
                     →
                   </span>
                 </div>
@@ -195,7 +200,10 @@ export default function ResourcesPage() {
                 From the team
               </h2>
             </div>
-            <a href="#" className="hidden font-mono text-sm text-brand md:inline-flex">
+            <a
+              href="https://github.com/TraceMachina/nativelink"
+              className="hidden font-mono text-sm text-brand md:inline-flex"
+            >
               All posts →
             </a>
           </div>
@@ -224,7 +232,7 @@ export default function ResourcesPage() {
             {announcements.map((p, i) => (
               <Reveal key={p.title} delay={i * 0.05}>
                 <a
-                  href="#"
+                  href="https://github.com/TraceMachina/nativelink"
                   className={cn(
                     "group block rounded-2xl border p-6 transition-all hover:-translate-y-0.5",
                     p.accent === "brand"
@@ -233,9 +241,7 @@ export default function ResourcesPage() {
                   )}
                 >
                   <div className="mb-3 flex items-center gap-2">
-                    <Badge variant={p.accent === "brand" ? "brand" : "default"}>
-                      {p.tag}
-                    </Badge>
+                    <Badge variant={p.accent === "brand" ? "brand" : "default"}>{p.tag}</Badge>
                     <span className="font-mono text-xs text-muted">
                       {p.date} · {p.readingTime}
                     </span>
@@ -243,9 +249,7 @@ export default function ResourcesPage() {
                   <h3 className="text-lg font-semibold leading-tight tracking-tight text-foreground">
                     {p.title}
                   </h3>
-                  <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-                    {p.excerpt}
-                  </p>
+                  <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{p.excerpt}</p>
                 </a>
               </Reveal>
             ))}
@@ -264,8 +268,8 @@ export default function ResourcesPage() {
               </h2>
             </div>
             <p className="max-w-[420px] text-base leading-relaxed text-muted-foreground">
-              How teams are using NativeLink to keep their build farms — and their
-              engineers — moving at full speed.
+              How teams are using NativeLink to keep their build farms — and their engineers —
+              moving at full speed.
             </p>
           </div>
         </Reveal>
@@ -308,7 +312,7 @@ export default function ResourcesPage() {
               </h2>
             </div>
             <Button asChild variant="outline" size="sm">
-              <a href="#">All posts</a>
+              <a href="https://github.com/TraceMachina/nativelink">All posts</a>
             </Button>
           </div>
         </Reveal>
@@ -317,7 +321,7 @@ export default function ResourcesPage() {
           {blogPosts.map((p, i) => (
             <Reveal key={p.title} delay={i * 0.04}>
               <a
-                href="#"
+                href="https://github.com/TraceMachina/nativelink"
                 className="group flex h-full flex-col justify-between rounded-2xl border border-border bg-surface p-7 transition-all hover:border-brand/40 hover:shadow-[0_20px_50px_-25px_rgb(var(--nl-color-brand)/0.35)]"
               >
                 <div>
@@ -334,7 +338,10 @@ export default function ResourcesPage() {
                 </div>
                 <div className="mt-6 inline-flex items-center gap-1.5 font-mono text-sm text-brand transition-all">
                   Read post{" "}
-                  <span aria-hidden="true" className="transition-transform group-hover:translate-x-1">
+                  <span
+                    aria-hidden="true"
+                    className="transition-transform group-hover:translate-x-1"
+                  >
                     →
                   </span>
                 </div>

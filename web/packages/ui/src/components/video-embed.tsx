@@ -13,12 +13,7 @@ const aspectMap = {
   "1/1": "aspect-square",
 } as const;
 
-export function VideoEmbed({
-  src,
-  title = "Video",
-  className,
-  aspect = "16/9",
-}: VideoEmbedProps) {
+export function VideoEmbed({ src, title = "Video", className, aspect = "16/9" }: VideoEmbedProps) {
   return (
     <div
       className={cn(

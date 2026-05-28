@@ -13,12 +13,29 @@ interface ContributorsResult {
 }
 
 const FALLBACK: Contributor[] = [
-  { login: "aaronmondal", avatar_url: "https://github.com/aaronmondal.png?size=80", html_url: "https://github.com/aaronmondal", contributions: 0 },
-  { login: "allada", avatar_url: "https://github.com/allada.png?size=80", html_url: "https://github.com/allada", contributions: 0 },
-  { login: "blaise-d", avatar_url: "https://github.com/blaise-d.png?size=80", html_url: "https://github.com/blaise-d", contributions: 0 },
+  {
+    login: "aaronmondal",
+    avatar_url: "https://github.com/aaronmondal.png?size=80",
+    html_url: "https://github.com/aaronmondal",
+    contributions: 0,
+  },
+  {
+    login: "allada",
+    avatar_url: "https://github.com/allada.png?size=80",
+    html_url: "https://github.com/allada",
+    contributions: 0,
+  },
+  {
+    login: "blaise-d",
+    avatar_url: "https://github.com/blaise-d.png?size=80",
+    html_url: "https://github.com/blaise-d",
+    contributions: 0,
+  },
 ];
 
-export async function getContributors(repo = "TraceMachina/nativelink"): Promise<ContributorsResult> {
+export async function getContributors(
+  repo = "TraceMachina/nativelink",
+): Promise<ContributorsResult> {
   const url = `https://api.github.com/repos/${repo}/contributors?per_page=30`;
   try {
     const res = await fetch(url, {

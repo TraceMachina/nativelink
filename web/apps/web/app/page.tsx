@@ -116,8 +116,8 @@ export default function HomePage() {
               </h1>
               <p className="mt-6 max-w-[560px] text-[17px] leading-relaxed text-muted-foreground md:text-lg">
                 NativeLink caches and parallelizes Bazel, Buck2, Reclient, and Pants at
-                infrastructure scale. Written in Rust. Open source. Battle-tested on
-                over a billion build requests a month.
+                infrastructure scale. Written in Rust. Open source. Battle-tested on over a billion
+                build requests a month.
               </p>
               <div className="mt-8 flex flex-wrap items-center gap-3">
                 <Button size="lg" asChild>
@@ -196,33 +196,25 @@ export default function HomePage() {
               <div className="font-mono text-4xl font-semibold leading-none tracking-tight text-brand md:text-5xl">
                 4–15×
               </div>
-              <div className="text-sm leading-relaxed text-muted">
-                Faster builds
-              </div>
+              <div className="text-sm leading-relaxed text-muted">Faster builds</div>
             </div>
             <div className="flex flex-col gap-2">
               <div className="font-mono text-4xl font-semibold leading-none tracking-tight text-foreground md:text-5xl">
                 <Counter to={1} suffix="B+" />
               </div>
-              <div className="text-sm leading-relaxed text-muted">
-                Build requests per month
-              </div>
+              <div className="text-sm leading-relaxed text-muted">Build requests per month</div>
             </div>
             <div className="flex flex-col gap-2">
               <div className="font-mono text-4xl font-semibold leading-none tracking-tight text-foreground md:text-5xl">
                 <Counter to={10} suffix=" min" />
               </div>
-              <div className="text-sm leading-relaxed text-muted">
-                To your first cache hit
-              </div>
+              <div className="text-sm leading-relaxed text-muted">To your first cache hit</div>
             </div>
             <div className="flex flex-col gap-2">
               <div className="font-mono text-4xl font-semibold leading-none tracking-tight text-brand md:text-5xl">
                 Zero
               </div>
-              <div className="text-sm leading-relaxed text-muted">
-                Build-system rewrites
-              </div>
+              <div className="text-sm leading-relaxed text-muted">Build-system rewrites</div>
             </div>
           </div>
         </Reveal>
@@ -234,13 +226,11 @@ export default function HomePage() {
           <div className="mx-auto mb-16 max-w-[720px] text-center">
             <Eyebrow className="mb-4">Why NativeLink</Eyebrow>
             <h2 className="text-balance text-4xl font-semibold leading-[1.05] tracking-[-0.03em] md:text-[56px]">
-              Build infrastructure that{" "}
-              <span className="text-brand">disappears</span>.
+              Build infrastructure that <span className="text-brand">disappears</span>.
             </h2>
             <p className="mt-5 text-base leading-relaxed text-muted-foreground md:text-lg">
-              The fastest builds are the ones you don't notice. NativeLink runs quietly
-              behind your existing build system, doing the work so your engineers don't
-              have to wait.
+              The fastest builds are the ones you don't notice. NativeLink runs quietly behind your
+              existing build system, doing the work so your engineers don't have to wait.
             </p>
           </div>
         </Reveal>
@@ -253,19 +243,46 @@ export default function HomePage() {
                   {f.n}
                 </div>
                 <div className="mb-5 inline-flex h-10 w-10 items-center justify-center rounded-xl bg-brand-soft text-brand transition-colors group-hover:bg-brand group-hover:text-brand-foreground">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" aria-hidden="true">
-                    {i === 0 && <path d="M13 2 L4 14 H12 L11 22 L20 10 H12 Z" strokeLinejoin="round" />}
-                    {i === 1 && <><circle cx="6" cy="6" r="2.5" /><circle cx="18" cy="6" r="2.5" /><circle cx="6" cy="18" r="2.5" /><circle cx="18" cy="18" r="2.5" /><path d="M8 6h8M8 18h8M6 8v8M18 8v8" /></>}
-                    {i === 2 && <path d="M12 3 L4 7 V13 C4 17 8 20 12 21 C16 20 20 17 20 13 V7 Z" strokeLinejoin="round" />}
-                    {i === 3 && <path d="M16 18 L22 12 L16 6 M8 6 L2 12 L8 18 M14 4 L10 20" strokeLinecap="round" strokeLinejoin="round" />}
+                  <svg
+                    width="18"
+                    height="18"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.75"
+                    aria-hidden="true"
+                  >
+                    {i === 0 && (
+                      <path d="M13 2 L4 14 H12 L11 22 L20 10 H12 Z" strokeLinejoin="round" />
+                    )}
+                    {i === 1 && (
+                      <>
+                        <circle cx="6" cy="6" r="2.5" />
+                        <circle cx="18" cy="6" r="2.5" />
+                        <circle cx="6" cy="18" r="2.5" />
+                        <circle cx="18" cy="18" r="2.5" />
+                        <path d="M8 6h8M8 18h8M6 8v8M18 8v8" />
+                      </>
+                    )}
+                    {i === 2 && (
+                      <path
+                        d="M12 3 L4 7 V13 C4 17 8 20 12 21 C16 20 20 17 20 13 V7 Z"
+                        strokeLinejoin="round"
+                      />
+                    )}
+                    {i === 3 && (
+                      <path
+                        d="M16 18 L22 12 L16 6 M8 6 L2 12 L8 18 M14 4 L10 20"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    )}
                   </svg>
                 </div>
                 <h3 className="text-lg font-semibold leading-tight tracking-tight text-foreground">
                   {f.title}
                 </h3>
-                <p className="mt-3 text-[15px] leading-relaxed text-muted-foreground">
-                  {f.body}
-                </p>
+                <p className="mt-3 text-[15px] leading-relaxed text-muted-foreground">{f.body}</p>
               </div>
             </Reveal>
           ))}
@@ -290,35 +307,29 @@ export default function HomePage() {
           <div className="mx-auto max-w-[960px] overflow-hidden rounded-2xl border border-border bg-surface">
             <div className="grid grid-cols-[1fr_auto_1fr] items-center border-b border-border bg-surface-elevated px-6 py-4">
               <div className="text-left">
-                <p className="font-mono text-[10px] uppercase tracking-widest text-muted">
-                  Before
-                </p>
-                <p className="font-mono text-sm text-muted-foreground">
-                  CMake + local cores
-                </p>
+                <p className="font-mono text-[10px] uppercase tracking-widest text-muted">Before</p>
+                <p className="font-mono text-sm text-muted-foreground">CMake + local cores</p>
               </div>
               <div className="font-mono text-xs text-muted">→</div>
               <div className="text-right">
                 <p className="font-mono text-[10px] uppercase tracking-widest text-brand">
                   With NativeLink
                 </p>
-                <p className="font-mono text-sm text-foreground">
-                  CMake + recc + cache
-                </p>
+                <p className="font-mono text-sm text-foreground">CMake + recc + cache</p>
               </div>
             </div>
             {comparisonRows.map((row, i) => (
               <div
                 key={row.label}
                 className="grid grid-cols-[1fr_auto_1fr] items-center gap-4 border-t border-border first:border-t-0 px-6 py-5 first:bg-transparent"
-                style={i % 2 === 1 ? { background: "rgb(var(--nl-color-foreground) / 0.02)" } : undefined}
+                style={
+                  i % 2 === 1 ? { background: "rgb(var(--nl-color-foreground) / 0.02)" } : undefined
+                }
               >
                 <div className="font-mono text-lg text-muted-foreground line-through decoration-foreground/30">
                   {row.before}
                 </div>
-                <div className="text-center text-xs text-muted">
-                  {row.label}
-                </div>
+                <div className="text-center text-xs text-muted">{row.label}</div>
                 <div className="text-right font-mono text-lg font-semibold text-brand">
                   {row.after}
                 </div>
@@ -335,13 +346,12 @@ export default function HomePage() {
             <div className="max-w-[600px]">
               <Eyebrow className="mb-4">Who runs NativeLink</Eyebrow>
               <h2 className="text-balance text-4xl font-semibold leading-[1.05] tracking-[-0.03em] md:text-5xl">
-                The teams shipping at{" "}
-                <span className="text-brand">machine speed</span>.
+                The teams shipping at <span className="text-brand">machine speed</span>.
               </h2>
             </div>
             <p className="max-w-[420px] text-base leading-relaxed text-muted-foreground">
-              From silicon verification to autonomous-vehicle simulation, NativeLink
-              powers the build farms that can't blink.
+              From silicon verification to autonomous-vehicle simulation, NativeLink powers the
+              build farms that can't blink.
             </p>
           </div>
         </Reveal>
@@ -391,9 +401,7 @@ export default function HomePage() {
               </span>{" "}
               Great work folks."
             </blockquote>
-            <p className="mt-6 text-sm text-muted-foreground">
-              Mustafa Gezen · Rocky Linux
-            </p>
+            <p className="mt-6 text-sm text-muted-foreground">Mustafa Gezen · Rocky Linux</p>
             <div className="mt-8 flex flex-wrap justify-center gap-2">
               <Badge variant="brand">1B+ requests / month</Badge>
               <Badge variant="outline">Trusted by Samsung, Brave & Chromium</Badge>

@@ -97,9 +97,7 @@ export function SiteFooter({
           <a href="/" aria-label="NativeLink — home" className="inline-flex">
             <Logo size="md" />
           </a>
-          <p className="max-w-[20rem] text-sm leading-relaxed text-muted-foreground">
-            {tagline}
-          </p>
+          <p className="max-w-[20rem] text-sm leading-relaxed text-muted-foreground">{tagline}</p>
         </div>
 
         {columns.map((col) => (
@@ -149,6 +147,7 @@ export function SiteFooter({
                 aria-label={s.label}
                 className="inline-flex h-9 w-9 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
               >
+                <span className="sr-only">{s.label}</span>
                 <svg
                   width="16"
                   height="16"

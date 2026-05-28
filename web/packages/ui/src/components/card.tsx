@@ -11,8 +11,7 @@ const Card = React.forwardRef<HTMLDivElement, CardProps>(
       ref={ref}
       className={cn(
         "rounded-xl p-7 transition-colors",
-        variant === "default" &&
-          "border border-border bg-surface/70 hover:border-border-strong",
+        variant === "default" && "border border-border bg-surface/70 hover:border-border-strong",
         variant === "featured" &&
           "border border-brand/40 bg-brand-soft/40 shadow-[0_1px_0_0_rgb(255_255_255),_0_24px_60px_-30px_rgb(var(--nl-color-brand)/0.45)]",
         variant === "elevated" &&

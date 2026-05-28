@@ -56,9 +56,7 @@ export function HeroVisual({ className }: HeroVisualProps) {
               <p className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
                 Cache hit rate
               </p>
-              <p className="mt-2 text-2xl font-semibold tracking-tight text-foreground">
-                94.7%
-              </p>
+              <p className="mt-2 text-2xl font-semibold tracking-tight text-foreground">94.7%</p>
               <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-foreground/[0.06]">
                 <motion.div
                   initial={{ width: 0 }}
@@ -74,9 +72,7 @@ export function HeroVisual({ className }: HeroVisualProps) {
               <p className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
                 Builds / hour
               </p>
-              <p className="mt-2 text-2xl font-semibold tracking-tight text-foreground">
-                12,408
-              </p>
+              <p className="mt-2 text-2xl font-semibold tracking-tight text-foreground">12,408</p>
               <p className="mt-1 flex items-center gap-1 font-mono text-[11px] text-success">
                 ↑ 23% vs last week
               </p>
@@ -86,12 +82,8 @@ export function HeroVisual({ className }: HeroVisualProps) {
               <p className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
                 Time saved
               </p>
-              <p className="mt-2 text-2xl font-semibold tracking-tight text-foreground">
-                487h
-              </p>
-              <p className="mt-1 font-mono text-[11px] text-muted-foreground">
-                this week
-              </p>
+              <p className="mt-2 text-2xl font-semibold tracking-tight text-foreground">487h</p>
+              <p className="mt-1 font-mono text-[11px] text-muted-foreground">this week</p>
             </div>
           </div>
 
@@ -115,8 +107,8 @@ export function HeroVisual({ className }: HeroVisualProps) {
 
             {/* Bar chart */}
             <div className="flex h-[148px] items-end justify-between gap-1.5 pl-2">
-              {bars.map((bar, i) => (
-                <div key={i} className="flex h-full flex-1 items-end gap-0">
+              {bars.map((bar) => (
+                <div key={bar.delay} className="flex h-full flex-1 items-end gap-0">
                   <motion.div
                     initial={{ height: 0 }}
                     whileInView={{ height: `${bar.height * 0.7}%` }}
@@ -152,7 +144,7 @@ export function HeroVisual({ className }: HeroVisualProps) {
             >
               <span className="inline-block h-1.5 w-1.5 rounded-full bg-success" />
               <span>cache hit</span>
-              <span className="text-muted-foreground">bazel build //src/...</span>
+              <span className="text-muted-foreground">{"bazel build //src/..."}</span>
               <span className="ml-auto text-muted">4.2s</span>
             </motion.div>
             <motion.div

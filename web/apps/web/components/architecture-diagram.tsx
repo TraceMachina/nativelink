@@ -10,8 +10,12 @@ export function ArchitectureDiagram() {
       <svg
         viewBox="0 0 800 360"
         className="relative h-auto w-full"
+        role="img"
         aria-label="NativeLink architecture diagram"
       >
+        <title>
+          NativeLink architecture: client to scheduler to worker fleet, backed by CAS and AC
+        </title>
         <defs>
           <linearGradient id="arc-grad" x1="0" y1="0" x2="800" y2="0">
             <stop offset="0%" stopColor="rgb(var(--nl-color-brand))" stopOpacity="0.0" />
@@ -33,7 +37,7 @@ export function ArchitectureDiagram() {
           { d: "M 520 180 C 600 180, 600 180, 670 180" },
           { d: "M 520 280 C 600 280, 600 180, 670 180" },
         ].map((path, i) => (
-          <g key={i}>
+          <g key={path.d}>
             <path
               d={path.d}
               fill="none"
@@ -46,7 +50,11 @@ export function ArchitectureDiagram() {
               fill="rgb(var(--nl-color-brand))"
               initial={{ pathOffset: 0 }}
               animate={{ pathOffset: 1 }}
-              transition={{ duration: 2 + i * 0.2, repeat: Infinity, delay: i * 0.4 }}
+              transition={{
+                duration: 2 + i * 0.2,
+                repeat: Number.POSITIVE_INFINITY,
+                delay: i * 0.4,
+              }}
             >
               <animateMotion dur={`${2 + i * 0.2}s`} repeatCount="indefinite" path={path.d} />
             </motion.circle>
@@ -55,14 +63,45 @@ export function ArchitectureDiagram() {
 
         {/* Client node */}
         <g>
-          <rect x="40" y="140" width="120" height="80" rx="12" fill="url(#node-grad)" stroke="rgb(var(--nl-color-border))" strokeWidth="1.5" />
-          <text x="100" y="172" textAnchor="middle" fontFamily="var(--nl-font-mono)" fontSize="11" fontWeight="600" fill="rgb(var(--nl-color-foreground))">
+          <rect
+            x="40"
+            y="140"
+            width="120"
+            height="80"
+            rx="12"
+            fill="url(#node-grad)"
+            stroke="rgb(var(--nl-color-border))"
+            strokeWidth="1.5"
+          />
+          <text
+            x="100"
+            y="172"
+            textAnchor="middle"
+            fontFamily="var(--nl-font-mono)"
+            fontSize="11"
+            fontWeight="600"
+            fill="rgb(var(--nl-color-foreground))"
+          >
             CLIENT
           </text>
-          <text x="100" y="190" textAnchor="middle" fontFamily="var(--nl-font-sans)" fontSize="10" fill="rgb(var(--nl-color-muted))">
+          <text
+            x="100"
+            y="190"
+            textAnchor="middle"
+            fontFamily="var(--nl-font-sans)"
+            fontSize="10"
+            fill="rgb(var(--nl-color-muted))"
+          >
             Bazel · Buck2
           </text>
-          <text x="100" y="204" textAnchor="middle" fontFamily="var(--nl-font-sans)" fontSize="10" fill="rgb(var(--nl-color-muted))">
+          <text
+            x="100"
+            y="204"
+            textAnchor="middle"
+            fontFamily="var(--nl-font-sans)"
+            fontSize="10"
+            fill="rgb(var(--nl-color-muted))"
+          >
             Reclient · Pants
           </text>
         </g>
@@ -84,13 +123,35 @@ export function ArchitectureDiagram() {
               stroke="rgb(var(--nl-color-brand) / 0.5)"
               strokeWidth="1.5"
             />
-            <text x="440" y={node.y + 30} textAnchor="middle" fontFamily="var(--nl-font-mono)" fontSize="11" fontWeight="700" fill="rgb(var(--nl-color-brand-strong))">
+            <text
+              x="440"
+              y={node.y + 30}
+              textAnchor="middle"
+              fontFamily="var(--nl-font-mono)"
+              fontSize="11"
+              fontWeight="700"
+              fill="rgb(var(--nl-color-brand-strong))"
+            >
               {node.label}
             </text>
-            <text x="440" y={node.y + 48} textAnchor="middle" fontFamily="var(--nl-font-sans)" fontSize="10" fill="rgb(var(--nl-color-muted-foreground))">
+            <text
+              x="440"
+              y={node.y + 48}
+              textAnchor="middle"
+              fontFamily="var(--nl-font-sans)"
+              fontSize="10"
+              fill="rgb(var(--nl-color-muted-foreground))"
+            >
               {node.subA}
             </text>
-            <text x="440" y={node.y + 62} textAnchor="middle" fontFamily="var(--nl-font-sans)" fontSize="10" fill="rgb(var(--nl-color-muted-foreground))">
+            <text
+              x="440"
+              y={node.y + 62}
+              textAnchor="middle"
+              fontFamily="var(--nl-font-sans)"
+              fontSize="10"
+              fill="rgb(var(--nl-color-muted-foreground))"
+            >
               {node.subB}
             </text>
           </g>
@@ -98,26 +159,81 @@ export function ArchitectureDiagram() {
 
         {/* Workers */}
         <g>
-          <rect x="670" y="140" width="120" height="80" rx="12" fill="url(#node-grad)" stroke="rgb(var(--nl-color-border))" strokeWidth="1.5" />
-          <text x="730" y="172" textAnchor="middle" fontFamily="var(--nl-font-mono)" fontSize="11" fontWeight="600" fill="rgb(var(--nl-color-foreground))">
+          <rect
+            x="670"
+            y="140"
+            width="120"
+            height="80"
+            rx="12"
+            fill="url(#node-grad)"
+            stroke="rgb(var(--nl-color-border))"
+            strokeWidth="1.5"
+          />
+          <text
+            x="730"
+            y="172"
+            textAnchor="middle"
+            fontFamily="var(--nl-font-mono)"
+            fontSize="11"
+            fontWeight="600"
+            fill="rgb(var(--nl-color-foreground))"
+          >
             WORKER FLEET
           </text>
-          <text x="730" y="190" textAnchor="middle" fontFamily="var(--nl-font-sans)" fontSize="10" fill="rgb(var(--nl-color-muted))">
+          <text
+            x="730"
+            y="190"
+            textAnchor="middle"
+            fontFamily="var(--nl-font-sans)"
+            fontSize="10"
+            fill="rgb(var(--nl-color-muted))"
+          >
             x86 · ARM · GPU
           </text>
-          <text x="730" y="204" textAnchor="middle" fontFamily="var(--nl-font-sans)" fontSize="10" fill="rgb(var(--nl-color-muted))">
+          <text
+            x="730"
+            y="204"
+            textAnchor="middle"
+            fontFamily="var(--nl-font-sans)"
+            fontSize="10"
+            fill="rgb(var(--nl-color-muted))"
+          >
             AWS · GCP · Bare
           </text>
         </g>
 
         {/* Container labels */}
-        <text x="100" y="120" textAnchor="middle" fontFamily="var(--nl-font-mono)" fontSize="9" letterSpacing="2" fill="rgb(var(--nl-color-muted))">
+        <text
+          x="100"
+          y="120"
+          textAnchor="middle"
+          fontFamily="var(--nl-font-mono)"
+          fontSize="9"
+          letterSpacing="2"
+          fill="rgb(var(--nl-color-muted))"
+        >
           YOUR CI
         </text>
-        <text x="440" y="20" textAnchor="middle" fontFamily="var(--nl-font-mono)" fontSize="9" letterSpacing="2" fill="rgb(var(--nl-color-brand))">
+        <text
+          x="440"
+          y="20"
+          textAnchor="middle"
+          fontFamily="var(--nl-font-mono)"
+          fontSize="9"
+          letterSpacing="2"
+          fill="rgb(var(--nl-color-brand))"
+        >
           NATIVELINK
         </text>
-        <text x="730" y="120" textAnchor="middle" fontFamily="var(--nl-font-mono)" fontSize="9" letterSpacing="2" fill="rgb(var(--nl-color-muted))">
+        <text
+          x="730"
+          y="120"
+          textAnchor="middle"
+          fontFamily="var(--nl-font-mono)"
+          fontSize="9"
+          letterSpacing="2"
+          fill="rgb(var(--nl-color-muted))"
+        >
           ANY CLOUD
         </text>
       </svg>

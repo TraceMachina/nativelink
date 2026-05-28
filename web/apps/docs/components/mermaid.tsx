@@ -55,8 +55,7 @@ export function Mermaid({ children }: MermaidProps) {
         securityLevel: "loose",
         theme: theme === "dark" ? "dark" : "default",
         themeVariables: {
-          fontFamily:
-            "var(--nl-font-sans), ui-sans-serif, system-ui, -apple-system, sans-serif",
+          fontFamily: "var(--nl-font-sans), ui-sans-serif, system-ui, -apple-system, sans-serif",
           fontSize: "14px",
           primaryColor: theme === "dark" ? "#221C3F" : "#EBE4FF",
           primaryTextColor: theme === "dark" ? "#F5F4F8" : "#111113",
@@ -77,10 +76,7 @@ export function Mermaid({ children }: MermaidProps) {
         },
       });
       try {
-        const { svg: rendered } = await mermaid.render(
-          `mermaid-${reactId}`,
-          chart,
-        );
+        const { svg: rendered } = await mermaid.render(`mermaid-${reactId}`, chart);
         if (!cancelled) setSvg(rendered);
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
@@ -97,9 +93,7 @@ export function Mermaid({ children }: MermaidProps) {
         <p className="font-mono text-xs uppercase tracking-widest text-amber-700 dark:text-amber-300">
           Mermaid render error
         </p>
-        <pre className="mt-2 whitespace-pre-wrap text-amber-700 dark:text-amber-300">
-          {error}
-        </pre>
+        <pre className="mt-2 whitespace-pre-wrap text-amber-700 dark:text-amber-300">{error}</pre>
       </div>
     );
   }
@@ -109,6 +103,7 @@ export function Mermaid({ children }: MermaidProps) {
       role="img"
       aria-label="Diagram"
       className="my-8 flex justify-center overflow-x-auto rounded-xl border border-border bg-surface-elevated/40 p-6 [&_svg]:max-w-full [&_svg]:h-auto"
+      // biome-ignore lint/security/noDangerouslySetInnerHtml: SVG is produced by mermaid from MDX content we author; not user input
       dangerouslySetInnerHTML={{ __html: svg }}
     />
   );

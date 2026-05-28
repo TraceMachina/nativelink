@@ -26,8 +26,8 @@ export default function NotFound() {
           </span>
         </h1>
         <p className="mx-auto mt-6 max-w-[520px] text-[17px] leading-relaxed text-muted-foreground md:text-lg">
-          The page you're looking for doesn't exist, was moved, or maybe never
-          shipped. Here's where you might want to go instead.
+          The page you're looking for doesn't exist, was moved, or maybe never shipped. Here's where
+          you might want to go instead.
         </p>
 
         <div className="mt-8 flex flex-wrap justify-center gap-3">
@@ -47,9 +47,7 @@ export default function NotFound() {
               className="group flex items-center justify-between gap-4 rounded-2xl border border-border bg-surface px-6 py-4 text-left transition-all hover:-translate-y-0.5 hover:border-brand/40"
             >
               <div>
-                <p className="font-mono text-sm font-semibold text-foreground">
-                  {l.label}
-                </p>
+                <p className="font-mono text-sm font-semibold text-foreground">{l.label}</p>
                 <p className="mt-0.5 text-sm text-muted-foreground">{l.description}</p>
               </div>
               <span

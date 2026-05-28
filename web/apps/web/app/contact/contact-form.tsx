@@ -21,7 +21,17 @@ export function ContactForm() {
     return (
       <div className="rounded-2xl border border-success/40 bg-success-soft/60 p-8 text-center">
         <div className="mx-auto mb-4 inline-flex h-12 w-12 items-center justify-center rounded-full bg-success text-background">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <svg
+            width="22"
+            height="22"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
             <path d="M5 12 L10 17 L20 7" />
           </svg>
         </div>
@@ -39,13 +49,7 @@ export function ContactForm() {
        *  textarea + button in one go while the server action runs. */}
       <fieldset disabled={pending} className="space-y-5 disabled:opacity-60">
         <div className="grid gap-5 sm:grid-cols-2">
-          <Field
-            label="Your name"
-            name="name"
-            autoComplete="name"
-            required
-            error={err?.name}
-          />
+          <Field label="Your name" name="name" autoComplete="name" required error={err?.name} />
           <Field
             label="Email"
             name="email"
@@ -57,7 +61,10 @@ export function ContactForm() {
         </div>
 
         <div className="flex flex-col gap-2">
-          <label htmlFor="topic" className="font-mono text-xs uppercase tracking-[0.14em] text-muted-foreground">
+          <label
+            htmlFor="topic"
+            className="font-mono text-xs uppercase tracking-[0.14em] text-muted-foreground"
+          >
             What's this about?
           </label>
           <select
@@ -86,7 +93,10 @@ export function ContactForm() {
         </div>
 
         <div className="flex flex-col gap-2">
-          <label htmlFor="message" className="font-mono text-xs uppercase tracking-[0.14em] text-muted-foreground">
+          <label
+            htmlFor="message"
+            className="font-mono text-xs uppercase tracking-[0.14em] text-muted-foreground"
+          >
             Tell us more
           </label>
           <textarea

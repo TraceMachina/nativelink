@@ -15,11 +15,19 @@
     font-family: var(--nl-font-sans);
     text-wrap: pretty;
   }
-  h1, h2, h3, h4, h5, h6 {
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
     text-wrap: balance;
     letter-spacing: -0.02em;
   }
-  code, kbd, pre, samp {
+  code,
+  kbd,
+  pre,
+  samp {
     font-family: var(--nl-font-mono);
   }
   ::selection {
@@ -34,21 +42,34 @@
 }
 
 @keyframes marquee {
-  from { transform: translateX(0); }
-  to   { transform: translateX(-50%); }
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
 }
 
 /* Reusable backdrop glow — used in heroes + the final CTA strip */
 @utility bg-brand-glow {
-  background-image:
-    radial-gradient(ellipse 800px 400px at 70% -10%, rgb(var(--nl-color-brand) / 0.10), transparent 60%),
-    radial-gradient(ellipse 600px 400px at 0% 50%, rgb(var(--nl-color-brand) / 0.05), transparent 60%);
+  background-image: radial-gradient(
+      ellipse 800px 400px at 70% -10%,
+      rgb(var(--nl-color-brand) / 0.1),
+      transparent 60%
+    ),
+    radial-gradient(
+      ellipse 600px 400px at 0% 50%,
+      rgb(var(--nl-color-brand) / 0.05),
+      transparent 60%
+    );
 }
 
 @utility bg-grid {
-  background-image:
-    linear-gradient(to right, rgb(var(--nl-color-border) / 0.45) 1px, transparent 1px),
-    linear-gradient(to bottom, rgb(var(--nl-color-border) / 0.45) 1px, transparent 1px);
+  background-image: linear-gradient(
+      to right,
+      rgb(var(--nl-color-border) / 0.45) 1px,
+      transparent 1px
+    ), linear-gradient(to bottom, rgb(var(--nl-color-border) / 0.45) 1px, transparent 1px);
   background-size: 36px 36px;
 }
 

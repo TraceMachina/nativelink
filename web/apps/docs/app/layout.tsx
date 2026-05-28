@@ -1,10 +1,10 @@
+import { source } from "@/lib/source";
+import { DocsLayout } from "fumadocs-ui/layouts/docs";
 import { RootProvider } from "fumadocs-ui/provider";
 import { GeistMono } from "geist/font/mono";
 import { GeistSans } from "geist/font/sans";
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
-import { DocsLayout } from "fumadocs-ui/layouts/docs";
-import { source } from "@/lib/source";
 import { baseOptions } from "./layout.config";
 import "./globals.css";
 
@@ -13,8 +13,7 @@ export const metadata: Metadata = {
     default: "NativeLink Docs",
     template: "%s — NativeLink Docs",
   },
-  description:
-    "Documentation for NativeLink — high-performance remote build cache & execution.",
+  description: "Documentation for NativeLink — high-performance remote build cache & execution.",
   metadataBase: new URL("https://nativelink.com"),
 };
 

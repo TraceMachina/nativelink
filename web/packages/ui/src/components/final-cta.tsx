@@ -1,6 +1,6 @@
+import { cn } from "../lib/cn";
 import { Button } from "./button";
 import { Eyebrow } from "./eyebrow";
-import { cn } from "../lib/cn";
 
 interface FinalCTAProps {
   eyebrow?: string;
@@ -25,10 +25,7 @@ export function FinalCTA({
 }: FinalCTAProps) {
   return (
     <section
-      className={cn(
-        "relative overflow-hidden border-t border-border/60 bg-brand-glow",
-        className,
-      )}
+      className={cn("relative overflow-hidden border-t border-border/60 bg-brand-glow", className)}
     >
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_center_top,rgb(var(--nl-color-brand)/0.18),transparent_60%)]" />
       <div className="relative mx-auto flex w-full max-w-[860px] flex-col items-center gap-6 px-6 py-24 text-center">

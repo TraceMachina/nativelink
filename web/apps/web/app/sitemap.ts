@@ -2,7 +2,11 @@ import type { MetadataRoute } from "next";
 
 const BASE_URL = "https://nativelink.com";
 
-const routes: { path: string; changeFrequency: MetadataRoute.Sitemap[number]["changeFrequency"]; priority: number }[] = [
+const routes: {
+  path: string;
+  changeFrequency: MetadataRoute.Sitemap[number]["changeFrequency"];
+  priority: number;
+}[] = [
   { path: "/", changeFrequency: "weekly", priority: 1.0 },
   { path: "/product", changeFrequency: "monthly", priority: 0.9 },
   { path: "/pricing", changeFrequency: "monthly", priority: 0.9 },

@@ -19,10 +19,8 @@ const buttonVariants = cva(
           "shadow-[0_1px_0_0_rgb(255_255_255_/_0.1)_inset]",
         outline:
           "border border-border bg-surface text-foreground hover:border-foreground hover:bg-foreground hover:text-background",
-        ghost:
-          "bg-transparent text-foreground hover:bg-foreground/5",
-        link:
-          "bg-transparent text-brand underline-offset-4 hover:underline px-0 min-h-0 shadow-none",
+        ghost: "bg-transparent text-foreground hover:bg-foreground/5",
+        link: "bg-transparent text-brand underline-offset-4 hover:underline px-0 min-h-0 shadow-none",
       },
       size: {
         sm: "h-10 rounded-[6px] px-4 text-sm",
@@ -47,11 +45,7 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
   ({ className, variant, size, asChild = false, ...props }, ref) => {
     const Comp = asChild ? Slot : "button";
     return (
-      <Comp
-        ref={ref}
-        className={cn(buttonVariants({ variant, size, className }))}
-        {...props}
-      />
+      <Comp ref={ref} className={cn(buttonVariants({ variant, size, className }))} {...props} />
     );
   },
 );
