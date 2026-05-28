@@ -36,7 +36,7 @@ const stats = [
     body: "Demonstrated on LLVM, one of the world's largest C++ codebases.",
   },
   {
-    value: "Billions",
+    value: "10 B+",
     label: "build requests per month",
     body: "served in production.",
   },
