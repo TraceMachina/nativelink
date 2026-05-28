@@ -21,7 +21,7 @@ const tiers = [
   },
   {
     name: "Cloud",
-    price: "$1,000",
+    price: "$999+",
     cadence: "/ month",
     tagline: "Managed NativeLink. We run the infra, you ship.",
     features: [
@@ -54,7 +54,10 @@ const tiers = [
   },
 ];
 
-const comparison: { section: string; rows: { label: string; oss: string | boolean; cloud: string | boolean; ent: string | boolean }[] }[] = [
+const comparison: {
+  section: string;
+  rows: { label: string; oss: string | boolean; cloud: string | boolean; ent: string | boolean }[];
+}[] = [
   {
     section: "Platform",
     rows: [
@@ -72,7 +75,12 @@ const comparison: { section: string; rows: { label: string; oss: string | boolea
     section: "Compatibility",
     rows: [
       { label: "Supported build systems", oss: "All", cloud: "All", ent: "All + custom" },
-      { label: "Operating systems", oss: "Linux, macOS", cloud: "Linux, macOS, Windows", ent: "Linux, macOS, Windows" },
+      {
+        label: "Operating systems",
+        oss: "Linux, macOS",
+        cloud: "Linux, macOS, Windows",
+        ent: "Linux, macOS, Windows",
+      },
       { label: "Org-wide sharing", oss: true, cloud: true, ent: true },
     ],
   },
@@ -88,7 +96,12 @@ const comparison: { section: string; rows: { label: string; oss: string | boolea
   {
     section: "Support",
     rows: [
-      { label: "Channel", oss: "Community Slack", cloud: "Email + Slack", ent: "Dedicated engineer" },
+      {
+        label: "Channel",
+        oss: "Community Slack",
+        cloud: "Email + Slack",
+        ent: "Dedicated engineer",
+      },
       { label: "SLA", oss: false, cloud: "99.9%", ent: "Custom" },
       { label: "Onboarding", oss: false, cloud: true, ent: "White-glove" },
     ],
@@ -130,8 +143,8 @@ export default function PricingPage() {
                 .
               </h1>
               <p className="mx-auto mt-6 max-w-[640px] text-[17px] leading-relaxed text-muted-foreground md:text-lg">
-                Start free, self-host, or let us run your build farm. Three tiers that
-                grow with your team — no hidden fees, no per-user pricing.
+                Start free, self-host, or let us run your build farm. Three tiers that grow with
+                your team — no hidden fees, no per-user pricing.
               </p>
             </div>
           </Reveal>
@@ -195,7 +208,13 @@ export default function PricingPage() {
                     variant={tier.variant === "featured" ? "primary" : "outline"}
                     className="w-full"
                   >
-                    <a href={tier.cta.href}>{tier.cta.label}</a>
+                    <a
+                      href={tier.cta.href}
+                      target={tier.cta.label === "Get started" ? "_blank" : undefined}
+                      rel={tier.cta.label === "Get started" ? "noreferrer" : undefined}
+                    >
+                      {tier.cta.label}
+                    </a>
                   </Button>
                 </div>
               </div>
@@ -262,16 +281,25 @@ export default function PricingPage() {
                 {comparison.map((group) => (
                   <Fragment key={group.section}>
                     <tr>
-                      <td colSpan={4} className="border-t border-border bg-foreground/[0.015] px-6 py-3 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+                      <td
+                        colSpan={4}
+                        className="border-t border-border bg-foreground/[0.015] px-6 py-3 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground"
+                      >
                         {group.section}
                       </td>
                     </tr>
                     {group.rows.map((row) => (
                       <tr key={row.label} className="border-t border-border">
                         <td className="px-6 py-4 text-[15px] text-foreground">{row.label}</td>
-                        <td className="px-6 py-4"><Cell value={row.oss} /></td>
-                        <td className="bg-brand-soft/15 px-6 py-4"><Cell value={row.cloud} /></td>
-                        <td className="px-6 py-4"><Cell value={row.ent} /></td>
+                        <td className="px-6 py-4">
+                          <Cell value={row.oss} />
+                        </td>
+                        <td className="bg-brand-soft/15 px-6 py-4">
+                          <Cell value={row.cloud} />
+                        </td>
+                        <td className="px-6 py-4">
+                          <Cell value={row.ent} />
+                        </td>
                       </tr>
                     ))}
                   </Fragment>

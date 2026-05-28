@@ -8,6 +8,9 @@ node_modules/
 .next/
 out/
 
+# astro
+.astro/
+
 # production
 dist/
 build/

@@ -1,10 +1,4 @@
-import {
-  FinalCTA,
-  SiteFooter,
-  SiteHeader,
-  ThemeProvider,
-  themeInitScript,
-} from "@nativelink/ui";
+import { FinalCTA, SiteFooter, SiteHeader, ThemeProvider, themeInitScript } from "@nativelink/ui";
 import { GeistMono } from "geist/font/mono";
 import { GeistSans } from "geist/font/sans";
 import type { Metadata } from "next";
@@ -25,8 +19,13 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en" suppressHydrationWarning className={`${GeistSans.variable} ${GeistMono.variable}`}>
+    <html
+      lang="en"
+      suppressHydrationWarning
+      className={`${GeistSans.variable} ${GeistMono.variable}`}
+    >
       <head>
+        {/* biome-ignore lint/security/noDangerouslySetInnerHtml: Inline before hydration so the theme is correct on first paint. */}
         <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
       </head>
       <body className="flex min-h-screen flex-col bg-background text-foreground antialiased">
@@ -40,6 +39,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
             body="Open source. Free cloud tier. Self-host the moment your team is ready."
             primaryLabel="Get started"
             primaryHref="/docs"
+            primaryNewTab
             secondaryLabel="See pricing"
             secondaryHref="/pricing"
           />

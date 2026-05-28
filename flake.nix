@@ -531,10 +531,6 @@
             ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
               pkgs.apple-sdk_14
               pkgs.libiconv
-            ]
-            ++ pkgs.lib.optionals (pkgs.stdenv.system != "x86_64-darwin") [
-              # Old darwin systems are incompatible with deno.
-              pkgs.deno
             ];
 
           shellHook =
@@ -568,8 +564,6 @@
               export PULUMI_K8S_AWAIT_ALL=true
               export PLAYWRIGHT_BROWSERS_PATH=${pkgs.playwright-driver.browsers}
               export PLAYWRIGHT_NODEJS_PATH=${pkgs.nodePackages_latest.nodejs}
-              export PATH=$HOME/.deno/bin:$PATH
-              deno types > web/platform/utils/deno.d.ts
             ''
             # TODO(palfrey): Generalize this.
             + pkgs.lib.optionalString (system == "x86_64-linux") ''

@@ -1,5 +1,4 @@
 import {
-  Badge,
   Button,
   Card,
   CardBody,
@@ -33,11 +32,26 @@ const values = [
 ];
 
 const milestones = [
-  { year: "2023", title: "Trace Machina founded.", body: "Aaron Mondal & team start building NativeLink in Rust, in public, on GitHub." },
-  { year: "2024", title: "First billion requests served.", body: "Open-source NativeLink hits a billion build requests / month in production." },
-  { year: "2024", title: "NativeLink Cloud launches.", body: "Managed offering goes GA after a private beta with five infrastructure-scale teams." },
-  { year: "2025", title: "LLVM picks up NativeLink.", body: "LLVM contributors adopt CMake + recc + NativeLink — clang builds 4× faster on day one." },
-  { year: "2026", title: "Series A — $15M.", body: "Sequoia leads the round; team scales across systems, distributed storage, and DX." },
+  {
+    year: "2023",
+    title: "Trace Machina founded.",
+    body: "Aaron Mondal & team start building NativeLink in Rust, in public, on GitHub.",
+  },
+  {
+    year: "2024",
+    title: "First billion requests served.",
+    body: "Open-source NativeLink hits a billion build requests / month in production.",
+  },
+  {
+    year: "2024",
+    title: "NativeLink Cloud launches.",
+    body: "Managed offering goes GA after a private beta with five infrastructure-scale teams.",
+  },
+  {
+    year: "2025",
+    title: "LLVM picks up NativeLink.",
+    body: "LLVM contributors adopt CMake + recc + NativeLink — clang builds 4× faster on day one.",
+  },
 ];
 
 const contactCards = [
@@ -80,8 +94,8 @@ export default function CompanyPage() {
               </h1>
               <p className="mx-auto mt-6 max-w-[680px] text-[17px] leading-relaxed text-muted-foreground md:text-lg">
                 NativeLink is built by Trace Machina. Our mission is to accelerate the
-                reindustrialization of the world by making advanced build and
-                simulation processes that move at machine speed.
+                reindustrialization of the world by making advanced build and simulation processes
+                that move at machine speed.
               </p>
             </div>
           </Reveal>
@@ -93,18 +107,18 @@ export default function CompanyPage() {
         <Reveal>
           <div className="space-y-6 text-balance text-center text-base leading-relaxed text-muted-foreground md:text-lg">
             <p>
-              We empower engineers to build the future of technology by making advanced
-              build and simulation processes that move at machine speed.
+              We empower engineers to build the future of technology by making advanced build and
+              simulation processes that move at machine speed.
             </p>
             <p>
-              Our products amplify the rate at which companies can innovate across
-              mission-critical industries — from semiconductors and advanced robotics to
-              autonomous vehicles, AI research, life sciences, and financial services.
+              Our products amplify the rate at which companies can innovate across mission-critical
+              industries — from semiconductors and advanced robotics to autonomous vehicles, AI
+              research, life sciences, and financial services.
             </p>
             <p>
-              Our commitment is to amplify execution across any environment, ensuring
-              that developers can focus on creating transformative technologies that
-              drive forward progress on behalf of humanity.
+              Our commitment is to amplify execution across any environment, ensuring that
+              developers can focus on creating transformative technologies that drive forward
+              progress on behalf of humanity.
             </p>
           </div>
         </Reveal>
@@ -130,9 +144,7 @@ export default function CompanyPage() {
                 <h3 className="text-2xl font-semibold leading-tight tracking-tight text-foreground">
                   {v.title}
                 </h3>
-                <p className="mt-3 text-[15px] leading-relaxed text-muted-foreground">
-                  {v.body}
-                </p>
+                <p className="mt-3 text-[15px] leading-relaxed text-muted-foreground">{v.body}</p>
               </div>
             </Reveal>
           ))}
@@ -165,9 +177,7 @@ export default function CompanyPage() {
                   <h3 className="mt-1 text-xl font-semibold leading-tight tracking-tight text-foreground md:text-2xl">
                     {m.title}
                   </h3>
-                  <p className="mt-2 text-[15px] leading-relaxed text-muted-foreground">
-                    {m.body}
-                  </p>
+                  <p className="mt-2 text-[15px] leading-relaxed text-muted-foreground">{m.body}</p>
                 </li>
               </Reveal>
             ))}
@@ -184,15 +194,18 @@ export default function CompanyPage() {
               Have questions or need assistance?
             </h2>
             <p className="mt-5 text-base leading-relaxed text-muted-foreground md:text-lg">
-              Reach out for general inquiries, sales conversations, or anything else —
-              we usually reply within a day.
+              Reach out for general inquiries, sales conversations, or anything else — we usually
+              reply within a day.
             </p>
           </div>
         </Reveal>
         <div className="grid gap-5 md:grid-cols-3">
           {contactCards.map((c, i) => (
             <Reveal key={c.title} delay={i * 0.05}>
-              <Card variant={c.variant === "primary" ? "featured" : "default"} className="flex h-full flex-col">
+              <Card
+                variant={c.variant === "primary" ? "featured" : "default"}
+                className="flex h-full flex-col"
+              >
                 <CardHeader>
                   <CardTitle>{c.title}</CardTitle>
                 </CardHeader>
