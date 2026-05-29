@@ -231,7 +231,7 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
         key: StoreKey<'_>,
         mut reader: DropCloserReadHalf,
         size_info: UploadSizeInfo,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         let digest = key.into_digest();
         let mut exists = [None];
         self.inner_has_with_results(&[digest], &mut exists)
@@ -240,11 +240,11 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
         if exists[0].is_some() {
             // We need to drain the reader to avoid the writer complaining that we dropped
             // the connection prematurely.
-            reader
+            let size = reader
                 .drain()
                 .await
                 .err_tip(|| "In ExistenceCacheStore::update")?;
-            return Ok(());
+            return Ok(size);
         }
         {
             let mut locked_callbacks = self.pause_remove_callbacks.lock();
@@ -254,14 +254,12 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
         }
         trace!(?digest, "Inserting into inner cache");
         let result = self.inner_store.update(digest, reader, size_info).await;
-        if result.is_ok() {
+        if let Ok(size) = &result {
             trace!(?digest, "Inserting into existence cache");
-            if let UploadSizeInfo::ExactSize(size) = size_info {
-                let _ = self
-                    .existence_cache
-                    .insert(digest, ExistenceItem(size))
-                    .await;
-            }
+            let _ = self
+                .existence_cache
+                .insert(digest, ExistenceItem(*size))
+                .await;
         }
         {
             let maybe_keys = self.pause_remove_callbacks.lock().take();

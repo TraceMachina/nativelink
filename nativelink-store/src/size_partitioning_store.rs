@@ -100,7 +100,7 @@ impl StoreDriver for SizePartitioningStore {
         key: StoreKey<'_>,
         reader: DropCloserReadHalf,
         size_info: UploadSizeInfo,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         let digest = match key {
             StoreKey::Digest(digest) => digest,
             other @ StoreKey::Str(_) => {

@@ -153,7 +153,7 @@ async fn verify_size_true_succeeds_on_multi_chunk_stream_update() -> Result<(), 
     tx.send("bar".into()).await?;
     tx.send_eof()?;
     let result = future.await.err_tip(|| "Failed to join spawn future")?;
-    assert_eq!(result, Ok(()), "Expected success, got: {:?}", result);
+    assert_eq!(result, Ok(6), "Expected success, got: {:?}", result);
     assert_eq!(
         inner_store.has(digest).await,
         Ok(Some(6)),

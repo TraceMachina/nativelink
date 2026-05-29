@@ -208,10 +208,10 @@ impl StoreDriver for DedupStore {
         key: StoreKey<'_>,
         reader: DropCloserReadHalf,
         _size_info: UploadSizeInfo,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         let mut bytes_reader = StreamReader::new(reader);
         let frame_reader = FramedRead::new(&mut bytes_reader, self.fast_cdc_decoder.clone());
-        let index_entries = frame_reader
+        let index_entries: Vec<_> = frame_reader
             .map(|r| r.err_tip(|| "Failed to decode frame from fast_cdc"))
             .map_ok(|frame| async move {
                 let hash = blake3::hash(&frame[..]).into();
@@ -236,6 +236,8 @@ impl StoreDriver for DedupStore {
             .try_collect()
             .await?;
 
+        let total_size = index_entries.iter().map(DigestInfo::size_bytes).sum();
+
         let serialized_index = wincode::config::serialize(
             &DedupIndex {
                 entries: index_entries,
@@ -255,7 +257,7 @@ impl StoreDriver for DedupStore {
             .await
             .err_tip(|| "Failed to insert our index entry to index_store in dedup_store")?;
 
-        Ok(())
+        Ok(total_size)
     }
 
     async fn get_part(

@@ -679,8 +679,10 @@ impl GrpcStore {
         &self,
         digest: DigestInfo,
         mut reader: DropCloserReadHalf,
-    ) -> Result<(), Error> {
-        let action_result = ActionResult::decode(reader.consume(None).await?)
+    ) -> Result<u64, Error> {
+        let bytes = reader.consume(None).await?;
+        let len = bytes.len() as u64;
+        let action_result = ActionResult::decode(bytes)
             .err_tip(|| "Failed to decode ActionResult in update_action_result_from_bytes")?;
         let update_action_request = UpdateActionResultRequest {
             instance_name: self.instance_name.clone(),
@@ -695,7 +697,7 @@ impl GrpcStore {
         };
         self.update_action_result(Request::new(update_action_request))
             .await
-            .map(|_| ())
+            .map(|_| len)
     }
 }
 
@@ -773,7 +775,7 @@ impl StoreDriver for GrpcStore {
         key: StoreKey<'_>,
         reader: DropCloserReadHalf,
         _size_info: UploadSizeInfo,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         struct LocalState {
             resource_name: String,
             reader: DropCloserReadHalf,
@@ -864,7 +866,7 @@ impl StoreDriver for GrpcStore {
         .await
         .err_tip(|| "in GrpcStore::update()")?;
 
-        Ok(())
+        Ok(digest.size_bytes())
     }
 
     async fn get_part(

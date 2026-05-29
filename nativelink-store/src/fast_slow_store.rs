@@ -23,6 +23,7 @@ use std::ffi::OsString;
 use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
+use futures::stream::{FuturesUnordered, StreamExt};
 use futures::{FutureExt, join};
 use nativelink_config::stores::{FastSlowSpec, StoreDirection};
 use nativelink_error::{Code, Error, ErrorContext, ResultExt, make_err};
@@ -44,6 +45,7 @@ use tracing::{debug, info, trace, warn};
 // there are many copies happening internally.
 
 type Loader = Arc<OnceCell<()>>;
+type MaybeSize = Option<u64>;
 
 // TODO(palfrey) We should consider copying the data in the background to allow the
 // client to hang up while the data is buffered. An alternative is to possibly make a
@@ -70,7 +72,7 @@ pub struct FastSlowStore {
     // concurrent writer that has not yet finished pushing to the slow store
     // is still visible to a concurrent existence check, preventing redundant
     // duplicate uploads of the same blob.
-    in_flight_slow_writes: Mutex<HashMap<StoreKey<'static>, u64>>,
+    in_flight_slow_writes: Mutex<HashMap<StoreKey<'static>, Arc<tokio::sync::Mutex<MaybeSize>>>>,
 }
 
 // This guard ensures that the populating_digests is cleared even if the future
@@ -104,6 +106,13 @@ impl LoaderGuard<'_> {
 struct InFlightSlowWriteGuard {
     weak_store: Weak<FastSlowStore>,
     key: Option<StoreKey<'static>>,
+    write_complete_guard: tokio::sync::OwnedMutexGuard<MaybeSize>,
+}
+
+impl InFlightSlowWriteGuard {
+    fn complete(mut self, size: MaybeSize) {
+        *self.write_complete_guard = size;
+    }
 }
 
 impl Drop for InFlightSlowWriteGuard {
@@ -157,33 +166,20 @@ impl FastSlowStore {
         })
     }
 
-    /// Best-effort size for tracking in-flight slow writes. Falls back to 0
-    /// when neither the upload size nor the key carries an exact size
-    /// (e.g. `MaxSize` for a string key). Callers of `has_with_results` only
-    /// rely on `Some(_)` vs `None`, so a size of 0 still correctly signals
-    /// "this blob exists".
-    const fn track_size(key: &StoreKey<'_>, size_info: UploadSizeInfo) -> u64 {
-        match size_info {
-            UploadSizeInfo::ExactSize(s) => s,
-            UploadSizeInfo::MaxSize(_) => match key {
-                StoreKey::Digest(d) => d.size_bytes(),
-                StoreKey::Str(_) => 0,
-            },
-        }
-    }
-
-    fn register_in_flight_slow_write(
-        &self,
-        key: StoreKey<'_>,
-        size: u64,
-    ) -> InFlightSlowWriteGuard {
+    fn register_in_flight_slow_write(&self, key: StoreKey<'_>) -> InFlightSlowWriteGuard {
         let owned = key.into_owned();
+        let write_complete = Arc::new(tokio::sync::Mutex::new(None));
+        let write_complete_guard = write_complete
+            .clone()
+            .try_lock_owned()
+            .expect("Newly created mutex is locked");
         self.in_flight_slow_writes
             .lock()
-            .insert(owned.borrow().into_owned(), size);
+            .insert(owned.borrow().into_owned(), write_complete);
         InFlightSlowWriteGuard {
             weak_store: self.weak_self.clone(),
             key: Some(owned),
+            write_complete_guard,
         }
     }
 
@@ -423,54 +419,37 @@ impl StoreDriver for FastSlowStore {
         if slow_store.optimized_for(StoreOptimizations::NoopDownloads) {
             return self.fast_store.has_with_results(key, results).await;
         }
-        // Primary lookup is the slow store because that's authoritative for
-        // downstream consumers that fetch from there. But the slow store
-        // alone can miss two important cases:
-        //   1. A concurrent writer's slow-store write is still in flight.
-        //   2. The blob is present in the fast (local) store — either
-        //      fast-only by configuration, or because the slow write has
-        //      not yet started/completed.
-        // Reporting NotFound in those cases causes redundant duplicate
-        // uploads or unnecessary slow-store fetches.
+
+        // Check with the slow store first.
         self.slow_store.has_with_results(key, results).await?;
 
-        // Fill in any blobs whose slow-store write is currently in flight.
-        // Cheap when the map is empty (the common case).
+        // Check for any in-flight requests to the slow store next.
+        let mut in_flight_futs = FuturesUnordered::new();
         {
             let in_flight = self.in_flight_slow_writes.lock();
             if !in_flight.is_empty() {
-                for (k, result) in key.iter().zip(results.iter_mut()) {
+                for (i, (k, result)) in key.iter().zip(results.iter_mut()).enumerate() {
                     if result.is_none() {
                         let owned = k.borrow().into_owned();
-                        if let Some(size) = in_flight.get(&owned) {
-                            *result = Some(*size);
+                        if let Some(maybe_size) = in_flight.get(&owned) {
+                            let maybe_size = maybe_size.clone();
+                            in_flight_futs.push(async move { (i, *maybe_size.lock().await) });
                         }
                     }
                 }
             }
         }
-
-        // Fall back to the fast store for anything still missing. This
-        // covers fast-only writes and the brief window between fast-store
-        // insertion and slow-store write start.
-        let missing_indices: Vec<usize> = results
-            .iter()
-            .enumerate()
-            .filter_map(|(i, r)| if r.is_none() { Some(i) } else { None })
-            .collect();
-        if !missing_indices.is_empty() {
-            let missing_keys: Vec<StoreKey<'_>> =
-                missing_indices.iter().map(|&i| key[i].borrow()).collect();
-            let mut fast_results = vec![None; missing_keys.len()];
-            self.fast_store
-                .has_with_results(&missing_keys, &mut fast_results)
-                .await?;
-            for (j, &orig_idx) in missing_indices.iter().enumerate() {
-                if fast_results[j].is_some() {
-                    results[orig_idx] = fast_results[j];
-                }
-            }
+        while let Some((i, size)) = in_flight_futs.next().await {
+            results[i] = size;
         }
+
+        // NOTE: We intentionally *NEVER* check the fast store, this is to
+        // ensure that we re-upload data to the slow store if it only exists
+        // in the fast store.  This does not affect workers as they do not
+        // check existence through `has` and instead go direct to loading the
+        // data which bypasses the check and will load from the fast store if
+        // it does not exist in the slow store.
+
         Ok(())
     }
 
@@ -479,7 +458,7 @@ impl StoreDriver for FastSlowStore {
         key: StoreKey<'_>,
         mut reader: DropCloserReadHalf,
         size_info: UploadSizeInfo,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         // If either one of our stores is a noop store, bypass the multiplexing
         // and just use the store that is not a noop store.
         let ignore_slow = self
@@ -497,23 +476,22 @@ impl StoreDriver for FastSlowStore {
         if ignore_slow && ignore_fast {
             // We need to drain the reader to avoid the writer complaining that we dropped
             // the connection prematurely.
-            reader
-                .drain()
-                .await
-                .err_tip(|| "In FastFlowStore::update")?;
-            return Ok(());
+            return reader.drain().await.err_tip(|| "In FastFlowStore::update");
         }
         if ignore_slow {
             return self.fast_store.update(key, reader, size_info).await;
         }
+        let slow_in_flight_guard = self.register_in_flight_slow_write(key.borrow());
         if ignore_fast {
-            let _guard =
-                self.register_in_flight_slow_write(key.borrow(), Self::track_size(&key, size_info));
-            return self.slow_store.update(key, reader, size_info).await;
+            let result = self
+                .slow_store
+                .update(key.borrow(), reader, size_info)
+                .await;
+            if let Ok(size) = &result {
+                slow_in_flight_guard.complete(Some(*size));
+            }
+            return result;
         }
-
-        let _slow_in_flight_guard =
-            self.register_in_flight_slow_write(key.borrow(), Self::track_size(&key, size_info));
 
         let (mut fast_tx, fast_rx) = make_buf_channel_pair();
         let (mut slow_tx, slow_rx) = make_buf_channel_pair();
@@ -524,9 +502,9 @@ impl StoreDriver for FastSlowStore {
             "FastSlowStore::update: starting dual-store upload",
         );
         let update_start = std::time::Instant::now();
-        let mut bytes_sent: u64 = 0;
 
         let data_stream_fut = async move {
+            let mut bytes_sent: u64 = 0;
             loop {
                 let buffer = reader
                     .recv()
@@ -544,7 +522,7 @@ impl StoreDriver for FastSlowStore {
                         total_bytes = bytes_sent,
                         "FastSlowStore::update: data_stream sent EOF to both stores",
                     );
-                    return Result::<(), Error>::Ok(());
+                    return Result::<u64, Error>::Ok(bytes_sent);
                 }
 
                 let chunk_len = buffer.len();
@@ -585,12 +563,18 @@ impl StoreDriver for FastSlowStore {
         let (data_stream_res, fast_res, slow_res) =
             join!(data_stream_fut, fast_store_fut, slow_store_fut);
 
+        if let Ok(size) = slow_res {
+            slow_in_flight_guard.complete(Some(size));
+        } else {
+            drop(slow_in_flight_guard);
+        }
+
         let total_elapsed = update_start.elapsed();
         if data_stream_res.is_err() || fast_res.is_err() || slow_res.is_err() {
             let all_not_found = [&data_stream_res, &fast_res, &slow_res]
                 .iter()
                 .all(|r| match r {
-                    Ok(()) => true,
+                    Ok(_size) => true,
                     Err(e) => e.code == Code::NotFound,
                 });
             if all_not_found {
@@ -619,8 +603,7 @@ impl StoreDriver for FastSlowStore {
                 "FastSlowStore::update: completed successfully",
             );
         }
-        data_stream_res.merge(fast_res).merge(slow_res)?;
-        Ok(())
+        data_stream_res.merge(fast_res).merge(slow_res)
     }
 
     /// `FastSlowStore` has optimizations for dealing with files.
@@ -637,7 +620,7 @@ impl StoreDriver for FastSlowStore {
         path: OsString,
         mut file: fs::FileSlot,
         upload_size: UploadSizeInfo,
-    ) -> Result<Option<fs::FileSlot>, Error> {
+    ) -> Result<(u64, Option<fs::FileSlot>), Error> {
         trace!(
             key = ?key,
             ?upload_size,
@@ -656,11 +639,8 @@ impl StoreDriver for FastSlowStore {
             {
                 trace!("FastSlowStore::update_with_whole_file: uploading to slow_store");
                 let slow_start = std::time::Instant::now();
-                let _guard = self.register_in_flight_slow_write(
-                    key.borrow(),
-                    Self::track_size(&key, upload_size),
-                );
-                slow_update_store_with_file(
+                let slow_in_flight_guard = self.register_in_flight_slow_write(key.borrow());
+                let size = slow_update_store_with_file(
                     self.slow_store.as_store_driver_pin(),
                     key.borrow(),
                     &mut file,
@@ -668,6 +648,7 @@ impl StoreDriver for FastSlowStore {
                 )
                 .await
                 .err_tip(|| "In FastSlowStore::update_with_whole_file slow_store")?;
+                slow_in_flight_guard.complete(Some(size));
                 trace!(
                     elapsed_ms = slow_start.elapsed().as_millis(),
                     "FastSlowStore::update_with_whole_file: slow_store upload completed",
@@ -676,7 +657,16 @@ impl StoreDriver for FastSlowStore {
             if self.fast_direction == StoreDirection::ReadOnly
                 || self.fast_direction == StoreDirection::Get
             {
-                return Ok(Some(file));
+                let file_size = match upload_size {
+                    UploadSizeInfo::ExactSize(size) => size,
+                    UploadSizeInfo::MaxSize(_) => file
+                        .as_ref()
+                        .metadata()
+                        .await
+                        .err_tip(|| format!("While reading metadata for {}", path.display()))?
+                        .len(),
+                };
+                return Ok((file_size, Some(file)));
             }
             return self
                 .fast_store
@@ -694,33 +684,51 @@ impl StoreDriver for FastSlowStore {
                 .optimized_for(StoreOptimizations::NoopUpdates)
                 || self.fast_direction == StoreDirection::ReadOnly
                 || self.fast_direction == StoreDirection::Get;
-            if !ignore_fast {
-                slow_update_store_with_file(
-                    self.fast_store.as_store_driver_pin(),
-                    key.borrow(),
-                    &mut file,
-                    upload_size,
+            let maybe_size = if ignore_fast {
+                None
+            } else {
+                Some(
+                    slow_update_store_with_file(
+                        self.fast_store.as_store_driver_pin(),
+                        key.borrow(),
+                        &mut file,
+                        upload_size,
+                    )
+                    .await
+                    .err_tip(|| "In FastSlowStore::update_with_whole_file fast_store")?,
                 )
-                .await
-                .err_tip(|| "In FastSlowStore::update_with_whole_file fast_store")?;
-            }
+            };
             let ignore_slow = self.slow_direction == StoreDirection::ReadOnly
                 || self.slow_direction == StoreDirection::Get;
             if ignore_slow {
-                return Ok(Some(file));
+                let size = match maybe_size {
+                    Some(size) => size,
+                    None => match upload_size {
+                        UploadSizeInfo::ExactSize(size) => size,
+                        UploadSizeInfo::MaxSize(_) => file
+                            .as_ref()
+                            .metadata()
+                            .await
+                            .err_tip(|| format!("While reading metadata for {}", path.display()))?
+                            .len(),
+                    },
+                };
+                return Ok((size, Some(file)));
             }
-            let _guard = self
-                .register_in_flight_slow_write(key.borrow(), Self::track_size(&key, upload_size));
-            return self
+            let slow_in_flight_guard: InFlightSlowWriteGuard =
+                self.register_in_flight_slow_write(key.borrow());
+            let (size, maybe_file_slot) = self
                 .slow_store
-                .update_with_whole_file(key, path, file, upload_size)
-                .await;
+                .update_with_whole_file(key.borrow(), path, file, upload_size)
+                .await?;
+            slow_in_flight_guard.complete(Some(size));
+            return Ok((size, maybe_file_slot));
         }
 
-        slow_update_store_with_file(self, key, &mut file, upload_size)
+        let size = slow_update_store_with_file(self, key, &mut file, upload_size)
             .await
             .err_tip(|| "In FastSlowStore::update_with_whole_file")?;
-        Ok(Some(file))
+        Ok((size, Some(file)))
     }
 
     async fn get_part(
@@ -888,6 +896,6 @@ struct FastSlowStoreMetrics {
 /// concurrent reader of the same digest until each one's own `gRPC`
 /// deadline fired (e.g. Bazel's `--remote_timeout`), turning a
 /// single slow read into a fan-out of `DEADLINE_EXCEEDED` errors.
-const LEADER_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
+const LEADER_WAIT_TIMEOUT: Duration = Duration::from_mins(1);
 
 default_health_status_indicator!(FastSlowStore);

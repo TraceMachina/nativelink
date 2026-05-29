@@ -697,9 +697,9 @@ impl StoreDriver for StallStore {
         _key: StoreKey<'_>,
         _reader: DropCloserReadHalf,
         _size_info: UploadSizeInfo,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         tokio::time::sleep(self.delay).await;
-        Ok(())
+        Ok(0)
     }
 
     async fn get_part(

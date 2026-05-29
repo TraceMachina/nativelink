@@ -65,7 +65,7 @@ impl VerifyStore {
         maybe_expected_digest_size: Option<u64>,
         original_hash: &PackedHash,
         mut maybe_hasher: Option<&mut D>,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         let mut sum_size: u64 = 0;
         loop {
             let chunk = rx
@@ -140,7 +140,7 @@ impl VerifyStore {
                 .await
                 .err_tip(|| "Failed to write chunk to inner store in verify store")?;
         }
-        Ok(())
+        Ok(sum_size)
     }
 }
 
@@ -159,7 +159,7 @@ impl StoreDriver for VerifyStore {
         key: StoreKey<'_>,
         reader: DropCloserReadHalf,
         size_info: UploadSizeInfo,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         let StoreKey::Digest(digest) = key else {
             return Err(make_input_err!(
                 "Only digests are supported in VerifyStore. Got {key:?}"
@@ -207,7 +207,11 @@ impl StoreDriver for VerifyStore {
 
         let (update_res, check_res) = tokio::join!(update_fut, check_fut);
 
-        update_res.merge(check_res)
+        match (update_res, check_res) {
+            // Prioritize the check future's error, as it's more specific.
+            (_, Err(e)) | (Err(e), Ok(_)) => Err(e),
+            (Ok(size), Ok(_)) => Ok(size),
+        }
     }
 
     async fn get_part(

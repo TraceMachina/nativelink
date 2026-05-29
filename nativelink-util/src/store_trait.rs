@@ -95,7 +95,7 @@ pub async fn slow_update_store_with_file<S: StoreDriver + ?Sized>(
     digest: impl Into<StoreKey<'_>>,
     file: &mut fs::FileSlot,
     upload_size: UploadSizeInfo,
-) -> Result<(), Error> {
+) -> Result<u64, Error> {
     file.rewind()
         .await
         .err_tip(|| "Failed to rewind in upload_file_to_store")?;
@@ -123,7 +123,7 @@ pub async fn slow_update_store_with_file<S: StoreDriver + ?Sized>(
     };
     tokio::pin!(read_data_fut);
     let (update_res, read_res) = tokio::join!(update_fut, read_data_fut);
-    update_res.merge(read_res)
+    read_res.merge(update_res)
 }
 
 /// Optimizations that stores may want to expose to the callers.
@@ -525,7 +525,7 @@ pub trait StoreLike: Send + Sync + Sized + Unpin + 'static {
         digest: impl Into<StoreKey<'a>>,
         reader: DropCloserReadHalf,
         upload_size: UploadSizeInfo,
-    ) -> impl Future<Output = Result<(), Error>> + Send + 'a {
+    ) -> impl Future<Output = Result<u64, Error>> + Send + 'a {
         self.as_store_driver_pin()
             .update(digest.into(), reader, upload_size)
     }
@@ -547,7 +547,7 @@ pub trait StoreLike: Send + Sync + Sized + Unpin + 'static {
         path: OsString,
         file: fs::FileSlot,
         upload_size: UploadSizeInfo,
-    ) -> impl Future<Output = Result<Option<fs::FileSlot>, Error>> + Send + 'a {
+    ) -> impl Future<Output = Result<(u64, Option<fs::FileSlot>), Error>> + Send + 'a {
         self.as_store_driver_pin()
             .update_with_whole_file(digest.into(), path, file, upload_size)
     }
@@ -667,7 +667,7 @@ pub trait StoreDriver:
         key: StoreKey<'_>,
         reader: DropCloserReadHalf,
         upload_size: UploadSizeInfo,
-    ) -> Result<(), Error>;
+    ) -> Result<u64, Error>;
 
     /// See: [`StoreLike::optimized_for`] for details.
     fn optimized_for(&self, _optimization: StoreOptimizations) -> bool {
@@ -681,7 +681,7 @@ pub trait StoreDriver:
         path: OsString,
         mut file: fs::FileSlot,
         upload_size: UploadSizeInfo,
-    ) -> Result<Option<fs::FileSlot>, Error> {
+    ) -> Result<(u64, Option<fs::FileSlot>), Error> {
         let inner_store = self.inner_store(Some(key.borrow()));
         if inner_store.optimized_for(StoreOptimizations::FileUpdates) {
             error_if!(
@@ -692,8 +692,8 @@ pub trait StoreDriver:
                 .update_with_whole_file(key, path, file, upload_size)
                 .await;
         }
-        slow_update_store_with_file(self, key, &mut file, upload_size).await?;
-        Ok(Some(file))
+        let size = slow_update_store_with_file(self, key, &mut file, upload_size).await?;
+        Ok((size, Some(file)))
     }
 
     /// See: [`StoreLike::update_oneshot`] for details.

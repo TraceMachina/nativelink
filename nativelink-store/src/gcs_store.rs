@@ -233,13 +233,14 @@ where
         digest: StoreKey<'_>,
         mut reader: DropCloserReadHalf,
         upload_size: UploadSizeInfo,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         if is_zero_digest(digest.borrow()) {
             return reader.recv().await.and_then(|should_be_empty| {
-                should_be_empty
-                    .is_empty()
-                    .then_some(())
-                    .ok_or_else(|| make_err!(Code::Internal, "Zero byte hash not empty"))
+                if should_be_empty.is_empty() {
+                    Ok(0)
+                } else {
+                    Err(make_err!(Code::Internal, "Zero byte hash not empty"))
+                }
             });
         }
 
@@ -255,13 +256,14 @@ where
             && size < MIN_MULTIPART_SIZE
         {
             let content = reader.consume(Some(usize::try_from(size)?)).await?;
+            let content_len = content.len() as u64;
             let client = &self.client;
 
             return self
                 .retrier
                 .retry(unfold(content, |content| async {
                     match client.write_object(&object_path, content.to_vec()).await {
-                        Ok(()) => Some((RetryResult::Ok(()), content)),
+                        Ok(()) => Some((RetryResult::Ok(content_len), content)),
                         Err(e) => Some((RetryResult::Retry(e), content)),
                     }
                 }))
@@ -356,7 +358,7 @@ where
                             )
                             .await
                         {
-                            Ok(()) => Some((RetryResult::Ok(()), ())),
+                            Ok(()) => Some((RetryResult::Ok(offset), ())),
                             Err(e) => Some((RetryResult::Retry(e), ())),
                         }
                     }))
@@ -368,7 +370,7 @@ where
                 .retrier
                 .retry(unfold((), |()| async {
                     match client.write_object(&object_path, Vec::new()).await {
-                        Ok(()) => Some((RetryResult::Ok(()), ())),
+                        Ok(()) => Some((RetryResult::Ok(0), ())),
                         Err(e) => Some((RetryResult::Retry(e), ())),
                     }
                 }))
@@ -392,7 +394,7 @@ where
             }))
             .await?;
 
-        Ok(())
+        Ok(offset)
     }
 
     async fn get_part(

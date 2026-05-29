@@ -108,33 +108,30 @@ impl StoreDriver for CacheMetricsStore {
     ) -> Result<(), Error> {
         let start = Instant::now();
         let result = self.backend.has_with_results(keys, results).await;
-        match &result {
-            Ok(()) => {
-                let hits = results.iter().filter(|result| result.is_some()).count();
-                let misses = results.len().saturating_sub(hits);
-                if hits > 0 {
-                    CACHE_METRICS
-                        .cache_operations
-                        .add(hits as u64, self.attrs.read_hit());
-                }
-                if misses > 0 {
-                    CACHE_METRICS
-                        .cache_operations
-                        .add(misses as u64, self.attrs.read_miss());
-                }
-                let duration_attrs = if hits > 0 {
-                    self.attrs.read_hit()
-                } else {
-                    self.attrs.read_miss()
-                };
-                self.record_duration(start, duration_attrs);
-            }
-            Err(_) => {
+        if result.is_ok() {
+            let hits = results.iter().filter(|result| result.is_some()).count();
+            let misses = results.len().saturating_sub(hits);
+            if hits > 0 {
                 CACHE_METRICS
                     .cache_operations
-                    .add(keys.len() as u64, self.attrs.read_error());
-                self.record_duration(start, self.attrs.read_error());
+                    .add(hits as u64, self.attrs.read_hit());
             }
+            if misses > 0 {
+                CACHE_METRICS
+                    .cache_operations
+                    .add(misses as u64, self.attrs.read_miss());
+            }
+            let duration_attrs = if hits > 0 {
+                self.attrs.read_hit()
+            } else {
+                self.attrs.read_miss()
+            };
+            self.record_duration(start, duration_attrs);
+        } else {
+            CACHE_METRICS
+                .cache_operations
+                .add(keys.len() as u64, self.attrs.read_error());
+            self.record_duration(start, self.attrs.read_error());
         }
         result
     }
@@ -152,24 +149,20 @@ impl StoreDriver for CacheMetricsStore {
         key: StoreKey<'_>,
         reader: DropCloserReadHalf,
         upload_size: UploadSizeInfo,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         let start = Instant::now();
-        let bytes = Self::size_info_bytes(upload_size);
         let result = self.backend.update(key, reader, upload_size).await;
-        match &result {
-            Ok(()) => {
-                CACHE_METRICS
-                    .cache_operations
-                    .add(1, self.attrs.write_success());
-                self.record_write_io(bytes);
-                self.record_duration(start, self.attrs.write_success());
-            }
-            Err(_) => {
-                CACHE_METRICS
-                    .cache_operations
-                    .add(1, self.attrs.write_error());
-                self.record_duration(start, self.attrs.write_error());
-            }
+        if let Ok(size) = &result {
+            CACHE_METRICS
+                .cache_operations
+                .add(1, self.attrs.write_success());
+            self.record_write_io(Some(*size));
+            self.record_duration(start, self.attrs.write_success());
+        } else {
+            CACHE_METRICS
+                .cache_operations
+                .add(1, self.attrs.write_error());
+            self.record_duration(start, self.attrs.write_error());
         }
         result
     }
@@ -184,27 +177,24 @@ impl StoreDriver for CacheMetricsStore {
         path: OsString,
         file: fs::FileSlot,
         upload_size: UploadSizeInfo,
-    ) -> Result<Option<fs::FileSlot>, Error> {
+    ) -> Result<(u64, Option<fs::FileSlot>), Error> {
         let start = Instant::now();
         let bytes = Self::size_info_bytes(upload_size);
         let result = self
             .backend
             .update_with_whole_file(key, path, file, upload_size)
             .await;
-        match &result {
-            Ok(_) => {
-                CACHE_METRICS
-                    .cache_operations
-                    .add(1, self.attrs.write_success());
-                self.record_write_io(bytes);
-                self.record_duration(start, self.attrs.write_success());
-            }
-            Err(_) => {
-                CACHE_METRICS
-                    .cache_operations
-                    .add(1, self.attrs.write_error());
-                self.record_duration(start, self.attrs.write_error());
-            }
+        if result.is_ok() {
+            CACHE_METRICS
+                .cache_operations
+                .add(1, self.attrs.write_success());
+            self.record_write_io(bytes);
+            self.record_duration(start, self.attrs.write_success());
+        } else {
+            CACHE_METRICS
+                .cache_operations
+                .add(1, self.attrs.write_error());
+            self.record_duration(start, self.attrs.write_error());
         }
         result
     }
@@ -213,20 +203,17 @@ impl StoreDriver for CacheMetricsStore {
         let start = Instant::now();
         let bytes = data.len() as u64;
         let result = self.backend.update_oneshot(key, data).await;
-        match &result {
-            Ok(()) => {
-                CACHE_METRICS
-                    .cache_operations
-                    .add(1, self.attrs.write_success());
-                self.record_write_io(Some(bytes));
-                self.record_duration(start, self.attrs.write_success());
-            }
-            Err(_) => {
-                CACHE_METRICS
-                    .cache_operations
-                    .add(1, self.attrs.write_error());
-                self.record_duration(start, self.attrs.write_error());
-            }
+        if result.is_ok() {
+            CACHE_METRICS
+                .cache_operations
+                .add(1, self.attrs.write_success());
+            self.record_write_io(Some(bytes));
+            self.record_duration(start, self.attrs.write_success());
+        } else {
+            CACHE_METRICS
+                .cache_operations
+                .add(1, self.attrs.write_error());
+            self.record_duration(start, self.attrs.write_error());
         }
         result
     }

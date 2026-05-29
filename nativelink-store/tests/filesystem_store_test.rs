@@ -999,6 +999,7 @@ async fn update_with_zero_digest() -> Result<(), Error> {
         store
             .update(digest, reader, UploadSizeInfo::ExactSize(0))
             .await
+            .map(|_| ())
     })
     .await
 }
@@ -1304,7 +1305,7 @@ async fn update_with_whole_file_uses_same_inode() -> Result<(), Error> {
             )
             .await?;
         assert!(
-            result.is_none(),
+            result.1.is_none(),
             "Expected filesystem store to consume the file"
         );
         original_inode
