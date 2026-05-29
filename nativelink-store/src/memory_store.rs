@@ -135,7 +135,7 @@ impl StoreDriver for MemoryStore {
         key: StoreKey<'_>,
         mut reader: DropCloserReadHalf,
         _size_info: UploadSizeInfo,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         // Internally Bytes might hold a reference to more data than just our data. To prevent
         // this potential case, we make a full copy of our data for long-term storage.
         let final_buffer = {
@@ -148,10 +148,11 @@ impl StoreDriver for MemoryStore {
             new_buffer.freeze()
         };
 
+        let len = final_buffer.len().try_into().unwrap_or(0);
         self.evicting_map
             .insert(key.into_owned().into(), BytesWrapper(final_buffer))
             .await;
-        Ok(())
+        Ok(len)
     }
 
     fn optimized_for(&self, optimization: StoreOptimizations) -> bool {

@@ -31,7 +31,7 @@ impl StoreDriver for FakeStore {
         _key: StoreKey<'_>,
         _reader: DropCloserReadHalf,
         _size_info: UploadSizeInfo,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         todo!();
     }
 

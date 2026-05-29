@@ -958,7 +958,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         mut temp_file: fs::FileSlot,
         final_key: StoreKey<'static>,
         mut reader: DropCloserReadHalf,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         let mut data_size = 0;
         loop {
             let mut data = reader
@@ -997,7 +997,8 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         drop(temp_file);
 
         *entry.data_size_mut() = data_size;
-        self.emplace_file(final_key, Arc::new(entry)).await
+        self.emplace_file(final_key, Arc::new(entry)).await?;
+        Ok(data_size)
     }
 
     async fn emplace_file(&self, key: StoreKey<'static>, entry: Arc<Fe>) -> Result<(), Error> {
@@ -1144,10 +1145,10 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         key: StoreKey<'_>,
         mut reader: DropCloserReadHalf,
         _upload_size: UploadSizeInfo,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         if is_zero_digest(key.borrow()) {
-            // don't need to add, because zero length files are just assumed to exist
-            return Ok(());
+            // don't need to add, because zero length files are just assumed to exist.
+            return Ok(0);
         }
 
         let temp_key = make_temp_key(&key);
@@ -1241,7 +1242,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         path: OsString,
         file: fs::FileSlot,
         upload_size: UploadSizeInfo,
-    ) -> Result<Option<fs::FileSlot>, Error> {
+    ) -> Result<(u64, Option<fs::FileSlot>), Error> {
         let file_size = match upload_size {
             UploadSizeInfo::ExactSize(size) => size,
             UploadSizeInfo::MaxSize(_) => file
@@ -1253,7 +1254,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         };
         if file_size == 0 {
             // don't need to add, because zero length files are just assumed to exist
-            return Ok(None);
+            return Ok((0, None));
         }
         let entry = Fe::create(
             file_size,
@@ -1272,7 +1273,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         self.emplace_file(key.into_owned(), Arc::new(entry))
             .await
             .err_tip(|| "Could not move file into store in upload_file_to_store, maybe dest is on different volume?")?;
-        return Ok(None);
+        return Ok((file_size, None));
     }
 
     async fn get_part(

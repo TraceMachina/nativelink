@@ -291,7 +291,7 @@ impl StoreDriver for CompressionStore {
         key: StoreKey<'_>,
         mut reader: DropCloserReadHalf,
         upload_size: UploadSizeInfo,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         let mut output_state = UploadState::new(&self, upload_size)?;
 
         let (mut tx, rx) = make_buf_channel_pair();
@@ -417,10 +417,13 @@ impl StoreDriver for CompressionStore {
                     .err_tip(|| "Failed writing EOF in compression store update")?;
             }
 
-            Result::<(), Error>::Ok(())
+            Result::<u64, Error>::Ok(received_amt)
         };
         let (write_result, update_result) = tokio::join!(write_fut, update_fut);
-        write_result.merge(update_result)
+        match (write_result, update_result) {
+            (Ok(size), Ok(_)) => Ok(size),
+            (Err(e), _) | (_, Err(e)) => Err(e),
+        }
     }
 
     async fn get_part(

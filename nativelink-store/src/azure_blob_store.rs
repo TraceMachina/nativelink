@@ -586,11 +586,11 @@ where
         digest: StoreKey<'_>,
         mut reader: DropCloserReadHalf,
         upload_size: UploadSizeInfo,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         let blob_path = self.make_blob_path(&digest);
         // Handling zero-sized content check
         if upload_size == UploadSizeInfo::ExactSize(0) {
-            return Ok(());
+            return Ok(0);
         }
 
         let max_size = match upload_size {
@@ -637,13 +637,15 @@ where
                             }
                         );
 
-                            upload_res
-                                .and(bind_res)
-                                .err_tip(|| "Failed to upload blob in single chunk")
+                            match (upload_res, bind_res) {
+                                (Ok(size), Ok(())) => Ok(size),
+                                (Err(e), _) | (_, Err(e)) => Err(e),
+                            }
+                            .err_tip(|| "Failed to upload blob in single chunk")
                         };
 
                         match result {
-                            Ok(()) => Some((RetryResult::Ok(()), reader)),
+                            Ok(()) => Some((RetryResult::Ok(reader.get_bytes_received()), reader)),
                             Err(mut err) => {
                                 err.code = Code::Aborted;
                                 let bytes_received = reader.get_bytes_received();
@@ -688,6 +690,7 @@ where
             let tx = tx.clone();
             let blob_path = blob_path.clone();
             async move {
+                let mut total_uploaded = 0;
                 for block_id in 0..MAX_BLOCKS {
                     let write_buf = reader
                         .consume(Some(
@@ -700,6 +703,8 @@ where
                     if write_buf.is_empty() {
                         break;
                     }
+
+                    total_uploaded += write_buf.len() as u64;
 
                     let block_id = format!("{block_id:032}");
                     let blob_path = blob_path.clone();
@@ -742,12 +747,13 @@ where
                             .append("Failed to send block to channel")
                     })?;
                 }
-                Ok::<_, Error>(())
+                Ok::<_, Error>(total_uploaded)
             }
             .fuse()
         };
 
         let mut upload_futures = FuturesUnordered::new();
+        let mut total_uploaded = 0;
 
         tokio::pin!(read_stream_fut);
 
@@ -756,7 +762,9 @@ where
                 break;
             }
             tokio::select! {
-                result = &mut read_stream_fut => result?,
+                result = &mut read_stream_fut => {
+                    total_uploaded = result?;
+                },
                 Some(block_id) = upload_futures.next() => block_ids.push(block_id?),
                 Some(fut) = rx.recv() => upload_futures.push(fut),
             }
@@ -792,7 +800,7 @@ where
                                             .append("Failed to commit block list in Azure store:"),
                                     )
                                 },
-                                |_| RetryResult::Ok(()),
+                                |_| RetryResult::Ok(total_uploaded),
                             ),
                         block_list,
                     ))

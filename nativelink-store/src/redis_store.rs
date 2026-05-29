@@ -854,7 +854,7 @@ where
         key: StoreKey<'_>,
         mut reader: DropCloserReadHalf,
         _upload_size: UploadSizeInfo,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         let final_key = self.encode_key(&key);
 
         // While the name generation function can be supplied by the user, we need to have the curly
@@ -882,7 +882,7 @@ where
                     .await
                     .err_tip(|| "Failed to drain in RedisStore::update")?;
                 // Zero-digest keys are special -- we don't need to do anything with it.
-                return Ok(());
+                return Ok(0);
             }
         }
 
@@ -972,13 +972,13 @@ where
 
         // If we have a publish channel configured, send a notice that the key has been set.
         if let Some(pub_sub_channel) = &self.pub_sub_channel {
-            return Ok(client
+            client
                 .connection_manager
-                .publish(pub_sub_channel, final_key.as_ref())
-                .await?);
+                .publish::<_, _, ()>(pub_sub_channel, final_key.as_ref())
+                .await?;
         }
 
-        Ok(())
+        Ok(blob_len.try_into().unwrap_or(0))
     }
 
     async fn get_part(

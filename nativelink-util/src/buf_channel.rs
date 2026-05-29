@@ -303,18 +303,19 @@ impl DropCloserReadHalf {
     }
 
     /// Drains the reader until an EOF is received, but sends data to the void.
-    pub async fn drain(&mut self) -> Result<(), Error> {
+    pub async fn drain(&mut self) -> Result<u64, Error> {
+        let mut total_bytes: u64 = 0;
         loop {
-            if self
+            let bytes = self
                 .recv()
                 .await
-                .err_tip(|| "Failed to drain in buf_channel::drain")?
-                .is_empty()
-            {
+                .err_tip(|| "Failed to drain in buf_channel::drain")?;
+            if bytes.is_empty() {
                 break; // EOF.
             }
+            total_bytes += bytes.len().try_into().unwrap_or(0);
         }
-        Ok(())
+        Ok(total_bytes)
     }
 
     /// Peek the next set of bytes in the stream without consuming them.

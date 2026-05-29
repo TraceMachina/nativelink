@@ -510,7 +510,7 @@ where
         key: StoreKey<'_>,
         reader: DropCloserReadHalf,
         size_info: UploadSizeInfo,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         let key_owned = key.into_owned();
         let result = self
             .inner_store
