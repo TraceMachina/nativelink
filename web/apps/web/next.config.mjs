@@ -8,25 +8,24 @@ const nextConfig = {
       { protocol: "https", hostname: "github.com" },
     ],
   },
-  // Marketing serves the apex; the docs app lives at /docs/* and is a
-  // separate Vercel deployment. We proxy here so /docs URLs stay on the
-  // marketing origin (SEO, cookies, one set of analytics).
+  // Marketing serves the apex; the docs app lives on docs.nativelink.com.
+  // Redirect /docs links there so old URLs and local nav links keep working.
   //
   //   Production: target is process.env.DOCS_URL (set on Vercel).
   //   Development: target is process.env.DOCS_DEV_URL or localhost:3001.
-  async rewrites() {
+  async redirects() {
     const target =
       process.env.NODE_ENV === "production"
         ? process.env.DOCS_URL
         : (process.env.DOCS_DEV_URL ?? "http://localhost:3001");
 
-    // If we're in production and DOCS_URL isn't set, skip the rewrite
-    // entirely — better to 404 cleanly than to proxy to nothing.
+    // If we're in production and DOCS_URL isn't set, skip the redirect
+    // entirely — better to 404 cleanly than to redirect to nothing.
     if (!target) return [];
 
     return [
-      { source: "/docs", destination: `${target}/docs` },
-      { source: "/docs/:path*", destination: `${target}/docs/:path*` },
+      { source: "/docs", destination: target, permanent: false },
+      { source: "/docs/:path*", destination: `${target}/:path*`, permanent: false },
     ];
   },
 };
