@@ -1,0 +1,10 @@
+{
+  "pages": [
+    "guidelines",
+    "docs",
+    "bazel",
+    "cargo",
+    "nix"
+  ],
+  "title": "For Contributors"
+}

@@ -1,0 +1,48 @@
+---
+title: What is LRE?
+description: Local Remote Execution — the hermeticity of RBE without the network.
+---
+
+LRE (Local Remote Execution) runs a NativeLink worker on your laptop
+and routes every build action through it. You get the hermeticity
+guarantees of remote execution — content-addressed inputs, pinned
+toolchain, sandboxed processes — without sending anything over the
+network.
+
+## What it solves
+
+The classic developer-experience trade-off:
+
+- **Pure local build** — fast feedback, "works on my machine" bugs.
+- **Pure remote build** — bit-identical with CI, slow on every change.
+
+LRE is the third option: bit-identical with CI, fast on every change.
+Cache hits from the remote cluster apply locally; cache writes from
+local apply remotely.
+
+## How it works
+
+Three pieces:
+
+1. A NativeLink server bound to `localhost`.
+2. A Nix-pinned toolchain: every binary the build invokes has a
+   content-addressed path in the Nix store.
+3. A configured build client (Bazel, Buck2, ...) targeting the local
+   server.
+
+The build issues the same `Execute` RPCs it would issue against a
+remote cluster — they just happen to land on `localhost`.
+
+## When to use LRE
+
+| Scenario                                       | LRE  |
+| ---------------------------------------------- | ---- |
+| Solo dev iterating, want CI reproducibility    | ✓    |
+| Team sharing a cache without a server          | ✓    |
+| Repro a CI failure locally                     | ✓    |
+| Fan-out across 200 cores                       | ✗    |
+| Building for a platform you can't host         | ✗    |
+
+The split: LRE for determinism, remote workers for throughput.
+
+The full write-up: [Explanations → LRE](/explanations/lre).

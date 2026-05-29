@@ -1,0 +1,62 @@
+---
+title: What is remote execution?
+description: Build steps run on a worker fleet, not your laptop. Faster builds, lower bills.
+---
+
+Remote execution ships the build action — inputs, command, sandbox
+spec — to a fleet of workers and brings back the outputs. Your laptop
+or CI runner becomes a thin coordinator; the heavy lifting happens on
+hardware sized for it.
+
+## The shape
+
+```
+[ client ]  ─ Execute() ─▶  [ scheduler ]
+                                  │
+                          ┌───────┼───────┐
+                          ▼       ▼       ▼
+                      [worker] [worker] [worker]
+                          │       │       │
+                          └───────┴───────┘
+                                  ▼
+                          [   CAS / AC   ]
+```
+
+The client tells the scheduler "run this action." The scheduler picks
+a worker that satisfies the action's platform requirements. The
+worker fetches inputs from the content-addressed store, runs the
+command in a sandbox, uploads outputs back to the store, and reports
+the result.
+
+The cache from [remote caching](/faq/caching) sits underneath
+all of this — actions hit it first; only misses get executed.
+
+## Why ship the work elsewhere
+
+Three reasons, in roughly the order teams adopt them:
+
+1. **Throughput.** A worker fleet has more cores than any one
+   developer machine. Linker steps that take 60 seconds on a laptop
+   take 8 on a hot worker.
+2. **Hermeticity.** The worker has exactly one job, in exactly one
+   environment. No conflicting versions of system libraries, no
+   stale `/tmp`, no surprises.
+3. **Cost.** CI runners are expensive because they sit idle most of
+   the day. A worker fleet utilises hardware constantly — average
+   utilisation goes from 5-10% to 60-80%.
+
+## Where NativeLink fits
+
+NativeLink is a Remote Execution API server. Any build tool that
+speaks the protocol —
+[Bazel](https://bazel.build),
+[Buck2](https://buck2.build),
+[Reclient](https://github.com/bazelbuild/reclient),
+[Pants](https://www.pantsbuild.org),
+[Goma](https://chromium.googlesource.com/infra/goma/client/) —
+plugs in with no code changes.
+
+The flow looks like the diagram above, with NativeLink as the
+scheduler + worker fleet. See
+[Architecture](/explanations/architecture) for the full
+walkthrough.

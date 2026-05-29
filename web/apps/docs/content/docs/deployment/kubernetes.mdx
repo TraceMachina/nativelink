@@ -1,0 +1,179 @@
+---
+title: Kubernetes
+description: Deploy NativeLink on Kubernetes — what each workload looks like, where state lives, how to autoscale workers.
+---
+
+NativeLink ships with a reference Kubernetes deployment in the
+[`deployment-examples/kubernetes/`](https://github.com/TraceMachina/nativelink/tree/main/deployment-examples/kubernetes)
+directory. This page covers the shape; the chart there has the
+manifests.
+
+## Workload layout
+
+Three Kubernetes workloads make up a production NativeLink cluster:
+
+| Workload       | Kind          | Replicas   | Notes                                  |
+| -------------- | ------------- | ---------- | -------------------------------------- |
+| `cas`          | StatefulSet   | 3+         | Persistent volume claim per pod        |
+| `scheduler`    | Deployment    | 2-3        | Stateless                              |
+| `worker`       | Deployment    | autoscaled | Stateless; uses HPA on queue depth     |
+
+The control plane (CAS + scheduler) is durable and lightly-loaded. The
+worker plane is where elasticity matters.
+
+## CAS StatefulSet
+
+```yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: nativelink-cas
+spec:
+  serviceName: nativelink-cas
+  replicas: 3
+  selector:
+    matchLabels:
+      app: nativelink-cas
+  template:
+    metadata:
+      labels:
+        app: nativelink-cas
+    spec:
+      containers:
+        - name: nativelink
+          image: ghcr.io/tracemachina/nativelink:v1.3.0
+          args: ["/config/cas.json5"]
+          ports:
+            - containerPort: 50051
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/nativelink
+            - name: config
+              mountPath: /config
+          resources:
+            requests:
+              cpu: 1
+              memory: 2Gi
+            limits:
+              cpu: 4
+              memory: 8Gi
+          livenessProbe:
+            grpc:
+              port: 50051
+            periodSeconds: 10
+      volumes:
+        - name: config
+          configMap:
+            name: nativelink-cas-config
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: gp3
+        resources:
+          requests:
+            storage: 200Gi
+```
+
+Each replica owns its slice of CAS storage on its own EBS / PD
+volume. The
+[production config](/configuration/production#cas-sharded-s3-redis)
+shows how to compose those slices into a single addressable CAS via
+the `shard` store backend.
+
+## Worker Deployment + HPA
+
+Workers are stateless. Each replica connects to the scheduler over
+gRPC, pulls actions, runs them, uploads results.
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nativelink-worker
+spec:
+  replicas: 4   # minimum; HPA scales up
+  selector:
+    matchLabels:
+      app: nativelink-worker
+  template:
+    metadata:
+      labels:
+        app: nativelink-worker
+    spec:
+      containers:
+        - name: nativelink
+          image: ghcr.io/tracemachina/nativelink:v1.3.0
+          args: ["/config/worker.json5"]
+          resources:
+            requests: { cpu: 4, memory: 8Gi }
+            limits:   { cpu: 8, memory: 16Gi }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: nativelink-worker
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: nativelink-worker
+  minReplicas: 4
+  maxReplicas: 200
+  metrics:
+    - type: External
+      external:
+        metric:
+          name: nativelink_scheduler_queue_depth
+        target:
+          type: Value
+          averageValue: "20"
+```
+
+Scale on `nativelink_scheduler_queue_depth` — the Prometheus metric
+the scheduler exports. Plain CPU-based scaling doesn't react fast
+enough; workers spend most of their time blocked on I/O.
+
+## Service & Ingress
+
+A single ClusterIP service per workload, with one Ingress / Gateway
+in front for clients:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: nativelink-cas
+spec:
+  selector:
+    app: nativelink-cas
+  ports:
+    - port: 50051
+      targetPort: 50051
+      protocol: TCP
+```
+
+Make sure the Ingress controller supports gRPC end-to-end (NGINX with
+`grpc_pass`, or any modern Gateway API implementation).
+
+## A complete reference
+
+The
+[`deployment-examples/kubernetes/`](https://github.com/TraceMachina/nativelink/tree/main/deployment-examples/kubernetes)
+directory in the source tree has:
+
+- A Helm chart with values for dev / staging / prod.
+- A Kustomize overlay set.
+- An example `prometheus-rules.yaml` covering the alerts we run.
+- A working HPA on queue depth (the `keda` adapter is included for
+  installations using it).
+
+Clone the repo, point at your cluster, `helm install`. Tune from
+there.
+
+## What's next
+
+- [Metrics](/deployment/metrics) — wire it into your Grafana.
+- [Persistent workers](/deployment/persistent-workers) — pool
+  long-lived worker processes for hot toolchains.

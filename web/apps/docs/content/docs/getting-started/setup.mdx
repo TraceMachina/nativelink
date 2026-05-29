@@ -1,0 +1,226 @@
+---
+title: Setup
+description: Install NativeLink and point your build system at it in under 10 minutes.
+---
+
+This guide takes you from zero to your first cached build. Pick the
+installation method that matches your platform, then wire your build
+system to the running cluster.
+
+<Callout type="info" title="Prerequisites">
+  You need a build tool that speaks the Remote Execution API — Bazel,
+  Buck2, Reclient, Pants, Goma, or CMake via recc. For the Docker path,
+  Docker 24+. For the Nix path, a recent Nix install with flakes enabled.
+</Callout>
+
+## Install NativeLink
+
+The fastest way is the prebuilt container image. It runs anywhere Docker
+runs and ships with a tested configuration.
+
+<Tabs items={["Linux (x86_64)", "macOS / Linux (Nix)", "Windows (x86_64)"]}>
+
+  <Tab value="Linux (x86_64)">
+
+```bash
+# Grab a known-good basic configuration
+curl -O https://raw.githubusercontent.com/TraceMachina/nativelink/v1.3.0/nativelink-config/examples/basic_cas.json5
+
+# Run the official image
+docker run \
+  -v $(pwd)/basic_cas.json5:/config \
+  -p 50051:50051 \
+  ghcr.io/tracemachina/nativelink:v1.3.0 config
+```
+
+The server is now listening on `localhost:50051`.
+
+  </Tab>
+
+  <Tab value="macOS / Linux (Nix)">
+
+```bash
+curl -O https://raw.githubusercontent.com/TraceMachina/nativelink/main/nativelink-config/examples/basic_cas.json5
+
+nix run github:TraceMachina/nativelink ./basic_cas.json5
+```
+
+Slower than the prebuilt image because it builds from source, but works on
+macOS (Apple Silicon and Intel) and any Linux with Nix. Also the only path
+that supports Apple Silicon natively at the moment.
+
+<Callout type="warn">
+  Executables built for macOS link dynamically against libraries from the
+  Nix store. They will not run on systems without those libraries
+  available. Stick to the Docker path if you need to copy the binary to
+  another machine.
+</Callout>
+
+  </Tab>
+
+  <Tab value="Windows (x86_64)">
+
+```powershell
+Invoke-WebRequest `
+  -Uri "https://raw.githubusercontent.com/TraceMachina/nativelink/v1.3.0/nativelink-config/examples/basic_cas.json5" `
+  -OutFile "basic_cas.json5"
+
+docker run `
+  -v ${PWD}/basic_cas.json5:/config `
+  -p 50051:50051 `
+  ghcr.io/tracemachina/nativelink:v1.3.0 config
+```
+
+Native Windows support is x86_64 only. ARM64 Windows users should use
+WSL2 with the Linux instructions above.
+
+  </Tab>
+
+</Tabs>
+
+## Verify it's running
+
+In another terminal:
+
+```bash
+curl -v http://localhost:50051/
+```
+
+You should see a gRPC server responding. The exact body doesn't matter —
+the connection succeeding does.
+
+## Point your build system at it
+
+<Tabs items={["Bazel", "Buck2", "Reclient", "Pants"]}>
+
+  <Tab value="Bazel">
+
+Add to your `.bazelrc`:
+
+```
+build --remote_cache=grpc://localhost:50051
+build --remote_executor=grpc://localhost:50051
+build --remote_instance_name=main
+```
+
+Or pass them per invocation:
+
+```bash
+bazel build //... \
+  --remote_cache=grpc://localhost:50051 \
+  --remote_executor=grpc://localhost:50051
+```
+
+Run any build target. Subsequent rebuilds of unchanged targets should
+report `(remote cache hit)` in the action log.
+
+  </Tab>
+
+  <Tab value="Buck2">
+
+In your project root, add `.buckconfig`:
+
+```ini
+[buck2_re_client]
+engine_address = grpc://localhost:50051
+action_cache_address = grpc://localhost:50051
+cas_address = grpc://localhost:50051
+instance_name = main
+```
+
+Then run with `--remote_cache`:
+
+```bash
+buck2 build //... --remote-cache
+```
+
+  </Tab>
+
+  <Tab value="Reclient">
+
+Set the environment variables Reclient reads:
+
+```bash
+export RBE_service=localhost:50051
+export RBE_instance=main
+export RBE_service_no_security=true   # only for local TLS-free dev
+
+reproxy &
+rewrapper -- <your-compile-command>
+```
+
+The Chromium build is the canonical Reclient consumer; see
+[Deployment → Chromium](/deployment/chromium) for a full example.
+
+  </Tab>
+
+  <Tab value="Pants">
+
+In `pants.toml`:
+
+```toml
+[GLOBAL]
+remote_cache_read = true
+remote_cache_write = true
+remote_store_address = "grpc://localhost:50051"
+remote_instance_name = "main"
+```
+
+Then run any goal as usual; Pants will route through the cache.
+
+  </Tab>
+
+</Tabs>
+
+## Confirm cache hits
+
+Re-run your build a second time without changing any source files. Every
+action should land in the cache and report a hit. With Bazel:
+
+```bash
+bazel build //... \
+  --remote_cache=grpc://localhost:50051 \
+  --execution_log_json_file=/tmp/exec.json
+
+# Count the cache hits vs misses
+grep -c '"remoteCacheHit": true' /tmp/exec.json
+```
+
+If you see hits — you're done. If not, jump to the troubleshooting
+section below.
+
+## Troubleshooting
+
+<Callout type="warn" title="Connection refused">
+  The NativeLink server isn't listening on the port your client is
+  pointing at. Confirm with `lsof -i :50051` (macOS / Linux) or
+  `netstat -ano | findstr 50051` (Windows). Check the Docker container is
+  still running with `docker ps`.
+</Callout>
+
+<Callout type="warn" title="Cache writes succeed, reads always miss">
+  Most often this means two clients are using different `instance_name`
+  values or different toolchain configurations. Compare the
+  `--remote_instance_name` flag (Bazel) or the equivalent in your build
+  system across the two invocations. Toolchain mismatches surface as
+  action hashes that never collide.
+</Callout>
+
+<Callout type="warn" title="Permission denied on /config in Docker">
+  SELinux-enforcing distributions (Fedora, RHEL) require an explicit
+  `:Z` label on the mounted volume:
+  `-v $(pwd)/basic_cas.json5:/config:Z`.
+</Callout>
+
+## What's next
+
+You have a local cache running. The natural next steps:
+
+- [Configuration introduction](/configuration/intro) — what's in
+  that JSON5 file, and how to grow it from a single node to a fleet.
+- [On-prem deployment](/getting-started/on-prem) — survive a team
+  rollout.
+- [Architecture](/explanations/architecture) — what each piece of
+  the cluster actually does.
+- [Local Remote Execution](/explanations/lre) — hermetic builds on
+  your laptop without containers.

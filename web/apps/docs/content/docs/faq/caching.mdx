@@ -1,0 +1,53 @@
+---
+title: What is remote caching?
+description: Reuse build outputs across machines so you only pay for compilation once.
+---
+
+Remote caching is the practice of storing the result of every build
+action in a shared store, keyed by the hash of the action's inputs. If
+anyone has already compiled the file you're about to compile — a
+teammate, your CI, an agent — you fetch the result instead of doing
+the work.
+
+## How the hash gets computed
+
+Take everything that affects a compilation's output:
+
+- The source files (each by content hash).
+- The compiler binary (by content hash).
+- The compile command, exactly as it'll be executed.
+- The set of header files included transitively.
+- Anything else the build system declared as an input.
+
+Hash that whole bundle. Two invocations with the same bundle produce
+identical outputs; the cache returns the prior result. One byte
+different anywhere — a header you didn't realise you depended on, a
+patch version bump in the compiler — and the hash changes, the cache
+misses, the work runs fresh.
+
+This only works if the build is **hermetic** — i.e. every input is
+declared. See [hermeticity](/faq/hermeticity).
+
+## What a cache hit looks like
+
+A typical Bazel hit:
+
+```
+INFO: From Compiling src/foo.cc:
+(remote cache hit)
+Target //src:foo up-to-date:
+  bazel-bin/src/libfoo.a
+```
+
+The action ran in 2-10 ms. The compiler never started; the linker
+never touched it. You paid the cost of one HTTP request.
+
+## Where NativeLink fits
+
+NativeLink implements the standard
+[Remote Execution API](https://github.com/bazelbuild/remote-apis) —
+the same protocol Bazel, Buck2, Reclient, Goma, and Pants speak. You
+point your build at a NativeLink server, and every action gets cached
+automatically.
+
+The fast version: [Setup](/getting-started/setup).

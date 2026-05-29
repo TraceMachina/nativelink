@@ -1,0 +1,123 @@
+---
+title: NativeLink on-prem
+description: Self-host NativeLink on hardware you control, with the operational checklist a team rollout actually needs.
+---
+
+The open-source release of NativeLink is designed to run on your own
+infrastructure. This page covers what changes between the
+[10-minute setup](/getting-started/setup) and a deployment that
+serves your team without 3 AM pages.
+
+## When to self-host
+
+Pick on-prem when one of these is true:
+
+- **Data residency.** Build artifacts can carry source code,
+  toolchains, even credentials. If those have to stay in a specific
+  region (EU GDPR, US FedRAMP boundaries, air-gapped corp networks),
+  managed Cloud isn't an option yet.
+- **Specialised hardware.** GPU workers, ARM cross-compile fleets,
+  in-house silicon. Cloud supports the common cases; on-prem lets you
+  use anything that can run a Linux binary.
+- **You already operate stateful services.** If your team owns
+  Kubernetes, Postgres, S3-compatible storage, adding NativeLink is
+  marginal work.
+
+If none of those apply, NativeLink Cloud is cheaper, faster to
+provision, and one fewer pager rotation.
+
+## What ships in the box
+
+A NativeLink deployment is composed of four roles. The same binary
+serves all of them; the JSON5 config decides which subset to run.
+
+| Role             | What it does                                              | Statefulness       |
+| ---------------- | --------------------------------------------------------- | ------------------ |
+| **CAS server**   | Stores and serves content-addressed blobs.                | Stateful           |
+| **AC server**    | Maps `Action` digests to `ActionResult`s.                 | Stateful           |
+| **Scheduler**    | Receives `Execute` calls, dispatches to workers.          | Stateless          |
+| **Worker**       | Runs the action in a sandbox, uploads outputs to CAS.     | Stateless          |
+
+A single binary can run all four. For anything beyond a single
+developer, run them on separate processes so you can scale and restart
+each independently.
+
+## The rollout checklist
+
+<Steps>
+  <li>
+    **Pick the storage backend.** The default in-memory CAS is fine for
+    a 10-minute demo and disastrous in production. Pick one before
+    rolling out:
+    - **Filesystem** — single-node clusters, sub-100GB caches.
+    - **S3 (or compatible)** — anything multi-node. R2, MinIO, GCS,
+      Azure Blob all work via the S3 adapter.
+    - **Redis** — hot-key acceleration in front of the durable store.
+      Optional but cheap latency wins.
+  </li>
+  <li>
+    **Pick the deployment substrate.** Most teams land on one of:
+    - **Kubernetes** — see [Deployment → Kubernetes](/deployment/kubernetes)
+      for a working chart.
+    - **Bare VMs** — `systemd` units, one binary per role, with a load
+      balancer in front.
+    - **Docker Compose** — a reasonable starting point for ≤ 5
+      developers.
+  </li>
+  <li>
+    **Plan capacity.** Heuristics from production clusters:
+    - CAS storage: 5–20 GB per active developer per week, depending on
+      language. C++ skews high; Go skews low.
+    - Worker CPU: 1 vCPU per concurrent action. Headroom matters more
+      than peak.
+    - Network: cache reads are the hot path. Provision at least 1 Gbps
+      between workers and CAS.
+  </li>
+  <li>
+    **Set up TLS.** mTLS between every hop. The
+    [Configuration → Production](/configuration/production) guide
+    has the certificate layout.
+  </li>
+  <li>
+    **Wire up metrics.** NativeLink emits Prometheus metrics out of the
+    box. Point Grafana at it. See
+    [Deployment → Metrics](/deployment/metrics).
+  </li>
+</Steps>
+
+## Container registry
+
+Official images are published to GitHub Container Registry. Pull the
+specific version your config references — `latest` works but pinning
+avoids surprises.
+
+```bash
+docker pull ghcr.io/tracemachina/nativelink:v1.3.0
+```
+
+The [`/pkgs/container/nativelink`](https://github.com/TraceMachina/nativelink/pkgs/container/nativelink)
+page lists every published tag.
+
+## Backups & recovery
+
+The CAS is the only stateful piece you can't trivially rebuild from
+clients. Snapshot strategy depends on the backend:
+
+- **Filesystem** — `rsync` or your filesystem's snapshot facility
+  (ZFS, Btrfs). Restore by stopping the CAS, swapping the directory,
+  starting again.
+- **S3-compatible** — versioning + lifecycle policies handle the
+  primary copy. For DR, cross-region replication.
+- **Redis** — treat as ephemeral. Loss is a cache miss, not data loss.
+
+The Action Cache can be wiped without data loss; you'll re-execute
+everything until it warms back up.
+
+## What's next
+
+- [Configuration → Production](/configuration/production) — the
+  JSON5 shape for a real cluster.
+- [Deployment → Kubernetes](/deployment/kubernetes) — a working
+  Helm chart.
+- [Deployment → Metrics](/deployment/metrics) — Prometheus and
+  Grafana, ready to go.

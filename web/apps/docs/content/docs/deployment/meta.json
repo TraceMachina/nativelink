@@ -1,0 +1,10 @@
+{
+  "pages": [
+    "on-prem-overview",
+    "kubernetes",
+    "chromium",
+    "metrics",
+    "persistent-workers"
+  ],
+  "title": "Deployment examples"
+}

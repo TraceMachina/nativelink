@@ -1,9 +1,9 @@
 <div id="logo" align="center">
   <a href="https://www.nativelink.com">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="web/platform/src/assets/logo-dark.svg" />
-      <source media="(prefers-color-scheme: light)" srcset="web/platform/src/assets/logo-light.svg" />
-      <img alt="NativeLink" src="web/platform/src/assets/logo-light.svg" width="376" height="100" />
+      <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg" />
+      <source media="(prefers-color-scheme: light)" srcset="assets/logo-light.svg" />
+      <img alt="NativeLink" src="assets/logo-light.svg" width="376" height="100" />
     </picture>
   </a>
 
@@ -33,7 +33,7 @@
 
 NativeLink is an efficient, high-performance build cache and remote execution system that accelerates software compilation and testing while reducing infrastructure costs. It optimizes build processes for projects of all sizes by intelligently caching build artifacts and distributing tasks across multiple machines.
 
-NativeLink is trusted in production environments to reduce costs and developer iteration times--handling over **one billion requests** per month for its customers, including large corporations such as **Samsung**.
+NativeLink is trusted in production environments to reduce costs and developer iteration times--handling over **billions of requests** per month for its customers, including large corporations such as **Samsung**.
 
 <p align="center">
   <a href="https://www.youtube.com/watch?v=WLpqFuyLMUQ">
