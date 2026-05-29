@@ -1,7 +1,7 @@
-import type { MetadataRoute } from "next";
 import { source } from "@/lib/source";
+import type { MetadataRoute } from "next";
 
-const BASE_URL = "https://nativelink.com";
+const BASE_URL = "https://docs.nativelink.com";
 
 export default function sitemap(): MetadataRoute.Sitemap {
   const lastModified = new Date();
@@ -9,6 +9,6 @@ export default function sitemap(): MetadataRoute.Sitemap {
     url: `${BASE_URL}${page.url}`,
     lastModified,
     changeFrequency: "weekly" as const,
-    priority: page.url === "/docs" ? 0.9 : 0.6,
+    priority: page.url === "/" ? 0.9 : 0.6,
   }));
 }

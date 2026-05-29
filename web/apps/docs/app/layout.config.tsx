@@ -3,16 +3,12 @@ import type { BaseLayoutProps } from "fumadocs-ui/layouts/shared";
 
 export const baseOptions: BaseLayoutProps = {
   nav: {
-    // basePath="/docs" so the logo SVG resolves under the docs server's
-    // basePath. Without this, <img src="/logo-light.svg"> 404s when the
-    // docs app is hit directly.
-    title: <Logo size="md" basePath="/docs" />,
+    title: <Logo size="md" />,
     url: "/",
     transparentMode: "top",
   },
   // Only the GitHub icon in the top-nav. Cross-app links back to marketing
-  // (/product, /pricing, /resources) were removed — they 404'd inside the
-  // docs basePath and clutter a docs-focused nav.
+  // (/product, /pricing, /resources) clutter a docs-focused nav.
   links: [
     {
       type: "icon",
