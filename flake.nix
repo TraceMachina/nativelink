@@ -81,8 +81,19 @@
         lib,
         ...
       }: let
-        craneLibFor = p: (crane.mkLib p).overrideToolchain pkgs.lre.stableRustFor;
-        nightlyCraneLibFor = p: (crane.mkLib p).overrideToolchain pkgs.lre.nightlyRustFor;
+        # On Linux we build fully static musl binaries, elsewhere the default stdenv.
+        stdenvSelectorFor = q:
+          if q.stdenv.targetPlatform.isLinux
+          then q.pkgsMusl.stdenv
+          else q.stdenv;
+        craneLibFor = p:
+          ((crane.mkLib p).overrideToolchain pkgs.lre.stableRustFor).overrideScope (_: _: {
+            stdenvSelector = stdenvSelectorFor;
+          });
+        nightlyCraneLibFor = p:
+          ((crane.mkLib p).overrideToolchain pkgs.lre.nightlyRustFor).overrideScope (_: _: {
+            stdenvSelector = stdenvSelectorFor;
+          });
 
         src = pkgs.lib.cleanSourceWith {
           src = (craneLibFor pkgs).path ./.;
@@ -124,10 +135,6 @@
         in
           {
             inherit src;
-            stdenv = q:
-              if q.stdenv.targetPlatform.isLinux
-              then q.pkgsMusl.stdenv
-              else q.stdenv;
             strictDeps = true;
             buildInputs =
               [p.cacert]
