@@ -7,6 +7,15 @@ NativeLink emits remote execution metrics through OpenTelemetry. Cache operation
 metrics are available when the store is explicitly wrapped with the opt-in
 `cache_metrics` store wrapper.
 
+<Callout type="info" title="License note">
+  NativeLink metrics are licensed under the Business Source License.
+  Individual developer cache use does not need a commercial license.
+  Teams using metrics in shared, production, or commercial settings
+can use NativeLink Cloud, Enterprise, or an intentionally
+very inexpensive separate license. See the
+  [license page](https://nativelink.com/license).
+</Callout>
+
 ## Overview
 
 NativeLink does not expose a Prometheus scrape endpoint directly. It emits OTLP

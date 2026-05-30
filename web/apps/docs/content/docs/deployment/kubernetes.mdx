@@ -41,7 +41,7 @@ spec:
     spec:
       containers:
         - name: nativelink
-          image: ghcr.io/tracemachina/nativelink:v1.3.0
+          image: ghcr.io/tracemachina/nativelink:v1.3.2
           args: ["/config/cas.json5"]
           ports:
             - containerPort: 50051
@@ -104,7 +104,7 @@ spec:
     spec:
       containers:
         - name: nativelink
-          image: ghcr.io/tracemachina/nativelink:v1.3.0
+          image: ghcr.io/tracemachina/nativelink:v1.3.2
           args: ["/config/worker.json5"]
           resources:
             requests: { cpu: 4, memory: 8Gi }

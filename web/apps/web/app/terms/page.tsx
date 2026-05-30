@@ -92,11 +92,16 @@ export default function TermsPage() {
                 2. License & Use
               </h3>
               <p className="mt-3 text-[15px] leading-relaxed text-muted-foreground">
-                The NativeLink open-source core is distributed under the MIT
-                License. You are free to use, modify, and distribute the open-source
-                release subject to that license. NativeLink Cloud and Enterprise
-                offerings are provided under the separate agreement you accept when
-                you sign up for those services.
+                NativeLink is distributed from a monorepo with module-aware
+                licensing. Most modules are licensed under FSL-1.1-Apache-2.0,
+                while some commercial modules, including metrics and remote
+                persistent workers, are licensed under the Business Source License.
+                Developers using NativeLink for an individual cache do not need a
+                commercial license; team and production usage of commercial modules
+                can be covered by an intentionally very inexpensive separate license.
+                See the <a href="/license">license page</a> for details.
+                NativeLink Cloud and Enterprise offerings are provided under the
+                separate agreement you accept when you sign up for those services.
               </p>
 
               <h3 id="accounts" className="mt-10 scroll-mt-24 text-xl font-semibold tracking-tight text-foreground">
@@ -142,8 +147,8 @@ export default function TermsPage() {
                   themselves are content-addressed and never inspected by us.
                 </li>
                 <li>
-                  Anonymous usage telemetry from the open-source release, which can
-                  be disabled with a single flag.
+                  Anonymous usage telemetry from the source-available release,
+                  which can be disabled with a single flag.
                 </li>
                 <li>
                   Standard server logs (IP addresses, user agents) retained for 30

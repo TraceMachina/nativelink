@@ -16,6 +16,7 @@ ELB
 Eskandar
 FFI
 FFIs
+FSL
 GPUs
 Goma
 gzip

@@ -3,6 +3,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.2](https://github.com/TraceMachina/nativelink/compare/v1.3.1..v1.3.2) - 2026-05-29
+
+
+
+### 📚 Documentation
+
+- remove base path URL in docs ([#2375](https://github.com/TraceMachina/nativelink/issues/2375)) - ([9bd088e](https://github.com/TraceMachina/nativelink/commit/9bd088eff672c4cf95164e475bab155b5c99b0db))
+- Bugfix/copy regressions ([#2371](https://github.com/TraceMachina/nativelink/issues/2371)) - ([2c54961](https://github.com/TraceMachina/nativelink/commit/2c5496173036773d205c5a39e75d0b7fc1a08c8a))
+
+### 🧪 Testing & CI
+
+- Fix fast-slow store optimisation ([#2373](https://github.com/TraceMachina/nativelink/issues/2373)) - ([2169fde](https://github.com/TraceMachina/nativelink/commit/2169fde722960fcc9aba44575dc8846c883b640f))
+
+### ⚙️ Miscellaneous
+
+- add CSS ambient declarations to work with TS6 ([#2374](https://github.com/TraceMachina/nativelink/issues/2374)) - ([84a7b07](https://github.com/TraceMachina/nativelink/commit/84a7b0750636254a836e8375b331d844f72d89d6))
+- fixing broken contact us button and start free buttons ([#2369](https://github.com/TraceMachina/nativelink/issues/2369)) - ([b157f0c](https://github.com/TraceMachina/nativelink/commit/b157f0c412184584d8326d0d7cedb17d315e4d5b))
+
+### ⬆️ Bumps & Version Updates
+
+- Add cache metrics ([#2344](https://github.com/TraceMachina/nativelink/issues/2344)) - ([9b016e5](https://github.com/TraceMachina/nativelink/commit/9b016e5b2a27f3d5c96993febfa27a5fe8b75b97))
+
 ## [1.3.1](https://github.com/TraceMachina/nativelink/compare/v1.3.0..v1.3.1) - 2026-05-23
 
 
