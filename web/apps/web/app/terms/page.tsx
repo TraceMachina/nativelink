@@ -96,6 +96,10 @@ export default function TermsPage() {
                 licensing. Most modules are licensed under FSL-1.1-Apache-2.0,
                 while some commercial modules, including metrics and remote
                 persistent workers, are licensed under the Business Source License.
+                Developers using NativeLink for an individual cache do not need a
+                commercial license; team and production usage of commercial modules
+                can be covered by an intentionally very inexpensive separate license.
+                See the <a href="/license">license page</a> for details.
                 NativeLink Cloud and Enterprise offerings are provided under the
                 separate agreement you accept when you sign up for those services.
               </p>

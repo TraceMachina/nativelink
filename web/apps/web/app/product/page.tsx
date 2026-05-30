@@ -93,7 +93,7 @@ const faqItems: FAQItem[] = [
   },
   {
     q: "Is NativeLink free?",
-    a: "Most of the monorepo is FSL-1.1-Apache-2.0. Metrics and remote persistent workers are Business Source License modules; managed Cloud and Enterprise include the commercial terms.",
+    a: "Most of the monorepo is FSL-1.1-Apache-2.0. Individual cache use does not need a commercial license. Metrics and remote persistent workers are Business Source License modules; Cloud, Enterprise, or a very inexpensive separate license covers shared production use.",
   },
   {
     q: "Why Rust?",
