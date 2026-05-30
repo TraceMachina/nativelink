@@ -256,7 +256,7 @@
               pkgs.unzip
               pkgs.zstd
               pkgs.cargo-bloat
-              pkgs.mold-wrapped
+              pkgs.mold
               pkgs.reindeer
               pkgs.lld_22
               pkgs.clang_22
