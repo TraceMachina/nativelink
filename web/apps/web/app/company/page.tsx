@@ -19,7 +19,7 @@ const values = [
   },
   {
     title: "Default to open.",
-    body: "Our core is MIT-licensed and stays that way. We sell support and operations, not access to the code that runs builds.",
+    body: "Most of the monorepo is FSL-1.1-Apache-2.0. We keep the code visible, and we sell support, operations, and commercial terms for selected modules.",
   },
   {
     title: "Speed is a feature.",
