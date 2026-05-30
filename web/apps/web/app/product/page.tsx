@@ -35,7 +35,7 @@ const pillars = [
   {
     eyebrow: "Cloud & self-host",
     title: "Hosted by us. Or run by you.",
-    body: "Start free on NativeLink Cloud in ten minutes. Move to dedicated infrastructure when your scale demands it. Or self-host the open-source release with one Docker command. Same code path. Same performance.",
+    body: "Start free on NativeLink Cloud in ten minutes. Move to dedicated infrastructure when your scale demands it. Or self-host the source-available release with one Docker command. Same code path. Same performance.",
     metric: "<10m",
     metricLabel: "time to first hit",
     icon: (
@@ -93,7 +93,7 @@ const faqItems: FAQItem[] = [
   },
   {
     q: "Is NativeLink free?",
-    a: "The open-source core is MIT-licensed and free forever. You only pay if you want our managed Cloud or an Enterprise contract.",
+    a: "Most of the monorepo is FSL-1.1-Apache-2.0. Metrics and remote persistent workers are Business Source License modules; managed Cloud and Enterprise include the commercial terms.",
   },
   {
     q: "Why Rust?",

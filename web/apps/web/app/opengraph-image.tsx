@@ -133,7 +133,7 @@ export default async function OpenGraphImage() {
             <span>1B+ build requests / month</span>
           </div>
           <span style={{ color: "#3C3A4E" }}>·</span>
-          <span>Rust · Open source · MIT</span>
+          <span>Rust · Source available · FSL-Apache</span>
         </div>
       </div>
     </div>,

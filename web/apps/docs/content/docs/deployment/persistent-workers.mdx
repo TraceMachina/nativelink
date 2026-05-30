@@ -11,6 +11,14 @@ Persistent workers solve this by keeping a pool of long-lived worker
 processes running and routing matching actions to them. The startup
 cost is paid once; subsequent actions reuse the same process.
 
+<Callout type="info" title="License note">
+  Remote persistent workers are licensed under the Business Source
+  License. Use them through NativeLink Cloud, Enterprise, or a
+  separate license agreement. Meaningful contributors may be eligible
+  for license waivers; contact the maintainers before depending on
+  one.
+</Callout>
+
 ## When this matters
 
 | Toolchain          | Startup cost | Persistent worker win |

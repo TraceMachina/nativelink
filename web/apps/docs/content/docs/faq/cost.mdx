@@ -1,15 +1,25 @@
 ---
 title: Is NativeLink free?
-description: Yes — the open-source core is MIT-licensed and free forever. Cloud and Enterprise are paid offerings.
+description: Yes — NativeLink is source-available and free for permitted self-hosted use. Cloud and Enterprise are paid offerings.
 ---
 
-**Yes — the open-source release is MIT-licensed and free forever.**
-You can self-host it on any infrastructure you control, modify it,
-redistribute it, run it for as many users as you want.
+**Yes — NativeLink is source-available and free for permitted
+self-hosted use.** Most of the monorepo is licensed under
+`FSL-1.1-Apache-2.0`, which allows internal use, modification, and
+redistribution for non-competing purposes, then grants an Apache 2.0
+future license on the schedule described in the repository
+[`LICENSE`](https://github.com/TraceMachina/nativelink/blob/main/LICENSE).
+
+NativeLink is not a single-license monorepo. Some feature modules
+carry their own source headers. In particular, metrics and remote
+persistent workers are licensed under the Business Source License and
+require a Cloud, Enterprise, or separate license agreement for use.
+Meaningful contributors may be eligible for license waivers; contact
+the maintainers before relying on one.
 
 If you'd rather pay someone to run it for you, two paid tiers exist:
 
-- **Cloud** — managed multi-tenant cluster, flat $1,000/month. Full
+- **Cloud** — managed multi-tenant cluster, flat $999+/month. Full
   SLA, autoscaling, dashboard.
 - **Enterprise** — single-tenant deployment, dedicated solutions
   engineer, on-prem or managed. Custom contracts.
@@ -26,9 +36,10 @@ comparison.
 - The CLI tooling and Helm chart.
 
 No artificial limits on cache size, action count, worker count, or
-team size. The open-source build is the same build we run in
-production — minus the operational tooling and dedicated support that
-Cloud and Enterprise add.
+team size. The self-hosted build is the same codebase we run in
+production, subject to the license that applies to each module, minus
+the operational tooling and dedicated support that Cloud and
+Enterprise add.
 
 ## What you'd pay for instead
 
