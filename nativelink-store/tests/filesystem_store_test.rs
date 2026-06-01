@@ -16,6 +16,7 @@ use core::fmt::{Debug, Formatter};
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use core::time::Duration;
+use std::borrow::Cow;
 use std::ffi::{OsStr, OsString};
 use std::path::Path;
 use std::sync::{Arc, LazyLock};
@@ -36,6 +37,7 @@ use nativelink_store::filesystem_store::{
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::{DigestInfo, fs, make_temp_path};
 use nativelink_util::evicting_map::LenEntry;
+use nativelink_util::health_utils::{HealthStatus, HealthStatusIndicator};
 use nativelink_util::store_trait::{Store, StoreKey, StoreLike, UploadSizeInfo};
 use nativelink_util::{background_spawn, spawn};
 use opentelemetry::context::{Context, FutureExt as OtelFutureExt};
@@ -1505,6 +1507,58 @@ async fn add_too_early_files() -> Result<(), Error> {
     ));
 
     Ok(())
+}
+
+#[nativelink_test]
+async fn check_health_ok_when_content_path_is_a_directory() -> Result<(), Error> {
+    let content_path = make_temp_path("content_path");
+    let temp_path = make_temp_path("temp_path");
+    fs::create_dir_all(&content_path).await?;
+    fs::create_dir_all(&temp_path).await?;
+
+    let store = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+        content_path: content_path.clone(),
+        temp_path,
+        eviction_policy: None,
+        ..Default::default()
+    })
+    .await?;
+
+    match HealthStatusIndicator::check_health(&*store, Cow::Borrowed("test")).await {
+        HealthStatus::Ok { .. } => Ok(()),
+        other => panic!("expected HealthStatus::Ok, got {other:?}"),
+    }
+}
+
+#[nativelink_test]
+async fn check_health_failed_when_content_path_is_missing() -> Result<(), Error> {
+    // Construct the store against a real path, then delete it so the
+    // stat() inside check_health fails with ENOENT.
+    let content_path = make_temp_path("content_path");
+    let temp_path = make_temp_path("temp_path");
+    fs::create_dir_all(&content_path).await?;
+    fs::create_dir_all(&temp_path).await?;
+
+    let store = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+        content_path: content_path.clone(),
+        temp_path,
+        eviction_policy: None,
+        ..Default::default()
+    })
+    .await?;
+
+    fs::remove_dir_all(&content_path).await?;
+
+    match HealthStatusIndicator::check_health(&*store, Cow::Borrowed("test")).await {
+        HealthStatus::Failed { message, .. } => {
+            assert!(
+                message.contains("stat") || message.contains("not a directory"),
+                "unexpected failure message: {message}",
+            );
+            Ok(())
+        }
+        other => panic!("expected HealthStatus::Failed, got {other:?}"),
+    }
 }
 
 /// `get_executable_hardlink_source` must return a private **0o555** inode that
