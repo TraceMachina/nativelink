@@ -7,7 +7,7 @@
       "devDependencies": {
         "@biomejs/biome": "1.9.4",
         "turbo": "^2.3.0",
-        "typescript": "^5.7.2",
+        "typescript": "^6.0.0",
       },
     },
     "apps/docs": {
@@ -33,7 +33,7 @@
         "@types/react": "^19.0.7",
         "@types/react-dom": "^19.0.3",
         "tailwindcss": "^4.0.0",
-        "typescript": "^5.7.2",
+        "typescript": "^6.0.0",
       },
     },
     "apps/web": {
@@ -55,7 +55,7 @@
         "@types/react": "^19.0.7",
         "@types/react-dom": "^19.0.3",
         "tailwindcss": "^4.0.0",
-        "typescript": "^5.7.2",
+        "typescript": "^6.0.0",
       },
     },
     "packages/config": {
@@ -80,7 +80,7 @@
         "@nativelink/config": "workspace:*",
         "@types/react": "^19.0.0",
         "@types/react-dom": "^19.0.0",
-        "typescript": "^5.7.2",
+        "typescript": "^6.0.0",
       },
       "peerDependencies": {
         "react": "^19.0.0",
@@ -1013,7 +1013,7 @@
 
     "turbo": ["turbo@2.9.15", "", { "optionalDependencies": { "@turbo/darwin-64": "2.9.15", "@turbo/darwin-arm64": "2.9.15", "@turbo/linux-64": "2.9.15", "@turbo/linux-arm64": "2.9.15", "@turbo/windows-64": "2.9.15", "@turbo/windows-arm64": "2.9.15" }, "bin": { "turbo": "bin/turbo" } }, "sha512-VpKvD9Z0Hu/xrGUAYX1wnhfpqv835wIwGqeKfulvBPTOcDap0E3nFwyzCAVV85fB1sBcBDEfTP+7FSW7GzwWSQ=="],
 
-    "typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
+    "typescript": ["typescript@6.0.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw=="],
 
     "undici-types": ["undici-types@6.21.0", "", {}, "sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ=="],
 
