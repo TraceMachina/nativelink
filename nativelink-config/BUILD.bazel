@@ -53,6 +53,7 @@ rust_test_suite(
         "@crates//:serde",
         "@crates//:serde_json",
         "@crates//:serde_json5",
+        "@crates//:serde_test",
     ],
 )
 
