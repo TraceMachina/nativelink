@@ -38,7 +38,7 @@ bazel_dep(name = "rules_go", version = "0.60.0")
 
 # Rust
 #
-bazel_dep(name = "rules_rs", version = "0.0.77")
+bazel_dep(name = "rules_rs", version = "0.0.82")
 bazel_dep(name = "llvm", version = "0.8.0")
 
 rust_toolchains = use_extension("@rules_rs//rs/toolchains:module_extension.bzl", "toolchains")

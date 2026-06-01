@@ -14,7 +14,7 @@ bazel_dep(name = "rules_cc", version = "0.2.18")
 
 # Use the starlark implementation of Java rules instead of the builtin ones.
 bazel_dep(name = "rules_java", version = "8.11.0")
-bazel_dep(name = "rules_rs", version = "0.0.77")
+bazel_dep(name = "rules_rs", version = "0.0.82")
 bazel_dep(name = "rules_rust", version = "0.70.0")
 bazel_dep(name = "bazel_skylib", version = "1.9.0")
 # rules_rust is pinned to the hermeticbuild fork in the parent MODULE.bazel via

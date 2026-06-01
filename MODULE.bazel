@@ -50,10 +50,10 @@ register_toolchains(
     dev_dependency = True,
 )
 
-bazel_dep(name = "rules_rs", version = "0.0.77")
+bazel_dep(name = "rules_rs", version = "0.0.82")
 
 # Pin rules_rust to the hermeticbuild fork (the same commit rules_rs provisions
-# see https://github.com/hermeticbuild/rules_rs/blob/v0.0.77/rs/rules_rust.bzl)
+# see https://github.com/hermeticbuild/rules_rs/blob/v0.0.82/rs/rules_rust.bzl)
 # so all `@rules_rust//...` references resolve to the patched ruleset. The
 # bazel_dep + archive_override is the form that keeps `@rules_rust` visible to
 # subsequent `use_extension(...)` calls in this MODULE.bazel — the alternative
@@ -66,12 +66,12 @@ bazel_dep(name = "rules_rs", version = "0.0.77")
 bazel_dep(name = "rules_rust", version = "0.70.0")
 archive_override(
     module_name = "rules_rust",
-    integrity = "sha256-aROt7MxNPUOELpgM4BZEQpptsoT6t2qjFpAzyZRF0LE=",
+    integrity = "sha256-/a9KfF83cNiK/bvRenQT664cn2tHTZuVMrE9kmPf89s=",
     patch_strip = 1,
     patches = ["//tools:rules_rust-musl-platforms.diff"],
-    strip_prefix = "rules_rust-1c00622c3ba0269a6d5306772fe2e9aff4bf89a0",
+    strip_prefix = "rules_rust-50f00f8c00ccafaccb983432dade3526f926aafc",
     urls = [
-        "https://github.com/hermeticbuild/rules_rust/archive/1c00622c3ba0269a6d5306772fe2e9aff4bf89a0.tar.gz",
+        "https://github.com/hermeticbuild/rules_rust/archive/50f00f8c00ccafaccb983432dade3526f926aafc.tar.gz",
     ],
 )
 
