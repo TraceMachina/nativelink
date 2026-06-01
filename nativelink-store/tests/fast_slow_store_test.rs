@@ -273,10 +273,10 @@ async fn drop_on_eof_completes_store_futures() -> Result<(), Error> {
             _digest: StoreKey<'_>,
             mut reader: DropCloserReadHalf,
             _size_info: UploadSizeInfo,
-        ) -> Result<(), Error> {
+        ) -> Result<u64, Error> {
             // Gets called in the fast store and we don't need to do
             // anything.  Should only complete when drain has finished.
-            reader.drain().await?;
+            let size = reader.drain().await?;
             let eof_tx = self.eof_tx.lock().unwrap().take();
             if let Some(tx) = eof_tx {
                 tx.send(())
@@ -286,7 +286,7 @@ async fn drop_on_eof_completes_store_futures() -> Result<(), Error> {
             if let Some(rx) = read_rx {
                 rx.await.map_err(|e| make_err!(Code::Internal, "{:?}", e))?;
             }
-            Ok(())
+            Ok(size)
         }
 
         async fn get_part(
@@ -367,7 +367,7 @@ async fn drop_on_eof_completes_store_futures() -> Result<(), Error> {
             // Drop get_part as soon as rx.drain() completes
             tokio::select!(
                 res = rx.drain() => res,
-                res = fast_slow_store.get_part(digest, tx, 0, Some(digest.size_bytes())) => res,
+                res = fast_slow_store.get_part(digest, tx, 0, Some(digest.size_bytes())) => res.map(|()| digest.size_bytes()),
             )
         },
         async move {
@@ -389,14 +389,8 @@ async fn drop_on_eof_completes_store_futures() -> Result<(), Error> {
     get_res.merge(read_res)
 }
 
-// Previously `has()` returned `None` for a blob that was present only in the
-// fast store. That behavior caused redundant work: a worker that had already
-// cached a blob locally would still get NotFound from `has()` and re-fetch
-// (or re-upload) the same data. `has_with_results` now falls back to the
-// fast store when the slow store reports nothing, so a fast-only hit
-// correctly returns the blob's size.
 #[nativelink_test]
-async fn fast_store_only_value_is_reported_by_has() -> Result<(), Error> {
+async fn ignore_value_in_fast_store() -> Result<(), Error> {
     let fast_store = Store::new(MemoryStore::new(&MemorySpec::default()));
     let slow_store = Store::new(MemoryStore::new(&MemorySpec::default()));
     let fast_slow_store = Arc::new(FastSlowStore::new(
@@ -413,10 +407,9 @@ async fn fast_store_only_value_is_reported_by_has() -> Result<(), Error> {
     fast_store
         .update_oneshot(digest, make_random_data(100).into())
         .await?;
-    assert_eq!(
-        fast_slow_store.has(digest).await?,
-        Some(100),
-        "Expected fast-store-only blob to be reported as present",
+    assert!(
+        fast_slow_store.has(digest).await?.is_none(),
+        "Expected data to not exist in store"
     );
     Ok(())
 }
@@ -607,7 +600,7 @@ fn make_stores_with_lazy_slow() -> (Store, Store, Store) {
             digest: StoreKey<'_>,
             reader: DropCloserReadHalf,
             size_info: UploadSizeInfo,
-        ) -> Result<(), Error> {
+        ) -> Result<u64, Error> {
             Pin::new(self.inner.as_ref())
                 .update(digest, reader, size_info)
                 .await
@@ -748,7 +741,7 @@ impl StoreDriver for InstrumentedSlowStore {
         _key: StoreKey<'_>,
         mut reader: DropCloserReadHalf,
         _size_info: UploadSizeInfo,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         // Drain anything sent so the writer side does not deadlock.
         reader.drain().await
     }
@@ -953,7 +946,7 @@ async fn has_sees_in_flight_slow_writes() -> Result<(), Error> {
             _key: StoreKey<'_>,
             mut reader: DropCloserReadHalf,
             _size_info: UploadSizeInfo,
-        ) -> Result<(), Error> {
+        ) -> Result<u64, Error> {
             let started_tx = self.started_tx.lock().unwrap().take();
             if let Some(tx) = started_tx {
                 let _ = tx.send(());
@@ -1042,12 +1035,16 @@ async fn has_sees_in_flight_slow_writes() -> Result<(), Error> {
 
     // Concurrent observer: the slow store will return None (its
     // has_with_results above), so the only way this can be Some is via
-    // the in-flight map.
-    assert_eq!(
-        fast_slow.has(digest).await?,
-        Some(data.len() as u64),
-        "Concurrent has() must see in-flight slow write",
-    );
+    // the in-flight map wait.
+    let observer_store = fast_slow.clone();
+    let mut observer = tokio::spawn(async move { observer_store.has(digest).await });
+
+    // Prove that the observer is blocked waiting for the in-flight write.
+    // It should not resolve before the gate is released.
+    tokio::select! {
+        _ = &mut observer => panic!("Observer resolved before writer completed"),
+        _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+    }
 
     // Release the writer and confirm the in-flight tracker is cleaned up.
     gate_tx
@@ -1057,13 +1054,22 @@ async fn has_sees_in_flight_slow_writes() -> Result<(), Error> {
         .await
         .map_err(|e| make_err!(Code::Internal, "writer join error: {e:?}"))??;
 
-    // After completion the fast store still has the blob, so has() should
-    // remain Some via the fast-store fallback (the GatedSlowStore still
-    // reports None).
+    let has_result = observer
+        .await
+        .map_err(|e| make_err!(Code::Internal, "observer join error: {e:?}"))??;
+
+    assert_eq!(
+        has_result,
+        Some(data.len() as u64),
+        "Concurrent has() must wait for and see in-flight slow write",
+    );
+
+    // After completion the fast store still has the blob, but has() should
+    // return None since we never fallback to checking the fast store.
     assert_eq!(
         fast_slow.has(digest).await?,
-        Some(data.len() as u64),
-        "Post-write has() should see the blob via fast-store fallback",
+        None,
+        "Post-write has() should not see the blob via fast-store fallback",
     );
 
     Ok(())
@@ -1099,7 +1105,7 @@ async fn has_does_not_consult_fast_store_when_slow_store_hits() -> Result<(), Er
             key: StoreKey<'_>,
             reader: DropCloserReadHalf,
             size_info: UploadSizeInfo,
-        ) -> Result<(), Error> {
+        ) -> Result<u64, Error> {
             Pin::new(self.inner.as_ref())
                 .update(key, reader, size_info)
                 .await
@@ -1201,7 +1207,7 @@ impl StoreDriver for GatedSlowStore2 {
         _key: StoreKey<'_>,
         mut reader: DropCloserReadHalf,
         _size_info: UploadSizeInfo,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         let started_tx = self.started_tx.lock().unwrap().take();
         if let Some(tx) = started_tx {
             let _ = tx.send(());
@@ -1290,11 +1296,16 @@ async fn dropping_update_future_cleans_up_in_flight_entry() -> Result<(), Error>
     started_rx
         .await
         .map_err(|e| make_err!(Code::Internal, "started signal lost: {e:?}"))?;
-    assert_eq!(
-        fast_slow.has(digest).await?,
-        Some(data.len() as u64),
-        "Pre-cancel: in-flight slow write must be visible via has()",
-    );
+
+    let observer_store = fast_slow.clone();
+    let mut observer = tokio::spawn(async move { observer_store.has(digest).await });
+
+    // Prove that the observer is blocked waiting for the in-flight write.
+    // It should not resolve before the gate is released.
+    tokio::select! {
+        _ = &mut observer => panic!("Observer resolved before writer completed"),
+        _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+    }
 
     // Cancel the writer. The guard's Drop should remove the entry.
     writer.abort();
@@ -1304,6 +1315,15 @@ async fn dropping_update_future_cleans_up_in_flight_entry() -> Result<(), Error>
     // The gate is now stale (writer is gone) — drop the receiver explicitly
     // by releasing the sender to avoid any hang in unrelated code paths.
     drop(gate_tx);
+
+    let has_result = observer
+        .await
+        .map_err(|e| make_err!(Code::Internal, "observer join error: {e:?}"))??;
+
+    assert_eq!(
+        has_result, None,
+        "Pre-cancel: in-flight slow write must be aborted and return None",
+    );
 
     assert_eq!(
         fast_slow.has(digest).await?,
@@ -1349,7 +1369,7 @@ impl StoreDriver for MapBackedSlow {
         key: StoreKey<'_>,
         reader: DropCloserReadHalf,
         size_info: UploadSizeInfo,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         // Delegate to the gated inner so timing is controllable.
         Pin::new(self.inner.as_ref())
             .update(key, reader, size_info)
@@ -1453,16 +1473,23 @@ async fn has_with_results_handles_mixed_key_sources() -> Result<(), Error> {
         StoreKey::Digest(fast_only_digest),
         StoreKey::Digest(missing_digest),
     ];
-    let mut results: [Option<u64>; 4] = [None; 4];
-    fast_slow
-        .as_store_driver_pin()
-        .has_with_results(&keys, &mut results)
-        .await?;
 
-    assert_eq!(results[0], Some(slow_only_size), "slow-only key");
-    assert_eq!(results[1], Some(in_flight_size), "in-flight key");
-    assert_eq!(results[2], Some(fast_only_size), "fast-only key");
-    assert_eq!(results[3], None, "missing key must stay None");
+    let observer_store = fast_slow.clone();
+    let mut observer = tokio::spawn(async move {
+        let mut results: [Option<u64>; 4] = [None; 4];
+        observer_store
+            .as_store_driver_pin()
+            .has_with_results(&keys, &mut results)
+            .await?;
+        Ok::<_, Error>(results)
+    });
+
+    // Prove that the observer is blocked waiting for the in-flight write.
+    // It should not resolve before the gate is released.
+    tokio::select! {
+        _ = &mut observer => panic!("Observer resolved before writer completed"),
+        _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+    }
 
     // Cleanup: release the gated writer.
     gate_tx
@@ -1471,6 +1498,18 @@ async fn has_with_results_handles_mixed_key_sources() -> Result<(), Error> {
     writer
         .await
         .map_err(|e| make_err!(Code::Internal, "writer join error: {e:?}"))??;
+
+    let results = observer
+        .await
+        .map_err(|e| make_err!(Code::Internal, "observer join error: {e:?}"))??;
+
+    assert_eq!(results[0], Some(slow_only_size), "slow-only key");
+    assert_eq!(results[1], Some(in_flight_size), "in-flight key");
+    assert_eq!(
+        results[2], None,
+        "fast-only key should be None because we do not check fast store"
+    );
+    assert_eq!(results[3], None, "missing key must stay None");
 
     Ok(())
 }

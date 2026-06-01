@@ -14,6 +14,7 @@
 
 pub mod ac_utils;
 pub mod azure_blob_store;
+pub mod cache_metrics_store;
 pub mod callback_utils;
 pub mod cas_utils;
 pub mod common_s3_utils;

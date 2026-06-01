@@ -1,0 +1,60 @@
+---
+title: Is NativeLink free?
+description: Yes — NativeLink is source-available and free for permitted self-hosted use. Cloud and Enterprise are paid offerings.
+---
+
+**Yes — NativeLink is source-available and free for permitted
+self-hosted use.** Most of the monorepo is licensed under
+`FSL-1.1-Apache-2.0`, which allows internal use, modification, and
+redistribution for non-competing purposes, then grants an Apache 2.0
+future license on the schedule described in the repository
+[`LICENSE`](https://github.com/TraceMachina/nativelink/blob/main/LICENSE).
+The customer-facing summary lives on the
+[NativeLink license page](https://nativelink.com/license).
+
+NativeLink is not a single-license monorepo. Some feature modules
+carry their own source headers. In particular, metrics and remote
+persistent workers are licensed under the Business Source License.
+Developers using NativeLink for an individual cache do not need a
+commercial license. Teams using those modules in shared, production,
+or commercial settings can use NativeLink Cloud, Enterprise, or a
+separate commercial license, which is intentionally very inexpensive.
+Meaningful contributors may be eligible for license waivers; contact
+the maintainers before relying on one.
+
+If you'd rather pay someone to run it for you, two paid tiers exist:
+
+- **Cloud** — managed multi-tenant cluster, flat $999+/month. Full
+  SLA, autoscaling, dashboard.
+- **Enterprise** — single-tenant deployment, dedicated solutions
+  engineer, on-prem or managed. Custom contracts.
+
+The
+[pricing page](https://nativelink.com/pricing) has the feature
+comparison.
+
+## What does "free" actually cover
+
+- The full RE-API server: CAS, AC, scheduler, worker.
+- Every storage backend: filesystem, S3, Redis, GCS, Azure Blob.
+- Every supported build client: Bazel, Buck2, Reclient, Pants, Goma.
+- The CLI tooling and Helm chart.
+
+No artificial limits on cache size, action count, worker count, or
+team size. The self-hosted build is the same codebase we run in
+production, subject to the license that applies to each module, minus
+the operational tooling and dedicated support that Cloud and
+Enterprise add.
+
+## What you'd pay for instead
+
+Hosting NativeLink yourself costs:
+
+- Compute for the control plane (typically a few small VMs).
+- Storage for the CAS (S3 / equivalent, sized for ~5-20 GB per active
+  developer per week).
+- Worker compute (variable; this is the part Cloud rents to you).
+- Engineer hours running it.
+
+For most teams under 30 engineers, self-host is cheaper. Past that,
+Cloud usually wins on engineer-time alone.

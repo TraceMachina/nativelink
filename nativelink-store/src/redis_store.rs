@@ -87,6 +87,10 @@ const DEFAULT_CONNECTION_TIMEOUT_MS: u64 = 3000;
 /// Note: If this changes it should be updated in the config documentation.
 const DEFAULT_COMMAND_TIMEOUT_MS: u64 = 10_000;
 
+/// The default `check_health` PING ceiling in milliseconds if not specified.
+/// Note: If this changes it should be updated in the config documentation.
+const DEFAULT_HEALTH_CHECK_TIMEOUT_MS: u64 = 4000;
+
 /// The default maximum number of chunk uploads per update.
 /// Note: If this changes it should be updated in the config documentation.
 pub const DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE: usize = 10;
@@ -344,6 +348,9 @@ where
     /// limits the calls to `get_client()`, but the requests per client
     /// are small enough that it works well enough.
     client_permits: Arc<Semaphore>,
+
+    /// Per-call ceiling for `check_health` PING.
+    health_check_timeout: Duration,
 }
 
 impl<C, M> Debug for RedisStore<C, M>
@@ -409,6 +416,7 @@ where
         scan_count: usize,
         max_client_permits: usize,
         max_count_per_cursor: u64,
+        health_check_timeout: Duration,
         subscriber_channel: UnboundedReceiver<PushInfo>,
         connection_manager: M,
     ) -> Result<Self, Error> {
@@ -427,6 +435,7 @@ where
             subscriber_channel: Mutex::new(Some(subscriber_channel)),
             client_permits: Arc::new(Semaphore::new(max_client_permits)),
             max_count_per_cursor,
+            health_check_timeout,
         })
     }
 
@@ -497,6 +506,9 @@ where
         }
         if spec.command_timeout_ms == 0 {
             spec.command_timeout_ms = DEFAULT_COMMAND_TIMEOUT_MS;
+        }
+        if spec.health_check_timeout_ms == 0 {
+            spec.health_check_timeout_ms = DEFAULT_HEALTH_CHECK_TIMEOUT_MS;
         }
         if spec.connection_pool_size == 0 {
             spec.connection_pool_size = DEFAULT_CONNECTION_POOL_SIZE;
@@ -579,6 +591,7 @@ impl RedisStore<ClusterConnection, ClusterRedisManager<ClusterConnection>> {
             spec.scan_count,
             spec.max_client_permits,
             spec.max_count_per_cursor,
+            Duration::from_millis(spec.health_check_timeout_ms),
             subscriber_channel,
             ClusterRedisManager::new(client.get_async_connection().await?).await?,
         )
@@ -705,6 +718,7 @@ impl RedisStore<ConnectionManager, StandardRedisManager<ConnectionManager>> {
             spec.scan_count,
             spec.max_client_permits,
             spec.max_count_per_cursor,
+            Duration::from_millis(spec.health_check_timeout_ms),
             subscriber_channel,
             StandardRedisManager::new(Box::new(move || {
                 Box::pin(Self::connect(spec.clone(), tx.clone()))
@@ -840,7 +854,7 @@ where
         key: StoreKey<'_>,
         mut reader: DropCloserReadHalf,
         _upload_size: UploadSizeInfo,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         let final_key = self.encode_key(&key);
 
         // While the name generation function can be supplied by the user, we need to have the curly
@@ -868,7 +882,7 @@ where
                     .await
                     .err_tip(|| "Failed to drain in RedisStore::update")?;
                 // Zero-digest keys are special -- we don't need to do anything with it.
-                return Ok(());
+                return Ok(0);
             }
         }
 
@@ -958,13 +972,13 @@ where
 
         // If we have a publish channel configured, send a notice that the key has been set.
         if let Some(pub_sub_channel) = &self.pub_sub_channel {
-            return Ok(client
+            client
                 .connection_manager
-                .publish(pub_sub_channel, final_key.as_ref())
-                .await?);
+                .publish::<_, _, ()>(pub_sub_channel, final_key.as_ref())
+                .await?;
         }
 
-        Ok(())
+        Ok(blob_len.try_into().unwrap_or(0))
     }
 
     async fn get_part(
@@ -1114,12 +1128,6 @@ where
     /// is reachable and the master is accepting commands; that is
     /// the only invariant a kubelet probe needs.
     async fn check_health(&self, _namespace: Cow<'static, str>) -> HealthStatus {
-        /// Per-check physical ceiling. Tight enough to stay well
-        /// under `HealthServer`'s default per-indicator budget;
-        /// loose enough to absorb a normally-slow PING during a
-        /// `BGSAVE` fork or sentinel rebalance.
-        const PING_TIMEOUT: Duration = Duration::from_secs(2);
-
         let mut client = match self.get_client().await {
             Ok(c) => c,
             Err(e) => {
@@ -1138,7 +1146,7 @@ where
                 .query_async::<()>(&mut client.connection_manager)
                 .await
         };
-        match timeout(PING_TIMEOUT, ping).await {
+        match timeout(self.health_check_timeout, ping).await {
             Ok(Ok(())) => HealthStatus::new_ok(self, "RedisStore::check_health: PING ok".into()),
             Ok(Err(e)) => HealthStatus::new_failed(
                 self,
@@ -1147,8 +1155,8 @@ where
             Err(_) => HealthStatus::new_failed(
                 self,
                 format!(
-                    "RedisStore::check_health: PING exceeded {} s timeout",
-                    PING_TIMEOUT.as_secs()
+                    "RedisStore::check_health: PING exceeded {}ms timeout",
+                    self.health_check_timeout.as_millis()
                 )
                 .into(),
             ),
@@ -1327,22 +1335,24 @@ impl Drop for RedisSubscription {
             return; // Already dropped, nothing to do.
         };
         let key = receiver.borrow().clone();
-        // IMPORTANT: This must be dropped before receiver_count() is called.
-        drop(receiver);
         let Some(subscribed_keys) = self.weak_subscribed_keys.upgrade() else {
-            return; // Already dropped, nothing to do.
+            return; // Parent dropped — nothing to do.
         };
         let mut subscribed_keys = subscribed_keys.write();
-        let Some(value) = subscribed_keys.get(&key) else {
-            error!(
-                "Key {key} was not found in subscribed keys when checking if it should be removed."
+        let Some(publisher) = subscribed_keys.get(&key) else {
+            warn!(
+                %key,
+                "RedisSubscription::drop: key absent from subscribed_keys under write lock — \
+                 indicates an unexpected removal path",
             );
             return;
         };
-        // If we have no receivers, cleanup the entry from our map.
-        if value.receiver_count() == 0 {
-            subscribed_keys.remove(key);
+        // Count includes our own (still-alive) receiver. If we are the
+        // sole subscriber, remove the publisher entry.
+        if publisher.receiver_count() == 1 {
+            subscribed_keys.remove(&key);
         }
+        drop(receiver);
     }
 }
 

@@ -1,10 +1,10 @@
 ---
-name: Deploy NativeLink Web
+name: Build NativeLink Web
 on:
   push:
     branches: [main]
     paths:
-      - 'web/platform/**'
+      - 'web/**'
       - '**/*.md'
       - 'nativelink-config/**'
       - 'tools/**'
@@ -13,7 +13,7 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - 'web/platform/**'
+      - 'web/**'
       - '**/*.md'
       - 'nativelink-config/**'
       - 'tools/**'
@@ -23,16 +23,15 @@ on:
 permissions: read-all
 
 jobs:
-  deploy:
+  build:
     strategy:
       fail-fast: false
       matrix:
         os:
           - ubuntu-24.04
           - macos-26
-    name: Web Platform Deployment / ${{ matrix.os }}
+    name: Web Build / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    environment: production
 
     permissions:
       id-token: write
@@ -50,21 +49,10 @@ jobs:
 
       - name: Test Build
         if: github.event_name == 'pull_request'
-        working-directory: web/platform
+        working-directory: web
         run: |
           nix develop --fallback --impure --command bash -c "
-            bun setup && bun docs && bun run build
-          "
-
-      - name: Production deployment
-        if: matrix.os == 'ubuntu-24.04' && github.ref == 'refs/heads/main'
-        working-directory: web/platform
-        env:
-          DENO_DEPLOY_TOKEN: ${{ secrets.DENO_DEPLOY_TOKEN }}
-        run: |
-          nix develop --fallback --impure --command bash -c "
-            bun prod --project=nativelink --org=nativelink \
-            --token=$DENO_DEPLOY_TOKEN \
+            bun install && bun run build
           "
 
       - name: Teardown Worker

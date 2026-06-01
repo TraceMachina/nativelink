@@ -1,0 +1,72 @@
+---
+title: History
+description: Where NativeLink came from, what it replaces, and why it was built in Rust.
+---
+
+NativeLink was born from operational frustration. The engineers who
+started it had spent years running build farms at companies whose
+names you'd recognise, and the existing options all had the same
+trade-off: choose one of (open source / fast / operable) and give up
+the other two.
+
+## The landscape, circa 2023
+
+Three families of remote-execution backend were in common use:
+
+- **Java-based servers.** Mature, full-featured, slow. JVM warm-up
+  cost a few seconds on each pod restart; long-tail GC pauses showed
+  up as `p99` build latency spikes. Memory footprint was generous in a
+  way that made "scale horizontally" the only realistic answer.
+- **Go services.** Fast enough on the happy path. Predictable until a
+  single artifact got hot — then a goroutine pile-up on the shard
+  serving it would take the cluster sideways. Lock contention on the
+  control plane was a recurring incident class.
+- **Proprietary clouds.** Fast, well-operated, no open-source option
+  and an unappealing per-action pricing model.
+
+NativeLink is what happens when you start from those constraints and
+write the whole stack in Rust.
+
+## What changed in the rewrite
+
+The most important shifts:
+
+- **No garbage collector.** Latency is predictable under load. The
+  `p99` lookup time on production NativeLink clusters runs under a
+  millisecond.
+- **Content-addressing all the way down.** No cache invalidation
+  logic, no eviction races, no "is this artifact stale?" checks.
+- **A single binary for every role.** CAS, AC, scheduler, worker —
+  the same executable, different config flags. Deployment is plain.
+- **Source-available, module-aware licensing.** You can read every
+  line that runs your builds. Most of the monorepo is
+  `FSL-1.1-Apache-2.0`; a small set of commercial modules, including
+  metrics and remote persistent workers, is licensed under the
+  Business Source License. See the
+  [license page](https://nativelink.com/license).
+
+## Adoption
+
+The early adopters that drove the design:
+
+- **LLVM contributors** running it under CMake + recc to cut clang
+  build times.
+- **Samsung Internet** — the Chromium-based browser team — using
+  NativeLink as their RBE backend for nightly builds.
+- **A handful of robotics and EDA teams** whose names live behind
+  non-disclosure agreements, but whose throughput requirements
+  (over a billion requests a month) shaped the scheduler design.
+
+Each of those workloads had a different bottleneck. The system as it
+stands is what survived collision with all of them.
+
+## Why this site exists
+
+The legacy docs were written when the project was three months old.
+This rewrite is intended to read like documentation for software that
+people actually run in production — fewer marketing claims, more
+working examples, a clear path from `setup` to `production`.
+
+If you find a gap, the docs source lives in
+[`web/apps/docs/content/docs`](https://github.com/TraceMachina/nativelink)
+and PRs are welcome.

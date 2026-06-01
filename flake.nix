@@ -81,8 +81,19 @@
         lib,
         ...
       }: let
-        craneLibFor = p: (crane.mkLib p).overrideToolchain pkgs.lre.stableRustFor;
-        nightlyCraneLibFor = p: (crane.mkLib p).overrideToolchain pkgs.lre.nightlyRustFor;
+        # On Linux we build fully static musl binaries, elsewhere the default stdenv.
+        stdenvSelectorFor = q:
+          if q.stdenv.targetPlatform.isLinux
+          then q.pkgsMusl.stdenv
+          else q.stdenv;
+        craneLibFor = p:
+          ((crane.mkLib p).overrideToolchain pkgs.lre.stableRustFor).overrideScope (_: _: {
+            stdenvSelector = stdenvSelectorFor;
+          });
+        nightlyCraneLibFor = p:
+          ((crane.mkLib p).overrideToolchain pkgs.lre.nightlyRustFor).overrideScope (_: _: {
+            stdenvSelector = stdenvSelectorFor;
+          });
 
         src = pkgs.lib.cleanSourceWith {
           src = (craneLibFor pkgs).path ./.;
@@ -124,10 +135,6 @@
         in
           {
             inherit src;
-            stdenv = q:
-              if q.stdenv.targetPlatform.isLinux
-              then q.pkgsMusl.stdenv
-              else q.stdenv;
             strictDeps = true;
             buildInputs =
               [p.cacert]
@@ -534,10 +541,6 @@
             ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
               pkgs.apple-sdk_14
               pkgs.libiconv
-            ]
-            ++ pkgs.lib.optionals (pkgs.stdenv.system != "x86_64-darwin") [
-              # Old darwin systems are incompatible with deno.
-              pkgs.deno
             ];
 
           shellHook =
@@ -571,8 +574,6 @@
               export PULUMI_K8S_AWAIT_ALL=true
               export PLAYWRIGHT_BROWSERS_PATH=${pkgs.playwright-driver.browsers}
               export PLAYWRIGHT_NODEJS_PATH=${pkgs.nodePackages_latest.nodejs}
-              export PATH=$HOME/.deno/bin:$PATH
-              deno types > web/platform/utils/deno.d.ts
             ''
             # TODO(palfrey): Generalize this.
             + pkgs.lib.optionalString (system == "x86_64-linux") ''

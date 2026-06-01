@@ -4,13 +4,23 @@ This directory contains configurations and examples for collecting, processing, 
 
 ## Overview
 
-NativeLink exposes comprehensive metrics about cache operations and remote execution through OpenTelemetry. These metrics provide insights into:
+NativeLink exposes remote execution metrics through OpenTelemetry. Cache
+operation metrics are available when the store is explicitly wrapped with the
+opt-in `cache_metrics` store wrapper. These metrics provide insights into:
 
-- **Cache Performance**: Hit rates, operation latencies, eviction rates
+- **Cache Performance**: Hit rates and operation latencies when `cache_metrics` is enabled
 - **Execution Pipeline**: Queue times, stage durations, success rates
 - **System Health**: Worker utilization, throughput, error rates
 
 ## Quick Start
+
+NativeLink doesn't expose a Prometheus scrape endpoint directly. It emits OTLP
+metrics. To view those metrics in Prometheus, use one of these paths:
+
+1. NativeLink sends OTLP to an OpenTelemetry Collector, and Prometheus scrapes
+   the Collector's Prometheus exporter endpoint.
+2. NativeLink sends OTLP/HTTP metrics directly to Prometheus with Prometheus'
+   OTLP receiver enabled.
 
 ### Using Docker Compose (Recommended for Development)
 
@@ -33,10 +43,36 @@ export OTEL_RESOURCE_ATTRIBUTES="deployment.environment=dev,nativelink.instance_
 nativelink /path/to/config.json
 ```
 
+To emit `nativelink_cache_*` metrics, wrap the CAS and/or AC store you want to
+measure:
+
+```json5
+{
+  "name": "CAS_MAIN_STORE",
+  "cache_metrics": {
+    "cache_type": "cas",
+    "backend": {
+      "filesystem": {
+        "content_path": "~/.cache/nativelink/content_path-cas",
+        "temp_path": "~/.cache/nativelink/tmp_path-cas"
+      }
+    }
+  }
+}
+```
+
+If `cache_metrics` is absent, NativeLink constructs the same store graph as it
+would without cache metrics. The disabled path doesn't add a wrapper, timer,
+attribute allocation, or OpenTelemetry recording call to cache operations.
+
 4. Access the metrics:
 - Prometheus UI: http://localhost:9090
 - Grafana: http://localhost:3000 (if included)
 - OTEL Collector metrics: http://localhost:8888/metrics
+
+In this flow, NativeLink sends OTLP to the Collector on `:4317`. The Collector
+serves Prometheus-format metrics on its Prometheus exporter endpoint, and
+Prometheus scrapes that endpoint.
 
 ### Using Kubernetes
 
@@ -64,6 +100,9 @@ env:
 ## Metrics Catalog
 
 ### Cache Metrics
+
+Cache metrics are opt-in. The following series are emitted only for stores
+wrapped with `cache_metrics`; configuring OTEL alone doesn't enable them.
 
 | Metric | Type | Description | Labels |
 |--------|------|-------------|--------|
@@ -160,13 +199,38 @@ See `otel-collector-config.yaml` for a complete example.
 
 Prometheus offers native OTLP support and excellent query capabilities.
 
-**Direct OTLP Ingestion:**
+**Direct OTLP Ingestion from NativeLink:**
 ```bash
 prometheus --web.enable-otlp-receiver \
           --storage.tsdb.out-of-order-time-window=30m
 ```
 
+Then point NativeLink at Prometheus' OTLP metrics endpoint:
+
+```bash
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+export OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=http://localhost:9090/api/v1/otlp/v1/metrics
+```
+
 **Via Collector Scraping:**
+
+Configure the Collector with a Prometheus exporter:
+
+```yaml
+exporters:
+  prometheus:
+    endpoint: "0.0.0.0:9090"
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [prometheus]
+```
+
+Then configure Prometheus to scrape the Collector:
+
 ```yaml
 scrape_configs:
   - job_name: 'otel-collector'

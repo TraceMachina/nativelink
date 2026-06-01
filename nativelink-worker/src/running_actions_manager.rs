@@ -82,9 +82,16 @@ use tonic::Request;
 use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
 
+use crate::persistent_worker::{
+    Input as PersistentWorkerInput, PersistentWorkerPool, WireFormat, WorkRequest, WorkerKey,
+};
+
 /// For simplicity we use a fixed exit code for cases when our program is terminated
 /// due to a signal.
 const EXIT_CODE_FOR_SIGNAL: i32 = 9;
+
+const SUPPORTS_WORKERS_PROPERTY: &str = "supports-workers";
+const REQUIRES_WORKER_PROTOCOL_PROPERTY: &str = "requires-worker-protocol";
 
 /// Default strategy for uploading historical results.
 /// Note: If this value changes the config documentation
@@ -111,6 +118,44 @@ struct SideChannelInfo {
     failure: Option<SideChannelFailureReason>,
 }
 
+fn action_supports_persistent_workers(
+    action_info: &ActionInfo,
+) -> Option<Result<WireFormat, Error>> {
+    if action_info
+        .platform_properties
+        .get(SUPPORTS_WORKERS_PROPERTY)
+        .is_none_or(|value| value != "1")
+    {
+        return None;
+    }
+
+    let protocol = action_info
+        .platform_properties
+        .get(REQUIRES_WORKER_PROTOCOL_PROPERTY)
+        .map_or("proto", String::as_str);
+    Some(WireFormat::parse(protocol))
+}
+
+fn os_args_to_strings(args: &[&OsStr]) -> Result<Vec<String>, Error> {
+    args.iter()
+        .map(|arg| {
+            arg.to_str().map(str::to_owned).ok_or_else(|| {
+                make_err!(
+                    Code::InvalidArgument,
+                    "Persistent worker command arguments must be valid UTF-8: {arg:?}"
+                )
+            })
+        })
+        .collect()
+}
+
+fn persistent_worker_request_arguments(argv: &[String]) -> Vec<String> {
+    argv.iter()
+        .skip(1)
+        .skip_while(|arg| !arg.starts_with('@'))
+        .cloned()
+        .collect()
+}
 /// Maximum number of file-materialization (hardlink) or subdirectory
 /// recursion futures polled concurrently per directory level. Higher values
 /// drown APFS's per-volume metadata lock with `hardlink(2)` syscalls and
@@ -150,24 +195,19 @@ pub fn download_to_directory<'a>(
                 .try_into()
                 .err_tip(|| "In Directory::file::digest")?;
             let dest = format!("{}/{}", current_directory, file.name);
-            let (mtime, mut unix_mode) = match file.node_properties {
+            let is_executable = file.is_executable;
+            let (mtime, custom_unix_mode) = match file.node_properties {
                 Some(properties) => (properties.mtime, properties.unix_mode),
                 None => (None, None),
             };
-            #[cfg_attr(target_family = "windows", allow(unused_assignments))]
-            if file.is_executable {
-                unix_mode = Some(unix_mode.unwrap_or(0o444) | 0o111);
-            }
             futures.push(
                 cas_store
                     .populate_fast_store(digest.into())
                     .and_then(move |()| async move {
                         if is_zero_digest(digest) {
                             // Zero-digest files are never persisted by the
-                            // FilesystemStore, so materialise them directly
-                            // in the worker exec dir. Attach context so a
-                            // failure here is diagnosable as a missing
-                            // empty file rather than a generic IO error.
+                            // FilesystemStore, so materialise them directly in
+                            // the worker exec dir.
                             let mut file_slot = fs::create_file(&dest)
                                 .await
                                 .err_tip(|| format!("Could not create zero-digest file at {dest}"))?;
@@ -175,14 +215,56 @@ pub fn download_to_directory<'a>(
                                 .write_all(&[])
                                 .await
                                 .err_tip(|| format!("Could not write zero-digest file at {dest}"))?;
-                        }
-                        else {
+                        } else if custom_unix_mode.is_some() || mtime.is_some() {
+                            // Rare path: per-file metadata (a custom unix_mode or
+                            // an mtime) must land on a PRIVATE inode. A
+                            // chmod/utimes on a hardlink mutates the shared CAS
+                            // inode for every other action that hardlinked it
+                            // (the #2347 corruption class). Copy the blob into a
+                            // private inode, then stamp mode/mtime onto it below.
                             let file_entry = filesystem_store
                                 .get_file_entry_for_digest(&digest)
                                 .await
-                                .err_tip(|| "During hard link")?;
-                            // TODO: add a test for #2051: deadlock with large number of files
-                            let src_path = file_entry.get_file_path_locked(|src| async move { Ok(PathBuf::from(src)) }).await?;
+                                .err_tip(|| "During private copy")?;
+                            let src_path = file_entry
+                                .get_file_path_locked(|src| async move { Ok(src) })
+                                .await?;
+                            let dst = dest.clone();
+                            spawn_blocking!("download_to_directory_private_copy", move || {
+                                std::fs::copy(&src_path, &dst).map(|_| ()).map_err(|e| {
+                                    make_err!(
+                                        Code::Internal,
+                                        "Failed to copy CAS blob into a private inode at {dst}: {e:?}"
+                                    )
+                                })
+                            })
+                            .await
+                            .err_tip(|| {
+                                "Failed to launch spawn_blocking private copy in download_to_directory"
+                            })??;
+                        } else {
+                            // Hot path: hardlink only — no writable fd is ever
+                            // opened for the materialized inode, so a concurrent
+                            // `execve` of an executable input cannot hit ETXTBSY
+                            // ("Text file busy"). Executables hardlink a
+                            // per-digest 0o555 variant created once off the hot
+                            // path (the 0o444 CAS blob is shared and cannot carry
+                            // +x); non-executables hardlink the 0o444 CAS blob.
+                            let src_path = if is_executable {
+                                filesystem_store
+                                    .get_executable_hardlink_source(&digest)
+                                    .await
+                                    .err_tip(|| "Resolving executable hardlink source")?
+                            } else {
+                                let file_entry = filesystem_store
+                                    .get_file_entry_for_digest(&digest)
+                                    .await
+                                    .err_tip(|| "During hard link")?;
+                                // TODO: add a test for #2051: deadlock with large number of files
+                                file_entry
+                                    .get_file_path_locked(|src| async move { Ok(src) })
+                                    .await?
+                            };
                             fs::hard_link(&src_path, &dest)
                                 .await
                                 .map_err(|e| {
@@ -205,25 +287,41 @@ pub fn download_to_directory<'a>(
                                         e.append(format!("Could not make hardlink to {dest}"))
                                     }
                                 })?;
-                            }
+                            // Hardlinked inodes are already correct (the 0o444
+                            // blob or the 0o555 executable variant) and carry no
+                            // per-file metadata, so there is nothing to stamp.
+                            return Ok(());
+                        }
+
+                        // Private-inode tail (zero-digest or private copy only):
+                        // stamp the requested mode and mtime. Safe because the
+                        // inode is private to this action.
                         #[cfg(target_family = "unix")]
-                        if let Some(unix_mode) = unix_mode {
-                            fs::set_permissions(&dest, Permissions::from_mode(unix_mode))
-                                .await
-                                .err_tip(|| {
-                                    format!(
-                                        "Could not set unix mode in download_to_directory {dest}"
-                                    )
-                                })?;
+                        {
+                            let mode = if let Some(mode) = custom_unix_mode {
+                                Some(if is_executable { mode | 0o111 } else { mode })
+                            } else if is_executable {
+                                Some(0o555)
+                            } else {
+                                None
+                            };
+                            if let Some(mode) = mode {
+                                fs::set_permissions(&dest, Permissions::from_mode(mode))
+                                    .await
+                                    .err_tip(|| {
+                                        format!("Could not set unix mode in download_to_directory {dest}")
+                                    })?;
+                            }
                         }
                         if let Some(mtime) = mtime {
+                            let dst = dest.clone();
                             spawn_blocking!("download_to_directory_set_mtime", move || {
                                 set_file_mtime(
-                                    &dest,
+                                    &dst,
                                     FileTime::from_unix_time(mtime.seconds, mtime.nanos as u32),
                                 )
                                 .err_tip(|| {
-                                    format!("Failed to set mtime in download_to_directory {dest}")
+                                    format!("Failed to set mtime in download_to_directory {dst}")
                                 })
                             })
                             .await
@@ -300,6 +398,13 @@ pub fn download_to_directory<'a>(
 ///
 /// This provides a significant performance improvement for repeated builds
 /// with the same input directories.
+///
+/// `work_directory` must already exist and be empty when this is called: the
+/// caller pre-creates it so that, on the fallback path, `download_to_directory`
+/// has a destination to write into. The directory cache, however, materializes
+/// the tree with `hardlink_directory_tree` / APFS `clonefile(2)`, both of which
+/// require the destination to *not* exist — so this function removes the empty
+/// directory before invoking the cache and recreates it if the cache fails.
 pub async fn prepare_action_inputs(
     directory_cache: &Option<Arc<crate::directory_cache::DirectoryCache>>,
     cas_store: &FastSlowStore,
@@ -309,11 +414,29 @@ pub async fn prepare_action_inputs(
 ) -> Result<(), Error> {
     // Try cache first if available
     if let Some(cache) = directory_cache {
+        // `clonefile(2)` and `hardlink_directory_tree` both require the
+        // destination to not exist. Remove the empty directory the caller
+        // pre-created; without this the cache fails its precondition on every
+        // action and silently falls back to the slow download path.
+        fs::remove_dir(work_directory)
+            .await
+            .err_tip(|| format!("Failed to clear pre-created work directory {work_directory}"))?;
         match cache
             .get_or_create(*digest, Path::new(work_directory))
             .await
         {
             Ok(cache_hit) => {
+                // The materialized tree is already usable. The directory
+                // cache locks each entry down with `set_readonly_recursive`,
+                // which leaves directories writable (0o755) and only makes
+                // files read-only (0o555). The macOS `clonefile(2)` path
+                // copies those modes verbatim and the Linux hardlink walk
+                // creates fresh writable directories, so every directory in
+                // the materialized tree already accepts the nested output
+                // files Bazel actions declare — no separate per-materialize
+                // recursive chmod walk is needed here. Files stay read-only,
+                // preserving the hermeticity contract and the CAS-hardlink
+                // shared-inode invariant.
                 trace!(
                     ?digest,
                     work_directory, cache_hit, "Successfully prepared inputs via directory cache"
@@ -326,7 +449,14 @@ pub async fn prepare_action_inputs(
                     ?e,
                     "Directory cache failed, falling back to traditional download"
                 );
-                // Fall through to traditional path
+                // The cache may have materialized a partial tree before
+                // failing. `download_to_directory` needs an existing, empty
+                // destination, so discard any partial state and recreate the
+                // work directory.
+                let _cleanup = fs::remove_dir_all(work_directory).await;
+                fs::create_dir(work_directory)
+                    .await
+                    .err_tip(|| format!("Failed to recreate work directory {work_directory}"))?;
             }
         }
     }
@@ -990,6 +1120,123 @@ impl RunningActionImpl {
         let program = self
             .canonicalise_path(args[0], &command_proto.working_directory)
             .err_tip(|| format!("Canonicalisation failure. Command={args:#?}"))?;
+        if let Some(wire_format_result) = action_supports_persistent_workers(&self.action_info) {
+            match wire_format_result {
+                Ok(wire_format) => {
+                    let command_argv = os_args_to_strings(&args)?;
+                    let key = WorkerKey::from_argv(&command_argv, wire_format)?;
+                    let request = WorkRequest {
+                        arguments: persistent_worker_request_arguments(&command_argv),
+                        inputs: Vec::<PersistentWorkerInput>::new(),
+                        request_id: 0,
+                        cancel: false,
+                        verbosity: 0,
+                        sandbox_dir: if command_proto.working_directory.is_empty() {
+                            self.work_directory.clone()
+                        } else {
+                            format!(
+                                "{}/{}",
+                                self.work_directory, command_proto.working_directory
+                            )
+                        },
+                    };
+                    let worker_cwd =
+                        PathBuf::from(&self.running_actions_manager.root_action_directory);
+
+                    match self
+                        .running_actions_manager
+                        .persistent_worker_pool
+                        .acquire(key.clone(), &program, &worker_cwd)
+                        .await
+                    {
+                        Ok(mut lease) => {
+                            let timer = self.metrics().child_process.begin_timer();
+                            let dispatch_result = {
+                                let dispatch_fut =
+                                    lease.worker().dispatch_with_timeout(&request, self.timeout);
+                                tokio::pin!(dispatch_fut);
+                                tokio::select! {
+                                    result = &mut dispatch_fut => Some(result),
+                                    _ = &mut kill_channel_rx => None,
+                                }
+                            };
+                            let response = match dispatch_result {
+                                Some(Ok(response)) => {
+                                    lease.release(true).await;
+                                    response
+                                }
+                                Some(Err(err)) => {
+                                    lease.release(false).await;
+                                    return Err(err).err_tip(|| {
+                                        format!("Dispatching action to persistent worker {key:?}")
+                                    });
+                                }
+                                None => {
+                                    drop(timer);
+                                    lease.release(false).await;
+                                    {
+                                        let mut state = self.state.lock();
+                                        state.error = Error::merge_option(
+                                            state.error.take(),
+                                            Some(Error::new(
+                                                Code::Cancelled,
+                                                format!(
+                                                    "Persistent worker command '{}' was killed by scheduler",
+                                                    args.join(OsStr::new(" ")).to_string_lossy()
+                                                ),
+                                            )),
+                                        );
+                                        state.command_proto = Some(command_proto);
+                                        state.execution_result =
+                                            Some(RunningActionImplExecutionResult {
+                                                stdout: Bytes::new(),
+                                                stderr: Bytes::new(),
+                                                exit_code: EXIT_CODE_FOR_SIGNAL,
+                                            });
+                                        state.execution_metadata.execution_completed_timestamp =
+                                            (self.running_actions_manager.callbacks.now_fn)();
+                                    }
+                                    return Ok(self);
+                                }
+                            };
+                            timer.measure();
+
+                            if response.exit_code == 0 {
+                                self.metrics().child_process_success_error_code.inc();
+                            } else {
+                                self.metrics().child_process_failure_error_code.inc();
+                            }
+                            info!(?args, ?key, "Persistent worker command complete");
+                            {
+                                let mut state = self.state.lock();
+                                state.command_proto = Some(command_proto);
+                                state.execution_result = Some(RunningActionImplExecutionResult {
+                                    stdout: Bytes::new(),
+                                    stderr: Bytes::from(response.output),
+                                    exit_code: response.exit_code,
+                                });
+                                state.execution_metadata.execution_completed_timestamp =
+                                    (self.running_actions_manager.callbacks.now_fn)();
+                            }
+                            return Ok(self);
+                        }
+                        Err(err) => {
+                            info!(
+                                ?err,
+                                ?key,
+                                "Falling back to one-shot execution; persistent worker unavailable"
+                            );
+                        }
+                    }
+                }
+                Err(err) => {
+                    info!(
+                        ?err,
+                        "Falling back to one-shot execution; unsupported persistent worker protocol"
+                    );
+                }
+            }
+        }
 
         let mut command_builder = process::Command::new(program);
         #[cfg(target_family = "unix")]
@@ -1222,7 +1469,22 @@ impl RunningActionImpl {
                         )
                     };
 
-                    let exit_code = exit_status.code().map_or(EXIT_CODE_FOR_SIGNAL, |exit_code| {
+                    let exit_code = exit_status.code().map_or_else(|| {
+                        // No exit code means the runner was terminated by a
+                        // signal. SIGKILL on Linux is the kernel OOM killer's
+                        // weapon of choice, so flag this for operators trying
+                        // to correlate action failures with kubectl-top
+                        // memory pressure.
+                        warn!(
+                            ?args,
+                            "Runner subprocess terminated by signal (no exit code); likely OOMKilled \
+                             or externally killed. If this repeats for the same action, raise \
+                             `workers.specs[*].resources.limits.memory` or shrink the action's \
+                             concurrency."
+                        );
+                        self.metrics().child_process_failure_error_code.inc();
+                        EXIT_CODE_FOR_SIGNAL
+                    }, |exit_code| {
                         if exit_code == 0 {
                             self.metrics().child_process_success_error_code.inc();
                         } else {
@@ -2184,6 +2446,7 @@ pub struct RunningActionsManagerImpl {
     /// Optional directory cache for improving performance by caching reconstructed
     /// input directories and using hardlinks.
     directory_cache: Option<Arc<crate::directory_cache::DirectoryCache>>,
+    persistent_worker_pool: PersistentWorkerPool,
 }
 
 impl RunningActionsManagerImpl {
@@ -2228,6 +2491,7 @@ impl RunningActionsManagerImpl {
             cleaning_up_operations: Mutex::new(HashSet::new()),
             cleanup_complete_notify: Arc::new(Notify::new()),
             directory_cache: args.directory_cache,
+            persistent_worker_pool: PersistentWorkerPool::default(),
             #[cfg(target_os = "linux")]
             use_namespaces: args.use_namespaces,
         })

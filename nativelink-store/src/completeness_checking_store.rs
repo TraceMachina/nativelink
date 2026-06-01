@@ -354,7 +354,7 @@ impl StoreDriver for CompletenessCheckingStore {
         key: StoreKey<'_>,
         reader: DropCloserReadHalf,
         size_info: UploadSizeInfo,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         self.ac_store.update(key, reader, size_info).await
     }
 

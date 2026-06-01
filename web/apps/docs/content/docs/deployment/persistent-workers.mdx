@@ -1,0 +1,118 @@
+---
+title: Persistent workers
+description: Keep worker processes warm between actions to cut compile startup time on heavy toolchains.
+---
+
+Some toolchains have nontrivial startup cost. The JVM is the
+canonical example — `javac` takes 300-500 ms just to come up. For
+actions where the work itself takes 50 ms, that overhead dominates.
+
+Persistent workers solve this by keeping a pool of long-lived worker
+processes running and routing matching actions to them. The startup
+cost is paid once; subsequent actions reuse the same process.
+
+<Callout type="info" title="License note">
+  Remote persistent workers are licensed under the Business Source
+  License. Individual developer cache use does not need a commercial
+  license. Teams using persistent workers in shared, production, or
+commercial settings can use NativeLink Cloud, Enterprise, or an
+intentionally very inexpensive separate license. See the
+  [license page](https://nativelink.com/license).
+</Callout>
+
+## When this matters
+
+| Toolchain          | Startup cost | Persistent worker win |
+| ------------------ | ------------ | --------------------- |
+| `javac`            | 300-500 ms   | 5-10×                 |
+| `kotlinc`          | 1-2 s        | 10-20×                |
+| Bazel-style worker | 100-500 ms   | 3-10×                 |
+| Plain `clang`      | ~10 ms       | Negligible            |
+| Plain `rustc`      | ~30 ms       | 2-3×                  |
+
+If your build is C++ on `clang`, persistent workers aren't worth
+configuring. If it's a JVM monorepo, they pay back almost immediately.
+
+## How NativeLink supports them
+
+The worker config has a `persistent_worker` block that tells
+NativeLink which toolchains to keep warm:
+
+```json5
+workers: [{
+  local: {
+    worker_api_endpoint: { uri: "grpc://scheduler:50051" },
+    cas_fast_slow_store: "CAS_MAIN_STORE",
+    upload_action_result: { upload_action_result: { ac_store: "AC_MAIN_STORE" } },
+    platform_properties: {
+      OSFamily: { values: ["linux"] },
+      toolchain: { values: ["jdk21"] },
+    },
+    persistent_workers: {
+      max_workers_per_pool: 8,
+      idle_timeout_s: 600,
+      protocols: ["proto", "json"],
+    },
+  },
+}],
+```
+
+The scheduler routes any action tagged
+`supports-workers=1` to a worker advertising the
+`persistent_workers` block.
+
+## Telling Bazel to use them
+
+In your `BUILD.bazel`:
+
+```python
+java_library(
+    name = "my-lib",
+    srcs = glob(["src/main/java/**/*.java"]),
+    exec_properties = {
+        "supports-workers": "1",
+        "toolchain": "jdk21",
+    },
+)
+```
+
+Or globally via `.bazelrc`:
+
+```
+build --experimental_worker_strategy_for=Javac=remote
+build --modify_execution_info=Javac=+supports-workers
+```
+
+## Pool sizing
+
+Persistent workers trade memory for latency. Each warm worker holds
+the toolchain in resident memory; `max_workers_per_pool` sets the
+ceiling.
+
+Reasonable defaults:
+
+- JVM toolchains: 4-8 workers per pool, 600 s idle timeout.
+- Heavy native toolchains: 2-4 per pool.
+- Lighter wrappers: 8-16 per pool.
+
+`idle_timeout_s` is how long a worker hangs around after its last
+action. Long enough to absorb think-time gaps; short enough that idle
+clusters don't waste memory.
+
+## Caveats
+
+- **Persistent workers are not sandboxed by default.** A misbehaving
+  toolchain that mutates global state between invocations will
+  produce nondeterministic results. The mitigation: run the worker
+  itself inside a sandbox (container, `bwrap`, `landlock`), then
+  rotate it periodically.
+- **Memory leaks.** Long-running JVMs leak. The `idle_timeout_s` is
+  a soft mitigation; for serious workloads, set a hard
+  `max_invocations` and recycle.
+
+## What's next
+
+- [Configuration → Production](/configuration/production) — the
+  full worker block.
+- [Architecture](/explanations/architecture) — how the
+  scheduler matches actions to workers.

@@ -1,0 +1,72 @@
+---
+title: Develop with Nix
+description: The official dev shell — hermetic by construction, identical to what CI runs.
+---
+
+The NativeLink flake provisions a complete dev shell — the exact Rust
+toolchain, the exact Bazel version, `protoc`, `mold`, every binary
+the build invokes. Use this if you want absolute reproducibility, or
+if you're working on [LRE](/explanations/lre) (which requires
+Nix).
+
+## Install Nix
+
+The
+[next-gen Nix installer](https://github.com/NixOS/experimental-nix-installer)
+is the easiest path:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf \
+  -L https://install.determinate.systems/nix | sh -s -- install
+```
+
+It enables flakes by default.
+
+## Enter the dev shell
+
+```bash
+git clone https://github.com/TraceMachina/nativelink
+cd nativelink
+nix develop
+```
+
+First run downloads the toolchain (a few minutes). Subsequent
+`nix develop` invocations are instant — everything is content-
+addressed in `/nix/store`.
+
+Inside the shell you have:
+
+- Cargo + the pinned Rust toolchain.
+- Bazel + Bazelisk.
+- `protoc`, `mold`, `clang`, and friends.
+- Test runners and linters (`cargo-nextest`, `cargo-deny`,
+  `cargo-shear`).
+- The `nativelink` binary itself, prebuilt.
+
+## Running things inside the shell
+
+Anything from the [Bazel](/contribute/bazel) or
+[Cargo](/contribute/cargo) workflow works inside `nix develop`.
+The shell just guarantees the tooling is the version we tested.
+
+## LRE-specific helpers
+
+The flake exposes a few LRE-flavoured entry points:
+
+```bash
+# Start an LRE-configured NativeLink server.
+nix run .#nativelink-lre
+
+# Open a shell with the LRE toolchain pinned.
+nix develop .#lre
+```
+
+See [Explanations → LRE](/explanations/lre) for what these are
+doing.
+
+## When Nix isn't worth it
+
+If you're making a small, localised change — typo fix, doc tweak, a
+unit test — the Cargo workflow is faster to get into. Nix shines for
+work touching the build graph, the LRE flow, or anything that needs
+exact toolchain reproducibility.

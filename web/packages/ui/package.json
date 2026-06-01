@@ -1,0 +1,48 @@
+{
+  "name": "@nativelink/ui",
+  "type": "module",
+  "dependencies": {
+    "@radix-ui/react-slot": "^1.1.1",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "motion": "^11.15.0",
+    "tailwind-merge": "^2.6.0"
+  },
+  "devDependencies": {
+    "@nativelink/config": "workspace:*",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.7.2"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./badge": "./src/components/badge.tsx",
+    "./button": "./src/components/button.tsx",
+    "./card": "./src/components/card.tsx",
+    "./cn": "./src/lib/cn.ts",
+    "./divider": "./src/components/divider.tsx",
+    "./eyebrow": "./src/components/eyebrow.tsx",
+    "./faq": "./src/components/faq.tsx",
+    "./final-cta": "./src/components/final-cta.tsx",
+    "./logo": "./src/components/logo.tsx",
+    "./mobile-nav": "./src/components/mobile-nav.tsx",
+    "./prose": "./src/components/prose.tsx",
+    "./reveal": "./src/components/reveal.tsx",
+    "./section": "./src/components/section.tsx",
+    "./site-footer": "./src/components/site-footer.tsx",
+    "./site-header": "./src/components/site-header.tsx",
+    "./stat": "./src/components/stat.tsx",
+    "./video-embed": "./src/components/video-embed.tsx"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "private": true,
+  "scripts": {
+    "lint": "biome check .",
+    "typecheck": "tsc --noEmit"
+  },
+  "sideEffects": false,
+  "version": "0.0.0"
+}

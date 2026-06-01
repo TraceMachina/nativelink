@@ -2116,6 +2116,182 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
     Ok(())
 }
 
+/// Worker crash-loop regression: an action whose worker keeps disconnecting
+/// (e.g. `OOMKill`) used to bypass `max_job_retries` because
+/// `UpdateWithDisconnect` requeued without counting as an attempt. The build
+/// would only terminate when the Bazel client's `--test_timeout` fired,
+/// hiding the cluster-side root cause behind a TIMEOUT/NO STATUS surface.
+/// After the fix, disconnects count as attempts and exceed the cap.
+#[nativelink_test]
+async fn worker_disconnect_loop_caps_at_max_job_retries_test() -> Result<(), Error> {
+    let worker_id = WorkerId("worker_id".to_string());
+
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec {
+            max_job_retries: 1,
+            ..Default::default()
+        },
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+    );
+    let action_digest = DigestInfo::new([99u8; 32], 512);
+
+    let mut rx_from_worker =
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
+    let insert_timestamp = make_system_time(1);
+    let mut action_listener =
+        setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp).await?;
+
+    let operation_id = {
+        let operation_id = match rx_from_worker.recv().await.unwrap().update {
+            Some(update_for_worker::Update::StartAction(exec)) => exec.operation_id,
+            v => panic!("Expected StartAction, got : {v:?}"),
+        };
+        assert_eq!(
+            action_listener.changed().await.unwrap().0.stage,
+            ActionStage::Executing
+        );
+        OperationId::from(operation_id.as_str())
+    };
+
+    // First disconnect: should requeue (attempts=1, not yet > max_job_retries=1).
+    drop(
+        scheduler
+            .update_action(
+                &worker_id,
+                &operation_id,
+                UpdateOperationType::UpdateWithDisconnect,
+            )
+            .await,
+    );
+    {
+        let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
+        assert_eq!(
+            action_state.stage,
+            ActionStage::Queued,
+            "First disconnect should requeue, got: {:?}",
+            action_state.stage,
+        );
+    }
+
+    // Reattach worker so it picks up the requeued action.
+    let mut rx_from_worker =
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
+    {
+        match rx_from_worker.recv().await.unwrap().update {
+            Some(update_for_worker::Update::StartAction(_)) => { /* Success */ }
+            v => panic!("Expected StartAction, got : {v:?}"),
+        }
+        assert_eq!(
+            action_listener.changed().await.unwrap().0.stage,
+            ActionStage::Executing
+        );
+    }
+
+    // Second disconnect: now attempts=2 > max_job_retries=1, so the action
+    // must transition to Completed with an error mentioning the disconnect
+    // loop, not silently requeue.
+    drop(
+        scheduler
+            .update_action(
+                &worker_id,
+                &operation_id,
+                UpdateOperationType::UpdateWithDisconnect,
+            )
+            .await,
+    );
+    {
+        let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
+        let ActionStage::Completed(action_result) = &action_state.stage else {
+            panic!(
+                "Second disconnect should mark action Completed-with-error, got: {:?}",
+                action_state.stage
+            );
+        };
+        let err = action_result
+            .error
+            .as_ref()
+            .expect("Completed action from disconnect cap must carry an error");
+        assert!(
+            err.to_string()
+                .contains("Worker disconnected repeatedly while executing this action"),
+            "Error message did not mention disconnect loop: {err}",
+        );
+    }
+
+    Ok(())
+}
+
+/// `Action.timeout` from the RBE protocol must be enforced backend-side.
+/// Without this, an action that hangs forever only terminates when the
+/// Bazel client's `--remote_timeout` (gRPC deadline) or `--test_timeout`
+/// (client-side) fires; from the operator's perspective the cluster never
+/// surfaces the slow action.
+#[nativelink_test]
+async fn action_timeout_is_enforced_backend_side_test() -> Result<(), Error> {
+    use nativelink_scheduler::awaited_action_db::AwaitedAction;
+    use nativelink_scheduler::simple_scheduler_state_manager::SimpleSchedulerStateManager;
+
+    // Anchor MockClock so MockInstantWrapped::now() == make_system_time(0).
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let executing_started_at = make_system_time(0);
+
+    let action_digest = DigestInfo::new([7u8; 32], 1);
+    let mut action_info = make_base_action_info(executing_started_at, action_digest);
+    Arc::make_mut(&mut action_info).timeout = Duration::from_secs(2);
+
+    let operation_id = OperationId::default();
+    let mut awaited_action =
+        AwaitedAction::new(operation_id.clone(), action_info, executing_started_at);
+    awaited_action.worker_set_state(
+        Arc::new(ActionState {
+            stage: ActionStage::Executing,
+            client_operation_id: operation_id,
+            action_digest,
+            last_transition_timestamp: executing_started_at,
+        }),
+        executing_started_at,
+    );
+
+    let task_change_notify = Arc::new(Notify::new());
+    let state_mgr = SimpleSchedulerStateManager::new(
+        /* max_job_retries */ 1,
+        /* no_event_action_timeout */ Duration::from_secs(60),
+        /* client_action_timeout */ Duration::from_secs(60),
+        /* max_executing_timeout */ Duration::ZERO,
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        MockInstantWrapped::default,
+        /* worker_registry */ None,
+    );
+
+    assert!(
+        !state_mgr.should_timeout_operation(&awaited_action).await,
+        "Should not time out before Action.timeout elapses",
+    );
+
+    // Advance past the 2s per-action deadline.
+    MockClock::advance(Duration::from_secs(5));
+
+    assert!(
+        state_mgr.should_timeout_operation(&awaited_action).await,
+        "Scheduler must mark Executing action timed out once Action.timeout has elapsed",
+    );
+
+    Ok(())
+}
+
 #[nativelink_test]
 async fn ensure_scheduler_drops_inner_spawn() -> Result<(), Error> {
     struct DropChecker {

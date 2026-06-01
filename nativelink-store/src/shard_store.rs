@@ -206,7 +206,7 @@ impl StoreDriver for ShardStore {
         key: StoreKey<'_>,
         reader: DropCloserReadHalf,
         size_info: UploadSizeInfo,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         let store = self.get_store(&key);
         store
             .update(key, reader, size_info)

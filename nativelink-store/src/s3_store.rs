@@ -268,7 +268,7 @@ where
         digest: StoreKey<'_>,
         mut reader: DropCloserReadHalf,
         upload_size: UploadSizeInfo,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         let s3_path = &self.make_s3_path(&digest);
 
         let max_size = match upload_size {
@@ -312,13 +312,15 @@ where
                                     size: sz,
                                 }))
                                 .send()
-                                .map_ok_or_else(|e| Err(Error::from_std_err(Code::Aborted, &e)), |_| Ok(())),
+                                .map_ok_or_else(|e| Err(Error::from_std_err(Code::Aborted, &e)), |_| Ok(sz)),
                             // Stream all data from the reader channel to the writer channel.
                             tx.bind_buffered(reader_ref)
                         );
-                        upload_res
-                            .merge(bind_res)
-                            .err_tip(|| "Failed to upload file to s3 in single chunk")
+                        match (upload_res, bind_res) {
+                            (Ok(size), Ok(())) => Ok(size),
+                            (Err(e), _) | (_, Err(e)) => Err(e),
+                        }
+                        .err_tip(|| "Failed to upload file to s3 in single chunk")
                     };
 
                     // If we failed to upload the file, check to see if we can retry.
@@ -343,7 +345,7 @@ where
                             "Retryable S3 error"
                         );
                         RetryResult::Retry(err)
-                    }, |()| RetryResult::Ok(()));
+                    }, |size| RetryResult::Ok(size));
                     Some((retry_result, reader))
                 }))
                 .await;
@@ -394,6 +396,7 @@ where
 
             let read_stream_fut = async move {
                 let retrier = &Pin::get_ref(self).retrier;
+                let mut total_uploaded = 0;
                 // Note: Our break condition is when we reach EOF.
                 for part_number in 1..i32::MAX {
                     let write_buf = reader
@@ -405,6 +408,8 @@ where
                     if write_buf.is_empty() {
                         break; // Reached EOF.
                     }
+
+                    total_uploaded += write_buf.len() as u64;
 
                     tx.send(retrier.retry(unfold(write_buf, move |write_buf| {
                         async move {
@@ -447,11 +452,12 @@ where
                             .append("Failed to send part to channel in s3_store")
                     })?;
                 }
-                Result::<_, Error>::Ok(())
+                Result::<_, Error>::Ok(total_uploaded)
             }
             .fuse();
 
             let mut upload_futures = FuturesUnordered::new();
+            let mut total_uploaded = 0;
 
             let mut completed_parts = Vec::with_capacity(
                 usize::try_from(cmp::min(
@@ -466,7 +472,9 @@ where
                     break; // No more data to process.
                 }
                 tokio::select! {
-                    result = &mut read_stream_fut => result?, // Return error or wait for other futures.
+                    result = &mut read_stream_fut => {
+                        total_uploaded = result?;
+                    }, // Return error or wait for other futures.
                     Some(upload_result) = upload_futures.next() => completed_parts.push(upload_result?),
                     Some(fut) = rx.recv() => upload_futures.push(fut),
                 }
@@ -499,7 +507,7 @@ where
                                         ),
                                     )
                                 },
-                                |_| RetryResult::Ok(()),
+                                |_| RetryResult::Ok(total_uploaded),
                             ),
                         completed_parts,
                     ))
@@ -509,26 +517,22 @@ where
         // Upload our parts and complete the multipart upload.
         // If we fail attempt to abort the multipart upload (cleanup).
         upload_parts()
-            .or_else(move |e| async move {
-                Result::<(), _>::Err(e).merge(
-                    // Note: We don't retry here because this is just a best attempt.
-                    self.s3_client
-                        .abort_multipart_upload()
-                        .bucket(&self.bucket)
-                        .key(s3_path)
-                        .upload_id(upload_id)
-                        .send()
-                        .await
-                        .map_or_else(
-                            |e| {
-                                let err = Error::from_std_err(Code::Aborted, &e)
-                                    .append("Failed to abort multipart upload in S3 store");
-                                info!(?err, "Multipart upload error");
-                                Err(err)
-                            },
-                            |_| Ok(()),
-                        ),
-                )
+            .or_else(move |mut e| async move {
+                let abort_res = self
+                    .s3_client
+                    .abort_multipart_upload()
+                    .bucket(&self.bucket)
+                    .key(s3_path)
+                    .upload_id(upload_id)
+                    .send()
+                    .await;
+                if let Err(abort_err) = abort_res {
+                    let err = Error::from_std_err(Code::Aborted, &abort_err)
+                        .append("Failed to abort multipart upload in S3 store");
+                    info!(?err, "Multipart upload error");
+                    e = e.merge(err);
+                }
+                Err(e)
             })
             .await
     }

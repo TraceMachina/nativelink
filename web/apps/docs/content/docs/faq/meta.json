@@ -1,0 +1,13 @@
+{
+  "pages": [
+    "cost",
+    "caching",
+    "remote-execution",
+    "lre",
+    "toolchains",
+    "hermeticity",
+    "nix",
+    "rust"
+  ],
+  "title": "FAQ"
+}

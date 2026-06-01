@@ -1,0 +1,52 @@
+---
+title: What are toolchains?
+description: How NativeLink represents compilers, linkers, and the runtime they need.
+---
+
+A toolchain is the bundle of binaries and configuration NativeLink
+needs to run a build action — the compiler, the linker, the standard
+library headers, the `cc` wrapper script, any shared library the
+compiler depends on. Everything that touches the action.
+
+For caching and hermeticity to work, the toolchain has to be **fully
+declared as inputs**. If the build implicitly picks up `clang` from
+`$PATH`, two machines with slightly different `clang` versions produce
+different outputs but identical action hashes. The cache lies; you
+debug for an afternoon.
+
+## Three ways to provide one
+
+| Provider                  | Hermetic?    | Setup cost     |
+| ------------------------- | ------------ | -------------- |
+| **Nix flake**             | Fully        | Highest        |
+| **Bazel rules_cc / rules_rust** | Mostly | Medium         |
+| **System (`$PATH`)**      | No           | Lowest         |
+
+### Nix
+
+The recommended path for [LRE](/explanations/lre) and any
+deployment where reproducibility matters. The toolchain is identified
+by a hash of its inputs; two machines pulling the same flake get
+byte-identical binaries.
+
+### Bazel rules_cc / rules_rust
+
+The Bazel-native option. Pin the toolchain version in your
+`MODULE.bazel`, register it as a platform, point actions at it.
+Reasonable for most Bazel monorepos.
+
+### System tooling
+
+Use whatever's installed. Quick to set up, no hermeticity guarantees.
+Reasonable for "I just want to try the cache out for a day."
+
+## Tagging actions with a toolchain
+
+NativeLink matches actions to workers via `platform_properties`. A
+worker that has the `nvidia-a100` GPU tagged will be the only worker
+that receives actions requesting that GPU. Same applies to toolchain
+versions, OS, CPU count, custom labels — anything the cluster
+operator configures.
+
+For the configuration knobs see
+[Configuration → Production](/configuration/production#scheduler-ha-with-sticky-workers).

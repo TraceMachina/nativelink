@@ -41,7 +41,7 @@ jobs:
 
       - name: Generate coverage
         run: |
-          nix build -L .#nativelinkCoverageForHost
+          nix build --fallback -L .#nativelinkCoverageForHost
 
       - name: Upload coverage artifact
         if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}

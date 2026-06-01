@@ -440,7 +440,7 @@ impl StoreDriver for ExperimentalMongoStore {
         key: StoreKey<'_>,
         mut reader: DropCloserReadHalf,
         upload_size: UploadSizeInfo,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         let encoded_key = self.encode_key(&key);
 
         // Handle zero digest
@@ -458,7 +458,7 @@ impl StoreDriver for ExperimentalMongoStore {
                         "Failed to drain in ExperimentalMongoStore::update: {e}"
                     )
                 })?;
-                return Ok(());
+                return Ok(0);
             }
         }
 
@@ -515,7 +515,7 @@ impl StoreDriver for ExperimentalMongoStore {
 
         drop(semaphore);
 
-        Ok(())
+        Ok(size.try_into().unwrap_or(0))
     }
 
     async fn get_part(

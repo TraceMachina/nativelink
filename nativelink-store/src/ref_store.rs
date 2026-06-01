@@ -118,7 +118,7 @@ impl StoreDriver for RefStore {
         key: StoreKey<'_>,
         reader: DropCloserReadHalf,
         size_info: UploadSizeInfo,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         self.get_store()?.update(key, reader, size_info).await
     }
 

@@ -1,0 +1,124 @@
+---
+title: Local Remote Execution
+description: Hermetic, content-addressed builds on your machine. No Docker, no containers, no surprise dependencies.
+---
+
+Local Remote Execution (LRE) is NativeLink's answer to the question
+every team eventually asks: *how do I get the hermeticity of remote
+execution without losing the iteration speed of building locally?*
+
+The short version: run a remote-execution worker on your laptop, pin
+the toolchain with Nix, route every action through the worker. Same
+guarantees as RBE; no network round-trip.
+
+## What LRE gives you
+
+- **Identical artifacts on every machine.** The Nix-pinned toolchain
+  produces bit-identical output across your laptop, your colleague's
+  laptop, and CI.
+- **Real hermeticity, no Docker.** No container runtime overhead, no
+  image rebuild on every toolchain change.
+- **Cache sharing with remote workers.** Because the action hashes
+  match across local and remote execution, a cache hit one place is
+  a cache hit everywhere.
+- **Works offline.** Once the toolchain is fetched, LRE is a pure
+  local computation.
+
+## How it works
+
+Three pieces in collaboration:
+
+1. **A NativeLink worker** running on the developer's machine, bound
+   to the loopback interface.
+2. **A pinned toolchain**, provided by a Nix flake. Every binary the
+   build invokes — compiler, linker, assembler, even `coreutils` —
+   is content-addressed in the Nix store.
+3. **A configured client** (Bazel, Buck2, ...) that targets the local
+   worker the same way it would target a remote cluster.
+
+When the client issues an `Execute` call, the action's inputs are
+fetched from the local CAS (also running on `localhost`), the worker
+runs the command in a sandbox using the pinned toolchain, and the
+outputs are stored back in the CAS — same protocol path as remote
+execution, with the network replaced by a Unix socket.
+
+## When to use LRE
+
+| Scenario                                    | Use LRE? |
+| ------------------------------------------- | -------- |
+| Solo dev iterating on a personal monorepo   | ✓        |
+| Team of 5 sharing a cache without a server  | ✓        |
+| Reproducing a CI failure locally            | ✓        |
+| Fan-out across hundreds of cores            | ✗ (use a remote worker fleet) |
+| Building for a platform you can't host      | ✗        |
+
+The split is "is the bottleneck CPU or determinism?" — LRE gives you
+determinism. For raw throughput, you still want a remote worker pool.
+
+## Setup
+
+The recommended flow:
+
+<Steps>
+  <li>
+    **Install Nix** with flakes enabled. The
+    [next-gen installer](https://github.com/NixOS/experimental-nix-installer)
+    is the easiest path.
+  </li>
+  <li>
+    **Pull the NativeLink LRE flake template.**
+
+    ```bash
+    nix flake init -t github:TraceMachina/nativelink#lre
+    ```
+  </li>
+  <li>
+    **Enter the dev shell.** This downloads the pinned toolchain on
+    first run.
+
+    ```bash
+    nix develop
+    ```
+  </li>
+  <li>
+    **Start the local worker.** The template ships with a
+    `nativelink-lre.json5` that binds CAS, AC, scheduler, and a single
+    worker to `localhost:50051`.
+
+    ```bash
+    nativelink ./nativelink-lre.json5
+    ```
+  </li>
+  <li>
+    **Point your build system at it.** The flake includes a
+    `.bazelrc.lre` that's pre-configured; for non-Bazel clients see
+    [Getting Started → Other build systems](/getting-started/other-build-systems).
+  </li>
+</Steps>
+
+The first build will be the same wall-time as a normal local build.
+The second one will be near-instant — that's the cache doing its job.
+
+## Why Nix, specifically?
+
+LRE needs every input to a build action to be hashable. The compiler,
+the linker, the standard library headers, the `bash` that runs the
+wrapper script. Hashing a `/nix/store/...-clang-18` path is trivial
+because the path itself encodes a hash of every input that produced
+it. Hashing a `/usr/bin/clang` is impossible without scraping its
+filesystem state.
+
+That's the entire reason. Nix gives us hash-pinned tools; everything
+else follows.
+
+For background, see [What is Nix?](/faq/nix) and
+[How do I make my Bazel setup hermetic?](/faq/hermeticity).
+
+## What's next
+
+- [Architecture](/explanations/architecture) — the full RE-API
+  picture LRE plugs into.
+- [Configuration → Basic](/configuration/basic) — the JSON5 the
+  local worker reads.
+- [RBE → Nix templates](/rbe/nix-templates) — runnable LRE
+  reference setups.

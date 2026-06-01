@@ -564,6 +564,7 @@ impl ByteStreamServer {
                 // Bytestream always uses digest size as the actual byte size.
                 .update(digest, rx, UploadSizeInfo::ExactSize(digest.size_bytes()))
                 .await
+                .map(|_| ())
         });
         ActiveStreamGuard {
             stream_state: Some(StreamState {
