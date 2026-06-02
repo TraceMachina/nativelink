@@ -6,7 +6,7 @@
     "@nativelink/ui": "workspace:*",
     "geist": "^1.5.1",
     "motion": "^11.15.0",
-    "next": "^15.1.6",
+    "next": "^16",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
