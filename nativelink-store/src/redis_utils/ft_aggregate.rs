@@ -35,6 +35,19 @@ pub(crate) struct FtAggregateOptions {
     pub sort_by: Vec<String>,
 }
 
+/// Per-query `FT.AGGREGATE` timeout in milliseconds.
+///
+/// `RediSearch`'s module default (≈500 ms) is far too tight for the
+/// scheduler's awaited-action index under any meaningful load: queries
+/// time out, `NativeLink` surfaces them as parse errors, and the dedup
+/// lookup fails. When dedup fails the scheduler creates a duplicate
+/// operation for an action that is already in flight — observed as
+/// "two same actions running on different PRs" with each running the
+/// full `maxActionExecutingTimeoutS` window before completing. Pass an
+/// explicit value generous enough to absorb 1M+ document scans on a
+/// busy `RediSearch` instance.
+const FT_AGGREGATE_TIMEOUT_MS: u64 = 10_000;
+
 /// Calls `FT.AGGREGATE` in redis. redis-rs does not properly support this command
 /// so we have to manually handle it.
 pub(crate) async fn ft_aggregate<C>(
@@ -56,6 +69,8 @@ where
     let mut ft_aggregate_cmd = cmd
         .arg(&index)
         .arg(&query)
+        .arg("TIMEOUT")
+        .arg(FT_AGGREGATE_TIMEOUT_MS)
         .arg("LOAD")
         .arg(options.load.len())
         .arg(&options.load)
