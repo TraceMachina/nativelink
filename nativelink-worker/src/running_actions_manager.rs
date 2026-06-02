@@ -229,12 +229,12 @@ pub fn download_to_directory<'a>(
                             let src_path = file_entry
                                 .get_file_path_locked(|src| async move { Ok(src) })
                                 .await?;
-                            let dst = dest.clone();
+                            let spawned_dest = dest.clone();
                             spawn_blocking!("download_to_directory_private_copy", move || {
-                                std::fs::copy(&src_path, &dst).map(|_| ()).map_err(|e| {
+                                std::fs::copy(&src_path, &spawned_dest).map(|_| ()).map_err(|e| {
                                     make_err!(
                                         Code::Internal,
-                                        "Failed to copy CAS blob into a private inode at {dst}: {e:?}"
+                                        "Failed to copy CAS blob into a private inode at {spawned_dest}: {e:?}"
                                     )
                                 })
                             })
@@ -314,14 +314,14 @@ pub fn download_to_directory<'a>(
                             }
                         }
                         if let Some(mtime) = mtime {
-                            let dst = dest.clone();
+                            let spawned_dest = dest.clone();
                             spawn_blocking!("download_to_directory_set_mtime", move || {
                                 set_file_mtime(
-                                    &dst,
+                                    &spawned_dest,
                                     FileTime::from_unix_time(mtime.seconds, mtime.nanos as u32),
                                 )
                                 .err_tip(|| {
-                                    format!("Failed to set mtime in download_to_directory {dst}")
+                                    format!("Failed to set mtime in download_to_directory {spawned_dest}")
                                 })
                             })
                             .await

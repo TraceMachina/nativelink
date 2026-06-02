@@ -345,7 +345,7 @@ where
                             "Retryable S3 error"
                         );
                         RetryResult::Retry(err)
-                    }, |size| RetryResult::Ok(size));
+                    }, RetryResult::Ok);
                     Some((retry_result, reader))
                 }))
                 .await;

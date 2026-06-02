@@ -1800,10 +1800,10 @@ async fn redis_subscription_drop_one_of_two_keeps_publisher() -> Result<(), Erro
 
 #[nativelink_test]
 async fn redis_subscription_concurrent_drops_no_absence_warn() -> Result<(), Error> {
+    const ITERATIONS: usize = 200;
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let manager = RedisSubscriptionManager::new(rx);
 
-    const ITERATIONS: usize = 200;
     for i in 0..ITERATIONS {
         let key = format!("race-key-{i}");
         let sub_a = manager.subscribe(TestSubKey(key.clone()))?;
