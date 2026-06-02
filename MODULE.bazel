@@ -107,6 +107,10 @@ crate.from_cargo(
     # selects against legacy @rules_rust//rust/platform:* labels.
     use_legacy_rules_rust_platforms = True,
 )
+crate.annotation(
+    crate = "zstd-sys",
+    gen_build_script = "on",
+)
 use_repo(crate, "crates")
 
 # NativeLink uses Local Remote Execution for Rust by default which automatically
