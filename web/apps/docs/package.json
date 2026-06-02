@@ -9,7 +9,7 @@
     "fumadocs-ui": "^16",
     "geist": "^1.5.1",
     "mermaid": "^11.4.1",
-    "next": "^15.1.6",
+    "next": "^16",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
