@@ -128,8 +128,7 @@ aws-sdk-s3 = { version = "1.82.0", features = [
   "http-1x",
   "rt-tokio",
 ], default-features = false }
-aws-smithy-runtime = { version = "1.8.1", default-features = false, features = [
-  "client",
+aws-smithy-http-client = { version = "1.1.13", default-features = false, features = [
   "test-util",
 ] }
 aws-smithy-runtime-api = { version = "1.7.4", default-features = false }
