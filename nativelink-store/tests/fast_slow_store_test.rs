@@ -1043,7 +1043,7 @@ async fn has_sees_in_flight_slow_writes() -> Result<(), Error> {
     // It should not resolve before the gate is released.
     tokio::select! {
         _ = &mut observer => panic!("Observer resolved before writer completed"),
-        _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+        () = tokio::time::sleep(Duration::from_millis(10)) => {}
     }
 
     // Release the writer and confirm the in-flight tracker is cleaned up.
@@ -1304,7 +1304,7 @@ async fn dropping_update_future_cleans_up_in_flight_entry() -> Result<(), Error>
     // It should not resolve before the gate is released.
     tokio::select! {
         _ = &mut observer => panic!("Observer resolved before writer completed"),
-        _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+        () = tokio::time::sleep(Duration::from_millis(10)) => {}
     }
 
     // Cancel the writer. The guard's Drop should remove the entry.
@@ -1488,7 +1488,7 @@ async fn has_with_results_handles_mixed_key_sources() -> Result<(), Error> {
     // It should not resolve before the gate is released.
     tokio::select! {
         _ = &mut observer => panic!("Observer resolved before writer completed"),
-        _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+        () = tokio::time::sleep(Duration::from_millis(10)) => {}
     }
 
     // Cleanup: release the gated writer.
