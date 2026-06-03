@@ -1,5 +1,5 @@
 {nix2container}: final: _prev: {
-  inherit (nix2container.packages.${final.system}) nix2container;
+  inherit (nix2container.packages.${final.stdenv.hostPlatform.system}) nix2container;
 
   rbe-configs-gen = final.callPackage ./rbe-configs-gen {};
 
