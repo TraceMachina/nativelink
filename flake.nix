@@ -174,9 +174,9 @@
             });
 
         nativeTargetPkgs =
-          if pkgs.system == "x86_64-linux"
+          if pkgs.stdenv.hostPlatform.system == "x86_64-linux"
           then pkgs.pkgsCross.musl64
-          else if pkgs.system == "aarch64-linux"
+          else if pkgs.stdenv.hostPlatform.system == "aarch64-linux"
           then pkgs.pkgsCross.aarch64-multiplatform-musl
           else pkgs;
 
@@ -256,7 +256,7 @@
               pkgs.unzip
               pkgs.zstd
               pkgs.cargo-bloat
-              pkgs.mold-wrapped
+              pkgs.mold
               pkgs.reindeer
               pkgs.lld_22
               pkgs.clang_22
