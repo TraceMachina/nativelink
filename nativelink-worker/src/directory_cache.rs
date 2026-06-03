@@ -1538,6 +1538,7 @@ mod tests {
 
         // Fire 16 concurrent requests for the same digest, each to its own
         // destination.
+        #[allow(clippy::items_after_statements)]
         const N: usize = 16;
         let dests: Vec<PathBuf> = (0..N)
             .map(|i| temp_dir.path().join(format!("dest_{i}")))
