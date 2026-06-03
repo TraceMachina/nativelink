@@ -1,0 +1,6 @@
+:root {
+  --nl-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --nl-duration-fast: 150ms;
+  --nl-duration-base: 250ms;
+  --nl-duration-slow: 600ms;
+}

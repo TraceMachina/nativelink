@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,13 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::convert::Into;
+use core::convert::Into;
+use core::str::Utf8Error;
+use std::sync::{MutexGuard, PoisonError};
 
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
 };
 use prost_types::TimestampError;
 use serde::{Deserialize, Serialize};
+use tokio::sync::AcquireError;
+// Reexport of tonic's error codes which we use as "nativelink_error::Code".
+pub use tonic::Code;
 
 #[macro_export]
 macro_rules! make_err {
@@ -46,10 +51,57 @@ macro_rules! error_if {
     }};
 }
 
-#[derive(Debug, Eq, PartialEq, Clone, Serialize, Deserialize)]
+/// Typed metadata that travels with an [`Error`].
+///
+/// Used in place of string-parsing error messages when the producer
+/// has structured information the consumer needs to act on. The
+/// motivating case is missing-blob errors from `fast_slow_store` —
+/// `to_execute_response` reads [`ErrorContext::MissingDigest`] and
+/// surfaces a `FAILED_PRECONDITION` with a `PreconditionFailure`
+/// detail naming the digest, which Bazel auto-retries on.
+///
+/// Default is [`ErrorContext::None`]; existing call sites that
+/// construct [`Error`] via `make_err!` / `Error::new` do not need to
+/// be updated.
+#[derive(Default, Debug, Eq, PartialEq, Clone, Serialize, Deserialize)]
+pub enum ErrorContext {
+    #[default]
+    None,
+    /// The error refers to a specific CAS blob that could not be
+    /// located. `hash` and `size` together form the digest the client
+    /// should re-upload (`REv2` `blobs/{hash}/{size}`).
+    MissingDigest { hash: String, size: i64 },
+}
+
+#[derive(Eq, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Error {
+    #[serde(with = "CodeDef")]
     pub code: Code,
     pub messages: Vec<String>,
+    #[serde(default, skip_serializing_if = "ErrorContext::is_none")]
+    pub context: ErrorContext,
+}
+
+impl core::fmt::Debug for Error {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let mut builder = f.debug_struct("Error");
+        builder.field("code", &self.code);
+        if !self.messages.is_empty() {
+            builder.field("messages", &self.messages);
+        }
+        if !self.context.is_none() {
+            builder.field("context", &self.context);
+        }
+        builder.finish()
+    }
+}
+
+impl ErrorContext {
+    #[inline]
+    #[must_use]
+    pub const fn is_none(&self) -> bool {
+        matches!(self, Self::None)
+    }
 }
 
 impl MetricsComponent for Error {
@@ -63,21 +115,46 @@ impl MetricsComponent for Error {
 }
 
 impl Error {
-    pub fn new(code: Code, msg: String) -> Self {
-        let mut msgs = Vec::with_capacity(1);
-        if !msg.is_empty() {
-            msgs.push(msg);
-        }
+    #[must_use]
+    pub const fn new_with_messages(code: Code, messages: Vec<String>) -> Self {
         Self {
             code,
-            messages: msgs,
+            messages,
+            context: ErrorContext::None,
         }
+    }
+
+    #[must_use]
+    pub fn new(code: Code, msg: String) -> Self {
+        if msg.is_empty() {
+            Self::new_with_messages(code, vec![])
+        } else {
+            Self::new_with_messages(code, vec![msg])
+        }
+    }
+
+    #[must_use]
+    pub fn from_std_err(code: Code, mut err: &dyn core::error::Error) -> Self {
+        let mut messages = vec![format!("{err}")];
+        while let Some(src) = err.source() {
+            messages.push(format!("{src}"));
+            err = src;
+        }
+        messages.reverse();
+        Self::new_with_messages(code, messages)
     }
 
     #[inline]
     #[must_use]
     pub fn append<S: Into<String>>(mut self, msg: S) -> Self {
         self.messages.push(msg.into());
+        self
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn with_context(mut self, context: ErrorContext) -> Self {
+        self.context = context;
         self
     }
 
@@ -104,16 +181,18 @@ impl Error {
         other.map(Into::into)
     }
 
+    #[must_use]
     pub fn to_std_err(self) -> std::io::Error {
-        std::io::Error::new(self.code.into(), self.messages.join(" : "))
+        std::io::Error::new(self.code.into_error_kind(), self.messages.join(" : "))
     }
 
+    #[must_use]
     pub fn message_string(&self) -> String {
         self.messages.join(" : ")
     }
 }
 
-impl std::error::Error for Error {}
+impl core::error::Error for Error {}
 
 impl From<Error> for nativelink_proto::google::rpc::Status {
     fn from(val: Error) -> Self {
@@ -130,12 +209,13 @@ impl From<nativelink_proto::google::rpc::Status> for Error {
         Self {
             code: val.code.into(),
             messages: vec![val.message],
+            context: ErrorContext::None,
         }
     }
 }
 
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for Error {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         // A manual impl to reduce the noise of frequently empty fields.
         let mut builder = f.debug_struct("Error");
 
@@ -151,48 +231,68 @@ impl std::fmt::Display for Error {
 
 impl From<prost::DecodeError> for Error {
     fn from(err: prost::DecodeError) -> Self {
-        make_err!(Code::Internal, "{}", err.to_string())
+        Self::from_std_err(Code::Internal, &err)
     }
 }
 
 impl From<prost::EncodeError> for Error {
     fn from(err: prost::EncodeError) -> Self {
-        make_err!(Code::Internal, "{}", err.to_string())
+        Self::from_std_err(Code::Internal, &err)
     }
 }
 
 impl From<prost::UnknownEnumValue> for Error {
     fn from(err: prost::UnknownEnumValue) -> Self {
-        make_err!(Code::Internal, "{}", err.to_string())
+        Self::from_std_err(Code::Internal, &err)
     }
 }
 
-impl From<std::num::TryFromIntError> for Error {
-    fn from(err: std::num::TryFromIntError) -> Self {
-        make_err!(Code::InvalidArgument, "{}", err.to_string())
+impl From<core::num::TryFromIntError> for Error {
+    fn from(err: core::num::TryFromIntError) -> Self {
+        Self::from_std_err(Code::InvalidArgument, &err)
     }
 }
 
 impl From<tokio::task::JoinError> for Error {
     fn from(err: tokio::task::JoinError) -> Self {
-        make_err!(Code::Internal, "{}", err.to_string())
+        Self::from_std_err(Code::Internal, &err)
     }
 }
 
-impl From<std::num::ParseIntError> for Error {
-    fn from(err: std::num::ParseIntError) -> Self {
-        make_err!(Code::InvalidArgument, "{}", err.to_string())
+impl<T> From<PoisonError<MutexGuard<'_, T>>> for Error {
+    fn from(err: PoisonError<MutexGuard<'_, T>>) -> Self {
+        Self::from_std_err(Code::Internal, &err)
     }
 }
 
-impl From<hex::FromHexError> for Error {
-    fn from(err: hex::FromHexError) -> Self {
-        make_err!(Code::InvalidArgument, "{}", err.to_string())
+impl From<serde_json5::Error> for Error {
+    fn from(err: serde_json5::Error) -> Self {
+        match err {
+            serde_json5::Error::Message { msg, location } => {
+                if let Some(has_location) = location {
+                    make_err!(
+                        Code::Internal,
+                        "line {}, column {} - {}",
+                        has_location.line,
+                        has_location.column,
+                        msg
+                    )
+                } else {
+                    Self::new(Code::Internal, msg)
+                }
+            }
+        }
     }
 }
 
-impl From<std::convert::Infallible> for Error {
-    fn from(_err: std::convert::Infallible) -> Self {
+impl From<core::num::ParseIntError> for Error {
+    fn from(err: core::num::ParseIntError) -> Self {
+        Self::from_std_err(Code::InvalidArgument, &err)
+    }
+}
+
+impl From<core::convert::Infallible> for Error {
+    fn from(_err: core::convert::Infallible) -> Self {
         // Infallible is an error type that can never happen.
         unreachable!();
     }
@@ -200,83 +300,150 @@ impl From<std::convert::Infallible> for Error {
 
 impl From<TimestampError> for Error {
     fn from(err: TimestampError) -> Self {
-        make_err!(Code::InvalidArgument, "{}", err)
+        Self::from_std_err(Code::InvalidArgument, &err)
+    }
+}
+
+impl From<AcquireError> for Error {
+    fn from(err: AcquireError) -> Self {
+        Self::from_std_err(Code::Internal, &err)
+    }
+}
+
+impl From<Utf8Error> for Error {
+    fn from(err: Utf8Error) -> Self {
+        Self::from_std_err(Code::Internal, &err)
     }
 }
 
 impl From<std::io::Error> for Error {
     fn from(err: std::io::Error) -> Self {
         Self {
-            code: err.kind().into(),
+            code: err.kind().into_code(),
             messages: vec![err.to_string()],
+            context: ErrorContext::None,
         }
     }
 }
 
-impl From<Code> for Error {
-    fn from(code: Code) -> Self {
-        make_err!(code, "")
-    }
-}
-
-impl From<fred::error::RedisError> for Error {
-    fn from(error: fred::error::RedisError) -> Self {
-        use fred::error::RedisErrorKind::{
-            Auth, Backpressure, Canceled, Cluster, Config, InvalidArgument, InvalidCommand,
-            NotFound, Parse, Protocol, Sentinel, Timeout, Tls, Unknown, Url, IO,
+impl From<redis::RedisError> for Error {
+    fn from(error: redis::RedisError) -> Self {
+        use redis::ErrorKind::{
+            AuthenticationFailed, InvalidClientConfig, Io as IoError, Parse as ParseError,
+            UnexpectedReturnType,
         };
 
         // Conversions here are based on https://grpc.github.io/grpc/core/md_doc_statuscodes.html.
         let code = match error.kind() {
-            Config | InvalidCommand | InvalidArgument | Url => Code::InvalidArgument,
-            IO | Protocol | Tls | Cluster | Parse | Sentinel => Code::Internal,
-            Auth => Code::PermissionDenied,
-            Canceled => Code::Aborted,
-            Unknown => Code::Unknown,
-            Timeout => Code::DeadlineExceeded,
-            NotFound => Code::NotFound,
-            Backpressure => Code::Unavailable,
+            AuthenticationFailed => Code::PermissionDenied,
+            ParseError | UnexpectedReturnType | InvalidClientConfig => Code::InvalidArgument,
+            IoError => {
+                if error.is_timeout() {
+                    Code::DeadlineExceeded
+                } else {
+                    Code::Internal
+                }
+            }
+            _ => Code::Unknown,
         };
 
-        make_err!(code, "{error}")
-    }
-}
-
-impl From<tonic::transport::Error> for Error {
-    fn from(error: tonic::transport::Error) -> Self {
-        make_err!(Code::Internal, "{}", error.to_string())
+        let kind = error.kind();
+        make_err!(code, "{kind:?}: {error}")
     }
 }
 
 impl From<tonic::Status> for Error {
     fn from(status: tonic::Status) -> Self {
-        make_err!(status.code().into(), "{}", status.to_string())
+        Self::new(status.code(), status.to_string())
     }
 }
 
 impl From<Error> for tonic::Status {
     fn from(val: Error) -> Self {
-        Self::new(val.code.into(), val.messages.join(" : "))
+        Self::new(val.code, val.messages.join(" : "))
+    }
+}
+
+impl From<walkdir::Error> for Error {
+    fn from(err: walkdir::Error) -> Self {
+        Self::from_std_err(Code::Internal, &err)
+    }
+}
+
+impl From<uuid::Error> for Error {
+    fn from(err: uuid::Error) -> Self {
+        Self::from_std_err(Code::Internal, &err)
+    }
+}
+
+impl From<rustls_pki_types::pem::Error> for Error {
+    fn from(err: rustls_pki_types::pem::Error) -> Self {
+        Self::from_std_err(Code::Internal, &err)
+    }
+}
+
+impl From<tokio::time::error::Elapsed> for Error {
+    fn from(err: tokio::time::error::Elapsed) -> Self {
+        Self::from_std_err(Code::DeadlineExceeded, &err)
+    }
+}
+
+impl From<url::ParseError> for Error {
+    fn from(err: url::ParseError) -> Self {
+        Self::from_std_err(Code::Internal, &err)
+    }
+}
+
+impl From<mongodb::error::Error> for Error {
+    fn from(err: mongodb::error::Error) -> Self {
+        Self::from_std_err(Code::Internal, &err)
+    }
+}
+
+impl From<reqwest::Error> for Error {
+    fn from(err: reqwest::Error) -> Self {
+        Self::from_std_err(Code::Internal, &err)
+    }
+}
+
+impl From<zip::result::ZipError> for Error {
+    fn from(err: zip::result::ZipError) -> Self {
+        Self::from_std_err(Code::Internal, &err)
+    }
+}
+
+impl From<std::ffi::NulError> for Error {
+    fn from(err: std::ffi::NulError) -> Self {
+        Self::from_std_err(Code::Internal, &err)
     }
 }
 
 pub trait ResultExt<T> {
+    /// # Errors
+    ///
+    /// Will return `Err` if we can't convert the error.
     fn err_tip_with_code<F, S>(self, tip_fn: F) -> Result<T, Error>
     where
         Self: Sized,
-        S: std::string::ToString,
-        F: (std::ops::FnOnce(&Error) -> (Code, S)) + Sized;
+        S: ToString,
+        F: (FnOnce(&Error) -> (Code, S)) + Sized;
 
+    /// # Errors
+    ///
+    /// Will return `Err` if we can't convert the error.
     #[inline]
     fn err_tip<F, S>(self, tip_fn: F) -> Result<T, Error>
     where
         Self: Sized,
-        S: std::string::ToString,
-        F: (std::ops::FnOnce() -> S) + Sized,
+        S: ToString,
+        F: (FnOnce() -> S) + Sized,
     {
         self.err_tip_with_code(|e| (e.code, tip_fn()))
     }
 
+    /// # Errors
+    ///
+    /// Will return `Err` if we can't merge the errors.
     fn merge<U>(self, _other: Result<U, Error>) -> Result<U, Error>
     where
         Self: Sized,
@@ -290,8 +457,8 @@ impl<T, E: Into<Error>> ResultExt<T> for Result<T, E> {
     fn err_tip_with_code<F, S>(self, tip_fn: F) -> Result<T, Error>
     where
         Self: Sized,
-        S: std::string::ToString,
-        F: (std::ops::FnOnce(&Error) -> (Code, S)) + Sized,
+        S: ToString,
+        F: (FnOnce(&Error) -> (Code, S)) + Sized,
     {
         self.map_err(|e| {
             let mut error: Error = e.into();
@@ -325,13 +492,14 @@ impl<T> ResultExt<T> for Option<T> {
     fn err_tip_with_code<F, S>(self, tip_fn: F) -> Result<T, Error>
     where
         Self: Sized,
-        S: std::string::ToString,
-        F: (std::ops::FnOnce(&Error) -> (Code, S)) + Sized,
+        S: ToString,
+        F: (FnOnce(&Error) -> (Code, S)) + Sized,
     {
         self.ok_or_else(|| {
             let mut error = Error {
                 code: Code::Internal,
                 messages: vec![],
+                context: ErrorContext::None,
             };
             let (code, message) = tip_fn(&error);
             error.code = code;
@@ -341,9 +509,58 @@ impl<T> ResultExt<T> for Option<T> {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive] // New Codes may be added in the future, so never exhaustively match!
-pub enum Code {
+trait CodeExt {
+    fn into_error_kind(self) -> std::io::ErrorKind;
+}
+
+impl CodeExt for Code {
+    fn into_error_kind(self) -> std::io::ErrorKind {
+        match self {
+            Self::Aborted => std::io::ErrorKind::Interrupted,
+            Self::AlreadyExists => std::io::ErrorKind::AlreadyExists,
+            Self::DeadlineExceeded => std::io::ErrorKind::TimedOut,
+            Self::InvalidArgument => std::io::ErrorKind::InvalidInput,
+            Self::NotFound => std::io::ErrorKind::NotFound,
+            Self::PermissionDenied => std::io::ErrorKind::PermissionDenied,
+            Self::Unavailable => std::io::ErrorKind::ConnectionRefused,
+            _ => std::io::ErrorKind::Other,
+        }
+    }
+}
+
+trait ErrorKindExt {
+    fn into_code(self) -> Code;
+}
+
+impl ErrorKindExt for std::io::ErrorKind {
+    fn into_code(self) -> Code {
+        match self {
+            Self::NotFound => Code::NotFound,
+            Self::PermissionDenied => Code::PermissionDenied,
+            Self::ConnectionRefused | Self::ConnectionReset | Self::ConnectionAborted => {
+                Code::Unavailable
+            }
+            Self::AlreadyExists => Code::AlreadyExists,
+            Self::InvalidInput | Self::InvalidData => Code::InvalidArgument,
+            Self::TimedOut => Code::DeadlineExceeded,
+            Self::Interrupted => Code::Aborted,
+            Self::NotConnected
+            | Self::AddrInUse
+            | Self::AddrNotAvailable
+            | Self::BrokenPipe
+            | Self::WouldBlock
+            | Self::WriteZero
+            | Self::Other
+            | Self::UnexpectedEof => Code::Internal,
+            _ => Code::Unknown,
+        }
+    }
+}
+
+// Serde definition for tonic::Code. See: https://serde.rs/remote-derive.html
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(remote = "Code")]
+pub enum CodeDef {
     Ok = 0,
     Cancelled = 1,
     Unknown = 2,
@@ -363,133 +580,4 @@ pub enum Code {
     Unauthenticated = 16,
     // NOTE: Additional codes must be added to stores.rs in ErrorCodes and also
     // in both match statements in retry.rs.
-}
-
-impl From<i32> for Code {
-    fn from(code: i32) -> Self {
-        match code {
-            x if x == Self::Ok as i32 => Self::Ok,
-            x if x == Self::Cancelled as i32 => Self::Cancelled,
-            x if x == Self::Unknown as i32 => Self::Unknown,
-            x if x == Self::InvalidArgument as i32 => Self::InvalidArgument,
-            x if x == Self::DeadlineExceeded as i32 => Self::DeadlineExceeded,
-            x if x == Self::NotFound as i32 => Self::NotFound,
-            x if x == Self::AlreadyExists as i32 => Self::AlreadyExists,
-            x if x == Self::PermissionDenied as i32 => Self::PermissionDenied,
-            x if x == Self::ResourceExhausted as i32 => Self::ResourceExhausted,
-            x if x == Self::FailedPrecondition as i32 => Self::FailedPrecondition,
-            x if x == Self::Aborted as i32 => Self::Aborted,
-            x if x == Self::OutOfRange as i32 => Self::OutOfRange,
-            x if x == Self::Unimplemented as i32 => Self::Unimplemented,
-            x if x == Self::Internal as i32 => Self::Internal,
-            x if x == Self::Unavailable as i32 => Self::Unavailable,
-            x if x == Self::DataLoss as i32 => Self::DataLoss,
-            x if x == Self::Unauthenticated as i32 => Self::Unauthenticated,
-            _ => Self::Unknown,
-        }
-    }
-}
-
-impl From<tonic::Code> for Code {
-    fn from(code: tonic::Code) -> Self {
-        match code {
-            tonic::Code::Ok => Self::Ok,
-            tonic::Code::Cancelled => Self::Cancelled,
-            tonic::Code::Unknown => Self::Unknown,
-            tonic::Code::InvalidArgument => Self::InvalidArgument,
-            tonic::Code::DeadlineExceeded => Self::DeadlineExceeded,
-            tonic::Code::NotFound => Self::NotFound,
-            tonic::Code::AlreadyExists => Self::AlreadyExists,
-            tonic::Code::PermissionDenied => Self::PermissionDenied,
-            tonic::Code::ResourceExhausted => Self::ResourceExhausted,
-            tonic::Code::FailedPrecondition => Self::FailedPrecondition,
-            tonic::Code::Aborted => Self::Aborted,
-            tonic::Code::OutOfRange => Self::OutOfRange,
-            tonic::Code::Unimplemented => Self::Unimplemented,
-            tonic::Code::Internal => Self::Internal,
-            tonic::Code::Unavailable => Self::Unavailable,
-            tonic::Code::DataLoss => Self::DataLoss,
-            tonic::Code::Unauthenticated => Self::Unauthenticated,
-        }
-    }
-}
-
-impl From<Code> for tonic::Code {
-    fn from(val: Code) -> Self {
-        match val {
-            Code::Ok => Self::Ok,
-            Code::Cancelled => Self::Cancelled,
-            Code::Unknown => Self::Unknown,
-            Code::InvalidArgument => Self::InvalidArgument,
-            Code::DeadlineExceeded => Self::DeadlineExceeded,
-            Code::NotFound => Self::NotFound,
-            Code::AlreadyExists => Self::AlreadyExists,
-            Code::PermissionDenied => Self::PermissionDenied,
-            Code::ResourceExhausted => Self::ResourceExhausted,
-            Code::FailedPrecondition => Self::FailedPrecondition,
-            Code::Aborted => Self::Aborted,
-            Code::OutOfRange => Self::OutOfRange,
-            Code::Unimplemented => Self::Unimplemented,
-            Code::Internal => Self::Internal,
-            Code::Unavailable => Self::Unavailable,
-            Code::DataLoss => Self::DataLoss,
-            Code::Unauthenticated => Self::Unauthenticated,
-        }
-    }
-}
-
-impl From<std::io::ErrorKind> for Code {
-    fn from(kind: std::io::ErrorKind) -> Self {
-        match kind {
-            std::io::ErrorKind::NotFound => Self::NotFound,
-            std::io::ErrorKind::PermissionDenied => Self::PermissionDenied,
-            std::io::ErrorKind::ConnectionRefused
-            | std::io::ErrorKind::ConnectionReset
-            | std::io::ErrorKind::ConnectionAborted => Self::Unavailable,
-            std::io::ErrorKind::AlreadyExists => Self::AlreadyExists,
-            std::io::ErrorKind::InvalidInput | std::io::ErrorKind::InvalidData => {
-                Self::InvalidArgument
-            }
-            std::io::ErrorKind::TimedOut => Self::DeadlineExceeded,
-            std::io::ErrorKind::Interrupted => Self::Aborted,
-            std::io::ErrorKind::NotConnected
-            | std::io::ErrorKind::AddrInUse
-            | std::io::ErrorKind::AddrNotAvailable
-            | std::io::ErrorKind::BrokenPipe
-            | std::io::ErrorKind::WouldBlock
-            | std::io::ErrorKind::WriteZero
-            | std::io::ErrorKind::Other
-            | std::io::ErrorKind::UnexpectedEof => Self::Internal,
-            _ => Self::Unknown,
-        }
-    }
-}
-
-impl From<Code> for std::io::ErrorKind {
-    fn from(kind: Code) -> Self {
-        match kind {
-            Code::Aborted => Self::Interrupted,
-            Code::AlreadyExists => Self::AlreadyExists,
-            Code::DeadlineExceeded => Self::TimedOut,
-            Code::InvalidArgument => Self::InvalidInput,
-            Code::NotFound => Self::NotFound,
-            Code::PermissionDenied => Self::PermissionDenied,
-            Code::Unavailable => Self::ConnectionRefused,
-            _ => Self::Other,
-        }
-    }
-}
-
-// Allows for mapping this type into a generic serialization error.
-impl serde::ser::Error for Error {
-    fn custom<T: std::fmt::Display>(msg: T) -> Self {
-        Self::new(Code::InvalidArgument, msg.to_string())
-    }
-}
-
-// Allows for mapping this type into a generic deserialization error.
-impl serde::de::Error for Error {
-    fn custom<T: std::fmt::Display>(msg: T) -> Self {
-        Self::new(Code::InvalidArgument, msg.to_string())
-    }
 }

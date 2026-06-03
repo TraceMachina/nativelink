@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -18,7 +18,7 @@ use std::time::SystemTime;
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::ExecuteResponse;
-use nativelink_proto::google::longrunning::{operation, Operation};
+use nativelink_proto::google::longrunning::{Operation, operation};
 use nativelink_proto::google::rpc::Status;
 use nativelink_util::action_messages::{
     ActionResult, ActionStage, ActionState, ActionUniqueKey, ActionUniqueQualifier,
@@ -30,7 +30,7 @@ use pretty_assertions::assert_eq;
 
 #[nativelink_test]
 async fn action_state_any_url_test() -> Result<(), Error> {
-    let unique_qualifier = ActionUniqueQualifier::Cachable(ActionUniqueKey {
+    let unique_qualifier = ActionUniqueQualifier::Cacheable(ActionUniqueKey {
         instance_name: "foo_instance".to_string(),
         digest_function: DigestHasherFunc::Sha256,
         digest: DigestInfo::new([1u8; 32], 5),
@@ -43,6 +43,7 @@ async fn action_state_any_url_test() -> Result<(), Error> {
         // Result is only populated if has_action_result.
         stage: ActionStage::Completed(ActionResult::default()),
         action_digest,
+        last_transition_timestamp: SystemTime::now(),
     };
     let operation: Operation = action_state.as_operation(client_id);
 

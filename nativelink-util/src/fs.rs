@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,205 +12,56 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::fs::Metadata;
-use std::io::IoSlice;
+use core::pin::Pin;
+use core::sync::atomic::{AtomicUsize, Ordering};
+use core::task::{Context, Poll};
+use std::fs::{Metadata, Permissions};
+use std::io::{IoSlice, Seek};
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::OnceLock;
-use std::task::{Context, Poll};
-use std::time::Duration;
 
-use bytes::BytesMut;
-use futures::Future;
-use nativelink_error::{make_err, Code, Error, ResultExt};
-/// We wrap all tokio::fs items in our own wrapper so we can limit the number of outstanding
+use nativelink_error::{Code, Error, ResultExt, make_err};
+use rlimit::increase_nofile_limit;
+/// We wrap all `tokio::fs` items in our own wrapper so we can limit the number of outstanding
 /// open files at any given time. This will greatly reduce the chance we'll hit open file limit
 /// issues.
 pub use tokio::fs::DirEntry;
-use tokio::io::{
-    AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt, AsyncWrite, ReadBuf, SeekFrom, Take,
-};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncWrite, ReadBuf, SeekFrom, Take};
 use tokio::sync::{Semaphore, SemaphorePermit};
-use tokio::time::timeout;
-use tracing::{event, Level};
+use tracing::{error, info, trace, warn};
 
 use crate::spawn_blocking;
 
 /// Default read buffer size when reading to/from disk.
-pub const DEFAULT_READ_BUFF_SIZE: usize = 16384;
-
-type StreamPosition = u64;
-type BytesRemaining = u64;
-
-#[derive(Debug)]
-enum MaybeFileSlot {
-    Open(Take<FileSlot>),
-    Closed((StreamPosition, BytesRemaining)),
-}
-
-/// A wrapper around a generic FileSlot. This gives us the ability to
-/// close a file and then resume it later. Specifically useful for cases
-/// piping data from one location to another and one side is slow at
-/// reading or writing the data, we can have a timeout, close the file
-/// and then reopen it later.
-///
-/// Note: This wraps both files opened for read and write, so we always
-/// need to know how the original file was opened and the location of
-/// the file. To simplify the code significantly we always require the
-/// file to be a `Take<FileSlot>`.
-#[derive(Debug)]
-pub struct ResumeableFileSlot {
-    maybe_file_slot: MaybeFileSlot,
-    path: PathBuf,
-    is_write: bool,
-}
-
-impl ResumeableFileSlot {
-    pub fn new(file: FileSlot, path: PathBuf, is_write: bool) -> Self {
-        Self {
-            maybe_file_slot: MaybeFileSlot::Open(file.take(u64::MAX)),
-            path,
-            is_write,
-        }
-    }
-
-    pub fn new_with_take(file: Take<FileSlot>, path: PathBuf, is_write: bool) -> Self {
-        Self {
-            maybe_file_slot: MaybeFileSlot::Open(file),
-            path,
-            is_write,
-        }
-    }
-
-    /// Returns the path of the file.
-    pub fn get_path(&self) -> &Path {
-        Path::new(&self.path)
-    }
-
-    /// Returns the current read position of a file.
-    pub async fn stream_position(&mut self) -> Result<u64, Error> {
-        let file_slot = match &mut self.maybe_file_slot {
-            MaybeFileSlot::Open(file_slot) => file_slot,
-            MaybeFileSlot::Closed((pos, _)) => return Ok(*pos),
-        };
-        file_slot
-            .get_mut()
-            .inner
-            .stream_position()
-            .await
-            .err_tip(|| "Failed to get file position in digest_for_file")
-    }
-
-    pub async fn close_file(&mut self) -> Result<(), Error> {
-        let MaybeFileSlot::Open(file_slot) = &mut self.maybe_file_slot else {
-            return Ok(());
-        };
-        let position = file_slot
-            .get_mut()
-            .inner
-            .stream_position()
-            .await
-            .err_tip(|| format!("Failed to get file position {:?}", self.path))?;
-        self.maybe_file_slot = MaybeFileSlot::Closed((position, file_slot.limit()));
-        Ok(())
-    }
-
-    #[inline]
-    pub async fn as_reader(&mut self) -> Result<&mut Take<FileSlot>, Error> {
-        let (stream_position, bytes_remaining) = match self.maybe_file_slot {
-            MaybeFileSlot::Open(ref mut file_slot) => return Ok(file_slot),
-            MaybeFileSlot::Closed(pos) => pos,
-        };
-        let permit = OPEN_FILE_SEMAPHORE
-            .acquire()
-            .await
-            .map_err(|e| make_err!(Code::Internal, "Open file semaphore closed {:?}", e))?;
-        let inner = tokio::fs::OpenOptions::new()
-            .write(self.is_write)
-            .read(!self.is_write)
-            .open(&self.path)
-            .await
-            .err_tip(|| format!("Could not open after resume {:?}", self.path))?;
-        let mut file_slot = FileSlot {
-            _permit: permit,
-            inner,
-        };
-        file_slot
-            .inner
-            .seek(SeekFrom::Start(stream_position))
-            .await
-            .err_tip(|| {
-                format!(
-                    "Failed to seek to position {stream_position} {:?}",
-                    self.path
-                )
-            })?;
-
-        self.maybe_file_slot = MaybeFileSlot::Open(file_slot.take(bytes_remaining));
-        match &mut self.maybe_file_slot {
-            MaybeFileSlot::Open(file_slot) => Ok(file_slot),
-            MaybeFileSlot::Closed(_) => unreachable!(),
-        }
-    }
-
-    #[inline]
-    pub async fn as_writer(&mut self) -> Result<&mut FileSlot, Error> {
-        Ok(self.as_reader().await?.get_mut())
-    }
-
-    /// Utility function to read data from a handler and handles file descriptor
-    /// timeouts. Chunk size is based on the `buf`'s capacity.
-    /// Note: If the `handler` changes `buf`s capacity, it is responsible for reserving
-    /// more before returning.
-    pub async fn read_buf_cb<'b, T, F, Fut>(
-        &'b mut self,
-        (mut buf, mut state): (BytesMut, T),
-        mut handler: F,
-    ) -> Result<(BytesMut, T), Error>
-    where
-        F: (FnMut((BytesMut, T)) -> Fut) + 'b,
-        Fut: Future<Output = Result<(BytesMut, T), Error>> + 'b,
-    {
-        loop {
-            buf.clear();
-            self.as_reader()
-                .await
-                .err_tip(|| "Could not get reader from file slot in read_buf_cb")?
-                .read_buf(&mut buf)
-                .await
-                .err_tip(|| "Could not read chunk during read_buf_cb")?;
-            if buf.is_empty() {
-                return Ok((buf, state));
-            }
-            let handler_fut = handler((buf, state));
-            tokio::pin!(handler_fut);
-            loop {
-                match timeout(idle_file_descriptor_timeout(), &mut handler_fut).await {
-                    Ok(Ok(output)) => {
-                        (buf, state) = output;
-                        break;
-                    }
-                    Ok(Err(err)) => {
-                        return Err(err).err_tip(|| "read_buf_cb's handler returned an error")
-                    }
-                    Err(_) => {
-                        self.close_file()
-                            .await
-                            .err_tip(|| "Could not close file due to timeout in read_buf_cb")?;
-                        continue;
-                    }
-                }
-            }
-        }
-    }
-}
+pub const DEFAULT_READ_BUFF_SIZE: usize = 0x4000;
 
 #[derive(Debug)]
 pub struct FileSlot {
     // We hold the permit because once it is dropped it goes back into the queue.
     _permit: SemaphorePermit<'static>,
     inner: tokio::fs::File,
+}
+
+impl FileSlot {
+    /// Advise the kernel to drop page cache for this file's contents.
+    /// Only available on Linux;
+    #[cfg(target_os = "linux")]
+    pub fn advise_dontneed(&self) {
+        use std::os::unix::io::AsRawFd;
+        let fd = self.inner.as_raw_fd();
+        let ret = unsafe { libc::posix_fadvise(fd, 0, 0, libc::POSIX_FADV_DONTNEED) };
+        if ret != 0 {
+            tracing::debug!(
+                fd,
+                ret,
+                "posix_fadvise(DONTNEED) returned non-zero (best-effort, ignoring)",
+            );
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub const fn advise_dontneed(&self) {
+        // No-op: posix_fadvise is not available on Mac or Windows.
+    }
 }
 
 impl AsRef<tokio::fs::File> for FileSlot {
@@ -284,13 +135,19 @@ impl AsyncWrite for FileSlot {
     }
 }
 
-const DEFAULT_OPEN_FILE_PERMITS: usize = 10;
-static TOTAL_FILE_SEMAPHORES: AtomicUsize = AtomicUsize::new(DEFAULT_OPEN_FILE_PERMITS);
-pub static OPEN_FILE_SEMAPHORE: Semaphore = Semaphore::const_new(DEFAULT_OPEN_FILE_PERMITS);
+// Note: If the default changes make sure you update the documentation in
+// `config/cas_server.rs`.
+pub const DEFAULT_OPEN_FILE_LIMIT: usize = 24 * 1024; // 24k.
+static OPEN_FILE_LIMIT: AtomicUsize = AtomicUsize::new(DEFAULT_OPEN_FILE_LIMIT);
+pub static OPEN_FILE_SEMAPHORE: Semaphore = Semaphore::const_new(DEFAULT_OPEN_FILE_LIMIT);
 
 /// Try to acquire a permit from the open file semaphore.
 #[inline]
 pub async fn get_permit() -> Result<SemaphorePermit<'static>, Error> {
+    trace!(
+        available_permits = OPEN_FILE_SEMAPHORE.available_permits(),
+        "getting FS permit"
+    );
     OPEN_FILE_SEMAPHORE
         .acquire()
         .await
@@ -306,67 +163,110 @@ where
     let permit = get_permit().await?;
     spawn_blocking!("fs_call_with_permit", move || f(permit))
         .await
-        .unwrap_or_else(|e| Err(make_err!(Code::Internal, "background task failed: {e:?}")))
+        .unwrap_or_else(|e| {
+            Err(Error::from_std_err(Code::Internal, &e).append("background task failed"))
+        })
 }
 
-pub fn set_open_file_limit(limit: usize) {
-    let current_total = TOTAL_FILE_SEMAPHORES.load(Ordering::Acquire);
-    if limit < current_total {
-        event!(
-            Level::ERROR,
-            "set_open_file_limit({}) must be greater than {}",
-            limit,
-            current_total
+/// Sets the soft nofile limit to `desired_open_file_limit` and adjusts
+/// `OPEN_FILE_SEMAPHORE` accordingly.
+///
+/// # Panics
+///
+/// If any type conversion fails. This can't happen if `usize` is smaller than
+/// `u64`.
+pub fn set_open_file_limit(desired_open_file_limit: usize) {
+    // Tokio semaphores have a max of 2^61 - 1 permits. On some platforms
+    // (e.g. macOS) the kernel reports an "unlimited" file limit that exceeds
+    // this, causing a panic when we try to add permits. Cap at a generous but
+    // safe value.
+    const MAX_SAFE_LIMIT: usize = 1 << 30; // ~1 billion
+
+    let new_open_file_limit = {
+        match increase_nofile_limit(
+            u64::try_from(desired_open_file_limit)
+                .expect("desired_open_file_limit is too large to convert to u64."),
+        ) {
+            Ok(open_file_limit) => {
+                info!("set_open_file_limit() assigns new open file limit {open_file_limit}.",);
+                usize::try_from(open_file_limit)
+                    .expect("open_file_limit is too large to convert to usize.")
+                    .min(MAX_SAFE_LIMIT)
+            }
+            Err(e) => {
+                error!(
+                    "set_open_file_limit() failed to assign open file limit. Maybe system does not have ulimits, continuing anyway. - {e:?}",
+                );
+                DEFAULT_OPEN_FILE_LIMIT
+            }
+        }
+    };
+    // TODO(jaroeichler): Can we give a better estimate?
+    if new_open_file_limit < DEFAULT_OPEN_FILE_LIMIT {
+        warn!(
+            "The new open file limit ({new_open_file_limit}) is below the recommended value of {DEFAULT_OPEN_FILE_LIMIT}. Consider raising max_open_files.",
         );
-        return;
     }
-    TOTAL_FILE_SEMAPHORES.fetch_add(limit - current_total, Ordering::Release);
-    OPEN_FILE_SEMAPHORE.add_permits(limit - current_total);
+
+    // Use only 80% of the open file limit for permits from OPEN_FILE_SEMAPHORE
+    // to give extra room for other file descriptors like sockets, pipes, and
+    // other things.
+    let reduced_open_file_limit = new_open_file_limit.saturating_sub(new_open_file_limit / 5);
+    let previous_open_file_limit = OPEN_FILE_LIMIT.load(Ordering::Acquire);
+    // No permit should be acquired yet, so this warning should not occur.
+    if (OPEN_FILE_SEMAPHORE.available_permits() + reduced_open_file_limit)
+        < previous_open_file_limit
+    {
+        warn!(
+            "There are not enough available permits to remove {previous_open_file_limit} - {reduced_open_file_limit} permits.",
+        );
+    }
+    if previous_open_file_limit <= reduced_open_file_limit {
+        OPEN_FILE_LIMIT.fetch_add(
+            reduced_open_file_limit - previous_open_file_limit,
+            Ordering::Release,
+        );
+        OPEN_FILE_SEMAPHORE.add_permits(reduced_open_file_limit - previous_open_file_limit);
+    } else {
+        OPEN_FILE_LIMIT.fetch_sub(
+            previous_open_file_limit - reduced_open_file_limit,
+            Ordering::Release,
+        );
+        OPEN_FILE_SEMAPHORE.forget_permits(previous_open_file_limit - reduced_open_file_limit);
+    }
 }
 
 pub fn get_open_files_for_test() -> usize {
-    TOTAL_FILE_SEMAPHORES.load(Ordering::Acquire) - OPEN_FILE_SEMAPHORE.available_permits()
+    OPEN_FILE_LIMIT.load(Ordering::Acquire) - OPEN_FILE_SEMAPHORE.available_permits()
 }
 
-/// How long a file descriptor can be open without being used before it is closed.
-static IDLE_FILE_DESCRIPTOR_TIMEOUT: OnceLock<Duration> = OnceLock::new();
-
-pub fn idle_file_descriptor_timeout() -> Duration {
-    *IDLE_FILE_DESCRIPTOR_TIMEOUT.get_or_init(|| Duration::MAX)
-}
-
-/// Set the idle file descriptor timeout. This is the amount of time
-/// a file descriptor can be open without being used before it is closed.
-pub fn set_idle_file_descriptor_timeout(timeout: Duration) -> Result<(), Error> {
-    IDLE_FILE_DESCRIPTOR_TIMEOUT
-        .set(timeout)
-        .map_err(|_| make_err!(Code::Internal, "idle_file_descriptor_timeout already set"))
-}
-
-pub async fn open_file(path: impl AsRef<Path>, limit: u64) -> Result<ResumeableFileSlot, Error> {
+pub async fn open_file(
+    path: impl AsRef<Path>,
+    start: u64,
+    limit: u64,
+) -> Result<Take<FileSlot>, Error> {
     let path = path.as_ref().to_owned();
-    let (permit, os_file, path) = call_with_permit(move |permit| {
-        Ok((
-            permit,
-            std::fs::File::open(&path).err_tip(|| format!("Could not open {path:?}"))?,
-            path,
-        ))
+    let (permit, os_file) = call_with_permit(move |permit| {
+        let mut os_file =
+            std::fs::File::open(&path).err_tip(|| format!("Could not open {}", path.display()))?;
+        if start > 0 {
+            os_file
+                .seek(SeekFrom::Start(start))
+                .err_tip(|| format!("Could not seek to {start} in {}", path.display()))?;
+        }
+        Ok((permit, os_file))
     })
     .await?;
-    Ok(ResumeableFileSlot::new_with_take(
-        FileSlot {
-            _permit: permit,
-            inner: tokio::fs::File::from_std(os_file),
-        }
-        .take(limit),
-        path,
-        false, /* is_write */
-    ))
+    Ok(FileSlot {
+        _permit: permit,
+        inner: tokio::fs::File::from_std(os_file),
+    }
+    .take(limit))
 }
 
-pub async fn create_file(path: impl AsRef<Path>) -> Result<ResumeableFileSlot, Error> {
+pub async fn create_file(path: impl AsRef<Path>) -> Result<FileSlot, Error> {
     let path = path.as_ref().to_owned();
-    let (permit, os_file, path) = call_with_permit(move |permit| {
+    let (permit, os_file) = call_with_permit(move |permit| {
         Ok((
             permit,
             std::fs::File::options()
@@ -375,19 +275,14 @@ pub async fn create_file(path: impl AsRef<Path>) -> Result<ResumeableFileSlot, E
                 .create(true)
                 .truncate(true)
                 .open(&path)
-                .err_tip(|| format!("Could not open {path:?}"))?,
-            path,
+                .err_tip(|| format!("Could not open {}", path.display()))?,
         ))
     })
     .await?;
-    Ok(ResumeableFileSlot::new(
-        FileSlot {
-            _permit: permit,
-            inner: tokio::fs::File::from_std(os_file),
-        },
-        path,
-        true, /* is_write */
-    ))
+    Ok(FileSlot {
+        _permit: permit,
+        inner: tokio::fs::File::from_std(os_file),
+    })
 }
 
 pub async fn hard_link(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> Result<(), Error> {
@@ -396,10 +291,7 @@ pub async fn hard_link(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> Result<(
     call_with_permit(move |_| std::fs::hard_link(src, dst).map_err(Into::<Error>::into)).await
 }
 
-pub async fn set_permissions(
-    src: impl AsRef<Path>,
-    perm: std::fs::Permissions,
-) -> Result<(), Error> {
+pub async fn set_permissions(src: impl AsRef<Path>, perm: Permissions) -> Result<(), Error> {
     let src = src.as_ref().to_owned();
     call_with_permit(move |_| std::fs::set_permissions(src, perm).map_err(Into::<Error>::into))
         .await
@@ -417,21 +309,17 @@ pub async fn create_dir_all(path: impl AsRef<Path>) -> Result<(), Error> {
 
 #[cfg(target_family = "unix")]
 pub async fn symlink(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> Result<(), Error> {
-    let src = src.as_ref().to_owned();
-    let dst = dst.as_ref().to_owned();
-    call_with_permit(move |_| {
-        tokio::runtime::Handle::current()
-            .block_on(tokio::fs::symlink(src, dst))
-            .map_err(Into::<Error>::into)
-    })
-    .await
+    // TODO: add a test for #2051: deadlock with large number of files
+    let _permit = get_permit().await?;
+    tokio::fs::symlink(src, dst).await.map_err(Into::into)
 }
 
-pub async fn read_link(path: impl AsRef<Path>) -> Result<std::path::PathBuf, Error> {
+pub async fn read_link(path: impl AsRef<Path>) -> Result<PathBuf, Error> {
     let path = path.as_ref().to_owned();
     call_with_permit(move |_| std::fs::read_link(path).map_err(Into::<Error>::into)).await
 }
 
+#[derive(Debug)]
 pub struct ReadDir {
     // We hold the permit because once it is dropped it goes back into the queue.
     permit: SemaphorePermit<'static>,
@@ -481,6 +369,13 @@ pub async fn remove_file(path: impl AsRef<Path>) -> Result<(), Error> {
     call_with_permit(move |_| std::fs::remove_file(path).map_err(Into::<Error>::into)).await
 }
 
+/// Removes an empty directory. Errors if the directory is not empty; use
+/// [`remove_dir_all`] when the contents should be removed too.
+pub async fn remove_dir(path: impl AsRef<Path>) -> Result<(), Error> {
+    let path = path.as_ref().to_owned();
+    call_with_permit(move |_| std::fs::remove_dir(path).map_err(Into::<Error>::into)).await
+}
+
 pub async fn canonicalize(path: impl AsRef<Path>) -> Result<PathBuf, Error> {
     let path = path.as_ref().to_owned();
     call_with_permit(move |_| std::fs::canonicalize(path).map_err(Into::<Error>::into)).await
@@ -501,7 +396,63 @@ pub async fn symlink_metadata(path: impl AsRef<Path>) -> Result<Metadata, Error>
     call_with_permit(move |_| std::fs::symlink_metadata(path).map_err(Into::<Error>::into)).await
 }
 
+// We can't just use the stock remove_dir_all as it falls over if someone's set readonly
+// permissions. This version walks the directories and fixes the permissions where needed
+// before deleting everything.
+#[cfg(not(target_family = "windows"))]
+fn internal_remove_dir_all(path: impl AsRef<Path>) -> Result<(), Error> {
+    // Because otherwise Windows builds complain about these things not being used
+    use std::io::ErrorKind;
+    use std::os::unix::fs::PermissionsExt;
+
+    use tracing::debug;
+    use walkdir::WalkDir;
+
+    for entry in WalkDir::new(&path) {
+        let Ok(entry) = &entry else {
+            debug!("Can't get into {entry:?}, assuming already deleted");
+            continue;
+        };
+        let metadata = entry.metadata()?;
+        if metadata.is_dir() {
+            match std::fs::remove_dir_all(entry.path()) {
+                Ok(()) => {}
+                Err(e) if e.kind() == ErrorKind::PermissionDenied => {
+                    std::fs::set_permissions(entry.path(), Permissions::from_mode(0o700)).err_tip(
+                        || format!("Setting permissions for {}", entry.path().display()),
+                    )?;
+                }
+                e @ Err(_) => e.err_tip(|| format!("Removing {}", entry.path().display()))?,
+            }
+        } else if metadata.is_file() {
+            std::fs::set_permissions(entry.path(), Permissions::from_mode(0o600))
+                .err_tip(|| format!("Setting permissions for {}", entry.path().display()))?;
+        }
+    }
+
+    // should now be safe to delete after we fixed all the permissions in the walk loop
+    match std::fs::remove_dir_all(&path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == ErrorKind::NotFound => {}
+        e @ Err(_) => e.err_tip(|| {
+            format!(
+                "Removing {} after permissions fixes",
+                path.as_ref().display()
+            )
+        })?,
+    }
+    Ok(())
+}
+
+// We can't set the permissions easily in Windows, so just fallback to
+// the stock Rust remove_dir_all
+#[cfg(target_family = "windows")]
+fn internal_remove_dir_all(path: impl AsRef<Path>) -> Result<(), Error> {
+    std::fs::remove_dir_all(&path)?;
+    Ok(())
+}
+
 pub async fn remove_dir_all(path: impl AsRef<Path>) -> Result<(), Error> {
     let path = path.as_ref().to_owned();
-    call_with_permit(move |_| std::fs::remove_dir_all(path).map_err(Into::<Error>::into)).await
+    call_with_permit(move |_| internal_remove_dir_all(path)).await
 }

@@ -1,73 +1,41 @@
 {
   pkgs,
   nightly-rust,
+  generate-bazel-rc,
+  generate-stores-config,
+  renovate-patched,
   ...
 }: let
-  excludes = ["^nativelink-proto/genproto" "native-cli/vendor"];
+  excludes = ["nativelink-proto/genproto"];
 in {
   # Default hooks
-  trailing-whitespace-fixer = {
-    inherit excludes;
+  check-case-conflicts = {
     enable = true;
-    name = "trailing-whitespace";
-    description = "Remove trailing whitespace";
-    entry = "${pkgs.python312Packages.pre-commit-hooks}/bin/trailing-whitespace-fixer";
+    inherit excludes;
     types = ["text"];
   };
-  end-of-file-fixer = {
-    inherit excludes;
+  detect-private-keys = {
     enable = true;
-    name = "end-of-file-fixer";
-    description = "Remove trailing whitespace";
-    entry = "${pkgs.python312Packages.pre-commit-hooks}/bin/end-of-file-fixer";
-    types = ["text"];
-  };
-  fix-byte-order-marker = {
-    inherit excludes;
-    enable = true;
-    name = "fix-byte-order-marker";
-    entry = "${pkgs.python312Packages.pre-commit-hooks}/bin/fix-byte-order-marker";
-  };
-  mixed-line-ending = {
-    inherit excludes;
-    enable = true;
-    name = "mixed-line-ending";
-    entry = "${pkgs.python312Packages.pre-commit-hooks}/bin/mixed-line-ending";
-    types = ["text"];
-  };
-  check-case-conflict = {
-    inherit excludes;
-    enable = true;
-    name = "check-case-conflict";
-    entry = "${pkgs.python312Packages.pre-commit-hooks}/bin/check-case-conflict";
-    types = ["text"];
-  };
-  detect-private-key = {
     excludes =
       excludes
       ++ [
         # Integration testfiles not intended for production.
         "deployment-examples/docker-compose/example-do-not-use-in-prod-key.pem"
-        "kubernetes/components/insecure-certs/example-do-not-use-in-prod-key.pem"
+        "kubernetes/resources/insecure-certs/example-do-not-use-in-prod-key.pem"
       ];
-    enable = true;
-    name = "detect-private-key";
-    entry = "${pkgs.python312Packages.pre-commit-hooks}/bin/detect-private-key";
     types = ["text"];
   };
-  forbid-binary-files = {
-    excludes = [
-      # Landing page image for the website.
-      "nativelink-docs/static/img/hero-dark.png"
-
-      # Testdata for fastcdc.
-      "nativelink-util/tests/data/SekienAkashita.jpg"
-
-      # Bun binary lockfile
-      "web/platform/bun.lockb"
-    ];
+  end-of-file-fixer = {
     enable = true;
-    types = ["binary"];
+    inherit excludes;
+    types = ["text"];
+  };
+  fix-byte-order-marker = {
+    enable = true;
+    inherit excludes;
+  };
+  forbid-binary-files = {
+    enable = true;
     entry = let
       script = pkgs.writeShellScriptBin "forbid-binary-files" ''
         set -eu
@@ -80,6 +48,22 @@ in {
         fi
       '';
     in "${script}/bin/forbid-binary-files";
+    excludes = [
+      # Testdata for fastcdc.
+      "nativelink-util/tests/data/SekienAkashita.jpg"
+    ];
+    name = "forbid-binary-files";
+    types = ["binary"];
+  };
+  mixed-line-endings = {
+    enable = true;
+    inherit excludes;
+    types = ["text"];
+  };
+  trim-trailing-whitespace = {
+    enable = true;
+    inherit excludes;
+    types = ["text"];
   };
 
   # Dockerfile
@@ -87,83 +71,125 @@ in {
 
   # Documentation
   vale = {
-    inherit excludes;
     enable = true;
+    inherit excludes;
     settings.configPath = ".vale.ini";
   };
 
-  # Go
-  gci = {
-    excludes = ["native-cli/vendor"];
+  # General
+  typos = {
     enable = true;
-    name = "gci";
-    entry = "${pkgs.gci}/bin/gci write";
-    description = "Fix go imports.";
-    types = ["go"];
-  };
-  gofumpt = {
-    excludes = ["native-cli/vendor"];
-    enable = true;
-    name = "gofumpt";
-    entry = "${pkgs.gofumpt}/bin/gofumpt -w -l";
-    description = "Format Go.";
-    types = ["go"];
-  };
-  golines = {
-    excludes = ["native-cli/vendor"];
-    enable = true;
-    name = "golines";
-    entry = "${pkgs.golines}/bin/golines --max-len=80 -w";
-    description = "Shorten Go lines.";
-    types = ["go"];
-  };
-  # TODO(aaronmondal): This linter works in the nix developmen environment, but
-  #                    not with `nix flake check`. It's unclear how to fix this.
-  golangci-lint-in-shell = {
-    enable = true;
-    entry = let
-      script = pkgs.writeShellScript "precommit-golangci-lint" ''
-        # TODO(aaronmondal): This linter works in the nix development
-        #                    environment, but not with `nix flake check`. It's
-        #                    unclear how to fix this.
-        if [ ''${IN_NIX_SHELL} = "impure" ]; then
-          export PATH=${pkgs.go}/bin:$PATH
-          cd native-cli
-          ${pkgs.golangci-lint}/bin/golangci-lint run --modules-download-mode=readonly
-        fi
-      '';
-    in
-      builtins.toString script;
-    types = ["go"];
-    require_serial = true;
-    pass_filenames = false;
+    settings.configPath = "typos.toml";
   };
 
   # Nix
   alejandra.enable = true;
-  statix.enable = true;
   deadnix.enable = true;
+  statix.enable = true;
 
   # Rust
   rustfmt = {
     enable = true;
     packageOverrides.cargo = nightly-rust.cargo;
     packageOverrides.rustfmt = nightly-rust.rustfmt;
+    pass_filenames = true;
+    inherit excludes;
+  };
+
+  # Taplo fmt
+  taplo = {
+    enable = true;
+    types = ["toml"];
+  };
+
+  # Taplo validate
+  taplo-validate = {
+    enable = true;
+    entry = "${pkgs.taplo}/bin/taplo validate";
+    name = "taplo validate";
+    types = ["toml"];
+  };
+
+  # Shell
+  shellcheck = {
+    enable = true;
+    excludes = [".envrc"] ++ excludes;
+  };
+  shfmt = {
+    args = ["--indent" "4" "--space-redirects"];
+    enable = true;
+    inherit excludes;
   };
 
   # Starlark
   bazel-buildifier-format = {
-    enable = true;
-    name = "buildifier format";
     description = "Format Starlark";
+    enable = true;
     entry = "${pkgs.bazel-buildtools}/bin/buildifier -lint=fix";
+    name = "buildifier format";
     types = ["bazel"];
   };
   bazel-buildifier-lint = {
-    enable = true;
-    name = "buildifier lint";
     description = "Lint Starlark";
+    enable = true;
     entry = "${pkgs.bazel-buildtools}/bin/buildifier -lint=warn";
+    excludes = ["local-remote-execution/generated-cc/cc/cc_toolchain_config.bzl"];
+    name = "buildifier lint";
     types = ["bazel"];
+  };
+
+  # bazelrc
+  generate-bazel-rc = {
+    description = "Generate bazelrc";
+    enable = true;
+    entry = "${generate-bazel-rc}/bin/generate-bazel-rc Cargo.toml .bazelrc";
+    name = "generate-bazel-rc";
+    files = "Cargo.toml|.bazelrc";
+    pass_filenames = false;
+  };
+
+  pretty-format-json = {
+    enable = true;
+    args = ["--autofix" "--top-keys" "name,type"];
+  };
+
+  # json5
+  formatjson5 = {
+    excludes =
+      excludes
+      ++ ["nativelink-config/examples/stores-config.json5"];
+    description = "Format json5 files";
+    enable = true;
+    entry = "${pkgs.formatjson5}/bin/formatjson5";
+    args = ["-r" "--indent" "2"];
+    types = ["json5"];
+  };
+
+  # Renovate config validator
+  renovate = {
+    description = "Validate renovate config";
+    enable = true;
+    entry = "${renovate-patched}/bin/renovate-config-validator";
+    args = ["--strict"];
+    files = "renovate.json5";
+  };
+
+  # Detect unused cargo deps
+  machete = {
+    description = "Detect unused cargo deps";
+    enable = true;
+    entry = "${pkgs.cargo-machete}/bin/cargo-machete";
+    args = ["--with-metadata" "."];
+    pass_filenames = false;
+  };
+
+  # Generate demo config to test stores.rs comments
+  generate-stores-config = {
+    description = "Generate stores config";
+    enable = true;
+    entry = "${generate-stores-config}/bin/generate-stores-config nativelink-config/src/stores.rs nativelink-config/examples/stores-config.json5";
+    name = "generate-stores-config";
+    files = "nativelink-config/src/stores.rs|nativelink-config/examples/stores-config.json5";
+    pass_filenames = false;
   };
 }

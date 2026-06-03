@@ -133,7 +133,7 @@ index 56f91e0ebf..a1ab2fe6ef 100644
 +++ b/rust/private/providers.bzl
 @@ -75,8 +75,8 @@ BuildInfo = provider(
          "compile_data": "Depset[File]: Compile data provided by the build script that was not copied into `out_dir`.",
-         "dep_env": "Optinal[File]: extra build script environment varibles to be set to direct dependencies.",
+         "dep_env": "Optional[File]: extra build script environment variables to be set to direct dependencies.",
          "flags": "Optional[File]: file containing additional flags to pass to rustc",
 -        "link_flags": "Optional[File]: file containing flags to pass to the linker",
 -        "link_search_paths": "Optional[File]: file containing search paths to pass to the linker",

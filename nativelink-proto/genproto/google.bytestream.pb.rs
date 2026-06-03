@@ -1,10 +1,10 @@
-// Copyright 2022 The NativeLink Authors. All rights reserved.
+// Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -37,17 +37,22 @@ pub struct ReadRequest {
     pub read_limit: i64,
 }
 /// Response object for ByteStream.Read.
+#[derive(::derive_more::Debug)]
 #[derive(Clone, PartialEq, ::prost::Message)]
+#[prost(skip_debug)]
 pub struct ReadResponse {
     /// A portion of the data for the resource. The service **may** leave `data`
     /// empty for any given `ReadResponse`. This enables the service to inform the
     /// client that the request is still live while it is running an operation to
     /// generate more data.
     #[prost(bytes = "bytes", tag = "10")]
+    #[debug(ignore)]
     pub data: ::prost::bytes::Bytes,
 }
 /// Request object for ByteStream.Write.
+#[derive(::derive_more::Debug)]
 #[derive(Clone, PartialEq, ::prost::Message)]
+#[prost(skip_debug)]
 pub struct WriteRequest {
     /// The name of the resource to write. This **must** be set on the first
     /// `WriteRequest` of each `Write()` action. If it is set on subsequent calls,
@@ -78,6 +83,7 @@ pub struct WriteRequest {
     /// service that the request is still live while it is running an operation to
     /// generate more data.
     #[prost(bytes = "bytes", tag = "10")]
+    #[debug(ignore)]
     pub data: ::prost::bytes::Bytes,
 }
 /// Response object for ByteStream.Write.
@@ -145,7 +151,7 @@ pub mod byte_stream_client {
     }
     impl<T> ByteStreamClient<T>
     where
-        T: tonic::client::GrpcService<tonic::body::BoxBody>,
+        T: tonic::client::GrpcService<tonic::body::Body>,
         T::Error: Into<StdError>,
         T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
         <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
@@ -166,13 +172,13 @@ pub mod byte_stream_client {
             F: tonic::service::Interceptor,
             T::ResponseBody: Default,
             T: tonic::codegen::Service<
-                http::Request<tonic::body::BoxBody>,
+                http::Request<tonic::body::Body>,
                 Response = http::Response<
-                    <T as tonic::client::GrpcService<tonic::body::BoxBody>>::ResponseBody,
+                    <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
                 >,
             >,
             <T as tonic::codegen::Service<
-                http::Request<tonic::body::BoxBody>,
+                http::Request<tonic::body::Body>,
             >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
         {
             ByteStreamClient::new(InterceptedService::new(inner, interceptor))
@@ -482,7 +488,7 @@ pub mod byte_stream_server {
         B: Body + std::marker::Send + 'static,
         B::Error: Into<StdError> + std::marker::Send + 'static,
     {
-        type Response = http::Response<tonic::body::BoxBody>;
+        type Response = http::Response<tonic::body::Body>;
         type Error = std::convert::Infallible;
         type Future = BoxFuture<Self::Response, Self::Error>;
         fn poll_ready(
@@ -633,7 +639,9 @@ pub mod byte_stream_server {
                 }
                 _ => {
                     Box::pin(async move {
-                        let mut response = http::Response::new(empty_body());
+                        let mut response = http::Response::new(
+                            tonic::body::Body::default(),
+                        );
                         let headers = response.headers_mut();
                         headers
                             .insert(

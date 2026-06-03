@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,27 +12,29 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::cmp;
-use std::pin::Pin;
+use core::cmp;
+use core::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use bincode::config::{FixintEncoding, WithOtherIntEncoding};
-use bincode::{DefaultOptions, Options};
 use futures::stream::{self, FuturesOrdered, StreamExt, TryStreamExt};
-use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_config::stores::DedupSpec;
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::fastcdc::FastCDC;
-use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
-use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
+use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
+use nativelink_util::store_trait::{
+    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+};
 use serde::{Deserialize, Serialize};
 use tokio_util::codec::FramedRead;
 use tokio_util::io::StreamReader;
-use tracing::{event, Level};
+use tracing::warn;
 
 use crate::cas_utils::is_zero_digest;
+use crate::compression_store::WincodeConfig;
 
 // NOTE: If these change update the comments in `stores.rs` to reflect
 // the new defaults.
@@ -41,7 +43,17 @@ const DEFAULT_NORM_SIZE: u64 = 256 * 1024;
 const DEFAULT_MAX_SIZE: u64 = 512 * 1024;
 const DEFAULT_MAX_CONCURRENT_FETCH_PER_GET: usize = 10;
 
-#[derive(Serialize, Deserialize, PartialEq, Debug, Default, Clone)]
+#[derive(
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    Debug,
+    Default,
+    Clone,
+    wincode::SchemaRead,
+    wincode::SchemaWrite,
+)]
 pub struct DedupIndex {
     pub entries: Vec<DigestInfo>,
 }
@@ -55,34 +67,48 @@ pub struct DedupStore {
     fast_cdc_decoder: FastCDC,
     #[metric(help = "Maximum number of concurrent fetches per get")]
     max_concurrent_fetch_per_get: usize,
-    bincode_options: WithOtherIntEncoding<DefaultOptions, FixintEncoding>,
+    wincode_config: WincodeConfig,
+}
+
+impl core::fmt::Debug for DedupStore {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("DedupStore")
+            .field("index_store", &self.index_store)
+            .field("content_store", &self.content_store)
+            .field("fast_cdc_decoder", &self.fast_cdc_decoder)
+            .field(
+                "max_concurrent_fetch_per_get",
+                &self.max_concurrent_fetch_per_get,
+            )
+            .finish_non_exhaustive()
+    }
 }
 
 impl DedupStore {
     pub fn new(
-        config: &nativelink_config::stores::DedupStore,
+        spec: &DedupSpec,
         index_store: Store,
         content_store: Store,
     ) -> Result<Arc<Self>, Error> {
-        let min_size = if config.min_size == 0 {
+        let min_size = if spec.min_size == 0 {
             DEFAULT_MIN_SIZE
         } else {
-            u64::from(config.min_size)
+            u64::from(spec.min_size)
         };
-        let normal_size = if config.normal_size == 0 {
+        let normal_size = if spec.normal_size == 0 {
             DEFAULT_NORM_SIZE
         } else {
-            u64::from(config.normal_size)
+            u64::from(spec.normal_size)
         };
-        let max_size = if config.max_size == 0 {
+        let max_size = if spec.max_size == 0 {
             DEFAULT_MAX_SIZE
         } else {
-            u64::from(config.max_size)
+            u64::from(spec.max_size)
         };
-        let max_concurrent_fetch_per_get = if config.max_concurrent_fetch_per_get == 0 {
+        let max_concurrent_fetch_per_get = if spec.max_concurrent_fetch_per_get == 0 {
             DEFAULT_MAX_CONCURRENT_FETCH_PER_GET
         } else {
-            config.max_concurrent_fetch_per_get as usize
+            spec.max_concurrent_fetch_per_get as usize
         };
         Ok(Arc::new(Self {
             index_store,
@@ -94,7 +120,7 @@ impl DedupStore {
                 usize::try_from(max_size).err_tip(|| "Could not convert max_size to usize")?,
             ),
             max_concurrent_fetch_per_get,
-            bincode_options: DefaultOptions::new().with_fixint_encoding(),
+            wincode_config: WincodeConfig::new(),
         }))
     }
 
@@ -117,18 +143,16 @@ impl DedupStore {
                 Ok(data) => data,
             };
 
-            match self.bincode_options.deserialize::<DedupIndex>(&data) {
+            match wincode::config::deserialize::<DedupIndex, WincodeConfig>(
+                &data,
+                self.wincode_config,
+            ) {
+                Ok(dedup_index) => dedup_index,
                 Err(err) => {
-                    event!(
-                        Level::WARN,
-                        ?key,
-                        ?err,
-                        "Failed to deserialize index in dedup store",
-                    );
+                    warn!(?key, ?err, "Failed to deserialize index in dedup store",);
                     // We return the equivalent of NotFound here so the client is happy.
                     return Ok(None);
                 }
-                Ok(v) => v,
             }
         };
 
@@ -184,10 +208,10 @@ impl StoreDriver for DedupStore {
         key: StoreKey<'_>,
         reader: DropCloserReadHalf,
         _size_info: UploadSizeInfo,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         let mut bytes_reader = StreamReader::new(reader);
         let frame_reader = FramedRead::new(&mut bytes_reader, self.fast_cdc_decoder.clone());
-        let index_entries = frame_reader
+        let index_entries: Vec<_> = frame_reader
             .map(|r| r.err_tip(|| "Failed to decode frame from fast_cdc"))
             .map_ok(|frame| async move {
                 let hash = blake3::hash(&frame[..]).into();
@@ -212,25 +236,28 @@ impl StoreDriver for DedupStore {
             .try_collect()
             .await?;
 
-        let serialized_index = self
-            .bincode_options
-            .serialize(&DedupIndex {
+        let total_size = index_entries.iter().map(DigestInfo::size_bytes).sum();
+
+        let serialized_index = wincode::config::serialize(
+            &DedupIndex {
                 entries: index_entries,
-            })
-            .map_err(|e| {
-                make_err!(
-                    Code::Internal,
-                    "Failed to serialize index in dedup_store : {:?}",
-                    e
-                )
-            })?;
+            },
+            self.wincode_config,
+        )
+        .map_err(|e| {
+            make_err!(
+                Code::Internal,
+                "Failed to serialize index in dedup_store : {:?}",
+                e
+            )
+        })?;
 
         self.index_store
             .update_oneshot(key, serialized_index.into())
             .await
             .err_tip(|| "Failed to insert our index entry to index_store in dedup_store")?;
 
-        Ok(())
+        Ok(total_size)
     }
 
     async fn get_part(
@@ -255,9 +282,7 @@ impl StoreDriver for DedupStore {
                 .get_part_unchunked(key, 0, None)
                 .await
                 .err_tip(|| "Failed to read index store in dedup store")?;
-
-            self.bincode_options
-                .deserialize::<DedupIndex>(&data)
+            wincode::config::deserialize::<DedupIndex, WincodeConfig>(&data, self.wincode_config)
                 .map_err(|e| {
                     make_err!(
                         Code::Internal,
@@ -284,10 +309,10 @@ impl StoreDriver for DedupStore {
                         continue;
                     }
                     // If we are not going to read any bytes past the length we are done.
-                    if let Some(length) = length {
-                        if first_byte >= offset + length {
-                            break;
-                        }
+                    if let Some(length) = length
+                        && first_byte >= offset + length
+                    {
+                        break;
                     }
                     entries.push(entry);
                 }
@@ -302,7 +327,7 @@ impl StoreDriver for DedupStore {
         // 5 requests at a time, and request 3 is stalled, request 1 & 2 can be output and
         // request 4 & 5 can be executing (or finished) while waiting for 3 to finish.
         // Note: We will buffer our data here up to:
-        // `config.max_size * config.max_concurrent_fetch_per_get` per `get_part()` request.
+        // `spec.max_size * spec.max_concurrent_fetch_per_get` per `get_part()` request.
         let mut entries_stream = stream::iter(entries)
             .map(move |index_entry| async move {
                 let data = self
@@ -354,12 +379,22 @@ impl StoreDriver for DedupStore {
         self
     }
 
-    fn as_any<'a>(&'a self) -> &'a (dyn std::any::Any + Sync + Send + 'static) {
+    fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
         self
     }
 
-    fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
+    }
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        callback: Arc<dyn RemoveItemCallback>,
+    ) -> Result<(), Error> {
+        self.index_store
+            .register_remove_callback(callback.clone())?;
+        self.content_store.register_remove_callback(callback)?;
+        Ok(())
     }
 }
 

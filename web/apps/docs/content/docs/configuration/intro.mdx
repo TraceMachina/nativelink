@@ -1,0 +1,172 @@
+---
+title: Configuration introduction
+description: How NativeLink's JSON5 configuration is structured — stores, servers, schedulers, workers.
+---
+
+A NativeLink cluster of any shape — single-node, multi-region, anywhere
+in between — is described by one JSON5 file. The schema is small,
+composable, and the same in every environment.
+
+<Callout type="info" title="Why JSON5">
+  Comments, trailing commas, single quotes. Real configurations have
+  comments next to them; JSON5 lets us keep them in the file rather
+  than in a wiki page that drifts.
+</Callout>
+
+## Top-level shape
+
+```json5
+{
+  // Storage backends — CAS and AC live here.
+  stores: [ ... ],
+
+  // gRPC + HTTP listeners that expose the RE-API services.
+  servers: [ ... ],
+
+  // Optional. Required if this node accepts Execute() calls.
+  schedulers: { ... },
+
+  // Optional. Required if this node runs actions.
+  workers: [ ... ],
+}
+```
+
+Every section is an array (or object map). You can have any number of
+each. A single-node dev cluster has one store of each kind, one server,
+one scheduler, one worker. A production cluster might have a dozen
+stores fronting different storage tiers, multiple servers split by
+listener (gRPC for clients, HTTP/2 for control), one scheduler per
+region, and an autoscaling worker fleet.
+
+## Stores
+
+Stores are the storage primitive. Each store has a name and a backend.
+Backends include:
+
+- **`memory`** — in-process map. Vanishes on restart. Useful for
+  development and for short-lived AC tiers.
+- **`filesystem`** — disk-backed. The simplest persistent option.
+- **`s3`** — any S3-compatible store (AWS S3, R2, MinIO, GCS via the
+  S3 adapter).
+- **`redis`** — fast in-memory store, typically used in front of a
+  durable backend.
+- **`compression`** — wraps another store with LZ4 or zstd
+  compression. Most production deployments wrap their CAS in this.
+- **`dedup`** — wraps another store with content-defined chunking.
+  Trades CPU for storage when you have large artifacts that share
+  fragments.
+- **`fast_slow`** — a two-tier store. Reads check the fast tier
+  first; writes go to both.
+- **`shard`** — splits a store across multiple backends by hash
+  prefix. The recommended shape for multi-node CAS.
+- **`size_partitioning`** — routes small blobs to one backend and
+  large blobs to another. Lets you keep hot small files in Redis and
+  cold large files in S3.
+
+Stores are referenced by name. A server pointing `cas_store` at
+`"CAS_MAIN_STORE"` will use whichever store is registered under that
+name.
+
+## Servers
+
+A server is a listener plus a set of services exposed on it. Most
+deployments have one server doing everything; you'd split servers when
+you want different ports, TLS configurations, or auth policies for
+different services.
+
+```json5
+servers: [{
+  listener: {
+    http: {
+      socket_address: "0.0.0.0:50051",
+      advanced_http: { http2_keep_alive_interval: 10 },
+    },
+  },
+  services: {
+    cas:          [{ instance_name: "main", cas_store: "CAS_MAIN_STORE" }],
+    ac:           [{ instance_name: "main", ac_store: "AC_MAIN_STORE" }],
+    bytestream:   [{ instance_name: "main", cas_store: "CAS_MAIN_STORE" }],
+    capabilities: [{ instance_name: "main" }],
+    execution:    [{ instance_name: "main", scheduler: "MAIN_SCHEDULER" }],
+  },
+}]
+```
+
+The services you'll enable in practice:
+
+| Service          | Purpose                                                 |
+| ---------------- | ------------------------------------------------------- |
+| `cas`            | Content-addressed blob storage RPCs.                    |
+| `ac`             | Action result lookups.                                  |
+| `bytestream`     | Streaming reads/writes of CAS blobs.                    |
+| `capabilities`   | Tells clients what this server supports.                |
+| `execution`      | Accepts `Execute` / `WaitExecution` RPCs.               |
+| `worker_api`     | Workers connect here to receive actions.                |
+
+A cache-only node enables `cas`, `ac`, `bytestream`, `capabilities`.
+An executor adds `execution` + `worker_api`.
+
+## Schedulers
+
+A scheduler accepts execution requests and routes them to workers.
+The default `simple` scheduler covers most needs:
+
+```json5
+schedulers: {
+  MAIN_SCHEDULER: {
+    simple: {
+      supported_platform_properties: {
+        OSFamily: "exact",
+        container_image: "exact",
+        cpu_count: "minimum",
+      },
+    },
+  },
+}
+```
+
+For more involved routing — workers tagged by capability, custom
+priorities, etc. — see
+[Configuration → Production](/configuration/production).
+
+## Workers
+
+A worker block tells NativeLink: "spin up an executor in this process,
+talk to the scheduler at *address*, and run actions matching *these
+platform properties*."
+
+```json5
+workers: [{
+  local: {
+    worker_api_endpoint: { uri: "grpc://localhost:50061" },
+    cas_fast_slow_store: "CAS_MAIN_STORE",
+    upload_action_result: { upload_action_result: { ac_store: "AC_MAIN_STORE" } },
+    platform_properties: {
+      OSFamily: { values: ["linux"] },
+      container_image: { query_cmd: "echo nativelink" },
+    },
+  },
+}]
+```
+
+For most teams, the worker process runs on different machines from the
+scheduler/CAS. The `worker_api_endpoint` URI is how it reaches them.
+
+## Reading the full reference
+
+The
+[configuration reference](/reference/nativelink-config) is
+autogenerated from the Rust source — every knob, every default, every
+constraint. Use this page for understanding, the reference for
+lookups.
+
+## What's next
+
+- [Basic configurations](/configuration/basic) — runnable shapes
+  for development.
+- [Production configurations](/configuration/production) — sharded
+  CAS, autoscaling workers, mTLS, observability.
+- The
+  [`nativelink-config/examples/`](https://github.com/TraceMachina/nativelink/tree/main/nativelink-config/examples)
+  directory in the source tree has a dozen working configs you can
+  copy from.

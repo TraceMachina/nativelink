@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,21 +12,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::pin::Pin;
+use core::pin::Pin;
 
 use futures::future::pending;
 use futures::try_join;
+use nativelink_config::stores::{MemorySpec, StoreSpec, VerifySpec};
 use nativelink_error::{Error, ResultExt};
 use nativelink_macro::nativelink_test;
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_store::verify_store::VerifyStore;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
-use nativelink_util::digest_hasher::{make_ctx_for_hash_func, DigestHasherFunc};
+use nativelink_util::digest_hasher::{DigestHasherFunc, make_ctx_for_hash_func};
 use nativelink_util::spawn;
 use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
+use opentelemetry::context::FutureExt;
 use pretty_assertions::assert_eq;
-use tracing::info_span;
+use tracing::{Instrument, info_span};
 
 const VALID_HASH1: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
 
@@ -34,12 +36,10 @@ const VALID_HASH1: &str = "0123456789abcdef0000000000000000000100000000000001234
 async fn verify_size_false_passes_on_update() -> Result<(), Error> {
     const VALUE1: &str = "123";
 
-    let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
+    let inner_store = MemoryStore::new(&MemorySpec::default());
     let store = VerifyStore::new(
-        &nativelink_config::stores::VerifyStore {
-            backend: nativelink_config::stores::StoreConfig::memory(
-                nativelink_config::stores::MemoryStore::default(),
-            ),
+        &VerifySpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
             verify_size: false,
             verify_hash: false,
         },
@@ -67,12 +67,10 @@ async fn verify_size_true_fails_on_update() -> Result<(), Error> {
     const VALUE1: &str = "123";
     const EXPECTED_ERR: &str = "Expected size 100 but got size 3 on insert";
 
-    let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
+    let inner_store = MemoryStore::new(&MemorySpec::default());
     let store = VerifyStore::new(
-        &nativelink_config::stores::VerifyStore {
-            backend: nativelink_config::stores::StoreConfig::memory(
-                nativelink_config::stores::MemoryStore::default(),
-            ),
+        &VerifySpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
             verify_size: true,
             verify_hash: false,
         },
@@ -104,15 +102,13 @@ async fn verify_size_true_fails_on_update() -> Result<(), Error> {
 }
 
 #[nativelink_test]
-async fn verify_size_true_suceeds_on_update() -> Result<(), Error> {
+async fn verify_size_true_succeeds_on_update() -> Result<(), Error> {
     const VALUE1: &str = "123";
 
-    let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
+    let inner_store = MemoryStore::new(&MemorySpec::default());
     let store = VerifyStore::new(
-        &nativelink_config::stores::VerifyStore {
-            backend: nativelink_config::stores::StoreConfig::memory(
-                nativelink_config::stores::MemoryStore::default(),
-            ),
+        &VerifySpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
             verify_size: true,
             verify_hash: false,
         },
@@ -131,13 +127,11 @@ async fn verify_size_true_suceeds_on_update() -> Result<(), Error> {
 }
 
 #[nativelink_test]
-async fn verify_size_true_suceeds_on_multi_chunk_stream_update() -> Result<(), Error> {
-    let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
+async fn verify_size_true_succeeds_on_multi_chunk_stream_update() -> Result<(), Error> {
+    let inner_store = MemoryStore::new(&MemorySpec::default());
     let store = VerifyStore::new(
-        &nativelink_config::stores::VerifyStore {
-            backend: nativelink_config::stores::StoreConfig::memory(
-                nativelink_config::stores::MemoryStore::default(),
-            ),
+        &VerifySpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
             verify_size: true,
             verify_hash: false,
         },
@@ -148,7 +142,7 @@ async fn verify_size_true_suceeds_on_multi_chunk_stream_update() -> Result<(), E
 
     let digest = DigestInfo::try_new(VALID_HASH1, 6).unwrap();
     let future = spawn!(
-        "verify_size_true_suceeds_on_multi_chunk_stream_update",
+        "verify_size_true_succeeds_on_multi_chunk_stream_update",
         async move {
             Pin::new(&store)
                 .update(digest, rx, UploadSizeInfo::ExactSize(6))
@@ -159,7 +153,7 @@ async fn verify_size_true_suceeds_on_multi_chunk_stream_update() -> Result<(), E
     tx.send("bar".into()).await?;
     tx.send_eof()?;
     let result = future.await.err_tip(|| "Failed to join spawn future")?;
-    assert_eq!(result, Ok(()), "Expected success, got: {:?}", result);
+    assert_eq!(result, Ok(6), "Expected success, got: {:?}", result);
     assert_eq!(
         inner_store.has(digest).await,
         Ok(Some(6)),
@@ -169,17 +163,15 @@ async fn verify_size_true_suceeds_on_multi_chunk_stream_update() -> Result<(), E
 }
 
 #[nativelink_test]
-async fn verify_sha256_hash_true_suceeds_on_update() -> Result<(), Error> {
+async fn verify_sha256_hash_true_succeeds_on_update() -> Result<(), Error> {
     /// This value is sha256("123").
     const HASH: &str = "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3";
     const VALUE: &str = "123";
 
-    let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
+    let inner_store = MemoryStore::new(&MemorySpec::default());
     let store = VerifyStore::new(
-        &nativelink_config::stores::VerifyStore {
-            backend: nativelink_config::stores::StoreConfig::memory(
-                nativelink_config::stores::MemoryStore::default(),
-            ),
+        &VerifySpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
             verify_size: false,
             verify_hash: true,
         },
@@ -204,12 +196,10 @@ async fn verify_sha256_hash_true_fails_on_update() -> Result<(), Error> {
     const VALUE: &str = "123";
     const ACTUAL_HASH: &str = "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3";
 
-    let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
+    let inner_store = MemoryStore::new(&MemorySpec::default());
     let store = VerifyStore::new(
-        &nativelink_config::stores::VerifyStore {
-            backend: nativelink_config::stores::StoreConfig::memory(
-                nativelink_config::stores::MemoryStore::default(),
-            ),
+        &VerifySpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
             verify_size: false,
             verify_hash: true,
         },
@@ -234,17 +224,15 @@ async fn verify_sha256_hash_true_fails_on_update() -> Result<(), Error> {
 }
 
 #[nativelink_test]
-async fn verify_blake3_hash_true_suceeds_on_update() -> Result<(), Error> {
+async fn verify_blake3_hash_true_succeeds_on_update() -> Result<(), Error> {
     /// This value is blake3("123").
     const HASH: &str = "b3d4f8803f7e24b8f389b072e75477cdbcfbe074080fb5e500e53e26e054158e";
     const VALUE: &str = "123";
 
-    let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
+    let inner_store = MemoryStore::new(&MemorySpec::default());
     let store = VerifyStore::new(
-        &nativelink_config::stores::VerifyStore {
-            backend: nativelink_config::stores::StoreConfig::memory(
-                nativelink_config::stores::MemoryStore::default(),
-            ),
+        &VerifySpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
             verify_size: false,
             verify_hash: true,
         },
@@ -252,11 +240,11 @@ async fn verify_blake3_hash_true_suceeds_on_update() -> Result<(), Error> {
     );
 
     let digest = DigestInfo::try_new(HASH, 3).unwrap();
-    let result = make_ctx_for_hash_func(DigestHasherFunc::Blake3)?
-        .wrap_async(
-            info_span!("update_oneshot"),
-            store.update_oneshot(digest, VALUE.into()),
-        )
+
+    let result = store
+        .update_oneshot(digest, VALUE.into())
+        .instrument(info_span!("update_oneshot"))
+        .with_context(make_ctx_for_hash_func(DigestHasherFunc::Blake3)?)
         .await;
 
     assert_eq!(result, Ok(()), "Expected success, got: {:?}", result);
@@ -275,12 +263,10 @@ async fn verify_blake3_hash_true_fails_on_update() -> Result<(), Error> {
     const VALUE: &str = "123";
     const ACTUAL_HASH: &str = "b3d4f8803f7e24b8f389b072e75477cdbcfbe074080fb5e500e53e26e054158e";
 
-    let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
+    let inner_store = MemoryStore::new(&MemorySpec::default());
     let store = VerifyStore::new(
-        &nativelink_config::stores::VerifyStore {
-            backend: nativelink_config::stores::StoreConfig::memory(
-                nativelink_config::stores::MemoryStore::default(),
-            ),
+        &VerifySpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
             verify_size: false,
             verify_hash: true,
         },
@@ -289,11 +275,10 @@ async fn verify_blake3_hash_true_fails_on_update() -> Result<(), Error> {
 
     let digest = DigestInfo::try_new(HASH, 3).unwrap();
 
-    let result = make_ctx_for_hash_func(DigestHasherFunc::Blake3)?
-        .wrap_async(
-            info_span!("update_oneshot"),
-            store.update_oneshot(digest, VALUE.into()),
-        )
+    let result = store
+        .update_oneshot(digest, VALUE.into())
+        .instrument(info_span!("update_oneshot"))
+        .with_context(make_ctx_for_hash_func(DigestHasherFunc::Blake3)?)
         .await;
 
     // let result = store.update_oneshot(digest, VALUE.into()).await;
@@ -320,12 +305,10 @@ async fn verify_fails_immediately_on_too_much_data_sent_update() -> Result<(), E
     const VALUE: &str = "123";
     const EXPECTED_ERR: &str = "Expected size 4 but already received 6 on insert";
 
-    let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
+    let inner_store = MemoryStore::new(&MemorySpec::default());
     let store = VerifyStore::new(
-        &nativelink_config::stores::VerifyStore {
-            backend: nativelink_config::stores::StoreConfig::memory(
-                nativelink_config::stores::MemoryStore::default(),
-            ),
+        &VerifySpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
             verify_size: true,
             verify_hash: false,
         },
@@ -339,7 +322,7 @@ async fn verify_fails_immediately_on_too_much_data_sent_update() -> Result<(), E
         tx.send(VALUE.into()).await?;
         pending::<()>().await;
         panic!("Should not reach here");
-        #[allow(unreachable_code)]
+        #[expect(unreachable_code, reason = "needed to avoid inference errors")]
         Ok(())
     };
     let result = try_join!(
@@ -361,17 +344,15 @@ async fn verify_fails_immediately_on_too_much_data_sent_update() -> Result<(), E
 }
 
 #[nativelink_test]
-async fn verify_size_and_hash_suceeds_on_small_data() -> Result<(), Error> {
+async fn verify_size_and_hash_succeeds_on_small_data() -> Result<(), Error> {
     /// This value is sha256("123").
     const HASH: &str = "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3";
     const VALUE: &str = "123";
 
-    let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
+    let inner_store = MemoryStore::new(&MemorySpec::default());
     let store = VerifyStore::new(
-        &nativelink_config::stores::VerifyStore {
-            backend: nativelink_config::stores::StoreConfig::memory(
-                nativelink_config::stores::MemoryStore::default(),
-            ),
+        &VerifySpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
             verify_size: true,
             verify_hash: true,
         },

@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -15,18 +15,19 @@
 use std::collections::HashMap;
 
 use nativelink_config::schedulers::PropertyType;
-use nativelink_error::{make_input_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_input_err};
 use nativelink_metric::{
-    group, MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
+    MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent, group,
 };
 use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
 
 /// Helps manage known properties and conversion into `PlatformPropertyValue`.
+#[derive(Debug)]
 pub struct PlatformPropertyManager {
     known_properties: HashMap<String, PropertyType>,
 }
 
-// TODO(allada) We cannot use the `MetricsComponent` trait here because
+// TODO(palfrey) We cannot use the `MetricsComponent` trait here because
 // the `PropertyType` lives in the `nativelink-config` crate which is not
 // a dependency of the `nativelink-metric-collector` crate.
 impl MetricsComponent for PlatformPropertyManager {
@@ -77,7 +78,7 @@ impl PlatformPropertyManager {
     pub fn make_prop_value(&self, key: &str, value: &str) -> Result<PlatformPropertyValue, Error> {
         if let Some(prop_type) = self.known_properties.get(key) {
             return match prop_type {
-                PropertyType::minimum => Ok(PlatformPropertyValue::Minimum(
+                PropertyType::Minimum => Ok(PlatformPropertyValue::Minimum(
                     value.parse::<u64>().err_tip_with_code(|e| {
                         (
                             Code::InvalidArgument,
@@ -85,8 +86,9 @@ impl PlatformPropertyManager {
                         )
                     })?,
                 )),
-                PropertyType::exact => Ok(PlatformPropertyValue::Exact(value.to_string())),
-                PropertyType::priority => Ok(PlatformPropertyValue::Priority(value.to_string())),
+                PropertyType::Exact => Ok(PlatformPropertyValue::Exact(value.to_string())),
+                PropertyType::Priority => Ok(PlatformPropertyValue::Priority(value.to_string())),
+                PropertyType::Ignore => Ok(PlatformPropertyValue::Ignore(value.to_string())),
             };
         }
         Err(make_input_err!("Unknown platform property '{}'", key))

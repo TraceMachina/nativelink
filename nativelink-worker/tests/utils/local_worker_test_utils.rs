@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -19,24 +19,27 @@ use async_lock::Mutex;
 use bytes::Bytes;
 use hyper::body::Frame;
 use nativelink_config::cas_server::{EndpointConfig, LocalWorkerConfig, WorkerProperty};
-use nativelink_error::Error;
+use nativelink_error::{Error, make_err};
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    ExecuteResult, GoingAwayRequest, KeepAliveRequest, SupportedProperties, UpdateForWorker,
+    ConnectWorkerRequest, ExecuteComplete, ExecuteResult, GoingAwayRequest, KeepAliveRequest,
+    UpdateForWorker,
 };
 use nativelink_util::channel_body_for_tests::ChannelBody;
+use nativelink_util::shutdown_guard::ShutdownGuard;
 use nativelink_util::spawn;
 use nativelink_util::task::JoinHandleDropGuard;
 use nativelink_worker::local_worker::LocalWorker;
 use nativelink_worker::worker_api_client_wrapper::WorkerApiClientTrait;
-use tokio::sync::{broadcast, mpsc, oneshot};
-use tonic::Status;
+use tokio::sync::{broadcast, mpsc};
+use tonic::{Code, Status};
 use tonic::{
+    Response,
+    Streaming,
     codec::Codec, // Needed for .decoder().
     codec::CompressionEncoding,
     codec::ProstCodec,
-    Response,
-    Streaming,
 };
+use tracing::debug;
 
 use super::mock_running_actions_manager::MockRunningActionsManager;
 
@@ -45,27 +48,36 @@ use super::mock_running_actions_manager::MockRunningActionsManager;
 const BROADCAST_CAPACITY: usize = 1;
 
 #[derive(Debug)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "TODO Fix thix. Triggers on nightly"
+)]
 enum WorkerClientApiCalls {
-    ConnectWorker(SupportedProperties),
+    ConnectWorker(ConnectWorkerRequest),
     ExecutionResponse(ExecuteResult),
 }
 
 #[derive(Debug)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "TODO Fix thix. Triggers on nightly"
+)]
 enum WorkerClientApiReturns {
     ConnectWorker(Result<Response<Streaming<UpdateForWorker>>, Status>),
-    ExecutionResponse(Result<Response<()>, Status>),
+    ExecutionResponse(Result<(), Error>),
 }
 
 #[derive(Clone)]
-pub struct MockWorkerApiClient {
+pub(crate) struct MockWorkerApiClient {
     rx_call: Arc<Mutex<mpsc::UnboundedReceiver<WorkerClientApiCalls>>>,
     tx_call: mpsc::UnboundedSender<WorkerClientApiCalls>,
     rx_resp: Arc<Mutex<mpsc::UnboundedReceiver<WorkerClientApiReturns>>>,
     tx_resp: mpsc::UnboundedSender<WorkerClientApiReturns>,
+    keep_alives_count: u8,
 }
 
 impl MockWorkerApiClient {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let (tx_call, rx_call) = mpsc::unbounded_channel();
         let (tx_resp, rx_resp) = mpsc::unbounded_channel();
         Self {
@@ -73,6 +85,7 @@ impl MockWorkerApiClient {
             tx_call,
             rx_resp: Arc::new(Mutex::new(rx_resp)),
             tx_resp,
+            keep_alives_count: 0,
         }
     }
 }
@@ -84,10 +97,10 @@ impl Default for MockWorkerApiClient {
 }
 
 impl MockWorkerApiClient {
-    pub async fn expect_connect_worker(
-        &mut self,
+    pub(crate) async fn expect_connect_worker(
+        &self,
         result: Result<Response<Streaming<UpdateForWorker>>, Status>,
-    ) -> SupportedProperties {
+    ) -> ConnectWorkerRequest {
         let mut rx_call_lock = self.rx_call.lock().await;
         let req = match rx_call_lock
             .recv()
@@ -105,9 +118,9 @@ impl MockWorkerApiClient {
         req
     }
 
-    pub async fn expect_execution_response(
-        &mut self,
-        result: Result<Response<()>, Status>,
+    pub(crate) async fn expect_execution_response(
+        &self,
+        result: Result<(), Error>,
     ) -> ExecuteResult {
         let mut rx_call_lock = self.rx_call.lock().await;
         let req = match rx_call_lock
@@ -130,7 +143,7 @@ impl MockWorkerApiClient {
 impl WorkerApiClientTrait for MockWorkerApiClient {
     async fn connect_worker(
         &mut self,
-        request: SupportedProperties,
+        request: ConnectWorkerRequest,
     ) -> Result<Response<Streaming<UpdateForWorker>>, Status> {
         self.tx_call
             .send(WorkerClientApiCalls::ConnectWorker(request))
@@ -148,15 +161,21 @@ impl WorkerApiClientTrait for MockWorkerApiClient {
         }
     }
 
-    async fn keep_alive(&mut self, _request: KeepAliveRequest) -> Result<Response<()>, Status> {
+    async fn keep_alive(&mut self, _request: KeepAliveRequest) -> Result<(), Error> {
+        debug!("Got KeepAlive");
+        if self.keep_alives_count == 0 {
+            self.keep_alives_count += 1;
+            Ok(())
+        } else {
+            Err(make_err!(Code::Internal, "KeepAlive fail"))
+        }
+    }
+
+    async fn going_away(&mut self, _request: GoingAwayRequest) -> Result<(), Error> {
         unreachable!();
     }
 
-    async fn going_away(&mut self, _request: GoingAwayRequest) -> Result<Response<()>, Status> {
-        unreachable!();
-    }
-
-    async fn execution_response(&mut self, request: ExecuteResult) -> Result<Response<()>, Status> {
+    async fn execution_response(&mut self, request: ExecuteResult) -> Result<(), Error> {
         self.tx_call
             .send(WorkerClientApiCalls::ExecutionResponse(request))
             .expect("Could not send request to mpsc");
@@ -172,9 +191,13 @@ impl WorkerApiClientTrait for MockWorkerApiClient {
             }
         }
     }
+
+    async fn execution_complete(&mut self, _request: ExecuteComplete) -> Result<(), Error> {
+        Ok(())
+    }
 }
 
-pub fn setup_grpc_stream() -> (
+pub(crate) fn setup_grpc_stream() -> (
     mpsc::Sender<Frame<Bytes>>,
     Response<Streaming<UpdateForWorker>>,
 ) {
@@ -185,7 +208,9 @@ pub fn setup_grpc_stream() -> (
     (tx, Response::new(stream))
 }
 
-pub async fn setup_local_worker_with_config(local_worker_config: LocalWorkerConfig) -> TestContext {
+pub(crate) async fn setup_local_worker_with_config(
+    local_worker_config: LocalWorkerConfig,
+) -> TestContext {
     let mock_worker_api_client = MockWorkerApiClient::new();
     let mock_worker_api_client_clone = mock_worker_api_client.clone();
     let actions_manager = Arc::new(MockRunningActionsManager::new());
@@ -198,7 +223,7 @@ pub async fn setup_local_worker_with_config(local_worker_config: LocalWorkerConf
         }),
         Box::new(move |_| Box::pin(async move { /* No sleep */ })),
     );
-    let (shutdown_tx_test, _) = broadcast::channel::<Arc<oneshot::Sender<()>>>(BROADCAST_CAPACITY);
+    let (shutdown_tx_test, _) = broadcast::channel::<ShutdownGuard>(BROADCAST_CAPACITY);
 
     let drop_guard = spawn!("local_worker_spawn", async move {
         worker.run(shutdown_tx_test.subscribe()).await
@@ -216,7 +241,7 @@ pub async fn setup_local_worker_with_config(local_worker_config: LocalWorkerConf
     }
 }
 
-pub async fn setup_local_worker(
+pub(crate) async fn setup_local_worker(
     platform_properties: HashMap<String, WorkerProperty>,
 ) -> TestContext {
     const ARBITRARY_LARGE_TIMEOUT: f32 = 10000.;
@@ -231,7 +256,7 @@ pub async fn setup_local_worker(
     setup_local_worker_with_config(local_worker_config).await
 }
 
-pub struct TestContext {
+pub(crate) struct TestContext {
     pub client: MockWorkerApiClient,
     pub actions_manager: Arc<MockRunningActionsManager>,
 

@@ -1,0 +1,29 @@
+{
+  "name": "nativelink-web",
+  "type": "module",
+  "devDependencies": {
+    "@biomejs/biome": "1.9.4",
+    "turbo": "^2.3.0",
+    "typescript": "^6.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "bun@1.2.21",
+  "private": true,
+  "scripts": {
+    "build": "turbo run build",
+    "check": "biome check .",
+    "clean": "turbo run clean && rm -rf node_modules .turbo",
+    "dev": "turbo run dev",
+    "dev:docs": "turbo run dev --filter=@nativelink/docs",
+    "dev:web": "turbo run dev --filter=@nativelink/web",
+    "format": "biome format --write .",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ]
+}

@@ -1,73 +1,99 @@
 module(
     name = "nativelink",
-    version = "0.5.3",
+    version = "1.3.2",
     compatibility_level = 0,
 )
 
-bazel_dep(name = "rules_cc", version = "0.0.9")
-bazel_dep(name = "platforms", version = "0.0.10")
-bazel_dep(name = "rules_python", version = "0.36.0")
+bazel_dep(name = "rules_cc", version = "0.2.18")
+bazel_dep(name = "platforms", version = "1.1.0")
+bazel_dep(name = "bazel_skylib", version = "1.9.0")
+bazel_dep(name = "rules_python", version = "2.0.0")
+bazel_dep(name = "rules_shell", version = "0.6.1")
 
-python = use_extension("@rules_python//python/extensions:python.bzl", "python")
-python.toolchain(
-    configure_coverage_tool = True,
-    # TODO(aaronmondal): Fix or remove legacy container pipelines so that they
-    #                    run rootless.
-    ignore_root_user_error = True,
-    python_version = "3.12",
+# hermetic-llvm: zero-sysroot, fully hermetic LLVM cross-compilation toolchain.
+# Inside Nix, lre.bazelrc registers @local-remote-execution//generated-cc/...
+# via --extra_toolchains, which outranks the MODULE.bazel registration below,
+# so Nix users keep getting LRE-CC unchanged. Outside Nix (no lre.bazelrc),
+# these hermetic toolchains replace the host autodetect path.
+bazel_dep(name = "llvm", version = "0.7.7")
+
+register_toolchains("@llvm//toolchain:all")
+
+# We use the Nix Python install, as per https://rules-python.readthedocs.io/en/latest/toolchains.html#local-toolchain
+# Can't use the rules_python download versions as it breaks with the genrule stuff in nativelink-proto
+# Also, this way around we get a Nix-locked Python binary
+local_runtime_repo = use_repo_rule(
+    "@rules_python//python/local_toolchains:repos.bzl",
+    "local_runtime_repo",
 )
-use_repo(python, python = "python_versions")
 
-bazel_dep(name = "rules_rust", version = "0.51.0")
+local_runtime_toolchains_repo = use_repo_rule(
+    "@rules_python//python/local_toolchains:repos.bzl",
+    "local_runtime_toolchains_repo",
+)
 
-rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
-rust.toolchain(
-    edition = "2021",
-    rust_analyzer_version = "nightly/2024-07-24",
-    rustfmt_version = "nightly/2024-07-24",
-    sha256s = {
-        "2024-07-24/rustc-nightly-x86_64-unknown-linux-gnu.tar.xz": "76cdce7fc08e4aed1429675409b2a149ffbb787fb7d185db12a15d2bb65167e5",
-        "2024-07-24/clippy-nightly-x86_64-unknown-linux-gnu.tar.xz": "d687aac8b1ee766150b5caec5e65e9d5a50d3ec2e87b1f43febf5cef9943dbb7",
-        "2024-07-24/cargo-nightly-x86_64-unknown-linux-gnu.tar.xz": "b5281d4f15ef66142391ef7b43a1d406c66a5f6ad65e8c89e65cd0fd69e12600",
-        "2024-07-24/rustfmt-nightly-x86_64-unknown-linux-gnu.tar.xz": "3c975c51b8420b6a1bcf0405e65364a1592ab2d24a9574008e1d1a899c0c8086",
-        "2024-07-24/llvm-tools-nightly-x86_64-unknown-linux-gnu.tar.xz": "7a2feb5e82f83f30b994117a562db1af59c1c675fe090a963bd2aecd319e300f",
-        "2024-07-24/rust-std-nightly-x86_64-unknown-linux-gnu.tar.xz": "b317c632f208c4b3d69e356264d5b74602147a2edef014cad340eaffbe0db0e5",
-        "2024-07-24/rustc-nightly-x86_64-apple-darwin.tar.xz": "bb7cf8790bd9ba1612d931485b5dac85d697c60fd3adec2011fd4ca418852bf6",
-        "2024-07-24/clippy-nightly-x86_64-apple-darwin.tar.xz": "c2c30e6b97f3d20ec535f22dd28a934e7e250bad0d465ae936f6bd1c774e9883",
-        "2024-07-24/cargo-nightly-x86_64-apple-darwin.tar.xz": "eb4b98b95bc0c1504a685b31689e9604e194c5d4378f4d2fc0e0f0fcb86757db",
-        "2024-07-24/rustfmt-nightly-x86_64-apple-darwin.tar.xz": "2e51c84d05c3b94754dae9440f8a5ae86ddcd277dad05e179ebbf2f9d301961f",
-        "2024-07-24/llvm-tools-nightly-x86_64-apple-darwin.tar.xz": "228d61577183ab5a839e659e234fffe7aea5c8022f7a361efa738b166e50ade6",
-        "2024-07-24/rust-std-nightly-x86_64-apple-darwin.tar.xz": "cec2e9651d9ccd9f7474d96ffaabcad63b597f66785f378b119ee094503e9a20",
-        "2024-07-24/rustc-nightly-aarch64-apple-darwin.tar.xz": "3a2e89e80c6ff03aa6d1ea7dd520032dd74a632ac8d4344dfac48a152ac8d5fa",
-        "2024-07-24/clippy-nightly-aarch64-apple-darwin.tar.xz": "5528091b3af1b4d50288eced91eac1f15efc33c964b333546039a76f6c7a92f9",
-        "2024-07-24/cargo-nightly-aarch64-apple-darwin.tar.xz": "34a7fe290172416161f35707567b5b5a5e563be89229f30eac8b522df1c7a6a0",
-        "2024-07-24/rustfmt-nightly-aarch64-apple-darwin.tar.xz": "d42491f55423d24073df0d514d9df11d9f32d2c513bd7a4a1cf41e109c30e695",
-        "2024-07-24/llvm-tools-nightly-aarch64-apple-darwin.tar.xz": "3fdefeb279f7219eb814f29680dc00a207dcb4e823574c5c26b2fe44c0dbefae",
-        "2024-07-24/rust-std-nightly-aarch64-apple-darwin.tar.xz": "ea8afa34a2010b7ed371ad260af837cf89d02fb24783ed9cee75685781247fde",
-    },
-    versions = [
-        "1.81.0",
-        "nightly/2024-07-24",
+local_runtime_repo(
+    name = "local_python3",
+    dev_dependency = True,
+    interpreter_path = "python3",
+    on_failure = "fail",
+)
+
+local_runtime_toolchains_repo(
+    name = "local_python_toolchains",
+    dev_dependency = True,
+    runtimes = ["local_python3"],
+)
+
+register_toolchains(
+    "@local_python_toolchains//:all",
+    dev_dependency = True,
+)
+
+bazel_dep(name = "rules_rs", version = "0.0.76")
+
+# Pin rules_rust to the hermeticbuild fork (the same commit rules_rs provisions)
+# so all `@rules_rust//...` references resolve to the patched ruleset. The
+# bazel_dep + archive_override is the form that keeps `@rules_rust` visible to
+# subsequent `use_extension(...)` calls in this MODULE.bazel — the alternative
+# (relying solely on use_repo from the rules_rs extension) doesn't expose the
+# repo at the module level.
+#
+# The local musl-platforms patch is still applied because the hermeticbuild
+# fork does not list x86_64/aarch64-unknown-linux-musl as supported triples in
+# rust/platform/triple_mappings.bzl.
+bazel_dep(name = "rules_rust", version = "0.68.1")
+archive_override(
+    module_name = "rules_rust",
+    integrity = "sha256-HG4cSGKVIoZTn0zpUNKhJbGvFfD2UVPJqKRqgTqLOQQ=",
+    patch_strip = 1,
+    patches = ["//tools:rules_rust-musl-platforms.diff"],
+    strip_prefix = "rules_rust-cf176d81c12d9c8f6420c7d433b0af0f08d2abb1",
+    urls = [
+        "https://github.com/hermeticbuild/rules_rust/archive/cf176d81c12d9c8f6420c7d433b0af0f08d2abb1.tar.gz",
     ],
 )
 
-rust_host_tools = use_extension(
-    "@rules_rust//rust:extension.bzl",
-    "rust_host_tools",
-)
-rust_host_tools.host_tools(
-    edition = "2021",
-    version = "1.81.0",
+# Route any rules_rs internal `@rules_rust` references through the same
+# top-level bazel_dep so the entire build sees one rules_rust.
+rules_rust_ext = use_extension("@rules_rs//rs:rules_rust.bzl", "rules_rust")
+
+override_repo(
+    rules_rust_ext,
+    rules_rust = "rules_rust",
 )
 
-use_repo(rust, "rust_toolchains")
-
-crate = use_extension("@rules_rust//crate_universe:extension.bzl", "crate")
+crate = use_extension("@rules_rs//rs:extensions.bzl", "crate")
 crate.from_cargo(
     name = "crates",
-    cargo_lockfile = "//:Cargo.lock",
-    manifests = ["//:Cargo.toml"],
-    supported_platform_triples = [
+    cargo_lock = "//:Cargo.lock",
+    cargo_toml = "//:Cargo.toml",
+    # In legacy-platform-label mode rules_rs collapses every *-musl triple
+    # onto its *-gnu sibling (same label). Listing both produces duplicate
+    # select() keys in the generated BUILD files, so musl is intentionally
+    # omitted here — the underlying linux-gnu deps cover both libc variants
+    # for our crate set, and the LRE musl toolchains still build correctly.
+    platform_triples = [
         "aarch64-apple-darwin",
         "aarch64-unknown-linux-gnu",
         "arm-unknown-linux-gnueabi",
@@ -76,22 +102,70 @@ crate.from_cargo(
         "x86_64-pc-windows-msvc",
         "x86_64-unknown-linux-gnu",
     ],
+    # The LRE Rust toolchains in //local-remote-execution/rust still register
+    # against @rules_rust//rust:toolchain_type, so crate_universe must render
+    # selects against legacy @rules_rust//rust/platform:* labels.
+    use_legacy_rules_rust_platforms = True,
+)
+crate.annotation(
+    crate = "zstd-sys",
+    gen_build_script = "on",
 )
 use_repo(crate, "crates")
 
-rust_analyzer = use_extension(
-    "@rules_rust//tools/rust_analyzer:extension.bzl",
-    "rust_analyzer_dependencies",
-)
-rust_analyzer.rust_analyzer_dependencies()
+# NativeLink uses Local Remote Execution for Rust by default which automatically
+# handles Rust toolchain configuration via Nix.
+#
+# If you build outside of Nix you'll have to register these toolchains
+# explicitly by passing `--extra_toolchains=@rust_toolchains//:all` to your
+# Bazel invocation.
+#
+# WARNING: This configuration exists entirely as a convenience option and
+#          migration and is not a supported way of building production
+#          grade nativelink executables. It may be removed at any point in time.
+rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
+rust.toolchain(
+    edition = "2024",
 
-bazel_dep(name = "protobuf", version = "27.5", repo_name = "com_google_protobuf")
-bazel_dep(name = "toolchains_protoc", version = "0.3.3")
+    # These should always follow the versions from LRE.
+    rust_analyzer_version = "nightly/2026-03-24",
+    rustfmt_version = "nightly/2026-03-24",
+    sha256s = {
+        # Update the shas with update-module-hashes
+        # BEGIN SHAS
+        "2026-03-24/cargo-nightly-x86_64-unknown-linux-gnu.tar.xz": "952622b3830be1cd0cc06544972d9b9cbea361bb1a155e5aacf88102dfc5b9bf",
+        "2026-03-24/clippy-nightly-x86_64-unknown-linux-gnu.tar.xz": "c7e66ea9a6d6a5b9af6f55b24f7709874e06c43a9cacb5d68d30b960ecbab230",
+        "2026-03-24/llvm-tools-nightly-x86_64-unknown-linux-gnu.tar.xz": "50a82652bad87dcae1b08127e888991d514b018851c3378b862752155e29b3ec",
+        "2026-03-24/rust-std-nightly-x86_64-unknown-linux-gnu.tar.xz": "5c0c15c08c9e727d3544c521aa48168bd32b24ef9eec814bae5786b5194f31bf",
+        "2026-03-24/rustc-nightly-aarch64-apple-darwin.tar.xz": "9310535abcfe2b1b86e4e8a1e6455e622ad5435a5281a6133aa7e6aa0bd4aa3d",
+        "2026-03-24/rustc-nightly-x86_64-unknown-linux-gnu.tar.xz": "7183776faefeb29ca430ee91f49a157491e82ce5ef158f082b3876648bba0406",
+        "2026-03-24/rustfmt-nightly-aarch64-apple-darwin.tar.xz": "3f989cd84234158dfe240571ec18441bfb586d9fcc4c06036a766a705ea6a69b",
+        "2026-03-24/rustfmt-nightly-x86_64-unknown-linux-gnu.tar.xz": "0eeef38fe72a1a718b19256cd1e5f92c96ee9d39eb6b9324f2514a674f1e4308",
+        "cargo-1.93.1-aarch64-apple-darwin.tar.xz": "ecd50b093656061366c5af1184af10d883f21bddb482a9c2142fe860c0f671b2",
+        "cargo-1.93.1-x86_64-unknown-linux-gnu.tar.xz": "dbf12e8fd2a245a6bdd9f6c8df267cb2c25b0c56866ee91d8321337df0a00ddb",
+        "clippy-1.93.1-aarch64-apple-darwin.tar.xz": "33d57654b0f19360cc4deecbaf248586f89ce9d345df2d54ee8d5541cf7c9f95",
+        "clippy-1.93.1-x86_64-unknown-linux-gnu.tar.xz": "60c0ce83ecc1700de724404a928c30d096c178a610c6707d4f06cee25284cc02",
+        "llvm-tools-1.93.1-aarch64-apple-darwin.tar.xz": "d61834568e6e591db13ad235e09c3c65e2f10c099c29bfd8eec018f6c9f55462",
+        "llvm-tools-1.93.1-x86_64-unknown-linux-gnu.tar.xz": "f32c5405d7765ffd18554e01f59eff1db32e22813a529425f4ad8903722b594e",
+        "rust-std-1.93.1-aarch64-apple-darwin.tar.xz": "dd278e6eb993ddffb190442ca11ed1e118c1edaf04114910e3c8c652f6423f65",
+        "rust-std-1.93.1-x86_64-unknown-linux-gnu.tar.xz": "82c4e41268f1741e4eb68796aeb6ca5042406ae858dd56144155c4ef8d87d8b6",
+        "rustc-1.93.1-aarch64-apple-darwin.tar.xz": "d103a0ee04c121b30cf061c7ad1456daaebd7ff0a7ea5fdb64acf92d86cb25fd",
+        "rustc-1.93.1-x86_64-unknown-linux-gnu.tar.xz": "b9db2636f5a101c4cdaf46a26f8a0c8e4b5767ecdb02ae9c7ccc3ead577732bc",
+        # END SHAS
+    },
+    versions = [
+        "1.93.1",
+        "nightly/2026-03-24",
+    ],
+)
+use_repo(rust, "rust_toolchains")
+
+bazel_dep(name = "toolchains_protoc", version = "0.4.3")
 
 protoc = use_extension("@toolchains_protoc//protoc:extensions.bzl", "protoc")
 protoc.toolchain(
     google_protobuf = "com_google_protobuf",
-    version = "v28.0",
+    version = "v30.2",
 )
 
 # Local remote execution.

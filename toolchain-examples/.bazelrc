@@ -1,0 +1,24 @@
+# Use rules_python's builtin script to emulate a bootstrap python.
+build --@rules_python//python/config_settings:bootstrap_impl=script
+
+# These toolchains map out everything in
+# https://github.com/uber/hermetic_cc_toolchain/blob/bfc407599e503a44928a3cefad27421c9341eff0/MODULE.bazel#L44
+build:zig-cc --extra_toolchains @zig_sdk//toolchain:linux_amd64_gnu.2.28
+build:zig-cc --extra_toolchains @zig_sdk//toolchain:linux_arm64_gnu.2.28
+build:zig-cc --extra_toolchains @zig_sdk//toolchain:windows_amd64
+build:zig-cc --extra_toolchains @zig_sdk//toolchain:windows_arm64
+build:zig-cc --extra_toolchains @zig_sdk//toolchain:darwin_amd64
+build:zig-cc --extra_toolchains @zig_sdk//toolchain:darwin_arm64
+build:zig-cc --extra_toolchains @zig_sdk//libc_aware/toolchain:linux_amd64_gnu.2.28
+build:zig-cc --extra_toolchains @zig_sdk//libc_aware/toolchain:linux_amd64_gnu.2.31
+build:zig-cc --extra_toolchains @zig_sdk//libc_aware/toolchain:linux_amd64_musl
+build:zig-cc --extra_toolchains @zig_sdk//libc_aware/toolchain:linux_arm64_gnu.2.28
+build:zig-cc --extra_toolchains @zig_sdk//libc_aware/toolchain:linux_arm64_musl
+build:zig-cc --extra_toolchains @zig_sdk//toolchain:wasip1_wasm
+
+# Toolchain to verify remote execution with contrib/toolchains_llvm.
+build:llvm --extra_toolchains=@llvm_toolchain//:cc-toolchain-x86_64-linux
+
+# Java runtime to ensure hermeticity on the remote.
+build:java --java_runtime_version=remotejdk_21
+build:java --tool_java_runtime_version=remotejdk_21

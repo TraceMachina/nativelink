@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -15,11 +15,11 @@
 use core::panic;
 
 use proc_macro::TokenStream;
-use quote::{format_ident, quote, ToTokens};
+use quote::{ToTokens, format_ident, quote};
 use syn::parse::{Parse, ParseStream};
 use syn::{
-    parse_macro_input, Attribute, DeriveInput, Ident, ImplGenerics, LitStr, TypeGenerics,
-    WhereClause,
+    Attribute, DeriveInput, Ident, ImplGenerics, LitStr, TypeGenerics, WhereClause,
+    parse_macro_input,
 };
 
 /// Holds the type of group for the metric. For example, if a metric
@@ -35,21 +35,21 @@ enum GroupType {
 impl Parse for GroupType {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         if input.is_empty() {
-            return Ok(GroupType::None);
+            return Ok(Self::None);
         }
         let group_str: LitStr = input.parse()?;
         let group = format_ident!("{}", group_str.value());
-        Ok(GroupType::StaticGroupName(group))
+        Ok(Self::StaticGroupName(group))
     }
 }
 
 impl ToTokens for GroupType {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
         match self {
-            GroupType::None => {
+            Self::None => {
                 quote! { "" }
             }
-            GroupType::StaticGroupName(group) => quote! { stringify!(#group) },
+            Self::StaticGroupName(group) => quote! { stringify!(#group) },
         }
         .to_tokens(tokens);
     }
@@ -71,10 +71,10 @@ impl Parse for MetricKind {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let kind_str: LitStr = input.parse()?;
         match kind_str.value().as_str() {
-            "counter" => Ok(MetricKind::Counter),
-            "string" => Ok(MetricKind::String),
-            "component" => Ok(MetricKind::Component),
-            "default" => Ok(MetricKind::Default),
+            "counter" => Ok(Self::Counter),
+            "string" => Ok(Self::String),
+            "component" => Ok(Self::Component),
+            "default" => Ok(Self::Default),
             _ => Err(syn::Error::new(kind_str.span(), "Invalid metric type")),
         }
     }
@@ -83,10 +83,10 @@ impl Parse for MetricKind {
 impl ToTokens for MetricKind {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
         match self {
-            MetricKind::Counter => quote! { ::nativelink_metric::MetricKind::Counter },
-            MetricKind::String => quote! { ::nativelink_metric::MetricKind::String },
-            MetricKind::Component => quote! { ::nativelink_metric::MetricKind::Component },
-            MetricKind::Default => quote! { ::nativelink_metric::MetricKind::Default },
+            Self::Counter => quote! { ::nativelink_metric::MetricKind::Counter },
+            Self::String => quote! { ::nativelink_metric::MetricKind::String },
+            Self::Component => quote! { ::nativelink_metric::MetricKind::Component },
+            Self::Default => quote! { ::nativelink_metric::MetricKind::Default },
         }
         .to_tokens(tokens);
     }
@@ -135,12 +135,12 @@ impl<'a> MetricFieldMetaData<'a> {
 /// to create the `MetricsComponent` impl.
 #[derive(Debug)]
 struct Generics<'a> {
-    impl_generics: ImplGenerics<'a>,
-    ty_generics: TypeGenerics<'a>,
+    implementation: ImplGenerics<'a>,
+    ty: TypeGenerics<'a>,
     where_clause: Option<&'a WhereClause>,
 }
 
-/// Holds metadata about the struct that is having MetricsComponent
+/// Holds metadata about the struct that is having `MetricsComponent`
 /// implemented.
 #[derive(Debug)]
 struct MetricStruct<'a> {
@@ -149,26 +149,27 @@ struct MetricStruct<'a> {
     generics: Generics<'a>,
 }
 
-impl<'a> ToTokens for MetricStruct<'a> {
+impl ToTokens for MetricStruct<'_> {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
         let name = &self.name;
-        let impl_generics = &self.generics.impl_generics;
-        let ty_generics = &self.generics.ty_generics;
+        let impl_generics = &self.generics.implementation;
+        let ty_generics = &self.generics.ty;
         let where_clause = &self.generics.where_clause;
 
         let metric_fields = self.metric_fields.iter().map(|field| {
             let field_name = &field.field_name;
             let group = &field.group;
 
-            let help = if let Some(help) = field.help.as_ref() {
-                quote! { #help }
-            } else {
-                quote! { "" }
-            };
-            let value = match &field.handler {
-                Some(handler) => quote! { &#handler(&self.#field_name) },
-                None => quote! { &self.#field_name },
-            };
+            let help = field
+                .help
+                .as_ref()
+                .map_or_else(|| quote! { "" }, |help| quote! { #help });
+
+            let value = field.handler.as_ref().map_or_else(
+                || quote! { &self.#field_name },
+                |handler| quote! { &#handler(&self.#field_name) },
+            );
+
             let metric_kind = &field.metric_kind;
             quote! {
                 ::nativelink_metric::publish!(
@@ -220,13 +221,13 @@ pub fn metrics_component_derive(input: TokenStream) -> TokenStream {
         }
     }
 
-    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+    let (implementation, ty, where_clause) = input.generics.split_for_impl();
     let metrics_struct = MetricStruct {
         name: &input.ident,
         metric_fields,
         generics: Generics {
-            impl_generics,
-            ty_generics,
+            implementation,
+            ty,
             where_clause,
         },
     };

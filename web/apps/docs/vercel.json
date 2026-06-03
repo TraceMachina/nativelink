@@ -1,0 +1,10 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "cd ../.. && bun --filter @nativelink/docs build",
+  "framework": "nextjs",
+  "github": {
+    "silent": true
+  },
+  "installCommand": "cd ../.. && bun install --frozen-lockfile",
+  "outputDirectory": ".next"
+}

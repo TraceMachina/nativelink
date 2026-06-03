@@ -1,0 +1,81 @@
+---
+title: Develop with Bazel
+description: Build, test, and run NativeLink with Bazel — the same dev loop CI uses.
+---
+
+The Bazel-based dev loop is the one our CI runs. Use this if you want
+the most reproducible setup or if your editor integration prefers
+Bazel.
+
+## Prerequisites
+
+- Bazel 7.x or 8.x (Bazelisk recommended).
+- A C++ toolchain (clang or gcc) for native dependencies.
+- On macOS: XCode command-line tools.
+- On Linux: `mold` is automatically used if available.
+
+## First build
+
+```bash
+git clone https://github.com/TraceMachina/nativelink
+cd nativelink
+bazel test //...
+```
+
+The first `bazel test` will take 10-20 minutes as it builds the
+toolchain and dependencies. Subsequent builds finish in seconds.
+
+<Callout type="info" title="Hooking up your own cache">
+  Add to your `~/.bazelrc.user`:
+
+  ```
+  build --remote_cache=grpc://localhost:50051
+  build --remote_executor=grpc://localhost:50051
+  ```
+
+  With a NativeLink cluster running locally, subsequent builds will
+  hit the cache for any action your team has already produced.
+</Callout>
+
+## Common commands
+
+```bash
+# Run all tests.
+bazel test //...
+
+# Run a specific test target.
+bazel test //nativelink-store/tests:s3_store_test
+
+# Build the server binary.
+bazel build //nativelink:nativelink
+
+# Run the built binary against a config.
+bazel run //nativelink -- /path/to/config.json5
+
+# Format Rust code.
+bazel run //tools:rustfmt-fix
+```
+
+## Editor integration
+
+For `rust-analyzer`:
+
+```bash
+bazel run //tools:gen-rust-project
+```
+
+This generates a `rust-project.json` that VS Code / Helix / your
+editor of choice will pick up.
+
+## Common pitfalls
+
+- **`No such file or directory: .bazelrc.lre`** — the `lre` config
+  is only available if you've run `nix develop` first. Either set
+  up Nix or comment out the LRE-specific lines in `.bazelrc`.
+- **Slow first build with no cache** — expected. Subsequent builds
+  reuse Bazel's local cache; pointing at a remote NativeLink cluster
+  makes a fresh clone fast for everyone.
+
+For non-Bazel workflows, see
+[Develop with Cargo](/contribute/cargo) or
+[Develop with Nix](/contribute/nix).

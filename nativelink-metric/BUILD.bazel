@@ -3,6 +3,7 @@ load(
     "rust_doc",
     "rust_doc_test",
     "rust_library",
+    "rust_test",
 )
 
 rust_library(
@@ -14,6 +15,21 @@ rust_library(
         "//nativelink-metric/nativelink-metric-macro-derive",
     ],
     visibility = ["//visibility:public"],
+    deps = [
+        "@crates//:async-lock",
+        "@crates//:parking_lot",
+        "@crates//:tokio",
+        "@crates//:tracing",
+    ],
+)
+
+rust_test(
+    name = "unit_test",
+    timeout = "short",
+    crate = ":nativelink-metric",
+    proc_macro_deps = [
+        "//nativelink-metric/nativelink-metric-macro-derive",
+    ],
     deps = [
         "@crates//:async-lock",
         "@crates//:parking_lot",

@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,20 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::hash::{DefaultHasher, Hasher};
-use std::ops::BitXor;
-use std::pin::Pin;
+use core::hash::Hasher;
+use core::ops::BitXor;
+use core::pin::Pin;
+use std::hash::DefaultHasher;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::stream::{FuturesUnordered, TryStreamExt};
-use nativelink_error::{error_if, Error, ResultExt};
+use nativelink_config::stores::ShardSpec;
+use nativelink_error::{Error, ResultExt, error_if};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
-use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
-use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
+use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
+use nativelink_util::store_trait::{
+    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+};
 
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 struct StoreAndWeight {
     #[metric(help = "The weight of the store")]
     weight: u32,
@@ -33,9 +37,9 @@ struct StoreAndWeight {
     store: Store,
 }
 
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct ShardStore {
-    // The weights will always be in ascending order a specific store is choosen based on the
+    // The weights will always be in ascending order a specific store is chosen based on the
     // the hash of the key hash that is nearest-binary searched using the u32 as the index.
     #[metric(
         group = "stores",
@@ -45,29 +49,29 @@ pub struct ShardStore {
 }
 
 impl ShardStore {
-    pub fn new(
-        config: &nativelink_config::stores::ShardStore,
-        stores: Vec<Store>,
-    ) -> Result<Arc<Self>, Error> {
+    pub fn new(spec: &ShardSpec, stores: Vec<Store>) -> Result<Arc<Self>, Error> {
         error_if!(
-            config.stores.len() != stores.len(),
+            spec.stores.len() != stores.len(),
             "Config shards do not match stores length"
         );
         error_if!(
-            config.stores.is_empty(),
+            spec.stores.is_empty(),
             "ShardStore must have at least one store"
         );
-        let total_weight: u64 = config
+        let total_weight: u64 = spec
             .stores
             .iter()
             .map(|shard_config| u64::from(shard_config.weight.unwrap_or(1)))
             .sum();
-        let mut weights: Vec<u32> = config
+        let mut weights: Vec<u32> = spec
             .stores
             .iter()
             .map(|shard_config| {
-                (u64::from(u32::MAX) * u64::from(shard_config.weight.unwrap_or(1)) / total_weight)
-                    as u32
+                u32::try_from(
+                    u64::from(u32::MAX) * u64::from(shard_config.weight.unwrap_or(1))
+                        / total_weight,
+                )
+                .unwrap_or(u32::MAX)
             })
             .scan(0, |state, weight| {
                 *state += weight;
@@ -147,6 +151,9 @@ impl StoreDriver for ShardStore {
         keys: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
+        type KeyIdxVec = Vec<usize>;
+        type KeyVec<'a> = Vec<StoreKey<'a>>;
+
         if keys.len() == 1 {
             // Hot path: It is very common to lookup only one key.
             let store_idx = self.get_store_index(&keys[0]);
@@ -156,8 +163,6 @@ impl StoreDriver for ShardStore {
                 .await
                 .err_tip(|| "In ShardStore::has_with_results() for store {store_idx}}");
         }
-        type KeyIdxVec = Vec<usize>;
-        type KeyVec<'a> = Vec<StoreKey<'a>>;
         let mut keys_for_store: Vec<(KeyIdxVec, KeyVec)> = self
             .weights_and_stores
             .iter()
@@ -201,7 +206,7 @@ impl StoreDriver for ShardStore {
         key: StoreKey<'_>,
         reader: DropCloserReadHalf,
         size_info: UploadSizeInfo,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         let store = self.get_store(&key);
         store
             .update(key, reader, size_info)
@@ -231,12 +236,22 @@ impl StoreDriver for ShardStore {
         self.weights_and_stores[index].store.inner_store(Some(key))
     }
 
-    fn as_any<'a>(&'a self) -> &'a (dyn std::any::Any + Sync + Send + 'static) {
+    fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
         self
     }
 
-    fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
+    }
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        callback: Arc<dyn RemoveItemCallback>,
+    ) -> Result<(), Error> {
+        for store in &self.weights_and_stores {
+            store.store.register_remove_callback(callback.clone())?;
+        }
+        Ok(())
     }
 }
 

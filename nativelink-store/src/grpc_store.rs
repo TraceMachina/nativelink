@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,16 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::pin::Pin;
+use core::time::Duration;
 use std::borrow::Cow;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::BytesMut;
-use futures::stream::{unfold, FuturesUnordered};
-use futures::{future, Future, Stream, StreamExt, TryFutureExt, TryStreamExt};
-use nativelink_error::{error_if, make_input_err, Error, ResultExt};
+use futures::stream::{FuturesUnordered, unfold};
+use futures::{Future, Stream, StreamExt, TryFutureExt, TryStreamExt, future};
+use nativelink_config::stores::GrpcSpec;
+use nativelink_error::{Error, ResultExt, error_if, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_proto::build::bazel::remote::execution::v2::action_cache_client::ActionCacheClient;
 use nativelink_proto::build::bazel::remote::execution::v2::content_addressable_storage_client::ContentAddressableStorageClient;
@@ -38,85 +39,151 @@ use nativelink_proto::google::bytestream::{
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::connection_manager::ConnectionManager;
-use nativelink_util::digest_hasher::{default_digest_hasher_func, ACTIVE_HASHER_FUNC};
+use nativelink_util::digest_hasher::{DigestHasherFunc, default_digest_hasher_func};
 use nativelink_util::health_utils::HealthStatusIndicator;
-use nativelink_util::origin_context::ActiveOriginContext;
 use nativelink_util::proto_stream_utils::{
     FirstStream, WriteRequestStreamWrapper, WriteState, WriteStateWrapper,
 };
 use nativelink_util::resource_info::ResourceInfo;
 use nativelink_util::retry::{Retrier, RetryResult};
-use nativelink_util::store_trait::{StoreDriver, StoreKey, UploadSizeInfo};
+use nativelink_util::store_trait::{RemoveItemCallback, StoreDriver, StoreKey, UploadSizeInfo};
+use nativelink_util::telemetry::ClientHeaders;
 use nativelink_util::{default_health_status_indicator, tls_utils};
+use opentelemetry::context::Context;
+use opentelemetry::global;
+use opentelemetry::propagation::Injector;
 use parking_lot::Mutex;
 use prost::Message;
-use rand::rngs::OsRng;
-use rand::Rng;
 use tokio::time::sleep;
-use tonic::{IntoRequest, Request, Response, Status, Streaming};
-use tracing::{event, Level};
+use tonic::metadata::{Ascii, MetadataKey, MetadataValue};
+use tonic::{Code, IntoRequest, Request, Response, Status, Streaming};
+use tracing::{error, trace, warn};
 use uuid::Uuid;
+
+struct TonicMetadataInjector<'a>(&'a mut tonic::metadata::MetadataMap);
+
+impl Injector for TonicMetadataInjector<'_> {
+    fn set(&mut self, key: &str, value: String) {
+        if let (Ok(k), Ok(v)) = (
+            MetadataKey::from_bytes(key.as_bytes()),
+            MetadataValue::try_from(&value),
+        ) {
+            self.0.insert(k, v);
+        }
+    }
+}
+
+/// Adds configured static headers, forwards nominated client request headers,
+/// and injects the current OpenTelemetry trace context into an outgoing gRPC
+/// request.
+fn enrich_request<T>(
+    mut request: Request<T>,
+    headers: &[(MetadataKey<Ascii>, MetadataValue<Ascii>)],
+    forward_headers: &[String],
+) -> Request<T> {
+    for (key, value) in headers {
+        request.metadata_mut().insert(key.clone(), value.clone());
+    }
+    if !forward_headers.is_empty()
+        && let Some(client_headers) = Context::current().get::<ClientHeaders>()
+    {
+        for name in forward_headers {
+            if let Some(value) = client_headers.0.get(&name.to_lowercase())
+                && let (Ok(k), Ok(v)) = (
+                    MetadataKey::from_bytes(name.as_bytes()),
+                    MetadataValue::try_from(value.as_str()),
+                )
+            {
+                request.metadata_mut().insert(k, v);
+            }
+        }
+    }
+    global::get_text_map_propagator(|propagator| {
+        propagator.inject(&mut TonicMetadataInjector(request.metadata_mut()));
+    });
+    request
+}
 
 // This store is usually a pass-through store, but can also be used as a CAS store. Using it as an
 // AC store has one major side-effect... The has() function may not give the proper size of the
 // underlying data. This might cause issues if embedded in certain stores.
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct GrpcStore {
     #[metric(help = "Instance name for the store")]
     instance_name: String,
     store_type: nativelink_config::stores::StoreType,
     retrier: Retrier,
     connection_manager: ConnectionManager,
+    /// Per-RPC timeout. `Duration::ZERO` means disabled.
+    rpc_timeout: Duration,
+    use_legacy_resource_names: bool,
+    headers: Vec<(MetadataKey<Ascii>, MetadataValue<Ascii>)>,
+    forward_headers: Vec<String>,
 }
 
 impl GrpcStore {
-    pub async fn new(config: &nativelink_config::stores::GrpcStore) -> Result<Arc<Self>, Error> {
-        let jitter_amt = config.retry.jitter;
-        Self::new_with_jitter(
-            config,
-            Box::new(move |delay: Duration| {
-                if jitter_amt == 0. {
-                    return delay;
-                }
-                let min = 1. - (jitter_amt / 2.);
-                let max = 1. + (jitter_amt / 2.);
-                delay.mul_f32(OsRng.gen_range(min..max))
-            }),
-        )
-        .await
+    pub async fn new(spec: &GrpcSpec) -> Result<Arc<Self>, Error> {
+        Self::new_with_jitter(spec, spec.retry.make_jitter_fn()).await
     }
 
     pub async fn new_with_jitter(
-        config: &nativelink_config::stores::GrpcStore,
-        jitter_fn: Box<dyn Fn(Duration) -> Duration + Send + Sync>,
+        spec: &GrpcSpec,
+        jitter_fn: Arc<dyn Fn(Duration) -> Duration + Send + Sync>,
     ) -> Result<Arc<Self>, Error> {
         error_if!(
-            config.endpoints.is_empty(),
+            spec.endpoints.is_empty(),
             "Expected at least 1 endpoint in GrpcStore"
         );
-        let mut endpoints = Vec::with_capacity(config.endpoints.len());
-        for endpoint_config in &config.endpoints {
-            let endpoint = tls_utils::endpoint(endpoint_config)
-                .map_err(|e| make_input_err!("Invalid URI for GrpcStore endpoint : {e:?}"))?;
+        let mut endpoints = Vec::with_capacity(spec.endpoints.len());
+        for endpoint_config in &spec.endpoints {
+            let endpoint = tls_utils::endpoint(endpoint_config).map_err(|e| {
+                Error::from_std_err(Code::InvalidArgument, &e)
+                    .append("Invalid URI for GrpcStore endpoint")
+            })?;
             endpoints.push(endpoint);
         }
 
-        let jitter_fn = Arc::new(jitter_fn);
-        Ok(Arc::new(GrpcStore {
-            instance_name: config.instance_name.clone(),
-            store_type: config.store_type,
+        let rpc_timeout = Duration::from_secs(spec.rpc_timeout_s);
+
+        let mut headers = Vec::with_capacity(spec.headers.len());
+        for (name, value) in &spec.headers {
+            // We lowercase keys as HTTP headers are case-insensitive so we should match all cases
+            let key = MetadataKey::from_bytes(name.to_lowercase().as_bytes()).map_err(|_| {
+                make_err!(Code::InvalidArgument, "Invalid gRPC metadata key: {name}")
+            })?;
+            let val = MetadataValue::try_from(value.as_str()).map_err(|_| {
+                make_err!(
+                    Code::InvalidArgument,
+                    "Invalid gRPC metadata value for key: {name}"
+                )
+            })?;
+            headers.push((key, val));
+        }
+
+        Ok(Arc::new(Self {
+            instance_name: spec.instance_name.clone(),
+            store_type: spec.store_type,
             retrier: Retrier::new(
                 Arc::new(|duration| Box::pin(sleep(duration))),
                 jitter_fn.clone(),
-                config.retry.clone(),
+                spec.retry.clone(),
             ),
             connection_manager: ConnectionManager::new(
-                endpoints.into_iter(),
-                config.connections_per_endpoint,
-                config.max_concurrent_requests,
-                config.retry.clone(),
+                endpoints,
+                spec.connections_per_endpoint,
+                spec.max_concurrent_requests,
+                spec.retry.clone(),
                 jitter_fn,
             ),
+            rpc_timeout,
+            use_legacy_resource_names: spec.use_legacy_resource_names,
+            headers,
+            // We lowercase keys as HTTP headers are case-insensitive so we should match all cases
+            forward_headers: spec
+                .forward_headers
+                .iter()
+                .map(|s| s.to_lowercase())
+                .collect(),
         }))
     }
 
@@ -145,20 +212,36 @@ impl GrpcStore {
         grpc_request: Request<FindMissingBlobsRequest>,
     ) -> Result<Response<FindMissingBlobsResponse>, Error> {
         error_if!(
-            matches!(self.store_type, nativelink_config::stores::StoreType::ac),
+            matches!(self.store_type, nativelink_config::stores::StoreType::Ac),
             "CAS operation on AC store"
         );
 
         let mut request = grpc_request.into_inner();
+
+        // Some builds (Chromium for example) do lots of empty requests for some reason, so shortcut them
+        if request.blob_digests.is_empty() {
+            return Ok(Response::new(FindMissingBlobsResponse {
+                missing_blob_digests: vec![],
+            }));
+        }
+
         request.instance_name.clone_from(&self.instance_name);
         self.perform_request(request, |request| async move {
             let channel = self
                 .connection_manager
-                .connection()
+                .connection(format!(
+                    "find_missing_blobs: ({}) {:?}",
+                    request.blob_digests.len(),
+                    request.blob_digests
+                ))
                 .await
                 .err_tip(|| "in find_missing_blobs")?;
             ContentAddressableStorageClient::new(channel)
-                .find_missing_blobs(Request::new(request))
+                .find_missing_blobs(enrich_request(
+                    Request::new(request),
+                    &self.headers,
+                    &self.forward_headers,
+                ))
                 .await
                 .err_tip(|| "in GrpcStore::find_missing_blobs")
         })
@@ -170,7 +253,7 @@ impl GrpcStore {
         grpc_request: Request<BatchUpdateBlobsRequest>,
     ) -> Result<Response<BatchUpdateBlobsResponse>, Error> {
         error_if!(
-            matches!(self.store_type, nativelink_config::stores::StoreType::ac),
+            matches!(self.store_type, nativelink_config::stores::StoreType::Ac),
             "CAS operation on AC store"
         );
 
@@ -179,11 +262,15 @@ impl GrpcStore {
         self.perform_request(request, |request| async move {
             let channel = self
                 .connection_manager
-                .connection()
+                .connection("batch_update_blobs".into())
                 .await
                 .err_tip(|| "in batch_update_blobs")?;
             ContentAddressableStorageClient::new(channel)
-                .batch_update_blobs(Request::new(request))
+                .batch_update_blobs(enrich_request(
+                    Request::new(request),
+                    &self.headers,
+                    &self.forward_headers,
+                ))
                 .await
                 .err_tip(|| "in GrpcStore::batch_update_blobs")
         })
@@ -195,7 +282,7 @@ impl GrpcStore {
         grpc_request: Request<BatchReadBlobsRequest>,
     ) -> Result<Response<BatchReadBlobsResponse>, Error> {
         error_if!(
-            matches!(self.store_type, nativelink_config::stores::StoreType::ac),
+            matches!(self.store_type, nativelink_config::stores::StoreType::Ac),
             "CAS operation on AC store"
         );
 
@@ -204,11 +291,15 @@ impl GrpcStore {
         self.perform_request(request, |request| async move {
             let channel = self
                 .connection_manager
-                .connection()
+                .connection("batch_read_blobs".into())
                 .await
                 .err_tip(|| "in batch_read_blobs")?;
             ContentAddressableStorageClient::new(channel)
-                .batch_read_blobs(Request::new(request))
+                .batch_read_blobs(enrich_request(
+                    Request::new(request),
+                    &self.headers,
+                    &self.forward_headers,
+                ))
                 .await
                 .err_tip(|| "in GrpcStore::batch_read_blobs")
         })
@@ -220,7 +311,7 @@ impl GrpcStore {
         grpc_request: Request<GetTreeRequest>,
     ) -> Result<Response<Streaming<GetTreeResponse>>, Error> {
         error_if!(
-            matches!(self.store_type, nativelink_config::stores::StoreType::ac),
+            matches!(self.store_type, nativelink_config::stores::StoreType::Ac),
             "CAS operation on AC store"
         );
 
@@ -229,11 +320,15 @@ impl GrpcStore {
         self.perform_request(request, |request| async move {
             let channel = self
                 .connection_manager
-                .connection()
+                .connection(format!("get_tree: {:?}", request.root_digest))
                 .await
                 .err_tip(|| "in get_tree")?;
             ContentAddressableStorageClient::new(channel)
-                .get_tree(Request::new(request))
+                .get_tree(enrich_request(
+                    Request::new(request),
+                    &self.headers,
+                    &self.forward_headers,
+                ))
                 .await
                 .err_tip(|| "in GrpcStore::get_tree")
         })
@@ -253,14 +348,18 @@ impl GrpcStore {
     async fn read_internal(
         &self,
         request: ReadRequest,
-    ) -> Result<impl Stream<Item = Result<ReadResponse, Status>>, Error> {
+    ) -> Result<impl Stream<Item = Result<ReadResponse, Status>> + use<>, Error> {
         let channel = self
             .connection_manager
-            .connection()
+            .connection(format!("read_internal: {}", request.resource_name))
             .await
             .err_tip(|| "in read_internal")?;
         let mut response = ByteStreamClient::new(channel)
-            .read(Request::new(request))
+            .read(enrich_request(
+                Request::new(request),
+                &self.headers,
+                &self.forward_headers,
+            ))
             .await
             .err_tip(|| "in GrpcStore::read")?
             .into_inner();
@@ -271,12 +370,15 @@ impl GrpcStore {
         Ok(FirstStream::new(first_response, response))
     }
 
-    pub async fn read(
+    pub async fn read<R>(
         &self,
-        grpc_request: impl IntoRequest<ReadRequest>,
-    ) -> Result<impl Stream<Item = Result<ReadResponse, Status>>, Error> {
+        grpc_request: R,
+    ) -> Result<impl Stream<Item = Result<ReadResponse, Status>> + use<R>, Error>
+    where
+        R: IntoRequest<ReadRequest>,
+    {
         error_if!(
-            matches!(self.store_type, nativelink_config::stores::StoreType::ac),
+            matches!(self.store_type, nativelink_config::stores::StoreType::Ac),
             "CAS operation on AC store"
         );
 
@@ -289,14 +391,14 @@ impl GrpcStore {
 
     pub async fn write<T, E>(
         &self,
-        stream: WriteRequestStreamWrapper<T, E>,
+        stream: WriteRequestStreamWrapper<T>,
     ) -> Result<Response<WriteResponse>, Error>
     where
         T: Stream<Item = Result<WriteRequest, E>> + Unpin + Send + 'static,
         E: Into<Error> + 'static,
     {
         error_if!(
-            matches!(self.store_type, nativelink_config::stores::StoreType::ac),
+            matches!(self.store_type, nativelink_config::stores::StoreType::Ac),
             "CAS operation on AC store"
         );
 
@@ -305,51 +407,132 @@ impl GrpcStore {
             stream,
         )));
 
+        let write_start = std::time::Instant::now();
+        let instance_name = self.instance_name.clone();
+        let rpc_timeout = self.rpc_timeout;
+        trace!(
+            instance_name = %instance_name,
+            rpc_timeout_s = rpc_timeout.as_secs(),
+            "GrpcStore::write: starting ByteStream write",
+        );
+        let mut attempt: u32 = 0;
         let result = self
             .retrier
-            .retry(unfold(local_state, move |local_state| async move {
-                // The client write may occur on a separate thread and
-                // therefore in order to share the state with it we have to
-                // wrap it in a Mutex and retrieve it after the write
-                // has completed.  There is no way to get the value back
-                // from the client.
-                let result = self
-                    .connection_manager
-                    .connection()
-                    .and_then(|channel| async {
-                        ByteStreamClient::new(channel)
-                            .write(WriteStateWrapper::new(local_state.clone()))
-                            .await
-                            .err_tip(|| "in GrpcStore::write")
-                    })
-                    .await;
+            .retry(unfold(local_state, move |local_state| {
+                attempt += 1;
+                let instance_name = instance_name.clone();
+                async move {
+                    // The client write may occur on a separate thread and
+                    // therefore in order to share the state with it we have to
+                    // wrap it in a Mutex and retrieve it after the write
+                    // has completed.  There is no way to get the value back
+                    // from the client.
+                    trace!(
+                        instance_name = %instance_name,
+                        attempt,
+                        "GrpcStore::write: requesting connection from pool",
+                    );
+                    let conn_start = std::time::Instant::now();
+                    let rpc_fut = self.connection_manager.connection("write".into()).and_then(
+                        |channel| {
+                            let conn_elapsed = conn_start.elapsed();
+                            let instance_for_rpc = instance_name.clone();
+                            let conn_elapsed_ms =
+                                u64::try_from(conn_elapsed.as_millis()).unwrap_or(u64::MAX);
+                            trace!(
+                                instance_name = %instance_for_rpc,
+                                conn_elapsed_ms,
+                                "GrpcStore::write: got connection, starting ByteStream.Write RPC",
+                            );
+                            let rpc_start = std::time::Instant::now();
+                            let local_state_for_rpc = local_state.clone();
+                            async move {
+                                let res = ByteStreamClient::new(channel)
+                                    .write(enrich_request(
+                                        Request::new(WriteStateWrapper::new(local_state_for_rpc)),
+                                        &self.headers,
+                                        &self.forward_headers,
+                                    ))
+                                    .await
+                                    .err_tip(|| "in GrpcStore::write");
+                                let rpc_elapsed_ms = u64::try_from(rpc_start.elapsed().as_millis())
+                                    .unwrap_or(u64::MAX);
+                                trace!(
+                                    instance_name = %instance_for_rpc,
+                                    rpc_elapsed_ms,
+                                    success = res.is_ok(),
+                                    "GrpcStore::write: ByteStream.Write RPC returned",
+                                );
+                                res
+                            }
+                        },
+                    );
 
-                // Get the state back from StateWrapper, this should be
-                // uncontended since write has returned.
-                let mut local_state_locked = local_state.lock();
-
-                let result = if let Some(err) = local_state_locked.take_read_stream_error() {
-                    // If there was an error with the stream, then don't retry.
-                    RetryResult::Err(err.append("Where read_stream_error was set"))
-                } else {
-                    // On error determine whether it is possible to retry.
-                    match result {
-                        Err(err) => {
-                            if local_state_locked.can_resume() {
-                                local_state_locked.resume();
-                                RetryResult::Retry(err)
-                            } else {
-                                RetryResult::Err(err.append("Retry is not possible"))
+                    let result = if rpc_timeout > Duration::ZERO {
+                        match tokio::time::timeout(rpc_timeout, rpc_fut).await {
+                            Ok(res) => res,
+                            Err(_elapsed) => {
+                                warn!(
+                                    instance_name = %instance_name,
+                                    attempt,
+                                    rpc_timeout_s = rpc_timeout.as_secs(),
+                                    "GrpcStore::write: per-RPC timeout exceeded, cancelling",
+                                );
+                                #[allow(unused_qualifications)]
+                                Err(nativelink_error::make_err!(
+                                    nativelink_error::Code::DeadlineExceeded,
+                                    "GrpcStore::write RPC timed out after {}s",
+                                    rpc_timeout.as_secs()
+                                ))
                             }
                         }
-                        Ok(response) => RetryResult::Ok(response),
-                    }
-                };
+                    } else {
+                        rpc_fut.await
+                    };
 
-                drop(local_state_locked);
-                Some((result, local_state))
+                    // Get the state back from StateWrapper, this should be
+                    // uncontended since write has returned.
+                    let mut local_state_locked = local_state.lock();
+
+                    let result = local_state_locked
+                        .take_read_stream_error()
+                        .map(|err| RetryResult::Err(err.append("Where read_stream_error was set")))
+                        .unwrap_or_else(|| {
+                            // No stream error, handle the original result
+                            match result {
+                                Ok(response) => RetryResult::Ok(response),
+                                Err(ref err) => {
+                                    warn!(
+                                        instance_name = %instance_name,
+                                        attempt,
+                                        ?err,
+                                        can_resume = local_state_locked.can_resume(),
+                                        "GrpcStore::write: RPC failed",
+                                    );
+                                    if local_state_locked.can_resume() {
+                                        local_state_locked.resume();
+                                        RetryResult::Retry(err.clone())
+                                    } else {
+                                        RetryResult::Err(
+                                            err.clone().append("Retry is not possible"),
+                                        )
+                                    }
+                                }
+                            }
+                        });
+
+                    drop(local_state_locked);
+                    Some((result, local_state))
+                }
             }))
             .await?;
+
+        let total_elapsed_ms = u64::try_from(write_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        trace!(
+            instance_name = %self.instance_name,
+            total_elapsed_ms,
+            "GrpcStore::write: completed successfully",
+        );
         Ok(result)
     }
 
@@ -360,7 +543,7 @@ impl GrpcStore {
         const IS_UPLOAD_TRUE: bool = true;
 
         error_if!(
-            matches!(self.store_type, nativelink_config::stores::StoreType::ac),
+            matches!(self.store_type, nativelink_config::stores::StoreType::Ac),
             "CAS operation on AC store"
         );
 
@@ -375,11 +558,15 @@ impl GrpcStore {
         self.perform_request(request, |request| async move {
             let channel = self
                 .connection_manager
-                .connection()
+                .connection(format!("query_write_status: {}", request.resource_name))
                 .await
                 .err_tip(|| "in query_write_status")?;
             ByteStreamClient::new(channel)
-                .query_write_status(Request::new(request))
+                .query_write_status(enrich_request(
+                    Request::new(request),
+                    &self.headers,
+                    &self.forward_headers,
+                ))
                 .await
                 .err_tip(|| "in GrpcStore::query_write_status")
         })
@@ -395,11 +582,15 @@ impl GrpcStore {
         self.perform_request(request, |request| async move {
             let channel = self
                 .connection_manager
-                .connection()
+                .connection(format!("get_action_result: {:?}", request.action_digest))
                 .await
                 .err_tip(|| "in get_action_result")?;
             ActionCacheClient::new(channel)
-                .get_action_result(Request::new(request))
+                .get_action_result(enrich_request(
+                    Request::new(request),
+                    &self.headers,
+                    &self.forward_headers,
+                ))
                 .await
                 .err_tip(|| "in GrpcStore::get_action_result")
         })
@@ -415,11 +606,15 @@ impl GrpcStore {
         self.perform_request(request, |request| async move {
             let channel = self
                 .connection_manager
-                .connection()
+                .connection(format!("update_action_result: {:?}", request.action_digest))
                 .await
                 .err_tip(|| "in update_action_result")?;
             ActionCacheClient::new(channel)
-                .update_action_result(Request::new(request))
+                .update_action_result(enrich_request(
+                    Request::new(request),
+                    &self.headers,
+                    &self.forward_headers,
+                ))
                 .await
                 .err_tip(|| "in GrpcStore::update_action_result")
         })
@@ -436,8 +631,8 @@ impl GrpcStore {
             inline_stdout: false,
             inline_stderr: false,
             inline_output_files: Vec::new(),
-            digest_function: ActiveOriginContext::get_value(&ACTIVE_HASHER_FUNC)
-                .err_tip(|| "In get_action_from_store")?
+            digest_function: Context::current()
+                .get::<DigestHasherFunc>()
                 .map_or_else(default_digest_hasher_func, |v| *v)
                 .proto_digest_func()
                 .into(),
@@ -484,23 +679,25 @@ impl GrpcStore {
         &self,
         digest: DigestInfo,
         mut reader: DropCloserReadHalf,
-    ) -> Result<(), Error> {
-        let action_result = ActionResult::decode(reader.consume(None).await?)
+    ) -> Result<u64, Error> {
+        let bytes = reader.consume(None).await?;
+        let len = bytes.len() as u64;
+        let action_result = ActionResult::decode(bytes)
             .err_tip(|| "Failed to decode ActionResult in update_action_result_from_bytes")?;
         let update_action_request = UpdateActionResultRequest {
             instance_name: self.instance_name.clone(),
             action_digest: Some(digest.into()),
             action_result: Some(action_result),
             results_cache_policy: None,
-            digest_function: ActiveOriginContext::get_value(&ACTIVE_HASHER_FUNC)
-                .err_tip(|| "In get_action_from_store")?
+            digest_function: Context::current()
+                .get::<DigestHasherFunc>()
                 .map_or_else(default_digest_hasher_func, |v| *v)
                 .proto_digest_func()
                 .into(),
         };
         self.update_action_result(Request::new(update_action_request))
             .await
-            .map(|_| ())
+            .map(|_| len)
     }
 }
 
@@ -513,7 +710,7 @@ impl StoreDriver for GrpcStore {
         keys: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
-        if matches!(self.store_type, nativelink_config::stores::StoreType::ac) {
+        if matches!(self.store_type, nativelink_config::stores::StoreType::Ac) {
             keys.iter()
                 .zip(results.iter_mut())
                 .map(|(key, result)| async move {
@@ -526,7 +723,7 @@ impl StoreDriver for GrpcStore {
                     Ok::<_, Error>(())
                 })
                 .collect::<FuturesUnordered<_>>()
-                .try_for_each(|_| future::ready(Ok(())))
+                .try_for_each(|()| future::ready(Ok(())))
                 .await
                 .err_tip(|| "Getting upstream action cache entry")?;
             return Ok(());
@@ -539,8 +736,8 @@ impl StoreDriver for GrpcStore {
                     .iter()
                     .map(|k| k.borrow().into_digest().into())
                     .collect(),
-                digest_function: ActiveOriginContext::get_value(&ACTIVE_HASHER_FUNC)
-                    .err_tip(|| "In GrpcStore::has_with_results")?
+                digest_function: Context::current()
+                    .get::<DigestHasherFunc>()
                     .map_or_else(default_digest_hasher_func, |v| *v)
                     .proto_digest_func()
                     .into(),
@@ -578,27 +775,50 @@ impl StoreDriver for GrpcStore {
         key: StoreKey<'_>,
         reader: DropCloserReadHalf,
         _size_info: UploadSizeInfo,
-    ) -> Result<(), Error> {
-        let digest = key.into_digest();
-        if matches!(self.store_type, nativelink_config::stores::StoreType::ac) {
-            return self.update_action_result_from_bytes(digest, reader).await;
-        }
-
-        let mut buf = Uuid::encode_buffer();
-        let resource_name = format!(
-            "{}/uploads/{}/blobs/{}/{}",
-            &self.instance_name,
-            Uuid::new_v4().hyphenated().encode_lower(&mut buf),
-            digest.packed_hash(),
-            digest.size_bytes(),
-        );
-
+    ) -> Result<u64, Error> {
         struct LocalState {
             resource_name: String,
             reader: DropCloserReadHalf,
             did_error: bool,
             bytes_received: i64,
         }
+
+        let digest = key.into_digest();
+        if matches!(self.store_type, nativelink_config::stores::StoreType::Ac) {
+            return self.update_action_result_from_bytes(digest, reader).await;
+        }
+
+        let mut buf = Uuid::encode_buffer();
+        let resource_name = if self.use_legacy_resource_names {
+            format!(
+                "{}/uploads/{}/blobs/{}/{}",
+                &self.instance_name,
+                Uuid::new_v4().hyphenated().encode_lower(&mut buf),
+                digest.packed_hash(),
+                digest.size_bytes(),
+            )
+        } else {
+            let digest_function = Context::current()
+                .get::<DigestHasherFunc>()
+                .map_or_else(default_digest_hasher_func, |v| *v)
+                .proto_digest_func()
+                .as_str_name()
+                .to_ascii_lowercase();
+            format!(
+                "{}/uploads/{}/blobs/{}/{}/{}",
+                &self.instance_name,
+                Uuid::new_v4().hyphenated().encode_lower(&mut buf),
+                digest_function,
+                digest.packed_hash(),
+                digest.size_bytes(),
+            )
+        };
+        trace!(
+            resource_name = %resource_name,
+            digest_hash = %digest.packed_hash(),
+            digest_size = digest.size_bytes(),
+            "GrpcStore::update: starting upload for digest",
+        );
         let local_state = LocalState {
             resource_name,
             reader,
@@ -608,10 +828,7 @@ impl StoreDriver for GrpcStore {
 
         let stream = Box::pin(unfold(local_state, |mut local_state| async move {
             if local_state.did_error {
-                event!(
-                    Level::ERROR,
-                    "GrpcStore::update() polled stream after error was returned"
-                );
+                error!("GrpcStore::update() polled stream after error was returned");
                 return None;
             }
             let data = match local_state
@@ -649,7 +866,7 @@ impl StoreDriver for GrpcStore {
         .await
         .err_tip(|| "in GrpcStore::update()")?;
 
-        Ok(())
+        Ok(digest.size_bytes())
     }
 
     async fn get_part(
@@ -659,8 +876,15 @@ impl StoreDriver for GrpcStore {
         offset: u64,
         length: Option<u64>,
     ) -> Result<(), Error> {
+        struct LocalState<'a> {
+            resource_name: String,
+            writer: &'a mut DropCloserWriteHalf,
+            read_offset: i64,
+            read_limit: i64,
+        }
+
         let digest = key.into_digest();
-        if matches!(self.store_type, nativelink_config::stores::StoreType::ac) {
+        if matches!(self.store_type, nativelink_config::stores::StoreType::Ac) {
             let offset = usize::try_from(offset).err_tip(|| "Could not convert offset to usize")?;
             let length = length
                 .map(|v| usize::try_from(v).err_tip(|| "Could not convert length to usize"))
@@ -676,19 +900,28 @@ impl StoreDriver for GrpcStore {
             return writer.send_eof();
         }
 
-        let resource_name = format!(
-            "{}/blobs/{}/{}",
-            &self.instance_name,
-            digest.packed_hash(),
-            digest.size_bytes(),
-        );
-
-        struct LocalState<'a> {
-            resource_name: String,
-            writer: &'a mut DropCloserWriteHalf,
-            read_offset: i64,
-            read_limit: i64,
-        }
+        let resource_name = if self.use_legacy_resource_names {
+            format!(
+                "{}/blobs/{}/{}",
+                &self.instance_name,
+                digest.packed_hash(),
+                digest.size_bytes(),
+            )
+        } else {
+            let digest_function = Context::current()
+                .get::<DigestHasherFunc>()
+                .map_or_else(default_digest_hasher_func, |v| *v)
+                .proto_digest_func()
+                .as_str_name()
+                .to_ascii_lowercase();
+            format!(
+                "{}/blobs/{}/{}/{}",
+                &self.instance_name,
+                digest_function,
+                digest.packed_hash(),
+                digest.size_bytes(),
+            )
+        };
 
         let local_state = LocalState {
             resource_name,
@@ -726,7 +959,7 @@ impl StoreDriver for GrpcStore {
                                         .append("While fetching message in GrpcStore::get_part()"),
                                 ),
                                 local_state,
-                            ))
+                            ));
                         }
                     };
                     let length = data.len() as i64;
@@ -758,12 +991,22 @@ impl StoreDriver for GrpcStore {
         self
     }
 
-    fn as_any<'a>(&'a self) -> &'a (dyn std::any::Any + Sync + Send + 'static) {
+    fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
         self
     }
 
-    fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
+    }
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        _callback: Arc<dyn RemoveItemCallback>,
+    ) -> Result<(), Error> {
+        Err(Error::new(
+            Code::Internal,
+            "gRPC stores are incompatible with removal callbacks".to_string(),
+        ))
     }
 }
 

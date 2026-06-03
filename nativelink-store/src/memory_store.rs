@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,28 +12,36 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::fmt::Debug;
-use std::ops::Bound;
-use std::pin::Pin;
+use core::any::Any;
+use core::borrow::Borrow;
+use core::fmt::Debug;
+use core::ops::Bound;
+use core::pin::Pin;
 use std::sync::Arc;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
+use nativelink_config::stores::MemorySpec;
 use nativelink_error::{Code, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
-use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
-use nativelink_util::store_trait::{StoreDriver, StoreKey, UploadSizeInfo};
+use nativelink_util::health_utils::{
+    HealthRegistryBuilder, HealthStatusIndicator, default_health_status_indicator,
+};
+use nativelink_util::store_trait::{
+    RemoveItemCallback, StoreDriver, StoreKey, StoreKeyBorrow, StoreOptimizations, UploadSizeInfo,
+};
 
+use crate::callback_utils::RemoveItemCallbackHolder;
 use crate::cas_utils::is_zero_digest;
 
 #[derive(Clone)]
 pub struct BytesWrapper(Bytes);
 
 impl Debug for BytesWrapper {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("BytesWrapper { -- Binary data -- }")
     }
 }
@@ -50,16 +58,22 @@ impl LenEntry for BytesWrapper {
     }
 }
 
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct MemoryStore {
     #[metric(group = "evicting_map")]
-    evicting_map: EvictingMap<StoreKey<'static>, BytesWrapper, SystemTime>,
+    evicting_map: EvictingMap<
+        StoreKeyBorrow,
+        StoreKey<'static>,
+        BytesWrapper,
+        SystemTime,
+        RemoveItemCallbackHolder,
+    >,
 }
 
 impl MemoryStore {
-    pub fn new(config: &nativelink_config::stores::MemoryStore) -> Arc<Self> {
+    pub fn new(spec: &MemorySpec) -> Arc<Self> {
         let empty_policy = nativelink_config::stores::EvictionPolicy::default();
-        let eviction_policy = config.eviction_policy.as_ref().unwrap_or(&empty_policy);
+        let eviction_policy = spec.eviction_policy.as_ref().unwrap_or(&empty_policy);
         Arc::new(Self {
             evicting_map: EvictingMap::new(eviction_policy, SystemTime::now()),
         })
@@ -67,8 +81,8 @@ impl MemoryStore {
 
     /// Returns the number of key-value pairs that are currently in the the cache.
     /// Function is not for production code paths.
-    pub async fn len_for_test(&self) -> usize {
-        self.evicting_map.len_for_test().await
+    pub fn len_for_test(&self) -> usize {
+        self.evicting_map.len_for_test()
     }
 
     pub async fn remove_entry(&self, key: StoreKey<'_>) -> bool {
@@ -83,11 +97,12 @@ impl StoreDriver for MemoryStore {
         keys: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
-        // TODO(allada): This is a dirty hack to get around the lifetime issues with the
-        // evicting map.
-        let digests: Vec<_> = keys.iter().map(|key| key.borrow().into_owned()).collect();
+        let own_keys = keys
+            .iter()
+            .map(|sk| sk.borrow().into_owned())
+            .collect::<Vec<_>>();
         self.evicting_map
-            .sizes_for_keys(digests, results, false /* peek */)
+            .sizes_for_keys(own_keys.iter(), results, false /* peek */)
             .await;
         // We need to do a special pass to ensure our zero digest exist.
         keys.iter()
@@ -111,8 +126,7 @@ impl StoreDriver for MemoryStore {
         );
         let iterations = self
             .evicting_map
-            .range(range, move |key, _value| handler(key))
-            .await;
+            .range(range, move |key, _value| handler(key.borrow()));
         Ok(iterations)
     }
 
@@ -121,7 +135,7 @@ impl StoreDriver for MemoryStore {
         key: StoreKey<'_>,
         mut reader: DropCloserReadHalf,
         _size_info: UploadSizeInfo,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         // Internally Bytes might hold a reference to more data than just our data. To prevent
         // this potential case, we make a full copy of our data for long-term storage.
         let final_buffer = {
@@ -134,8 +148,30 @@ impl StoreDriver for MemoryStore {
             new_buffer.freeze()
         };
 
+        let len = final_buffer.len().try_into().unwrap_or(0);
         self.evicting_map
-            .insert(key.borrow().into_owned(), BytesWrapper(final_buffer))
+            .insert(key.into_owned().into(), BytesWrapper(final_buffer))
+            .await;
+        Ok(len)
+    }
+
+    fn optimized_for(&self, optimization: StoreOptimizations) -> bool {
+        optimization == StoreOptimizations::SubscribesToUpdateOneshot
+    }
+
+    async fn update_oneshot(self: Pin<&Self>, key: StoreKey<'_>, data: Bytes) -> Result<(), Error> {
+        // Fast path: Direct insertion without channel overhead.
+        // We still need to copy the data to prevent holding references to larger buffers.
+        let final_buffer = if data.is_empty() {
+            data
+        } else {
+            let mut new_buffer = BytesMut::with_capacity(data.len());
+            new_buffer.extend_from_slice(&data[..]);
+            new_buffer.freeze()
+        };
+
+        self.evicting_map
+            .insert(key.into_owned().into(), BytesWrapper(final_buffer))
             .await;
         Ok(())
     }
@@ -152,7 +188,8 @@ impl StoreDriver for MemoryStore {
             .map(|v| usize::try_from(v).err_tip(|| "Could not convert length to usize"))
             .transpose()?;
 
-        if is_zero_digest(key.borrow()) {
+        let owned_key = key.into_owned();
+        if is_zero_digest(owned_key.clone()) {
             writer
                 .send_eof()
                 .err_tip(|| "Failed to send zero EOF in filesystem store get_part")?;
@@ -161,9 +198,9 @@ impl StoreDriver for MemoryStore {
 
         let value = self
             .evicting_map
-            .get(&key.borrow().into_owned())
+            .get(&owned_key)
             .await
-            .err_tip_with_code(|_| (Code::NotFound, format!("Key {key:?} not found")))?;
+            .err_tip_with_code(|_| (Code::NotFound, format!("Key {owned_key:?} not found")))?;
         let default_len = usize::try_from(value.len())
             .err_tip(|| "Could not convert value.len() to usize")?
             .saturating_sub(offset);
@@ -184,12 +221,25 @@ impl StoreDriver for MemoryStore {
         self
     }
 
-    fn as_any<'a>(&'a self) -> &'a (dyn std::any::Any + Sync + Send + 'static) {
+    fn as_any<'a>(&'a self) -> &'a (dyn Any + Sync + Send + 'static) {
         self
     }
 
-    fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn Any + Sync + Send + 'static> {
         self
+    }
+
+    fn register_health(self: Arc<Self>, registry: &mut HealthRegistryBuilder) {
+        registry.register_indicator(self);
+    }
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        callback: Arc<dyn RemoveItemCallback>,
+    ) -> Result<(), Error> {
+        self.evicting_map
+            .add_remove_callback(RemoveItemCallbackHolder::new(callback));
+        Ok(())
     }
 }
 

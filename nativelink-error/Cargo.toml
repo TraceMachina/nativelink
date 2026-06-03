@@ -1,21 +1,43 @@
+#:schema ../tools/cargo-with-detailed-deps.json
+lints.workspace = true
+
 [package]
-name = "nativelink-error"
-version = "0.5.3"
-edition = "2021"
+autobenches = false
 autobins = false
 autoexamples = false
 autotests = true
-autobenches = false
+edition = "2024"
+name = "nativelink-error"
+version = "1.3.2"
 
 [dependencies]
-nativelink-proto = { path = "../nativelink-proto" }
 nativelink-metric = { path = "../nativelink-metric" }
-fred = { version = "9.2.1", default-features = false, features = [
-  "enable-rustls-ring",
+nativelink-proto = { path = "../nativelink-proto" }
+
+mongodb = { version = "3", features = [
+  "compat-3-0-0",
+  "rustls-tls",
+], default-features = false }
+prost = { version = "0.13.5", default-features = false }
+prost-types = { version = "0.13.5", default-features = false, features = [
+  "std",
 ] }
-hex = { version = "0.4.3", default-features = false }
-prost = { version = "0.13.3", default-features = false }
-prost-types = { version = "0.13.3", default-features = false }
-serde = { version = "1.0.210", features = ["derive"], default-features = false }
-tokio = { version = "1.40.0", features = ["fs", "rt-multi-thread", "signal", "io-util"], default-features = false }
-tonic = { version = "0.12.3", features = ["transport", "tls"], default-features = false }
+redis = { version = "1.0.0", default-features = false }
+reqwest = { version = "0.12", default-features = false }
+rustls-pki-types = { version = "1.13.1", default-features = false }
+serde = { version = "1.0.219", default-features = false, features = ["derive"] }
+serde_json5 = { version = "0.2.1", default-features = false }
+tokio = { version = "1.52.2", features = [
+  "fs",
+  "io-util",
+  "rt-multi-thread",
+  "signal",
+], default-features = false }
+tonic = { version = "0.13.0", features = [
+  "tls-ring",
+  "transport",
+], default-features = false }
+url = { version = "2.5.7", default-features = false }
+uuid = { version = "1.16.0", default-features = false, features = ["std"] }
+walkdir = { version = "2.5.0", default-features = false }
+zip = { version = "7.2.0", default-features = false }

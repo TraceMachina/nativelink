@@ -1,0 +1,203 @@
+---
+title: Basic configurations
+description: Minimal NativeLink configurations for development and small teams — copy, paste, run.
+---
+
+Three configurations that cover ~90% of single-node use. Pick the one
+that matches what you need, drop it next to your cluster, run.
+
+## In-memory cache only
+
+The quickest cache to spin up. Everything lives in RAM; restart wipes
+it. Good for a 10-minute demo or a CI runner with a short lifetime.
+
+```json5
+{
+  stores: [
+    {
+      name: "CAS_MAIN_STORE",
+      memory: {
+        eviction_policy: { max_bytes: 1_000_000_000 }, // 1 GiB
+      },
+    },
+    {
+      name: "AC_MAIN_STORE",
+      memory: {
+        eviction_policy: { max_bytes: 100_000_000 }, // 100 MiB
+      },
+    },
+  ],
+  servers: [{
+    listener: { http: { socket_address: "0.0.0.0:50051" } },
+    services: {
+      cas:          [{ instance_name: "main", cas_store: "CAS_MAIN_STORE" }],
+      ac:           [{ instance_name: "main", ac_store: "AC_MAIN_STORE" }],
+      bytestream:   [{ instance_name: "main", cas_store: "CAS_MAIN_STORE" }],
+      capabilities: [{ instance_name: "main" }],
+    },
+  }],
+}
+```
+
+Save as `basic_cas.json5`, then:
+
+```bash
+nativelink ./basic_cas.json5
+```
+
+Point any RE-API client at `grpc://localhost:50051` (see
+[Setup](/getting-started/setup#point-your-build-system-at-it)).
+
+## Filesystem-backed cache
+
+Survives restarts. Suitable for a small team's shared cache, a CI
+worker that hosts its own cache on a persistent volume, or any
+single-node cluster where you don't want to lose state on reboot.
+
+```json5
+{
+  stores: [
+    {
+      name: "CAS_MAIN_STORE",
+      filesystem: {
+        content_path: "/var/lib/nativelink/cas",
+        temp_path:    "/var/lib/nativelink/tmp",
+        eviction_policy: { max_bytes: 50_000_000_000 }, // 50 GiB
+      },
+    },
+    {
+      name: "AC_MAIN_STORE",
+      filesystem: {
+        content_path: "/var/lib/nativelink/ac",
+        temp_path:    "/var/lib/nativelink/tmp",
+        eviction_policy: { max_bytes: 500_000_000 }, // 500 MiB
+      },
+    },
+  ],
+  servers: [{
+    listener: { http: { socket_address: "0.0.0.0:50051" } },
+    services: {
+      cas:          [{ instance_name: "main", cas_store: "CAS_MAIN_STORE" }],
+      ac:           [{ instance_name: "main", ac_store: "AC_MAIN_STORE" }],
+      bytestream:   [{ instance_name: "main", cas_store: "CAS_MAIN_STORE" }],
+      capabilities: [{ instance_name: "main" }],
+    },
+  }],
+}
+```
+
+<Callout type="info" title="Pick a filesystem that handles many small files">
+  CAS blobs are typically small — function-level outputs, header
+  files, link arguments. Default ext4 will work fine; a filesystem
+  tuned for small files (XFS with `inode64`, ZFS with `recordsize=4k`)
+  will degrade more gracefully under load.
+</Callout>
+
+## Compressed filesystem cache
+
+Same as filesystem-backed, with LZ4 compression around the CAS data.
+Trades a small amount of CPU for typically 40–60% storage savings on
+real-world build artifacts.
+
+```json5
+{
+  stores: [
+    {
+      name: "CAS_MAIN_STORE",
+      compression: {
+        compression_algorithm: { lz4: {} },
+        backend: {
+          filesystem: {
+            content_path: "/var/lib/nativelink/cas",
+            temp_path:    "/var/lib/nativelink/tmp",
+            eviction_policy: { max_bytes: 100_000_000_000 }, // 100 GiB
+          },
+        },
+      },
+    },
+    {
+      name: "AC_MAIN_STORE",
+      filesystem: {
+        content_path: "/var/lib/nativelink/ac",
+        temp_path:    "/var/lib/nativelink/tmp",
+        eviction_policy: { max_bytes: 500_000_000 },
+      },
+    },
+  ],
+  servers: [/* same as filesystem-backed */],
+}
+```
+
+Compression happens on write; decompression on read is automatic. The
+client sees raw bytes either way.
+
+## Adding remote execution to any of the above
+
+The configs above are cache-only. To accept `Execute` calls and run
+actions, add a scheduler and at least one worker:
+
+```json5
+{
+  // ... stores + servers from above ...
+
+  schedulers: {
+    MAIN_SCHEDULER: {
+      simple: {
+        supported_platform_properties: {
+          OSFamily: "exact",
+          container_image: "exact",
+        },
+      },
+    },
+  },
+
+  servers: [{
+    listener: { http: { socket_address: "0.0.0.0:50051" } },
+    services: {
+      // ... cas / ac / bytestream / capabilities as above ...
+      execution:  [{ instance_name: "main", scheduler: "MAIN_SCHEDULER" }],
+      worker_api: { scheduler: "MAIN_SCHEDULER" },
+    },
+  }],
+
+  workers: [{
+    local: {
+      worker_api_endpoint: { uri: "grpc://localhost:50051" },
+      cas_fast_slow_store: "CAS_MAIN_STORE",
+      upload_action_result: { upload_action_result: { ac_store: "AC_MAIN_STORE" } },
+      platform_properties: {
+        OSFamily: { values: ["linux"] },
+        container_image: { query_cmd: "echo nativelink" },
+      },
+    },
+  }],
+}
+```
+
+Now the cluster will execute actions in addition to caching them.
+
+## Choosing instance names
+
+The `instance_name` field appears everywhere. It namespaces every
+artifact: action hashes from two different instance names never
+collide.
+
+Pick one name per logical environment. Common patterns:
+
+- `main` — the production cache.
+- `<repo-name>` — a per-repo cache, for orgs that want isolation.
+- `<branch-pattern>-experiments` — a sandbox for non-default
+  branches.
+
+Every client targeting a given cache must use the same
+`instance_name`. Mismatches don't produce errors; they produce
+silently-empty caches.
+
+## What's next
+
+- [Production configurations](/configuration/production) — the
+  shape this evolves into for a real fleet.
+- [Other build systems](/getting-started/other-build-systems) —
+  pointing non-Bazel clients at the cluster.
+- [`nativelink-config/examples/`](https://github.com/TraceMachina/nativelink/tree/main/nativelink-config/examples)
+  in the source — more working configs.

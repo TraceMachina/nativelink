@@ -2,12 +2,16 @@ extends: substitution
 message: "Consider using '%s' instead of '%s'."
 link: https://docs.microsoft.com/en-us/style-guide/word-choice/use-simple-words-concise-sentences
 ignorecase: true
-level: warning
+level: suggestion
 action:
   name: replace
 swap:
-  (?:give|gave) rise to: lead to
+  "sufficient number(?: of)?": enough
+  (?:extract|take away|eliminate): remove
+  (?:in order to|as a means to): to
+  (?:inform|let me know): tell
   (?:previous|prior) to: before
+  (?:utilize|make use of): use
   a (?:large)? majority of: most
   a (?:large)? number of: many
   a myriad of: myriad
@@ -15,7 +19,7 @@ swap:
   all across: across
   all of a sudden: suddenly
   all of these: these
-  all of: all
+  all of(?! a sudden| these): all
   all-time record: record
   almost all: most
   almost never: seldom
@@ -52,13 +56,14 @@ swap:
   continue on: continue
   despite the fact that: although
   disappear from sight: disappear
+  doomed to fail: doomed
   drag and drop: drag
   drag-and-drop: drag
-  doomed to fail: doomed
   due to the fact that: because
   during the period of: during
   during the time that: while
   emergency situation: emergency
+  establish connectivity: connect
   except when: unless
   excessive number: too many
   extend an invitation: invite
@@ -74,6 +79,7 @@ swap:
   in a careful manner: carefully
   in a thoughtful manner: thoughtfully
   in a timely manner: timely
+  in addition: also
   in an effort to: to
   in between: between
   in lieu of: instead of
@@ -106,7 +112,6 @@ swap:
   span across: span
   subsequent to: after
   successfully complete: complete
-  sufficient number (?:of)?: enough
   take action: act
   take into account: consider
   the question as to whether: whether

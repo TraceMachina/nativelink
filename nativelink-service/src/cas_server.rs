@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,22 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::convert::Into;
+use core::pin::Pin;
+use core::time::Duration;
 use std::collections::{HashMap, VecDeque};
-use std::convert::Into;
-use std::pin::Pin;
 
 use bytes::Bytes;
 use futures::stream::{FuturesUnordered, Stream};
-use futures::TryStreamExt;
-use nativelink_config::cas_server::{CasStoreConfig, InstanceName};
-use nativelink_error::{error_if, make_input_err, Code, Error, ResultExt};
+use futures::{StreamExt, TryStreamExt};
+use nativelink_config::cas_server::{CasStoreConfig, WithInstanceName};
+use nativelink_error::{Code, Error, ResultExt, error_if, make_err, make_input_err};
 use nativelink_proto::build::bazel::remote::execution::v2::content_addressable_storage_server::{
     ContentAddressableStorage, ContentAddressableStorageServer as Server,
 };
 use nativelink_proto::build::bazel::remote::execution::v2::{
-    batch_read_blobs_response, batch_update_blobs_response, compressor, BatchReadBlobsRequest,
-    BatchReadBlobsResponse, BatchUpdateBlobsRequest, BatchUpdateBlobsResponse, Directory,
-    FindMissingBlobsRequest, FindMissingBlobsResponse, GetTreeRequest, GetTreeResponse,
+    BatchReadBlobsRequest, BatchReadBlobsResponse, BatchUpdateBlobsRequest,
+    BatchUpdateBlobsResponse, Directory, FindMissingBlobsRequest, FindMissingBlobsResponse,
+    GetTreeRequest, GetTreeResponse, batch_read_blobs_response, batch_update_blobs_response,
+    compressor,
 };
 use nativelink_proto::google::rpc::Status as GrpcStatus;
 use nativelink_store::ac_utils::get_and_decode_digest;
@@ -36,31 +38,36 @@ use nativelink_store::store_manager::StoreManager;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::make_ctx_for_hash_func;
 use nativelink_util::store_trait::{Store, StoreLike};
+use opentelemetry::context::FutureExt;
 use tonic::{Request, Response, Status};
-use tracing::{error_span, event, instrument, Level};
+use tracing::{Instrument, Level, debug, error_span, instrument};
 
+#[derive(Debug)]
 pub struct CasServer {
     stores: HashMap<String, Store>,
 }
 
 type GetTreeStream = Pin<Box<dyn Stream<Item = Result<GetTreeResponse, Status>> + Send + 'static>>;
 
+/// Per-blob deadline applied inside `BatchReadBlobs` / `BatchUpdateBlobs`.
+const BATCH_PER_BLOB_TIMEOUT: Duration = Duration::from_secs(30);
+
 impl CasServer {
     pub fn new(
-        config: &HashMap<InstanceName, CasStoreConfig>,
+        configs: &[WithInstanceName<CasStoreConfig>],
         store_manager: &StoreManager,
     ) -> Result<Self, Error> {
-        let mut stores = HashMap::with_capacity(config.len());
-        for (instance_name, cas_cfg) in config {
-            let store = store_manager.get_store(&cas_cfg.cas_store).ok_or_else(|| {
-                make_input_err!("'cas_store': '{}' does not exist", cas_cfg.cas_store)
+        let mut stores = HashMap::with_capacity(configs.len());
+        for config in configs {
+            let store = store_manager.get_store(&config.cas_store).ok_or_else(|| {
+                make_input_err!("'cas_store': '{}' does not exist", config.cas_store)
             })?;
-            stores.insert(instance_name.to_string(), store);
+            stores.insert(config.instance_name.clone(), store);
         }
-        Ok(CasServer { stores })
+        Ok(Self { stores })
     }
 
-    pub fn into_service(self) -> Server<CasServer> {
+    pub fn into_service(self) -> Server<Self> {
         Server::new(self)
     }
 
@@ -132,13 +139,25 @@ impl CasServer {
                     size_bytes,
                     request_data.len()
                 );
-                let result = store_ref
-                    .update_oneshot(digest_info, request_data)
-                    .await
-                    .err_tip(|| "Error writing to store");
+                // Apply a per-blob deadline so one slow upload does not
+                // make the whole batch hit the client's overall deadline.
+                let result = match tokio::time::timeout(
+                    BATCH_PER_BLOB_TIMEOUT,
+                    store_ref.update_oneshot(digest_info, request_data),
+                )
+                .await
+                {
+                    Ok(r) => r.err_tip(|| "Error writing to store"),
+                    Err(_elapsed) => Err(make_err!(
+                        Code::DeadlineExceeded,
+                        "BatchUpdateBlobs per-blob timeout ({} s) elapsed for digest {}",
+                        BATCH_PER_BLOB_TIMEOUT.as_secs(),
+                        digest_info,
+                    )),
+                };
                 Ok::<_, Error>(batch_update_blobs_response::Response {
                     digest: Some(digest),
-                    status: Some(result.map_or_else(Into::into, |_| GrpcStatus::default())),
+                    status: Some(result.map_or_else(Into::into, |()| GrpcStatus::default())),
                 })
             })
             .collect();
@@ -174,11 +193,23 @@ impl CasServer {
             .into_iter()
             .map(|digest| async move {
                 let digest_copy = DigestInfo::try_from(digest.clone())?;
-                // TODO(allada) There is a security risk here of someone taking all the memory on the instance.
-                let result = store_ref
-                    .get_part_unchunked(digest_copy, 0, None)
-                    .await
-                    .err_tip(|| "Error reading from store");
+                // TODO(palfrey) There is a security risk here of someone taking all the memory on the instance.
+                // Apply a per-blob deadline so one slow read does not
+                // make the whole batch hit the client's overall deadline.
+                let result = match tokio::time::timeout(
+                    BATCH_PER_BLOB_TIMEOUT,
+                    store_ref.get_part_unchunked(digest_copy, 0, None),
+                )
+                .await
+                {
+                    Ok(r) => r.err_tip(|| "Error reading from store"),
+                    Err(_elapsed) => Err(make_err!(
+                        Code::DeadlineExceeded,
+                        "BatchReadBlobs per-blob timeout ({} s) elapsed for digest {}",
+                        BATCH_PER_BLOB_TIMEOUT.as_secs(),
+                        digest_copy,
+                    )),
+                };
                 let (status, data) = result.map_or_else(
                     |mut e| {
                         if e.code == Code::NotFound {
@@ -209,7 +240,7 @@ impl CasServer {
     async fn inner_get_tree(
         &self,
         request: GetTreeRequest,
-    ) -> Result<Response<GetTreeStream>, Error> {
+    ) -> Result<impl Stream<Item = Result<GetTreeResponse, Status>> + Send + use<>, Error> {
         let instance_name = &request.instance_name;
 
         let store = self
@@ -226,7 +257,7 @@ impl CasServer {
                 .get_tree(Request::new(request))
                 .await?
                 .into_inner();
-            return Ok(Response::new(Box::pin(stream)));
+            return Ok(stream.left_stream());
         }
         let root_digest: DigestInfo = request
             .root_digest
@@ -275,27 +306,29 @@ impl CasServer {
                     .err_tip(|| "In Directory::file::digest")?;
                 deque.push_back(digest);
             }
+
+            let page_size_usize = usize::try_from(page_size).unwrap_or(usize::MAX);
+
             if page_token_matched {
                 directories.push(directory);
-                if directories.len() as i32 == page_size {
+                if directories.len() == page_size_usize {
                     break;
                 }
             }
         }
         // `next_page_token` will return the `{hash_str}:{size_bytes}` of the next request's first directory digest.
         // It will be an empty string when it reached the end of the directory tree.
-        let next_page_token: String = if let Some(value) = deque.front() {
-            format!("{value}")
-        } else {
-            String::new()
-        };
+        let next_page_token: String = deque
+            .front()
+            .map_or_else(String::new, |value| format!("{value}"));
 
-        Ok(Response::new(Box::pin(futures::stream::once(async {
+        Ok(futures::stream::once(async {
             Ok(GetTreeResponse {
                 directories,
                 next_page_token,
             })
-        }))))
+        })
+        .right_stream())
     }
 }
 
@@ -303,34 +336,37 @@ impl CasServer {
 impl ContentAddressableStorage for CasServer {
     type GetTreeStream = GetTreeStream;
 
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
-        ret(level = Level::INFO),
+        ret(level = Level::DEBUG),
         level = Level::ERROR,
         skip_all,
-        fields(request = ?grpc_request.get_ref())
+        fields(
+            // Mostly to skip request.blob_digests which is sometimes enormous
+            request.instance_name = ?grpc_request.get_ref().instance_name,
+            request.digest_function = ?grpc_request.get_ref().digest_function
+        )
     )]
     async fn find_missing_blobs(
         &self,
         grpc_request: Request<FindMissingBlobsRequest>,
     ) -> Result<Response<FindMissingBlobsResponse>, Status> {
         let request = grpc_request.into_inner();
-        make_ctx_for_hash_func(request.digest_function)
-            .err_tip(|| "In CasServer::find_missing_blobs")?
-            .wrap_async(
-                error_span!("cas_server_find_missing_blobs"),
-                self.inner_find_missing_blobs(request),
+        let digest_function = request.digest_function;
+        self.inner_find_missing_blobs(request)
+            .instrument(error_span!("cas_server_find_missing_blobs"))
+            .with_context(
+                make_ctx_for_hash_func(digest_function)
+                    .err_tip(|| "In CasServer::find_missing_blobs")?,
             )
             .await
             .err_tip(|| "Failed on find_missing_blobs() command")
             .map_err(Into::into)
     }
 
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
-        ret(level = Level::INFO),
+        ret(level = Level::DEBUG),
         level = Level::ERROR,
         skip_all,
         fields(request = ?grpc_request.get_ref())
@@ -340,18 +376,19 @@ impl ContentAddressableStorage for CasServer {
         grpc_request: Request<BatchUpdateBlobsRequest>,
     ) -> Result<Response<BatchUpdateBlobsResponse>, Status> {
         let request = grpc_request.into_inner();
-        make_ctx_for_hash_func(request.digest_function)
-            .err_tip(|| "In CasServer::batch_update_blobs")?
-            .wrap_async(
-                error_span!("cas_server_batch_update_blobs"),
-                self.inner_batch_update_blobs(request),
+        let digest_function = request.digest_function;
+
+        self.inner_batch_update_blobs(request)
+            .instrument(error_span!("cas_server_batch_update_blobs"))
+            .with_context(
+                make_ctx_for_hash_func(digest_function)
+                    .err_tip(|| "In CasServer::batch_update_blobs")?,
             )
             .await
             .err_tip(|| "Failed on batch_update_blobs() command")
             .map_err(Into::into)
     }
 
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
         ret(level = Level::INFO),
@@ -364,18 +401,19 @@ impl ContentAddressableStorage for CasServer {
         grpc_request: Request<BatchReadBlobsRequest>,
     ) -> Result<Response<BatchReadBlobsResponse>, Status> {
         let request = grpc_request.into_inner();
-        make_ctx_for_hash_func(request.digest_function)
-            .err_tip(|| "In CasServer::batch_read_blobs")?
-            .wrap_async(
-                error_span!("cas_server_batch_read_blobs"),
-                self.inner_batch_read_blobs(request),
+        let digest_function = request.digest_function;
+
+        self.inner_batch_read_blobs(request)
+            .instrument(error_span!("cas_server_batch_read_blobs"))
+            .with_context(
+                make_ctx_for_hash_func(digest_function)
+                    .err_tip(|| "In CasServer::batch_read_blobs")?,
             )
             .await
             .err_tip(|| "Failed on batch_read_blobs() command")
             .map_err(Into::into)
     }
 
-    #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err,
         level = Level::ERROR,
@@ -387,17 +425,21 @@ impl ContentAddressableStorage for CasServer {
         grpc_request: Request<GetTreeRequest>,
     ) -> Result<Response<Self::GetTreeStream>, Status> {
         let request = grpc_request.into_inner();
-        let resp = make_ctx_for_hash_func(request.digest_function)
-            .err_tip(|| "In CasServer::get_tree")?
-            .wrap_async(
-                error_span!("cas_server_get_tree"),
-                self.inner_get_tree(request),
+        let digest_function = request.digest_function;
+
+        let resp = self
+            .inner_get_tree(request)
+            .instrument(error_span!("cas_server_get_tree"))
+            .with_context(
+                make_ctx_for_hash_func(digest_function).err_tip(|| "In CasServer::get_tree")?,
             )
             .await
             .err_tip(|| "Failed on get_tree() command")
+            .map(|stream| -> Response<Self::GetTreeStream> { Response::new(Box::pin(stream)) })
             .map_err(Into::into);
+
         if resp.is_ok() {
-            event!(Level::DEBUG, return = "Ok(<stream>)");
+            debug!(return = "Ok(<stream>)");
         }
         resp
     }

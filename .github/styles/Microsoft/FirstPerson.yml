@@ -5,8 +5,8 @@ ignorecase: true
 level: warning
 nonword: true
 tokens:
-  - (?:^|\s)I\s
-  - (?:^|\s)I,\s
+  - (?:^|\s)I(?=\s)
+  - (?:^|\s)I(?=,\s)
   - \bI'd\b
   - \bI'll\b
   - \bI'm\b

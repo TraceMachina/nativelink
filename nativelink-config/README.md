@@ -12,8 +12,9 @@ A very basic configuration that's a pure in-memory store is:
 
 ```js
 {
-  "stores": {
-    "CAS_MAIN_STORE": {
+  "stores": [
+    {
+      "name": "CAS_MAIN_STORE",
       "memory": {
         "eviction_policy": {
           // 1gb.
@@ -21,7 +22,8 @@ A very basic configuration that's a pure in-memory store is:
         }
       }
     },
-    "AC_MAIN_STORE": {
+    {
+      "name": "AC_MAIN_STORE",
       "memory": {
         "eviction_policy": {
           // 100mb.
@@ -29,7 +31,7 @@ A very basic configuration that's a pure in-memory store is:
         }
       }
     }
-  },
+  ],
   "servers": [{
     "listener": {
       "http": {
@@ -40,24 +42,21 @@ A very basic configuration that's a pure in-memory store is:
       }
     },
     "services": {
-      "cas": {
-        "main": {
-          "cas_store": "CAS_MAIN_STORE"
-        }
-      },
-      "ac": {
-        "main": {
-          "ac_store": "AC_MAIN_STORE"
-        }
-      },
-      "capabilities": {
-        "main": {}
-      },
-      "bytestream": {
-        "cas_stores": {
-          "main": "CAS_MAIN_STORE",
-        }
-      }
+      "cas": [{
+        "instance_name": "main",
+        "cas_store": "CAS_MAIN_STORE"
+      }],
+      "ac": [{
+        "instance_name": "main",
+        "ac_store": "AC_MAIN_STORE"
+      }],
+      "capabilities": [{
+        "instance_name": "main"
+      }],
+      "bytestream": [{
+        "instance_name": "main",
+        "cas_store": "CAS_MAIN_STORE",
+      }]
     }
   }]
 }
@@ -73,8 +72,9 @@ the data is retrieved.
 
 ```js
 {
-  "stores": {
-    "CAS_MAIN_STORE": {
+  "stores": [
+    {
+      "name": "CAS_MAIN_STORE",
       "compression": {
         "compression_algorithm": {
           "lz4": {}
@@ -91,7 +91,8 @@ the data is retrieved.
         }
       }
     },
-    "AC_MAIN_STORE": {
+    {
+      "name": "AC_MAIN_STORE",
       "filesystem": {
         "content_path": "/tmp/bazel_cache/ac",
         "temp_path": "/tmp/bazel_cache/tmp_data",
@@ -101,14 +102,12 @@ the data is retrieved.
         }
       }
     }
-  },
+  ],
   // Place rest of configuration here ...
 }
 ```
 
-<!-- vale off -->
 ### Dedup Store
-<!-- vale on -->
 
 In this example we will attempt to de-duplicate our data and compress it before
 storing it. This works by applying the [FastCDC](https://www.usenix.org/system/files/conference/atc16/atc16-paper-xia.pdf)
@@ -125,8 +124,9 @@ only transfer the bytes around where the changes occurred.
 
 ```js
 {
-  "stores": {
-    "CAS_MAIN_STORE": {
+  "stores": [
+    {
+      "name": "CAS_MAIN_STORE",
       "dedup": {
         // Index store contains the references to the chunks of data and how to
         // reassemble them live. These will usually be <1% of the total size of
@@ -170,7 +170,8 @@ only transfer the bytes around where the changes occurred.
         "max_size": 262144
       }
     },
-    "AC_MAIN_STORE": {
+    {
+      "name": "AC_MAIN_STORE",
       // Don't apply anything special to our action cache, just store as normal files.
       "filesystem": {
         "content_path": "/tmp/bazel_cache/ac",
@@ -181,7 +182,7 @@ only transfer the bytes around where the changes occurred.
         }
       }
     }
-  },
+  ],
   // Place rest of configuration here ...
 }
 ```
@@ -194,9 +195,11 @@ stores, but in this example we'll store the raw files.
 
 ```js
 {
-  "stores": {
-    "CAS_MAIN_STORE": {
-      "experimental_s3_store": {
+  "stores": [
+    {
+      "name": "CAS_MAIN_STORE",
+      "experimental_cloud_object_store": {
+        "provider": "aws",
         // Region the bucket lives in.
         "region": "us-west-1",
         // Name of the bucket to upload to.
@@ -211,8 +214,10 @@ stores, but in this example we'll store the raw files.
         }
       }
     },
-    "AC_MAIN_STORE": {
-      "experimental_s3_store": {
+    {
+      "name": "AC_MAIN_STORE",
+      "experimental_cloud_object_store": {
+        "provider": "aws",
         "region": "us-west-1",
         "bucket": "some-bucket-name",
         "key_prefix": "ac/",
@@ -223,10 +228,58 @@ stores, but in this example we'll store the raw files.
         }
       }
     }
-  },
+  ],
   // Place rest of configuration here ...
 }
 ```
+
+### R2 Store
+
+[Cloudflare R2](https://developers.cloudflare.com/r2/) is an S3-compatible
+object store with no egress fees, which makes it attractive for read-heavy
+CAS workloads. The endpoint is derived from your Cloudflare `account_id`;
+credentials are read from env vars via `shellexpand`.
+
+```js
+{
+  "stores": [
+    {
+      "name": "CAS_MAIN_STORE",
+      "experimental_cloud_object_store": {
+        "provider": "r2",
+        "account_id": "your-cloudflare-account-id",
+        "bucket": "nativelink-cas",
+        "access_key_id": "${R2_ACCESS_KEY_ID}",
+        "secret_access_key": "${R2_SECRET_ACCESS_KEY}",
+        "key_prefix": "cas/",
+        "retry": {
+          "max_retries": 6,
+          "delay": 0.3,
+          "jitter": 0.5,
+        }
+      }
+    },
+    {
+      "name": "AC_MAIN_STORE",
+      "experimental_cloud_object_store": {
+        "provider": "r2",
+        "account_id": "your-cloudflare-account-id",
+        "bucket": "nativelink-cas",
+        "access_key_id": "${R2_ACCESS_KEY_ID}",
+        "secret_access_key": "${R2_SECRET_ACCESS_KEY}",
+        "key_prefix": "ac/",
+      }
+    }
+  ],
+  // Place rest of configuration here ...
+}
+```
+
+A complete runnable example with CAS and AC is at
+[`nativelink-config/examples/r2_backend.json5`](https://github.com/TraceMachina/nativelink/blob/main/nativelink-config/examples/r2_backend.json5).
+If `access_key_id` and `secret_access_key` are omitted, NativeLink falls
+back to the standard AWS credential chain (`AWS_*` env vars,
+`~/.aws/credentials`, IMDS).
 
 ### Fast Slow Store
 
@@ -241,8 +294,9 @@ the rest will be stored in AWS's S3:
 
 ```js
 {
-  "stores": {
-    "CAS_MAIN_STORE": {
+  "stores": [
+    {
+      "name": "CAS_MAIN_STORE",
       "fast_slow": {
         "fast": {
           "memory": {
@@ -253,7 +307,8 @@ the rest will be stored in AWS's S3:
           }
         },
         "slow": {
-          "experimental_s3_store": {
+          "experimental_cloud_object_store": {
+            "provider": "aws",
             "region": "us-west-1",
             "bucket": "some-bucket-name",
             "key_prefix": "cas/",
@@ -261,7 +316,8 @@ the rest will be stored in AWS's S3:
         }
       }
     },
-    "AC_MAIN_STORE": {
+    {
+      "name": "AC_MAIN_STORE",
       "fast_slow": {
         "fast": {
           "memory": {
@@ -272,7 +328,8 @@ the rest will be stored in AWS's S3:
           }
         },
         "slow": {
-          "experimental_s3_store": {
+          "experimental_cloud_object_store": {
+            "provider": "aws",
             "region": "us-west-1",
             "bucket": "some-bucket-name",
             "key_prefix": "ac/",
@@ -280,7 +337,7 @@ the rest will be stored in AWS's S3:
         }
       }
     }
-  },
+  ],
   // Place rest of configuration here ...
 }
 ```
@@ -298,8 +355,9 @@ and check it against the digest instead.
 
 ```js
 {
-  "stores": {
-    "CAS_MAIN_STORE": {
+  "stores": [
+    {
+      "name": "CAS_MAIN_STORE",
       "verify": {
         "backend": {
           "memory": {
@@ -314,7 +372,8 @@ and check it against the digest instead.
         "hash_verification_function": "sha256",
       }
     },
-    "AC_MAIN_STORE": {
+    {
+      "name": "AC_MAIN_STORE",
       "memory": {
         "eviction_policy": {
           // 100mb.
@@ -322,7 +381,7 @@ and check it against the digest instead.
         }
       }
     }
-  },
+  ],
   // Place rest of configuration here ...
 }
 ```

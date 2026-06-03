@@ -3,6 +3,7 @@ load(
     "rust_doc",
     "rust_doc_test",
     "rust_proc_macro",
+    "rust_test",
 )
 
 rust_proc_macro(
@@ -11,6 +12,17 @@ rust_proc_macro(
         "src/lib.rs",
     ],
     visibility = ["//visibility:public"],
+    deps = [
+        "@crates//:proc-macro2",
+        "@crates//:quote",
+        "@crates//:syn",
+    ],
+)
+
+rust_test(
+    name = "unit_test",
+    timeout = "short",
+    crate = ":nativelink-macro",
     deps = [
         "@crates//:proc-macro2",
         "@crates//:quote",

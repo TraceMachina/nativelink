@@ -1,0 +1,278 @@
+---
+title: Metrics & observability
+description: Collect NativeLink OTLP metrics, scrape them with Prometheus, and dashboard them in Grafana.
+---
+
+NativeLink emits remote execution metrics through OpenTelemetry. Cache operation
+metrics are available when the store is explicitly wrapped with the opt-in
+`cache_metrics` store wrapper.
+
+<Callout type="info" title="License note">
+  NativeLink metrics are licensed under the Business Source License.
+  Individual developer cache use does not need a commercial license.
+  Teams using metrics in shared, production, or commercial settings
+can use NativeLink Cloud, Enterprise, or an intentionally
+very inexpensive separate license. See the
+  [license page](https://nativelink.com/license).
+</Callout>
+
+## Overview
+
+NativeLink does not expose a Prometheus scrape endpoint directly. It emits OTLP
+metrics. To view those metrics in Prometheus, use one of these paths:
+
+1. NativeLink sends OTLP to an OpenTelemetry Collector, and Prometheus scrapes
+   the Collector's Prometheus exporter endpoint.
+2. NativeLink sends OTLP/HTTP metrics directly to Prometheus with Prometheus'
+   OTLP receiver enabled.
+
+The metrics cover:
+
+- **Cache performance**: hit rates and operation latencies when `cache_metrics`
+  is enabled.
+- **Execution pipeline**: queue times, stage durations, and success rates.
+- **System health**: worker utilization, throughput, and error rates.
+
+## Quick start
+
+<Tabs items={["Docker Compose", "Kubernetes", "Direct to Prometheus"]}>
+
+  <Tab value="Docker Compose">
+
+    Start the local metrics stack:
+
+    ```bash
+    git clone https://github.com/TraceMachina/nativelink
+    cd nativelink/deployment-examples/metrics
+    docker-compose up -d
+    ```
+
+    Configure NativeLink to send OTLP metrics to the Collector:
+
+    ```bash
+    export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+    export OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+    export OTEL_SERVICE_NAME=nativelink
+    export OTEL_RESOURCE_ATTRIBUTES="deployment.environment=dev,nativelink.instance_name=main"
+    ```
+
+    Then start NativeLink with your config:
+
+    ```bash
+    nativelink /path/to/config.json
+    ```
+
+    In this flow, NativeLink sends OTLP to the Collector on `:4317`. The
+    Collector serves Prometheus-format metrics on its Prometheus exporter
+    endpoint, and Prometheus scrapes that endpoint.
+
+    Services:
+
+    - Prometheus: `http://localhost:9090`
+    - Grafana: `http://localhost:3000`
+    - OTEL Collector metrics: `http://localhost:8888/metrics`
+
+  </Tab>
+
+  <Tab value="Kubernetes">
+
+    Deploy the Collector and Prometheus manifests:
+
+    ```bash
+    kubectl apply -f deployment-examples/metrics/kubernetes/otel-collector.yaml
+    kubectl apply -f deployment-examples/metrics/kubernetes/prometheus.yaml
+    ```
+
+    Configure the NativeLink deployment to export OTLP metrics:
+
+    ```yaml
+    env:
+      - name: OTEL_EXPORTER_OTLP_ENDPOINT
+        value: "http://otel-collector:4317"
+      - name: OTEL_EXPORTER_OTLP_PROTOCOL
+        value: "grpc"
+      - name: OTEL_RESOURCE_ATTRIBUTES
+        value: "deployment.environment=prod,k8s.cluster.name=main"
+    ```
+
+  </Tab>
+
+  <Tab value="Direct to Prometheus">
+
+    Start Prometheus with the OTLP receiver enabled:
+
+    ```bash
+    prometheus \
+      --web.enable-otlp-receiver \
+      --storage.tsdb.out-of-order-time-window=30m \
+      --config.file=prometheus.yml
+    ```
+
+    Then point NativeLink at Prometheus' OTLP metrics endpoint:
+
+    ```bash
+    export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+    export OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=http://localhost:9090/api/v1/otlp/v1/metrics
+    export OTEL_SERVICE_NAME=nativelink
+    export OTEL_RESOURCE_ATTRIBUTES="service.instance.id=$(uuidgen)"
+    export OTEL_TRACES_EXPORTER=none
+    export OTEL_LOGS_EXPORTER=none
+    ```
+
+  </Tab>
+
+</Tabs>
+
+## Enable cache metrics
+
+To emit `nativelink_cache_*` metrics, wrap the CAS or AC store you want to
+measure:
+
+```json5
+{
+  "name": "CAS_MAIN_STORE",
+  "cache_metrics": {
+    "cache_type": "cas",
+    "backend": {
+      "filesystem": {
+        "content_path": "~/.cache/nativelink/content_path-cas",
+        "temp_path": "~/.cache/nativelink/tmp_path-cas",
+      },
+    },
+  },
+}
+```
+
+If `cache_metrics` is absent, NativeLink constructs the same store graph as it
+would without cache metrics. The disabled path does not add a wrapper, timer,
+attribute allocation, or OpenTelemetry recording call to cache operations.
+
+## Metrics catalog
+
+### Cache metrics
+
+Cache metrics are opt-in. These series are emitted only for stores wrapped with
+`cache_metrics`; configuring OTEL alone does not enable them.
+
+| Metric | Type | Description | Labels |
+| ------ | ---- | ----------- | ------ |
+| `nativelink_cache_operations_total` | Counter | Total cache operations | `cache_type`, `cache_operation_name`, `cache_operation_result` |
+| `nativelink_cache_operation_duration` | Histogram | Operation latency in milliseconds | `cache_type`, `cache_operation_name` |
+| `nativelink_cache_io_total` | Counter | Bytes read or written | `cache_type`, `cache_operation_name` |
+| `nativelink_cache_size` | Gauge | Current cache size in bytes | `cache_type` |
+| `nativelink_cache_entries` | Gauge | Number of cached entries | `cache_type` |
+| `nativelink_cache_item_size` | Histogram | Size distribution of cache entries | `cache_type` |
+
+Operation names include `read`, `write`, `delete`, and `evict`. Operation
+results include `hit`, `miss`, `expired`, `success`, and `error`.
+
+### Execution metrics
+
+| Metric | Type | Description | Labels |
+| ------ | ---- | ----------- | ------ |
+| `nativelink_execution_stage_duration` | Histogram | Time spent in each execution stage | `execution_stage` |
+| `nativelink_execution_total_duration` | Histogram | Total execution time from submission to completion | `execution_instance` |
+| `nativelink_execution_queue_time` | Histogram | Time spent waiting in queue | `execution_priority` |
+| `nativelink_execution_active_count` | Gauge | Current actions in each stage | `execution_stage` |
+| `nativelink_execution_completed_count_total` | Counter | Completed executions | `execution_result`, `execution_action_digest` |
+| `nativelink_execution_stage_transitions_total` | Counter | Stage transition events | `execution_instance`, `execution_priority` |
+| `nativelink_execution_output_size` | Histogram | Size of execution outputs | - |
+| `nativelink_execution_retry_count_total` | Counter | Number of retries | - |
+
+Execution stages are `unknown`, `cache_check`, `queued`, `executing`, and
+`completed`.
+
+Counter metrics are exposed with a `_total` suffix in Prometheus. The Docker
+Compose quickstart, recording rules, and included dashboards assume `_total`
+counter names.
+
+## Example queries
+
+### Cache performance
+
+```text
+sum(rate(nativelink_cache_operations_total{cache_operation_result="hit"}[5m])) by (cache_type) /
+sum(rate(nativelink_cache_operations_total{cache_operation_name="read"}[5m])) by (cache_type)
+```
+
+```text
+histogram_quantile(0.95,
+  sum(rate(nativelink_cache_operation_duration_bucket[5m])) by (le, cache_type)
+)
+```
+
+### Execution pipeline
+
+```text
+sum(rate(nativelink_execution_completed_count_total{execution_result="success"}[5m])) /
+sum(rate(nativelink_execution_completed_count_total[5m]))
+```
+
+```text
+sum(nativelink_execution_active_count{execution_stage="queued"})
+```
+
+## Grafana dashboard
+
+A reference dashboard lives at
+[`deployment-examples/metrics/grafana/dashboards/nativelink-overview.json`](https://github.com/TraceMachina/nativelink/tree/main/deployment-examples/metrics/grafana/dashboards/nativelink-overview.json).
+Import it via Grafana's UI:
+
+1. Dashboards -> New -> Import.
+2. Paste the JSON.
+3. Pick your Prometheus data source.
+
+## Alerting
+
+Start with these signals and tune thresholds for your latency budget:
+
+| Alert | Threshold | Notes |
+| ----- | --------- | ----- |
+| `HighErrorRate` | error rate above 5% for 5 minutes | Check worker failures and scheduler logs. |
+| `QueueBacklog` | queued actions above 100 for 15 minutes | Add workers or inspect worker matching. |
+| `CacheEvictionHigh` | eviction rate above threshold for 10 minutes | Increase storage or tune eviction policy. |
+
+## Troubleshooting
+
+### No metrics appear
+
+1. Verify the OTEL environment:
+
+   ```bash
+   env | grep OTEL_
+   ```
+
+2. Check Collector health:
+
+   ```bash
+   curl http://localhost:13133/health
+   ```
+
+3. Verify the Collector is receiving metrics:
+
+   ```bash
+   curl http://localhost:8888/metrics | grep otelcol_receiver
+   ```
+
+### Cache metrics are missing
+
+If you see `nativelink_execution_*` metrics but no `nativelink_cache_*`
+metrics, wrap the store you want to measure with `cache_metrics`. OTEL
+configuration alone does not enable store-level cache operation metrics.
+
+### Out-of-order samples
+
+Increase the Prometheus window:
+
+```yaml
+storage:
+  tsdb:
+    out_of_order_time_window: 1h
+```
+
+## Additional resources
+
+- [Metrics deployment examples](https://github.com/TraceMachina/nativelink/tree/main/deployment-examples/metrics)
+- [OpenTelemetry Documentation](https://opentelemetry.io/docs/)
+- [Prometheus OTLP receiver](https://prometheus.io/docs/prometheus/latest/feature_flags/#otlp-receiver)
+- [NativeLink GitHub](https://github.com/TraceMachina/nativelink)

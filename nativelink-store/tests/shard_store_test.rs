@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,6 +14,7 @@
 
 use std::sync::Arc;
 
+use nativelink_config::stores::{MemorySpec, ShardSpec, StoreSpec};
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
 use nativelink_store::memory_store::MemoryStore;
@@ -28,15 +29,15 @@ use rand::{Rng, SeedableRng};
 const MEGABYTE_SZ: usize = 1024 * 1024;
 
 fn make_stores(weights: &[u32]) -> (Arc<ShardStore>, Vec<Arc<MemoryStore>>) {
-    let memory_store_config = nativelink_config::stores::MemoryStore::default();
-    let store_config = nativelink_config::stores::StoreConfig::memory(memory_store_config.clone());
+    let memory_store_config = MemorySpec::default();
+    let store_config = StoreSpec::Memory(memory_store_config);
     let stores: Vec<_> = weights
         .iter()
         .map(|_| MemoryStore::new(&memory_store_config))
         .collect();
 
     let shard_store = ShardStore::new(
-        &nativelink_config::stores::ShardStore {
+        &ShardSpec {
             stores: weights
                 .iter()
                 .map(|weight| nativelink_config::stores::ShardConfig {
@@ -80,7 +81,8 @@ async fn verify_weights(
     }
 
     for (index, (store, expected_hit)) in stores.iter().zip(expected_hits.iter()).enumerate() {
-        let total_hits = store.len_for_test().await;
+        let total_hits = store.len_for_test();
+        #[expect(clippy::print_stdout, reason = "improves debugging")]
         if print_results {
             println!("expected_hit: {expected_hit} - total_hits: {total_hits}");
         } else {

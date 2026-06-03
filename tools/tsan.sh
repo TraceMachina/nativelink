@@ -1,11 +1,11 @@
 #!/bin/bash
 # Copyright 2022 The NativeLink Authors. All rights reserved.
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
+# Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#    http://www.apache.org/licenses/LICENSE-2.0
+#    See LICENSE file for details
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -18,14 +18,14 @@
 set -euo pipefail
 
 export TMPDIR="${TEST_TMPDIR:-${TMPDIR:-/tmp}}"
-tsan_suppresions_file=$(mktemp -t tsan_suppressions.XXXXXX)
-trap "rm -f $tsan_suppresions_file" EXIT
+tsan_suppressions_file=$(mktemp -t tsan_suppressions.XXXXXX)
+trap 'rm -f $tsan_suppressions_file' EXIT
 
-cat <<EOF > "$tsan_suppresions_file"
+cat << EOF > "$tsan_suppressions_file"
 race:std::rt::lang_start_internal
 EOF
 
-export TSAN_OPTIONS="suppressions=$tsan_suppresions_file"
+export TSAN_OPTIONS="suppressions=$tsan_suppressions_file"
 export RUST_TEST_THREADS=1
 # Note: We cannot use `exec` here or else our `trap` cleanup will not run.
 "$@"

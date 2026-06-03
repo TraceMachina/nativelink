@@ -7,19 +7,20 @@
 use bytes::{Bytes, BytesMut};
 use tokio_util::codec::Decoder;
 
+#[derive(Debug)]
 struct State {
     hash: u32,
     position: usize,
 }
 
 impl State {
-    fn reset(&mut self) {
+    const fn reset(&mut self) {
         self.hash = 0;
         self.position = 0;
     }
 }
 
-/// This algorithm will take an input stream and build frames based on FastCDC algorithm.
+/// This algorithm will take an input stream and build frames based on `FastCDC` algorithm.
 /// see: <https://www.usenix.org/system/files/conference/atc16/atc16-paper-xia.pdf>
 ///
 /// In layman's terms this means we can take an input of unknown size and composition
@@ -38,6 +39,7 @@ impl State {
 ///
 /// Or put simply, it helps upload only the parts of the files that change, instead
 /// of the entire file.
+#[derive(Debug)]
 pub struct FastCDC {
     min_size: usize,
     avg_size: usize,
@@ -55,14 +57,13 @@ impl FastCDC {
         assert!(min_size < avg_size, "Expected {min_size} < {avg_size}");
         assert!(avg_size < max_size, "Expected {avg_size} < {max_size}");
         let norm_size = {
-            let mut offset = min_size + ((min_size + 1) / 2);
+            let mut offset = min_size + min_size.div_ceil(2);
             if offset > avg_size {
                 offset = avg_size;
             }
             avg_size - offset
         };
-        // Calculate the number of bits closest approximating our average.
-        let bits = (avg_size as f64).log2().round() as u32;
+
         Self {
             min_size,
             avg_size,
@@ -71,8 +72,8 @@ impl FastCDC {
             norm_size,
             // Turn our bits into a bitmask we can use later on for more
             // efficient bitwise operations.
-            mask_hard: 2u32.pow(bits + 1) - 1,
-            mask_easy: 2u32.pow(bits - 1) - 1,
+            mask_hard: 2u32.pow(avg_size.ilog2() + 1) - 1,
+            mask_easy: 2u32.pow(avg_size.ilog2() - 1) - 1,
 
             state: State {
                 hash: 0,
@@ -93,7 +94,7 @@ impl Decoder for FastCDC {
         // Zero means not found.
         let mut split_point = 0;
 
-        let start_point = std::cmp::max(self.state.position, self.min_size);
+        let start_point = core::cmp::max(self.state.position, self.min_size);
 
         // Note: We use this kind of loop because it improved performance of this loop by 20%.
         let mut i = start_point;
@@ -119,7 +120,7 @@ impl Decoder for FastCDC {
             self.state.reset();
             debug_assert!(
                 split_point <= self.max_size,
-                "Expected {} < {}",
+                "Expected {} <= {}",
                 split_point,
                 self.max_size
             );
@@ -149,7 +150,7 @@ impl Decoder for FastCDC {
 
 impl Clone for FastCDC {
     /// Clone configuration but with new state. This is useful where you can create
-    /// a base FastCDC object then clone it when you want to process a new stream.
+    /// a base `FastCDC` object then clone it when you want to process a new stream.
     fn clone(&self) -> Self {
         Self {
             min_size: self.min_size,

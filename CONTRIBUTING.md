@@ -271,20 +271,8 @@ When working on Rust code `bazel test` commands automatically run `rustfmt` on
 all source files. If you get errors from these checks, run the `rustfmt` Bazel
 target to format the sources.
 
-For Bash/Zsh:
-
 ```bash
-bazel run \
-  --@rules_rust//:rustfmt.toml=//:.rustfmt.toml \
-  @rules_rust//:rustfmt
-```
-
-For Windows PowerShell:
-
-```powershell
-bazel run `
-  --@rules_rust//:rustfmt.toml=//:.rustfmt.toml `
-  @rules_rust//:rustfmt
+bazel run --config=rustfmt @rules_rust//:rustfmt
 ```
 
 ### Running pre-commit hooks
@@ -474,7 +462,7 @@ NativeLink Code of Conduct is available in the
 You can generate branch-based coverage reports via:
 
 ```
-nix run .#nativelinkCoverageForHost
+nix build .#nativelinkCoverageForHost
 ```
 
 The `result` symlink contains a webpage with the visualized report.

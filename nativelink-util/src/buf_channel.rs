@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,18 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::pin::Pin;
+use core::sync::atomic::{AtomicBool, Ordering};
+use core::task::Poll;
 use std::collections::VecDeque;
-use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::task::Poll;
 
 use bytes::{Bytes, BytesMut};
 use futures::task::Context;
 use futures::{Future, Stream, TryFutureExt};
-use nativelink_error::{error_if, make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, error_if, make_err, make_input_err};
 use tokio::sync::mpsc;
-use tracing::{event, Level};
+use tracing::warn;
 
 const ZERO_DATA: Bytes = Bytes::new();
 
@@ -59,6 +59,7 @@ pub fn make_buf_channel_pair() -> (DropCloserWriteHalf, DropCloserReadHalf) {
 }
 
 /// Writer half of the pair.
+#[derive(Debug)]
 pub struct DropCloserWriteHalf {
     tx: Option<mpsc::Sender<Bytes>>,
     bytes_written: u64,
@@ -129,10 +130,12 @@ impl DropCloserWriteHalf {
             // we forward it on to the reader.
             if reader.peek().await.is_err() {
                 // Read our next message for good book keeping.
-                let _ = reader
-                    .recv()
-                    .await
-                    .err_tip(|| "In DropCloserWriteHalf::bind_buffered::peek::eof")?;
+                drop(
+                    reader
+                        .recv()
+                        .await
+                        .err_tip(|| "In DropCloserWriteHalf::bind_buffered::peek::eof")?,
+                );
                 return Err(make_err!(
                     Code::Internal,
                     "DropCloserReadHalf::peek() said error, but when data received said Ok. This should never happen."
@@ -155,8 +158,7 @@ impl DropCloserWriteHalf {
         // Flag that we have sent the EOF.
         let eof_was_sent = self.eof_sent.swap(true, Ordering::Release);
         if eof_was_sent {
-            event!(
-                Level::WARN,
+            warn!(
                 "Stream already closed when eof already was sent. This is often ok for retry was triggered, but should not happen on happy path."
             );
             return Ok(());
@@ -184,6 +186,7 @@ impl DropCloserWriteHalf {
 }
 
 /// Reader half of the pair.
+#[derive(Debug)]
 pub struct DropCloserReadHalf {
     rx: mpsc::Receiver<Bytes>,
     /// Number of bytes received over the stream.
@@ -201,7 +204,7 @@ pub struct DropCloserReadHalf {
     /// any of the data was received if possible (eg: something failed and
     /// we want to retry).
     recent_data: Vec<Bytes>,
-    /// Amount of data to keep in the recent_data buffer before clearing it
+    /// Amount of data to keep in the `recent_data` buffer before clearing it
     /// and no longer populating it.
     max_recent_data_size: u64,
 }
@@ -222,11 +225,11 @@ impl DropCloserReadHalf {
                 self.bytes_received = 0;
                 self.last_err = Some(err.clone());
                 return Err(err);
-            };
+            }
 
             self.maybe_populate_recent_data(&ZERO_DATA);
             return Ok(ZERO_DATA);
-        };
+        }
 
         self.bytes_received += chunk.len() as u64;
         self.maybe_populate_recent_data(&chunk);
@@ -265,15 +268,15 @@ impl DropCloserReadHalf {
         self.recent_data.push(chunk.clone());
     }
 
-    /// Sets the maximum size of the recent_data buffer. If the number of bytes
-    /// received exceeds this size, the recent_data buffer will be cleared and
+    /// Sets the maximum size of the `recent_data` buffer. If the number of bytes
+    /// received exceeds this size, the `recent_data` buffer will be cleared and
     /// no longer populated.
-    pub fn set_max_recent_data_size(&mut self, size: u64) {
+    pub const fn set_max_recent_data_size(&mut self, size: u64) {
         self.max_recent_data_size = size;
     }
 
     /// Attempts to reset the stream to before any data was received. This will
-    /// only work if the number of bytes received is less than max_recent_data_size.
+    /// only work if the number of bytes received is less than `max_recent_data_size`.
     ///
     /// On error the state of the stream is undefined and the caller should not
     /// attempt to use the stream again.
@@ -300,18 +303,19 @@ impl DropCloserReadHalf {
     }
 
     /// Drains the reader until an EOF is received, but sends data to the void.
-    pub async fn drain(&mut self) -> Result<(), Error> {
+    pub async fn drain(&mut self) -> Result<u64, Error> {
+        let mut total_bytes: u64 = 0;
         loop {
-            if self
+            let bytes = self
                 .recv()
                 .await
-                .err_tip(|| "Failed to drain in buf_channel::drain")?
-                .is_empty()
-            {
+                .err_tip(|| "Failed to drain in buf_channel::drain")?;
+            if bytes.is_empty() {
                 break; // EOF.
             }
+            total_bytes += bytes.len().try_into().unwrap_or(0);
         }
-        Ok(())
+        Ok(total_bytes)
     }
 
     /// Peek the next set of bytes in the stream without consuming them.
@@ -327,7 +331,7 @@ impl DropCloserReadHalf {
     }
 
     /// The number of bytes received over this stream so far.
-    pub fn get_bytes_received(&self) -> u64 {
+    pub const fn get_bytes_received(&self) -> u64 {
         self.bytes_received
     }
 
@@ -360,7 +364,7 @@ impl DropCloserReadHalf {
                     }
                 }
                 Err(e) => {
-                    return Err(e.clone()).err_tip(|| "Failed to check if next chunk is EOF")?
+                    return Err(e).err_tip(|| "Failed to check if next chunk is EOF")?;
                 }
             }
             chunk
@@ -372,7 +376,7 @@ impl DropCloserReadHalf {
             let mut chunk = self
                 .recv()
                 .await
-                .err_tip(|| "During first read of buf_channel::take()")?;
+                .err_tip(|| "During next read of buf_channel::take()")?;
             if chunk.is_empty() {
                 break; // EOF.
             }
@@ -393,7 +397,7 @@ impl DropCloserReadHalf {
 impl Stream for DropCloserReadHalf {
     type Item = Result<Bytes, std::io::Error>;
 
-    // TODO(blaise.bruer) This is not very efficient as we are creating a new future on every
+    // TODO(palfrey) This is not very efficient as we are creating a new future on every
     // poll() call. It might be better to use a waker.
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         Box::pin(self.recv())

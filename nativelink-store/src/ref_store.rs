@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,23 +12,29 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::cell::UnsafeCell;
-use std::pin::Pin;
-use std::sync::{Arc, Mutex, Weak};
+use core::cell::UnsafeCell;
+use core::pin::Pin;
+use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
-use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_config::stores::RefSpec;
+use nativelink_error::{Error, ResultExt, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
-use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
-use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
-use tracing::{event, Level};
+use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
+use nativelink_util::store_trait::{
+    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+};
+use parking_lot::Mutex;
+use tracing::error;
 
 use crate::store_manager::StoreManager;
 
 #[repr(C, align(8))]
+#[derive(Debug)]
 struct AlignedStoreCell(UnsafeCell<Option<Store>>);
 
+#[derive(Debug)]
 struct StoreReference {
     cell: AlignedStoreCell,
     mux: Mutex<()>,
@@ -36,26 +42,25 @@ struct StoreReference {
 
 unsafe impl Sync for StoreReference {}
 
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct RefStore {
     #[metric(help = "The store we are referencing")]
-    ref_store_name: String,
+    name: String,
     store_manager: Weak<StoreManager>,
-    ref_store: StoreReference,
+    inner: StoreReference,
+    remove_callbacks: Mutex<Vec<Arc<dyn RemoveItemCallback>>>,
 }
 
 impl RefStore {
-    pub fn new(
-        config: &nativelink_config::stores::RefStore,
-        store_manager: Weak<StoreManager>,
-    ) -> Arc<Self> {
-        Arc::new(RefStore {
-            ref_store_name: config.name.clone(),
+    pub fn new(spec: &RefSpec, store_manager: Weak<StoreManager>) -> Arc<Self> {
+        Arc::new(Self {
+            name: spec.name.clone(),
             store_manager,
-            ref_store: StoreReference {
+            inner: StoreReference {
                 mux: Mutex::new(()),
                 cell: AlignedStoreCell(UnsafeCell::new(None)),
             },
+            remove_callbacks: Mutex::new(vec![]),
         })
     }
 
@@ -68,7 +73,7 @@ impl RefStore {
     // 3. It is likely that the internals of how Option work protect us anyway.
     #[inline]
     fn get_store(&self) -> Result<&Store, Error> {
-        let ref_store = self.ref_store.cell.0.get();
+        let ref_store = self.inner.cell.0.get();
         unsafe {
             if let Some(ref store) = *ref_store {
                 return Ok(store);
@@ -76,18 +81,16 @@ impl RefStore {
         }
         // This should protect us against multiple writers writing the same location at the same
         // time.
-        let _lock = self.ref_store.mux.lock().map_err(|e| {
-            make_err!(
-                Code::Internal,
-                "Failed to lock mutex in ref_store : {:?}",
-                e
-            )
-        })?;
+        let _lock = self.inner.mux.lock();
         let store_manager = self
             .store_manager
             .upgrade()
             .err_tip(|| "Store manager is gone")?;
-        if let Some(store) = store_manager.get_store(&self.ref_store_name) {
+        if let Some(store) = store_manager.get_store(&self.name) {
+            let remove_callbacks = self.remove_callbacks.lock().clone();
+            for callback in remove_callbacks {
+                store.register_remove_callback(callback)?;
+            }
             unsafe {
                 *ref_store = Some(store);
                 return Ok((*ref_store).as_ref().unwrap());
@@ -95,7 +98,7 @@ impl RefStore {
         }
         Err(make_input_err!(
             "Failed to find store '{}' in StoreManager in RefStore",
-            self.ref_store_name
+            self.name
         ))
     }
 }
@@ -115,7 +118,7 @@ impl StoreDriver for RefStore {
         key: StoreKey<'_>,
         reader: DropCloserReadHalf,
         size_info: UploadSizeInfo,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         self.get_store()?.update(key, reader, size_info).await
     }
 
@@ -135,18 +138,32 @@ impl StoreDriver for RefStore {
         match self.get_store() {
             Ok(store) => store.inner_store(key),
             Err(err) => {
-                event!(Level::ERROR, ?key, ?err, "Failed to get store for key",);
+                error!(?key, ?err, "Failed to get store for key",);
                 self
             }
         }
     }
 
-    fn as_any<'a>(&'a self) -> &'a (dyn std::any::Any + Sync + Send + 'static) {
+    fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
         self
     }
 
-    fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
+    }
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        callback: Arc<dyn RemoveItemCallback>,
+    ) -> Result<(), Error> {
+        self.remove_callbacks.lock().push(callback.clone());
+        let ref_store = self.inner.cell.0.get();
+        unsafe {
+            if let Some(ref store) = *ref_store {
+                store.register_remove_callback(callback)?;
+            }
+        }
+        Ok(())
     }
 }
 

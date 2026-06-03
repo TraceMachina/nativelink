@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,15 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::ops::Bound;
+use core::pin::Pin;
+use core::task::{Context, Poll};
 use std::collections::VecDeque;
-use std::ops::Bound;
-use std::pin::Pin;
-use std::task::{Context, Poll};
 
 use futures::{Future, Stream};
 use pin_project::pin_project;
 
 #[pin_project(project = StreamStateProj)]
+#[derive(Debug)]
 enum StreamState<Fut> {
     Future(#[pin] Fut),
     Next,
@@ -32,6 +33,7 @@ enum StreamState<Fut> {
 /// to implement Stream, but to access the underlying data requires a lock,
 /// but API does not require the data to be in sync with data already received.
 #[pin_project]
+#[derive(Debug)]
 pub struct ChunkedStream<K, T, F, E, Fut>
 where
     K: Ord,
@@ -52,7 +54,7 @@ where
     F: FnMut(Bound<K>, Bound<K>, VecDeque<T>) -> Fut,
     Fut: Future<Output = Result<Option<((Bound<K>, Bound<K>), VecDeque<T>)>, E>>,
 {
-    pub fn new(start_key: Bound<K>, end_key: Bound<K>, chunk_fn: F) -> Self {
+    pub const fn new(start_key: Bound<K>, end_key: Bound<K>, chunk_fn: F) -> Self {
         Self {
             chunk_fn,
             buffer: VecDeque::new(),
@@ -83,7 +85,7 @@ where
                         Ok(Some(((start, end), mut buffer))) => {
                             *this.start_key = Some(start);
                             *this.end_key = Some(end);
-                            std::mem::swap(&mut buffer, this.buffer);
+                            core::mem::swap(&mut buffer, this.buffer);
                         }
                         Ok(None) => return Poll::Ready(None), // End of stream.
                         Err(err) => return Poll::Ready(Some(Err(err))),
@@ -94,7 +96,7 @@ where
                 StreamStateProj::Next => {
                     this.buffer.clear();
                     // This trick is used to recycle capacity.
-                    let buffer = std::mem::take(this.buffer);
+                    let buffer = core::mem::take(this.buffer);
                     let start_key = this
                         .start_key
                         .take()

@@ -1,0 +1,22 @@
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: nativelink
+  namespace: default
+spec:
+  interval: 2m
+  path: PLACEHOLDER_NATIVELINK_KUSTOMIZATION
+  prune: true
+  force: true
+  retryInterval: 20s
+  targetNamespace: default
+  wait: true
+  sourceRef:
+    kind: GitRepository
+    name: nativelink
+    namespace: default
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: nativelink-image-tags

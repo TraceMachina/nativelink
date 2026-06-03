@@ -1,0 +1,29 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../kubernetes/nativelink
+  - ../../kubernetes/workers/lre-cc
+  - ../../kubernetes/resources/gateway-routes
+
+# Note: This deployment is mainly intended for documentation purposes. If you
+#       intend to use it you'll need to provide image tags here.
+#
+#       NativeLink doesn't support a "latest" tag or similar for reproducibility
+#       reasons. For the latest tags see:
+#         https://github.com/orgs/TraceMachina/packages?repo_name=nativelink
+#
+# See the lre overlay for a setup that autodetects these tags and automatically
+# stays in sync with main. See the `../deploy/dev` directory for development
+# setups.
+images:
+  - name: nativelink
+    newName: ghcr.io/TraceMachina/nativelink
+    newTag: TODO
+  - name: nativelink-worker-init
+    newName: ghcr.io/TraceMachina/nativelink-worker-init
+    newTag: TODO
+  - name: nativelink-worker-lre-cc
+    newName: ghcr.io/TraceMachina/nativelink-worker-lre-cc
+    newTag: TODO

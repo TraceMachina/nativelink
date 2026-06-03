@@ -1,0 +1,151 @@
+# OpenTelemetry Collector Configuration for NativeLink Metrics
+# This configuration receives metrics from NativeLink via OTLP and exports them to various backends
+
+receivers:
+  # Receive metrics from NativeLink via OTLP gRPC
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Add resource attributes for better metric identification
+  resource:
+    attributes:
+      - key: service.namespace
+        value: nativelink
+        action: upsert
+      - key: deployment.environment
+        from_attribute: deployment_environment
+        action: insert
+      - key: deployment.region
+        from_attribute: deployment_region
+        action: insert
+
+  # Transform metrics to add NativeLink-specific attributes
+  transform/nativelink:
+    metric_statements:
+      - context: datapoint
+        statements:
+          # Add instance name from resource attributes if available
+          - set(attributes["instance_name"], resource.attributes["nativelink.instance_name"])
+            where resource.attributes["nativelink.instance_name"] != nil
+
+  # Batch metrics for efficiency
+  batch:
+    timeout: 10s
+    send_batch_size: 1024
+    send_batch_max_size: 2048
+
+  # Add memory limiter to prevent OOM
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512
+    spike_limit_mib: 128
+
+exporters:
+  # Export metrics to Prometheus format
+  prometheus:
+    endpoint: 0.0.0.0:9090
+    namespace: nativelink
+    const_labels:
+      service: nativelink
+    resource_to_telemetry_conversion:
+      enabled: true
+    enable_open_metrics: true
+    # Add metric descriptions for NativeLink metrics
+    metric_expiration: 10m
+
+  # Direct OTLP export to Prometheus (when Prometheus has OTLP receiver enabled)
+  otlphttp/prometheus:
+    endpoint: http://prometheus:9090/api/v1/otlp/v1/metrics
+    compression: gzip
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 300s
+
+  # Export traces to Jaeger
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+
+  # Export to other OTLP backends (e.g., Grafana Cloud, ClickHouse)
+  otlp/backend:
+    endpoint: "${OTLP_BACKEND_ENDPOINT}"
+    compression: gzip
+    headers:
+      Authorization: "Bearer ${OTLP_BACKEND_TOKEN}"
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 300s
+
+  # Debug exporter for troubleshooting
+  debug:
+    verbosity: detailed
+    sampling_initial: 5
+    sampling_thereafter: 200
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+    path: /health
+    check_collector_pipeline:
+      enabled: true
+      interval: 15s
+      exporter_failure_threshold: 5
+
+  pprof:
+    endpoint: 0.0.0.0:1777
+
+  zpages:
+    endpoint: 0.0.0.0:55679
+
+service:
+  extensions: [health_check, pprof, zpages]
+  pipelines:
+    # Main metrics pipeline - exports to Prometheus scrape endpoint
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, transform/nativelink, batch]
+      exporters: [prometheus]
+
+    # Direct to Prometheus OTLP endpoint (if enabled)
+    metrics/prometheus_otlp:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, transform/nativelink, batch]
+      exporters: [otlphttp/prometheus]
+
+    # Traces pipeline - exports to Jaeger
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp/jaeger]
+
+    # Optional: Send to additional backend
+    # Uncomment and configure OTLP_BACKEND_ENDPOINT environment variable
+    # metrics/backend:
+    #   receivers: [otlp]
+    #   processors: [memory_limiter, resource, transform/nativelink, batch]
+    #   exporters: [otlp/backend]
+
+    # Debug pipeline for development
+    # metrics/debug:
+    #   receivers: [otlp]
+    #   processors: [memory_limiter]
+    #   exporters: [debug]
+
+  telemetry:
+    logs:
+      level: info
+      initial_fields:
+        service: otel-collector
+    metrics:
+      level: detailed
+      address: 0.0.0.0:8888

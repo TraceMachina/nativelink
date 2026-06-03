@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,14 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::hash::BuildHasher;
+use core::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use core::time::Duration;
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use nativelink_metric_macro_derive::MetricsComponent;
-pub use tracing::{error as __metric_error, info as __metric_event, info_span as __metric_span};
+pub use tracing::{
+    error as __metric_error, info as __metric_info, info_span as __metric_info_span,
+};
 
 /// Error type for the metrics library.
 // Note: We do not use the nativelink-error struct because
@@ -28,23 +32,23 @@ pub use tracing::{error as __metric_error, info as __metric_event, info_span as 
 #[derive(Debug)]
 pub struct Error(String);
 
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for Error {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}", self.0)
     }
 }
 
-impl std::error::Error for Error {}
+impl core::error::Error for Error {}
 
 /// Holds metadata about the field that is being published.
-#[derive(Default, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct MetricFieldData<'a> {
     pub name: Cow<'a, str>,
     pub help: Cow<'a, str>,
     pub group: Cow<'a, str>,
 }
 
-/// The final primtive data that is being published with the kind.
+/// The final primitive data that is being published with the kind.
 #[derive(Debug)]
 pub enum MetricPublishKnownKindData {
     Counter(u64),
@@ -68,31 +72,36 @@ pub enum MetricKind {
 impl From<u64> for MetricKind {
     fn from(value: u64) -> Self {
         match value {
-            0 | 4_u64..=u64::MAX => MetricKind::Default,
-            1 => MetricKind::Counter,
-            2 => MetricKind::String,
-            3 => MetricKind::Component,
+            0 | 4_u64..=u64::MAX => Self::Default,
+            1 => Self::Counter,
+            2 => Self::String,
+            3 => Self::Component,
         }
     }
 }
 
 impl MetricKind {
-    pub fn into_known_kind(&self, default_kind: MetricKind) -> MetricPublishKnownKindData {
-        let mut this = *self;
-        if matches!(self, MetricKind::Default) {
-            this = default_kind;
-        }
+    #[must_use]
+    pub fn into_known_kind(&self, default_kind: Self) -> MetricPublishKnownKindData {
+        let this = if matches!(self, Self::Default) {
+            default_kind
+        } else {
+            *self
+        };
         match this {
-            MetricKind::Counter => MetricPublishKnownKindData::Counter(0),
-            MetricKind::String => MetricPublishKnownKindData::String(String::new()),
-            MetricKind::Component => MetricPublishKnownKindData::Component,
-            MetricKind::Default => unreachable!("Default should have been handled"),
+            Self::Counter => MetricPublishKnownKindData::Counter(0),
+            Self::String => MetricPublishKnownKindData::String(String::new()),
+            Self::Component => MetricPublishKnownKindData::Component,
+            Self::Default => unreachable!("Default should have been handled"),
         }
     }
 }
 
 /// The trait that all components that can be published must implement.
 pub trait MetricsComponent {
+    /// # Errors
+    ///
+    /// Will return `Err` if we can't publish the metric.
     fn publish(
         &self,
         kind: MetricKind,
@@ -101,6 +110,9 @@ pub trait MetricsComponent {
 }
 
 pub trait RootMetricsComponent: MetricsComponent + Send + Sync {
+    /// # Errors
+    ///
+    /// Will return `Err` if we can't publish the metric.
     fn publish(
         &self,
         kind: MetricKind,
@@ -116,10 +128,10 @@ impl<T: MetricsComponent> MetricsComponent for Option<T> {
         kind: MetricKind,
         field_metadata: MetricFieldData,
     ) -> Result<MetricPublishKnownKindData, Error> {
-        match self {
-            Some(value) => value.publish(kind, field_metadata),
-            None => Ok(MetricPublishKnownKindData::Component),
-        }
+        self.as_ref()
+            .map_or(Ok(MetricPublishKnownKindData::Component), |value| {
+                value.publish(kind, field_metadata)
+            })
     }
 }
 
@@ -143,7 +155,7 @@ impl<T: MetricsComponent + ?Sized> MetricsComponent for Arc<T> {
     }
 }
 
-impl<T: MetricsComponent> MetricsComponent for HashSet<T> {
+impl<T: MetricsComponent, S: BuildHasher> MetricsComponent for HashSet<T, S> {
     fn publish(
         &self,
         kind: MetricKind,
@@ -177,7 +189,7 @@ impl<T: MetricsComponent> MetricsComponent for HashSet<T> {
     }
 }
 
-impl<U: ToString, T: MetricsComponent> MetricsComponent for HashMap<U, T> {
+impl<U: ToString, T: MetricsComponent, S: BuildHasher> MetricsComponent for HashMap<U, T, S> {
     fn publish(
         &self,
         kind: MetricKind,
@@ -296,10 +308,10 @@ impl MetricsComponent for SystemTime {
         kind: MetricKind,
         field_metadata: MetricFieldData,
     ) -> Result<MetricPublishKnownKindData, Error> {
-        match SystemTime::now().duration_since(UNIX_EPOCH) {
-            Ok(n) => n.as_secs().publish(kind, field_metadata),
-            Err(_) => Err(Error("SystemTime before UNIX EPOCH!".to_string())),
-        }
+        Self::now().duration_since(UNIX_EPOCH).map_or_else(
+            |_| Err(Error("SystemTime before UNIX EPOCH!".to_string())),
+            |n| n.as_secs().publish(kind, field_metadata),
+        )
     }
 }
 
@@ -473,7 +485,7 @@ impl<T: MetricsComponent> MetricsComponent for parking_lot::RwLock<T> {
 #[macro_export]
 macro_rules! group {
     ($name:expr) => {
-        $crate::__metric_span!(target: "nativelink_metric", "", __name = $name.to_string())
+        $crate::__metric_info_span!(target: "nativelink_metric", "", __name = $name.to_string())
     };
 }
 
@@ -497,7 +509,7 @@ macro_rules! publish {
             };
             match $crate::MetricsComponent::publish($value, $metric_kind, field_metadata)? {
                 $crate::MetricPublishKnownKindData::Counter(value) => {
-                    $crate::__metric_event!(
+                    $crate::__metric_info!(
                         target: "nativelink_metric",
                         __value = value,
                         __type = $crate::MetricKind::Counter as u8,
@@ -506,7 +518,7 @@ macro_rules! publish {
                     );
                 }
                 $crate::MetricPublishKnownKindData::String(value) => {
-                    $crate::__metric_event!(
+                    $crate::__metric_info!(
                         target: "nativelink_metric",
                         __value = value,
                         __type = $crate::MetricKind::String as u8,

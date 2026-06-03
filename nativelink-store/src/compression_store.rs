@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,26 +12,28 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::cmp;
-use std::pin::Pin;
+use core::cmp;
+use core::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use bincode::config::{FixintEncoding, WithOtherIntEncoding};
-use bincode::{DefaultOptions, Options};
 use byteorder::{ByteOrder, LittleEndian};
 use bytes::{Buf, BufMut, BytesMut};
 use futures::future::FutureExt;
 use lz4_flex::block::{compress_into, decompress_into, get_maximum_output_size};
-use nativelink_error::{error_if, make_err, Code, Error, ResultExt};
+use nativelink_config::stores::CompressionSpec;
+use nativelink_error::{Code, Error, ResultExt, error_if, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{
-    make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf,
+    DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
 };
-use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
+use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::spawn;
-use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{
+    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+};
 use serde::{Deserialize, Serialize};
+use wincode::{SchemaRead, SchemaWrite};
 
 use crate::cas_utils::is_zero_digest;
 
@@ -42,9 +44,7 @@ pub const CURRENT_STREAM_FORMAT_VERSION: u8 = 1;
 // Default block size that will be used to slice stream into.
 pub const DEFAULT_BLOCK_SIZE: u32 = 64 * 1024;
 
-const U32_SZ: u64 = std::mem::size_of::<u8>() as u64;
-
-type BincodeOptions = WithOtherIntEncoding<DefaultOptions, FixintEncoding>;
+const U32_SZ: u64 = size_of::<u8>() as u64;
 
 // We use a custom frame format here because I wanted the ability in the future to:
 // * Read a random part of the data without needing to parse entire file.
@@ -113,27 +113,31 @@ pub const CHUNK_FRAME_TYPE: u8 = 0;
 /// Number representing the footer.
 pub const FOOTER_FRAME_TYPE: u8 = 1;
 
-/// This is a partial mirror of nativelink_config::stores::Lz4Config.
+/// This is a partial mirror of `nativelink_config::stores::Lz4Config`.
 /// We cannot use that natively here because it could cause our
 /// serialized format to change if we added more configs.
-#[derive(Serialize, Deserialize, PartialEq, Debug, Default, Copy, Clone)]
+#[derive(
+    Serialize, Deserialize, PartialEq, Eq, Debug, Default, Copy, Clone, SchemaWrite, SchemaRead,
+)]
 pub struct Lz4Config {
     pub block_size: u32,
 }
 
-#[derive(Serialize, Deserialize, PartialEq, Debug)]
+#[derive(Serialize, Deserialize, PartialEq, Eq, Debug, Clone, Copy, SchemaWrite, SchemaRead)]
 pub struct Header {
     pub version: u8,
     pub config: Lz4Config,
     pub upload_size: UploadSizeInfo,
 }
 
-#[derive(Serialize, Deserialize, PartialEq, Debug, Default, Clone, Copy)]
+#[derive(
+    Serialize, Deserialize, PartialEq, Eq, Debug, Default, Clone, Copy, SchemaWrite, SchemaRead,
+)]
 pub struct SliceIndex {
     pub position_from_prev_index: u32,
 }
 
-#[derive(Serialize, Deserialize, PartialEq, Debug, Default)]
+#[derive(Serialize, Deserialize, PartialEq, Eq, Debug, Default, SchemaWrite, SchemaRead)]
 pub struct Footer {
     pub indexes: Vec<SliceIndex>,
     pub index_count: u32,
@@ -142,11 +146,25 @@ pub struct Footer {
     pub version: u8,
 }
 
-/// lz4_flex::block::get_maximum_output_size() way over estimates, so we use the
-/// one provided here: https://github.com/torvalds/linux/blob/master/include/linux/lz4.h#L61
+/// `lz4_flex::block::get_maximum_output_size()` way over estimates, so we use the
+/// one provided here: <https://github.com/torvalds/linux/blob/master/include/linux/lz4.h#L61>
 /// Local testing shows this gives quite accurate worst case given random input.
-fn lz4_compress_bound(input_size: u64) -> u64 {
+const fn lz4_compress_bound(input_size: u64) -> u64 {
     input_size + (input_size / 255) + 16
+}
+
+fn serialized_size<C, V>(value: &V, config: C) -> Result<u64, Error>
+where
+    C: wincode::config::Config,
+    V: SchemaWrite<C, Src = V>,
+{
+    wincode::config::serialized_size(value, config).map_err(|e| {
+        make_err!(
+            Code::Internal,
+            "Failed to calculate serialized size: {:?}",
+            e
+        )
+    })
 }
 
 struct UploadState {
@@ -157,7 +175,10 @@ struct UploadState {
 }
 
 impl UploadState {
-    pub fn new(store: &CompressionStore, upload_size: UploadSizeInfo) -> Result<Self, Error> {
+    pub(crate) fn new(
+        store: &CompressionStore,
+        upload_size: UploadSizeInfo,
+    ) -> Result<Self, Error> {
         let input_max_size = match upload_size {
             UploadSizeInfo::MaxSize(sz) | UploadSizeInfo::ExactSize(sz) => sz,
         };
@@ -173,13 +194,12 @@ impl UploadState {
         };
         let footer = Footer {
             indexes: vec![
-                SliceIndex {
-                    ..Default::default()
-                };
+                SliceIndex::default();
                 usize::try_from(max_index_count)
                     .err_tip(|| "Could not convert max_index_count to usize")?
             ],
-            index_count: max_index_count as u32,
+            index_count: u32::try_from(max_index_count)
+                .err_tip(|| "Could not convert max_index_count to u32")?,
             uncompressed_data_size: 0, // Updated later.
             config: header.config,
             version: CURRENT_STREAM_FORMAT_VERSION,
@@ -189,10 +209,9 @@ impl UploadState {
         let max_block_size = lz4_compress_bound(u64::from(store.config.block_size)) + U32_SZ + 1;
 
         let max_output_size = {
-            let header_size = store.bincode_options.serialized_size(&header).unwrap();
+            let header_size = serialized_size(&header, store.wincode_config)?;
             let max_content_size = max_block_size * max_index_count;
-            let max_footer_size =
-                U32_SZ + 1 + store.bincode_options.serialized_size(&footer).unwrap();
+            let max_footer_size = U32_SZ + 1 + serialized_size(&footer, store.wincode_config)?;
             header_size + max_content_size + max_footer_size
         };
 
@@ -205,8 +224,18 @@ impl UploadState {
     }
 }
 
+// Based off of an older Bincode config
+pub type WincodeConfig = wincode::config::Configuration<
+    true,
+    { wincode::config::PREALLOCATION_SIZE_LIMIT_DISABLED },
+    wincode::len::BincodeLen,
+    wincode::int_encoding::LittleEndian,
+    wincode::int_encoding::FixInt,
+    u32,
+>;
+
 /// This store will compress data before sending it on to the inner store.
-/// Note: Currently using get_part() and trying to read part of the data will
+/// Note: Currently using `get_part()` and trying to read part of the data will
 /// result in the entire contents being read from the inner store but will
 /// only send the contents requested.
 #[derive(MetricsComponent)]
@@ -214,16 +243,22 @@ pub struct CompressionStore {
     #[metric(group = "inner_store")]
     inner_store: Store,
     config: nativelink_config::stores::Lz4Config,
-    bincode_options: BincodeOptions,
+    wincode_config: WincodeConfig,
+}
+
+impl core::fmt::Debug for CompressionStore {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("CompressionStore")
+            .field("inner_store", &self.inner_store)
+            .field("config", &self.config)
+            .finish_non_exhaustive()
+    }
 }
 
 impl CompressionStore {
-    pub fn new(
-        compression_config: &nativelink_config::stores::CompressionStore,
-        inner_store: Store,
-    ) -> Result<Arc<Self>, Error> {
-        let lz4_config = match compression_config.compression_algorithm {
-            nativelink_config::stores::CompressionAlgorithm::lz4(mut lz4_config) => {
+    pub fn new(spec: &CompressionSpec, inner_store: Store) -> Result<Arc<Self>, Error> {
+        let lz4_config = match spec.compression_algorithm {
+            nativelink_config::stores::CompressionAlgorithm::Lz4(mut lz4_config) => {
                 if lz4_config.block_size == 0 {
                     lz4_config.block_size = DEFAULT_BLOCK_SIZE;
                 }
@@ -233,10 +268,10 @@ impl CompressionStore {
                 lz4_config
             }
         };
-        Ok(Arc::new(CompressionStore {
+        Ok(Arc::new(Self {
             inner_store,
             config: lz4_config,
-            bincode_options: DefaultOptions::new().with_fixint_encoding(),
+            wincode_config: WincodeConfig::new(),
         }))
     }
 }
@@ -256,7 +291,7 @@ impl StoreDriver for CompressionStore {
         key: StoreKey<'_>,
         mut reader: DropCloserReadHalf,
         upload_size: UploadSizeInfo,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         let mut output_state = UploadState::new(&self, upload_size)?;
 
         let (mut tx, rx) = make_buf_channel_pair();
@@ -285,12 +320,10 @@ impl StoreDriver for CompressionStore {
         let write_fut = async move {
             {
                 // Write Header.
-                let serialized_header = self
-                    .bincode_options
-                    .serialize(&output_state.header)
-                    .map_err(|e| {
-                        make_err!(Code::Internal, "Failed to serialize header : {:?}", e)
-                    })?;
+                let serialized_header =
+                    wincode::config::serialize(&output_state.header, self.wincode_config).map_err(
+                        |e| make_err!(Code::Internal, "Failed to serialize header : {:?}", e),
+                    )?;
                 tx.send(serialized_header.into())
                     .await
                     .err_tip(|| "Failed to write compression header on upload")?;
@@ -322,7 +355,7 @@ impl StoreDriver for CompressionStore {
                 // For efficiency reasons we do some raw slice manipulation so we can write directly
                 // into our buffer instead of having to do another allocation.
                 let raw_compressed_data = unsafe {
-                    std::slice::from_raw_parts_mut(
+                    core::slice::from_raw_parts_mut(
                         compressed_data_buf.chunk_mut().as_mut_ptr(),
                         max_output_size,
                     )
@@ -335,14 +368,18 @@ impl StoreDriver for CompressionStore {
                 }
 
                 // Now fill the size in our slice.
-                LittleEndian::write_u32(&mut compressed_data_buf[1..5], compressed_data_sz as u32);
+                LittleEndian::write_u32(
+                    &mut compressed_data_buf[1..5],
+                    u32::try_from(compressed_data_sz).unwrap_or(u32::MAX),
+                );
 
                 // Now send our chunk.
                 tx.send(compressed_data_buf.freeze())
                     .await
                     .err_tip(|| "Failed to write chunk to inner store in compression store")?;
 
-                index.position_from_prev_index = compressed_data_sz as u32;
+                index.position_from_prev_index =
+                    u32::try_from(compressed_data_sz).unwrap_or(u32::MAX);
 
                 index_count += 1;
             }
@@ -354,26 +391,23 @@ impl StoreDriver for CompressionStore {
             // Note: We need to be careful that if we don't have any data (zero bytes) it
             // doesn't go to -1.
             index_count = index_count.saturating_sub(1);
-            output_state.footer.indexes.resize(
-                index_count as usize,
-                SliceIndex {
-                    ..Default::default()
-                },
-            );
-            output_state.footer.index_count = output_state.footer.indexes.len() as u32;
+            output_state
+                .footer
+                .indexes
+                .resize(index_count as usize, SliceIndex::default());
+            output_state.footer.index_count =
+                u32::try_from(output_state.footer.indexes.len()).unwrap_or(u32::MAX);
             output_state.footer.uncompressed_data_size = received_amt;
             {
                 // Write Footer.
-                let serialized_footer = self
-                    .bincode_options
-                    .serialize(&output_state.footer)
-                    .map_err(|e| {
-                        make_err!(Code::Internal, "Failed to serialize header : {:?}", e)
-                    })?;
+                let serialized_footer =
+                    wincode::config::serialize(&output_state.footer, self.wincode_config).map_err(
+                        |e| make_err!(Code::Internal, "Failed to serialize header : {:?}", e),
+                    )?;
 
                 let mut footer = BytesMut::with_capacity(1 + 4 + serialized_footer.len());
                 footer.put_u8(FOOTER_FRAME_TYPE);
-                footer.put_u32_le(serialized_footer.len() as u32);
+                footer.put_u32_le(u32::try_from(serialized_footer.len()).unwrap_or(u32::MAX));
                 footer.extend_from_slice(&serialized_footer);
 
                 tx.send(footer.freeze())
@@ -383,10 +417,13 @@ impl StoreDriver for CompressionStore {
                     .err_tip(|| "Failed writing EOF in compression store update")?;
             }
 
-            Result::<(), Error>::Ok(())
+            Result::<u64, Error>::Ok(received_amt)
         };
         let (write_result, update_result) = tokio::join!(write_fut, update_fut);
-        write_result.merge(update_result)
+        match (write_result, update_result) {
+            (Ok(size), Ok(_)) => Ok(size),
+            (Err(e), _) | (_, Err(e)) => Err(e),
+        }
     }
 
     async fn get_part(
@@ -424,14 +461,14 @@ impl StoreDriver for CompressionStore {
         let read_fut = async move {
             let header = {
                 // Read header.
-                static EMPTY_HEADER: Header = Header {
+                const EMPTY_HEADER: Header = Header {
                     version: CURRENT_STREAM_FORMAT_VERSION,
                     config: Lz4Config { block_size: 0 },
                     upload_size: UploadSizeInfo::ExactSize(0),
                 };
-                let header_size = self.bincode_options.serialized_size(&EMPTY_HEADER).unwrap();
+                let header_size = serialized_size(&EMPTY_HEADER, self.wincode_config)?;
                 let chunk = rx
-                    .consume(Some(header_size as usize))
+                    .consume(Some(usize::try_from(header_size).unwrap_or(usize::MAX)))
                     .await
                     .err_tip(|| "Failed to read header in get_part compression store")?;
                 error_if!(
@@ -441,11 +478,11 @@ impl StoreDriver for CompressionStore {
                     header_size,
                 );
 
-                self.bincode_options
-                    .deserialize::<Header>(&chunk)
-                    .map_err(|e| {
-                        make_err!(Code::Internal, "Failed to deserialize header : {:?}", e)
-                    })?
+                wincode::config::deserialize::<Header, WincodeConfig>(
+                    &chunk,
+                    self.wincode_config,
+                )
+                .map_err(|e| make_err!(Code::Internal, "Failed to deserialize header : {:?}", e))?
             };
 
             error_if!(
@@ -502,7 +539,7 @@ impl StoreDriver for CompressionStore {
                     // For efficiency reasons we do some raw slice manipulation so we can write directly
                     // into our buffer instead of having to do another allocation.
                     let raw_decompressed_data = unsafe {
-                        std::slice::from_raw_parts_mut(
+                        core::slice::from_raw_parts_mut(
                             uncompressed_data.chunk_mut().as_mut_ptr(),
                             max_output_size,
                         )
@@ -514,13 +551,13 @@ impl StoreDriver for CompressionStore {
                     let new_uncompressed_data_sz =
                         uncompressed_data_sz + uncompressed_chunk_sz as u64;
                     if new_uncompressed_data_sz >= offset && remaining_bytes_to_send > 0 {
-                        let start_pos = if offset <= uncompressed_data_sz {
-                            0
-                        } else {
-                            offset - uncompressed_data_sz
-                        } as usize;
+                        let start_pos =
+                            usize::try_from(offset.saturating_sub(uncompressed_data_sz))
+                                .unwrap_or(usize::MAX);
                         let end_pos = cmp::min(
-                            start_pos + remaining_bytes_to_send as usize,
+                            start_pos.saturating_add(
+                                usize::try_from(remaining_bytes_to_send).unwrap_or(usize::MAX),
+                            ),
                             uncompressed_chunk_sz,
                         );
                         if end_pos != start_pos {
@@ -561,12 +598,11 @@ impl StoreDriver for CompressionStore {
                     "Unexpected EOF when reading footer in compression store get_part"
                 );
 
-                let footer = self
-                    .bincode_options
-                    .deserialize::<Footer>(&chunk)
-                    .map_err(|e| {
-                        make_err!(Code::Internal, "Failed to deserialize footer : {:?}", e)
-                    })?;
+                let footer = wincode::config::deserialize::<Footer, WincodeConfig>(
+                    &chunk,
+                    self.wincode_config,
+                )
+                .map_err(|e| make_err!(Code::Internal, "Failed to deserialize footer : {:?}", e))?;
 
                 error_if!(
                     header.version != footer.version,
@@ -618,12 +654,19 @@ impl StoreDriver for CompressionStore {
         self
     }
 
-    fn as_any(&self) -> &(dyn std::any::Any + Sync + Send + 'static) {
+    fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
         self
     }
 
-    fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
+    }
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        callback: Arc<dyn RemoveItemCallback>,
+    ) -> Result<(), Error> {
+        self.inner_store.register_remove_callback(callback)
     }
 }
 

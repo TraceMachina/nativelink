@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,9 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::ptr::from_ref;
+use core::ptr::from_ref;
 use std::sync::Arc;
 
+use nativelink_config::stores::{MemorySpec, RefSpec};
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
 use nativelink_store::memory_store::MemoryStore;
@@ -29,13 +30,11 @@ const VALID_HASH1: &str = "0123456789abcdef0000000000000000000100000000000001234
 fn setup_stores() -> (Arc<StoreManager>, Store, Store) {
     let store_manager = Arc::new(StoreManager::new());
 
-    let memory_store = Store::new(MemoryStore::new(
-        &nativelink_config::stores::MemoryStore::default(),
-    ));
+    let memory_store = Store::new(MemoryStore::new(&MemorySpec::default()));
     store_manager.add_store("foo", memory_store.clone());
 
     let ref_store = Store::new(RefStore::new(
-        &nativelink_config::stores::RefStore {
+        &RefSpec {
             name: "foo".to_string(),
         },
         Arc::downgrade(&store_manager),
@@ -140,21 +139,19 @@ async fn update_test() -> Result<(), Error> {
 async fn inner_store_test() -> Result<(), Error> {
     let store_manager = Arc::new(StoreManager::new());
 
-    let memory_store = Store::new(MemoryStore::new(
-        &nativelink_config::stores::MemoryStore::default(),
-    ));
+    let memory_store = Store::new(MemoryStore::new(&MemorySpec::default()));
     store_manager.add_store("mem_store", memory_store.clone());
 
     let ref_store_inner = Store::new(RefStore::new(
-        &nativelink_config::stores::RefStore {
+        &RefSpec {
             name: "mem_store".to_string(),
         },
         Arc::downgrade(&store_manager),
     ));
-    store_manager.add_store("ref_store_inner", ref_store_inner.clone());
+    store_manager.add_store("ref_store_inner", ref_store_inner);
 
     let ref_store_outer = Store::new(RefStore::new(
-        &nativelink_config::stores::RefStore {
+        &RefSpec {
             name: "ref_store_inner".to_string(),
         },
         Arc::downgrade(&store_manager),

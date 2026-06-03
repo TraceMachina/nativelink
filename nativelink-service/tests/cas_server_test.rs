@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,28 +12,36 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::pin::Pin;
+use core::pin::Pin;
+use core::time::Duration;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use futures::StreamExt;
-use maplit::hashmap;
+use nativelink_config::cas_server::WithInstanceName;
+use nativelink_config::stores::{MemorySpec, StoreSpec};
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
+use nativelink_metric::MetricsComponent;
 use nativelink_proto::build::bazel::remote::execution::v2::content_addressable_storage_server::ContentAddressableStorage;
 use nativelink_proto::build::bazel::remote::execution::v2::{
-    batch_read_blobs_response, batch_update_blobs_request, batch_update_blobs_response, compressor,
-    digest_function, BatchReadBlobsRequest, BatchReadBlobsResponse, BatchUpdateBlobsRequest,
+    BatchReadBlobsRequest, BatchReadBlobsResponse, BatchUpdateBlobsRequest,
     BatchUpdateBlobsResponse, Digest, Directory, DirectoryNode, FindMissingBlobsRequest,
-    GetTreeRequest, GetTreeResponse, NodeProperties,
+    GetTreeRequest, GetTreeResponse, NodeProperties, batch_read_blobs_response,
+    batch_update_blobs_request, batch_update_blobs_response, compressor, digest_function,
 };
 use nativelink_proto::google::rpc::Status as GrpcStatus;
 use nativelink_service::cas_server::CasServer;
 use nativelink_store::ac_utils::serialize_and_upload_message;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
+use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
-use nativelink_util::store_trait::{StoreKey, StoreLike};
+use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
+use nativelink_util::store_trait::{
+    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+};
 use pretty_assertions::assert_eq;
 use prost_types::Timestamp;
 use tonic::{Code, Request};
@@ -49,9 +57,7 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
     store_manager.add_store(
         "main_cas",
         store_factory(
-            &nativelink_config::stores::StoreConfig::memory(
-                nativelink_config::stores::MemoryStore::default(),
-            ),
+            &StoreSpec::Memory(MemorySpec::default()),
             &store_manager,
             None,
         )
@@ -62,17 +68,18 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
 
 fn make_cas_server(store_manager: &StoreManager) -> Result<CasServer, Error> {
     CasServer::new(
-        &hashmap! {
-            "foo_instance_name".to_string() => nativelink_config::cas_server::CasStoreConfig{
+        &[WithInstanceName {
+            instance_name: "foo_instance_name".to_string(),
+            config: nativelink_config::cas_server::CasStoreConfig {
                 cas_store: "main_cas".to_string(),
-            }
-        },
+            },
+        }],
         store_manager,
     )
 }
 
 #[nativelink_test]
-async fn empty_store() -> Result<(), Box<dyn std::error::Error>> {
+async fn empty_store() -> Result<(), Box<dyn core::error::Error>> {
     let store_manager = make_store_manager().await?;
     let cas_server = make_cas_server(&store_manager)?;
 
@@ -93,7 +100,7 @@ async fn empty_store() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[nativelink_test]
-async fn store_one_item_existence() -> Result<(), Box<dyn std::error::Error>> {
+async fn store_one_item_existence() -> Result<(), Box<dyn core::error::Error>> {
     const VALUE: &str = "1";
 
     let store_manager = make_store_manager().await?;
@@ -120,7 +127,7 @@ async fn store_one_item_existence() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[nativelink_test]
-async fn has_three_requests_one_bad_hash() -> Result<(), Box<dyn std::error::Error>> {
+async fn has_three_requests_one_bad_hash() -> Result<(), Box<dyn core::error::Error>> {
     const VALUE: &str = "1";
 
     let store_manager = make_store_manager().await?;
@@ -159,7 +166,7 @@ async fn has_three_requests_one_bad_hash() -> Result<(), Box<dyn std::error::Err
 }
 
 #[nativelink_test]
-async fn update_existing_item() -> Result<(), Box<dyn std::error::Error>> {
+async fn update_existing_item() -> Result<(), Box<dyn core::error::Error>> {
     const VALUE1: &str = "1";
     const VALUE2: &str = "2";
 
@@ -215,8 +222,8 @@ async fn update_existing_item() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[nativelink_test]
-async fn batch_read_blobs_read_two_blobs_success_one_fail() -> Result<(), Box<dyn std::error::Error>>
-{
+async fn batch_read_blobs_read_two_blobs_success_one_fail()
+-> Result<(), Box<dyn core::error::Error>> {
     const VALUE1: &str = "1";
     const VALUE2: &str = "23";
 
@@ -368,7 +375,7 @@ async fn setup_directory_structure(
 }
 
 #[nativelink_test]
-async fn get_tree_read_directories_without_paging() -> Result<(), Box<dyn std::error::Error>> {
+async fn get_tree_read_directories_without_paging() -> Result<(), Box<dyn core::error::Error>> {
     let store_manager = make_store_manager().await?;
     let cas_server = make_cas_server(&store_manager)?;
     let store = store_manager.get_store("main_cas").unwrap();
@@ -453,7 +460,7 @@ async fn get_tree_read_directories_without_paging() -> Result<(), Box<dyn std::e
 }
 
 #[nativelink_test]
-async fn get_tree_read_directories_with_paging() -> Result<(), Box<dyn std::error::Error>> {
+async fn get_tree_read_directories_with_paging() -> Result<(), Box<dyn core::error::Error>> {
     let store_manager = make_store_manager().await?;
     let cas_server = make_cas_server(&store_manager)?;
     let store = store_manager.get_store("main_cas").unwrap();
@@ -574,8 +581,8 @@ async fn get_tree_read_directories_with_paging() -> Result<(), Box<dyn std::erro
 }
 
 #[nativelink_test]
-async fn batch_update_blobs_two_items_existence_with_third_missing(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn batch_update_blobs_two_items_existence_with_third_missing()
+-> Result<(), Box<dyn core::error::Error>> {
     const VALUE1: &str = "1";
     const VALUE2: &str = "23";
 
@@ -664,5 +671,163 @@ async fn batch_update_blobs_two_items_existence_with_third_missing(
         let response = raw_response.unwrap().into_inner();
         assert_eq!(response.missing_blob_digests, vec![missing_digest]);
     }
+    Ok(())
+}
+
+#[derive(Debug, MetricsComponent)]
+struct StallStore {
+    delay: Duration,
+}
+
+#[async_trait]
+impl StoreDriver for StallStore {
+    async fn has_with_results(
+        self: Pin<&Self>,
+        _digests: &[StoreKey<'_>],
+        results: &mut [Option<u64>],
+    ) -> Result<(), Error> {
+        for r in results.iter_mut() {
+            *r = None;
+        }
+        Ok(())
+    }
+
+    async fn update(
+        self: Pin<&Self>,
+        _key: StoreKey<'_>,
+        _reader: DropCloserReadHalf,
+        _size_info: UploadSizeInfo,
+    ) -> Result<u64, Error> {
+        tokio::time::sleep(self.delay).await;
+        Ok(0)
+    }
+
+    async fn get_part(
+        self: Pin<&Self>,
+        _key: StoreKey<'_>,
+        _writer: &mut DropCloserWriteHalf,
+        _offset: u64,
+        _length: Option<u64>,
+    ) -> Result<(), Error> {
+        tokio::time::sleep(self.delay).await;
+        Ok(())
+    }
+
+    fn inner_store(&self, _digest: Option<StoreKey>) -> &'_ dyn StoreDriver {
+        self
+    }
+
+    fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
+        self
+    }
+
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+        self
+    }
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        _callback: Arc<dyn RemoveItemCallback>,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+default_health_status_indicator!(StallStore);
+
+fn make_cas_server_with_stall_store(delay: Duration) -> Result<CasServer, Error> {
+    let store_manager = Arc::new(StoreManager::new());
+    store_manager.add_store("main_cas", Store::new(Arc::new(StallStore { delay })));
+    CasServer::new(
+        &[WithInstanceName {
+            instance_name: INSTANCE_NAME.to_string(),
+            config: nativelink_config::cas_server::CasStoreConfig {
+                cas_store: "main_cas".to_string(),
+            },
+        }],
+        &store_manager,
+    )
+}
+
+#[nativelink_test(start_paused = true)]
+async fn batch_update_blobs_per_blob_timeout_returns_deadline_exceeded()
+-> Result<(), Box<dyn core::error::Error>> {
+    const VALUE: &str = "1";
+
+    // Stall longer than `BATCH_PER_BLOB_TIMEOUT` (30 s) so the
+    // per-blob timeout fires before the store ever resolves.
+    let cas_server = make_cas_server_with_stall_store(Duration::from_secs(120))?;
+
+    let digest = Digest {
+        hash: HASH1.to_string(),
+        size_bytes: VALUE.len() as i64,
+    };
+    let raw_response = cas_server
+        .batch_update_blobs(Request::new(BatchUpdateBlobsRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            requests: vec![batch_update_blobs_request::Request {
+                digest: Some(digest.clone()),
+                data: VALUE.into(),
+                compressor: compressor::Value::Identity.into(),
+            }],
+            digest_function: digest_function::Value::Sha256.into(),
+        }))
+        .await;
+
+    let response = raw_response.unwrap().into_inner();
+    assert_eq!(response.responses.len(), 1);
+    let entry = &response.responses[0];
+    assert_eq!(entry.digest.as_ref(), Some(&digest));
+    let status = entry.status.as_ref().expect("status set");
+    assert_eq!(
+        status.code,
+        Code::DeadlineExceeded as i32,
+        "expected DeadlineExceeded, got status: {status:?}",
+    );
+    assert!(
+        status.message.contains("BatchUpdateBlobs per-blob timeout"),
+        "unexpected message: {}",
+        status.message,
+    );
+    Ok(())
+}
+
+#[nativelink_test(start_paused = true)]
+async fn batch_read_blobs_per_blob_timeout_returns_deadline_exceeded()
+-> Result<(), Box<dyn core::error::Error>> {
+    let cas_server = make_cas_server_with_stall_store(Duration::from_secs(120))?;
+
+    let digest = Digest {
+        hash: HASH1.to_string(),
+        size_bytes: 1,
+    };
+    let raw_response = cas_server
+        .batch_read_blobs(Request::new(BatchReadBlobsRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            digests: vec![digest.clone()],
+            acceptable_compressors: vec![compressor::Value::Identity.into()],
+            digest_function: digest_function::Value::Sha256.into(),
+        }))
+        .await;
+
+    let response = raw_response.unwrap().into_inner();
+    assert_eq!(response.responses.len(), 1);
+    let entry = &response.responses[0];
+    assert_eq!(entry.digest.as_ref(), Some(&digest));
+    assert!(
+        entry.data.is_empty(),
+        "no data should be returned on timeout"
+    );
+    let status = entry.status.as_ref().expect("status set");
+    assert_eq!(
+        status.code,
+        Code::DeadlineExceeded as i32,
+        "expected DeadlineExceeded, got status: {status:?}",
+    );
+    assert!(
+        status.message.contains("BatchReadBlobs per-blob timeout"),
+        "unexpected message: {}",
+        status.message,
+    );
     Ok(())
 }

@@ -1,0 +1,37 @@
+---
+name: Build local project against NativeLink
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions: read-all
+
+jobs:
+  local:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-26]
+        exclude:
+          - os: macos-26
+    name: Local / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: >- # v6.0.2
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Install Nix
+        uses: >- # https://github.com/DeterminateSystems/nix-installer-action/releases/tag/v22
+          DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25
+        with:
+          source-tag: v3.13.0
+
+      - name: Build project
+        run: nix develop --fallback --command bazel build ...

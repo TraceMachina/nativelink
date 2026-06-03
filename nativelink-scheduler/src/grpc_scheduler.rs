@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,15 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::future::Future;
+use core::time::Duration;
 use std::collections::HashMap;
-use std::future::Future;
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::stream::unfold;
 use futures::{StreamExt, TryFutureExt};
-use nativelink_error::{error_if, make_err, Code, Error, ResultExt};
+use nativelink_config::schedulers::GrpcSpec;
+use nativelink_error::{Code, Error, ResultExt, error_if, make_err};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_proto::build::bazel::remote::execution::v2::capabilities_client::CapabilitiesClient;
 use nativelink_proto::build::bazel::remote::execution::v2::execution_client::ExecutionClient;
@@ -29,23 +30,22 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
 };
 use nativelink_proto::google::longrunning::Operation;
 use nativelink_util::action_messages::{
-    ActionInfo, ActionState, ActionUniqueQualifier, OperationId, DEFAULT_EXECUTION_PRIORITY,
+    ActionInfo, ActionState, ActionUniqueQualifier, DEFAULT_EXECUTION_PRIORITY, OperationId,
 };
 use nativelink_util::connection_manager::ConnectionManager;
 use nativelink_util::known_platform_property_provider::KnownPlatformPropertyProvider;
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, OperationFilter,
 };
+use nativelink_util::origin_event::OriginMetadata;
 use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::{background_spawn, tls_utils};
 use parking_lot::Mutex;
-use rand::rngs::OsRng;
-use rand::Rng;
 use tokio::select;
 use tokio::sync::watch;
 use tokio::time::sleep;
 use tonic::{Request, Streaming};
-use tracing::{event, Level};
+use tracing::{error, info, warn};
 
 struct GrpcActionStateResult {
     client_operation_id: OperationId,
@@ -54,26 +54,28 @@ struct GrpcActionStateResult {
 
 #[async_trait]
 impl ActionStateResult for GrpcActionStateResult {
-    async fn as_state(&self) -> Result<Arc<ActionState>, Error> {
+    async fn as_state(&self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error> {
         let mut action_state = self.rx.borrow().clone();
         Arc::make_mut(&mut action_state).client_operation_id = self.client_operation_id.clone();
-        Ok(action_state)
+        // TODO(palfrey) We currently don't support OriginMetadata in this implementation, but
+        // we should.
+        Ok((action_state, None))
     }
 
-    async fn changed(&mut self) -> Result<Arc<ActionState>, Error> {
-        self.rx.changed().await.map_err(|_| {
-            make_err!(
-                Code::Internal,
-                "Channel closed in GrpcActionStateResult::changed"
-            )
+    async fn changed(&mut self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error> {
+        self.rx.changed().await.map_err(|e| {
+            Error::from_std_err(Code::Internal, &e)
+                .append("Channel closed in GrpcActionStateResult::changed")
         })?;
         let mut action_state = self.rx.borrow().clone();
         Arc::make_mut(&mut action_state).client_operation_id = self.client_operation_id.clone();
-        Ok(action_state)
+        // TODO(palfrey) We currently don't support OriginMetadata in this implementation, but
+        // we should.
+        Ok((action_state, None))
     }
 
-    async fn as_action_info(&self) -> Result<Arc<ActionInfo>, Error> {
-        // TODO(allada) We should probably remove as_action_info()
+    async fn as_action_info(&self) -> Result<(Arc<ActionInfo>, Option<OriginMetadata>), Error> {
+        // TODO(palfrey) We should probably remove as_action_info()
         // or implement it properly.
         return Err(make_err!(
             Code::Unimplemented,
@@ -82,7 +84,7 @@ impl ActionStateResult for GrpcActionStateResult {
     }
 }
 
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct GrpcScheduler {
     #[metric(group = "property_managers")]
     supported_props: Mutex<HashMap<String, Vec<String>>>,
@@ -91,39 +93,27 @@ pub struct GrpcScheduler {
 }
 
 impl GrpcScheduler {
-    pub fn new(config: &nativelink_config::schedulers::GrpcScheduler) -> Result<Self, Error> {
-        let jitter_amt = config.retry.jitter;
-        Self::new_with_jitter(
-            config,
-            Box::new(move |delay: Duration| {
-                if jitter_amt == 0. {
-                    return delay;
-                }
-                let min = 1. - (jitter_amt / 2.);
-                let max = 1. + (jitter_amt / 2.);
-                delay.mul_f32(OsRng.gen_range(min..max))
-            }),
-        )
+    pub fn new(spec: &GrpcSpec) -> Result<Self, Error> {
+        Self::new_with_jitter(spec, spec.retry.make_jitter_fn())
     }
 
     pub fn new_with_jitter(
-        config: &nativelink_config::schedulers::GrpcScheduler,
-        jitter_fn: Box<dyn Fn(Duration) -> Duration + Send + Sync>,
+        spec: &GrpcSpec,
+        jitter_fn: Arc<dyn Fn(Duration) -> Duration + Send + Sync>,
     ) -> Result<Self, Error> {
-        let endpoint = tls_utils::endpoint(&config.endpoint)?;
-        let jitter_fn = Arc::new(jitter_fn);
+        let endpoint = tls_utils::endpoint(&spec.endpoint)?;
         Ok(Self {
             supported_props: Mutex::new(HashMap::new()),
             retrier: Retrier::new(
                 Arc::new(|duration| Box::pin(sleep(duration))),
                 jitter_fn.clone(),
-                config.retry.clone(),
+                spec.retry.clone(),
             ),
             connection_manager: ConnectionManager::new(
-                std::iter::once(endpoint),
-                config.connections_per_endpoint,
-                config.max_concurrent_requests,
-                config.retry.clone(),
+                core::iter::once(endpoint),
+                spec.connections_per_endpoint,
+                spec.max_concurrent_requests,
+                spec.retry.clone(),
                 jitter_fn,
             ),
         })
@@ -155,7 +145,7 @@ impl GrpcScheduler {
         if let Some(initial_response) = result_stream
             .message()
             .await
-            .err_tip(|| "Recieving response from upstream scheduler")?
+            .err_tip(|| "Receiving response from upstream scheduler")?
         {
             let client_operation_id = OperationId::from(initial_response.name.as_str());
             // Our operation_id is not needed here is just a place holder to recycle existing object.
@@ -169,9 +159,8 @@ impl GrpcScheduler {
             background_spawn!("grpc_scheduler_stream_state", async move {
                 loop {
                     select!(
-                        _ = tx.closed() => {
-                            event!(
-                                Level::INFO,
+                        () = tx.closed() => {
+                            info!(
                                 "Client disconnected in GrpcScheduler"
                             );
                             return;
@@ -186,8 +175,7 @@ impl GrpcScheduler {
                             match maybe_action_state {
                                 Ok(response) => {
                                     if let Err(err) = tx.send(Arc::new(response)) {
-                                        event!(
-                                            Level::INFO,
+                                        info!(
                                             ?err,
                                             "Client error in GrpcScheduler"
                                         );
@@ -195,8 +183,7 @@ impl GrpcScheduler {
                                     }
                                 }
                                 Err(err) => {
-                                    event!(
-                                        Level::ERROR,
+                                    error!(
                                         ?err,
                                         "Error converting response to ActionState in GrpcScheduler"
                                     );
@@ -227,7 +214,7 @@ impl GrpcScheduler {
             // Not in the cache, lookup the capabilities with the upstream.
             let channel = self
                 .connection_manager
-                .connection()
+                .connection("get_known_properties".into())
                 .await
                 .err_tip(|| "in get_platform_property_manager()")?;
             let capabilities_result = CapabilitiesClient::new(channel)
@@ -265,8 +252,8 @@ impl GrpcScheduler {
             })
         };
         let skip_cache_lookup = match action_info.unique_qualifier {
-            ActionUniqueQualifier::Cachable(_) => false,
-            ActionUniqueQualifier::Uncachable(_) => true,
+            ActionUniqueQualifier::Cacheable(_) => false,
+            ActionUniqueQualifier::Uncacheable(_) => true,
         };
         let request = ExecuteRequest {
             instance_name: action_info.instance_name().clone(),
@@ -285,7 +272,7 @@ impl GrpcScheduler {
             .perform_request(request, |request| async move {
                 let channel = self
                     .connection_manager
-                    .connection()
+                    .connection(format!("add_action: {:?}", request.action_digest))
                     .await
                     .err_tip(|| "in add_action()")?;
                 ExecutionClient::new(channel)
@@ -301,11 +288,15 @@ impl GrpcScheduler {
     async fn inner_filter_operations(
         &self,
         filter: OperationFilter,
-    ) -> Result<ActionStateResultStream, Error> {
-        error_if!(filter != OperationFilter {
-            client_operation_id: filter.client_operation_id.clone(),
-            ..Default::default()
-        }, "Unsupported filter in GrpcScheduler::filter_operations. Only client_operation_id is supported - {filter:?}");
+    ) -> Result<ActionStateResultStream<'_>, Error> {
+        error_if!(
+            filter
+                != OperationFilter {
+                    client_operation_id: filter.client_operation_id.clone(),
+                    ..Default::default()
+                },
+            "Unsupported filter in GrpcScheduler::filter_operations. Only client_operation_id is supported - {filter:?}"
+        );
         let client_operation_id = filter.client_operation_id.ok_or_else(|| {
             make_err!(Code::InvalidArgument, "`client_operation_id` is the only supported filter in GrpcScheduler::filter_operations")
         })?;
@@ -316,7 +307,7 @@ impl GrpcScheduler {
             .perform_request(request, |request| async move {
                 let channel = self
                     .connection_manager
-                    .connection()
+                    .connection(format!("filter_operations: {}", request.name))
                     .await
                     .err_tip(|| "in find_by_client_operation_id()")?;
                 ExecutionClient::new(channel)
@@ -333,11 +324,7 @@ impl GrpcScheduler {
             )
             .boxed()),
             Err(err) => {
-                event!(
-                    Level::WARN,
-                    ?err,
-                    "Error looking up action with upstream scheduler"
-                );
+                warn!(?err, "Error looking up action with upstream scheduler");
                 Ok(futures::stream::empty().boxed())
             }
         }

@@ -1,0 +1,28 @@
+---
+# This should be a post step, but can't do it in composite actions easily. See https://github.com/actions/runner/issues/1478
+name: Teardown Nix
+description: "Common teardown for all runs using Nix."
+inputs:
+  nix_name:
+    default: ""
+  nativelink_attic_token:
+    required: true
+runs:
+  using: "composite"
+  steps:
+      - name: Check attic push
+        if: ${{ inputs.nativelink_attic_token != '' }}
+        run: |
+          cat /tmp/attic-push.log
+        shell: bash
+
+      - name: Attic push
+        if: ${{ inputs.nix_name != '' && inputs.nativelink_attic_token != '' }}
+        uses: >- # v4
+          nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60
+        with:
+          timeout_minutes: 30
+          max_attempts: 3
+          command: |
+            /tmp/result/bin/attic push nativelink $(nix eval --raw ${{ inputs.nix_name }})
+          shell: bash

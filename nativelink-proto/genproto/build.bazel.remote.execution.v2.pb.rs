@@ -1,10 +1,10 @@
-// Copyright 2022 The NativeLink Authors. All rights reserved.
+// Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -600,7 +600,9 @@ pub struct ExecutedActionMetadata {
 /// `ActionResult.execution_metadata.Worker`) have a non-default value, to
 /// ensure that the serialized value is non-empty, which can then be used
 /// as a basic data sanity check.
+#[derive(::derive_more::Debug)]
 #[derive(Clone, PartialEq, ::prost::Message)]
+#[prost(skip_debug)]
 pub struct ActionResult {
     /// The output files of the action. For each output file requested in the
     /// `output_files` or `output_paths` field of the Action, if the corresponding
@@ -614,6 +616,7 @@ pub struct ActionResult {
     /// will be omitted from the list. The server is free to arrange the output
     /// list as desired; clients MUST NOT assume that the output list is sorted.
     #[prost(message, repeated, tag = "2")]
+    #[debug(ignore)]
     pub output_files: ::prost::alloc::vec::Vec<OutputFile>,
     /// The output files of the action that are symbolic links to other files. Those
     /// may be links to other output files, or input files, or even absolute paths
@@ -1243,7 +1246,9 @@ pub struct FindMissingBlobsResponse {
 }
 /// A request message for
 /// [ContentAddressableStorage.BatchUpdateBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.BatchUpdateBlobs].
+#[derive(::derive_more::Debug)]
 #[derive(Clone, PartialEq, ::prost::Message)]
+#[prost(skip_debug)]
 pub struct BatchUpdateBlobsRequest {
     /// The instance of the execution system to operate against. A server may
     /// support multiple instances of the execution system (with their own workers,
@@ -1254,6 +1259,7 @@ pub struct BatchUpdateBlobsRequest {
     pub instance_name: ::prost::alloc::string::String,
     /// The individual upload requests.
     #[prost(message, repeated, tag = "2")]
+    #[debug(ignore)]
     pub requests: ::prost::alloc::vec::Vec<batch_update_blobs_request::Request>,
     /// The digest function that was used to compute the digests of the
     /// blobs being uploaded.
@@ -1288,10 +1294,13 @@ pub mod batch_update_blobs_request {
 }
 /// A response message for
 /// [ContentAddressableStorage.BatchUpdateBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.BatchUpdateBlobs].
+#[derive(::derive_more::Debug)]
 #[derive(Clone, PartialEq, ::prost::Message)]
+#[prost(skip_debug)]
 pub struct BatchUpdateBlobsResponse {
     /// The responses to the requests.
     #[prost(message, repeated, tag = "1")]
+    #[debug(ignore)]
     pub responses: ::prost::alloc::vec::Vec<batch_update_blobs_response::Response>,
 }
 /// Nested message and enum types in `BatchUpdateBlobsResponse`.
@@ -1311,7 +1320,9 @@ pub mod batch_update_blobs_response {
 }
 /// A request message for
 /// [ContentAddressableStorage.BatchReadBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.BatchReadBlobs].
+#[derive(::derive_more::Debug)]
 #[derive(Clone, PartialEq, ::prost::Message)]
+#[prost(skip_debug)]
 pub struct BatchReadBlobsRequest {
     /// The instance of the execution system to operate against. A server may
     /// support multiple instances of the execution system (with their own workers,
@@ -1323,6 +1334,7 @@ pub struct BatchReadBlobsRequest {
     /// The individual blob digests. All digests MUST use the same digest
     /// function.
     #[prost(message, repeated, tag = "2")]
+    #[debug(ignore)]
     pub digests: ::prost::alloc::vec::Vec<Digest>,
     /// A list of acceptable encodings for the returned inlined data, in no
     /// particular order. `IDENTITY` is always allowed even if not specified here.
@@ -1340,10 +1352,13 @@ pub struct BatchReadBlobsRequest {
 }
 /// A response message for
 /// [ContentAddressableStorage.BatchReadBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.BatchReadBlobs].
+#[derive(::derive_more::Debug)]
 #[derive(Clone, PartialEq, ::prost::Message)]
+#[prost(skip_debug)]
 pub struct BatchReadBlobsResponse {
     /// The responses to the requests.
     #[prost(message, repeated, tag = "1")]
+    #[debug(ignore)]
     pub responses: ::prost::alloc::vec::Vec<batch_read_blobs_response::Response>,
 }
 /// Nested message and enum types in `BatchReadBlobsResponse`.
@@ -1888,7 +1903,7 @@ pub mod execution_client {
     }
     impl<T> ExecutionClient<T>
     where
-        T: tonic::client::GrpcService<tonic::body::BoxBody>,
+        T: tonic::client::GrpcService<tonic::body::Body>,
         T::Error: Into<StdError>,
         T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
         <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
@@ -1909,13 +1924,13 @@ pub mod execution_client {
             F: tonic::service::Interceptor,
             T::ResponseBody: Default,
             T: tonic::codegen::Service<
-                http::Request<tonic::body::BoxBody>,
+                http::Request<tonic::body::Body>,
                 Response = http::Response<
-                    <T as tonic::client::GrpcService<tonic::body::BoxBody>>::ResponseBody,
+                    <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
                 >,
             >,
             <T as tonic::codegen::Service<
-                http::Request<tonic::body::BoxBody>,
+                http::Request<tonic::body::Body>,
             >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
         {
             ExecutionClient::new(InterceptedService::new(inner, interceptor))
@@ -2139,7 +2154,7 @@ pub mod action_cache_client {
     }
     impl<T> ActionCacheClient<T>
     where
-        T: tonic::client::GrpcService<tonic::body::BoxBody>,
+        T: tonic::client::GrpcService<tonic::body::Body>,
         T::Error: Into<StdError>,
         T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
         <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
@@ -2160,13 +2175,13 @@ pub mod action_cache_client {
             F: tonic::service::Interceptor,
             T::ResponseBody: Default,
             T: tonic::codegen::Service<
-                http::Request<tonic::body::BoxBody>,
+                http::Request<tonic::body::Body>,
                 Response = http::Response<
-                    <T as tonic::client::GrpcService<tonic::body::BoxBody>>::ResponseBody,
+                    <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
                 >,
             >,
             <T as tonic::codegen::Service<
-                http::Request<tonic::body::BoxBody>,
+                http::Request<tonic::body::Body>,
             >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
         {
             ActionCacheClient::new(InterceptedService::new(inner, interceptor))
@@ -2447,7 +2462,7 @@ pub mod content_addressable_storage_client {
     }
     impl<T> ContentAddressableStorageClient<T>
     where
-        T: tonic::client::GrpcService<tonic::body::BoxBody>,
+        T: tonic::client::GrpcService<tonic::body::Body>,
         T::Error: Into<StdError>,
         T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
         <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
@@ -2468,13 +2483,13 @@ pub mod content_addressable_storage_client {
             F: tonic::service::Interceptor,
             T::ResponseBody: Default,
             T: tonic::codegen::Service<
-                http::Request<tonic::body::BoxBody>,
+                http::Request<tonic::body::Body>,
                 Response = http::Response<
-                    <T as tonic::client::GrpcService<tonic::body::BoxBody>>::ResponseBody,
+                    <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
                 >,
             >,
             <T as tonic::codegen::Service<
-                http::Request<tonic::body::BoxBody>,
+                http::Request<tonic::body::Body>,
             >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
         {
             ContentAddressableStorageClient::new(
@@ -2728,7 +2743,7 @@ pub mod capabilities_client {
     }
     impl<T> CapabilitiesClient<T>
     where
-        T: tonic::client::GrpcService<tonic::body::BoxBody>,
+        T: tonic::client::GrpcService<tonic::body::Body>,
         T::Error: Into<StdError>,
         T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
         <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
@@ -2749,13 +2764,13 @@ pub mod capabilities_client {
             F: tonic::service::Interceptor,
             T::ResponseBody: Default,
             T: tonic::codegen::Service<
-                http::Request<tonic::body::BoxBody>,
+                http::Request<tonic::body::Body>,
                 Response = http::Response<
-                    <T as tonic::client::GrpcService<tonic::body::BoxBody>>::ResponseBody,
+                    <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
                 >,
             >,
             <T as tonic::codegen::Service<
-                http::Request<tonic::body::BoxBody>,
+                http::Request<tonic::body::Body>,
             >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
         {
             CapabilitiesClient::new(InterceptedService::new(inner, interceptor))
@@ -3035,7 +3050,7 @@ pub mod execution_server {
         B: Body + std::marker::Send + 'static,
         B::Error: Into<StdError> + std::marker::Send + 'static,
     {
-        type Response = http::Response<tonic::body::BoxBody>;
+        type Response = http::Response<tonic::body::Body>;
         type Error = std::convert::Infallible;
         type Future = BoxFuture<Self::Response, Self::Error>;
         fn poll_ready(
@@ -3140,7 +3155,9 @@ pub mod execution_server {
                 }
                 _ => {
                     Box::pin(async move {
-                        let mut response = http::Response::new(empty_body());
+                        let mut response = http::Response::new(
+                            tonic::body::Body::default(),
+                        );
                         let headers = response.headers_mut();
                         headers
                             .insert(
@@ -3310,7 +3327,7 @@ pub mod action_cache_server {
         B: Body + std::marker::Send + 'static,
         B::Error: Into<StdError> + std::marker::Send + 'static,
     {
-        type Response = http::Response<tonic::body::BoxBody>;
+        type Response = http::Response<tonic::body::Body>;
         type Error = std::convert::Infallible;
         type Future = BoxFuture<Self::Response, Self::Error>;
         fn poll_ready(
@@ -3414,7 +3431,9 @@ pub mod action_cache_server {
                 }
                 _ => {
                     Box::pin(async move {
-                        let mut response = http::Response::new(empty_body());
+                        let mut response = http::Response::new(
+                            tonic::body::Body::default(),
+                        );
                         let headers = response.headers_mut();
                         headers
                             .insert(
@@ -3779,7 +3798,7 @@ pub mod content_addressable_storage_server {
         B: Body + std::marker::Send + 'static,
         B::Error: Into<StdError> + std::marker::Send + 'static,
     {
-        type Response = http::Response<tonic::body::BoxBody>;
+        type Response = http::Response<tonic::body::Body>;
         type Error = std::convert::Infallible;
         type Future = BoxFuture<Self::Response, Self::Error>;
         fn poll_ready(
@@ -3986,7 +4005,9 @@ pub mod content_addressable_storage_server {
                 }
                 _ => {
                     Box::pin(async move {
-                        let mut response = http::Response::new(empty_body());
+                        let mut response = http::Response::new(
+                            tonic::body::Body::default(),
+                        );
                         let headers = response.headers_mut();
                         headers
                             .insert(
@@ -4124,7 +4145,7 @@ pub mod capabilities_server {
         B: Body + std::marker::Send + 'static,
         B::Error: Into<StdError> + std::marker::Send + 'static,
     {
-        type Response = http::Response<tonic::body::BoxBody>;
+        type Response = http::Response<tonic::body::Body>;
         type Error = std::convert::Infallible;
         type Future = BoxFuture<Self::Response, Self::Error>;
         fn poll_ready(
@@ -4182,7 +4203,9 @@ pub mod capabilities_server {
                 }
                 _ => {
                     Box::pin(async move {
-                        let mut response = http::Response::new(empty_body());
+                        let mut response = http::Response::new(
+                            tonic::body::Body::default(),
+                        );
                         let headers = response.headers_mut();
                         headers
                             .insert(

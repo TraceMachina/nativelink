@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,19 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::cmp;
+use core::cmp;
+use core::pin::Pin;
+use core::str::from_utf8;
 use std::io::Cursor;
-use std::pin::Pin;
-use std::str::from_utf8;
 use std::sync::Arc;
 
-use bincode::{DefaultOptions, Options};
 use bytes::Bytes;
-use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_config::stores::{CompressionSpec, MemorySpec, StoreSpec};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_store::compression_store::{
-    CompressionStore, Footer, Lz4Config, SliceIndex, CURRENT_STREAM_FORMAT_VERSION,
-    DEFAULT_BLOCK_SIZE, FOOTER_FRAME_TYPE,
+    CURRENT_STREAM_FORMAT_VERSION, CompressionStore, DEFAULT_BLOCK_SIZE, FOOTER_FRAME_TYPE, Footer,
+    Lz4Config, SliceIndex, WincodeConfig,
 };
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::buf_channel::make_buf_channel_pair;
@@ -58,10 +58,9 @@ fn extract_footer(data: &[u8]) -> Result<Footer, Error> {
         "Expected frame_type to be footer"
     );
 
-    DefaultOptions::new()
-        .with_fixint_encoding()
-        .deserialize::<Footer>(&data[pos..])
-        .map_err(|e| make_err!(Code::Internal, "Failed to deserialize header : {:?}", e))
+    let footer = wincode::config::deserialize::<Footer, _>(&data[pos..], WincodeConfig::new())
+        .map_err(|e| make_err!(Code::Internal, "Failed to deserialize header : {:?}", e))?;
+    Ok(footer)
 }
 
 const VALID_HASH: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
@@ -73,19 +72,13 @@ async fn simple_smoke_test() -> Result<(), Error> {
     const RAW_INPUT: &str = "123";
 
     let store = CompressionStore::new(
-        &nativelink_config::stores::CompressionStore {
-            backend: nativelink_config::stores::StoreConfig::memory(
-                nativelink_config::stores::MemoryStore::default(),
-            ),
-            compression_algorithm: nativelink_config::stores::CompressionAlgorithm::lz4(
-                nativelink_config::stores::Lz4Config {
-                    ..Default::default()
-                },
+        &CompressionSpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            compression_algorithm: nativelink_config::stores::CompressionAlgorithm::Lz4(
+                nativelink_config::stores::Lz4Config::default(),
             ),
         },
-        Store::new(MemoryStore::new(
-            &nativelink_config::stores::MemoryStore::default(),
-        )),
+        Store::new(MemoryStore::new(&MemorySpec::default())),
     )
     .err_tip(|| "Failed to create compression store")?;
 
@@ -114,20 +107,16 @@ async fn partial_reads_test() -> Result<(), Error> {
     ];
 
     let store_owned = CompressionStore::new(
-        &nativelink_config::stores::CompressionStore {
-            backend: nativelink_config::stores::StoreConfig::memory(
-                nativelink_config::stores::MemoryStore::default(),
-            ),
-            compression_algorithm: nativelink_config::stores::CompressionAlgorithm::lz4(
+        &CompressionSpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            compression_algorithm: nativelink_config::stores::CompressionAlgorithm::Lz4(
                 nativelink_config::stores::Lz4Config {
                     block_size: 10,
                     ..Default::default()
                 },
             ),
         },
-        Store::new(MemoryStore::new(
-            &nativelink_config::stores::MemoryStore::default(),
-        )),
+        Store::new(MemoryStore::new(&MemorySpec::default())),
     )
     .err_tip(|| "Failed to create compression store")?;
     let store = Pin::new(&store_owned);
@@ -167,19 +156,13 @@ async fn partial_reads_test() -> Result<(), Error> {
 #[nativelink_test]
 async fn rand_5mb_smoke_test() -> Result<(), Error> {
     let store_owned = CompressionStore::new(
-        &nativelink_config::stores::CompressionStore {
-            backend: nativelink_config::stores::StoreConfig::memory(
-                nativelink_config::stores::MemoryStore::default(),
-            ),
-            compression_algorithm: nativelink_config::stores::CompressionAlgorithm::lz4(
-                nativelink_config::stores::Lz4Config {
-                    ..Default::default()
-                },
+        &CompressionSpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            compression_algorithm: nativelink_config::stores::CompressionAlgorithm::Lz4(
+                nativelink_config::stores::Lz4Config::default(),
             ),
         },
-        Store::new(MemoryStore::new(
-            &nativelink_config::stores::MemoryStore::default(),
-        )),
+        Store::new(MemoryStore::new(&MemorySpec::default())),
     )
     .err_tip(|| "Failed to create compression store")?;
     let store = Pin::new(&store_owned);
@@ -202,16 +185,12 @@ async fn rand_5mb_smoke_test() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn sanity_check_zero_bytes_test() -> Result<(), Error> {
-    let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
+    let inner_store = MemoryStore::new(&MemorySpec::default());
     let store_owned = CompressionStore::new(
-        &nativelink_config::stores::CompressionStore {
-            backend: nativelink_config::stores::StoreConfig::memory(
-                nativelink_config::stores::MemoryStore::default(),
-            ),
-            compression_algorithm: nativelink_config::stores::CompressionAlgorithm::lz4(
-                nativelink_config::stores::Lz4Config {
-                    ..Default::default()
-                },
+        &CompressionSpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            compression_algorithm: nativelink_config::stores::CompressionAlgorithm::Lz4(
+                nativelink_config::stores::Lz4Config::default(),
             ),
         },
         Store::new(inner_store.clone()),
@@ -259,13 +238,11 @@ async fn check_header_test() -> Result<(), Error> {
     const MAX_SIZE_INPUT: u64 = 1024 * 1024; // 1MB.
     const RAW_INPUT: &str = "123";
 
-    let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
+    let inner_store = MemoryStore::new(&MemorySpec::default());
     let store_owned = CompressionStore::new(
-        &nativelink_config::stores::CompressionStore {
-            backend: nativelink_config::stores::StoreConfig::memory(
-                nativelink_config::stores::MemoryStore::default(),
-            ),
-            compression_algorithm: nativelink_config::stores::CompressionAlgorithm::lz4(
+        &CompressionSpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            compression_algorithm: nativelink_config::stores::CompressionAlgorithm::Lz4(
                 nativelink_config::stores::Lz4Config {
                     block_size: BLOCK_SIZE,
                     ..Default::default()
@@ -319,7 +296,8 @@ async fn check_header_test() -> Result<(), Error> {
         );
         let upload_size = reader.read_u32_le().await?;
         assert_eq!(
-            upload_size, MAX_SIZE_INPUT as u32,
+            u64::from(upload_size),
+            MAX_SIZE_INPUT,
             "Expected upload size to match"
         );
     }
@@ -347,13 +325,11 @@ async fn check_footer_test() -> Result<(), Error> {
     const BLOCK_SIZE: u32 = 32 * 1024;
     const EXPECTED_INDEXES: [u32; 7] = [32898, 32898, 32898, 32898, 140, 140, 140];
 
-    let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
+    let inner_store = MemoryStore::new(&MemorySpec::default());
     let store_owned = CompressionStore::new(
-        &nativelink_config::stores::CompressionStore {
-            backend: nativelink_config::stores::StoreConfig::memory(
-                nativelink_config::stores::MemoryStore::default(),
-            ),
-            compression_algorithm: nativelink_config::stores::CompressionAlgorithm::lz4(
+        &CompressionSpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            compression_algorithm: nativelink_config::stores::CompressionAlgorithm::Lz4(
                 nativelink_config::stores::Lz4Config {
                     block_size: BLOCK_SIZE,
                     ..Default::default()
@@ -438,7 +414,7 @@ async fn check_footer_test() -> Result<(), Error> {
         }
     }
     {
-        // `bincode` adds the size again as a u64 before our index vector so check it too.
+        // `wincode` adds the size again as a u64 before our index vector so check it too.
         let bincode_index_count =
             u64::from_le_bytes(compressed_data[pos - 8..pos].try_into().unwrap());
         pos -= 8;
@@ -476,7 +452,7 @@ async fn check_footer_test() -> Result<(), Error> {
                     position_from_prev_index: v
                 })
                 .to_vec(),
-            index_count: EXPECTED_INDEXES.len() as u32,
+            index_count: u32::try_from(EXPECTED_INDEXES.len()).unwrap_or(u32::MAX),
             uncompressed_data_size: data_len as u64,
             config: Lz4Config {
                 block_size: BLOCK_SIZE
@@ -495,13 +471,11 @@ async fn get_part_is_zero_digest() -> Result<(), Error> {
 
     let digest = DigestInfo::new(Sha256::new().finalize().into(), 0);
 
-    let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
+    let inner_store = MemoryStore::new(&MemorySpec::default());
     let store_owned = CompressionStore::new(
-        &nativelink_config::stores::CompressionStore {
-            backend: nativelink_config::stores::StoreConfig::memory(
-                nativelink_config::stores::MemoryStore::default(),
-            ),
-            compression_algorithm: nativelink_config::stores::CompressionAlgorithm::lz4(
+        &CompressionSpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            compression_algorithm: nativelink_config::stores::CompressionAlgorithm::Lz4(
                 nativelink_config::stores::Lz4Config {
                     block_size: BLOCK_SIZE,
                     ..Default::default()
@@ -516,11 +490,13 @@ async fn get_part_is_zero_digest() -> Result<(), Error> {
     let (mut writer, mut reader) = make_buf_channel_pair();
 
     let _drop_guard = spawn!("get_part_is_zero_digest", async move {
-        let _ = store
-            .as_ref()
-            .get_part(digest, &mut writer, 0, None)
-            .await
-            .err_tip(|| "Failed to get_part");
+        drop(
+            store
+                .as_ref()
+                .get_part(digest, &mut writer, 0, None)
+                .await
+                .err_tip(|| "Failed to get_part"),
+        );
     });
 
     let file_data = reader
@@ -530,6 +506,137 @@ async fn get_part_is_zero_digest() -> Result<(), Error> {
 
     let empty_bytes = Bytes::new();
     assert_eq!(&file_data, &empty_bytes, "Expected file content to match");
+
+    Ok(())
+}
+
+// Regression test for the bug where start_pos > end_pos in the slice operation
+#[nativelink_test]
+async fn regression_test_range_start_not_greater_than_end() -> Result<(), Error> {
+    // Create a store with a small block size to trigger multiple blocks
+    const BLOCK_SIZE: u32 = 64 * 1024; // 64KB, same as DEFAULT_BLOCK_SIZE
+
+    let inner_store = MemoryStore::new(&MemorySpec::default());
+    let store_owned = CompressionStore::new(
+        &CompressionSpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            compression_algorithm: nativelink_config::stores::CompressionAlgorithm::Lz4(
+                nativelink_config::stores::Lz4Config {
+                    block_size: BLOCK_SIZE,
+                    ..Default::default()
+                },
+            ),
+        },
+        Store::new(inner_store.clone()),
+    )
+    .err_tip(|| "Failed to create compression store")?;
+    let store = Pin::new(&store_owned);
+
+    // Create a large buffer that spans multiple blocks
+    let data_size = BLOCK_SIZE as usize * 3; // 3 blocks
+    let mut data = vec![0u8; data_size];
+    let mut rng = SmallRng::seed_from_u64(42);
+    rng.fill(&mut data[..]);
+
+    let digest = DigestInfo::try_new(VALID_HASH, data_size).unwrap();
+    store.update_oneshot(digest, data.clone().into()).await?;
+
+    // Try to read exactly at block boundaries with various offsets
+    let boundary = u64::from(BLOCK_SIZE);
+
+    // These specific offsets test the case in the bug report where
+    // start_pos was 65536 and end_pos was 65535
+    for (offset, length) in &[
+        (boundary - 1, Some(2u64)),  // Read across block boundary
+        (boundary, Some(1u64)),      // Read exactly at block boundary
+        (boundary + 1, Some(10u64)), // Read just after block boundary
+        // Specifically test the case where offset >= block size
+        (u64::from(BLOCK_SIZE), Some(20u64)),
+        // Specifically test the case that caused the bug (65536 and 65535)
+        (u64::from(BLOCK_SIZE), Some(u64::from(BLOCK_SIZE) - 1)),
+        // More edge cases around the block boundary to thoroughly test the issue
+        (u64::from(BLOCK_SIZE) - 1, Some(1u64)), // Just before boundary
+        (u64::from(BLOCK_SIZE), Some(0u64)),     // Zero length at boundary
+        (u64::from(BLOCK_SIZE), Some(u64::MAX)), // Unlimited length at boundary
+        (u64::from(BLOCK_SIZE) * 2, Some(u64::from(BLOCK_SIZE) - 1)), // Same issue at next block
+    ] {
+        // First test with get_part_unchunked
+        let result = store.get_part_unchunked(digest, *offset, *length).await;
+
+        // The bug was causing a panic, so just checking that it doesn't panic
+        // means the fix is working
+        assert!(
+            result.is_ok(),
+            "Reading with get_part_unchunked at offset {offset} with length {length:?} should not fail"
+        );
+
+        let store_data = result.unwrap();
+
+        // Verify the data matches what we expect
+        let expected_len = cmp::min(
+            usize::try_from(length.unwrap_or(u64::MAX))?,
+            data.len().saturating_sub(usize::try_from(*offset)?),
+        );
+        assert_eq!(
+            store_data.len(),
+            expected_len,
+            "Expected data length to match when reading at offset {} with length {:?}",
+            offset,
+            length
+        );
+
+        if expected_len > 0 {
+            let start = usize::try_from(*offset)?;
+            let end = start + expected_len;
+            assert_eq!(
+                &store_data[..],
+                &data[start..end],
+                "Expected data content to match when reading at offset {} with length {:?}",
+                offset,
+                length
+            );
+        }
+
+        // Now also test with the lower-level get_part method to ensure it doesn't panic
+        // This is closer to what the bytestream server would call
+        let (mut tx, mut rx) = make_buf_channel_pair();
+
+        // The error was happening in this method call
+        let get_part_result = store.get_part(digest, &mut tx, *offset, *length).await;
+        assert!(
+            get_part_result.is_ok(),
+            "Reading with get_part at offset {offset} with length {length:?} should not fail"
+        );
+
+        // Just to consume the stream and ensure it behaves as expected
+        let mut received_data = Vec::new();
+        while let Ok(chunk) = rx.consume(Some(1024)).await {
+            if chunk.is_empty() {
+                break;
+            }
+            received_data.extend_from_slice(&chunk);
+        }
+
+        assert_eq!(
+            received_data.len(),
+            expected_len,
+            "Expected get_part received data length to match when reading at offset {} with length {:?}",
+            offset,
+            length
+        );
+
+        if expected_len > 0 {
+            let start = usize::try_from(*offset)?;
+            let end = start + expected_len;
+            assert_eq!(
+                &received_data[..],
+                &data[start..end],
+                "Expected get_part data content to match when reading at offset {} with length {:?}",
+                offset,
+                length
+            );
+        }
+    }
 
     Ok(())
 }

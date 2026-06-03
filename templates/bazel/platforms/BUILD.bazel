@@ -1,0 +1,10 @@
+# Specify the container image to use with lre-cc. Be careful to choose the one
+# corresponding to the commit of NativeLink you specify in `flake.nix` and
+# `MODULE.bazel`.
+platform(
+    name = "lre-cc",
+    exec_properties = {
+        "container-image": "ghcr.io/tracemachina/nativelink-worker-lre-cc:y77yplyfmp77h5l25jhb2qqlwdx1l638",
+    },
+    parents = ["@local-remote-execution//generated-cc/config:platform"],
+)

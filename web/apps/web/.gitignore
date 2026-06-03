@@ -1,0 +1,5 @@
+.next/
+out/
+.turbo/
+next-env.d.ts
+*.tsbuildinfo

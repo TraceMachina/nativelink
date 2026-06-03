@@ -1,10 +1,10 @@
 # Copyright 2022-2024 The NativeLink Authors. All rights reserved.
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
+# Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#    http://www.apache.org/licenses/LICENSE-2.0
+#    See LICENSE file for details
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,17 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM ubuntu:22.04@sha256:f9d633ff6640178c2d0525017174a688e2c1aef28f0a0130b26bd5554491f0da AS dependencies
-# hadolint ignore=DL3009
+FROM ubuntu:noble-20250925@sha256:728785b59223d755e3e5c5af178fab1be7031f3522c5ccd7a0b32b80d8248123 AS dependencies
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive \
     apt-get install --no-install-recommends -y \
-        git=1:2.34.1-1ubuntu1.11 \
-        ca-certificates=20230311ubuntu0.22.04.1 && \
-        update-ca-certificates
+        git=1:2.43.0-1ubuntu7.3 \
+        ca-certificates=20240203 \
+        && apt-get clean \
+        && rm -rf /var/lib/apt/lists/* \
+        && update-ca-certificates
 
 FROM dependencies AS final
 
 # hadolint ignore=DL3003
-RUN git clone https://github.com/blakehatch/drake.git && \
+RUN git clone https://github.com/RobotLocomotion/drake.git && \
     cd drake && \
     DEBIAN_FRONTEND=noninteractive ./setup/ubuntu/install_prereqs.sh --with-bazel -y
