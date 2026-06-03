@@ -15,6 +15,7 @@
 use core::net::SocketAddr;
 use core::time::Duration;
 use std::collections::{HashMap, HashSet};
+use std::io::ErrorKind;
 use std::sync::Arc;
 
 use async_lock::Mutex as AsyncMutex;
@@ -510,7 +511,25 @@ async fn inner_main(
                 Error::from_std_err(Code::InvalidArgument, &e)
                     .append(format!("Invalid address '{}'", http_config.socket_address))
             })?;
-        let tcp_listener = TcpListener::bind(&socket_addr).await?;
+        let tcp_listener = TcpListener::bind(&socket_addr)
+            .await
+            .map_err(|e| match e.kind() {
+                ErrorKind::AddrInUse => make_err!(
+                    Code::AlreadyExists,
+                    "Address '{}' is already in use by another process.",
+                    socket_addr
+                ),
+                ErrorKind::PermissionDenied => make_err!(
+                    Code::PermissionDenied,
+                    "Permission denied. You may need root privileges to bind to address '{}'.",
+                    socket_addr
+                ),
+                ErrorKind::InvalidInput => {
+                    make_input_err!("The provided address '{}' is invalid.", socket_addr)
+                }
+                _ => Error::from_std_err(Code::Internal, &e)
+                    .append(format!("Failed to bind to socket address '{socket_addr}'")),
+            })?;
         let mut http = auto::Builder::new(TaskExecutor::default());
 
         let http_config = &http_config.advanced_http;
