@@ -420,16 +420,6 @@
             }
             else {}
           );
-        checks = {
-          # TODO(palfrey): Fix the tests.
-          # tests = craneLib.cargoNextest (commonArgs
-          #   // {
-          #   inherit cargoArtifacts;
-          #   cargoNextestExtraArgs = "--all";
-          #   partitions = 1;
-          #   partitionType = "count";
-          # });
-        };
         pre-commit.settings = {
           hooks = import ./tools/pre-commit-hooks.nix {
             inherit pkgs;
