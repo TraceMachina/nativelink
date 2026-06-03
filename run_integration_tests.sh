@@ -42,6 +42,7 @@ Usage:
 TEST_PATTERNS: Name of test you wish to execute. Wildcard (*) supported.
                Default: '*.sh'
 EOT
+        exit 1
         ;;
     -*)
         echo "Unknown option $1"
