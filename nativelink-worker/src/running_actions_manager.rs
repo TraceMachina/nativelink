@@ -387,10 +387,15 @@ pub fn download_to_directory<'a>(
                             fs::hard_link(&src_path, &dest)
                                 .await
                                 .map_err(|e| {
+                                    let src_metadata = std::fs::metadata(&src_path);
+                                    let dest_metadata = std::fs::metadata(&dest);
+                                    let dest_parent_metadata = Path::new(&dest).parent().map(Path::metadata);
+                                    let snapshot = filesystem_store.get_eviction_snapshot();
+                                    warn!(?e, fs_eviction_snapshot = %snapshot, ?src_path, ?src_metadata, %dest, ?dest_metadata, ?dest_parent_metadata, "Could not make hardlink");
                                     if e.code == Code::NotFound {
                                         e.append(
                                             format!(
-                                            "Could not make hardlink to {dest}, file was likely evicted from cache.\n\
+                                            "Could not make hardlink from {} to {dest}, file was likely evicted from cache.\n\
                                             This error often occurs when the filesystem store's max_bytes is too small for your workload.\n\
                                             To fix this issue:\n\
                                             1. Increase the 'max_bytes' value in your filesystem store configuration\n\
@@ -400,10 +405,10 @@ pub fn download_to_directory<'a>(
                                             4. Restart NativeLink after making the change\n\n\
                                             If this error persists after increasing max_bytes several times, please report at:\n\
                                             https://github.com/TraceMachina/nativelink/issues\n\
-                                            Include your config file and both server and client logs to help us assist you."
+                                            Include your config file and both server and client logs to help us assist you.", src_path.display()
                                         ))
                                     } else {
-                                        e.append(format!("Could not make hardlink to {dest}"))
+                                        e.append(format!("Could not make hardlink from {} to {dest}", src_path.display()))
                                     }
                                 })?;
                             // Hardlinked inodes are already correct (the 0o444

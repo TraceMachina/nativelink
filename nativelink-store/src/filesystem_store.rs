@@ -38,7 +38,8 @@ use nativelink_util::buf_channel::{
     DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
 };
 use nativelink_util::common::{DigestInfo, fs};
-use nativelink_util::evicting_map::{EvictingMap, LenEntry};
+use nativelink_util::evicting_map::{EvictingMap, EvictionSnapshot, LenEntry};
+use nativelink_util::fs::FileSlot;
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 #[cfg(unix)]
 use nativelink_util::spawn_blocking;
@@ -200,9 +201,12 @@ pub trait FileEntry: LenEntry + Send + Sync + Debug + 'static {
     fn make_and_open_file(
         block_size: u64,
         encoded_file_path: EncodedFilePath,
-    ) -> impl Future<Output = Result<(Self, fs::FileSlot, OsString), Error>> + Send
+    ) -> impl Future<Output = Result<(Self, FileSlot, OsString), Error>> + Send
     where
         Self: Sized;
+
+    /// Returns the underlying size of the data in bytes
+    fn data_size(&self) -> u64;
 
     /// Returns the underlying reference to the size of the data in bytes
     fn data_size_mut(&mut self) -> &mut u64;
@@ -218,7 +222,7 @@ pub trait FileEntry: LenEntry + Send + Sync + Debug + 'static {
         &self,
         offset: u64,
         length: u64,
-    ) -> impl Future<Output = Result<Take<fs::FileSlot>, Error>> + Send;
+    ) -> impl Future<Output = Result<Take<FileSlot>, Error>> + Send;
 
     /// This function is a safe way to extract the file name of the underlying file. To protect users from
     /// accidentally creating undefined behavior we encourage users to do the logic they need to do with
@@ -264,7 +268,7 @@ impl FileEntry for FileEntryImpl {
     async fn make_and_open_file(
         block_size: u64,
         encoded_file_path: EncodedFilePath,
-    ) -> Result<(Self, fs::FileSlot, OsString), Error> {
+    ) -> Result<(Self, FileSlot, OsString), Error> {
         let temp_full_path = encoded_file_path.get_file_path().to_os_string();
         let temp_file_result = fs::create_file(temp_full_path.clone())
             .or_else(|mut err| async {
@@ -298,6 +302,10 @@ impl FileEntry for FileEntryImpl {
         ))
     }
 
+    fn data_size(&self) -> u64 {
+        self.data_size
+    }
+
     fn data_size_mut(&mut self) -> &mut u64 {
         &mut self.data_size
     }
@@ -314,7 +322,7 @@ impl FileEntry for FileEntryImpl {
         &self,
         offset: u64,
         length: u64,
-    ) -> impl Future<Output = Result<Take<fs::FileSlot>, Error>> + Send {
+    ) -> impl Future<Output = Result<Take<FileSlot>, Error>> + Send {
         self.get_file_path_locked(move |full_content_path| async move {
             let file = fs::open_file(&full_content_path, offset, length)
                 .await
@@ -362,7 +370,7 @@ fn make_temp_digest(mut digest: DigestInfo) -> DigestInfo {
     digest
 }
 
-fn make_temp_key(key: &StoreKey) -> StoreKey<'static> {
+pub fn make_temp_key(key: &StoreKey) -> StoreKey<'static> {
     StoreKey::Digest(make_temp_digest(key.borrow().into_digest()))
 }
 
@@ -672,6 +680,104 @@ async fn prune_temp_path(temp_path: &str) -> Result<(), Error> {
     Ok(())
 }
 
+// Sometimes we get files to emplace that are identical to the existing files
+// Due to the evict/remove/replace cycle taking some amount of time, we actually
+// want to drop these
+// Return value is "is duplicate"
+pub async fn check_duplicate_files<Fe>(
+    evicting_map: &Arc<FsEvictingMap<'_, Fe>>,
+    key: &StoreKey<'static>,
+    entry: &Arc<Fe>,
+) -> Result<bool, Error>
+where
+    Fe: FileEntry,
+{
+    let temp_file_encoded_file_path = entry.get_encoded_file_path().write().await;
+    let maybe_existing_item = evicting_map.get(&key.borrow().into_owned()).await;
+    if let Some(existing_item) = maybe_existing_item {
+        if Arc::ptr_eq(entry, &existing_item) {
+            warn!("Tried to check duplicate of an entry we already have!");
+            return Ok(true);
+        }
+        let existing_item_encoded_file_path = existing_item.get_encoded_file_path().write().await;
+        if entry.data_size() == existing_item.data_size() {
+            const CHUNK_SIZE: usize = 16 * 1024; // 16kb chunks, kinda picked out of the air
+            let file_length = entry.data_size();
+            let existing_path = existing_item_encoded_file_path.get_file_path();
+            let temp_path = temp_file_encoded_file_path.get_file_path();
+            trace!(?existing_path, ?temp_path, "Checking duplicate files");
+            let mut temp_file = fs::open_file(&temp_path, 0, file_length).await?;
+            let mut existing_file = fs::open_file(&existing_path, 0, file_length).await?;
+
+            let mut temp_buffer: [u8; CHUNK_SIZE] = [0; CHUNK_SIZE];
+            let mut existing_buffer: [u8; CHUNK_SIZE] = [0; CHUNK_SIZE];
+            // in a file_length file, there are 0 to file_length-1 entries
+            // not file_length. It's counting all the bytes, starting from 0
+            for offset in (0..file_length - 1).step_by(CHUNK_SIZE) {
+                let buffer_size = if offset + (CHUNK_SIZE as u64) <= file_length {
+                    CHUNK_SIZE
+                } else if file_length < CHUNK_SIZE as u64 {
+                    usize::try_from(file_length)
+                        .expect("Always succeeds because file_length < 16384")
+                } else {
+                    usize::try_from(file_length - offset).expect("Always succeeds because offset < file_length, and offset-file_length must be < 16384")
+                };
+                if let Err(err) = temp_file.read_exact(&mut temp_buffer[0..buffer_size]).await {
+                    warn!(
+                        ?err,
+                        ?temp_path,
+                        file_length,
+                        offset,
+                        buffer_size,
+                        "Failed to read temp file, skipping duplicate check"
+                    );
+                    return Ok(false);
+                }
+                if let Err(err) = existing_file
+                    .read_exact(&mut existing_buffer[0..buffer_size])
+                    .await
+                {
+                    warn!(
+                        ?err,
+                        ?existing_path,
+                        file_length,
+                        offset,
+                        buffer_size,
+                        "Failed to read existing, skipping duplicate check"
+                    );
+                    return Ok(false);
+                }
+                if temp_buffer.ne(&existing_buffer) {
+                    trace!(
+                        ?existing_path,
+                        ?temp_path,
+                        "Files are different, so non-duplicate"
+                    );
+                    return Ok(false);
+                }
+            }
+            trace!(
+                ?existing_path,
+                ?temp_path,
+                "Identical files, so don't need to edit, skipping emplace"
+            );
+            return Ok(true);
+        }
+        trace!(
+            entry_data_size = entry.data_size(),
+            existing_data_size = existing_item.data_size(),
+            existing_path = ?existing_item_encoded_file_path.get_file_path(),
+            "Different data sizes, so non-duplicate"
+        );
+    } else {
+        trace!(
+            temp_file = ?temp_file_encoded_file_path.get_file_path(),
+            "No existing entry, so not duplicate"
+        );
+    }
+    Ok(false)
+}
+
 #[derive(Debug, MetricsComponent)]
 pub struct FilesystemStore<Fe: FileEntry = FileEntryImpl> {
     #[metric]
@@ -956,7 +1062,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
     async fn update_file(
         self: Pin<&Self>,
         mut entry: Fe,
-        mut temp_file: fs::FileSlot,
+        mut temp_file: FileSlot,
         final_key: StoreKey<'static>,
         mut reader: DropCloserReadHalf,
     ) -> Result<u64, Error> {
@@ -1033,6 +1139,13 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         // We need to guarantee that this will get to the end even if the parent future is dropped.
         // See: https://github.com/TraceMachina/nativelink/issues/495
         background_spawn!("filesystem_store_emplace_file", async move {
+            // Sometimes we get files to emplace that are identical to the existing files
+            // Due to the evict/remove/replace cycle taking some amount of time, we actually
+            // want to drop these
+            if check_duplicate_files(&evicting_map, &key, &entry).await? {
+                return Ok(());
+            }
+
             evicting_map
                 .insert(key.borrow().into_owned().into(), entry.clone())
                 .await;
@@ -1110,6 +1223,31 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         .await
         .err_tip(|| "Failed to create spawn in filesystem store update_file")?
     }
+
+    pub fn get_eviction_snapshot(&self) -> EvictionSnapshot {
+        self.evicting_map.get_snapshot()
+    }
+
+    // Only for tests, so we can run check_duplicate_files
+    pub fn get_evicting_map(&self) -> Arc<FsEvictingMap<'static, Fe>> {
+        self.evicting_map.clone()
+    }
+
+    // Separated out so tests can use this
+    pub async fn make_temp_file(
+        &self,
+        temp_key: StoreKey<'static>,
+    ) -> Result<(Fe, FileSlot, OsString), Error> {
+        Fe::make_and_open_file(
+            self.block_size,
+            EncodedFilePath {
+                shared_context: self.shared_context.clone(),
+                path_type: PathType::Temp,
+                key: temp_key,
+            },
+        )
+        .await
+    }
 }
 
 #[async_trait]
@@ -1169,15 +1307,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         // reader available to know that the populator is active.
         reader.peek().await?;
 
-        let (entry, temp_file, temp_full_path) = Fe::make_and_open_file(
-            self.block_size,
-            EncodedFilePath {
-                shared_context: self.shared_context.clone(),
-                path_type: PathType::Temp,
-                key: temp_key,
-            },
-        )
-        .await?;
+        let (entry, temp_file, temp_full_path) = self.make_temp_file(temp_key).await?;
 
         self.update_file(entry, temp_file, key.into_owned(), reader)
             .await
@@ -1202,16 +1332,10 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         }
 
         let temp_key = make_temp_key(&key);
-        let (mut entry, mut temp_file, temp_full_path) = Fe::make_and_open_file(
-            self.block_size,
-            EncodedFilePath {
-                shared_context: self.shared_context.clone(),
-                path_type: PathType::Temp,
-                key: temp_key,
-            },
-        )
-        .await
-        .err_tip(|| "Failed to create temp file in filesystem store update_oneshot")?;
+        let (mut entry, mut temp_file, temp_full_path) = self
+            .make_temp_file(temp_key)
+            .await
+            .err_tip(|| "Failed to create temp file in filesystem store update_oneshot")?;
 
         // Write directly without channel overhead
         if !data.is_empty() {
@@ -1253,9 +1377,9 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         self: Pin<&Self>,
         key: StoreKey<'_>,
         path: OsString,
-        file: fs::FileSlot,
+        file: FileSlot,
         upload_size: UploadSizeInfo,
-    ) -> Result<(u64, Option<fs::FileSlot>), Error> {
+    ) -> Result<(u64, Option<FileSlot>), Error> {
         let file_size = match upload_size {
             UploadSizeInfo::ExactSize(size) => size,
             UploadSizeInfo::MaxSize(_) => file

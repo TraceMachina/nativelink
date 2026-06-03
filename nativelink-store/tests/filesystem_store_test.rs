@@ -32,7 +32,7 @@ use nativelink_error::{Code, Error, ErrorContext, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_store::filesystem_store::{
     DIGEST_FOLDER, EncodedFilePath, FileEntry, FileEntryImpl, FileType, FilesystemStore,
-    STR_FOLDER, key_from_file,
+    STR_FOLDER, check_duplicate_files, key_from_file, make_temp_key,
 };
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::{DigestInfo, fs, make_temp_path};
@@ -112,6 +112,10 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> FileEntry for TestFileEntry<
             file_slot,
             path,
         ))
+    }
+
+    fn data_size(&self) -> u64 {
+        self.inner.as_ref().unwrap().data_size()
     }
 
     fn data_size_mut(&mut self) -> &mut u64 {
@@ -1219,16 +1223,17 @@ async fn get_file_size_uses_block_size() -> Result<(), Error> {
 async fn update_with_whole_file_closes_file() -> Result<(), Error> {
     #[expect(clippy::collection_is_never_read)] // TODO(jhpratt) investigate
     let mut permits = vec![];
-    // Grab all permits to ensure only 1 permit is available.
+    // Grab all permits to ensure only 2 permits are available.
     {
+        // We need two so the duplicate file work works!
         wait_for_no_open_files().await?;
-        while fs::OPEN_FILE_SEMAPHORE.available_permits() > 1 {
+        while fs::OPEN_FILE_SEMAPHORE.available_permits() > 2 {
             permits.push(fs::get_permit().await);
         }
         assert_eq!(
             fs::OPEN_FILE_SEMAPHORE.available_permits(),
-            1,
-            "Expected 1 permit to be available"
+            2,
+            "Expected 2 permits to be available"
         );
     }
     let content_path = make_temp_path("content_path");
@@ -1699,5 +1704,97 @@ async fn deferred_write_error_does_not_emplace_truncated_file() -> Result<(), Er
         ghosts.is_empty(),
         "no file may reach the content path, found {ghosts:?}"
     );
+    Ok(())
+}
+
+async fn setup_store_for_duplicates()
+-> Result<(DigestInfo, core::pin::Pin<Box<Arc<FilesystemStore>>>), Error> {
+    let content_path = make_temp_path("content_path");
+    let temp_path = make_temp_path("temp_path");
+    let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
+
+    let store = Box::pin(
+        FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+            content_path: content_path.clone(),
+            temp_path: temp_path.clone(),
+            ..Default::default()
+        })
+        .await?,
+    );
+    store.update_oneshot(digest, VALUE1.into()).await?;
+    Ok((digest, store))
+}
+
+#[nativelink_test]
+async fn duplicate_upload_of_same_entry() -> Result<(), Error> {
+    let (digest, store) = setup_store_for_duplicates().await?;
+
+    let entry = store.get_file_entry_for_digest(&digest).await?;
+
+    assert!(
+        check_duplicate_files(&store.get_evicting_map(), &StoreKey::Digest(digest), &entry).await?,
+        "Expected duplicate"
+    );
+    assert!(logs_contain(
+        "Tried to check duplicate of an entry we already have!"
+    ));
+    Ok(())
+}
+
+#[nativelink_test]
+async fn detect_duplicate_upload_different_size() -> Result<(), Error> {
+    let (digest, store) = setup_store_for_duplicates().await?;
+
+    let key = &StoreKey::Digest(digest);
+    let temp_key = make_temp_key(key);
+    let (entry, _temp_file, _temp_full_path) = store.make_temp_file(temp_key).await?;
+
+    assert!(
+        !check_duplicate_files(&store.get_evicting_map(), key, &Arc::new(entry)).await?,
+        "Expected non-duplicate"
+    );
+    assert!(logs_contain(
+        "Different data sizes, so non-duplicate entry_data_size=0 existing_data_size=10"
+    ));
+    Ok(())
+}
+
+#[nativelink_test]
+async fn detect_duplicate_upload() -> Result<(), Error> {
+    let (digest, store) = setup_store_for_duplicates().await?;
+
+    let key = &StoreKey::Digest(digest);
+    let temp_key = make_temp_key(key);
+    let (mut entry, mut temp_file, _temp_full_path) = store.make_temp_file(temp_key).await?;
+    let mut data = Bytes::from_static(VALUE1.as_bytes());
+    temp_file.write_all_buf(&mut data).await?;
+    *entry.data_size_mut() = 10;
+
+    assert!(
+        check_duplicate_files(&store.get_evicting_map(), key, &Arc::new(entry)).await?,
+        "Expected duplicate"
+    );
+    assert!(logs_contain(
+        "Identical files, so don't need to edit, skipping emplace"
+    ));
+    Ok(())
+}
+
+#[nativelink_test]
+async fn detect_same_key_different_contents() -> Result<(), Error> {
+    let (digest, store) = setup_store_for_duplicates().await?;
+
+    let key = &StoreKey::Digest(digest);
+    let temp_key = make_temp_key(key);
+    let (mut entry, mut temp_file, _temp_full_path) = store.make_temp_file(temp_key).await?;
+    let mut data = Bytes::from_static(VALUE2.as_bytes());
+    temp_file.write_all_buf(&mut data).await?;
+    *entry.data_size_mut() = 10;
+
+    assert!(
+        !check_duplicate_files(&store.get_evicting_map(), key, &Arc::new(entry)).await?,
+        "Expected non-duplicate"
+    );
+    assert!(logs_contain("Files are different, so non-duplicate"));
     Ok(())
 }
