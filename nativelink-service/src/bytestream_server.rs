@@ -494,8 +494,9 @@ impl ByteStreamServer {
         // Parse UUID string to u128 key for efficient HashMap operations
         let uuid_key = parse_uuid_to_key(uuid_str);
 
-        let (uuid, bytes_received, is_collision) =
-            match instance.active_uploads.lock().entry(uuid_key) {
+        let (uuid, bytes_received, is_collision) = {
+            let mut active_uploads = instance.active_uploads.lock();
+            match active_uploads.entry(uuid_key) {
                 Entry::Occupied(mut entry) => {
                     let maybe_idle_stream = entry.get_mut();
                     if let Some(idle_stream) = maybe_idle_stream.1.take() {
@@ -512,8 +513,8 @@ impl ByteStreamServer {
                             .fetch_add(1, Ordering::Relaxed);
                         return idle_stream.into_active_stream(bytes_received, instance);
                     }
-                    // Case 3: Stream is active - generate a unique UUID to avoid collision
-                    // Using nanosecond timestamp makes collision probability essentially zero
+                    // Case 3: Stream is active - generate a unique UUID to avoid collision.
+                    // Using nanosecond timestamp makes collision probability essentially zero.
                     let original_key = *entry.key();
                     let unique_key = Self::generate_unique_uuid_key(original_key);
                     warn!(
@@ -521,11 +522,9 @@ impl ByteStreamServer {
                         original_uuid = format!("{:032x}", original_key),
                         unique_uuid = format!("{:032x}", unique_key)
                     );
-                    // Entry goes out of scope here, releasing the lock
-
+                    // Release the Occupied entry's borrow so we can insert on the same guard.
+                    drop(entry);
                     let bytes_received = Arc::new(AtomicU64::new(0));
-                    let mut active_uploads = instance.active_uploads.lock();
-                    // Insert with the unique UUID - this should never collide due to nanosecond precision
                     active_uploads.insert(unique_key, (bytes_received.clone(), None));
                     (unique_key, bytes_received, true)
                 }
@@ -537,7 +536,8 @@ impl ByteStreamServer {
                     entry.insert((bytes_received.clone(), None));
                     (uuid, bytes_received, false)
                 }
-            };
+            }
+        };
 
         // Track metrics for new upload
         instance

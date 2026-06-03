@@ -1077,3 +1077,71 @@ async fn write_too_many_bytes_fails() -> Result<(), Box<dyn core::error::Error>>
 // in production with large C++ builds using Bazel.
 // Manual testing shows the warning: "UUID collision detected, generating unique UUID"
 // and both uploads complete successfully.
+
+#[nativelink_test]
+async fn uuid_collision_does_not_deadlock() -> Result<(), Box<dyn core::error::Error>> {
+    // Two Write RPCs share a UUID while the first is mid-stream
+    // (Entry::Occupied + idle_stream == None — Case 3 in
+    // create_or_join_upload_stream). The server must release the
+    // active_uploads lock before re-acquiring it for the unique-key insert,
+    // otherwise it self-deadlocks on parking_lot's non-reentrant Mutex.
+    //
+    // A std::thread watchdog hard-exits at 5 s: tokio::time::timeout does
+    // not reliably fire when a runtime worker is parked on a sync mutex.
+    use core::sync::atomic::{AtomicBool, Ordering};
+
+    struct WatchdogGuard(Arc<AtomicBool>);
+    impl Drop for WatchdogGuard {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    const DATA: &[u8] = &[0u8; 10];
+    let resource_name = make_resource_name(DATA.len());
+
+    let done = Arc::new(AtomicBool::new(false));
+    let _wd = WatchdogGuard(done.clone());
+    std::thread::spawn({
+        let done = done.clone();
+        move || {
+            std::thread::sleep(core::time::Duration::from_secs(5));
+            if !done.load(Ordering::SeqCst) {
+                eprintln!("watchdog: timed out — UUID collision deadlock still present");
+                std::process::exit(2);
+            }
+        }
+    });
+
+    let bs_server = Arc::new(
+        make_bytestream_server(make_store_manager().await?.as_ref(), None)
+            .expect("Failed to make server"),
+    );
+
+    // Write 1: keep the stream open with partial data so the UUID lands in
+    // active_uploads with idle_stream == None.
+    let (tx1, _join1) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    tx1.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name: resource_name.clone(),
+        write_offset: 0,
+        finish_write: false,
+        data: DATA[..5].into(),
+    })?))
+    .await?;
+    tokio::time::sleep(core::time::Duration::from_millis(50)).await;
+
+    // Write 2: same UUID while write 1 is active — triggers Case 3.
+    let (tx2, join2) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    tx2.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name: resource_name.clone(),
+        write_offset: 0,
+        finish_write: true,
+        data: DATA.into(),
+    })?))
+    .await?;
+    drop(tx2);
+
+    join2.await.expect("task panicked")?;
+    drop(tx1);
+    Ok(())
+}
