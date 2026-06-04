@@ -44,6 +44,8 @@ pub struct ActionInfoWithProps {
     pub platform_properties: PlatformProperties,
     /// Origin metadata used when publishing scheduler-side telemetry for this action.
     pub origin_metadata: OriginMetadata,
+    /// `OriginEvent` id for the `scheduler_start_execute` request.
+    pub scheduler_start_execute_event_id: Option<String>,
 }
 
 /// Notifications to send worker about a requested state change.

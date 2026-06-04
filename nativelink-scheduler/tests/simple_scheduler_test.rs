@@ -32,9 +32,11 @@ use nativelink_metric::MetricsComponent;
 use nativelink_proto::build::bazel::remote::execution::v2::{
     ExecuteRequest, Platform, RequestMetadata, digest_function, platform,
 };
-use nativelink_proto::com::github::trace_machina::nativelink::events::{event, request_event};
+use nativelink_proto::com::github::trace_machina::nativelink::events::{
+    event, request_event, response_event,
+};
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    ConnectionResult, StartExecute, UpdateForWorker, update_for_worker,
+    ActionResourceUsage, ConnectionResult, StartExecute, UpdateForWorker, update_for_worker,
 };
 use nativelink_scheduler::awaited_action_db::{
     AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, SortedAwaitedAction,
@@ -282,13 +284,16 @@ async fn scheduler_start_execute_origin_event_includes_resource_hints() -> Resul
     let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
     assert_eq!(action_state.stage, ActionStage::Executing);
 
-    let origin_event = origin_event_rx.recv().await.unwrap();
-    assert_eq!(origin_event.identity, "dev@example.com");
+    let scheduler_start_execute_event = origin_event_rx.recv().await.unwrap();
+    let scheduler_start_execute_event_id = scheduler_start_execute_event.event_id.clone();
+    assert_eq!(scheduler_start_execute_event.identity, "dev@example.com");
     assert_eq!(
-        origin_event.bazel_request_metadata.unwrap(),
+        scheduler_start_execute_event
+            .bazel_request_metadata
+            .unwrap(),
         request_metadata
     );
-    let origin_event = origin_event.event.unwrap().event.unwrap();
+    let origin_event = scheduler_start_execute_event.event.unwrap().event.unwrap();
     let request_event = match origin_event {
         event::Event::Request(request_event) => request_event,
         event => panic!("Unexpected origin event: {event:?}"),
@@ -304,6 +309,37 @@ async fn scheduler_start_execute_origin_event_includes_resource_hints() -> Resul
         scheduler_start_execute.platform.unwrap().properties,
         start_action_platform.properties
     );
+
+    scheduler
+        .record_action_resource_usage(
+            &worker_id,
+            &OperationId::from(start_action.operation_id.as_str()),
+            ActionResourceUsage {
+                peak_memory_kb: 12_345,
+                sampled: true,
+                ..Default::default()
+            },
+        )
+        .await?;
+
+    let resource_usage_event = origin_event_rx.recv().await.unwrap();
+    assert_eq!(
+        resource_usage_event.parent_event_id,
+        scheduler_start_execute_event_id
+    );
+    let origin_event = resource_usage_event.event.unwrap().event.unwrap();
+    let response_event = match origin_event {
+        event::Event::Response(response_event) => response_event,
+        event => panic!("Unexpected origin event: {event:?}"),
+    };
+    let resource_usage = match response_event.event.unwrap() {
+        response_event::Event::ActionResourceUsage(resource_usage) => resource_usage,
+        event => panic!("Unexpected response event: {event:?}"),
+    };
+    assert_eq!(resource_usage.operation_id, start_action.operation_id);
+    assert_eq!(resource_usage.worker_id, "worker_id");
+    assert_eq!(resource_usage.peak_memory_kb, 12_345);
+    assert!(resource_usage.sampled);
 
     Ok(())
 }

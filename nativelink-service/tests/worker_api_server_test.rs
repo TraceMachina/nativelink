@@ -445,6 +445,7 @@ pub async fn execution_response_success_test() -> Result<(), Box<dyn core::error
                 inner: action_info,
                 platform_properties,
                 origin_metadata: OriginMetadata::default(),
+                scheduler_start_execute_event_id: None,
             },
         )
         .await
@@ -613,6 +614,7 @@ pub async fn workers_only_allow_max_tasks() -> Result<(), Box<dyn core::error::E
                 inner: action_info,
                 platform_properties,
                 origin_metadata: OriginMetadata::default(),
+                scheduler_start_execute_event_id: None,
             },
         )
         .await

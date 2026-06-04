@@ -169,17 +169,17 @@ impl core::fmt::Debug for SimpleScheduler {
 }
 
 impl SimpleScheduler {
-    fn publish_scheduler_start_execute(
-        maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
-        origin_metadata: &OriginMetadata,
+    fn origin_event_id(event: &Event) -> String {
+        Uuid::now_v6(&get_node_id(Some(event)))
+            .hyphenated()
+            .to_string()
+    }
+
+    fn scheduler_start_execute_event(
         worker_id: &WorkerId,
         operation_id: &OperationId,
         action_info: &ActionInfoWithProps,
-    ) {
-        let Some(origin_event_tx) = maybe_origin_event_tx else {
-            return;
-        };
-
+    ) -> Event {
         let start_execute = StartExecute {
             execute_request: Some(action_info.inner.as_ref().into()),
             operation_id: operation_id.to_string(),
@@ -187,16 +187,26 @@ impl SimpleScheduler {
             platform: Some((&action_info.platform_properties).into()),
             worker_id: worker_id.to_string(),
         };
-        let event = Event {
+        Event {
             event: Some(event::Event::Request(RequestEvent {
                 event: Some(request_event::Event::SchedulerStartExecute(start_execute)),
             })),
+        }
+    }
+
+    fn publish_scheduler_start_execute(
+        maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
+        origin_metadata: &OriginMetadata,
+        event_id: String,
+        event: Event,
+    ) {
+        let Some(origin_event_tx) = maybe_origin_event_tx else {
+            return;
         };
+
         let origin_event = OriginEvent {
             version: 0,
-            event_id: Uuid::now_v6(&get_node_id(Some(&event)))
-                .hyphenated()
-                .to_string(),
+            event_id,
             parent_event_id: String::new(),
             bazel_request_metadata: origin_metadata.bazel_metadata.clone(),
             identity: origin_metadata.identity.clone(),
@@ -214,6 +224,7 @@ impl SimpleScheduler {
     fn publish_action_resource_usage(
         maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
         origin_metadata: &OriginMetadata,
+        parent_event_id: Option<&str>,
         resource_usage: ActionResourceUsage,
     ) {
         let Some(origin_event_tx) = maybe_origin_event_tx else {
@@ -227,10 +238,8 @@ impl SimpleScheduler {
         };
         let origin_event = OriginEvent {
             version: 0,
-            event_id: Uuid::now_v6(&get_node_id(Some(&event)))
-                .hyphenated()
-                .to_string(),
-            parent_event_id: String::new(),
+            event_id: Self::origin_event_id(&event),
+            parent_event_id: parent_event_id.unwrap_or_default().to_string(),
             bazel_request_metadata: origin_metadata.bazel_metadata.clone(),
             identity: origin_metadata.identity.clone(),
             event: Some(event),
@@ -321,6 +330,7 @@ impl SimpleScheduler {
                 inner: action_info,
                 platform_properties,
                 origin_metadata: origin_metadata.clone(),
+                scheduler_start_execute_event_id: None,
             };
 
             // Try to find a worker for the action.
@@ -362,9 +372,18 @@ impl SimpleScheduler {
                     return Err(err);
                 }
 
-                let event_worker_id = worker_id.clone();
-                let event_operation_id = operation_id.clone();
-                let event_action_info = action_info.clone();
+                let mut action_info = action_info;
+                let scheduler_start_execute_event = maybe_origin_event_tx.map(|_| {
+                    let event = SimpleScheduler::scheduler_start_execute_event(
+                        &worker_id,
+                        &operation_id,
+                        &action_info,
+                    );
+                    let event_id = SimpleScheduler::origin_event_id(&event);
+                    action_info.scheduler_start_execute_event_id = Some(event_id.clone());
+                    (event_id, event)
+                });
+
                 debug!(%worker_id, %operation_id, ?action_info, "Notifying worker of operation");
                 workers
                     .worker_notify_run_action(worker_id, operation_id, action_info)
@@ -373,13 +392,14 @@ impl SimpleScheduler {
                         "Failed to run worker_notify_run_action in SimpleScheduler::do_try_match"
                     })?;
 
-                SimpleScheduler::publish_scheduler_start_execute(
-                    maybe_origin_event_tx,
-                    &event_origin_metadata,
-                    &event_worker_id,
-                    &event_operation_id,
-                    &event_action_info,
-                );
+                if let Some((event_id, event)) = scheduler_start_execute_event {
+                    SimpleScheduler::publish_scheduler_start_execute(
+                        maybe_origin_event_tx,
+                        &event_origin_metadata,
+                        event_id,
+                        event,
+                    );
+                }
 
                 Ok(())
             };
@@ -767,6 +787,7 @@ impl WorkerScheduler for SimpleScheduler {
         Self::publish_action_resource_usage(
             self.maybe_origin_event_tx.as_ref(),
             &action_info.origin_metadata,
+            action_info.scheduler_start_execute_event_id.as_deref(),
             resource_usage,
         );
         Ok(())
