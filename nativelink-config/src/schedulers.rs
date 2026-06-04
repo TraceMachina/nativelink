@@ -327,7 +327,7 @@ pub struct HistoricalResourceSpec {
 
     /// Platform property name used for memory minimums, expressed in KiB.
     /// Default: `memory_kb`
-    #[serde(default = "default_historical_resource_memory_property_name")]
+    #[serde(default = "default_historical_resource_memory_property_name", deserialize_with = "convert_string_with_shellexpand")]
     pub memory_property_name: String,
 
     /// The nested scheduler to use after applying resource hints.
