@@ -201,30 +201,45 @@ pub trait HealthStatusReporter {
 
 /// Health status reporter implementation for the health registry that provides a stream
 /// of health status descriptions.
+///
+/// Indicator checks run **in parallel**: each indicator's
+/// `check_health` does real I/O against its store (write/has/read
+/// roundtrip per [`StoreDriver::check_health`]), so iterating
+/// indicators serially makes the total response time `N * timeout`.
+/// Under load that easily exceeds Kubernetes liveness probe budgets,
+/// causing kubelet to kill an otherwise-healthy pod whose only sin
+/// was that one congested store made the probe handler queue behind
+/// it. Parallel execution caps the total at ~`timeout` regardless of
+/// how many stores are registered.
 impl HealthStatusReporter for HealthRegistry {
     fn health_status_report(
         &self,
         timeout_limit: &Duration,
     ) -> Pin<Box<dyn Stream<Item = HealthStatusDescription> + Send + '_>> {
-        let local_timeout_limit = Arc::new(*timeout_limit);
+        let local_timeout_limit = *timeout_limit;
         Box::pin(
-            futures::stream::iter(
-                self.indicators
-                    .iter()
-                    .zip(core::iter::repeat(local_timeout_limit)),
-            )
-            .then(|((namespace, indicator), internal_timeout)| async move {
-                let status_res =
-                    timeout(*internal_timeout, indicator.check_health(namespace.clone())).await;
-                HealthStatusDescription {
-                    namespace: namespace.clone(),
-                    status: status_res.unwrap_or_else(|_| {
-                        let struct_name = indicator.struct_name();
-                        warn!(struct_name, "Timeout during health check");
-                        HealthStatus::Timeout { struct_name }
-                    }),
-                }
-            }),
+            futures::stream::iter(self.indicators.iter().map(
+                move |(namespace, indicator)| async move {
+                    let status_res = timeout(
+                        local_timeout_limit,
+                        indicator.check_health(namespace.clone()),
+                    )
+                    .await;
+                    HealthStatusDescription {
+                        namespace: namespace.clone(),
+                        status: status_res.unwrap_or_else(|_| {
+                            let struct_name = indicator.struct_name();
+                            warn!(struct_name, "Timeout during health check");
+                            HealthStatus::Timeout { struct_name }
+                        }),
+                    }
+                },
+            ))
+            // Drive every indicator's check concurrently rather than
+            // serially. The order of the resulting descriptions is
+            // not part of the API contract; collect-into-Vec callers
+            // already ignore order.
+            .buffer_unordered(usize::MAX),
         )
     }
 }

@@ -179,8 +179,8 @@
               # platforms corresponding to the host. When using remote executors that
               # differ from the platform corresponding to the host this should be extended
               # via manual `--extra_toolchains` arguments.
-              "--extra_toolchains=@local-remote-execution//rust:rust-${pkgs.system}"
-              "--extra_toolchains=@local-remote-execution//rust:rustfmt-${pkgs.system}"
+              "--extra_toolchains=@local-remote-execution//rust:rust-${pkgs.stdenv.hostPlatform.system}"
+              "--extra_toolchains=@local-remote-execution//rust:rustfmt-${pkgs.stdenv.hostPlatform.system}"
 
               # Defaults for rust target platforms. This is a convenience setting that
               # may be overridden by manual `--platforms` arguments.
