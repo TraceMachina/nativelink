@@ -310,6 +310,7 @@ pub struct HistoricalResourceSpec {
     /// ```json
     /// { "hints": [ ... ] }
     /// ```
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub hints_file: String,
 
     /// Reload interval for `hints_file`. Set to 0 to load once.
