@@ -322,7 +322,7 @@ pub struct HistoricalResourceSpec {
 
     /// Platform property name used for CPU minimums.
     /// Default: `cpu_count`
-    #[serde(default = "default_historical_resource_cpu_property_name")]
+    #[serde(default = "default_historical_resource_cpu_property_name", deserialize_with = "convert_string_with_shellexpand")]
     pub cpu_property_name: String,
 
     /// Platform property name used for memory minimums, expressed in KiB.
