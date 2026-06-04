@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,24 +12,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::time::Duration;
 use std::sync::Arc;
-use std::time::Duration;
 
 use aws_sdk_s3::config::{BehaviorVersion, Builder, Region};
 use aws_sdk_s3::primitives::ByteStream;
-use aws_smithy_runtime::client::http::test_util::{ReplayEvent, StaticReplayClient};
+use aws_smithy_http_client::test_util::{ReplayEvent, StaticReplayClient};
 use aws_smithy_types::body::SdkBody;
 use bytes::{BufMut, Bytes, BytesMut};
 use futures::join;
 use futures::task::Poll;
 use http::header;
 use http::status::StatusCode;
-use hyper::Body;
-use mock_instant::MockClock;
-use nativelink_error::{make_input_err, Error, ResultExt};
+use http_body::Frame;
+use mock_instant::thread_local::MockClock;
+use nativelink_config::stores::{CommonObjectSpec, ExperimentalAwsSpec};
+use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_macro::nativelink_test;
 use nativelink_store::s3_store::S3Store;
 use nativelink_util::buf_channel::make_buf_channel_pair;
+use nativelink_util::channel_body_for_tests::ChannelBody;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
 use nativelink_util::spawn;
@@ -37,7 +39,7 @@ use nativelink_util::store_trait::{StoreLike, UploadSizeInfo};
 use pretty_assertions::assert_eq;
 use sha2::{Digest, Sha256};
 
-// TODO(aaronmondal): Figure out how to test the connector retry mechanism.
+// TODO(palfrey): Figure out how to test the connector retry mechanism.
 
 const BUCKET_NAME: &str = "dummy-bucket-name";
 const VALID_HASH1: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
@@ -53,13 +55,13 @@ async fn simple_has_object_found() -> Result<(), Error> {
             .unwrap(),
     )]);
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2024_03_28())
+        .behavior_version(BehaviorVersion::latest())
         .region(Region::from_static(REGION))
         .http_client(mock_client)
         .build();
     let s3_client = aws_sdk_s3::Client::from_conf(test_config);
     let store = S3Store::new_with_client_and_jitter(
-        &nativelink_config::stores::S3Store {
+        &ExperimentalAwsSpec {
             bucket: BUCKET_NAME.to_string(),
             ..Default::default()
         },
@@ -88,13 +90,13 @@ async fn simple_has_object_not_found() -> Result<(), Error> {
             .unwrap(),
     )]);
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2024_03_28())
+        .behavior_version(BehaviorVersion::latest())
         .region(Region::from_static(REGION))
         .http_client(mock_client)
         .build();
     let s3_client = aws_sdk_s3::Client::from_conf(test_config);
     let store = S3Store::new_with_client_and_jitter(
-        &nativelink_config::stores::S3Store {
+        &ExperimentalAwsSpec {
             bucket: BUCKET_NAME.to_string(),
             ..Default::default()
         },
@@ -146,19 +148,22 @@ async fn simple_has_retries() -> Result<(), Error> {
         ),
     ]);
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2024_03_28())
+        .behavior_version(BehaviorVersion::latest())
         .region(Region::from_static(REGION))
         .http_client(mock_client)
         .build();
     let s3_client = aws_sdk_s3::Client::from_conf(test_config);
 
     let store = S3Store::new_with_client_and_jitter(
-        &nativelink_config::stores::S3Store {
+        &ExperimentalAwsSpec {
             bucket: BUCKET_NAME.to_string(),
-            retry: nativelink_config::stores::Retry {
-                max_retries: 1024,
-                delay: 0.,
-                jitter: 0.,
+            common: CommonObjectSpec {
+                retry: nativelink_config::stores::Retry {
+                    max_retries: 1024,
+                    delay: 0.,
+                    jitter: 0.,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
             ..Default::default()
@@ -179,33 +184,46 @@ async fn simple_has_retries() -> Result<(), Error> {
     Ok(())
 }
 
+// As of `BehaviorVersion::latest` responses contain checksums. This helper
+// function removes them for easier comparison.
+fn extract_payload_from_chunked_data(chunked_data: &[u8]) -> Result<Bytes, Error> {
+    let data_str = core::str::from_utf8(chunked_data)
+        .map_err(|e| make_input_err!("Invalid UTF-8 in chunked data: {e:?}"))?;
+    let parts: Vec<&str> = data_str.split("\r\n").collect();
+    if parts.len() > 1 {
+        return Ok(Bytes::from(parts[1].to_string()));
+    }
+    Ok(Bytes::from(chunked_data.to_vec()))
+}
+
+/// This function mutates the request to insert a Content-MD5 header and remove
+/// any existing flexible checksum headers
 #[nativelink_test]
 async fn simple_update_ac() -> Result<(), Error> {
     const AC_ENTRY_SIZE: u64 = 199;
     const CONTENT_LENGTH: usize = 50;
     let mut send_data = BytesMut::new();
     for i in 0..CONTENT_LENGTH {
-        send_data.put_u8(((i % 93) + 33) as u8); // Printable characters only.
+        send_data.put_u8(u8::try_from((i % 93) + 33).expect("printable ASCII range"));
     }
     let send_data = send_data.freeze();
 
-    let (mock_client, request_receiver) =
-        aws_smithy_runtime::client::http::test_util::capture_request(Some(
-            aws_smithy_runtime_api::http::Response::new(
-                StatusCode::OK.into(),
-                SdkBody::empty(), // This is an upload, so server does not send a body.
-            )
-            .try_into_http02x()
-            .unwrap(),
-        ));
+    let (mock_client, request_receiver) = aws_smithy_http_client::test_util::capture_request(Some(
+        aws_smithy_runtime_api::http::Response::new(
+            StatusCode::OK.into(),
+            SdkBody::empty(), // This is an upload, so server does not send a body.
+        )
+        .try_into_http1x()
+        .unwrap(),
+    ));
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2024_03_28())
+        .behavior_version(BehaviorVersion::latest())
         .region(Region::from_static(REGION))
         .http_client(mock_client)
         .build();
     let s3_client = aws_sdk_s3::Client::from_conf(test_config);
     let store = S3Store::new_with_client_and_jitter(
-        &nativelink_config::stores::S3Store {
+        &ExperimentalAwsSpec {
             bucket: BUCKET_NAME.to_string(),
             ..Default::default()
         },
@@ -221,7 +239,7 @@ async fn simple_update_ac() -> Result<(), Error> {
             .update(
                 DigestInfo::try_new(VALID_HASH1, AC_ENTRY_SIZE)?,
                 rx,
-                UploadSizeInfo::ExactSize(CONTENT_LENGTH),
+                UploadSizeInfo::ExactSize(CONTENT_LENGTH as u64),
             )
             .await
     });
@@ -233,7 +251,12 @@ async fn simple_update_ac() -> Result<(), Error> {
         assert_eq!(Poll::Pending, futures::poll!(&mut update_fut));
         let sent_request = request_receiver.expect_request();
         assert_eq!(sent_request.method(), "PUT");
-        assert_eq!(sent_request.uri(), format!("https://{BUCKET_NAME}.s3.{REGION}.amazonaws.com/{VALID_HASH1}-{AC_ENTRY_SIZE}?x-id=PutObject"));
+        assert_eq!(
+            sent_request.uri(),
+            format!(
+                "https://{BUCKET_NAME}.s3.{REGION}.amazonaws.com/{VALID_HASH1}-{AC_ENTRY_SIZE}?x-id=PutObject"
+            )
+        );
         ByteStream::from_body_0_4(sent_request.into_body())
     };
 
@@ -243,16 +266,19 @@ async fn simple_update_ac() -> Result<(), Error> {
     let spawn_fut = spawn!("simple_update_ac", async move {
         tokio::try_join!(update_fut, async move {
             for i in 0..CONTENT_LENGTH {
-                tx.send(send_data_copy.slice(i..(i + 1))).await?;
+                tx.send(send_data_copy.slice(i..=i)).await?;
             }
             tx.send_eof()
         })
-        .or_else(|e| {
-            // Printing error to make it easier to debug, since ordering
-            // of futures is not guaranteed.
-            eprintln!("Error updating or sending in spawn: {e:?}");
-            Err(e)
-        })
+        .or_else(
+            #[expect(clippy::use_debug)]
+            |e| {
+                // Printing error to make it easier to debug, since ordering
+                // of futures is not guaranteed.
+                eprintln!("Error updating or sending in spawn: {e:?}");
+                Err(e)
+            },
+        )
     });
 
     // Wait for all the data to be received by the s3 backend server.
@@ -260,11 +286,11 @@ async fn simple_update_ac() -> Result<(), Error> {
         .collect()
         .await
         .map_err(|e| make_input_err!("{e:?}"))?;
-    assert_eq!(
-        send_data,
-        data_sent_to_s3.into_bytes(),
-        "Expected data to match"
-    );
+
+    let chunked_bytes = data_sent_to_s3.into_bytes();
+    let actual_payload = extract_payload_from_chunked_data(&chunked_bytes)?;
+
+    assert_eq!(send_data, actual_payload, "Expected data to match");
 
     // Collect our spawn future to ensure it completes without error.
     spawn_fut
@@ -287,13 +313,13 @@ async fn simple_get_ac() -> Result<(), Error> {
             .unwrap(),
     )]);
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2024_03_28())
+        .behavior_version(BehaviorVersion::latest())
         .region(Region::from_static(REGION))
         .http_client(mock_client)
         .build();
     let s3_client = aws_sdk_s3::Client::from_conf(test_config);
     let store = S3Store::new_with_client_and_jitter(
-        &nativelink_config::stores::S3Store {
+        &ExperimentalAwsSpec {
             bucket: BUCKET_NAME.to_string(),
             ..Default::default()
         },
@@ -306,10 +332,10 @@ async fn simple_get_ac() -> Result<(), Error> {
         .get_part_unchunked(DigestInfo::try_new(VALID_HASH1, AC_ENTRY_SIZE)?, 0, None)
         .await?;
     assert_eq!(
-            store_data,
-            VALUE.as_bytes(),
-            "Hash for key: {VALID_HASH1} did not insert. Expected: {VALUE:#x?}, but got: {store_data:#x?}",
-        );
+        store_data,
+        VALUE.as_bytes(),
+        "Hash for key: {VALID_HASH1} did not insert. Expected: {VALUE:#x?}, but got: {store_data:#x?}",
+    );
     Ok(())
 }
 
@@ -332,13 +358,13 @@ async fn smoke_test_get_part() -> Result<(), Error> {
                 .unwrap(),
         )]);
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2024_03_28())
+        .behavior_version(BehaviorVersion::latest())
         .region(Region::from_static(REGION))
         .http_client(mock_client.clone())
         .build();
     let s3_client = aws_sdk_s3::Client::from_conf(test_config);
     let store = S3Store::new_with_client_and_jitter(
-        &nativelink_config::stores::S3Store {
+        &ExperimentalAwsSpec {
             bucket: BUCKET_NAME.to_string(),
             ..Default::default()
         },
@@ -350,8 +376,8 @@ async fn smoke_test_get_part() -> Result<(), Error> {
     store
         .get_part_unchunked(
             DigestInfo::try_new(VALID_HASH1, AC_ENTRY_SIZE)?,
-            OFFSET,
-            Some(LENGTH),
+            OFFSET as u64,
+            Some(LENGTH as u64),
         )
         .await?;
 
@@ -392,19 +418,22 @@ async fn get_part_simple_retries() -> Result<(), Error> {
         ),
     ]);
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2024_03_28())
+        .behavior_version(BehaviorVersion::latest())
         .region(Region::from_static(REGION))
         .http_client(mock_client)
         .build();
     let s3_client = aws_sdk_s3::Client::from_conf(test_config);
 
     let store = S3Store::new_with_client_and_jitter(
-        &nativelink_config::stores::S3Store {
+        &ExperimentalAwsSpec {
             bucket: BUCKET_NAME.to_string(),
-            retry: nativelink_config::stores::Retry {
-                max_retries: 1024,
-                delay: 0.,
-                jitter: 0.,
+            common: CommonObjectSpec {
+                retry: nativelink_config::stores::Retry {
+                    max_retries: 1024,
+                    delay: 0.,
+                    jitter: 0.,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
             ..Default::default()
@@ -426,9 +455,9 @@ async fn multipart_update_large_cas() -> Result<(), Error> {
     const MIN_MULTIPART_SIZE: usize = 5 * 1024 * 1024; // 5mb.
     const AC_ENTRY_SIZE: usize = MIN_MULTIPART_SIZE * 2 + 50;
 
-    let mut send_data = Vec::with_capacity(AC_ENTRY_SIZE);
+    let mut send_data: Vec<u8> = Vec::with_capacity(AC_ENTRY_SIZE);
     for i in 0..send_data.capacity() {
-        send_data.push(((i * 3) % 256) as u8);
+        send_data.push(u8::try_from((i * 3) % 256).expect("modulo 256 always fits in u8"));
     }
     let digest = DigestInfo::try_new(VALID_HASH1, send_data.len())?;
 
@@ -524,13 +553,13 @@ async fn multipart_update_large_cas() -> Result<(), Error> {
             ),
         ]);
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2024_03_28())
+        .behavior_version(BehaviorVersion::latest())
         .region(Region::from_static(REGION))
         .http_client(mock_client.clone())
         .build();
     let s3_client = aws_sdk_s3::Client::from_conf(test_config);
     let store = S3Store::new_with_client_and_jitter(
-        &nativelink_config::stores::S3Store {
+        &ExperimentalAwsSpec {
             bucket: BUCKET_NAME.to_string(),
             ..Default::default()
         },
@@ -549,7 +578,10 @@ async fn multipart_update_large_cas() -> Result<(), Error> {
 #[nativelink_test]
 async fn ensure_empty_string_in_stream_works_test() -> Result<(), Error> {
     const CAS_ENTRY_SIZE: usize = 10; // Length of "helloworld".
-    let (mut tx, channel_body) = Body::channel();
+
+    let (tx, channel_body) = ChannelBody::new();
+    let sdk_body = SdkBody::from_body_1_x(channel_body);
+
     let mock_client = StaticReplayClient::new(vec![ReplayEvent::new(
             http::Request::builder()
                 .uri(format!(
@@ -560,17 +592,17 @@ async fn ensure_empty_string_in_stream_works_test() -> Result<(), Error> {
                 .unwrap(),
             http::Response::builder()
                 .status(StatusCode::OK)
-                .body(SdkBody::from_body_0_4(channel_body))
+                .body(sdk_body)
                 .unwrap(),
         )]);
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2024_03_28())
+        .behavior_version(BehaviorVersion::latest())
         .region(Region::from_static(REGION))
         .http_client(mock_client.clone())
         .build();
     let s3_client = aws_sdk_s3::Client::from_conf(test_config);
     let store = S3Store::new_with_client_and_jitter(
-        &nativelink_config::stores::S3Store {
+        &ExperimentalAwsSpec {
             bucket: BUCKET_NAME.to_string(),
             ..Default::default()
         },
@@ -579,22 +611,33 @@ async fn ensure_empty_string_in_stream_works_test() -> Result<(), Error> {
         MockInstantWrapped::default,
     )?;
 
-    let (_, get_part_result) = join!(
+    let (send_result, get_part_result) = join!(
         async move {
-            tx.send_data(Bytes::from_static(b"hello")).await?;
-            tx.send_data(Bytes::from_static(b"")).await?;
-            tx.send_data(Bytes::from_static(b"world")).await?;
-            Result::<(), hyper::Error>::Ok(())
+            tx.send(Frame::data(Bytes::from_static(b"hello")))
+                .await
+                .map_err(|_| "send error")?;
+            tx.send(Frame::data(Bytes::from_static(b"")))
+                .await
+                .map_err(|_| "send error")?;
+            tx.send(Frame::data(Bytes::from_static(b"world")))
+                .await
+                .map_err(|_| "send error")?;
+            Result::<(), &'static str>::Ok(())
         },
         store.get_part_unchunked(
             DigestInfo::try_new(VALID_HASH1, CAS_ENTRY_SIZE)?,
             0,
-            Some(CAS_ENTRY_SIZE),
+            Some(CAS_ENTRY_SIZE as u64),
         )
     );
+
+    if let Err(e) = send_result {
+        return Err(make_err!(Code::Internal, "Failed to send data: {}", e));
+    }
+
     assert_eq!(
-        get_part_result.err_tip(|| "Expected get_part_result to pass")?,
-        "helloworld".as_bytes()
+        *get_part_result.err_tip(|| "Expected get_part_result to pass")?,
+        *b"helloworld"
     );
 
     mock_client.assert_requests_match(&[]);
@@ -603,20 +646,17 @@ async fn ensure_empty_string_in_stream_works_test() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn get_part_is_zero_digest() -> Result<(), Error> {
-    let digest = DigestInfo {
-        packed_hash: Sha256::new().finalize().into(),
-        size_bytes: 0,
-    };
+    let digest = DigestInfo::new(Sha256::new().finalize().into(), 0);
 
     let mock_client = StaticReplayClient::new(vec![]);
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2024_03_28())
+        .behavior_version(BehaviorVersion::latest())
         .region(Region::from_static(REGION))
         .http_client(mock_client)
         .build();
     let s3_client = aws_sdk_s3::Client::from_conf(test_config);
     let store = Arc::new(S3Store::new_with_client_and_jitter(
-        &nativelink_config::stores::S3Store {
+        &ExperimentalAwsSpec {
             bucket: BUCKET_NAME.to_string(),
             ..Default::default()
         },
@@ -646,22 +686,19 @@ async fn get_part_is_zero_digest() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn has_with_results_on_zero_digests() -> Result<(), Error> {
-    let digest = DigestInfo {
-        packed_hash: Sha256::new().finalize().into(),
-        size_bytes: 0,
-    };
+    let digest = DigestInfo::new(Sha256::new().finalize().into(), 0);
     let keys = vec![digest.into()];
     let mut results = vec![None];
 
     let mock_client = StaticReplayClient::new(vec![]);
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2024_03_28())
+        .behavior_version(BehaviorVersion::latest())
         .region(Region::from_static(REGION))
         .http_client(mock_client)
         .build();
     let s3_client = aws_sdk_s3::Client::from_conf(test_config);
     let store = S3Store::new_with_client_and_jitter(
-        &nativelink_config::stores::S3Store {
+        &ExperimentalAwsSpec {
             bucket: BUCKET_NAME.to_string(),
             ..Default::default()
         },
@@ -671,7 +708,7 @@ async fn has_with_results_on_zero_digests() -> Result<(), Error> {
     )?;
 
     store.has_with_results(&keys, &mut results).await.unwrap();
-    assert_eq!(results, vec!(Some(0)));
+    assert_eq!(results, vec![Some(0)]);
 
     Ok(())
 }
@@ -698,15 +735,18 @@ async fn has_with_expired_result() -> Result<(), Error> {
         ),
     ]);
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2024_03_28())
+        .behavior_version(BehaviorVersion::latest())
         .region(Region::from_static(REGION))
         .http_client(mock_client)
         .build();
     let s3_client = aws_sdk_s3::Client::from_conf(test_config);
     let store = S3Store::new_with_client_and_jitter(
-        &nativelink_config::stores::S3Store {
+        &ExperimentalAwsSpec {
             bucket: BUCKET_NAME.to_string(),
-            consider_expired_after_s: 2 * 24 * 60 * 60, // 2 days.
+            common: CommonObjectSpec {
+                consider_expired_after_s: 2 * 24 * 60 * 60, // 2 days.
+                ..Default::default()
+            },
             ..Default::default()
         },
         s3_client,
@@ -717,8 +757,8 @@ async fn has_with_expired_result() -> Result<(), Error> {
     // Time starts at 1970-01-01 00:00:00.
     let digest = DigestInfo::try_new(VALID_HASH1, CAS_ENTRY_SIZE).unwrap();
     {
-        MockClock::advance(Duration::from_secs(24 * 60 * 60)); // 1 day.
-                                                               // Date is now 1970-01-02 00:00:00.
+        MockClock::advance(Duration::from_hours(24)); // 1 day.
+        // Date is now 1970-01-02 00:00:00.
         let mut results = vec![None];
         store
             .has_with_results(&[digest.into()], &mut results)
@@ -727,8 +767,8 @@ async fn has_with_expired_result() -> Result<(), Error> {
         assert_eq!(results, vec![Some(512)]);
     }
     {
-        MockClock::advance(Duration::from_secs(24 * 60 * 60)); // 1 day.
-                                                               // Date is now 1970-01-03 00:00:00.
+        MockClock::advance(Duration::from_hours(24)); // 1 day.
+        // Date is now 1970-01-03 00:00:00.
         let mut results = vec![None];
         store
             .has_with_results(&[digest.into()], &mut results)

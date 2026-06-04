@@ -4,7 +4,6 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-parts.url = "github:hercules-ci/flake-parts";
-    flake-utils.url = "github:numtide/flake-utils";
     git-hooks = {
       url = "github:cachix/git-hooks.nix";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -15,12 +14,11 @@
     };
     crane = {
       url = "github:ipetkov/crane";
-      inputs.nixpkgs.follows = "nixpkgs";
     };
     nix2container = {
-      url = "github:nlewo/nix2container";
+      # TODO(SchahinRohani): Use a specific commit hash until nix2container is stable.
+      url = "github:nlewo/nix2container/66f4b8a47e92aa744ec43acbb5e9185078983909";
       inputs.nixpkgs.follows = "nixpkgs";
-      inputs.flake-utils.follows = "flake-utils";
     };
   };
 
@@ -42,146 +40,132 @@
       imports = [
         inputs.git-hooks.flakeModule
         ./local-remote-execution/flake-module.nix
+        ./tools/darwin/flake-module.nix
+        ./tools/nixos/flake-module.nix
+        ./flake-module.nix
       ];
+      flake = {
+        flakeModules = {
+          default = ./flake-module.nix;
+          darwin = ./tools/darwin/flake-module.nix;
+          lre = ./local-remote-execution/flake-module.nix;
+          nixos = ./tools/nixos/flake-module.nix;
+        };
+        overlays = {
+          lre = import ./local-remote-execution/overlays/default.nix {inherit nix2container;};
+          tools = import ./tools/public/default.nix {inherit nix2container;};
+        };
+        # TODO(jaroeichler): Keep template inputs on upstream.
+        templates = {
+          bazel = {
+            path = ./templates/bazel;
+            description = "Local remote execution with Bazel";
+            welcomeText = ''
+              # Getting started
+
+              Enter the Nix environment with `nix develop`.
+              Get your credentials for NativeLink and paste them into `user.bazelrc`.
+              Run `bazel build hello-world` to build the example with local
+              remote execution.
+
+              See <https://www.nativelink.com/docs/explanations/lre> for further
+              details on local remote execution.
+            '';
+          };
+        };
+      };
       perSystem = {
         config,
         pkgs,
         system,
+        lib,
         ...
       }: let
-        stable-rust-version = "1.79.0";
-        nightly-rust-version = "2024-07-24";
-
-        # TODO(aaronmondal): Make musl builds work on Darwin.
-        # See: https://github.com/TraceMachina/nativelink/issues/751
-        stable-rust =
-          if pkgs.stdenv.isDarwin
-          then pkgs.rust-bin.stable.${stable-rust-version}
-          else pkgs.pkgsMusl.rust-bin.stable.${stable-rust-version};
-        nightly-rust =
-          if pkgs.stdenv.isDarwin
-          then pkgs.rust-bin.nightly.${nightly-rust-version}
-          else pkgs.pkgsMusl.rust-bin.nightly.${nightly-rust-version};
-
-        # TODO(aaronmondal): Tools like rustdoc don't work with the `pkgsMusl`
-        # package set because of missing libgcc_s. Fix this upstream and use the
-        # `stable-rust` toolchain in the devShell as well.
-        # See: https://github.com/oxalica/rust-overlay/issues/161
-        stable-rust-native = pkgs.rust-bin.stable.${stable-rust-version};
-
-        maybeDarwinDeps = pkgs.lib.optionals pkgs.stdenv.isDarwin [
-          pkgs.darwin.apple_sdk.frameworks.Security
-          pkgs.libiconv
-        ];
-
-        llvmPackages = pkgs.llvmPackages_18;
-
-        customStdenv = pkgs.callPackage ./tools/llvmStdenv.nix {inherit llvmPackages;};
-
-        # TODO(aaronmondal): This doesn't work with rules_rust yet.
-        # Tracked in https://github.com/TraceMachina/nativelink/issues/477.
-        customClang = pkgs.callPackage ./tools/customClang.nix {stdenv = customStdenv;};
-
-        nixSystemToRustTriple = nixSystem:
-          {
-            "x86_64-linux" = "x86_64-unknown-linux-musl";
-            "aarch64-linux" = "aarch64-unknown-linux-musl";
-            "x86_64-darwin" = "x86_64-apple-darwin";
-            "aarch64-darwin" = "aarch64-apple-darwin";
-          }
-          .${nixSystem}
-          or (throw "Unsupported Nix system: ${nixSystem}");
-
-        # Calling `pkgs.pkgsCross` changes the host and target platform to the
-        # cross-target but leaves the build platform the same as pkgs.
-        #
-        # For instance, calling `pkgs.pkgsCross.aarch64-multiplatform` on an
-        # `x86_64-linux` host sets `host==target==aarch64-linux` but leaves the
-        # build platform at `x86_64-linux`.
-        #
-        # On aarch64-darwin the same `pkgs.pkgsCross.aarch64-multiplatform`
-        # again sets `host==target==aarch64-linux` but now with a build platform
-        # of `aarch64-darwin`.
-        #
-        # For optimal cache reuse of different crosscompilation toolchains we
-        # take our rust toolchain from the host's `pkgs` and remap the rust
-        # target to the target platform of the `pkgsCross` target. This lets us
-        # reuse the same executables (for instance rustc) to build artifacts for
-        # different target platforms.
-        stableRustFor = p:
-          p.rust-bin.stable.${stable-rust-version}.default.override {
-            targets = [
-              "${nixSystemToRustTriple p.stdenv.targetPlatform.system}"
-            ];
-          };
-
-        craneLibFor = p: (crane.mkLib p).overrideToolchain stableRustFor;
+        # On Linux we build fully static musl binaries, elsewhere the default stdenv.
+        stdenvSelectorFor = q:
+          if q.stdenv.targetPlatform.isLinux
+          then q.pkgsMusl.stdenv
+          else q.stdenv;
+        craneLibFor = p:
+          ((crane.mkLib p).overrideToolchain pkgs.lre.stableRustFor).overrideScope (_: _: {
+            stdenvSelector = stdenvSelectorFor;
+          });
+        nightlyCraneLibFor = p:
+          ((crane.mkLib p).overrideToolchain pkgs.lre.nightlyRustFor).overrideScope (_: _: {
+            stdenvSelector = stdenvSelectorFor;
+          });
 
         src = pkgs.lib.cleanSourceWith {
           src = (craneLibFor pkgs).path ./.;
           filter = path: type:
-            (builtins.match "^.*(data/SekienSkashita\.jpg|nativelink-config/README\.md)" path != null)
+            (builtins.match "^.*(examples/.+\.json5|data/.+|nativelink-config/README\.md)" path != null)
             || ((craneLibFor pkgs).filterCargoSources path type);
         };
 
         # Warning: The different usages of `p` and `pkgs` are intentional as we
         # use crosscompilers and crosslinkers whose packagesets collapse with
-        # the host's packageset. If you change this, take care that you don't
+        # the host's packageset. If you change this take care that you don't
         # accidentally explode the global closure size.
         commonArgsFor = p: let
           isLinuxBuild = p.stdenv.buildPlatform.isLinux;
           isLinuxTarget = p.stdenv.targetPlatform.isLinux;
-          targetArch = nixSystemToRustTriple p.stdenv.targetPlatform.system;
+          # Map the nix system to the Rust target triple that we'd want to target
+          # by default.
+          targetArch =
+            (
+              nixSystem:
+                {
+                  "x86_64-linux" = "x86_64-unknown-linux-musl";
+                  "aarch64-linux" = "aarch64-unknown-linux-musl";
+                  "x86_64-darwin" = "x86_64-apple-darwin";
+                  "aarch64-darwin" = "aarch64-apple-darwin";
+                }.${
+                  nixSystem
+                } or (throw "Unsupported Nix host platform: ${nixSystem}")
+            )
+            p.stdenv.targetPlatform.system;
 
           # Full path to the linker for CARGO_TARGET_XXX_LINKER
           linkerPath =
             if isLinuxBuild && isLinuxTarget
             then "${pkgs.mold}/bin/ld.mold"
-            else "${pkgs.llvmPackages_latest.lld}/bin/ld.lld";
+            else "${pkgs.llvmPackages_22.lld}/bin/ld.lld";
+
+          linkerEnvVar = "CARGO_TARGET_${pkgs.lib.toUpper (pkgs.lib.replaceStrings ["-"] ["_"] targetArch)}_LINKER";
         in
           {
             inherit src;
-            stdenv =
-              if isLinuxTarget
-              then p.pkgsMusl.stdenv
-              else p.stdenv;
             strictDeps = true;
             buildInputs =
               [p.cacert]
               ++ pkgs.lib.optionals p.stdenv.targetPlatform.isDarwin [
-                p.darwin.apple_sdk.frameworks.Security
+                p.apple-sdk_14
                 p.libiconv
               ];
             nativeBuildInputs =
-              (
+              [p.bashNonInteractive] # needed for some command tests
+              ++ (
                 if isLinuxBuild
                 then [pkgs.mold]
-                else [pkgs.llvmPackages_latest.lld]
+                else [pkgs.llvmPackages_22.lld]
               )
               ++ pkgs.lib.optionals p.stdenv.targetPlatform.isDarwin [
-                p.darwin.apple_sdk.frameworks.Security
+                p.apple-sdk_14
                 p.libiconv
               ];
             CARGO_BUILD_TARGET = targetArch;
           }
-          // (
-            if isLinuxTarget
-            then
-              {
-                CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
-              }
-              // (
-                if linkerPath != null
-                then {
-                  "CARGO_TARGET_${pkgs.lib.toUpper (pkgs.lib.replaceStrings ["-"] ["_"] targetArch)}_LINKER" = linkerPath;
-                }
-                else {}
-              )
-            else {}
-          );
+          // (pkgs.lib.optionalAttrs isLinuxTarget {
+            CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
+            TARGET_CC = "${pkgs.lre.clang}/bin/customClang"; # So mimalloc gets the right compiler not defaulting to gcc
+            # FIXME(palfrey): Attempted workaround from https://github.com/llvm/llvm-project/issues/32849#issuecomment-2353071071 but doesn't work
+            # CFLAGS = "-femit-all-decls";
+            ${linkerEnvVar} = linkerPath;
+          });
 
         # Additional target for external dependencies to simplify caching.
         cargoArtifactsFor = p: (craneLibFor p).buildDepsOnly (commonArgsFor p);
+        nightlyCargoArtifactsFor = p: (nightlyCraneLibFor p).buildDepsOnly (commonArgsFor p);
 
         nativelinkFor = p:
           (craneLibFor p).buildPackage ((commonArgsFor p)
@@ -190,9 +174,9 @@
             });
 
         nativeTargetPkgs =
-          if pkgs.system == "x86_64-linux"
+          if pkgs.stdenv.hostPlatform.system == "x86_64-linux"
           then pkgs.pkgsCross.musl64
-          else if pkgs.system == "aarch64-linux"
+          else if pkgs.stdenv.hostPlatform.system == "aarch64-linux"
           then pkgs.pkgsCross.aarch64-multiplatform-musl
           else pkgs;
 
@@ -203,32 +187,21 @@
         nativelink-aarch64-linux = nativelinkFor pkgs.pkgsCross.aarch64-multiplatform-musl;
         nativelink-x86_64-linux = nativelinkFor pkgs.pkgsCross.musl64;
 
-        nativelink-debug = (craneLibFor pkgs).buildPackage ((commonArgsFor pkgs)
-          // {
-            cargoArtifacts = cargoArtifactsFor pkgs;
-            CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static --cfg tokio_unstable";
-            CARGO_PROFILE = "smol";
-            cargoExtraArgs = "--features enable_tokio_console";
-          });
-
-        publish-ghcr = pkgs.callPackage ./tools/publish-ghcr.nix {};
-
-        local-image-test = pkgs.callPackage ./tools/local-image-test.nix {};
-
         nativelink-is-executable-test = pkgs.callPackage ./tools/nativelink-is-executable-test.nix {inherit nativelink;};
 
-        rbe-configs-gen = pkgs.callPackage ./local-remote-execution/rbe-configs-gen.nix {};
+        generate-toolchains = pkgs.callPackage ./tools/generate-toolchains.nix {};
 
-        generate-toolchains = pkgs.callPackage ./tools/generate-toolchains.nix {inherit rbe-configs-gen;};
+        build-chromium-tests =
+          pkgs.writeShellScriptBin
+          "build-chromium-tests"
+          ./deploy/chromium-example/build_chromium_tests.sh;
 
-        native-cli = pkgs.callPackage ./native-cli/default.nix {};
-
-        docs = pkgs.callPackage ./tools/docs.nix {rust = stable-rust.default;};
+        docs = pkgs.callPackage ./tools/docs.nix {rust = pkgs.lre.stable-rust;};
 
         inherit (nix2container.packages.${system}.nix2container) pullImage;
         inherit (nix2container.packages.${system}.nix2container) buildImage;
 
-        # TODO(aaronmondal): Allow "crosscompiling" this image. At the moment
+        # TODO(palfrey): Allow "crosscompiling" this image. At the moment
         #                    this would set a wrong container architecture. See:
         #                    https://github.com/nlewo/nix2container/issues/138.
         nativelink-image = let
@@ -251,7 +224,7 @@
               Labels = {
                 "org.opencontainers.image.description" = "An RBE compatible, high-performance cache and remote executor.";
                 "org.opencontainers.image.documentation" = "https://github.com/TraceMachina/nativelink";
-                "org.opencontainers.image.licenses" = "Apache-2.0";
+                "org.opencontainers.image.licenses" = "FSL-1.1-Apache-2.0";
                 "org.opencontainers.image.revision" = "${self.rev or self.dirtyRev or "dirty"}";
                 "org.opencontainers.image.source" = "https://github.com/TraceMachina/nativelink";
                 "org.opencontainers.image.title" = "NativeLink";
@@ -262,13 +235,10 @@
 
         nativelink-worker-init = pkgs.callPackage ./tools/nativelink-worker-init.nix {inherit buildImage self nativelink-image;};
 
-        rbe-autogen = pkgs.callPackage ./local-remote-execution/rbe-autogen.nix {
-          inherit buildImage;
-          stdenv = customStdenv;
-        };
-        createWorker = pkgs.callPackage ./tools/create-worker.nix {inherit buildImage self;};
+        createWorker = pkgs.nativelink-tools.lib.createWorker self;
+
         buck2-toolchain = let
-          buck2-nightly-rust-version = "2024-04-28";
+          buck2-nightly-rust-version = "2026-03-24";
           buck2-nightly-rust = pkgs.rust-bin.nightly.${buck2-nightly-rust-version};
           buck2-rust = buck2-nightly-rust.default.override {extensions = ["rust-src"];};
         in
@@ -282,14 +252,14 @@
               pkgs.diffutils
               pkgs.gnutar
               pkgs.gzip
-              pkgs.python3Full
+              pkgs.python3
               pkgs.unzip
               pkgs.zstd
               pkgs.cargo-bloat
-              pkgs.mold-wrapped
+              pkgs.mold
               pkgs.reindeer
-              pkgs.lld_16
-              pkgs.clang_16
+              pkgs.lld_22
+              pkgs.clang_22
               buck2-rust
             ];
           };
@@ -304,10 +274,6 @@
             os = "linux";
           };
         };
-        lre-cc = pkgs.callPackage ./local-remote-execution/lre-cc.nix {
-          inherit customClang buildImage;
-          stdenv = customStdenv;
-        };
         toolchain-drake = buildImage {
           name = "toolchain-drake";
           # imageDigest and sha256 are generated by toolchain-drake.sh for non-reproducible builds.
@@ -320,58 +286,125 @@
             os = "linux";
           };
         };
-      in rec {
-        _module.args.pkgs = let
-          nixpkgs-patched = (import self.inputs.nixpkgs {inherit system;}).applyPatches {
-            name = "nixpkgs-patched";
-            src = self.inputs.nixpkgs;
-            patches = [
-              ./tools/nixpkgs_link_libunwind_and_libcxx.diff
-              ./tools/nixpkgs_disable_ratehammering_pulumi_tests.diff
-              ./tools/nixpkgs_playwright.diff
-            ];
+        toolchain-buck2 = buildImage {
+          name = "toolchain-buck2";
+          # imageDigest and sha256 are generated by toolchain-buck2.sh for non-reproducible builds.
+          fromImage = pullImage {
+            imageName = "localhost:5001/toolchain-buck2";
+            imageDigest = ""; # DO NOT COMMIT BUCK2 IMAGE_DIGEST VALUE
+            sha256 = ""; # DO NOT COMMIT BUCK2 SHA256 VALUE
+            tlsVerify = false;
+            arch = "amd64";
+            os = "linux";
           };
+        };
+
+        nativelinkCoverageFor = p: let
+          coverageArgs = commonArgsFor p;
         in
-          import nixpkgs-patched {
-            inherit system;
-            overlays = [(import rust-overlay)];
-          };
+          (nightlyCraneLibFor p).cargoLlvmCov (coverageArgs
+            // {
+              cargoArtifacts = nightlyCargoArtifactsFor p;
+              preConfigurePhases = ["tempHome"];
+              tempHome = ''
+                # Default home at this point is /homeless-shelter, which doesn't exist and so breaks things like
+                # the Mongo downloader
+                echo "HOME was ''${HOME}"
+                export HOME=$(mktemp -d fake-homeXXXX --tmpdir)
+                echo "HOME is now ''${HOME}"
+
+                # FIXME: This is a giant pile of hacks, as what we should be doing is downloading mongodb and patching it to work with
+                # Nix. Several hours of patchelf rummaging later, hitting issues like "_Unwind_GetRegionStart: symbol not found" we
+                # instead have this hacky workaround. It adds a symlink to a Nix mongod where the extractor code expects to find it,
+                # which will work. This is the wrong version (7.0.16 v.s. 7.0.11 currently, so not so bad) but TBH our codebase is mostly
+                # fairly version agnostic so far and 7.0.11 is picked out of the air as the one we've used elsewhere.
+
+                mkdir -p $HOME/.cache/mongo/extracted/7.0.11/mongodb-linux-x86_64-ubuntu2204-7.0.11/bin
+                touch $HOME/.cache/mongo/extracted/7.0.11/extracted.marker # As needed by nativelink-store/tests/mongo_runner/mod.rs
+                export MONGOD=$HOME/.cache/mongo/extracted/7.0.11/mongodb-linux-x86_64-ubuntu2204-7.0.11/bin/mongod
+                ln -s ${p.mongodb}/bin/mongod ''${MONGOD}
+                ''${MONGOD} --version
+              '';
+              cargoExtraArgs = builtins.concatStringsSep " " [
+                "--all"
+                "--locked"
+                "--features nix"
+                # "--branch" # FIXME(palfrey): because of https://github.com/llvm/llvm-project/issues/119558
+                "--ignore-filename-regex '.*(genproto|vendor-cargo-deps|crates).*'"
+              ];
+              cargoLlvmCovExtraArgs = "--html --output-dir $out";
+            });
+
+        nativelinkCoverageForHost = nativelinkCoverageFor pkgs;
+      in rec {
+        _module.args.pkgs = import self.inputs.nixpkgs {
+          inherit system;
+          config.allowUnfreePredicate = pkg:
+            builtins.elem (lib.getName pkg) [
+              "mongodb"
+            ];
+          overlays = [
+            self.overlays.lre
+            self.overlays.tools
+            (import rust-overlay)
+            (import ./tools/rust-overlay-cut-libsecret.nix)
+          ];
+        };
         apps = {
           default = {
             type = "app";
             program = "${nativelink}/bin/nativelink";
           };
-          native = {
-            type = "app";
-            program = "${native-cli}/bin/native";
-          };
         };
         packages =
           rec {
             inherit
-              local-image-test
-              lre-cc
-              native-cli
               nativelink
+              nativelinkCoverageForHost
               nativelink-aarch64-linux
-              nativelink-debug
               nativelink-image
               nativelink-is-executable-test
               nativelink-worker-init
               nativelink-x86_64-linux
-              publish-ghcr
               ;
+
+            # Used by the CI
+            inherit (pkgs.nativelink-tools) local-image-test publish-ghcr;
+
             default = nativelink;
 
-            rbe-autogen-lre-cc = rbe-autogen lre-cc;
-            nativelink-worker-lre-cc = createWorker lre-cc;
+            nativelink-worker-lre-cc = createWorker pkgs.lre.lre-cc.image;
             lre-java = pkgs.callPackage ./local-remote-execution/lre-java.nix {inherit buildImage;};
-            rbe-autogen-lre-java = rbe-autogen lre-java;
+            rbe-autogen-lre-java = pkgs.rbe-autogen lre-java;
             nativelink-worker-lre-java = createWorker lre-java;
+            nativelink-worker-lre-rs = createWorker pkgs.lre.lre-rs.image;
             nativelink-worker-siso-chromium = createWorker siso-chromium;
             nativelink-worker-toolchain-drake = createWorker toolchain-drake;
+            nativelink-worker-toolchain-buck2 = createWorker toolchain-buck2;
             nativelink-worker-buck2-toolchain = buck2-toolchain;
             image = nativelink-image;
+
+            inherit (pkgs) buildstream buck2 mongodb wait4x bazelisk;
+            buildstream-with-nativelink-test = pkgs.callPackage integration_tests/buildstream/buildstream-with-nativelink-test.nix {
+              inherit nativelink buildstream;
+            };
+            mongo-with-nativelink-test = pkgs.callPackage integration_tests/mongo/mongo-with-nativelink-test.nix {
+              inherit nativelink mongodb wait4x bazelisk;
+            };
+            rbe-toolchain-with-nativelink-test = pkgs.callPackage toolchain-examples/rbe-toolchain-test.nix {
+              inherit nativelink bazelisk;
+            };
+            buck2-with-nativelink-test = pkgs.callPackage integration_tests/buck2/buck2-with-nativelink-test.nix {
+              inherit nativelink buck2;
+            };
+            update-module-hashes = pkgs.callPackage tools/updaters/rewrite-module.nix {
+              python-with-requests = pkgs.python3.withPackages (ps:
+                with ps; [
+                  ps.requests
+                ]);
+            };
+            generate-bazel-rc = pkgs.callPackage tools/generate-bazel-rc/build.nix {craneLib = craneLibFor pkgs;};
+            generate-stores-config = pkgs.callPackage nativelink-config/generate-stores-config/build.nix {craneLib = craneLibFor pkgs;};
           }
           // (
             # It's not possible to crosscompile to darwin, not even between
@@ -387,41 +420,76 @@
             }
             else {}
           );
-        checks = {
-          # TODO(aaronmondal): Fix the tests.
-          # tests = craneLib.cargoNextest (commonArgs
-          #   // {
-          #   inherit cargoArtifacts;
-          #   cargoNextestExtraArgs = "--all";
-          #   partitions = 1;
-          #   partitionType = "count";
-          # });
-        };
         pre-commit.settings = {
           hooks = import ./tools/pre-commit-hooks.nix {
-            inherit pkgs nightly-rust;
+            inherit pkgs;
+            inherit (packages) generate-bazel-rc generate-stores-config;
+            renovate-patched = pkgs.callPackage ./tools/renovate.nix {};
+            nightly-rust = pkgs.rust-bin.nightly.${pkgs.lre.nightly-rust.meta.version};
           };
         };
-        local-remote-execution.settings = {
-          Env =
+        lre = {
+          Env = with pkgs.lre;
             if pkgs.stdenv.isDarwin
-            then [] # Doesn't support Darwin yet.
-            else lre-cc.meta.Env;
-          prefix = "lre";
+            then lre-rs.meta.Env # C++ doesn't support Darwin yet.
+            else (lre-cc.meta.Env ++ lre-rs.meta.Env);
+          prefix =
+            if pkgs.stdenv.isDarwin
+            then "macos"
+            else "linux";
         };
+        nixos.path = with pkgs; [
+          "/run/current-system/sw/bin"
+          "${binutils.bintools}/bin"
+          "${pkgs.lre.clang}/bin"
+          "${git}/bin"
+
+          # In the lre-rs image these are copied to `/bin` by the create-worker
+          # function,
+          #
+          # Since we set `--incompatible_strict_action_env` in our .bazelrc we
+          # default to `PATH=/bin:/usr/bin:/usr/local/bin` on non-NixOS systems.
+          #
+          # On NixOS we override that path with what we have in this list. We
+          # could add `/bin` here, but using the explicit store paths adds
+          # another layer of safety so that we don't mix local and remote tools
+          # in cases where platform resolution doesn't behave as intended.
+          #
+          # Ideally, these shouldn't be in create-worker at all, and instead
+          # should be their own lre-shell toolchain "below" lre-cc, rather than
+          # a bolted-on-top layer in the final output.
+          #
+          # Note that these packages must be the same as the ones used in
+          # `create-worker.nix`.
+          "${bash}/bin"
+          "${coreutils}/bin"
+          "${gnused}/bin"
+        ];
         devShells.default = pkgs.mkShell {
-          nativeBuildInputs = let
+          packages = let
             bazel = pkgs.writeShellScriptBin "bazel" ''
               unset TMPDIR TMP
               exec ${pkgs.bazelisk}/bin/bazelisk "$@"
             '';
           in
             [
-              # Development tooling goes here.
-              bazel
-              stable-rust-native.default
+              # Development tooling
+              pkgs.git
               pkgs.pre-commit
+              pkgs.git-cliff
+              pkgs.buck2
+              packages.update-module-hashes
+              pkgs.python3
+
+              # Rust
+              bazel
+              pkgs.lre.stable-rust
+              pkgs.lre.lre-rs.lre-rs-configs-gen
+              pkgs.rust-analyzer
+
+              ## Infrastructure
               pkgs.awscli2
+              pkgs.google-cloud-sdk
               pkgs.skopeo
               pkgs.dive
               pkgs.cosign
@@ -434,48 +502,71 @@
               pkgs.kind
               pkgs.tektoncd-cli
               pkgs.pulumi
-              pkgs.pulumiPackages.pulumi-language-go
+              pkgs.pulumiPackages.pulumi-go
+              pkgs.fluxcd
               pkgs.go
               pkgs.kustomize
-              pkgs.nodePackages.pnpm
+              pkgs.kubectx
+
+              # Web
+              pkgs.bun
+              pkgs.lychee
+              pkgs.nodejs_22 # For pagefind search
+              pkgs.playwright-driver
+              pkgs.playwright-test
 
               # Additional tools from within our development environment.
-              local-image-test
-              generate-toolchains
-              customClang
-              native-cli
+              build-chromium-tests
               docs
+              generate-toolchains
+              pkgs.lre.clang
+              pkgs.lre.lre-cc.lre-cc-configs-gen
+              pkgs.nativelink-tools.local-image-test
+              pkgs.nativelink-tools.create-local-image
+              pkgs.attic-client
             ]
-            ++ pkgs.lib.optionals (!pkgs.stdenv.isDarwin) [
-              # The docs on Mac require a manual setup outside the flake.
-              pkgs.playwright-driver.browsers
-            ]
-            ++ maybeDarwinDeps;
+            ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
+              pkgs.apple-sdk_14
+              pkgs.libiconv
+            ];
+
           shellHook =
             ''
               # Generate the .pre-commit-config.yaml symlink when entering the
               # development shell.
               ${config.pre-commit.installationScript}
 
-              # Generate lre.bazelrc which configures LRE toolchains when running
-              # in the nix environment.
-              ${config.local-remote-execution.installationScript}
+              # Generate local-remote-execution.bazelrc which configures LRE toolchains when
+              # running in the nix environment.
+              ${config.lre.installationScript}
+
+              # Generate nativelink.bazelrc which gives Bazel invocations access
+              # to NativeLink's read-only cache.
+              ${config.nativelink.installationScript}
+
+              # If on NixOS, generate nixos.bazelrc, which adds the required
+              # NixOS binary paths to the bazel environment.
+              ${config.nixos.installationScript}
+
+              # If on Darwin, generate darwin.bazelrc, which configures darwin
+              # libs and frameworks.
+              ${config.darwin.installationScript}
 
               # The Bazel and Cargo builds in nix require a Clang toolchain.
-              # TODO(aaronmondal): The Bazel build currently uses the
+              # TODO(palfrey): The Bazel build currently uses the
               #                    irreproducible host C++ toolchain. Provide
               #                    this toolchain via nix for bitwise identical
               #                    binaries across machines.
               export CC=clang
-            ''
-            + pkgs.lib.optionalString (!pkgs.stdenv.isDarwin) ''
+              export PULUMI_K8S_AWAIT_ALL=true
               export PLAYWRIGHT_BROWSERS_PATH=${pkgs.playwright-driver.browsers}
               export PLAYWRIGHT_NODEJS_PATH=${pkgs.nodePackages_latest.nodejs}
+            ''
+            # TODO(palfrey): Generalize this.
+            + pkgs.lib.optionalString (system == "x86_64-linux") ''
+              export CC_x86_64_unknown_linux_gnu=customClang
             '';
         };
       };
-    }
-    // {
-      flakeModule = ./local-remote-execution/flake-module.nix;
     };
 }

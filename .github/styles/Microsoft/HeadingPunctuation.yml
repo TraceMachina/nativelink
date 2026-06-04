@@ -7,7 +7,7 @@ scope: heading
 action:
   name: edit
   params:
-    - remove
-    - '.?!'
+    - trim_right
+    - ".?!"
 tokens:
-  - '[a-z][.?!](?:\s|$)'
+  - "[a-z][.?!]$"

@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -15,22 +15,25 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use bytes::Bytes;
-use nativelink_error::{make_input_err, Error, ResultExt};
+use nativelink_error::{Error, ResultExt, make_input_err};
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
 };
 use nativelink_util::action_messages::{
     ActionInfo, ActionStage, ActionState, OperationId, WorkerId,
 };
+use nativelink_util::origin_event::OriginMetadata;
+use opentelemetry::baggage::BaggageExt;
+use opentelemetry::context::Context;
+use opentelemetry_semantic_conventions::attribute::ENDUSER_ID;
 use serde::{Deserialize, Serialize};
 use static_assertions::{assert_eq_size, const_assert, const_assert_eq};
 
 /// The version of the awaited action.
 /// This number will always increment by one each time
 /// the action is updated.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-struct AwaitedActionVersion(u64);
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+struct AwaitedActionVersion(i64);
 
 impl MetricsComponent for AwaitedActionVersion {
     fn publish(
@@ -38,7 +41,9 @@ impl MetricsComponent for AwaitedActionVersion {
         _kind: MetricKind,
         _field_metadata: MetricFieldData,
     ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
-        Ok(MetricPublishKnownKindData::Counter(self.0))
+        Ok(MetricPublishKnownKindData::Counter(u64::from_ne_bytes(
+            self.0.to_ne_bytes(),
+        )))
     }
 }
 
@@ -54,6 +59,8 @@ pub struct AwaitedAction {
     action_info: Arc<ActionInfo>,
 
     /// The operation id of the action.
+    // If you need the client operation id, it may be set in
+    // ActionState::operation_id.
     #[metric(help = "The operation id of the AwaitedAction")]
     operation_id: OperationId,
 
@@ -65,6 +72,10 @@ pub struct AwaitedAction {
     #[metric(help = "The last time the worker updated the AwaitedAction")]
     last_worker_updated_timestamp: SystemTime,
 
+    /// The last time the client sent a keepalive message.
+    #[metric(help = "The last time the client sent a keepalive message")]
+    last_client_keepalive_timestamp: SystemTime,
+
     /// Worker that is currently running this action, None if unassigned.
     #[metric(help = "The worker id of the AwaitedAction")]
     worker_id: Option<WorkerId>,
@@ -73,90 +84,139 @@ pub struct AwaitedAction {
     #[metric(help = "The state of the AwaitedAction")]
     state: Arc<ActionState>,
 
+    /// The origin metadata of the action.
+    maybe_origin_metadata: Option<OriginMetadata>,
+
     /// Number of attempts the job has been tried.
     #[metric(help = "The number of attempts the AwaitedAction has been tried")]
     pub attempts: usize,
 }
 
 impl AwaitedAction {
-    pub fn new(operation_id: OperationId, action_info: Arc<ActionInfo>) -> Self {
-        let stage = ActionStage::Queued;
+    pub fn new(operation_id: OperationId, action_info: Arc<ActionInfo>, now: SystemTime) -> Self {
         let sort_key = AwaitedActionSortKey::new_with_unique_key(
             action_info.priority,
             &action_info.insert_timestamp,
         );
-        let state = Arc::new(ActionState {
-            stage,
-            operation_id: operation_id.clone(),
+        let action_state = Arc::new(ActionState {
+            stage: ActionStage::Queued,
+            // Note: We don't use the real client_operation_id here because
+            // the only place AwaitedAction::new should ever be called is
+            // when the action is first created and this struct will be stored
+            // in the database, so we don't want to accidentally leak the
+            // client_operation_id to all clients.
+            client_operation_id: operation_id.clone(),
             action_digest: action_info.unique_qualifier.digest(),
+            last_transition_timestamp: now,
         });
+
+        let ctx = Context::current();
+        let baggage = ctx.baggage();
+
+        let maybe_origin_metadata = if baggage.is_empty() {
+            None
+        } else {
+            Some(OriginMetadata {
+                identity: baggage
+                    .get(ENDUSER_ID)
+                    .map(|v| v.as_str().to_string())
+                    .unwrap_or_default(),
+                bazel_metadata: None, // TODO(palfrey): Implement conversion.
+            })
+        };
+
         Self {
             version: AwaitedActionVersion(0),
             action_info,
             operation_id,
             sort_key,
             attempts: 0,
-            last_worker_updated_timestamp: SystemTime::now(),
+            last_worker_updated_timestamp: now,
+            last_client_keepalive_timestamp: now,
+            maybe_origin_metadata,
             worker_id: None,
-            state,
+            state: action_state,
         }
     }
 
-    pub fn version(&self) -> u64 {
+    pub(crate) const fn version(&self) -> i64 {
         self.version.0
     }
 
-    pub fn increment_version(&mut self) {
+    pub(crate) const fn set_version(&mut self, version: i64) {
+        self.version = AwaitedActionVersion(version);
+    }
+
+    pub(crate) const fn increment_version(&mut self) {
         self.version = AwaitedActionVersion(self.version.0 + 1);
     }
 
-    pub fn action_info(&self) -> &Arc<ActionInfo> {
+    pub const fn action_info(&self) -> &Arc<ActionInfo> {
         &self.action_info
     }
 
-    pub fn operation_id(&self) -> &OperationId {
+    pub const fn operation_id(&self) -> &OperationId {
         &self.operation_id
     }
 
-    pub fn sort_key(&self) -> AwaitedActionSortKey {
+    pub(crate) const fn sort_key(&self) -> AwaitedActionSortKey {
         self.sort_key
     }
 
-    pub fn state(&self) -> &Arc<ActionState> {
+    pub const fn state(&self) -> &Arc<ActionState> {
         &self.state
     }
 
-    pub fn worker_id(&self) -> Option<WorkerId> {
-        self.worker_id
-    }
-
-    pub fn last_worker_updated_timestamp(&self) -> SystemTime {
-        self.last_worker_updated_timestamp
-    }
-
-    /// Sets the worker id that is currently processing this action.
-    pub fn set_worker_id(&mut self, new_maybe_worker_id: Option<WorkerId>) {
-        if self.worker_id != new_maybe_worker_id {
-            self.worker_id = new_maybe_worker_id;
-            self.last_worker_updated_timestamp = SystemTime::now();
+    pub fn is_complete(&self) -> bool {
+        match &self.state.stage {
+            ActionStage::Unknown
+            | ActionStage::CacheCheck
+            | ActionStage::Queued
+            | ActionStage::Executing => false,
+            ActionStage::Completed(_) | ActionStage::CompletedFromCache(_) => true,
         }
     }
 
-    /// Sets the current state of the action and notifies subscribers.
-    /// Returns true if the state was set, false if there are no subscribers.
-    pub fn set_state(&mut self, mut state: Arc<ActionState>) {
-        std::mem::swap(&mut self.state, &mut state);
-        self.last_worker_updated_timestamp = SystemTime::now();
+    pub(crate) const fn maybe_origin_metadata(&self) -> Option<&OriginMetadata> {
+        self.maybe_origin_metadata.as_ref()
     }
-}
 
-impl TryInto<bytes::Bytes> for AwaitedAction {
-    type Error = Error;
-    fn try_into(self) -> Result<Bytes, Self::Error> {
-        serde_json::to_string(&self)
-            .map(Bytes::from)
-            .map_err(|e| make_input_err!("{}", e.to_string()))
-            .err_tip(|| "In AwaitedAction::TryInto::Bytes")
+    pub(crate) const fn worker_id(&self) -> Option<&WorkerId> {
+        self.worker_id.as_ref()
+    }
+
+    pub(crate) const fn last_worker_updated_timestamp(&self) -> SystemTime {
+        self.last_worker_updated_timestamp
+    }
+
+    pub(crate) const fn worker_keep_alive(&mut self, now: SystemTime) {
+        self.last_worker_updated_timestamp = now;
+    }
+
+    pub(crate) const fn last_client_keepalive_timestamp(&self) -> SystemTime {
+        self.last_client_keepalive_timestamp
+    }
+
+    pub(crate) const fn update_client_keep_alive(&mut self, now: SystemTime) {
+        self.last_client_keepalive_timestamp = now;
+    }
+
+    pub(crate) fn set_client_operation_id(&mut self, client_operation_id: OperationId) {
+        Arc::make_mut(&mut self.state).client_operation_id = client_operation_id;
+    }
+
+    /// Sets the worker id that is currently processing this action.
+    pub(crate) fn set_worker_id(&mut self, new_maybe_worker_id: Option<WorkerId>, now: SystemTime) {
+        if self.worker_id != new_maybe_worker_id {
+            self.worker_id = new_maybe_worker_id;
+            self.worker_keep_alive(now);
+        }
+    }
+
+    /// Sets the current state of the action and updates the last worker updated timestamp.
+    pub fn worker_set_state(&mut self, mut state: Arc<ActionState>, now: SystemTime) {
+        core::mem::swap(&mut self.state, &mut state);
+        self.worker_keep_alive(now);
     }
 }
 
@@ -190,33 +250,40 @@ impl MetricsComponent for AwaitedActionSortKey {
 }
 
 impl AwaitedActionSortKey {
-    #[rustfmt::skip]
     const fn new(priority: i32, insert_timestamp: u32) -> Self {
-        // Shift `new_priority` so [`i32::MIN`] is represented by zero.
-        // This makes it so any nagative values are positive, but
-        // maintains ordering.
-        const MIN_I32: i64 = (i32::MIN as i64).abs();
-        let priority = ((priority as i64 + MIN_I32) as u32).to_be_bytes();
+        // Shift the signed i32 range [i32::MIN, i32::MAX] to the unsigned u32 range
+        // [0, u32::MAX] to preserve ordering when we convert to bytes for sorting.
+        let priority_u32 = i32::MIN.unsigned_abs().wrapping_add_signed(priority);
+        let priority = priority_u32.to_be_bytes();
 
         // Invert our timestamp so the larger the timestamp the lower the number.
         // This makes timestamp descending order instead of ascending.
         let timestamp = (insert_timestamp ^ u32::MAX).to_be_bytes();
 
-        AwaitedActionSortKey(u64::from_be_bytes([
-            priority[0], priority[1], priority[2], priority[3],
-            timestamp[0], timestamp[1], timestamp[2], timestamp[3],
+        Self(u64::from_be_bytes([
+            priority[0],
+            priority[1],
+            priority[2],
+            priority[3],
+            timestamp[0],
+            timestamp[1],
+            timestamp[2],
+            timestamp[3],
         ]))
     }
 
     fn new_with_unique_key(priority: i32, insert_timestamp: &SystemTime) -> Self {
-        let timestamp = insert_timestamp
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as u32;
+        let timestamp = u32::try_from(
+            insert_timestamp
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        )
+        .unwrap_or(u32::MAX);
         Self::new(priority, timestamp)
     }
 
-    pub fn as_u64(&self) -> u64 {
+    pub(crate) const fn as_u64(self) -> u64 {
         self.0
     }
 }

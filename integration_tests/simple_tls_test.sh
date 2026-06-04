@@ -1,11 +1,11 @@
 #!/bin/bash
 # Copyright 2024 The NativeLink Authors. All rights reserved.
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
+# Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#    http://www.apache.org/licenses/LICENSE-2.0
+#    See LICENSE file for details
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,8 +14,8 @@
 # limitations under the License.
 
 if [[ $UNDER_TEST_RUNNER -ne 1 ]]; then
-  echo "This script should be run under run_integration_tests.sh"
-  exit 1
+    echo "This script should be run under run_integration_tests.sh"
+    exit 1
 fi
 
 RESULTS=$(curl --retry 5 --insecure --cacert ./example-do-not-use-in-prod-rootca.crt --key ./example-do-not-use-in-prod-key1.pem https://127.0.0.1:50071/status 2>&1)
@@ -23,8 +23,8 @@ RESULTS=$(curl --retry 5 --insecure --cacert ./example-do-not-use-in-prod-rootca
 echo "Results from curl: $RESULTS"
 
 if echo "$RESULTS" | grep -q "Ok"; then
-  echo "Curl returned 'Ok' status via TLS"
+    echo "Curl returned 'Ok' status via TLS"
 else
-  echo "Expected curl to be able to get 'Ok' status via TLS"
-  exit 1
+    echo "Expected curl to be able to get 'Ok' status via TLS"
+    exit 1
 fi

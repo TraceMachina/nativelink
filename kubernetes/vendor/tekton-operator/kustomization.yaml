@@ -1,0 +1,15 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+- tekton-operator.yaml
+
+# Disable the automatic creation of a TektonConfig as we provide our own.
+patches:
+- target:
+    kind: ConfigMap
+    name: tekton-config-defaults
+  patch: |
+    - op: replace
+      path: /data/AUTOINSTALL_COMPONENTS
+      value: "false"

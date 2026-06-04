@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,16 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::pin::Pin;
+use core::pin::Pin;
 use std::sync::Arc;
 
 use bytes::BytesMut;
-use maplit::hashmap;
+use nativelink_config::cas_server::WithInstanceName;
+use nativelink_config::stores::{MemorySpec, StoreSpec};
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::action_cache_server::ActionCache;
 use nativelink_proto::build::bazel::remote::execution::v2::{
-    digest_function, ActionResult, Digest, GetActionResultRequest, UpdateActionResultRequest,
+    ActionResult, Digest, GetActionResultRequest, UpdateActionResultRequest, digest_function,
 };
 use nativelink_service::ac_server::AcServer;
 use nativelink_store::default_store_factory::store_factory;
@@ -41,7 +42,7 @@ async fn insert_into_store<T: Message>(
     hash: &str,
     action_size: i64,
     action_result: &T,
-) -> Result<i64, Box<dyn std::error::Error>> {
+) -> Result<i64, Box<dyn core::error::Error>> {
     let mut store_data = BytesMut::new();
     action_result.encode(&mut store_data)?;
     let data_len = store_data.len();
@@ -55,9 +56,7 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
     store_manager.add_store(
         "main_cas",
         store_factory(
-            &nativelink_config::stores::StoreConfig::Memory(
-                nativelink_config::stores::MemoryStore::default(),
-            ),
+            &StoreSpec::Memory(MemorySpec::default()),
             &store_manager,
             None,
         )
@@ -66,9 +65,7 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
     store_manager.add_store(
         "main_ac",
         store_factory(
-            &nativelink_config::stores::StoreConfig::Memory(
-                nativelink_config::stores::MemoryStore::default(),
-            ),
+            &StoreSpec::Memory(MemorySpec::default()),
             &store_manager,
             None,
         )
@@ -79,12 +76,13 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
 
 fn make_ac_server(store_manager: &StoreManager) -> Result<AcServer, Error> {
     AcServer::new(
-        &hashmap! {
-            "foo_instance_name".to_string() => nativelink_config::cas_server::AcStoreConfig{
+        &[WithInstanceName {
+            instance_name: "foo_instance_name".to_string(),
+            config: nativelink_config::cas_server::AcStoreConfig {
                 ac_store: "main_ac".to_string(),
                 read_only: false,
-            }
-        },
+            },
+        }],
         store_manager,
     )
 }
@@ -110,7 +108,7 @@ async fn get_action_result(
 }
 
 #[nativelink_test]
-async fn empty_store() -> Result<(), Box<dyn std::error::Error>> {
+async fn empty_store() -> Result<(), Box<dyn core::error::Error>> {
     let store_manager = make_store_manager().await?;
     let ac_server = make_ac_server(&store_manager)?;
 
@@ -118,15 +116,13 @@ async fn empty_store() -> Result<(), Box<dyn std::error::Error>> {
 
     let err = raw_response.unwrap_err();
     assert_eq!(err.code(), Code::NotFound);
-    assert_eq!(
-            err.message(),
-            "Key Digest(DigestInfo { size_bytes: 0, hash: \"0123456789abcdef000000000000000000000000000000000123456789abcdef\" }) not found"
-        );
+    assert!(err.message().is_empty());
+
     Ok(())
 }
 
 #[nativelink_test]
-async fn has_single_item() -> Result<(), Box<dyn std::error::Error>> {
+async fn has_single_item() -> Result<(), Box<dyn core::error::Error>> {
     let store_manager = make_store_manager().await?;
     let ac_server = make_ac_server(&store_manager)?;
     let ac_store = store_manager.get_store("main_ac").unwrap();
@@ -139,6 +135,8 @@ async fn has_single_item() -> Result<(), Box<dyn std::error::Error>> {
     insert_into_store(ac_store.as_pin(), HASH1, HASH1_SIZE, &action_result).await?;
     let raw_response = get_action_result(&ac_server, HASH1, HASH1_SIZE).await;
 
+    assert!(!logs_contain(" output_files: ["));
+
     assert!(
         raw_response.is_ok(),
         "Expected value, got error {raw_response:?}"
@@ -148,7 +146,7 @@ async fn has_single_item() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[nativelink_test]
-async fn single_item_wrong_digest_size() -> Result<(), Box<dyn std::error::Error>> {
+async fn single_item_wrong_digest_size() -> Result<(), Box<dyn core::error::Error>> {
     let store_manager = make_store_manager().await?;
     let ac_server = make_ac_server(&store_manager)?;
     let ac_store = store_manager.get_store("main_ac").unwrap();
@@ -163,14 +161,11 @@ async fn single_item_wrong_digest_size() -> Result<(), Box<dyn std::error::Error
 
     let err = raw_response.unwrap_err();
     assert_eq!(err.code(), Code::NotFound);
-    assert_eq!(
-            err.message(),
-            "Key Digest(DigestInfo { size_bytes: 146, hash: \"0123456789abcdef000000000000000000000000000000000123456789abcdef\" }) not found"
-        );
+    assert!(err.message().is_empty());
     Ok(())
 }
 
-fn get_encoded_proto_size<T: Message>(proto: &T) -> Result<usize, Box<dyn std::error::Error>> {
+fn get_encoded_proto_size<T: Message>(proto: &T) -> Result<usize, Box<dyn core::error::Error>> {
     let mut store_data = Vec::new();
     proto.encode(&mut store_data)?;
     Ok(store_data.len())
@@ -193,7 +188,7 @@ async fn update_action_result(
 }
 
 #[nativelink_test]
-async fn one_item_update_test() -> Result<(), Box<dyn std::error::Error>> {
+async fn one_item_update_test() -> Result<(), Box<dyn core::error::Error>> {
     let store_manager = make_store_manager().await?;
     let ac_server = make_ac_server(&store_manager)?;
     let ac_store = store_manager.get_store("main_ac").unwrap();

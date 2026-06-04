@@ -1,0 +1,10 @@
+{
+  "exclude": [
+    "node_modules",
+    "**/.next",
+    "**/dist",
+    "**/.turbo"
+  ],
+  "extends": "./packages/config/tsconfig/base.json",
+  "include": []
+}

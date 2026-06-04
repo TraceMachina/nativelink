@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,23 +12,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::pin::Pin;
+use core::pin::Pin;
+use core::time::Duration;
 use std::sync::Arc;
-use std::time::Duration;
 
 use futures::future::Future;
 use futures::stream::StreamExt;
 use nativelink_config::stores::{ErrorCode, Retry};
-use nativelink_error::{make_err, Code, Error};
-use tracing::{event, Level};
+use nativelink_error::{Code, Error, make_err};
+use tracing::{error, info};
 
 struct ExponentialBackoff {
     current: Duration,
 }
 
 impl ExponentialBackoff {
-    fn new(base: Duration) -> Self {
-        ExponentialBackoff { current: base }
+    const fn new(base: Duration) -> Self {
+        Self { current: base }
     }
 }
 
@@ -59,10 +59,17 @@ pub struct Retrier {
     config: Retry,
 }
 
-fn to_error_code(code: &Code) -> ErrorCode {
+impl core::fmt::Debug for Retrier {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Retrier")
+            .field("config", &self.config)
+            .finish_non_exhaustive()
+    }
+}
+
+const fn to_error_code(code: Code) -> ErrorCode {
     match code {
         Code::Cancelled => ErrorCode::Cancelled,
-        Code::Unknown => ErrorCode::Unknown,
         Code::InvalidArgument => ErrorCode::InvalidArgument,
         Code::DeadlineExceeded => ErrorCode::DeadlineExceeded,
         Code::NotFound => ErrorCode::NotFound,
@@ -83,7 +90,7 @@ fn to_error_code(code: &Code) -> ErrorCode {
 
 impl Retrier {
     pub fn new(sleep_fn: SleepFn, jitter_fn: JitterFn, config: Retry) -> Self {
-        Retrier {
+        Self {
             sleep_fn,
             jitter_fn,
             config,
@@ -92,47 +99,47 @@ impl Retrier {
 
     /// This should only return true if the error code should be interpreted as
     /// temporary.
-    fn should_retry(&self, code: &Code) -> bool {
-        if *code == Code::Ok {
+    fn should_retry(&self, code: Code) -> bool {
+        if code == Code::Ok {
             false
         } else if let Some(retry_codes) = &self.config.retry_on_errors {
             retry_codes.contains(&to_error_code(code))
         } else {
             match code {
-                Code::InvalidArgument => false,
-                Code::FailedPrecondition => false,
-                Code::OutOfRange => false,
-                Code::Unimplemented => false,
-                Code::NotFound => false,
-                Code::AlreadyExists => false,
-                Code::PermissionDenied => false,
-                Code::Unauthenticated => false,
-                Code::Cancelled => true,
-                Code::Unknown => true,
-                Code::DeadlineExceeded => true,
-                Code::ResourceExhausted => true,
-                Code::Aborted => true,
-                Code::Internal => true,
-                Code::Unavailable => true,
-                Code::DataLoss => true,
+                // TODO(SchahinRohani): Handle all cases properly so there is no need for a wildcard match
+                // All cases where a retry should happen are commented out here and replaced with a wildcard match.
+                Code::InvalidArgument
+                | Code::FailedPrecondition
+                | Code::OutOfRange
+                | Code::Unimplemented
+                | Code::NotFound
+                | Code::AlreadyExists
+                | Code::PermissionDenied
+                | Code::Unauthenticated => false,
+                // Code::Cancelled
+                // | Code::Unknown
+                // | Code::DeadlineExceeded
+                // | Code::ResourceExhausted
+                // | Code::Aborted
+                // | Code::Internal
+                // | Code::Unavailable
+                // | Code::DataLoss => true,
                 _ => true,
             }
         }
     }
 
     fn get_retry_config(&self) -> impl Iterator<Item = Duration> + '_ {
-        ExponentialBackoff::new(Duration::from_millis(self.config.delay as u64))
+        ExponentialBackoff::new(Duration::from_secs_f32(self.config.delay))
             .map(|d| (self.jitter_fn)(d))
             .take(self.config.max_retries) // Remember this is number of retries, so will run max_retries + 1.
     }
 
-    // Clippy complains that this function can be `async fn`, but this is not true.
-    // If we use `async fn`, other places in our code will fail to compile stating
-    // something about the async blocks not matching.
-    // This appears to happen due to a compiler bug while inlining, because the
-    // function that it complained about was calling another function that called
-    // this one.
-    #[allow(clippy::manual_async_fn)]
+    #[expect(
+        clippy::manual_async_fn,
+        reason = "making an `async fn` results in a potential compiler bug in seemingly unrelated \
+            code"
+    )]
     pub fn retry<'a, T: Send>(
         &'a self,
         operation: impl futures::stream::Stream<Item = RetryResult<T>> + Send + 'a,
@@ -148,22 +155,26 @@ impl Retrier {
                         return Err(make_err!(
                             Code::Internal,
                             "Retry stream ended abruptly on attempt {attempt}",
-                        ))
+                        ));
                     }
                     Some(RetryResult::Ok(value)) => return Ok(value),
                     Some(RetryResult::Err(e)) => {
                         return Err(e.append(format!("On attempt {attempt}")));
                     }
                     Some(RetryResult::Retry(err)) => {
-                        if !self.should_retry(&err.code) {
-                            event!(Level::ERROR, ?attempt, ?err, "Not retrying permanent error");
+                        if !self.should_retry(err.code) {
+                            if err.code == Code::NotFound {
+                                info!(?err, "Not found, not retrying");
+                            } else {
+                                error!(?attempt, ?err, "Not retrying permanent error");
+                            }
                             return Err(err);
                         }
                         (self.sleep_fn)(
                             iter.next()
-                                .ok_or(err.append(format!("On attempt {attempt}")))?,
+                                .ok_or_else(|| err.append(format!("On attempt {attempt}")))?,
                         )
-                        .await
+                        .await;
                     }
                 }
             }

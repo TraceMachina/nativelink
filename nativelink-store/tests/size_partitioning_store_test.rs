@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,6 +14,7 @@
 
 use std::sync::Arc;
 
+use nativelink_config::stores::{MemorySpec, SizePartitioningSpec, StoreSpec};
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
 use nativelink_store::memory_store::MemoryStore;
@@ -37,18 +38,14 @@ fn setup_stores(
     Arc<MemoryStore>,
     Arc<MemoryStore>,
 ) {
-    let lower_memory_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
-    let upper_memory_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
+    let lower_memory_store = MemoryStore::new(&MemorySpec::default());
+    let upper_memory_store = MemoryStore::new(&MemorySpec::default());
 
     let size_part_store = SizePartitioningStore::new(
-        &nativelink_config::stores::SizePartitioningStore {
+        &SizePartitioningSpec {
             size,
-            lower_store: nativelink_config::stores::StoreConfig::Memory(
-                nativelink_config::stores::MemoryStore::default(),
-            ),
-            upper_store: nativelink_config::stores::StoreConfig::Memory(
-                nativelink_config::stores::MemoryStore::default(),
-            ),
+            lower_store: StoreSpec::Memory(MemorySpec::default()),
+            upper_store: StoreSpec::Memory(MemorySpec::default()),
         },
         Store::new(lower_memory_store.clone()),
         Store::new(upper_memory_store.clone()),
@@ -84,7 +81,7 @@ async fn has_test() -> Result<(), Error> {
             .await;
         assert_eq!(
             small_has_result,
-            Ok(Some(SMALL_VALUE.len())),
+            Ok(Some(SMALL_VALUE.len() as u64)),
             "Expected size part store to have data in ref store : {}",
             SMALL_HASH
         );
@@ -96,7 +93,7 @@ async fn has_test() -> Result<(), Error> {
             .await;
         assert_eq!(
             small_has_result,
-            Ok(Some(BIG_VALUE.len())),
+            Ok(Some(BIG_VALUE.len() as u64)),
             "Expected size part store to have data in ref store : {}",
             BIG_HASH
         );

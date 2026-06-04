@@ -1,0 +1,32 @@
+{
+  "name": "@nativelink/web",
+  "type": "module",
+  "dependencies": {
+    "@nativelink/tokens": "workspace:*",
+    "@nativelink/ui": "workspace:*",
+    "geist": "^1.5.1",
+    "motion": "^12.0.0",
+    "next": "^16",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@nativelink/config": "workspace:*",
+    "@tailwindcss/postcss": "^4.0.0",
+    "@types/node": "^25.0.0",
+    "@types/react": "^19.0.7",
+    "@types/react-dom": "^19.0.3",
+    "tailwindcss": "^4.0.0",
+    "typescript": "^6.0.0"
+  },
+  "private": true,
+  "scripts": {
+    "build": "next build",
+    "clean": "rm -rf .next .turbo",
+    "dev": "next dev --port 3000",
+    "lint": "biome check .",
+    "start": "next start --port 3000",
+    "typecheck": "tsc --noEmit"
+  },
+  "version": "0.0.0"
+}

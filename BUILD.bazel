@@ -1,4 +1,5 @@
 load("@rules_rust//rust:defs.bzl", "rust_binary")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
 exports_files(
     [
@@ -16,8 +17,6 @@ rust_binary(
     deps = [
         "//nativelink-config",
         "//nativelink-error",
-        "//nativelink-metric",
-        "//nativelink-metric-collector",
         "//nativelink-scheduler",
         "//nativelink-service",
         "//nativelink-store",
@@ -27,24 +26,55 @@ rust_binary(
         "@crates//:axum",
         "@crates//:clap",
         "@crates//:futures",
-        "@crates//:hyper-1.4.1",
+        "@crates//:hyper",
         "@crates//:hyper-util",
         "@crates//:mimalloc",
-        "@crates//:opentelemetry",
-        "@crates//:opentelemetry-prometheus",
-        "@crates//:opentelemetry_sdk",
         "@crates//:parking_lot",
-        "@crates//:prometheus",
-        "@crates//:rustls-pemfile",
-        "@crates//:scopeguard",
-        "@crates//:serde_json",
-        "@crates//:serde_json5",
+        "@crates//:rustls-pki-types",
         "@crates//:tokio",
         "@crates//:tokio-rustls",
         "@crates//:tonic",
         "@crates//:tower",
         "@crates//:tracing",
-        "@crates//:tracing-subscriber",
+    ],
+)
+
+rust_binary(
+    name = "redis_store_tester",
+    srcs = [
+        "src/bin/redis_store_tester.rs",
+    ],
+    deps = [
+        "//nativelink-config",
+        "//nativelink-error",
+        "//nativelink-store",
+        "//nativelink-util",
+        "@crates//:bytes",
+        "@crates//:clap",
+        "@crates//:futures",
+        "@crates//:rand",
+        "@crates//:redis",
+        "@crates//:tokio",
+        "@crates//:tracing",
+    ],
+)
+
+rust_binary(
+    name = "cas_speed_check",
+    srcs = [
+        "src/bin/cas_speed_check.rs",
+    ],
+    deps = [
+        "//nativelink-error",
+        "//nativelink-proto",
+        "//nativelink-util",
+        "@crates//:clap",
+        "@crates//:hex",
+        "@crates//:rand",
+        "@crates//:sha2",
+        "@crates//:tokio",
+        "@crates//:tonic",
+        "@crates//:tracing",
     ],
 )
 
@@ -64,12 +94,26 @@ filegroup(
 )
 
 test_suite(
+    name = "unit_tests",
+    tests = [
+        "//nativelink-config:unit_test",
+        "//nativelink-error:unit_test",
+        "//nativelink-macro:unit_test",
+        "//nativelink-metric:unit_test",
+        "//nativelink-scheduler:unit_test",
+        "//nativelink-service:unit_test",
+        "//nativelink-store:unit_test",
+        "//nativelink-util:unit_test",
+        "//nativelink-worker:unit_test",
+    ],
+)
+
+test_suite(
     name = "doctests",
     tests = [
         "//nativelink-config:doc_test",
         "//nativelink-error:doc_test",
         "//nativelink-macro:doc_test",
-        "//nativelink-proto:doc_test",
         "//nativelink-scheduler:doc_test",
         "//nativelink-service:doc_test",
         "//nativelink-store:doc_test",

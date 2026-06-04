@@ -1,13 +1,10 @@
 ---
+version: "2"
 linters:
   enable-all: true
   disable:
-    # Deprecated.
-    - execinquery
-    - gomnd
-
     # Allow all packages for now.
     - depguard
 
-    # TODO(aaronmondal): Fix these at some point.
+    # TODO(palfrey): Fix these at some point.
     - exhaustruct

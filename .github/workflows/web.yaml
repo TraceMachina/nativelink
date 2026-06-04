@@ -1,0 +1,62 @@
+---
+name: Build NativeLink Web
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'web/**'
+      - '**/*.md'
+      - 'nativelink-config/**'
+      - 'tools/**'
+      - '**/*.lock'
+      - '**/*.nix'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'web/**'
+      - '**/*.md'
+      - 'nativelink-config/**'
+      - 'tools/**'
+      - '**/*.lock'
+      - '**/*.nix'
+
+permissions: read-all
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - macos-26
+    name: Web Build / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: >- # v6.0.2
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Prepare Worker
+        uses: ./.github/actions/prepare-nix
+        with:
+          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
+
+      - name: Test Build
+        if: github.event_name == 'pull_request'
+        working-directory: web
+        run: |
+          nix develop --fallback --impure --command bash -c "
+            bun install && bun run build
+          "
+
+      - name: Teardown Worker
+        uses: ./.github/actions/end-nix
+        if: always()
+        with:
+          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}

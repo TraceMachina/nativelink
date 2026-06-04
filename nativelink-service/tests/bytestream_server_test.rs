@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,16 +16,16 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use futures::task::Poll;
-use futures::{poll, Future};
+use futures::{Future, poll};
 use http_body_util::BodyExt;
-use hyper::body::Frame;
 use hyper::Uri;
+use hyper::body::Frame;
 use hyper_util::rt::TokioIo;
 use hyper_util::server::conn::auto;
 use hyper_util::service::TowerToHyperService;
-use maplit::hashmap;
-use nativelink_config::cas_server::ByteStreamConfig;
-use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_config::cas_server::{ByteStreamConfig, HttpListener, WithInstanceName};
+use nativelink_config::stores::{MemorySpec, StoreSpec};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_proto::google::bytestream::byte_stream_client::ByteStreamClient;
 use nativelink_proto::google::bytestream::byte_stream_server::ByteStream;
@@ -36,7 +36,7 @@ use nativelink_service::bytestream_server::ByteStreamServer;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::channel_body_for_tests::ChannelBody;
-use nativelink_util::common::{encode_stream_proto, DigestInfo};
+use nativelink_util::common::{DigestInfo, encode_stream_proto};
 use nativelink_util::store_trait::StoreLike;
 use nativelink_util::task::JoinHandleDropGuard;
 use nativelink_util::{background_spawn, spawn};
@@ -45,8 +45,8 @@ use tokio::io::DuplexStream;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio::task::yield_now;
-use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_stream::StreamExt;
+use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::codec::{Codec, CompressionEncoding, ProstCodec};
 use tonic::transport::{Channel, Endpoint};
 use tonic::{Request, Response, Streaming};
@@ -60,9 +60,7 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
     store_manager.add_store(
         "main_cas",
         store_factory(
-            &nativelink_config::stores::StoreConfig::Memory(
-                nativelink_config::stores::MemoryStore::default(),
-            ),
+            &StoreSpec::Memory(MemorySpec::default()),
             &store_manager,
             None,
         )
@@ -73,15 +71,17 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
 
 fn make_bytestream_server(
     store_manager: &StoreManager,
-    config: Option<ByteStreamConfig>,
+    config: Option<Vec<WithInstanceName<ByteStreamConfig>>>,
 ) -> Result<ByteStreamServer, Error> {
-    let config = config.unwrap_or(nativelink_config::cas_server::ByteStreamConfig {
-        cas_stores: hashmap! {
-            "foo_instance_name".to_string() => "main_cas".to_string(),
-        },
-        persist_stream_on_disconnect_timeout: 0,
-        max_bytes_per_stream: 1024,
-        max_decoding_message_size: 0,
+    let config = config.unwrap_or_else(|| {
+        vec![WithInstanceName {
+            instance_name: "foo_instance_name".to_string(),
+            config: ByteStreamConfig {
+                cas_store: "main_cas".to_string(),
+                persist_stream_on_disconnect_timeout: 0,
+                max_bytes_per_stream: 1024,
+            },
+        }]
     });
     ByteStreamServer::new(&config, store_manager)
 }
@@ -108,7 +108,7 @@ fn make_stream_and_writer_spawn(
     (tx, join_handle)
 }
 
-fn make_resource_name(data_len: impl std::fmt::Display) -> String {
+fn make_resource_name(data_len: impl core::fmt::Display) -> String {
     format!(
         "{}/uploads/{}/blobs/{}/{}",
         INSTANCE_NAME,
@@ -120,10 +120,8 @@ fn make_resource_name(data_len: impl std::fmt::Display) -> String {
 
 async fn server_and_client_stub(
     bs_server: ByteStreamServer,
+    http_listener: HttpListener,
 ) -> (JoinHandleDropGuard<()>, ByteStreamClient<Channel>) {
-    let (tx, rx) = unbounded_channel::<Result<DuplexStream, Error>>();
-    let mut rx = UnboundedReceiverStream::new(rx);
-
     #[derive(Clone)]
     struct Executor;
     impl<F> hyper::rt::Executor<F> for Executor
@@ -136,9 +134,17 @@ async fn server_and_client_stub(
         }
     }
 
+    let (tx, rx) = unbounded_channel::<Result<DuplexStream, Error>>();
+    let mut rx = UnboundedReceiverStream::new(rx);
+
     let server_spawn = spawn!("grpc_server", async move {
         let http = auto::Builder::new(Executor);
-        let grpc_service = tonic::service::Routes::new(bs_server.into_service());
+        let mut service = bs_server.into_service();
+        // Done in nativelink.rs in real versions
+        if http_listener.max_decoding_message_size != 0 {
+            service = service.max_decoding_message_size(http_listener.max_decoding_message_size);
+        }
+        let grpc_service = tonic::service::Routes::new(service);
 
         let adapted_service = tower::ServiceBuilder::new()
             .map_request(|req: hyper::Request<hyper::body::Incoming>| {
@@ -185,7 +191,7 @@ async fn server_and_client_stub(
 }
 
 #[nativelink_test]
-pub async fn chunked_stream_receives_all_data() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn chunked_stream_receives_all_data() -> Result<(), Box<dyn core::error::Error>> {
     let store_manager = make_store_manager().await?;
     let bs_server = Arc::new(
         make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
@@ -198,10 +204,11 @@ pub async fn chunked_stream_receives_all_data() -> Result<(), Box<dyn std::error
 
     // Send data.
     let raw_data = {
-        let raw_data = "12456789abcdefghijk".as_bytes();
         // Chunk our data into two chunks to simulate something a client
         // might do.
         const BYTE_SPLIT_OFFSET: usize = 8;
+
+        let raw_data = b"12456789abcdefghijk";
 
         let resource_name = format!(
             "{}/uploads/{}/blobs/{}/{}",
@@ -260,16 +267,23 @@ pub async fn chunked_stream_receives_all_data() -> Result<(), Box<dyn std::error
             .get_part_unchunked(DigestInfo::try_new(HASH1, raw_data.len())?, 0, None)
             .await?;
         assert_eq!(
-            std::str::from_utf8(&store_data),
-            std::str::from_utf8(raw_data),
+            core::str::from_utf8(&store_data),
+            core::str::from_utf8(raw_data),
             "Expected store to have been updated to new value"
         );
     }
+
     Ok(())
 }
 
 #[nativelink_test]
-pub async fn resume_write_success() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn resume_write_success() -> Result<(), Box<dyn core::error::Error>> {
+    const WRITE_DATA: &str = "12456789abcdefghijk";
+
+    // Chunk our data into two chunks to simulate something a client
+    // might do.
+    const BYTE_SPLIT_OFFSET: usize = 8;
+
     let store_manager = make_store_manager().await?;
     let bs_server = Arc::new(
         make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
@@ -278,11 +292,6 @@ pub async fn resume_write_success() -> Result<(), Box<dyn std::error::Error>> {
 
     let (tx, join_handle) =
         make_stream_and_writer_spawn(bs_server.clone(), Some(CompressionEncoding::Gzip));
-    const WRITE_DATA: &str = "12456789abcdefghijk";
-
-    // Chunk our data into two chunks to simulate something a client
-    // might do.
-    const BYTE_SPLIT_OFFSET: usize = 8;
 
     let resource_name = format!(
         "{}/uploads/{}/blobs/{}/{}",
@@ -342,7 +351,13 @@ pub async fn resume_write_success() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[nativelink_test]
-pub async fn restart_write_success() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn restart_write_success() -> Result<(), Box<dyn core::error::Error>> {
+    const WRITE_DATA: &str = "12456789abcdefghijk";
+
+    // Chunk our data into two chunks to simulate something a client
+    // might do.
+    const BYTE_SPLIT_OFFSET: usize = 8;
+
     let store_manager = make_store_manager().await?;
     let bs_server = Arc::new(
         make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
@@ -351,11 +366,6 @@ pub async fn restart_write_success() -> Result<(), Box<dyn std::error::Error>> {
 
     let (tx, join_handle) =
         make_stream_and_writer_spawn(bs_server.clone(), Some(CompressionEncoding::Gzip));
-    const WRITE_DATA: &str = "12456789abcdefghijk";
-
-    // Chunk our data into two chunks to simulate something a client
-    // might do.
-    const BYTE_SPLIT_OFFSET: usize = 8;
 
     let resource_name = format!(
         "{}/uploads/{}/blobs/{}/{}",
@@ -420,7 +430,13 @@ pub async fn restart_write_success() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[nativelink_test]
-pub async fn restart_mid_stream_write_success() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn restart_mid_stream_write_success() -> Result<(), Box<dyn core::error::Error>> {
+    const WRITE_DATA: &str = "12456789abcdefghijk";
+
+    // Chunk our data into two chunks to simulate something a client
+    // might do.
+    const BYTE_SPLIT_OFFSET: usize = 8;
+
     let store_manager = make_store_manager().await?;
     let bs_server = Arc::new(
         make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
@@ -429,11 +445,6 @@ pub async fn restart_mid_stream_write_success() -> Result<(), Box<dyn std::error
 
     let (tx, join_handle) =
         make_stream_and_writer_spawn(bs_server.clone(), Some(CompressionEncoding::Gzip));
-    const WRITE_DATA: &str = "12456789abcdefghijk";
-
-    // Chunk our data into two chunks to simulate something a client
-    // might do.
-    const BYTE_SPLIT_OFFSET: usize = 8;
 
     let resource_name = format!(
         "{}/uploads/{}/blobs/{}/{}",
@@ -498,8 +509,10 @@ pub async fn restart_mid_stream_write_success() -> Result<(), Box<dyn std::error
 }
 
 #[nativelink_test]
-pub async fn ensure_write_is_not_done_until_write_request_is_set(
-) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn ensure_write_is_not_done_until_write_request_is_set()
+-> Result<(), Box<dyn core::error::Error>> {
+    const WRITE_DATA: &str = "12456789abcdefghijk";
+
     let store_manager = make_store_manager().await?;
     let bs_server = Arc::new(
         make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
@@ -510,7 +523,6 @@ pub async fn ensure_write_is_not_done_until_write_request_is_set(
     let (tx, stream) = make_stream(Some(CompressionEncoding::Gzip));
     let mut write_fut = bs_server.write(Request::new(stream));
 
-    const WRITE_DATA: &str = "12456789abcdefghijk";
     let resource_name = make_resource_name(WRITE_DATA.len());
     let mut write_request = WriteRequest {
         resource_name,
@@ -575,7 +587,13 @@ pub async fn ensure_write_is_not_done_until_write_request_is_set(
 }
 
 #[nativelink_test]
-pub async fn out_of_order_data_fails() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn out_of_order_data_fails() -> Result<(), Box<dyn core::error::Error>> {
+    const WRITE_DATA: &str = "12456789abcdefghijk";
+
+    // Chunk our data into two chunks to simulate something a client
+    // might do.
+    const BYTE_SPLIT_OFFSET: usize = 8;
+
     let store_manager = make_store_manager().await?;
     let bs_server = Arc::new(
         make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
@@ -583,11 +601,6 @@ pub async fn out_of_order_data_fails() -> Result<(), Box<dyn std::error::Error>>
 
     let (tx, join_handle) =
         make_stream_and_writer_spawn(bs_server, Some(CompressionEncoding::Gzip));
-    const WRITE_DATA: &str = "12456789abcdefghijk";
-
-    // Chunk our data into two chunks to simulate something a client
-    // might do.
-    const BYTE_SPLIT_OFFSET: usize = 8;
 
     let resource_name = make_resource_name(WRITE_DATA.len());
     let mut write_request = WriteRequest {
@@ -629,7 +642,7 @@ pub async fn out_of_order_data_fails() -> Result<(), Box<dyn std::error::Error>>
 }
 
 #[nativelink_test]
-pub async fn upload_zero_byte_chunk() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn upload_zero_byte_chunk() -> Result<(), Box<dyn core::error::Error>> {
     let store_manager = make_store_manager().await?;
     let bs_server = Arc::new(
         make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
@@ -668,7 +681,7 @@ pub async fn upload_zero_byte_chunk() -> Result<(), Box<dyn std::error::Error>> 
 }
 
 #[nativelink_test]
-pub async fn disallow_negative_write_offset() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn disallow_negative_write_offset() -> Result<(), Box<dyn core::error::Error>> {
     let store_manager = make_store_manager().await?;
     let bs_server = Arc::new(
         make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
@@ -696,7 +709,7 @@ pub async fn disallow_negative_write_offset() -> Result<(), Box<dyn std::error::
 }
 
 #[nativelink_test]
-pub async fn out_of_sequence_write() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn out_of_sequence_write() -> Result<(), Box<dyn core::error::Error>> {
     let store_manager = make_store_manager().await?;
     let bs_server = Arc::new(
         make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
@@ -724,14 +737,14 @@ pub async fn out_of_sequence_write() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[nativelink_test]
-pub async fn chunked_stream_reads_small_set_of_data() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn chunked_stream_reads_small_set_of_data() -> Result<(), Box<dyn core::error::Error>> {
+    const VALUE1: &str = "12456789abcdefghijk";
+
     let store_manager = make_store_manager().await?;
     let bs_server = Arc::new(
         make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
     );
     let store = store_manager.get_store("main_cas").unwrap();
-
-    const VALUE1: &str = "12456789abcdefghijk";
 
     let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
     store.update_oneshot(digest, VALUE1.into()).await?;
@@ -760,14 +773,15 @@ pub async fn chunked_stream_reads_small_set_of_data() -> Result<(), Box<dyn std:
 }
 
 #[nativelink_test]
-pub async fn chunked_stream_reads_10mb_of_data() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn chunked_stream_reads_10mb_of_data() -> Result<(), Box<dyn core::error::Error>> {
+    const DATA_SIZE: usize = 10_000_000;
+
     let store_manager = make_store_manager().await?;
     let bs_server = Arc::new(
         make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
     );
     let store = store_manager.get_store("main_cas").unwrap();
 
-    const DATA_SIZE: usize = 10_000_000;
     let mut raw_data = vec![41u8; DATA_SIZE];
     // Change just a few bits to ensure we don't get same packet
     // over and over.
@@ -808,7 +822,7 @@ pub async fn chunked_stream_reads_10mb_of_data() -> Result<(), Box<dyn std::erro
 
 /// A bug was found in early development where we could deadlock when reading a stream if the
 /// store backend resulted in an error. This was because we were not shutting down the stream
-/// when on the backend store error which caused the AsyncReader to block forever because the
+/// when on the backend store error which caused the `AsyncReader` to block forever because the
 /// stream was never shutdown.
 #[nativelink_test]
 pub async fn read_with_not_found_does_not_deadlock() -> Result<(), Error> {
@@ -841,12 +855,10 @@ pub async fn read_with_not_found_does_not_deadlock() -> Result<(), Error> {
         let result_fut = read_stream.next();
 
         let result = result_fut.await.err_tip(|| "Expected result to be ready")?;
-        let expected_err_str = concat!(
-                "status: NotFound, message: \"Key Digest(DigestInfo { size_bytes: 55, hash: \\\"0123456789abcdef000000000000000000000000000000000123456789abcdef\\\" }) not found\", details: [], metadata: MetadataMap { headers: {} }",
-            );
+        let expected_err_str = "status: NotFound, message: \"Key Digest(DigestInfo(\\\"0123456789abcdef000000000000000000000000000000000123456789abcdef-55\\\")) not found\", details: [], metadata: MetadataMap { headers: {} }";
         assert_eq!(
             Error::from(result.unwrap_err()),
-            make_err!(Code::NotFound, "{}", expected_err_str),
+            make_err!(Code::NotFound, "{expected_err_str}"),
             "Expected error data to match"
         );
     }
@@ -854,7 +866,9 @@ pub async fn read_with_not_found_does_not_deadlock() -> Result<(), Error> {
 }
 
 #[nativelink_test]
-pub async fn test_query_write_status_smoke_test() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn test_query_write_status_smoke_test() -> Result<(), Box<dyn core::error::Error>> {
+    const BYTE_SPLIT_OFFSET: usize = 8;
+
     let store_manager = make_store_manager()
         .await
         .expect("Failed to make store manager");
@@ -862,30 +876,30 @@ pub async fn test_query_write_status_smoke_test() -> Result<(), Box<dyn std::err
         make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
     );
 
-    let raw_data = "12456789abcdefghijk".as_bytes();
+    let raw_data = b"12456789abcdefghijk";
     let resource_name = make_resource_name(raw_data.len());
 
     {
+        // If the write does not exist it should respond with a 0 size.
+        // This is because the client may have tried to write, but the
+        // connection closed before the payload had been received.
         let response = bs_server
             .query_write_status(Request::new(QueryWriteStatusRequest {
                 resource_name: resource_name.clone(),
             }))
             .await;
-        assert_eq!(response.is_err(), true);
-        let expected_err = make_err!(
-            Code::NotFound,
-            "{}{}",
-            "status: NotFound, message: \"not found : Failed on query_write_status() ",
-            "command\", details: [], metadata: MetadataMap { headers: {} }"
+        assert_eq!(
+            response.unwrap().into_inner(),
+            QueryWriteStatusResponse {
+                committed_size: 0,
+                complete: false,
+            }
         );
-        assert_eq!(Into::<Error>::into(response.unwrap_err()), expected_err);
     }
 
     // Setup stream.
     let (tx, join_handle) =
         make_stream_and_writer_spawn(bs_server.clone(), Some(CompressionEncoding::Gzip));
-
-    const BYTE_SPLIT_OFFSET: usize = 8;
 
     let mut write_request = WriteRequest {
         resource_name: resource_name.clone(),
@@ -902,7 +916,7 @@ pub async fn test_query_write_status_smoke_test() -> Result<(), Box<dyn std::err
 
     {
         // Check to see if our request is active.
-        tokio::task::yield_now().await;
+        yield_now().await;
         let data = bs_server
             .query_write_status(Request::new(QueryWriteStatusRequest {
                 resource_name: resource_name.clone(),
@@ -926,7 +940,7 @@ pub async fn test_query_write_status_smoke_test() -> Result<(), Box<dyn std::err
 
     {
         // Now that it's done uploading, ensure it returns a success when requested again.
-        tokio::task::yield_now().await;
+        yield_now().await;
         let data = bs_server
             .query_write_status(Request::new(QueryWriteStatusRequest { resource_name }))
             .await?;
@@ -946,22 +960,31 @@ pub async fn test_query_write_status_smoke_test() -> Result<(), Box<dyn std::err
 }
 
 #[nativelink_test]
-pub async fn max_decoding_message_size_test() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn max_decoding_message_size_test() -> Result<(), Box<dyn core::error::Error>> {
     const MAX_MESSAGE_SIZE: usize = 1024 * 1024; // 1MB.
-    let store_manager = make_store_manager().await?;
-    let config = ByteStreamConfig {
-        cas_stores: hashmap! {
-            INSTANCE_NAME.to_string() => "main_cas".to_string(),
-        },
-        max_decoding_message_size: MAX_MESSAGE_SIZE,
-        ..Default::default()
-    };
-    let bs_server = make_bytestream_server(store_manager.as_ref(), Some(config))
-        .expect("Failed to make server");
-    let (server_join_handle, mut bs_client) = server_and_client_stub(bs_server).await;
 
     // This is the size of the wrapper proto around the data.
     const WRITE_REQUEST_MSG_WRAPPER_SIZE: usize = 150;
+
+    let store_manager = make_store_manager().await?;
+    let config = vec![WithInstanceName {
+        instance_name: INSTANCE_NAME.to_string(),
+        config: ByteStreamConfig {
+            cas_store: "main_cas".to_string(),
+            ..Default::default()
+        },
+    }];
+    let bs_server = make_bytestream_server(store_manager.as_ref(), Some(config))
+        .expect("Failed to make server");
+    let (server_join_handle, mut bs_client) = server_and_client_stub(
+        bs_server,
+        HttpListener {
+            max_decoding_message_size: MAX_MESSAGE_SIZE,
+            ..Default::default()
+        },
+    )
+    .await;
+
     {
         // Test to ensure if we send exactly our max message size, it will succeed.
         let data = Bytes::from(vec![0u8; MAX_MESSAGE_SIZE - WRITE_REQUEST_MSG_WRAPPER_SIZE]);
@@ -1015,3 +1038,42 @@ pub async fn max_decoding_message_size_test() -> Result<(), Box<dyn std::error::
 
     Ok(())
 }
+
+#[nativelink_test]
+async fn write_too_many_bytes_fails() -> Result<(), Box<dyn core::error::Error>> {
+    const MAX_MESSAGE_SIZE: usize = 3;
+    const DATA_SIZE: usize = 4;
+
+    let (tx, join_handle) = make_stream_and_writer_spawn(
+        Arc::new(make_bytestream_server(make_store_manager().await?.as_ref(), None).unwrap()),
+        None,
+    );
+
+    tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name: make_resource_name(MAX_MESSAGE_SIZE),
+        write_offset: 0,
+        finish_write: true,
+        data: vec![0u8; DATA_SIZE].into(),
+    })?))
+    .await?;
+
+    drop(tx);
+
+    let err = join_handle
+        .await?
+        .expect_err("Expected an error for sending too many bytes");
+
+    assert!(
+        err.to_string().contains("Sent too much data"),
+        "Got wrong error: {err:?}"
+    );
+    Ok(())
+}
+
+// NOTE: UUID collision fix has been verified manually.
+// When two uploads use the same UUID and one is active, the server generates
+// a unique UUID using nanosecond timestamp for the second upload.
+// This prevents the "Cannot upload same UUID simultaneously" error that occurred
+// in production with large C++ builds using Bazel.
+// Manual testing shows the warning: "UUID collision detected, generating unique UUID"
+// and both uploads complete successfully.

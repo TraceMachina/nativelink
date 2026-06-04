@@ -1,5 +1,7 @@
 # Local Remote Execution
 
+[![Hermetic Toolchain Creation with Local Remote Execution (LRE) & Nix - Aaron Mondal, NativeLink](https://i.ytimg.com/vi/uokjTev8myk/hqdefault.jpg?sqp=-oaymwEbCKgBEF5IVfKriqkDDggBFQAAiEIYAXABwAEG\u0026rs=AOn4CLAhfUYVRAaK7RhLLZ0m_A-T1mYPAg)](https://www.youtube.com/embed/uokjTev8myk?rel=0)
+
 NativeLink's Local Remote Execution is a framework to build, distribute, and
 rapidly iterate on custom toolchain setups that are transparent, fully hermetic,
 and reproducible across machines of the same system architecture.
@@ -16,7 +18,7 @@ perfect cache hit rate across different repositories, developers, and CI.
 > [!NOTE]
 > At the moment LRE only works on `x86_64-linux`.
 
-##  Pre-Requisites
+## Pre-Requisites
 
 - Nix 2.19.0 or later
 - A functional local container setup
@@ -67,7 +69,7 @@ devShells.default = pkgs.mkShell {
   shellHook = ''
     # Generate lre.bazelrc which configures LRE toolchains when running
     # in the nix environment.
-    ${config.local-remote-execution.installationScript}
+    ${config.lre.installationScript}
   '';
 }
 ```
@@ -99,12 +101,12 @@ build --extra_toolchains=@local-remote-execution//generated-cc/config:cc-toolcha
 
 In the snippet above you can see a warning that no local toolchain is
 configured. LRE needs to know the remote toolchain configuration to make it
-available locally. The `local-remote-execution` settings take an `Env` input and
+available locally. The `lre` settings take an `Env` input and
 an optional `prefix` input to configure the generated `lre.bazelrc`:
 
 ```nix
 # This is a top-level field, next to `packages` and `apps`, and `devShells`
-local-remote-execution.settings = {
+lre = {
   # In this example we import the lre-cc environment from nativelink and make it
   # available locally.
   inherit (lre-cc.meta) Env;
@@ -192,22 +194,12 @@ Let's use NativeLink's Kubernetes example to verify that the setup worked.
 ## 🚢 Testing with local K8s
 
 Start the cluster and set up NativeLink in an LRE configuration. For details on
-this refer to the [Kubernetes example](https://github.com/tracemachina/nativelink/tree/main/deployment-examples/kubernetes):
-
-> [!TIP]
-> NativeLink's `native` CLI tool is self-contained and can be imported into
-> other nix flakes by adding `inputs.nativelink.packages.${system}.native-cli`
-> to the `nativeBuildInputs` of your `devShell`.
+this refer to the [Kubernetes example](https://www.nativelink.com/docs/deployment-examples/kubernetes):
 
 ```bash
 #!/usr/bin/env bash
 
 set -xeuo pipefail
-
-native up
-
-# Wait for gateways to come online.
-sleep 20
 
 EVENTLISTENER=$(kubectl get gtw eventlistener -o=jsonpath='{.status.addresses[0].value}')
 
@@ -268,22 +260,22 @@ invoke a build against the cluster:
 CACHE=$(kubectl get gtw cache -o=jsonpath='{.status.addresses[0].value}')
 SCHEDULER=$(kubectl get gtw scheduler -o=jsonpath='{.status.addresses[0].value}')
 
-# Note: If you omit setting a `prefix` the `local-remote-execution.settings` you
-#       can omit `--config=lre` here as LRE will be enabled by default.
+# Note: If you don't set `lre.prefix`, you can omit `--config=lre` here as
+# LRE will be enabled by default.
 bazel build \
     --config=lre \
     --remote_instance_name=main \
     --remote_cache=grpc://$CACHE:50051 \
     --remote_executor=grpc://$SCHEDULER:50052 \
-    //local-remote-execution/examples:hello_lre
+    //local-remote-execution/examples:lre-cc
 ```
 
 The target builds remotely:
 
 ```bash
 INFO: Found 1 target...
-Target //local-remote-execution/examples:hello_lre up-to-date:
-  bazel-bin/local-remote-execution/examples/hello_lre
+Target //local-remote-execution/examples:lre-cc up-to-date:
+  bazel-bin/local-remote-execution/examples/lre-cc
 INFO: Elapsed time: 3.004s, Critical Path: 2.23s
 INFO: 11 processes: 9 internal, <<<2 remote>>>.
 INFO: Build completed successfully, 11 total actions
@@ -298,22 +290,22 @@ bazel clean
 
 CACHE=$(kubectl get gtw cache -o=jsonpath='{.status.addresses[0].value}')
 
-# Note: If you omit setting a `prefix` the `local-remote-execution.settings` you
-#       can omit `--config=lre` here as LRE will be enabled by default.
+# Note: If you don't set `lre.prefix`, you can omit `--config=lre` here as
+# LRE will be enabled by default.
 bazel build \
     --config=lre \
     --remote_instance_name=main \
     --remote_cache=grpc://$CACHE:50051 \
-    //local-remote-execution/examples:hello_lre
+    //local-remote-execution/examples:lre-cc
 ```
 
 You'll get a cache hit on the target despite using a local build:
 
 ```bash
-INFO: Analyzed target //local-remote-execution/examples:hello_lre (91 packages loaded, 1059 targets configured).
+INFO: Analyzed target //local-remote-execution/examples:lre-cc (91 packages loaded, 1059 targets configured).
 INFO: Found 1 target...
-Target //local-remote-execution/examples:hello_lre up-to-date:
-  bazel-bin/local-remote-execution/examples/hello_lre
+Target //local-remote-execution/examples:lre-cc up-to-date:
+  bazel-bin/local-remote-execution/examples/lre-cc
 INFO: Elapsed time: 0.767s, Critical Path: 0.18s
 INFO: 11 processes: <<<2 remote cache hit>>>, 9 internal.
 INFO: Build completed successfully, 11 total actions
@@ -401,4 +393,6 @@ might need to implement your own logic to get from the toolchain container to
 some usable RBE configuration files (or write them manually), but this can be
 considered an implementation detail specific to your requirements.
 
-TODO(aaronmondal): Add an example of a custom toolchain extension around lre-cc.
+TODO(palfrey): Add an example of a custom toolchain extension around lre-cc.
+
+<img referrerpolicy="no-referrer-when-downgrade" src="https://nativelink.matomo.cloud/matomo.php?idsite=2&amp;rec=1&amp;action_name=local-remote-execution%20Readme.md" style="border:0" alt="" />

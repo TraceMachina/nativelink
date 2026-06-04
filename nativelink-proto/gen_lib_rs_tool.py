@@ -1,10 +1,10 @@
-# Copyright 2022 The NativeLink Authors. All rights reserved.
+# Copyright 2024 The NativeLink Authors. All rights reserved.
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
+# Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#    http://www.apache.org/licenses/LICENSE-2.0
+#    See LICENSE file for details
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,16 +16,15 @@
 
 import argparse
 import os
-from pathlib import Path
 
 _HEADER = """\
-// Copyright 2022 The NativeLink Authors. All rights reserved.
+// Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -36,6 +35,25 @@ _HEADER = """\
 // *** DO NOT MODIFY ***
 // This file is auto-generated. To update it, run:
 // `bazel run nativelink-proto:update_protos`
+
+#![allow(
+    unknown_lints,
+    unused_qualifications,
+    clippy::alloc_instead_of_core,
+    clippy::default_trait_access,
+    clippy::derive_partial_eq_without_eq,
+    clippy::doc_lazy_continuation,
+    clippy::doc_link_with_quotes,
+    clippy::doc_markdown,
+    clippy::doc_overindented_list_items,
+    clippy::large_enum_variant,
+    clippy::missing_const_for_fn,
+    clippy::similar_names,
+    clippy::std_instead_of_core,
+    clippy::use_self,
+    rustdoc::broken_intra_doc_links,
+    rustdoc::invalid_html_tags
+)]
 """
 
 

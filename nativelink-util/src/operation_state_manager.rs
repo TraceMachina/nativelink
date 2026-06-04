@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::pin::Pin;
+use core::pin::Pin;
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -27,6 +27,7 @@ use crate::action_messages::{
 };
 use crate::common::DigestInfo;
 use crate::known_platform_property_provider::KnownPlatformPropertyProvider;
+use crate::origin_event::OriginMetadata;
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -47,12 +48,12 @@ impl Default for OperationStageFlags {
 
 #[async_trait]
 pub trait ActionStateResult: Send + Sync + 'static {
-    // Provides the current state of the action.
-    async fn as_state(&self) -> Result<Arc<ActionState>, Error>;
-    // Waits for the state of the action to change.
-    async fn changed(&mut self) -> Result<Arc<ActionState>, Error>;
-    // Provide result as action info. This behavior will not be supported by all implementations.
-    async fn as_action_info(&self) -> Result<Arc<ActionInfo>, Error>;
+    /// Provides the current state of the action.
+    async fn as_state(&self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error>;
+    /// Waits for the state of the action to change.
+    async fn changed(&mut self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error>;
+    /// Provide result as action info. This behavior will not be supported by all implementations.
+    async fn as_action_info(&self) -> Result<(Arc<ActionInfo>, Option<OriginMetadata>), Error>;
 }
 
 /// The direction in which the results are ordered.
@@ -65,7 +66,7 @@ pub enum OrderDirection {
 /// The filters used to query operations from the state manager.
 #[derive(Default, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct OperationFilter {
-    // TODO(adams): create rust builder pattern?
+    // TODO(palfrey): create rust builder pattern?
     /// The stage(s) that the operation must be in.
     pub stages: OperationStageFlags,
 
@@ -81,7 +82,7 @@ pub struct OperationFilter {
     /// The digest of the action that the operation must have.
     pub action_digest: Option<DigestInfo>,
 
-    /// The operation must have it's worker timestamp before this time.
+    /// The operation must have its worker timestamp before this time.
     pub worker_update_before: Option<SystemTime>,
 
     /// The operation must have been completed before this time.
@@ -121,6 +122,29 @@ pub trait ClientStateManager: Sync + Send + Unpin + MetricsComponent + 'static {
     fn as_known_platform_property_provider(&self) -> Option<&dyn KnownPlatformPropertyProvider>;
 }
 
+/// The type of update to perform on an operation.
+#[derive(Debug, PartialEq, Clone)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "TODO Fix this. Breaks on stable, but not on nightly"
+)]
+pub enum UpdateOperationType {
+    /// Notification that the operation is still alive.
+    KeepAlive,
+
+    /// Notification that the operation has been updated.
+    UpdateWithActionStage(ActionStage),
+
+    /// Notification that the operation has been completed.
+    UpdateWithError(Error),
+
+    /// Notification that the worker disconnected.
+    UpdateWithDisconnect,
+
+    /// Notification that the execution stage has completed and it's just IO happening now.
+    ExecutionComplete,
+}
+
 #[async_trait]
 pub trait WorkerStateManager: Sync + Send + MetricsComponent {
     /// Update that state of an operation.
@@ -131,7 +155,7 @@ pub trait WorkerStateManager: Sync + Send + MetricsComponent {
         &self,
         operation_id: &OperationId,
         worker_id: &WorkerId,
-        action_stage: Result<ActionStage, Error>,
+        update: UpdateOperationType,
     ) -> Result<(), Error>;
 }
 
@@ -147,6 +171,6 @@ pub trait MatchingEngineStateManager: Sync + Send + MetricsComponent {
     async fn assign_operation(
         &self,
         operation_id: &OperationId,
-        worker_id_or_reason_for_unsassign: Result<&WorkerId, Error>,
+        worker_id_or_reason_for_unassign: Result<&WorkerId, Error>,
     ) -> Result<(), Error>;
 }

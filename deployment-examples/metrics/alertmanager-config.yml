@@ -1,0 +1,78 @@
+# Alertmanager configuration for NativeLink metrics
+global:
+  # The smarthost and SMTP sender used for mail notifications.
+  # smtp_smarthost: 'localhost:25'
+  # smtp_from: 'alertmanager@example.org'
+  # smtp_auth_username: 'alertmanager'
+  # smtp_auth_password: 'password'
+
+  # The default SMTP From header field.
+  resolve_timeout: 5m
+
+# The root route on which each incoming alert enters.
+route:
+  # The root route must not have any matchers as it is the entry point for
+  # all alerts. It needs to have a receiver configured.
+  receiver: 'default-receiver'
+
+  # The labels by which incoming alerts are grouped together.
+  group_by: ['alertname', 'service', 'severity']
+
+  # When a new group of alerts is created by an incoming alert, wait at
+  # least 'group_wait' to send the initial notification.
+  group_wait: 30s
+
+  # When the first notification was sent, wait 'group_interval' to send a batch
+  # of new alerts that started firing for that group.
+  group_interval: 5m
+
+  # If an alert has successfully been sent, wait 'repeat_interval' to
+  # resend them.
+  repeat_interval: 4h
+
+  # Child routes for specific alert routing
+  routes:
+    # Critical alerts - immediate notification
+    - match:
+        severity: critical
+      receiver: 'critical-receiver'
+      group_wait: 10s
+      repeat_interval: 1h
+
+    # Warning alerts
+    - match:
+        severity: warning
+      receiver: 'warning-receiver'
+      group_wait: 1m
+      repeat_interval: 4h
+
+# Inhibition rules allow to mute a set of alerts given that another alert is firing.
+inhibit_rules:
+  # Inhibit warning alerts when critical alert for the same service is firing
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'warning'
+    equal: ['alertname', 'service']
+
+# Receivers define notification integrations
+receivers:
+  # Default receiver - logs to stdout (useful for development)
+  - name: 'default-receiver'
+    # No configuration means alerts are silently acknowledged
+    # Add webhook, email, or other integrations as needed
+
+  # Critical alerts receiver
+  - name: 'critical-receiver'
+    # Example webhook configuration (uncomment and configure as needed):
+    # webhook_configs:
+    #   - url: 'http://your-webhook-endpoint/alerts'
+    #     send_resolved: true
+
+  # Warning alerts receiver
+  - name: 'warning-receiver'
+    # Configure as needed for your environment
+
+# Templates for notification formatting (optional)
+# templates:
+#   - '/etc/alertmanager/templates/*.tmpl'

@@ -6,8 +6,8 @@ level: error
 action:
   name: edit
   params:
-    - replace
-    - '-'
-    - '–'
+    - regex
+    - "-"
+    - "–"
 tokens:
-  - '\s-\d+\s'
+  - '(?<=\s)-\d+(?:\.\d+)?\b'

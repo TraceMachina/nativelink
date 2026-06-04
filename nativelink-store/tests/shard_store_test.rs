@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,6 +14,7 @@
 
 use std::sync::Arc;
 
+use nativelink_config::stores::{MemorySpec, ShardSpec, StoreSpec};
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
 use nativelink_store::memory_store::MemoryStore;
@@ -28,15 +29,15 @@ use rand::{Rng, SeedableRng};
 const MEGABYTE_SZ: usize = 1024 * 1024;
 
 fn make_stores(weights: &[u32]) -> (Arc<ShardStore>, Vec<Arc<MemoryStore>>) {
-    let memory_store_config = nativelink_config::stores::MemoryStore::default();
-    let store_config = nativelink_config::stores::StoreConfig::Memory(memory_store_config.clone());
+    let memory_store_config = MemorySpec::default();
+    let store_config = StoreSpec::Memory(memory_store_config);
     let stores: Vec<_> = weights
         .iter()
         .map(|_| MemoryStore::new(&memory_store_config))
         .collect();
 
     let shard_store = ShardStore::new(
-        &nativelink_config::stores::ShardStore {
+        &ShardSpec {
             stores: weights
                 .iter()
                 .map(|weight| nativelink_config::stores::ShardConfig {
@@ -80,14 +81,15 @@ async fn verify_weights(
     }
 
     for (index, (store, expected_hit)) in stores.iter().zip(expected_hits.iter()).enumerate() {
-        let total_hits = store.len_for_test().await;
+        let total_hits = store.len_for_test();
+        #[expect(clippy::print_stdout, reason = "improves debugging")]
         if print_results {
             println!("expected_hit: {expected_hit} - total_hits: {total_hits}");
         } else {
             assert_eq!(
                 *expected_hit, total_hits,
                 "Index {index} failed with expected_hit: {expected_hit} != total_hits: {total_hits}"
-            )
+            );
         }
     }
     Ok(())
@@ -106,7 +108,7 @@ async fn has_with_one_digest() -> Result<(), Error> {
         .update_oneshot(digest1, original_data.clone().into())
         .await?;
 
-    assert_eq!(shard_store.has(digest1).await, Ok(Some(MEGABYTE_SZ)));
+    assert_eq!(shard_store.has(digest1).await, Ok(Some(MEGABYTE_SZ as u64)));
     Ok(())
 }
 
@@ -141,7 +143,7 @@ async fn has_with_many_digests_one_missing() -> Result<(), Error> {
         shard_store
             .has_many(&[digest1.into(), missing_digest.into()])
             .await,
-        Ok(vec![Some(MEGABYTE_SZ), None])
+        Ok(vec![Some(MEGABYTE_SZ as u64), None])
     );
     Ok(())
 }
@@ -165,7 +167,10 @@ async fn has_with_many_digests_both_exist() -> Result<(), Error> {
         shard_store
             .has_many(&[digest1.into(), digest2.into()])
             .await,
-        Ok(vec![Some(original_data1.len()), Some(original_data2.len())])
+        Ok(vec![
+            Some(original_data1.len() as u64),
+            Some(original_data2.len() as u64)
+        ])
     );
     Ok(())
 }
@@ -253,14 +258,14 @@ async fn upload_download_has_check() -> Result<(), Error> {
         shard_store.get_part_unchunked(digest1, 0, None).await,
         Ok(original_data1.into())
     );
-    assert_eq!(shard_store.has(digest1).await, Ok(Some(MEGABYTE_SZ)));
+    assert_eq!(shard_store.has(digest1).await, Ok(Some(MEGABYTE_SZ as u64)));
     Ok(())
 }
 
 #[nativelink_test]
 async fn weights_send_to_proper_store() -> Result<(), Error> {
     // Very low chance anything will ever go to second store due to weights being so much diff.
-    let (shard_store, stores) = make_stores(&[100000, 1]);
+    let (shard_store, stores) = make_stores(&[100_000, 1]);
 
     let original_data1 = make_random_data(MEGABYTE_SZ);
     let digest1 = DigestInfo::try_new(STORE1_HASH, 100).unwrap();
@@ -268,7 +273,7 @@ async fn weights_send_to_proper_store() -> Result<(), Error> {
         .update_oneshot(digest1, original_data1.clone().into())
         .await?;
 
-    assert_eq!(stores[0].has(digest1).await, Ok(Some(MEGABYTE_SZ)));
+    assert_eq!(stores[0].has(digest1).await, Ok(Some(MEGABYTE_SZ as u64)));
     assert_eq!(stores[1].has(digest1).await, Ok(None));
     Ok(())
 }

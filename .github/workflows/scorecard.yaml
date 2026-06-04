@@ -16,36 +16,36 @@ concurrency:
 jobs:
   analysis:
     name: Scorecard analysis
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     permissions:
       security-events: write
       id-token: write
     timeout-minutes: 5
     steps:
       - name: Checkout
-        uses: >- # v4.1.1
-          actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+        uses: >- # v6.0.2
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           persist-credentials: false
 
       - name: Run analysis
-        uses: >- # v2.3.1
-          ossf/scorecard-action@0864cf19026789058feabb7e87baa5f140aac736
+        uses: >- # v2.4.0
+          ossf/scorecard-action@62b2cac7ed8198b15735ed49ab1e5cf35480ba46
         with:
           results_file: results.sarif
           results_format: sarif
           publish_results: true
 
       - name: Upload artifact
-        uses: >- # v4.0.0
-          actions/upload-artifact@c7d193f32edcb7bfad88892161225aeda64e9392
+        uses: >- # v4.6.0
+          actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08
         with:
           name: SARIF file
           path: results.sarif
           retention-days: 5
 
       - name: Upload to code-scanning
-        uses: >- # v3.22.11
-          github/codeql-action/upload-sarif@b374143c1149a9115d881581d29b8390bbcbb59c
+        uses: >- # v3.28.9
+          github/codeql-action/upload-sarif@9e8d0789d4a0fa9ceb6b1738f7e269594bdd67f0
         with:
           sarif_file: results.sarif

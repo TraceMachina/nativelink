@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,19 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::pin::Pin;
+use core::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
 };
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
-use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
-use nativelink_util::store_trait::{StoreDriver, StoreKey, StoreOptimizations, UploadSizeInfo};
+use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
+use nativelink_util::store_trait::{
+    RemoveItemCallback, StoreDriver, StoreKey, StoreOptimizations, UploadSizeInfo,
+};
 
-#[derive(Default)]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct NoopStore;
 
 impl MetricsComponent for NoopStore {
@@ -39,7 +41,7 @@ impl MetricsComponent for NoopStore {
 
 impl NoopStore {
     pub fn new() -> Arc<Self> {
-        Arc::new(NoopStore {})
+        Arc::new(Self {})
     }
 }
 
@@ -48,9 +50,11 @@ impl StoreDriver for NoopStore {
     async fn has_with_results(
         self: Pin<&Self>,
         _keys: &[StoreKey<'_>],
-        results: &mut [Option<usize>],
+        results: &mut [Option<u64>],
     ) -> Result<(), Error> {
-        results.iter_mut().for_each(|r| *r = None);
+        for result in results.iter_mut() {
+            *result = None;
+        }
         Ok(())
     }
 
@@ -59,11 +63,11 @@ impl StoreDriver for NoopStore {
         _key: StoreKey<'_>,
         mut reader: DropCloserReadHalf,
         _size_info: UploadSizeInfo,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         // We need to drain the reader to avoid the writer complaining that we dropped
         // the connection prematurely.
-        reader.drain().await.err_tip(|| "In NoopStore::update")?;
-        Ok(())
+        let size = reader.drain().await.err_tip(|| "In NoopStore::update")?;
+        Ok(size)
     }
 
     fn optimized_for(&self, optimization: StoreOptimizations) -> bool {
@@ -75,8 +79,8 @@ impl StoreDriver for NoopStore {
         self: Pin<&Self>,
         _key: StoreKey<'_>,
         _writer: &mut DropCloserWriteHalf,
-        _offset: usize,
-        _length: Option<usize>,
+        _offset: u64,
+        _length: Option<u64>,
     ) -> Result<(), Error> {
         Err(make_err!(Code::NotFound, "Not found in noop store"))
     }
@@ -85,12 +89,20 @@ impl StoreDriver for NoopStore {
         self
     }
 
-    fn as_any<'a>(&'a self) -> &'a (dyn std::any::Any + Sync + Send + 'static) {
+    fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
         self
     }
 
-    fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
+    }
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        _callback: Arc<dyn RemoveItemCallback>,
+    ) -> Result<(), Error> {
+        // does nothing, so drop
+        Ok(())
     }
 }
 

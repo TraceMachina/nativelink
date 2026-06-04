@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,34 +12,37 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::cmp::min;
+use core::convert::Into;
+use core::fmt::Debug;
+use core::pin::Pin;
+use core::sync::atomic::{AtomicBool, Ordering};
+use core::time::Duration;
 use std::borrow::Cow;
-use std::cmp::min;
 use std::collections::vec_deque::VecDeque;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::env;
 use std::ffi::{OsStr, OsString};
-use std::fmt::Debug;
 #[cfg(target_family = "unix")]
 use std::fs::Permissions;
 #[cfg(target_family = "unix")]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
-use std::path::Path;
-use std::pin::Pin;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use bytes::{Bytes, BytesMut};
-use filetime::{set_file_mtime, FileTime};
+use filetime::{FileTime, set_file_mtime};
 use formatx::Template;
 use futures::future::{
-    try_join, try_join3, try_join_all, BoxFuture, Future, FutureExt, TryFutureExt,
+    BoxFuture, Future, FutureExt, TryFutureExt, try_join, try_join_all, try_join3,
 };
 use futures::stream::{FuturesUnordered, StreamExt, TryStreamExt};
 use nativelink_config::cas_server::{
     EnvironmentSource, UploadActionResultConfig, UploadCacheResultsStrategy,
 };
-use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_proto::build::bazel::remote::execution::v2::{
     Action, ActionResult as ProtoActionResult, Command as ProtoCommand,
@@ -50,16 +53,17 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
     HistoricalExecuteResponse, StartExecute,
 };
 use nativelink_store::ac_utils::{
-    compute_buf_digest, get_and_decode_digest, serialize_and_upload_message, ESTIMATED_DIGEST_SIZE,
+    ESTIMATED_DIGEST_SIZE, compute_buf_digest, get_and_decode_digest, serialize_and_upload_message,
 };
+use nativelink_store::cas_utils::is_zero_digest;
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::{FileEntry, FilesystemStore};
 use nativelink_store::grpc_store::GrpcStore;
 use nativelink_util::action_messages::{
-    to_execute_response, ActionInfo, ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo,
-    NameOrPath, OperationId, SymlinkInfo,
+    ActionInfo, ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath, OperationId,
+    SymlinkInfo, to_execute_response,
 };
-use nativelink_util::common::{fs, DigestInfo};
+use nativelink_util::common::{DigestInfo, fs};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime};
 use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
@@ -67,19 +71,27 @@ use nativelink_util::{background_spawn, spawn, spawn_blocking};
 use parking_lot::Mutex;
 use prost::Message;
 use relative_path::RelativePath;
-use scopeguard::{guard, ScopeGuard};
+use scopeguard::{ScopeGuard, guard};
 use serde::Deserialize;
-use tokio::io::{AsyncReadExt, AsyncSeekExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::process;
-use tokio::sync::{oneshot, watch};
+use tokio::sync::{Notify, oneshot, watch};
+use tokio::time::Instant;
 use tokio_stream::wrappers::ReadDirStream;
 use tonic::Request;
-use tracing::{enabled, event, Level};
+use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
+
+use crate::persistent_worker::{
+    Input as PersistentWorkerInput, PersistentWorkerPool, WireFormat, WorkRequest, WorkerKey,
+};
 
 /// For simplicity we use a fixed exit code for cases when our program is terminated
 /// due to a signal.
 const EXIT_CODE_FOR_SIGNAL: i32 = 9;
+
+const SUPPORTS_WORKERS_PROPERTY: &str = "supports-workers";
+const REQUIRES_WORKER_PROTOCOL_PROPERTY: &str = "requires-worker-protocol";
 
 /// Default strategy for uploading historical results.
 /// Note: If this value changes the config documentation
@@ -92,12 +104,12 @@ const DEFAULT_HISTORICAL_RESULTS_STRATEGY: UploadCacheResultsStrategy =
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum SideChannelFailureReason {
-    /// Task should be considered timedout.
+    /// Task should be considered timed out.
     Timeout,
 }
 
 /// This represents the json data that can be passed from the running process
-/// to the parent via the SideChannelFile. See:
+/// to the parent via the `SideChannelFile`. See:
 /// `config::EnvironmentSource::sidechannelfile` for more details.
 /// Note: Any fields added here must be added to the documentation.
 #[derive(Debug, Deserialize, Default)]
@@ -106,9 +118,57 @@ struct SideChannelInfo {
     failure: Option<SideChannelFailureReason>,
 }
 
+fn action_supports_persistent_workers(
+    action_info: &ActionInfo,
+) -> Option<Result<WireFormat, Error>> {
+    if action_info
+        .platform_properties
+        .get(SUPPORTS_WORKERS_PROPERTY)
+        .is_none_or(|value| value != "1")
+    {
+        return None;
+    }
+
+    let protocol = action_info
+        .platform_properties
+        .get(REQUIRES_WORKER_PROTOCOL_PROPERTY)
+        .map_or("proto", String::as_str);
+    Some(WireFormat::parse(protocol))
+}
+
+fn os_args_to_strings(args: &[&OsStr]) -> Result<Vec<String>, Error> {
+    args.iter()
+        .map(|arg| {
+            arg.to_str().map(str::to_owned).ok_or_else(|| {
+                make_err!(
+                    Code::InvalidArgument,
+                    "Persistent worker command arguments must be valid UTF-8: {arg:?}"
+                )
+            })
+        })
+        .collect()
+}
+
+fn persistent_worker_request_arguments(argv: &[String]) -> Vec<String> {
+    argv.iter()
+        .skip(1)
+        .skip_while(|arg| !arg.starts_with('@'))
+        .cloned()
+        .collect()
+}
+/// Maximum number of file-materialization (hardlink) or subdirectory
+/// recursion futures polled concurrently per directory level. Higher values
+/// drown APFS's per-volume metadata lock with `hardlink(2)` syscalls and
+/// regress overall throughput vs lower-contention concurrency.
+///
+/// 64 is well above the inflection point on any modern Linux filesystem,
+/// so this is also a no-op on Linux beyond replacing tokio scheduling
+/// overhead.
+const DOWNLOAD_TO_DIRECTORY_CONCURRENCY: usize = 64;
+
 /// Aggressively download the digests of files and make a local folder from it. This function
-/// will spawn unbounded number of futures to try and get these downloaded. The store itself
-/// should be rate limited if spawning too many requests at once is an issue.
+/// gates each directory level to at most `DOWNLOAD_TO_DIRECTORY_CONCURRENCY`
+/// concurrent in-flight materialization futures.
 /// We require the `FilesystemStore` to be the `fast` store of `FastSlowStore`. This is for
 /// efficiency reasons. We will request the `FastSlowStore` to populate the entry then we will
 /// assume the `FilesystemStore` has the file available immediately after and hardlink the file
@@ -126,7 +186,7 @@ pub fn download_to_directory<'a>(
         let directory = get_and_decode_digest::<ProtoDirectory>(cas_store, digest.into())
             .await
             .err_tip(|| "Converting digest to Directory")?;
-        let mut futures = FuturesUnordered::new();
+        let mut futures = Vec::new();
 
         for file in directory.files {
             let digest: DigestInfo = file
@@ -135,56 +195,143 @@ pub fn download_to_directory<'a>(
                 .try_into()
                 .err_tip(|| "In Directory::file::digest")?;
             let dest = format!("{}/{}", current_directory, file.name);
-            let (mtime, mut unix_mode) = match file.node_properties {
+            let is_executable = file.is_executable;
+            let (mtime, custom_unix_mode) = match file.node_properties {
                 Some(properties) => (properties.mtime, properties.unix_mode),
                 None => (None, None),
             };
-            #[cfg_attr(target_family = "windows", allow(unused_assignments))]
-            if file.is_executable {
-                unix_mode = Some(unix_mode.unwrap_or(0o444) | 0o111);
-            }
             futures.push(
                 cas_store
                     .populate_fast_store(digest.into())
-                    .and_then(move |_| async move {
-                        let file_entry = filesystem_store
-                            .get_file_entry_for_digest(&digest)
-                            .await
-                            .err_tip(|| "During hard link")?;
-                        file_entry
-                            .get_file_path_locked(|src| fs::hard_link(src, &dest))
-                            .await
-                            .map_err(|e| {
-                                make_err!(Code::Internal, "Could not make hardlink, {e:?} : {dest}")
-                            })?;
-                        #[cfg(target_family = "unix")]
-                        if let Some(unix_mode) = unix_mode {
-                            fs::set_permissions(&dest, Permissions::from_mode(unix_mode))
+                    .and_then(move |()| async move {
+                        if is_zero_digest(digest) {
+                            // Zero-digest files are never persisted by the
+                            // FilesystemStore, so materialise them directly in
+                            // the worker exec dir.
+                            let mut file_slot = fs::create_file(&dest)
                                 .await
-                                .err_tip(|| {
-                                    format!(
-                                        "Could not set unix mode in download_to_directory {dest}"
+                                .err_tip(|| format!("Could not create zero-digest file at {dest}"))?;
+                            file_slot
+                                .write_all(&[])
+                                .await
+                                .err_tip(|| format!("Could not write zero-digest file at {dest}"))?;
+                        } else if custom_unix_mode.is_some() || mtime.is_some() {
+                            // Rare path: per-file metadata (a custom unix_mode or
+                            // an mtime) must land on a PRIVATE inode. A
+                            // chmod/utimes on a hardlink mutates the shared CAS
+                            // inode for every other action that hardlinked it
+                            // (the #2347 corruption class). Copy the blob into a
+                            // private inode, then stamp mode/mtime onto it below.
+                            let file_entry = filesystem_store
+                                .get_file_entry_for_digest(&digest)
+                                .await
+                                .err_tip(|| "During private copy")?;
+                            let src_path = file_entry
+                                .get_file_path_locked(|src| async move { Ok(src) })
+                                .await?;
+                            let spawned_dest = dest.clone();
+                            spawn_blocking!("download_to_directory_private_copy", move || {
+                                std::fs::copy(&src_path, &spawned_dest).map(|_| ()).map_err(|e| {
+                                    make_err!(
+                                        Code::Internal,
+                                        "Failed to copy CAS blob into a private inode at {spawned_dest}: {e:?}"
                                     )
-                                })?;
-                        }
-                        if let Some(mtime) = mtime {
-                            spawn_blocking!("download_to_directory_set_mtime", move || {
-                                set_file_mtime(
-                                    &dest,
-                                    FileTime::from_unix_time(mtime.seconds, mtime.nanos as u32),
-                                )
-                                .err_tip(|| {
-                                    format!("Failed to set mtime in download_to_directory {dest}")
                                 })
                             })
                             .await
                             .err_tip(|| {
-                                "Failed to launch spawn_blocking in download_to_directory"
+                                "Failed to launch spawn_blocking private copy in download_to_directory"
                             })??;
+                        } else {
+                            // Hot path: hardlink only — no writable fd is ever
+                            // opened for the materialized inode, so a concurrent
+                            // `execve` of an executable input cannot hit ETXTBSY
+                            // ("Text file busy"). Executables hardlink a
+                            // per-digest 0o555 variant created once off the hot
+                            // path (the 0o444 CAS blob is shared and cannot carry
+                            // +x); non-executables hardlink the 0o444 CAS blob.
+                            let src_path = if is_executable {
+                                filesystem_store
+                                    .get_executable_hardlink_source(&digest)
+                                    .await
+                                    .err_tip(|| "Resolving executable hardlink source")?
+                            } else {
+                                let file_entry = filesystem_store
+                                    .get_file_entry_for_digest(&digest)
+                                    .await
+                                    .err_tip(|| "During hard link")?;
+                                // TODO: add a test for #2051: deadlock with large number of files
+                                file_entry
+                                    .get_file_path_locked(|src| async move { Ok(src) })
+                                    .await?
+                            };
+                            fs::hard_link(&src_path, &dest)
+                                .await
+                                .map_err(|e| {
+                                    if e.code == Code::NotFound {
+                                        e.append(
+                                            format!(
+                                            "Could not make hardlink to {dest}, file was likely evicted from cache.\n\
+                                            This error often occurs when the filesystem store's max_bytes is too small for your workload.\n\
+                                            To fix this issue:\n\
+                                            1. Increase the 'max_bytes' value in your filesystem store configuration\n\
+                                            2. Example: Change 'max_bytes: 10000000000' to 'max_bytes: 50000000000' (or higher)\n\
+                                            3. The setting is typically found in your nativelink.json config under:\n\
+                                            stores -> [your_filesystem_store] -> filesystem -> eviction_policy -> max_bytes\n\
+                                            4. Restart NativeLink after making the change\n\n\
+                                            If this error persists after increasing max_bytes several times, please report at:\n\
+                                            https://github.com/TraceMachina/nativelink/issues\n\
+                                            Include your config file and both server and client logs to help us assist you."
+                                        ))
+                                    } else {
+                                        e.append(format!("Could not make hardlink to {dest}"))
+                                    }
+                                })?;
+                            // Hardlinked inodes are already correct (the 0o444
+                            // blob or the 0o555 executable variant) and carry no
+                            // per-file metadata, so there is nothing to stamp.
+                            return Ok(());
+                        }
+
+                        // Private-inode tail (zero-digest or private copy only):
+                        // stamp the requested mode and mtime. Safe because the
+                        // inode is private to this action.
+                        #[cfg(target_family = "unix")]
+                        {
+                            let mode = if let Some(mode) = custom_unix_mode {
+                                Some(if is_executable { mode | 0o111 } else { mode })
+                            } else if is_executable {
+                                Some(0o555)
+                            } else {
+                                None
+                            };
+                            if let Some(mode) = mode {
+                                fs::set_permissions(&dest, Permissions::from_mode(mode))
+                                    .await
+                                    .err_tip(|| {
+                                        format!("Could not set unix mode in download_to_directory {dest}")
+                                    })?;
+                            }
+                        }
+                        if let Some(mtime) = mtime {
+                            let spawned_dest = dest.clone();
+                            spawn_blocking!("download_to_directory_set_mtime", move || {
+                                set_file_mtime(
+                                    &spawned_dest,
+                                    FileTime::from_unix_time(mtime.seconds, mtime.nanos as u32),
+                                )
+                                .err_tip(|| {
+                                    format!("Failed to set mtime in download_to_directory {spawned_dest}")
+                                })
+                            })
+                            .await
+                            .err_tip(
+                                || "Failed to launch spawn_blocking in download_to_directory",
+                            )??;
                         }
                         Ok(())
                     })
-                    .map_err(move |e| e.append(format!("for digest {digest:?}")))
+                    .map_err(move |e| e.append(format!("for digest {digest}")))
                     .boxed(),
             );
         }
@@ -232,10 +379,90 @@ pub fn download_to_directory<'a>(
             );
         }
 
-        while futures.try_next().await?.is_some() {}
+        // Gate concurrency: at most DOWNLOAD_TO_DIRECTORY_CONCURRENCY futures
+        // polled at once for this directory level. Previously all futures were
+        // pushed into an unbounded FuturesUnordered, which on macOS produced
+        // thousands of parallel hardlink(2) calls fighting APFS's per-volume
+        // metadata lock and regressing throughput vs serial.
+        futures::stream::iter(futures)
+            .buffer_unordered(DOWNLOAD_TO_DIRECTORY_CONCURRENCY)
+            .try_collect::<Vec<_>>()
+            .await?;
         Ok(())
     }
     .boxed()
+}
+
+/// Prepares action inputs by first trying the directory cache (if available),
+/// then falling back to traditional `download_to_directory`.
+///
+/// This provides a significant performance improvement for repeated builds
+/// with the same input directories.
+///
+/// `work_directory` must already exist and be empty when this is called: the
+/// caller pre-creates it so that, on the fallback path, `download_to_directory`
+/// has a destination to write into. The directory cache, however, materializes
+/// the tree with `hardlink_directory_tree` / APFS `clonefile(2)`, both of which
+/// require the destination to *not* exist — so this function removes the empty
+/// directory before invoking the cache and recreates it if the cache fails.
+pub async fn prepare_action_inputs(
+    directory_cache: &Option<Arc<crate::directory_cache::DirectoryCache>>,
+    cas_store: &FastSlowStore,
+    filesystem_store: Pin<&FilesystemStore>,
+    digest: &DigestInfo,
+    work_directory: &str,
+) -> Result<(), Error> {
+    // Try cache first if available
+    if let Some(cache) = directory_cache {
+        // `clonefile(2)` and `hardlink_directory_tree` both require the
+        // destination to not exist. Remove the empty directory the caller
+        // pre-created; without this the cache fails its precondition on every
+        // action and silently falls back to the slow download path.
+        fs::remove_dir(work_directory)
+            .await
+            .err_tip(|| format!("Failed to clear pre-created work directory {work_directory}"))?;
+        match cache
+            .get_or_create(*digest, Path::new(work_directory))
+            .await
+        {
+            Ok(cache_hit) => {
+                // The materialized tree is already usable. The directory
+                // cache locks each entry down with `set_readonly_recursive`,
+                // which leaves directories writable (0o755) and only makes
+                // files read-only (0o555). The macOS `clonefile(2)` path
+                // copies those modes verbatim and the Linux hardlink walk
+                // creates fresh writable directories, so every directory in
+                // the materialized tree already accepts the nested output
+                // files Bazel actions declare — no separate per-materialize
+                // recursive chmod walk is needed here. Files stay read-only,
+                // preserving the hermeticity contract and the CAS-hardlink
+                // shared-inode invariant.
+                trace!(
+                    ?digest,
+                    work_directory, cache_hit, "Successfully prepared inputs via directory cache"
+                );
+                return Ok(());
+            }
+            Err(e) => {
+                warn!(
+                    ?digest,
+                    ?e,
+                    "Directory cache failed, falling back to traditional download"
+                );
+                // The cache may have materialized a partial tree before
+                // failing. `download_to_directory` needs an existing, empty
+                // destination, so discard any partial state and recreate the
+                // work directory.
+                let _cleanup = fs::remove_dir_all(work_directory).await;
+                fs::create_dir(work_directory)
+                    .await
+                    .err_tip(|| format!("Failed to recreate work directory {work_directory}"))?;
+            }
+        }
+    }
+
+    // Traditional path (cache disabled or failed)
+    download_to_directory(cas_store, filesystem_store, digest, work_directory).await
 }
 
 #[cfg(target_family = "windows")]
@@ -251,44 +478,107 @@ fn is_executable(metadata: &std::fs::Metadata, _full_path: &impl AsRef<Path>) ->
     (metadata.mode() & 0o111) != 0
 }
 
+type DigestUploader = Arc<tokio::sync::OnceCell<()>>;
+
 async fn upload_file(
     cas_store: Pin<&impl StoreLike>,
-    full_path: impl AsRef<Path> + Debug,
+    full_path: impl AsRef<Path> + Debug + Send + Sync,
     hasher: DigestHasherFunc,
     metadata: std::fs::Metadata,
+    digest_uploaders: Arc<Mutex<HashMap<DigestInfo, DigestUploader>>>,
 ) -> Result<FileInfo, Error> {
     let is_executable = is_executable(&metadata, &full_path);
     let file_size = metadata.len();
-    let resumeable_file = fs::open_file(&full_path, u64::MAX)
+    let file = fs::open_file(&full_path, 0, u64::MAX)
         .await
         .err_tip(|| format!("Could not open file {full_path:?}"))?;
 
-    let (digest, mut resumeable_file) = hasher
+    let (digest, mut file) = hasher
         .hasher()
-        .digest_for_file(resumeable_file, Some(file_size))
+        .digest_for_file(&full_path, file.into_inner(), Some(file_size))
         .await
         .err_tip(|| format!("Failed to hash file in digest_for_file failed for {full_path:?}"))?;
 
-    resumeable_file
-        .as_reader()
-        .await
-        .err_tip(|| "Could not get reader from file slot in RunningActionsManager::upload_file()")?
-        .get_mut()
-        .rewind()
-        .await
-        .err_tip(|| "Could not rewind file")?;
+    let digest_uploader = match digest_uploaders.lock().entry(digest) {
+        std::collections::hash_map::Entry::Occupied(occupied_entry) => occupied_entry.get().clone(),
+        std::collections::hash_map::Entry::Vacant(vacant_entry) => vacant_entry
+            .insert(Arc::new(tokio::sync::OnceCell::new()))
+            .clone(),
+    };
 
-    // Note: For unknown reasons we appear to be hitting:
-    // https://github.com/rust-lang/rust/issues/92096
-    // or a smiliar issue if we try to use the non-store driver function, so we
-    // are using the store driver function here.
-    cas_store
-        .as_store_driver_pin()
-        .update_with_whole_file(
-            digest.into(),
-            resumeable_file,
-            UploadSizeInfo::ExactSize(digest.size_bytes as usize),
-        )
+    // Only upload a file with a given hash once.  The file may exist multiple
+    // times in the output with different names.
+    digest_uploader
+        .get_or_try_init(async || {
+            // Only upload if the digest doesn't already exist, this should be
+            // a much cheaper operation than an upload.
+            let cas_store = cas_store.as_store_driver_pin();
+            let store_key: nativelink_util::store_trait::StoreKey<'_> = digest.into();
+            let has_start = std::time::Instant::now();
+            if cas_store
+                .has(store_key.borrow())
+                .await
+                .is_ok_and(|result| result.is_some())
+            {
+                trace!(
+                    ?digest,
+                    has_elapsed_ms = has_start.elapsed().as_millis(),
+                    "upload_file: digest already exists in CAS, skipping upload",
+                );
+                return Ok(());
+            }
+            trace!(
+                ?digest,
+                has_elapsed_ms = has_start.elapsed().as_millis(),
+                file_size = digest.size_bytes(),
+                "upload_file: digest not in CAS, starting upload",
+            );
+
+            file.rewind().await.err_tip(|| "Could not rewind file")?;
+
+            // Note: For unknown reasons we appear to be hitting:
+            // https://github.com/rust-lang/rust/issues/92096
+            // or a similar issue if we try to use the non-store driver function, so we
+            // are using the store driver function here.
+            let store_key_for_upload = store_key.clone();
+            let file_upload_start = std::time::Instant::now();
+            let upload_result = cas_store
+                .update_with_whole_file(
+                    store_key_for_upload,
+                    full_path.as_ref().into(),
+                    file,
+                    UploadSizeInfo::ExactSize(digest.size_bytes()),
+                )
+                .await
+                .map(|_slot| ());
+            trace!(
+                ?digest,
+                upload_elapsed_ms = file_upload_start.elapsed().as_millis(),
+                success = upload_result.is_ok(),
+                "upload_file: update_with_whole_file completed",
+            );
+
+            match upload_result {
+                Ok(()) => Ok(()),
+                Err(err) => {
+                    // Output uploads run concurrently and may overlap (e.g. a file is listed
+                    // both as an output file and inside an output directory). When another
+                    // upload has already moved the file into CAS, this update can fail with
+                    // NotFound even though the digest is now present. Per the RE spec, missing
+                    // outputs should be ignored, so treat this as success if the digest exists.
+                    if err.code == Code::NotFound
+                        && cas_store
+                            .has(store_key.borrow())
+                            .await
+                            .is_ok_and(|result| result.is_some())
+                    {
+                        Ok(())
+                    } else {
+                        Err(err)
+                    }
+                }
+            }
+        })
         .await
         .err_tip(|| format!("for {full_path:?}"))?;
 
@@ -369,6 +659,7 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
     full_dir_path: P,
     full_work_directory: &'a str,
     hasher: DigestHasherFunc,
+    digest_uploaders: Arc<Mutex<HashMap<DigestInfo, DigestUploader>>>,
 ) -> BoxFuture<'a, Result<(Directory, VecDeque<ProtoDirectory>), Error>> {
     Box::pin(async move {
         let file_futures = FuturesUnordered::new();
@@ -394,53 +685,59 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
                 if file_type.is_dir() {
                     let full_dir_path = full_dir_path.clone();
                     dir_futures.push(
-                        upload_directory(cas_store, full_path.clone(), full_work_directory, hasher)
-                            .and_then(|(dir, all_dirs)| async move {
-                                let directory_name = full_path
-                                    .file_name()
-                                    .err_tip(|| {
-                                        format!("Expected file_name to exist on {full_dir_path:?}")
-                                    })?
-                                    .to_str()
-                                    .err_tip(|| {
-                                        make_err!(
-                                            Code::Internal,
-                                            "Could not convert {:?} to string",
-                                            full_dir_path
-                                        )
-                                    })?
-                                    .to_string();
+                        upload_directory(
+                            cas_store,
+                            full_path.clone(),
+                            full_work_directory,
+                            hasher,
+                            digest_uploaders.clone(),
+                        )
+                        .and_then(|(dir, all_dirs)| async move {
+                            let directory_name = full_path
+                                .file_name()
+                                .err_tip(|| {
+                                    format!("Expected file_name to exist on {full_dir_path:?}")
+                                })?
+                                .to_str()
+                                .err_tip(|| {
+                                    make_err!(
+                                        Code::Internal,
+                                        "Could not convert {:?} to string",
+                                        full_dir_path
+                                    )
+                                })?
+                                .to_string();
 
-                                let digest = serialize_and_upload_message(
-                                    &dir,
-                                    cas_store,
-                                    &mut hasher.hasher(),
-                                )
-                                .await
-                                .err_tip(|| format!("for {full_path:?}"))?;
+                            let digest =
+                                serialize_and_upload_message(&dir, cas_store, &mut hasher.hasher())
+                                    .await
+                                    .err_tip(|| format!("for {}", full_path.display()))?;
 
-                                Result::<(DirectoryNode, VecDeque<Directory>), Error>::Ok((
-                                    DirectoryNode {
-                                        name: directory_name,
-                                        digest: Some(digest.into()),
-                                    },
-                                    all_dirs,
-                                ))
-                            })
-                            .boxed(),
+                            Result::<(DirectoryNode, VecDeque<Directory>), Error>::Ok((
+                                DirectoryNode {
+                                    name: directory_name,
+                                    digest: Some(digest.into()),
+                                },
+                                all_dirs,
+                            ))
+                        })
+                        .boxed(),
                     );
                 } else if file_type.is_file() {
+                    let digest_uploaders = digest_uploaders.clone();
                     file_futures.push(async move {
                         let metadata = fs::metadata(&full_path)
                             .await
-                            .err_tip(|| format!("Could not open file {full_path:?}"))?;
-                        upload_file(cas_store, &full_path, hasher, metadata)
-                            .map_ok(|v| v.into())
-                            .await
+                            .err_tip(|| format!("Could not open file {}", full_path.display()))?;
+                        upload_file(cas_store, &full_path, hasher, metadata, digest_uploaders)
+                            .map_ok(TryInto::try_into)
+                            .await?
                     });
                 } else if file_type.is_symlink() {
-                    symlink_futures
-                        .push(upload_symlink(full_path, &full_work_directory).map_ok(Into::into));
+                    symlink_futures.push(
+                        upload_symlink(full_path, &full_work_directory)
+                            .map(|symlink| symlink?.try_into()),
+                    );
                 }
             }
         }
@@ -488,7 +785,7 @@ async fn process_side_channel_file(
     let mut json_contents = String::new();
     {
         // Note: Scoping `file_slot` allows the file_slot semaphore to be released faster.
-        let mut file_slot = match fs::open_file(side_channel_file, u64::MAX).await {
+        let mut file_slot = match fs::open_file(side_channel_file, 0, u64::MAX).await {
             Ok(file_slot) => file_slot,
             Err(e) => {
                 if e.code != Code::NotFound {
@@ -498,63 +795,59 @@ async fn process_side_channel_file(
                 return Ok(None);
             }
         };
-        let reader = file_slot
-            .as_reader()
-            .await
-            .err_tip(|| "Error getting reader from side channel file (maybe permissions?)")?;
-        reader
+        file_slot
             .read_to_string(&mut json_contents)
             .await
             .err_tip(|| "Error reading side channel file")?;
     }
 
-    let side_channel_info: SideChannelInfo =
-        serde_json5::from_str(&json_contents).map_err(|e| {
-            make_input_err!(
-                "Could not convert contents of side channel file (json) to SideChannelInfo : {e:?}"
-            )
-        })?;
+    let side_channel_info: SideChannelInfo = serde_json5::from_str(&json_contents)
+        .map_err(Error::from)
+        .err_tip(|| "Could not convert contents of side channel file (json) to SideChannelInfo")?;
     Ok(side_channel_info.failure.map(|failure| match failure {
-        SideChannelFailureReason::Timeout => Error::new(
-            Code::DeadlineExceeded,
-            format!(
-                "Command '{}' timed out after {} seconds",
-                args.join(OsStr::new(" ")).to_string_lossy(),
-                timeout.as_secs_f32()
-            ),
-        ),
+        SideChannelFailureReason::Timeout => {
+            let join_args = args.join(OsStr::new(" "));
+            let command = join_args.to_string_lossy();
+            warn!(%command, timeout=timeout.as_secs_f32(), "Side channel timeout for command");
+            Error::new(
+                Code::DeadlineExceeded,
+                format!(
+                    "Command '{}' timed out after {} seconds",
+                    command,
+                    timeout.as_secs_f32()
+                ),
+            )
+        }
     }))
 }
 
 async fn do_cleanup(
-    running_actions_manager: &RunningActionsManagerImpl,
+    running_actions_manager: &Arc<RunningActionsManagerImpl>,
     operation_id: &OperationId,
     action_directory: &str,
 ) -> Result<(), Error> {
-    event!(Level::INFO, "Worker cleaning up");
+    // Mark this operation as being cleaned up
+    let Some(_cleaning_guard) = running_actions_manager.perform_cleanup(operation_id.clone())
+    else {
+        // Cleanup is already happening elsewhere.
+        return Ok(());
+    };
+
+    debug!("Worker cleaning up");
     // Note: We need to be careful to keep trying to cleanup even if one of the steps fails.
     let remove_dir_result = fs::remove_dir_all(action_directory)
         .await
         .err_tip(|| format!("Could not remove working directory {action_directory}"));
+
     if let Err(err) = running_actions_manager.cleanup_action(operation_id) {
-        event!(
-            Level::ERROR,
-            ?operation_id,
-            ?err,
-            "Error cleaning up action"
-        );
-        return Result::<(), Error>::Err(err).merge(remove_dir_result);
+        error!(%operation_id, ?err, "Error cleaning up action");
+        Result::<(), Error>::Err(err).merge(remove_dir_result)
+    } else if let Err(err) = remove_dir_result {
+        error!(%operation_id, ?err, "Error removing working directory");
+        Err(err)
+    } else {
+        Ok(())
     }
-    if let Err(err) = remove_dir_result {
-        event!(
-            Level::ERROR,
-            ?operation_id,
-            ?err,
-            "Error removing working directory"
-        );
-        return Err(err);
-    }
-    Ok(())
 }
 
 pub trait RunningAction: Sync + Send + Sized + Unpin + 'static {
@@ -584,15 +877,17 @@ pub trait RunningAction: Sync + Send + Sized + Unpin + 'static {
     fn get_work_directory(&self) -> &String;
 }
 
+#[derive(Debug)]
 struct RunningActionImplExecutionResult {
     stdout: Bytes,
     stderr: Bytes,
     exit_code: i32,
 }
 
+#[derive(Debug)]
 struct RunningActionImplState {
     command_proto: Option<ProtoCommand>,
-    // TODO(allada) Kill is not implemented yet, but is instrumented.
+    // TODO(palfrey) Kill is not implemented yet, but is instrumented.
     // However, it is used if the worker disconnects to destroy current jobs.
     kill_channel_tx: Option<oneshot::Sender<()>>,
     kill_channel_rx: Option<oneshot::Receiver<()>>,
@@ -607,6 +902,7 @@ struct RunningActionImplState {
     error: Option<Error>,
 }
 
+#[derive(Debug)]
 pub struct RunningActionImpl {
     operation_id: OperationId,
     action_directory: String,
@@ -615,11 +911,12 @@ pub struct RunningActionImpl {
     timeout: Duration,
     running_actions_manager: Arc<RunningActionsManagerImpl>,
     state: Mutex<RunningActionImplState>,
+    has_manager_entry: AtomicBool,
     did_cleanup: AtomicBool,
 }
 
 impl RunningActionImpl {
-    fn new(
+    pub fn new(
         execution_metadata: ExecutionMetadata,
         operation_id: OperationId,
         action_directory: String,
@@ -645,15 +942,22 @@ impl RunningActionImpl {
                 execution_metadata,
                 error: None,
             }),
-            did_cleanup: AtomicBool::new(false),
+            // Always need to ensure that we're removed from the manager on Drop.
+            has_manager_entry: AtomicBool::new(true),
+            // Only needs to be cleaned up after a prepare_action call, set there.
+            did_cleanup: AtomicBool::new(true),
         }
     }
 
+    #[allow(
+        clippy::missing_const_for_fn,
+        reason = "False positive on stable, but not on nightly"
+    )]
     fn metrics(&self) -> &Arc<Metrics> {
         &self.running_actions_manager.metrics
     }
 
-    /// Prepares any actions needed to execution this action. This action will do the following:
+    /// Prepares any actions needed to execute this action. This action will do the following:
     ///
     /// * Download any files needed to execute the action
     /// * Build a folder with all files needed to execute the action.
@@ -678,14 +982,18 @@ impl RunningActionImpl {
             });
             let filesystem_store_pin =
                 Pin::new(self.running_actions_manager.filesystem_store.as_ref());
-            let (command, _) = try_join(command_fut, async {
+            let (command, ()) = try_join(command_fut, async {
                 fs::create_dir(&self.work_directory)
                     .await
                     .err_tip(|| format!("Error creating work directory {}", self.work_directory))?;
+                // Now the work directory has been created, we have to clean up.
+                self.did_cleanup.store(false, Ordering::Release);
                 // Download the input files/folder and place them into the temp directory.
+                // Use directory cache if available for better performance.
                 self.metrics()
                     .download_to_directory
-                    .wrap(download_to_directory(
+                    .wrap(prepare_action_inputs(
+                        &self.running_actions_manager.directory_cache,
                         &self.running_actions_manager.cas_store,
                         filesystem_store_pin,
                         &self.action_info.input_root_digest,
@@ -733,7 +1041,7 @@ impl RunningActionImpl {
                 ))
                 .await?;
         }
-        event!(Level::INFO, ?command, "Worker received command",);
+        debug!(?command, "Worker received command");
         {
             let mut state = self.state.lock();
             state.command_proto = Some(command);
@@ -741,6 +1049,33 @@ impl RunningActionImpl {
                 (self.running_actions_manager.callbacks.now_fn)();
         }
         Ok(self)
+    }
+
+    pub fn canonicalise_path(
+        self: &Arc<Self>,
+        arg: &OsStr,
+        working_directory: &String,
+    ) -> Result<PathBuf, Error> {
+        // If the program contains a slash, we treat it as a path and resolve it relative to the work directory.
+        Ok(if Path::new(arg).components().count() > 1 {
+            let canonical_path = PathBuf::from(&self.work_directory)
+                .join(working_directory)
+                .join(arg);
+            if cfg!(target_os = "windows") {
+                // Workaround for https://github.com/rust-lang/rust/issues/42869 using a windows-specific crate
+                dunce::canonicalize(canonical_path)
+            } else {
+                canonical_path.canonicalize()
+            }
+            .err_tip(|| {
+                format!(
+                    "Could not canonicalize path for command root {}.",
+                    arg.to_string_lossy()
+                )
+            })?
+        } else {
+            PathBuf::from(arg)
+        })
     }
 
     async fn inner_execute(self: Arc<Self>) -> Result<Arc<Self>, Error> {
@@ -769,14 +1104,143 @@ impl RunningActionImpl {
             .execution_configuration
             .entrypoint
         {
-            std::iter::once(entrypoint.as_ref())
+            core::iter::once(entrypoint.as_ref())
                 .chain(command_proto.arguments.iter().map(AsRef::as_ref))
                 .collect()
         } else {
             command_proto.arguments.iter().map(AsRef::as_ref).collect()
         };
-        event!(Level::INFO, ?args, "Executing command",);
-        let mut command_builder = process::Command::new(args[0]);
+        // TODO(palfrey): This should probably be in debug, but currently
+        //                    that's too busy and we often rely on this to
+        //                    figure out toolchain misconfiguration issues.
+        //                    De-bloat the `debug` level by using the `trace`
+        //                    level more effectively and adjust this.
+        info!(?args, "Executing command");
+
+        let program = self
+            .canonicalise_path(args[0], &command_proto.working_directory)
+            .err_tip(|| format!("Canonicalisation failure. Command={args:#?}"))?;
+        if let Some(wire_format_result) = action_supports_persistent_workers(&self.action_info) {
+            match wire_format_result {
+                Ok(wire_format) => {
+                    let command_argv = os_args_to_strings(&args)?;
+                    let key = WorkerKey::from_argv(&command_argv, wire_format)?;
+                    let request = WorkRequest {
+                        arguments: persistent_worker_request_arguments(&command_argv),
+                        inputs: Vec::<PersistentWorkerInput>::new(),
+                        request_id: 0,
+                        cancel: false,
+                        verbosity: 0,
+                        sandbox_dir: if command_proto.working_directory.is_empty() {
+                            self.work_directory.clone()
+                        } else {
+                            format!(
+                                "{}/{}",
+                                self.work_directory, command_proto.working_directory
+                            )
+                        },
+                    };
+                    let worker_cwd =
+                        PathBuf::from(&self.running_actions_manager.root_action_directory);
+
+                    match self
+                        .running_actions_manager
+                        .persistent_worker_pool
+                        .acquire(key.clone(), &program, &worker_cwd)
+                        .await
+                    {
+                        Ok(mut lease) => {
+                            let timer = self.metrics().child_process.begin_timer();
+                            let dispatch_result = {
+                                let dispatch_fut =
+                                    lease.worker().dispatch_with_timeout(&request, self.timeout);
+                                tokio::pin!(dispatch_fut);
+                                tokio::select! {
+                                    result = &mut dispatch_fut => Some(result),
+                                    _ = &mut kill_channel_rx => None,
+                                }
+                            };
+                            let response = match dispatch_result {
+                                Some(Ok(response)) => {
+                                    lease.release(true).await;
+                                    response
+                                }
+                                Some(Err(err)) => {
+                                    lease.release(false).await;
+                                    return Err(err).err_tip(|| {
+                                        format!("Dispatching action to persistent worker {key:?}")
+                                    });
+                                }
+                                None => {
+                                    drop(timer);
+                                    lease.release(false).await;
+                                    {
+                                        let mut state = self.state.lock();
+                                        state.error = Error::merge_option(
+                                            state.error.take(),
+                                            Some(Error::new(
+                                                Code::Cancelled,
+                                                format!(
+                                                    "Persistent worker command '{}' was killed by scheduler",
+                                                    args.join(OsStr::new(" ")).to_string_lossy()
+                                                ),
+                                            )),
+                                        );
+                                        state.command_proto = Some(command_proto);
+                                        state.execution_result =
+                                            Some(RunningActionImplExecutionResult {
+                                                stdout: Bytes::new(),
+                                                stderr: Bytes::new(),
+                                                exit_code: EXIT_CODE_FOR_SIGNAL,
+                                            });
+                                        state.execution_metadata.execution_completed_timestamp =
+                                            (self.running_actions_manager.callbacks.now_fn)();
+                                    }
+                                    return Ok(self);
+                                }
+                            };
+                            timer.measure();
+
+                            if response.exit_code == 0 {
+                                self.metrics().child_process_success_error_code.inc();
+                            } else {
+                                self.metrics().child_process_failure_error_code.inc();
+                            }
+                            info!(?args, ?key, "Persistent worker command complete");
+                            {
+                                let mut state = self.state.lock();
+                                state.command_proto = Some(command_proto);
+                                state.execution_result = Some(RunningActionImplExecutionResult {
+                                    stdout: Bytes::new(),
+                                    stderr: Bytes::from(response.output),
+                                    exit_code: response.exit_code,
+                                });
+                                state.execution_metadata.execution_completed_timestamp =
+                                    (self.running_actions_manager.callbacks.now_fn)();
+                            }
+                            return Ok(self);
+                        }
+                        Err(err) => {
+                            info!(
+                                ?err,
+                                ?key,
+                                "Falling back to one-shot execution; persistent worker unavailable"
+                            );
+                        }
+                    }
+                }
+                Err(err) => {
+                    info!(
+                        ?err,
+                        "Falling back to one-shot execution; unsupported persistent worker protocol"
+                    );
+                }
+            }
+        }
+
+        let mut command_builder = process::Command::new(program);
+        #[cfg(target_family = "unix")]
+        command_builder.arg0(args[0]);
         command_builder
             .args(&args[1..])
             .kill_on_drop(true)
@@ -809,6 +1273,9 @@ impl RunningActionImpl {
                         .get(property)
                         .map_or_else(|| Cow::Borrowed(""), |v| Cow::Borrowed(v.as_str())),
                     EnvironmentSource::Value(value) => Cow::Borrowed(value.as_str()),
+                    EnvironmentSource::FromEnvironment => {
+                        Cow::Owned(env::var(name).unwrap_or_default())
+                    }
                     EnvironmentSource::TimeoutMillis => {
                         Cow::Owned(requested_timeout.as_millis().to_string())
                     }
@@ -855,6 +1322,31 @@ impl RunningActionImpl {
             command_builder.env(&environment_variable.name, &environment_variable.value);
         }
 
+        // Sandboxing of the command if we are running on Linux, this resolves issues where
+        // children can spawn children and also provides better reproducibility.
+        #[cfg(target_os = "linux")]
+        {
+            let use_namespaces = self.running_actions_manager.use_namespaces;
+            let root_action_directory =
+                std::ffi::CString::new(self.running_actions_manager.root_action_directory.clone())
+                    .err_tip(|| "In RunningActionImpl::inner_execute()")?;
+            let action_directory = std::ffi::CString::new(self.action_directory.clone())
+                .err_tip(|| "In RunningActionImpl::inner_execute()")?;
+
+            // SAFETY: This function is specifically designed to operate in a async-signal-safe
+            // environment.
+            unsafe {
+                command_builder.pre_exec(move || match use_namespaces {
+                    UseNamespaces::No => Ok(()),
+                    _ => crate::namespace_utils::configure_namespace(
+                        matches!(use_namespaces, UseNamespaces::YesAndMount),
+                        &root_action_directory,
+                        &action_directory,
+                    ),
+                });
+            }
+        }
+
         let mut child_process = command_builder
             .spawn()
             .err_tip(|| format!("Could not execute command {args:?}"))?;
@@ -867,14 +1359,34 @@ impl RunningActionImpl {
             .take()
             .err_tip(|| "Expected stderr to exist on command this should never happen")?;
 
+        #[cfg(target_os = "linux")]
+        // Wrap the child process to send SIGTERM rather than SIGKILL if namespaced to
+        // prevent zombie processes.
+        let child_process = crate::namespace_utils::MaybeNamespacedChild::new(
+            !matches!(
+                self.running_actions_manager.use_namespaces,
+                UseNamespaces::No,
+            ),
+            child_process,
+        );
+
         let mut child_process_guard = guard(child_process, |mut child_process| {
-            event!(
-                Level::ERROR,
-                "Child process was not cleaned up before dropping the call to execute(), killing in background spawn."
-            );
-            background_spawn!("running_actions_manager_kill_child_process", async move {
-                child_process.kill().await
-            });
+            let result: Result<Option<std::process::ExitStatus>, std::io::Error> =
+                child_process.try_wait();
+            match result {
+                Ok(res) if res.is_some() => {
+                    // The child already exited, probably a timeout or kill operation
+                }
+                result => {
+                    error!(
+                        ?result,
+                        "Child process was not cleaned up before dropping the call to execute(), killing in background spawn."
+                    );
+                    background_spawn!("running_actions_manager_kill_child_process", async move {
+                        drop(child_process.kill().await);
+                    });
+                }
+            }
         });
 
         let all_stdout_fut = spawn!("stdout_reader", async move {
@@ -909,35 +1421,41 @@ impl RunningActionImpl {
         let mut sleep_fut = (self.running_actions_manager.callbacks.sleep_fn)(self.timeout).fuse();
         loop {
             tokio::select! {
-                _ = &mut sleep_fut => {
+                () = &mut sleep_fut => {
                     self.running_actions_manager.metrics.task_timeouts.inc();
                     killed_action = true;
-                    if let Err(err) = child_process_guard.start_kill() {
-                        event!(
-                            Level::ERROR,
+                    if let Err(err) = child_process_guard.kill().await {
+                        error!(
                             ?err,
                             "Could not kill process in RunningActionsManager for action timeout",
                         );
                     }
                     {
+                        let joined_command = args.join(OsStr::new(" "));
+                        let command = joined_command.to_string_lossy();
+                        info!(
+                            seconds = self.action_info.timeout.as_secs_f32(),
+                            %command,
+                            "Command timed out"
+                        );
                         let mut state = self.state.lock();
                         state.error = Error::merge_option(state.error.take(), Some(Error::new(
                             Code::DeadlineExceeded,
                             format!(
                                 "Command '{}' timed out after {} seconds",
-                                args.join(OsStr::new(" ")).to_string_lossy(),
+                                command,
                                 self.action_info.timeout.as_secs_f32()
                             )
                         )));
                     }
                 },
                 maybe_exit_status = child_process_guard.wait() => {
-                    // Defuse our guard so it does not try to cleanup and make nessless logs.
+                    // Defuse our guard so it does not try to cleanup and make senseless logs.
                     drop(ScopeGuard::<_, _>::into_inner(child_process_guard));
                     let exit_status = maybe_exit_status.err_tip(|| "Failed to collect exit code of process")?;
-                    // TODO(allada) We should implement stderr/stdout streaming to client here.
+                    // TODO(palfrey) We should implement stderr/stdout streaming to client here.
                     // If we get killed before the stream is started, then these will lock up.
-                    // TODO(allada) There is a significant bug here. If we kill the action and the action creates
+                    // TODO(palfrey) There is a significant bug here. If we kill the action and the action creates
                     // child processes, it can create zombies. See: https://github.com/tracemachina/nativelink/issues/225
                     let (stdout, stderr) = if killed_action {
                         drop(timer);
@@ -950,20 +1468,36 @@ impl RunningActionImpl {
                             maybe_all_stderr.err_tip(|| "Internal error reading from stderr of worker task")??
                         )
                     };
-                    let exit_code = if let Some(exit_code) = exit_status.code() {
+
+                    let exit_code = exit_status.code().map_or_else(|| {
+                        // No exit code means the runner was terminated by a
+                        // signal. SIGKILL on Linux is the kernel OOM killer's
+                        // weapon of choice, so flag this for operators trying
+                        // to correlate action failures with kubectl-top
+                        // memory pressure.
+                        warn!(
+                            ?args,
+                            "Runner subprocess terminated by signal (no exit code); likely OOMKilled \
+                             or externally killed. If this repeats for the same action, raise \
+                             `workers.specs[*].resources.limits.memory` or shrink the action's \
+                             concurrency."
+                        );
+                        self.metrics().child_process_failure_error_code.inc();
+                        EXIT_CODE_FOR_SIGNAL
+                    }, |exit_code| {
                         if exit_code == 0 {
                             self.metrics().child_process_success_error_code.inc();
                         } else {
                             self.metrics().child_process_failure_error_code.inc();
                         }
                         exit_code
-                    } else {
-                        EXIT_CODE_FOR_SIGNAL
-                    };
+                    });
+
+                    info!(?args, "Command complete");
 
                     let maybe_error_override = if let Some(side_channel_file) = maybe_side_channel_file {
                         process_side_channel_file(side_channel_file.clone(), &args, requested_timeout).await
-                        .err_tip(|| format!("Error processing side channel file: {side_channel_file:?}"))?
+                        .err_tip(|| format!("Error processing side channel file: {}", side_channel_file.display()))?
                     } else {
                         None
                     };
@@ -983,18 +1517,11 @@ impl RunningActionImpl {
                 },
                 _ = &mut kill_channel_rx => {
                     killed_action = true;
-                    if let Err(err) = child_process_guard.start_kill() {
-                        event!(
-                            Level::ERROR,
+                    if let Err(err) = child_process_guard.kill().await {
+                        error!(
                             operation_id = ?self.operation_id,
                             ?err,
                             "Could not kill process",
-                        );
-                    } else {
-                        event!(
-                            Level::ERROR,
-                            operation_id = ?self.operation_id,
-                            "Could not get child process id, maybe already dead?",
                         );
                     }
                     {
@@ -1014,7 +1541,19 @@ impl RunningActionImpl {
     }
 
     async fn inner_upload_results(self: Arc<Self>) -> Result<Arc<Self>, Error> {
-        event!(Level::INFO, "Worker uploading results",);
+        enum OutputType {
+            None,
+            File(FileInfo),
+            Directory(DirectoryInfo),
+            FileSymlink(SymlinkInfo),
+            DirectorySymlink(SymlinkInfo),
+        }
+
+        let upload_start = std::time::Instant::now();
+        debug!(
+            operation_id = ?self.operation_id,
+            "Worker uploading results - starting",
+        );
         let (mut command_proto, execution_result, mut execution_metadata) = {
             let mut state = self.state.lock();
             state.execution_metadata.output_upload_start_timestamp =
@@ -1033,13 +1572,6 @@ impl RunningActionImpl {
         };
         let cas_store = self.running_actions_manager.cas_store.as_ref();
         let hasher = self.action_info.unique_qualifier.digest_function();
-        enum OutputType {
-            None,
-            File(FileInfo),
-            Directory(DirectoryInfo),
-            FileSymlink(SymlinkInfo),
-            DirectorySymlink(SymlinkInfo),
-        }
 
         let mut output_path_futures = FuturesUnordered::new();
         let mut output_paths = command_proto.output_paths;
@@ -1049,6 +1581,7 @@ impl RunningActionImpl {
             output_paths.append(&mut command_proto.output_files);
             output_paths.append(&mut command_proto.output_directories);
         }
+        let digest_uploaders = Arc::new(Mutex::new(HashMap::new()));
         for entry in output_paths {
             let full_path = OsString::from(if command_proto.working_directory.is_empty() {
                 format!("{}/{}", self.work_directory, entry)
@@ -1059,6 +1592,7 @@ impl RunningActionImpl {
                 )
             });
             let work_directory = &self.work_directory;
+            let digest_uploaders = digest_uploaders.clone();
             output_path_futures.push(async move {
                 let metadata = {
                     let metadata = match fs::symlink_metadata(&full_path).await {
@@ -1069,73 +1603,179 @@ impl RunningActionImpl {
                                 // execution spec, we simply ignore it continue.
                                 return Result::<OutputType, Error>::Ok(OutputType::None);
                             }
-                            return Err(e).err_tip(|| format!("Could not open file {full_path:?}"));
+                            return Err(e).err_tip(|| {
+                                format!("Could not open file {}", full_path.display())
+                            });
                         }
                     };
 
                     if metadata.is_file() {
                         return Ok(OutputType::File(
-                            upload_file(cas_store.as_pin(), &full_path, hasher, metadata)
-                                .await
-                                .map(|mut file_info| {
-                                    file_info.name_or_path = NameOrPath::Path(entry);
-                                    file_info
-                                })
-                                .err_tip(|| format!("Uploading file {full_path:?}"))?,
+                            upload_file(
+                                cas_store.as_pin(),
+                                &full_path,
+                                hasher,
+                                metadata,
+                                digest_uploaders,
+                            )
+                            .await
+                            .map(|mut file_info| {
+                                file_info.name_or_path = NameOrPath::Path(entry);
+                                file_info
+                            })
+                            .err_tip(|| format!("Uploading file {}", full_path.display()))?,
                         ));
                     }
                     metadata
                 };
                 if metadata.is_dir() {
                     Ok(OutputType::Directory(
-                        upload_directory(cas_store.as_pin(), &full_path, work_directory, hasher)
-                            .and_then(|(root_dir, children)| async move {
-                                let tree = ProtoTree {
-                                    root: Some(root_dir),
-                                    children: children.into(),
-                                };
-                                let tree_digest = serialize_and_upload_message(
-                                    &tree,
-                                    cas_store.as_pin(),
-                                    &mut hasher.hasher(),
-                                )
-                                .await
-                                .err_tip(|| format!("While processing {entry}"))?;
-                                Ok(DirectoryInfo {
-                                    path: entry,
-                                    tree_digest,
-                                })
-                            })
+                        upload_directory(
+                            cas_store.as_pin(),
+                            &full_path,
+                            work_directory,
+                            hasher,
+                            digest_uploaders,
+                        )
+                        .and_then(|(root_dir, children)| async move {
+                            let tree = ProtoTree {
+                                root: Some(root_dir),
+                                children: children.into(),
+                            };
+                            let tree_digest = serialize_and_upload_message(
+                                &tree,
+                                cas_store.as_pin(),
+                                &mut hasher.hasher(),
+                            )
                             .await
-                            .err_tip(|| format!("Uploading directory {full_path:?}"))?,
+                            .err_tip(|| format!("While processing {entry}"))?;
+                            Ok(DirectoryInfo {
+                                path: entry,
+                                tree_digest,
+                            })
+                        })
+                        .await
+                        .err_tip(|| format!("Uploading directory {}", full_path.display()))?,
                     ))
                 } else if metadata.is_symlink() {
-                    let output_symlink = upload_symlink(&full_path, work_directory)
-                        .await
-                        .map(|mut symlink_info| {
-                            symlink_info.name_or_path = NameOrPath::Path(entry);
-                            symlink_info
-                        })
-                        .err_tip(|| format!("Uploading symlink {full_path:?}"))?;
-                    match fs::metadata(&full_path).await {
-                        Ok(metadata) => {
-                            if metadata.is_dir() {
-                                return Ok(OutputType::DirectorySymlink(output_symlink));
+                    // Resolve the symlink to determine what it points to.
+                    // Symlinks created by DirectoryCache (absolute paths into
+                    // the cache directory) must NOT be uploaded as symlinks —
+                    // the target path is worker-local and meaningless to the
+                    // client. Instead, follow the symlink and upload the
+                    // resolved content (file or directory).
+                    let target = fs::read_link(&full_path).await.err_tip(|| {
+                        format!("Reading symlink target for {}", full_path.display())
+                    })?;
+                    let is_absolute_symlink = Path::new(&target).is_absolute();
+
+                    if is_absolute_symlink {
+                        // Absolute symlink — resolve and upload contents.
+                        match fs::metadata(&full_path).await {
+                            Ok(resolved_meta) => {
+                                if resolved_meta.is_dir() {
+                                    // Upload as directory (Tree proto).
+                                    Ok(OutputType::Directory(
+                                        upload_directory(
+                                            cas_store.as_pin(),
+                                            &full_path,
+                                            work_directory,
+                                            hasher,
+                                            digest_uploaders,
+                                        )
+                                        .and_then(|(root_dir, children)| async move {
+                                            let tree = ProtoTree {
+                                                root: Some(root_dir),
+                                                children: children.into(),
+                                            };
+                                            let tree_digest = serialize_and_upload_message(
+                                                &tree,
+                                                cas_store.as_pin(),
+                                                &mut hasher.hasher(),
+                                            )
+                                            .await
+                                            .err_tip(|| format!("While processing {entry}"))?;
+                                            Ok(DirectoryInfo {
+                                                path: entry,
+                                                tree_digest,
+                                            })
+                                        })
+                                        .await
+                                        .err_tip(|| {
+                                            format!(
+                                                "Uploading symlinked directory {}",
+                                                full_path.display()
+                                            )
+                                        })?,
+                                    ))
+                                } else {
+                                    // Upload as file (follow symlink).
+                                    Ok(OutputType::File(
+                                        upload_file(
+                                            cas_store.as_pin(),
+                                            &full_path,
+                                            hasher,
+                                            resolved_meta,
+                                            digest_uploaders,
+                                        )
+                                        .await
+                                        .map(|mut file_info| {
+                                            file_info.name_or_path = NameOrPath::Path(entry);
+                                            file_info
+                                        })
+                                        .err_tip(|| {
+                                            format!(
+                                                "Uploading symlinked file {}",
+                                                full_path.display()
+                                            )
+                                        })?,
+                                    ))
+                                }
                             }
-                            // Note: If it's anything but directory we put it as a file symlink.
-                            return Ok(OutputType::FileSymlink(output_symlink));
+                            Err(e) => {
+                                if e.code != Code::NotFound {
+                                    return Err(e).err_tip(|| {
+                                        format!(
+                                            "While resolving absolute symlink {}",
+                                            full_path.display()
+                                        )
+                                    });
+                                }
+                                Ok(OutputType::None)
+                            }
                         }
-                        Err(e) => {
-                            if e.code != Code::NotFound {
-                                return Err(e).err_tip(|| {
-                                    format!(
-                                        "While querying target symlink metadata for {full_path:?}"
-                                    )
-                                });
+                    } else {
+                        // Relative symlink — action intentionally created it.
+                        // Upload as a proper symlink.
+                        let output_symlink = upload_symlink(&full_path, work_directory)
+                            .await
+                            .map(|mut symlink_info| {
+                                symlink_info.name_or_path = NameOrPath::Path(entry);
+                                symlink_info
+                            })
+                            .err_tip(|| format!("Uploading symlink {}", full_path.display()))?;
+                        match fs::metadata(&full_path).await {
+                            Ok(metadata) => {
+                                if metadata.is_dir() {
+                                    Ok(OutputType::DirectorySymlink(output_symlink))
+                                } else {
+                                    // Note: If it's anything but directory we put it as a file symlink.
+                                    Ok(OutputType::FileSymlink(output_symlink))
+                                }
                             }
-                            // If the file doesn't exist, we consider it a file. Even though the
-                            // file doesn't exist we still need to populate an entry.
-                            return Ok(OutputType::FileSymlink(output_symlink));
+                            Err(e) => {
+                                if e.code != Code::NotFound {
+                                    return Err(e).err_tip(|| {
+                                        format!(
+                                            "While querying target symlink metadata for {}",
+                                            full_path.display()
+                                        )
+                                    });
+                                }
+                                // If the file doesn't exist, we consider it a file. Even though the
+                                // file doesn't exist we still need to populate an entry.
+                                Ok(OutputType::FileSymlink(output_symlink))
+                            }
                         }
                     }
                 } else {
@@ -1152,49 +1792,68 @@ impl RunningActionImpl {
         let mut output_file_symlinks = vec![];
 
         if execution_result.exit_code != 0 {
-            // Don't convert our stdout/stderr to strings unless we are need too.
-            if enabled!(Level::ERROR) {
-                let stdout = std::str::from_utf8(&execution_result.stdout).unwrap_or("<no-utf8>");
-                let stderr = std::str::from_utf8(&execution_result.stderr).unwrap_or("<no-utf8>");
-                event!(
-                    Level::ERROR,
-                    exit_code = ?execution_result.exit_code,
-                    stdout = ?stdout[..min(stdout.len(), 1000)],
-                    stderr = ?stderr[..min(stderr.len(), 1000)],
-                    "Command returned non-zero exit code",
-                );
-            }
+            let stdout = core::str::from_utf8(&execution_result.stdout).unwrap_or("<no-utf8>");
+            let stderr = core::str::from_utf8(&execution_result.stderr).unwrap_or("<no-utf8>");
+            error!(
+                exit_code = ?execution_result.exit_code,
+                stdout = ?stdout[..min(stdout.len(), 1000)],
+                stderr = ?stderr[..min(stderr.len(), 1000)],
+                command = ?command_proto.arguments,
+                "Command returned non-zero exit code",
+            );
         }
 
         let stdout_digest_fut = self.metrics().upload_stdout.wrap(async {
+            let start = std::time::Instant::now();
             let data = execution_result.stdout;
+            let data_len = data.len();
             let digest = compute_buf_digest(&data, &mut hasher.hasher());
             cas_store
                 .update_oneshot(digest, data)
                 .await
                 .err_tip(|| "Uploading stdout")?;
+            debug!(
+                ?digest,
+                data_len,
+                elapsed_ms = start.elapsed().as_millis(),
+                "upload_results: stdout upload completed",
+            );
             Result::<DigestInfo, Error>::Ok(digest)
         });
         let stderr_digest_fut = self.metrics().upload_stderr.wrap(async {
+            let start = std::time::Instant::now();
             let data = execution_result.stderr;
+            let data_len = data.len();
             let digest = compute_buf_digest(&data, &mut hasher.hasher());
             cas_store
                 .update_oneshot(digest, data)
                 .await
-                .err_tip(|| "Uploading stdout")?;
+                .err_tip(|| "Uploading  stderr")?;
+            debug!(
+                ?digest,
+                data_len,
+                elapsed_ms = start.elapsed().as_millis(),
+                "upload_results: stderr upload completed",
+            );
             Result::<DigestInfo, Error>::Ok(digest)
         });
 
+        debug!(
+            operation_id = ?self.operation_id,
+            num_output_paths = output_path_futures.len(),
+            "upload_results: starting stdout/stderr/output_paths uploads",
+        );
+        let join_start = std::time::Instant::now();
         let upload_result = futures::try_join!(stdout_digest_fut, stderr_digest_fut, async {
             while let Some(output_type) = output_path_futures.try_next().await? {
                 match output_type {
                     OutputType::File(output_file) => output_files.push(output_file),
                     OutputType::Directory(output_folder) => output_folders.push(output_folder),
                     OutputType::FileSymlink(output_symlink) => {
-                        output_file_symlinks.push(output_symlink)
+                        output_file_symlinks.push(output_symlink);
                     }
                     OutputType::DirectorySymlink(output_symlink) => {
-                        output_directory_symlinks.push(output_symlink)
+                        output_directory_symlinks.push(output_symlink);
                     }
                     OutputType::None => { /* Safe to ignore */ }
                 }
@@ -1202,8 +1861,14 @@ impl RunningActionImpl {
             Ok(())
         });
         drop(output_path_futures);
+        debug!(
+            operation_id = ?self.operation_id,
+            elapsed_ms = join_start.elapsed().as_millis(),
+            success = upload_result.is_ok(),
+            "upload_results: all uploads completed",
+        );
         let (stdout_digest, stderr_digest) = match upload_result {
-            Ok((stdout_digest, stderr_digest, _)) => (stdout_digest, stderr_digest),
+            Ok((stdout_digest, stderr_digest, ())) => (stdout_digest, stderr_digest),
             Err(e) => return Err(e).err_tip(|| "Error while uploading results"),
         };
 
@@ -1213,6 +1878,8 @@ impl RunningActionImpl {
         output_folders.sort_unstable_by(|a, b| a.path.cmp(&b.path));
         output_file_symlinks.sort_unstable_by(|a, b| a.name_or_path.cmp(&b.name_or_path));
         output_directory_symlinks.sort_unstable_by(|a, b| a.name_or_path.cmp(&b.name_or_path));
+        let num_output_files = output_files.len();
+        let num_output_folders = output_folders.len();
         {
             let mut state = self.state.lock();
             execution_metadata.worker_completed_timestamp =
@@ -1226,11 +1893,18 @@ impl RunningActionImpl {
                 stdout_digest,
                 stderr_digest,
                 execution_metadata,
-                server_logs: HashMap::default(), // TODO(allada) Not implemented.
+                server_logs: HashMap::default(), // TODO(palfrey) Not implemented.
                 error: state.error.clone(),
                 message: String::new(), // Will be filled in on cache_action_result if needed.
             });
         }
+        debug!(
+            operation_id = ?self.operation_id,
+            total_elapsed_ms = upload_start.elapsed().as_millis(),
+            num_output_files,
+            num_output_folders,
+            "upload_results: inner_upload_results completed successfully",
+        );
         Ok(self)
     }
 
@@ -1246,12 +1920,17 @@ impl RunningActionImpl {
 impl Drop for RunningActionImpl {
     fn drop(&mut self) {
         if self.did_cleanup.load(Ordering::Acquire) {
+            if self.has_manager_entry.load(Ordering::Acquire) {
+                drop(
+                    self.running_actions_manager
+                        .cleanup_action(&self.operation_id),
+                );
+            }
             return;
         }
         let operation_id = self.operation_id.clone();
-        event!(
-            Level::ERROR,
-            ?operation_id,
+        error!(
+            %operation_id,
             "RunningActionImpl did not cleanup. This is a violation of the requirements, will attempt to do it in the background."
         );
         let running_actions_manager = self.running_actions_manager.clone();
@@ -1262,9 +1941,8 @@ impl Drop for RunningActionImpl {
             else {
                 return;
             };
-            event!(
-                Level::ERROR,
-                ?operation_id,
+            error!(
+                %operation_id,
                 ?action_directory,
                 ?err,
                 "Error cleaning up action"
@@ -1279,31 +1957,84 @@ impl RunningAction for RunningActionImpl {
     }
 
     async fn prepare_action(self: Arc<Self>) -> Result<Arc<Self>, Error> {
-        self.metrics()
+        let res = self
+            .metrics()
             .clone()
             .prepare_action
             .wrap(Self::inner_prepare_action(self))
-            .await
+            .await;
+        if let Err(ref e) = res {
+            warn!(?e, "Error during prepare_action");
+        }
+        res
     }
 
     async fn execute(self: Arc<Self>) -> Result<Arc<Self>, Error> {
-        self.metrics()
+        let res = self
+            .metrics()
             .clone()
             .execute
             .wrap(Self::inner_execute(self))
-            .await
+            .await;
+        if let Err(ref e) = res {
+            warn!(?e, "Error during prepare_action");
+        }
+        res
     }
 
     async fn upload_results(self: Arc<Self>) -> Result<Arc<Self>, Error> {
-        self.metrics()
-            .clone()
+        let upload_timeout = self.running_actions_manager.max_upload_timeout;
+        let operation_id = self.operation_id.clone();
+        info!(
+            ?operation_id,
+            upload_timeout_s = upload_timeout.as_secs(),
+            "upload_results: starting with timeout",
+        );
+        let metrics = self.metrics().clone();
+        let upload_fut = metrics
             .upload_results
-            .wrap(Self::inner_upload_results(self))
-            .await
+            .wrap(Self::inner_upload_results(self));
+
+        let stall_warn_fut = async {
+            let mut elapsed_secs = 0u64;
+            loop {
+                tokio::time::sleep(Duration::from_mins(1)).await;
+                elapsed_secs += 60;
+                warn!(
+                    ?operation_id,
+                    elapsed_s = elapsed_secs,
+                    timeout_s = upload_timeout.as_secs(),
+                    "upload_results: still in progress — possible stall",
+                );
+            }
+        };
+
+        let res = tokio::time::timeout(upload_timeout, async {
+            tokio::pin!(upload_fut);
+            tokio::pin!(stall_warn_fut);
+            tokio::select! {
+                result = &mut upload_fut => result,
+                () = &mut stall_warn_fut => unreachable!(),
+            }
+        })
+        .await
+        .map_err(|err| {
+            warn!(%operation_id, timeout=upload_timeout.as_secs(), "Upload results timeout");
+            Error::from_std_err(Code::DeadlineExceeded, &err).append(format!(
+                "Upload results timed out after {}s for operation {:?}",
+                upload_timeout.as_secs(),
+                operation_id,
+            ))
+        })?;
+        if let Err(ref e) = res {
+            warn!(?operation_id, ?e, "Error during upload_results");
+        }
+        res
     }
 
     async fn cleanup(self: Arc<Self>) -> Result<Arc<Self>, Error> {
-        self.metrics()
+        let res = self
+            .metrics()
             .clone()
             .cleanup
             .wrap(async move {
@@ -1313,10 +2044,15 @@ impl RunningAction for RunningActionImpl {
                     &self.action_directory,
                 )
                 .await;
+                self.has_manager_entry.store(false, Ordering::Release);
                 self.did_cleanup.store(true, Ordering::Release);
                 result.map(move |()| self)
             })
-            .await
+            .await;
+        if let Err(ref e) = res {
+            warn!(?e, "Error during cleanup");
+        }
+        res
     }
 
     async fn get_finished_result(self: Arc<Self>) -> Result<ActionResult, Error> {
@@ -1364,6 +2100,7 @@ type SleepFn = fn(Duration) -> BoxFuture<'static, ()>;
 
 /// Functions that may be injected for testing purposes, during standard control
 /// flows these are specified by the new function.
+#[derive(Clone, Copy)]
 pub struct Callbacks {
     /// A function that gets the current time.
     pub now_fn: NowFn,
@@ -1371,24 +2108,31 @@ pub struct Callbacks {
     pub sleep_fn: SleepFn,
 }
 
+impl Debug for Callbacks {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Callbacks").finish_non_exhaustive()
+    }
+}
+
 /// The set of additional information for executing an action over and above
-/// those given in the ActionInfo passed to the worker.  This allows
+/// those given in the `ActionInfo` passed to the worker.  This allows
 /// modification of the action for execution on this particular worker.  This
 /// may be used to run the action with a particular set of additional
 /// environment variables, or perhaps configure it to execute within a
 /// container.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct ExecutionConfiguration {
     /// If set, will be executed instead of the first argument passed in the
-    /// ActionInfo with all of the arguments in the ActionInfo passed as
+    /// `ActionInfo` with all of the arguments in the `ActionInfo` passed as
     /// arguments to this command.
     pub entrypoint: Option<String>,
     /// The only environment variables that will be specified when the command
-    /// executes other than those in the ActionInfo.  On Windows, SystemRoot
-    /// and PATH are also assigned (see inner_execute).
+    /// executes other than those in the `ActionInfo`.  On Windows, `SystemRoot`
+    /// and PATH are also assigned (see `inner_execute`).
     pub additional_environment: Option<HashMap<String, EnvironmentSource>>,
 }
 
+#[derive(Debug)]
 struct UploadActionResults {
     upload_ac_results_strategy: UploadCacheResultsStrategy,
     upload_historical_results_strategy: UploadCacheResultsStrategy,
@@ -1423,32 +2167,30 @@ impl UploadActionResults {
             historical_store,
             success_message_template: Template::new(&config.success_message_template).map_err(
                 |e| {
-                    make_input_err!(
-                        "Could not convert success_message_template to rust template: {} : {e:?}",
+                    Error::from_std_err(Code::InvalidArgument, &e).append(format!(
+                        "Could not convert success_message_template to rust template: {}",
                         config.success_message_template
-                    )
+                    ))
                 },
             )?,
             failure_message_template: Template::new(&config.failure_message_template).map_err(
                 |e| {
-                    make_input_err!(
-                        "Could not convert failure_message_template to rust template: {} : {e:?}",
+                    Error::from_std_err(Code::InvalidArgument, &e).append(format!(
+                        "Could not convert failure_message_template to rust template: {}",
                         config.success_message_template
-                    )
+                    ))
                 },
             )?,
         })
     }
 
-    fn should_cache_result(
+    const fn should_cache_result(
         strategy: UploadCacheResultsStrategy,
         action_result: &ActionResult,
         treat_infra_error_as_failure: bool,
     ) -> bool {
-        let mut did_fail = action_result.exit_code != 0;
-        if treat_infra_error_as_failure && action_result.error.is_some() {
-            did_fail = true;
-        }
+        let did_fail = action_result.exit_code != 0
+            || (treat_infra_error_as_failure && action_result.error.is_some());
         match strategy {
             UploadCacheResultsStrategy::SuccessOnly => !did_fail,
             UploadCacheResultsStrategy::Never => false,
@@ -1460,8 +2202,8 @@ impl UploadActionResults {
         }
     }
 
-    /// Formats the message field in ExecuteResponse from the success_message_template or
-    /// failure_message_template config templates.
+    /// Formats the message field in `ExecuteResponse` from the `success_message_template`
+    /// or `failure_message_template` config templates.
     fn format_execute_response_message(
         mut template_str: Template,
         action_digest_info: DigestInfo,
@@ -1472,18 +2214,28 @@ impl UploadActionResults {
             "digest_function",
             hasher.proto_digest_func().as_str_name().to_lowercase(),
         );
-        template_str.replace("action_digest_hash", action_digest_info.hash_str());
-        template_str.replace("action_digest_size", action_digest_info.size_bytes);
+        template_str.replace(
+            "action_digest_hash",
+            action_digest_info.packed_hash().to_string(),
+        );
+        template_str.replace("action_digest_size", action_digest_info.size_bytes());
         if let Some(historical_digest_info) = maybe_historical_digest_info {
-            template_str.replace("historical_results_hash", historical_digest_info.hash_str());
-            template_str.replace("historical_results_size", historical_digest_info.size_bytes);
+            template_str.replace(
+                "historical_results_hash",
+                format!("{}", historical_digest_info.packed_hash()),
+            );
+            template_str.replace(
+                "historical_results_size",
+                historical_digest_info.size_bytes(),
+            );
         } else {
             template_str.replace("historical_results_hash", "");
             template_str.replace("historical_results_size", "");
         }
-        template_str
-            .text()
-            .map_err(|e| make_input_err!("Could not convert template to text: {e:?}"))
+        template_str.text().map_err(|e| {
+            Error::from_std_err(Code::InvalidArgument, &e)
+                .append("Could not convert template to text")
+        })
     }
 
     async fn upload_ac_results(
@@ -1539,7 +2291,7 @@ impl UploadActionResults {
             &mut hasher.hasher(),
         )
         .await
-        .err_tip(|| format!("Caching HistoricalExecuteResponse for digest: {action_digest:?}"))?;
+        .err_tip(|| format!("Caching HistoricalExecuteResponse for digest: {action_digest}"))?;
 
         Self::format_execute_response_message(
             message_template,
@@ -1604,8 +2356,8 @@ impl UploadActionResults {
             }
         };
 
-        // Note: Done in this order because we assume most results will succed and most configs will
-        // either always upload upload historical results or only upload on filure. In which case
+        // Note: Done in this order because we assume most results will succeed and most configs will
+        // either always upload upload historical results or only upload on failure. In which case
         // we can avoid an extra clone of the protos by doing this last with the above assumption.
         let ac_upload_results = if should_upload_ac_results {
             self.upload_ac_results(
@@ -1623,6 +2375,15 @@ impl UploadActionResults {
     }
 }
 
+#[cfg(target_os = "linux")]
+#[derive(Copy, Clone, Debug)]
+pub enum UseNamespaces {
+    No,
+    Yes,
+    YesAndMount,
+}
+
+#[derive(Debug)]
 pub struct RunningActionsManagerArgs<'a> {
     pub root_action_directory: String,
     pub execution_configuration: ExecutionConfiguration,
@@ -1631,11 +2392,32 @@ pub struct RunningActionsManagerArgs<'a> {
     pub historical_store: Store,
     pub upload_action_result_config: &'a UploadActionResultConfig,
     pub max_action_timeout: Duration,
+    pub max_upload_timeout: Duration,
     pub timeout_handled_externally: bool,
+    pub directory_cache: Option<Arc<crate::directory_cache::DirectoryCache>>,
+    #[cfg(target_os = "linux")]
+    pub use_namespaces: UseNamespaces,
+}
+
+struct CleanupGuard {
+    manager: Weak<RunningActionsManagerImpl>,
+    operation_id: OperationId,
+}
+
+impl Drop for CleanupGuard {
+    fn drop(&mut self) {
+        let Some(manager) = self.manager.upgrade() else {
+            return;
+        };
+        let mut cleaning = manager.cleaning_up_operations.lock();
+        cleaning.remove(&self.operation_id);
+        manager.cleanup_complete_notify.notify_waiters();
+    }
 }
 
 /// Holds state info about what is being executed and the interface for interacting
 /// with actions while they are running.
+#[derive(Debug)]
 pub struct RunningActionsManagerImpl {
     root_action_directory: String,
     execution_configuration: ExecutionConfiguration,
@@ -1643,16 +2425,36 @@ pub struct RunningActionsManagerImpl {
     filesystem_store: Arc<FilesystemStore>,
     upload_action_results: UploadActionResults,
     max_action_timeout: Duration,
+    max_upload_timeout: Duration,
     timeout_handled_externally: bool,
+    #[cfg(target_os = "linux")]
+    use_namespaces: UseNamespaces,
     running_actions: Mutex<HashMap<OperationId, Weak<RunningActionImpl>>>,
     // Note: We don't use Notify because we need to support a .wait_for()-like function, which
     // Notify does not support.
     action_done_tx: watch::Sender<()>,
     callbacks: Callbacks,
     metrics: Arc<Metrics>,
+    /// Track operations being cleaned up to avoid directory collisions during action retries.
+    /// When an action fails and is retried on the same worker, we need to ensure the previous
+    /// attempt's directory is fully cleaned up before creating a new one.
+    /// See: <https://github.com/TraceMachina/nativelink/issues/1859>
+    cleaning_up_operations: Mutex<HashSet<OperationId>>,
+    /// Notify waiters when a cleanup operation completes. This is used in conjunction with
+    /// `cleaning_up_operations` to coordinate directory cleanup and creation.
+    cleanup_complete_notify: Arc<Notify>,
+    /// Optional directory cache for improving performance by caching reconstructed
+    /// input directories and using hardlinks.
+    directory_cache: Option<Arc<crate::directory_cache::DirectoryCache>>,
+    persistent_worker_pool: PersistentWorkerPool,
 }
 
 impl RunningActionsManagerImpl {
+    /// Maximum time to wait for a cleanup operation to complete before timing out.
+    /// TODO(marcussorealheis): Consider making cleanup wait timeout configurable in the future
+    const MAX_WAIT: Duration = Duration::from_secs(30);
+    /// Maximum backoff duration for exponential backoff when waiting for cleanup.
+    const MAX_BACKOFF: Duration = Duration::from_millis(500);
     pub fn new_with_callbacks(
         args: RunningActionsManagerArgs<'_>,
         callbacks: Callbacks,
@@ -1662,9 +2464,9 @@ impl RunningActionsManagerImpl {
             .cas_store
             .fast_store()
             .downcast_ref::<FilesystemStore>(None)
-            .err_tip(|| {
-                "Expected FilesystemStore store for .fast_store() in RunningActionsManagerImpl"
-            })?
+            .err_tip(
+                || "Expected FilesystemStore store for .fast_store() in RunningActionsManagerImpl",
+            )?
             .get_arc()
             .err_tip(|| "FilesystemStore's internal Arc was lost")?;
         let (action_done_tx, _) = watch::channel(());
@@ -1680,11 +2482,18 @@ impl RunningActionsManagerImpl {
             )
             .err_tip(|| "During RunningActionsManagerImpl construction")?,
             max_action_timeout: args.max_action_timeout,
+            max_upload_timeout: args.max_upload_timeout,
             timeout_handled_externally: args.timeout_handled_externally,
             running_actions: Mutex::new(HashMap::new()),
             action_done_tx,
             callbacks,
             metrics: Arc::new(Metrics::default()),
+            cleaning_up_operations: Mutex::new(HashSet::new()),
+            cleanup_complete_notify: Arc::new(Notify::new()),
+            directory_cache: args.directory_cache,
+            persistent_worker_pool: PersistentWorkerPool::default(),
+            #[cfg(target_os = "linux")]
+            use_namespaces: args.use_namespaces,
         })
     }
 
@@ -1696,6 +2505,106 @@ impl RunningActionsManagerImpl {
                 sleep_fn: |duration| Box::pin(tokio::time::sleep(duration)),
             },
         )
+    }
+
+    /// Fixes a race condition that occurs when an action fails to execute on a worker, and the same worker
+    /// attempts to re-execute the same action before the physical cleanup (file is removed) completes.
+    /// See this issue for additional details: <https://github.com/TraceMachina/nativelink/issues/1859>
+    async fn wait_for_cleanup_if_needed(&self, operation_id: &OperationId) -> Result<(), Error> {
+        let start = Instant::now();
+        let mut backoff = Duration::from_millis(10);
+        let mut has_waited = false;
+
+        loop {
+            let should_wait = {
+                let cleaning = self.cleaning_up_operations.lock();
+                cleaning.contains(operation_id)
+            };
+
+            if !should_wait {
+                let dir_path =
+                    PathBuf::from(&self.root_action_directory).join(operation_id.to_string());
+
+                if !dir_path.exists() {
+                    return Ok(());
+                }
+
+                // Safety check: ensure we're only removing directories under root_action_directory
+                let root_path = Path::new(&self.root_action_directory);
+                let canonical_root = root_path.canonicalize().err_tip(|| {
+                    format!(
+                        "Failed to canonicalize root directory: {}",
+                        self.root_action_directory
+                    )
+                })?;
+                let canonical_dir = dir_path.canonicalize().err_tip(|| {
+                    format!("Failed to canonicalize directory: {}", dir_path.display())
+                })?;
+
+                if !canonical_dir.starts_with(&canonical_root) {
+                    return Err(make_err!(
+                        Code::Internal,
+                        "Attempted to remove directory outside of root_action_directory: {}",
+                        dir_path.display()
+                    ));
+                }
+
+                // Directory exists but not being cleaned - remove it
+                warn!(
+                    "Removing stale directory for {}: {}",
+                    operation_id,
+                    dir_path.display()
+                );
+                self.metrics.stale_removals.inc();
+
+                // Try to remove the directory, with one retry on failure
+                let remove_result = fs::remove_dir_all(&dir_path).await;
+                if let Err(e) = remove_result {
+                    // Retry once after a short delay in case the directory is temporarily locked
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    fs::remove_dir_all(&dir_path).await.err_tip(|| {
+                        format!(
+                            "Failed to remove stale directory {} for retry of {} after retry (original error: {})",
+                            dir_path.display(),
+                            operation_id,
+                            e
+                        )
+                    })?;
+                }
+                return Ok(());
+            }
+
+            if start.elapsed() > Self::MAX_WAIT {
+                self.metrics.cleanup_wait_timeouts.inc();
+                warn!(%operation_id, waited=?start.elapsed(), "Timeout waiting for previous operation cleanup");
+                return Err(make_err!(
+                    Code::DeadlineExceeded,
+                    "Timeout waiting for previous operation cleanup: {} (waited {:?})",
+                    operation_id,
+                    start.elapsed()
+                ));
+            }
+
+            if !has_waited {
+                self.metrics.cleanup_waits.inc();
+                has_waited = true;
+            }
+
+            trace!(
+                "Waiting for cleanup of {} (elapsed: {:?}, backoff: {:?})",
+                operation_id,
+                start.elapsed(),
+                backoff
+            );
+
+            tokio::select! {
+                () = self.cleanup_complete_notify.notified() => {},
+                () = tokio::time::sleep(backoff) => {
+                    // Exponential backoff
+                    backoff = (backoff * 2).min(Self::MAX_BACKOFF);
+                },
+            }
+        }
     }
 
     fn make_action_directory<'a>(
@@ -1744,18 +2653,17 @@ impl RunningActionsManagerImpl {
     fn cleanup_action(&self, operation_id: &OperationId) -> Result<(), Error> {
         let mut running_actions = self.running_actions.lock();
         let result = running_actions.remove(operation_id).err_tip(|| {
-            format!("Expected action id '{operation_id:?}' to exist in RunningActionsManagerImpl")
+            format!("Expected operation id '{operation_id}' to exist in RunningActionsManagerImpl")
         });
         // No need to copy anything, we just are telling the receivers an event happened.
-        self.action_done_tx.send_modify(|_| {});
+        self.action_done_tx.send_modify(|()| {});
         result.map(|_| ())
     }
 
     // Note: We do not capture metrics on this call, only `.kill_all()`.
     // Important: When the future returns the process may still be running.
     async fn kill_operation(action: Arc<RunningActionImpl>) {
-        event!(
-            Level::WARN,
+        warn!(
             operation_id = ?action.operation_id,
             "Sending kill to running operation",
         );
@@ -1763,15 +2671,24 @@ impl RunningActionsManagerImpl {
             let mut action_state = action.state.lock();
             action_state.kill_channel_tx.take()
         };
-        if let Some(kill_channel_tx) = kill_channel_tx {
-            if kill_channel_tx.send(()).is_err() {
-                event!(
-                    Level::ERROR,
-                    operation_id = ?action.operation_id,
-                    "Error sending kill to running operation",
-                );
-            }
+        if let Some(kill_channel_tx) = kill_channel_tx
+            && kill_channel_tx.send(()).is_err()
+        {
+            error!(
+                operation_id = ?action.operation_id,
+                "Error sending kill to running operation",
+            );
         }
+    }
+
+    fn perform_cleanup(self: &Arc<Self>, operation_id: OperationId) -> Option<CleanupGuard> {
+        let mut cleaning = self.cleaning_up_operations.lock();
+        cleaning
+            .insert(operation_id.clone())
+            .then_some(CleanupGuard {
+                manager: Arc::downgrade(self),
+                operation_id,
+            })
     }
 }
 
@@ -1793,11 +2710,12 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                 let operation_id = start_execute
                     .operation_id.as_str().into();
                 let action_info = self.create_action_info(start_execute, queued_timestamp).await?;
-                event!(
-                    Level::INFO,
+                debug!(
                     ?action_info,
                     "Worker received action",
                 );
+                // Wait for any previous cleanup to complete before creating directory
+                self.wait_for_cleanup_if_needed(&operation_id).await?;
                 let action_directory = self.make_action_directory(&operation_id).await?;
                 let execution_metadata = ExecutionMetadata {
                     worker: worker_id,
@@ -1834,6 +2752,15 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                 ));
                 {
                     let mut running_actions = self.running_actions.lock();
+                    // Check if action already exists and is still alive
+                    if let Some(existing_weak) = running_actions.get(&operation_id)
+                        && let Some(_existing_action) = existing_weak.upgrade() {
+                            return Err(make_err!(
+                                Code::AlreadyExists,
+                                "Action with operation_id {} is already running",
+                                operation_id
+                            ));
+                    }
                     running_actions.insert(operation_id, Arc::downgrade(&running_action));
                 }
                 Ok(running_action)
@@ -1862,7 +2789,7 @@ impl RunningActionsManager for RunningActionsManagerImpl {
             let running_actions = self.running_actions.lock();
             running_actions
                 .get(operation_id)
-                .and_then(|action| action.upgrade())
+                .and_then(Weak::upgrade)
                 .ok_or_else(|| make_input_err!("Failed to get running action {operation_id}"))?
         };
         Self::kill_operation(running_action).await;
@@ -1881,19 +2808,22 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                         .filter_map(|(_operation_id, action)| action.upgrade())
                         .collect()
                 };
-                for action in kill_operations {
-                    Self::kill_operation(action).await;
-                }
+                let mut kill_futures: FuturesUnordered<_> = kill_operations
+                    .into_iter()
+                    .map(Self::kill_operation)
+                    .collect();
+                while kill_futures.next().await.is_some() {}
             })
             .await;
         // Ignore error. If error happens it means there's no sender, which is not a problem.
         // Note: Sanity check this API will always check current value then future values:
         // https://play.rust-lang.org/?version=stable&edition=2021&gist=23103652cc1276a97e5f9938da87fdb2
-        let _ = self
-            .action_done_tx
-            .subscribe()
-            .wait_for(|_| self.running_actions.lock().is_empty())
-            .await;
+        drop(
+            self.action_done_tx
+                .subscribe()
+                .wait_for(|()| self.running_actions.lock().is_empty())
+                .await,
+        );
     }
 
     #[inline]
@@ -1902,7 +2832,7 @@ impl RunningActionsManager for RunningActionsManagerImpl {
     }
 }
 
-#[derive(Default, MetricsComponent)]
+#[derive(Debug, Default, MetricsComponent)]
 pub struct Metrics {
     #[metric(help = "Stats about the create_and_add_action command.")]
     create_and_add_action: AsyncCounterWrapper,
@@ -1924,6 +2854,12 @@ pub struct Metrics {
     cleanup: AsyncCounterWrapper,
     #[metric(help = "Stats about the get_finished_result command.")]
     get_finished_result: AsyncCounterWrapper,
+    #[metric(help = "Number of times an action waited for cleanup to complete.")]
+    cleanup_waits: CounterWithTime,
+    #[metric(help = "Number of stale directories removed during action retries.")]
+    stale_removals: CounterWithTime,
+    #[metric(help = "Number of timeouts while waiting for cleanup to complete.")]
+    cleanup_wait_timeouts: CounterWithTime,
     #[metric(help = "Stats about the get_proto_command_from_store command.")]
     get_proto_command_from_store: AsyncCounterWrapper,
     #[metric(help = "Stats about the download_to_directory command.")]

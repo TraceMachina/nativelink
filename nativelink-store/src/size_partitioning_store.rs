@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,21 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::pin::Pin;
+use core::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use nativelink_error::{make_input_err, Error, ResultExt};
+use nativelink_config::stores::SizePartitioningSpec;
+use nativelink_error::{Error, ResultExt, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
-use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
-use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
+use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
+use nativelink_util::store_trait::{
+    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+};
 use tokio::join;
 
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct SizePartitioningStore {
     #[metric(help = "Size to partition our data")]
-    partition_size: i64,
+    partition_size: u64,
     #[metric(group = "lower_store")]
     lower_store: Store,
     #[metric(group = "upper_store")]
@@ -34,13 +37,9 @@ pub struct SizePartitioningStore {
 }
 
 impl SizePartitioningStore {
-    pub fn new(
-        config: &nativelink_config::stores::SizePartitioningStore,
-        lower_store: Store,
-        upper_store: Store,
-    ) -> Arc<Self> {
-        Arc::new(SizePartitioningStore {
-            partition_size: config.size as i64,
+    pub fn new(spec: &SizePartitioningSpec, lower_store: Store, upper_store: Store) -> Arc<Self> {
+        Arc::new(Self {
+            partition_size: spec.size,
             lower_store,
             upper_store,
         })
@@ -52,16 +51,16 @@ impl StoreDriver for SizePartitioningStore {
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],
-        results: &mut [Option<usize>],
+        results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         let mut non_digest_sample = None;
         let (lower_digests, upper_digests): (Vec<_>, Vec<_>) =
-            keys.iter().map(|v| v.borrow()).partition(|k| {
+            keys.iter().map(StoreKey::borrow).partition(|k| {
                 let StoreKey::Digest(digest) = k else {
                     non_digest_sample = Some(k.borrow().into_owned());
                     return false;
                 };
-                digest.size_bytes < self.partition_size
+                digest.size_bytes() < self.partition_size
             });
         if let Some(non_digest) = non_digest_sample {
             return Err(make_input_err!(
@@ -101,16 +100,16 @@ impl StoreDriver for SizePartitioningStore {
         key: StoreKey<'_>,
         reader: DropCloserReadHalf,
         size_info: UploadSizeInfo,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         let digest = match key {
             StoreKey::Digest(digest) => digest,
-            other => {
+            other @ StoreKey::Str(_) => {
                 return Err(make_input_err!(
                     "SizePartitioningStore only supports Digest keys, got {other:?}"
-                ))
+                ));
             }
         };
-        if digest.size_bytes < self.partition_size {
+        if digest.size_bytes() < self.partition_size {
             return self.lower_store.update(digest, reader, size_info).await;
         }
         self.upper_store.update(digest, reader, size_info).await
@@ -120,18 +119,18 @@ impl StoreDriver for SizePartitioningStore {
         self: Pin<&Self>,
         key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
-        offset: usize,
-        length: Option<usize>,
+        offset: u64,
+        length: Option<u64>,
     ) -> Result<(), Error> {
         let digest = match key {
             StoreKey::Digest(digest) => digest,
-            other => {
+            other @ StoreKey::Str(_) => {
                 return Err(make_input_err!(
                     "SizePartitioningStore only supports Digest keys, got {other:?}"
-                ))
+                ));
             }
         };
-        if digest.size_bytes < self.partition_size {
+        if digest.size_bytes() < self.partition_size {
             return self
                 .lower_store
                 .get_part(digest, writer, offset, length)
@@ -146,22 +145,31 @@ impl StoreDriver for SizePartitioningStore {
         let Some(key) = key else {
             return self;
         };
-        let digest = match key {
-            StoreKey::Digest(digest) => digest,
-            _ => return self,
+        let StoreKey::Digest(digest) = key else {
+            return self;
         };
-        if digest.size_bytes < self.partition_size {
+        if digest.size_bytes() < self.partition_size {
             return self.lower_store.inner_store(Some(digest));
         }
         self.upper_store.inner_store(Some(digest))
     }
 
-    fn as_any<'a>(&'a self) -> &'a (dyn std::any::Any + Sync + Send + 'static) {
+    fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
         self
     }
 
-    fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
+    }
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        callback: Arc<dyn RemoveItemCallback>,
+    ) -> Result<(), Error> {
+        self.lower_store
+            .register_remove_callback(callback.clone())?;
+        self.upper_store.register_remove_callback(callback)?;
+        Ok(())
     }
 }
 

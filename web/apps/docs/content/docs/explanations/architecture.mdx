@@ -1,0 +1,150 @@
+---
+title: Architecture
+description: How NativeLink's scheduler, CAS, action cache, and worker fleet fit together — and why each piece exists.
+---
+
+NativeLink is four pieces glued together by the
+[Remote Execution API](https://github.com/bazelbuild/remote-apis). Each
+piece scales independently and can be deployed standalone, but most
+real clusters run them together.
+
+## The four roles
+
+<Mermaid>{`sequenceDiagram
+    participant client as Client (Bazel / Buck2 / Reclient)
+    participant sched as Scheduler
+    participant worker as Worker
+    participant cas as CAS + AC
+    client->>cas: lookup ActionResult(action_hash)
+    cas-->>client: cache miss
+    client->>sched: Execute(action)
+    sched->>worker: dispatch action
+    worker->>cas: fetch action inputs
+    worker->>worker: run command in sandbox
+    worker->>cas: upload action outputs
+    worker->>sched: action complete (output digests)
+    sched->>cas: store ActionResult
+    sched->>client: ActionResult
+    client->>cas: fetch output blobs
+`}</Mermaid>
+
+### CAS — Content-Addressable Storage
+
+Every build artifact NativeLink touches lives in the CAS, keyed by its
+SHA-256. Source files, intermediate object files, compiled binaries,
+log output — all of it. Two identical files anywhere in your org
+collapse into one stored blob.
+
+The CAS is the heart of the system. It is the only role you absolutely
+have to persist; lose it and you lose every cached artifact.
+
+### AC — Action Cache
+
+The Action Cache is a smaller, simpler store. It maps
+`hash(Action) → ActionResult` — given the recipe and ingredients
+(`Action`), what did the oven produce (`ActionResult`)? Action hashes
+include the command, the tool versions, every input file's digest, and
+the platform spec — so an AC hit means "this exact computation has
+been done before."
+
+Losing the AC is harmless: clients re-execute, workers re-fill the
+cache, life moves on.
+
+### Scheduler
+
+The Scheduler is the dispatcher. It receives `Execute` RPCs from
+clients, finds a worker that can run the action (platform match, queue
+depth, custom routing rules), and forwards the work. It tracks
+in-flight actions and reports back to the client.
+
+Schedulers are stateless. Run them behind a load balancer; restart at
+will.
+
+### Workers
+
+Workers are where the actual work happens. A worker fetches the
+action's inputs from CAS, executes the command in a sandbox, uploads
+the outputs back to CAS, and reports the result digests to the
+scheduler.
+
+Workers are stateless and disposable. Autoscaling them is the cheapest
+way to make builds faster.
+
+## End-to-end: one cached build
+
+Walking through what happens when a developer runs `bazel build //app`:
+
+<Steps>
+  <li>
+    **Bazel hashes the action.** Source file digests, the compiler
+    version, the command-line — everything goes into the hash.
+  </li>
+  <li>
+    **Bazel checks the Action Cache.** `GetActionResult(action_hash)`.
+    If there's a hit, the AC returns the result digests, Bazel fetches
+    the output blobs from CAS, and the build action is done. Total
+    round-trip: a few milliseconds.
+  </li>
+  <li>
+    **Cache miss → Execute.** Bazel calls `Execute(action)` on the
+    Scheduler.
+  </li>
+  <li>
+    **Scheduler dispatches.** It picks a worker that satisfies the
+    action's platform requirements (Linux, x86_64, has a C++ toolchain,
+    etc.) and hands the action off.
+  </li>
+  <li>
+    **Worker runs the command.** It fetches inputs from CAS, executes
+    in a sandbox, captures outputs.
+  </li>
+  <li>
+    **Worker uploads outputs to CAS.** Every output file goes into CAS
+    keyed by its hash.
+  </li>
+  <li>
+    **Scheduler stores the ActionResult in AC.** The next request for
+    the same action hash hits the cache.
+  </li>
+  <li>
+    **Client fetches outputs from CAS.** The build completes.
+  </li>
+</Steps>
+
+The path on a cache *hit* skips steps 3-7 entirely — that's where the
+10× wall-time wins come from.
+
+## A real-world example
+
+LLVM contributors are running NativeLink under CMake + recc. Full
+clang builds went from **17 minutes to 4 minutes** on the same
+hardware. The cache hits are responsible for most of the win — the
+remote execution layer carries the rest by handing slow link steps to
+beefier workers.
+
+The write-up: [LLVM, recc, NativeLink](https://reidkleckner.dev/posts/llvm-recc-nativelink/).
+
+## Why Rust, why this shape
+
+Three operational properties drove the design:
+
+- **No garbage collector.** A scheduler stalls under GC pressure are
+  visible in build latency. Rust eliminates the entire class.
+- **Memory safety.** A miscompiled binary that ships across an
+  organisation is a serious incident. Rust catches the bugs at compile
+  time.
+- **Hot-path simplicity.** The CAS is content-addressed end-to-end. No
+  cache invalidation logic, no eviction races. Add a blob, retrieve a
+  blob, garbage-collect by reference count.
+
+The same simplicity at the protocol level is why NativeLink can
+sustain over a billion build requests a month on modest hardware.
+
+## What's next
+
+- [Local Remote Execution](/explanations/lre) — running the same
+  hermetic build locally without a remote cluster.
+- [Configuration → Production](/configuration/production) — the
+  cluster shape for serving a real team.
+- [History](/explanations/history) — why this exists and what
+  came before.

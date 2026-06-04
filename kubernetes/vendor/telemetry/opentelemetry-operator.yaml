@@ -1,0 +1,10 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: my-opentelemetry-operator
+  namespace: operators
+spec:
+  channel: alpha
+  name: opentelemetry-operator
+  source: operatorhubio-catalog
+  sourceNamespace: olm

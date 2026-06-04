@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,26 +12,28 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::pin::Pin;
+use core::pin::Pin;
+use core::{iter, mem};
 use std::sync::Arc;
-use std::{iter, mem};
 
 use async_trait::async_trait;
 use futures::stream::{FuturesUnordered, StreamExt};
-use futures::{select, FutureExt, TryFutureExt};
-use nativelink_error::{make_err, Code, Error, ResultExt};
+use futures::{FutureExt, TryFutureExt, select};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_proto::build::bazel::remote::execution::v2::{
     ActionResult as ProtoActionResult, OutputDirectory as ProtoOutputDirectory, Tree as ProtoTree,
 };
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
-use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
+use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::metrics_utils::CounterWithTime;
-use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{
+    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+};
 use parking_lot::Mutex;
 use tokio::sync::Notify;
-use tracing::{event, Level};
+use tracing::warn;
 
 use crate::ac_utils::{get_and_decode_digest, get_size_and_decode_digest};
 
@@ -40,7 +42,7 @@ use crate::ac_utils::{get_and_decode_digest, get_size_and_decode_digest};
 fn get_digests_and_output_dirs(
     action_result: ProtoActionResult,
 ) -> Result<(Vec<StoreKey<'static>>, Vec<ProtoOutputDirectory>), Error> {
-    // TODO(allada) When `try_collect()` is stable we can use it instead.
+    // TODO(palfrey) When `try_collect()` is stable we can use it instead.
     let mut digest_iter = action_result
         .output_files
         .into_iter()
@@ -60,6 +62,7 @@ fn get_digests_and_output_dirs(
 /// Given a list of output directories recursively get all digests
 /// that need to be checked and pass them into `handle_digest_infos_fn`
 /// as they are found.
+#[expect(clippy::future_not_send)] // TODO(jhpratt) remove this
 async fn check_output_directories<'a>(
     cas_store: &Store,
     output_directories: Vec<ProtoOutputDirectory>,
@@ -75,7 +78,7 @@ async fn check_output_directories<'a>(
             .err_tip(|| "Could not decode tree digest CompletenessCheckingStore::has")?;
         futures.push(async move {
             let tree = get_and_decode_digest::<ProtoTree>(cas_store, tree_digest.into()).await?;
-            // TODO(allada) When `try_collect()` is stable we can use it instead.
+            // TODO(palfrey) When `try_collect()` is stable we can use it instead.
             // https://github.com/rust-lang/rust/issues/94047
             let mut digest_iter = tree.children.into_iter().chain(tree.root).flat_map(|dir| {
                 dir.files
@@ -89,7 +92,7 @@ async fn check_output_directories<'a>(
                     digest_infos.push(maybe_digest?.into());
                     Result::<_, Error>::Ok(())
                 })
-                .err_tip(|| "Expected digest to exist and be convertable")?;
+                .err_tip(|| "Expected digest to exist and be convertible")?;
             handle_digest_infos_fn(digest_infos);
             Ok(())
         });
@@ -104,7 +107,7 @@ async fn check_output_directories<'a>(
     Ok(())
 }
 
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct CompletenessCheckingStore {
     cas_store: Store,
     ac_store: Store,
@@ -117,7 +120,7 @@ pub struct CompletenessCheckingStore {
 
 impl CompletenessCheckingStore {
     pub fn new(ac_store: Store, cas_store: Store) -> Arc<Self> {
-        Arc::new(CompletenessCheckingStore {
+        Arc::new(Self {
             cas_store,
             ac_store,
             incomplete_entries_counter: CounterWithTime::default(),
@@ -132,12 +135,12 @@ impl CompletenessCheckingStore {
     async fn inner_has_with_results(
         &self,
         action_result_digests: &[StoreKey<'_>],
-        results: &mut [Option<usize>],
+        results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         // Holds shared state between the different futures.
         // This is how get around lifetime issues.
         struct State<'a> {
-            results: &'a mut [Option<usize>],
+            results: &'a mut [Option<u64>],
             digests_to_check: Vec<StoreKey<'a>>,
             digests_to_check_idxs: Vec<usize>,
             notify: Arc<Notify>,
@@ -190,7 +193,7 @@ impl CompletenessCheckingStore {
                         }
                         state
                             .digests_to_check_idxs
-                            .extend(iter::repeat(i).take(rep_len));
+                            .extend(iter::repeat_n(i, rep_len));
                         state.notify.notify_one();
                     }
 
@@ -209,7 +212,7 @@ impl CompletenessCheckingStore {
                             state.digests_to_check.extend(digest_infos);
                             state
                                 .digests_to_check_idxs
-                                .extend(iter::repeat(i).take(rep_len));
+                                .extend(iter::repeat_n(i, rep_len));
                             state.notify.notify_one();
                         },
                     )
@@ -222,7 +225,7 @@ impl CompletenessCheckingStore {
                 .map_err(move |mut e| {
                     if e.code != Code::NotFound {
                         e = e.append(
-                            "Error checking existence of digest in CompletenessCheckingStore::has",
+                            format!("Error checking existence of digest ({digest}) in CompletenessCheckingStore::has"),
                         );
                     }
                     (e, i)
@@ -272,9 +275,9 @@ impl CompletenessCheckingStore {
                 self.cas_store
                     .has_with_results(&digests, &mut has_results[..])
                     .await
-                    .err_tip(|| {
-                        "Error calling has_with_results() inside CompletenessCheckingStore::has"
-                    })?;
+                    .err_tip(
+                        || "Error calling has_with_results() inside CompletenessCheckingStore::has",
+                    )?;
                 let missed_indexes = has_results
                     .iter()
                     .zip(indexes)
@@ -309,8 +312,7 @@ impl CompletenessCheckingStore {
                             // Note: Don't return the errors. We just flag the result as
                             // missing but show a warning if it's not a NotFound.
                             if err.code != Code::NotFound {
-                                event!(
-                                    Level::WARN,
+                                warn!(
                                     ?err,
                                     "Error checking existence of digest"
                                 );
@@ -342,7 +344,7 @@ impl StoreDriver for CompletenessCheckingStore {
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],
-        results: &mut [Option<usize>],
+        results: &mut [Option<u64>],
     ) -> Result<(), Error> {
         self.inner_has_with_results(keys, results).await
     }
@@ -352,7 +354,7 @@ impl StoreDriver for CompletenessCheckingStore {
         key: StoreKey<'_>,
         reader: DropCloserReadHalf,
         size_info: UploadSizeInfo,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         self.ac_store.update(key, reader, size_info).await
     }
 
@@ -360,8 +362,8 @@ impl StoreDriver for CompletenessCheckingStore {
         self: Pin<&Self>,
         key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
-        offset: usize,
-        length: Option<usize>,
+        offset: u64,
+        length: Option<u64>,
     ) -> Result<(), Error> {
         let results = &mut [None];
         self.inner_has_with_results(&[key.borrow()], results)
@@ -380,12 +382,21 @@ impl StoreDriver for CompletenessCheckingStore {
         self
     }
 
-    fn as_any(&self) -> &(dyn std::any::Any + Sync + Send + 'static) {
+    fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
         self
     }
 
-    fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
+    }
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        callback: Arc<dyn RemoveItemCallback>,
+    ) -> Result<(), Error> {
+        self.ac_store.register_remove_callback(callback.clone())?;
+        self.cas_store.register_remove_callback(callback)?;
+        Ok(())
     }
 }
 

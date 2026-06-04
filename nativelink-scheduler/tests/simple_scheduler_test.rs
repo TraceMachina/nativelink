@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,82 +12,56 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::future::Future;
+use core::ops::Bound;
+use core::pin::Pin;
+use core::sync::atomic::{AtomicBool, Ordering};
+use core::time::Duration;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use async_lock::Mutex;
 use futures::task::Poll;
-use futures::{poll, StreamExt};
-use mock_instant::MockClock;
-use nativelink_config::schedulers::PropertyType;
-use nativelink_error::{make_err, Code, Error, ResultExt};
+use futures::{Stream, StreamExt, poll};
+use mock_instant::thread_local::{MockClock, SystemTime as MockSystemTime};
+use nativelink_config::schedulers::{PropertyType, SimpleSpec};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
-use nativelink_proto::build::bazel::remote::execution::v2::{digest_function, ExecuteRequest};
-use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    update_for_worker, ConnectionResult, StartExecute, UpdateForWorker,
+use nativelink_metric::MetricsComponent;
+use nativelink_proto::build::bazel::remote::execution::v2::{
+    ExecuteRequest, Platform, digest_function,
 };
+use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
+    ConnectionResult, StartExecute, UpdateForWorker, update_for_worker,
+};
+use nativelink_scheduler::awaited_action_db::{
+    AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, SortedAwaitedAction,
+    SortedAwaitedActionState,
+};
+use nativelink_scheduler::default_scheduler_factory::memory_awaited_action_db_factory;
 use nativelink_scheduler::simple_scheduler::SimpleScheduler;
 use nativelink_scheduler::worker::Worker;
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
 use nativelink_util::action_messages::{
-    ActionResult, ActionStage, ActionState, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath,
-    OperationId, SymlinkInfo, WorkerId, INTERNAL_ERROR_EXIT_CODE,
+    ActionInfo, ActionResult, ActionStage, ActionState, DirectoryInfo, ExecutionMetadata, FileInfo,
+    INTERNAL_ERROR_EXIT_CODE, NameOrPath, OperationId, SymlinkInfo, WorkerId,
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
 use nativelink_util::operation_state_manager::{
-    ActionStateResult, ClientStateManager, OperationFilter,
+    ActionStateResult, ClientStateManager, OperationFilter, OperationStageFlags,
+    UpdateOperationType,
 };
 use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
 use pretty_assertions::assert_eq;
-use tokio::sync::mpsc;
-use utils::scheduler_utils::{make_base_action_info, INSTANCE_NAME};
-use uuid::Uuid;
+use tokio::sync::{Notify, mpsc};
+use utils::scheduler_utils::{INSTANCE_NAME, make_base_action_info, update_eq};
 
 mod utils {
     pub(crate) mod scheduler_utils;
 }
 
-fn update_eq(expected: UpdateForWorker, actual: UpdateForWorker, ignore_id: bool) -> bool {
-    let Some(expected_update) = expected.update else {
-        return actual.update.is_none();
-    };
-    let Some(actual_update) = actual.update else {
-        return false;
-    };
-    match actual_update {
-        update_for_worker::Update::Disconnect(()) => {
-            matches!(expected_update, update_for_worker::Update::Disconnect(()))
-        }
-        update_for_worker::Update::KeepAlive(()) => {
-            matches!(expected_update, update_for_worker::Update::KeepAlive(()))
-        }
-        update_for_worker::Update::StartAction(actual_update) => match expected_update {
-            update_for_worker::Update::StartAction(mut expected_update) => {
-                if ignore_id {
-                    expected_update
-                        .operation_id
-                        .clone_from(&actual_update.operation_id);
-                }
-                expected_update == actual_update
-            }
-            _ => false,
-        },
-        update_for_worker::Update::KillOperationRequest(actual_update) => match expected_update {
-            update_for_worker::Update::KillOperationRequest(expected_update) => {
-                expected_update == actual_update
-            }
-            _ => false,
-        },
-        update_for_worker::Update::ConnectionResult(actual_update) => match expected_update {
-            update_for_worker::Update::ConnectionResult(expected_update) => {
-                expected_update == actual_update
-            }
-            _ => false,
-        },
-    }
-}
 async fn verify_initial_connection_message(
     worker_id: WorkerId,
     rx: &mut mpsc::UnboundedReceiver<UpdateForWorker>,
@@ -96,7 +70,7 @@ async fn verify_initial_connection_message(
     let expected_msg_for_worker = UpdateForWorker {
         update: Some(update_for_worker::Update::ConnectionResult(
             ConnectionResult {
-                worker_id: worker_id.to_string(),
+                worker_id: worker_id.into(),
             },
         )),
     };
@@ -118,7 +92,7 @@ async fn setup_new_worker(
     props: PlatformProperties,
 ) -> Result<mpsc::UnboundedReceiver<UpdateForWorker>, Error> {
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let worker = Worker::new(worker_id, props, tx, NOW_TIME);
+    let worker = Worker::new(worker_id.clone(), props, tx, NOW_TIME, 0);
     scheduler
         .add_worker(worker)
         .await
@@ -146,17 +120,25 @@ const WORKER_TIMEOUT_S: u64 = 100;
 
 #[nativelink_test]
 async fn basic_add_action_with_one_worker_test() -> Result<(), Error> {
-    let worker_id: WorkerId = WorkerId(Uuid::new_v4());
+    let worker_id = WorkerId("worker_id".to_string());
 
+    let task_change_notify = Arc::new(Notify::new());
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
-        &nativelink_config::schedulers::SimpleScheduler::default(),
+        &SimpleSpec::default(),
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
         || async move {},
+        task_change_notify,
         MockInstantWrapped::default,
+        None,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
     let mut rx_from_worker =
-        setup_new_worker(&scheduler, worker_id, PlatformProperties::default()).await?;
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
     let insert_timestamp = make_system_time(1);
     let mut action_listener =
         setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp)
@@ -175,6 +157,8 @@ async fn basic_add_action_with_one_worker_test() -> Result<(), Error> {
                 }),
                 operation_id: "Unknown Generated internally".to_string(),
                 queued_timestamp: Some(insert_timestamp.into()),
+                platform: Some(Platform::default()),
+                worker_id: worker_id.into(),
             })),
         };
         let msg_for_worker = rx_from_worker.recv().await.unwrap();
@@ -183,12 +167,13 @@ async fn basic_add_action_with_one_worker_test() -> Result<(), Error> {
     }
     {
         // Client should get notification saying it's being executed.
-        let action_state = action_listener.changed().await.unwrap();
+        let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
-            operation_id: action_state.operation_id.clone(),
+            client_operation_id: action_state.client_operation_id.clone(),
             stage: ActionStage::Executing,
             action_digest: action_state.action_digest,
+            last_transition_timestamp: SystemTime::now(),
         };
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
@@ -197,18 +182,124 @@ async fn basic_add_action_with_one_worker_test() -> Result<(), Error> {
 }
 
 #[nativelink_test]
-async fn find_executing_action() -> Result<(), Error> {
-    let worker_id: WorkerId = WorkerId(Uuid::new_v4());
+async fn bad_worker_match_logging_interval() -> Result<(), Error> {
+    let task_change_notify = Arc::new(Notify::new());
+    let (_scheduler, _worker_scheduler) = SimpleScheduler::new(
+        &SimpleSpec {
+            worker_match_logging_interval_s: -2,
+            ..Default::default()
+        },
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        task_change_notify,
+        None,
+    );
+    assert!(logs_contain(
+        "nativelink_scheduler::simple_scheduler: Valid values for worker_match_logging_interval_s are -1, 0, or a positive integer, setting to disabled worker_match_logging_interval_s=-2"
+    ));
+    Ok(())
+}
 
+#[nativelink_test]
+async fn client_does_not_receive_update_timeout() -> Result<(), Error> {
+    async fn advance_time<T>(duration: Duration, poll_fut: &mut Pin<&mut impl Future<Output = T>>) {
+        const STEP_AMOUNT: Duration = Duration::from_millis(100);
+        for _ in 0..(duration.as_millis() / STEP_AMOUNT.as_millis()) {
+            MockClock::advance(STEP_AMOUNT);
+            tokio::task::yield_now().await;
+            assert!(poll!(&mut *poll_fut).is_pending());
+        }
+    }
+
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+
+    let worker_id = WorkerId("worker_id".to_string());
+
+    let task_change_notify = Arc::new(Notify::new());
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
-        &nativelink_config::schedulers::SimpleScheduler::default(),
+        &SimpleSpec {
+            worker_timeout_s: WORKER_TIMEOUT_S,
+            worker_match_logging_interval_s: 1,
+            ..Default::default()
+        },
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
         || async move {},
+        task_change_notify.clone(),
         MockInstantWrapped::default,
+        None,
+    );
+    let action_digest = DigestInfo::new([99u8; 32], 512);
+
+    let _rx_from_worker =
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
+    let mut action_listener = setup_action(
+        &scheduler,
+        action_digest,
+        HashMap::new(),
+        make_system_time(1),
+    )
+    .await
+    .unwrap();
+
+    // Trigger a do_try_match to ensure we get a state change.
+    scheduler.do_try_match_for_test().await?;
+    assert_eq!(
+        action_listener.changed().await.unwrap().0.stage,
+        ActionStage::Executing
+    );
+
+    let changed_fut = action_listener.changed();
+    tokio::pin!(changed_fut);
+
+    {
+        // No update should have been received yet.
+        assert_eq!(poll!(&mut changed_fut).is_ready(), false);
+    }
+    // Advance our time by just under the timeout.
+    advance_time(Duration::from_secs(WORKER_TIMEOUT_S - 1), &mut changed_fut).await;
+    {
+        // Still no update should have been received yet.
+        assert_eq!(poll!(&mut changed_fut).is_ready(), false);
+    }
+    // Advance it by just over the timeout.
+    MockClock::advance(Duration::from_secs(2));
+    {
+        // Now we should have received a timeout and the action should have been
+        // put back in the queue.
+        assert_eq!(changed_fut.await.unwrap().0.stage, ActionStage::Queued);
+    }
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn find_executing_action() -> Result<(), Error> {
+    let worker_id = WorkerId("worker_id".to_string());
+
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec::default(),
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
     let mut rx_from_worker =
-        setup_new_worker(&scheduler, worker_id, PlatformProperties::default()).await?;
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
     let insert_timestamp = make_system_time(1);
     let action_listener = setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp)
         .await
@@ -218,7 +309,8 @@ async fn find_executing_action() -> Result<(), Error> {
         .as_state()
         .await
         .unwrap()
-        .operation_id
+        .0
+        .client_operation_id
         .clone();
     // Drop our receiver and look up a new one.
     drop(action_listener);
@@ -245,6 +337,8 @@ async fn find_executing_action() -> Result<(), Error> {
                 }),
                 operation_id: "Unknown Generated internally".to_string(),
                 queued_timestamp: Some(insert_timestamp.into()),
+                platform: Some(Platform::default()),
+                worker_id: worker_id.into(),
             })),
         };
         let msg_for_worker = rx_from_worker.recv().await.unwrap();
@@ -253,12 +347,13 @@ async fn find_executing_action() -> Result<(), Error> {
     }
     {
         // Client should get notification saying it's being executed.
-        let action_state = action_listener.changed().await.unwrap();
+        let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
-            operation_id: action_state.operation_id.clone(),
+            client_operation_id: action_state.client_operation_id.clone(),
             stage: ActionStage::Executing,
             action_digest: action_state.action_digest,
+            last_transition_timestamp: SystemTime::now(),
         };
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
@@ -268,21 +363,33 @@ async fn find_executing_action() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Error> {
-    let worker_id1: WorkerId = WorkerId(Uuid::new_v4());
-    let worker_id2: WorkerId = WorkerId(Uuid::new_v4());
+    let worker_id1 = WorkerId("worker1".to_string());
+    let worker_id2 = WorkerId("worker2".to_string());
+    let task_change_notify = Arc::new(Notify::new());
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
-        &nativelink_config::schedulers::SimpleScheduler {
+        &SimpleSpec {
             worker_timeout_s: WORKER_TIMEOUT_S,
             ..Default::default()
         },
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
         || async move {},
+        task_change_notify,
         MockInstantWrapped::default,
+        None,
     );
     let action_digest1 = DigestInfo::new([99u8; 32], 512);
     let action_digest2 = DigestInfo::new([88u8; 32], 512);
 
-    let mut rx_from_worker1 =
-        setup_new_worker(&scheduler, worker_id1, PlatformProperties::default()).await?;
+    let mut rx_from_worker1 = setup_new_worker(
+        &scheduler,
+        worker_id1.clone(),
+        PlatformProperties::default(),
+    )
+    .await?;
     let insert_timestamp1 = make_system_time(1);
     let mut client1_action_listener = setup_action(
         &scheduler,
@@ -309,6 +416,8 @@ async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Err
         }),
         operation_id: "WILL BE SET BELOW".to_string(),
         queued_timestamp: Some(insert_timestamp1.into()),
+        platform: Some(Platform::default()),
+        worker_id: worker_id1.to_string(),
     };
 
     let mut expected_start_execute_for_worker2 = StartExecute {
@@ -320,6 +429,8 @@ async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Err
         }),
         operation_id: "WILL BE SET BELOW".to_string(),
         queued_timestamp: Some(insert_timestamp2.into()),
+        platform: Some(Platform::default()),
+        worker_id: worker_id1.to_string(),
     };
     let operation_id1 = {
         // Worker1 should now see first execution request.
@@ -361,26 +472,32 @@ async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Err
     };
 
     // Add a second worker that can take jobs if the first dies.
-    let mut rx_from_worker2 =
-        setup_new_worker(&scheduler, worker_id2, PlatformProperties::default()).await?;
+    let mut rx_from_worker2 = setup_new_worker(
+        &scheduler,
+        worker_id2.clone(),
+        PlatformProperties::default(),
+    )
+    .await?;
 
     {
         let expected_action_stage = ActionStage::Executing;
         // Client should get notification saying it's being executed.
-        let action_state = client1_action_listener.changed().await.unwrap();
+        let (action_state, _maybe_origin_metadata) =
+            client1_action_listener.changed().await.unwrap();
         // We now know the name of the action so populate it.
         assert_eq!(&action_state.stage, &expected_action_stage);
     }
     {
         let expected_action_stage = ActionStage::Executing;
         // Client should get notification saying it's being executed.
-        let action_state = client2_action_listener.changed().await.unwrap();
+        let (action_state, _maybe_origin_metadata) =
+            client2_action_listener.changed().await.unwrap();
         // We now know the name of the action so populate it.
         assert_eq!(&action_state.stage, &expected_action_stage);
     }
 
     // Now remove worker.
-    let _ = scheduler.remove_worker(&worker_id1).await;
+    drop(scheduler.remove_worker(&worker_id1).await);
     tokio::task::yield_now().await; // Allow task<->worker matcher to run.
 
     {
@@ -396,14 +513,16 @@ async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Err
     {
         let expected_action_stage = ActionStage::Executing;
         // Client should get notification saying it's being executed.
-        let action_state = client1_action_listener.changed().await.unwrap();
+        let (action_state, _maybe_origin_metadata) =
+            client1_action_listener.changed().await.unwrap();
         // We now know the name of the action so populate it.
         assert_eq!(&action_state.stage, &expected_action_stage);
     }
     {
         let expected_action_stage = ActionStage::Executing;
         // Client should get notification saying it's being executed.
-        let action_state = client2_action_listener.changed().await.unwrap();
+        let (action_state, _maybe_origin_metadata) =
+            client2_action_listener.changed().await.unwrap();
         // We now know the name of the action so populate it.
         assert_eq!(&action_state.stage, &expected_action_stage);
     }
@@ -411,6 +530,7 @@ async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Err
         // Worker2 should now see execution request.
         let msg_for_worker = rx_from_worker2.recv().await.unwrap();
         expected_start_execute_for_worker1.operation_id = operation_id1.to_string();
+        expected_start_execute_for_worker1.worker_id = worker_id2.to_string();
         assert_eq!(
             msg_for_worker,
             UpdateForWorker {
@@ -424,6 +544,7 @@ async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Err
         // Worker2 should now see execution request.
         let msg_for_worker = rx_from_worker2.recv().await.unwrap();
         expected_start_execute_for_worker2.operation_id = operation_id2.to_string();
+        expected_start_execute_for_worker2.worker_id = worker_id2.to_string();
         assert_eq!(
             msg_for_worker,
             UpdateForWorker {
@@ -439,17 +560,25 @@ async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Err
 
 #[nativelink_test]
 async fn set_drain_worker_pauses_and_resumes_worker_test() -> Result<(), Error> {
-    let worker_id: WorkerId = WorkerId(Uuid::new_v4());
+    let worker_id = WorkerId("worker_id".to_string());
 
+    let task_change_notify = Arc::new(Notify::new());
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
-        &nativelink_config::schedulers::SimpleScheduler::default(),
+        &SimpleSpec::default(),
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
         || async move {},
+        task_change_notify,
         MockInstantWrapped::default,
+        None,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
     let mut rx_from_worker =
-        setup_new_worker(&scheduler, worker_id, PlatformProperties::default()).await?;
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
     let insert_timestamp = make_system_time(1);
     let mut action_listener =
         setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp).await?;
@@ -464,7 +593,7 @@ async fn set_drain_worker_pauses_and_resumes_worker_test() -> Result<(), Error> 
         };
         // Other tests check full data. We only care if client thinks we are Executing.
         assert_eq!(
-            action_listener.changed().await.unwrap().stage,
+            action_listener.changed().await.unwrap().0.stage,
             ActionStage::Executing
         );
         operation_id
@@ -481,12 +610,13 @@ async fn set_drain_worker_pauses_and_resumes_worker_test() -> Result<(), Error> 
 
     {
         // Client should get notification saying it's been queued.
-        let action_state = action_listener.changed().await.unwrap();
+        let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
-            operation_id: action_state.operation_id.clone(),
+            client_operation_id: action_state.client_operation_id.clone(),
             stage: ActionStage::Queued,
             action_digest: action_state.action_digest,
+            last_transition_timestamp: SystemTime::now(),
         };
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
@@ -497,12 +627,13 @@ async fn set_drain_worker_pauses_and_resumes_worker_test() -> Result<(), Error> 
 
     {
         // Client should get notification saying it's being executed.
-        let action_state = action_listener.changed().await.unwrap();
+        let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
-            operation_id: action_state.operation_id.clone(),
+            client_operation_id: action_state.client_operation_id.clone(),
             stage: ActionStage::Executing,
             action_digest: action_state.action_digest,
+            last_transition_timestamp: SystemTime::now(),
         };
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
@@ -512,18 +643,27 @@ async fn set_drain_worker_pauses_and_resumes_worker_test() -> Result<(), Error> 
 
 #[nativelink_test]
 async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), Error> {
-    let worker_id1: WorkerId = WorkerId(Uuid::new_v4());
-    let worker_id2: WorkerId = WorkerId(Uuid::new_v4());
+    let worker_id1 = WorkerId("worker1".to_string());
+    let worker_id2 = WorkerId("worker2".to_string());
 
     let mut prop_defs = HashMap::new();
     prop_defs.insert("prop".to_string(), PropertyType::Exact);
+
+    let task_change_notify = Arc::new(Notify::new());
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
-        &nativelink_config::schedulers::SimpleScheduler {
+        &SimpleSpec {
             supported_platform_properties: Some(prop_defs),
             ..Default::default()
         },
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
         || async move {},
+        task_change_notify,
         MockInstantWrapped::default,
+        None,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
     let mut platform_properties = HashMap::new();
@@ -547,12 +687,13 @@ async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), E
 
     {
         // Client should get notification saying it's been queued.
-        let action_state = action_listener.changed().await.unwrap();
+        let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
-            operation_id: action_state.operation_id.clone(),
+            client_operation_id: action_state.client_operation_id.clone(),
             stage: ActionStage::Queued,
             action_digest: action_state.action_digest,
+            last_transition_timestamp: SystemTime::now(),
         };
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
@@ -561,7 +702,8 @@ async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), E
         "prop".to_string(),
         PlatformPropertyValue::Exact("1".to_string()),
     );
-    let mut rx_from_worker2 = setup_new_worker(&scheduler, worker_id2, worker2_properties).await?;
+    let mut rx_from_worker2 =
+        setup_new_worker(&scheduler, worker_id2.clone(), worker2_properties.clone()).await?;
     {
         // Worker should have been sent an execute command.
         let expected_msg_for_worker = UpdateForWorker {
@@ -574,6 +716,8 @@ async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), E
                 }),
                 operation_id: "Unknown Generated internally".to_string(),
                 queued_timestamp: Some(insert_timestamp.into()),
+                platform: Some((&worker2_properties).into()),
+                worker_id: worker_id2.to_string(),
             })),
         };
         let msg_for_worker = rx_from_worker2.recv().await.unwrap();
@@ -581,12 +725,13 @@ async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), E
     }
     {
         // Client should get notification saying it's being executed.
-        let action_state = action_listener.changed().await.unwrap();
+        let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
-            operation_id: action_state.operation_id.clone(),
+            client_operation_id: action_state.client_operation_id.clone(),
             stage: ActionStage::Executing,
             action_digest: action_state.action_digest,
+            last_transition_timestamp: SystemTime::now(),
         };
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
@@ -602,20 +747,29 @@ async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), E
 
 #[nativelink_test]
 async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
-    let worker_id: WorkerId = WorkerId(Uuid::new_v4());
+    let worker_id = WorkerId("worker_id".to_string());
 
+    let task_change_notify = Arc::new(Notify::new());
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
-        &nativelink_config::schedulers::SimpleScheduler::default(),
+        &SimpleSpec::default(),
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
         || async move {},
+        task_change_notify,
         MockInstantWrapped::default,
+        None,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
-    let operation_id = OperationId::default();
+    let client_operation_id = OperationId::default();
     let mut expected_action_state = ActionState {
-        operation_id,
+        client_operation_id,
         stage: ActionStage::Queued,
         action_digest,
+        last_transition_timestamp: SystemTime::now(),
     };
 
     let insert_timestamp1 = make_system_time(1);
@@ -627,22 +781,27 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
 
     let (operation_id1, operation_id2) = {
         // Clients should get notification saying it's been queued.
-        let action_state1 = client1_action_listener.changed().await.unwrap();
-        let action_state2 = client2_action_listener.changed().await.unwrap();
-        let operation_id1 = action_state1.operation_id.clone();
-        let operation_id2 = action_state2.operation_id.clone();
+        let (action_state1, _maybe_origin_metadata) =
+            client1_action_listener.changed().await.unwrap();
+        let (action_state2, _maybe_origin_metadata) =
+            client2_action_listener.changed().await.unwrap();
+        let operation_id1 = action_state1.client_operation_id.clone();
+        let operation_id2 = action_state2.client_operation_id.clone();
         // Name is random so we set force it to be the same.
-        expected_action_state.operation_id = operation_id1.clone();
+        expected_action_state.client_operation_id = operation_id1.clone();
         assert_eq!(action_state1.as_ref(), &expected_action_state);
-        expected_action_state.operation_id = operation_id2.clone();
+        expected_action_state.client_operation_id = operation_id2.clone();
         assert_eq!(action_state2.as_ref(), &expected_action_state);
         // Both clients should have unique operation ID.
-        assert_ne!(action_state2.operation_id, action_state1.operation_id);
+        assert_ne!(
+            action_state2.client_operation_id,
+            action_state1.client_operation_id
+        );
         (operation_id1, operation_id2)
     };
 
     let mut rx_from_worker =
-        setup_new_worker(&scheduler, worker_id, PlatformProperties::default()).await?;
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
 
     {
         // Worker should have been sent an execute command.
@@ -656,6 +815,8 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
                 }),
                 operation_id: "Unknown Generated internally".to_string(),
                 queued_timestamp: Some(insert_timestamp1.into()),
+                platform: Some(Platform::default()),
+                worker_id: worker_id.into(),
             })),
         };
         let msg_for_worker = rx_from_worker.recv().await.unwrap();
@@ -665,17 +826,18 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
 
     // Action should now be executing.
     expected_action_state.stage = ActionStage::Executing;
+    expected_action_state.last_transition_timestamp = SystemTime::now();
     {
         // Both client1 and client2 should be receiving the same updates.
         // Most importantly the `name` (which is random) will be the same.
-        expected_action_state.operation_id = operation_id1.clone();
+        expected_action_state.client_operation_id = operation_id1.clone();
         assert_eq!(
-            client1_action_listener.changed().await.unwrap().as_ref(),
+            client1_action_listener.changed().await.unwrap().0.as_ref(),
             &expected_action_state
         );
-        expected_action_state.operation_id = operation_id2.clone();
+        expected_action_state.client_operation_id = operation_id2.clone();
         assert_eq!(
-            client2_action_listener.changed().await.unwrap().as_ref(),
+            client2_action_listener.changed().await.unwrap().0.as_ref(),
             &expected_action_state
         );
     }
@@ -685,8 +847,9 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
         let insert_timestamp3 = make_system_time(2);
         let mut client3_action_listener =
             setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp3).await?;
-        let action_state = client3_action_listener.changed().await.unwrap().clone();
-        expected_action_state.operation_id = action_state.operation_id.clone();
+        let (action_state, _maybe_origin_metadata) =
+            client3_action_listener.changed().await.unwrap();
+        expected_action_state.client_operation_id = action_state.client_operation_id.clone();
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
 
@@ -695,16 +858,24 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn worker_disconnects_does_not_schedule_for_execution_test() -> Result<(), Error> {
-    let worker_id: WorkerId = WorkerId(Uuid::new_v4());
+    let task_change_notify = Arc::new(Notify::new());
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
-        &nativelink_config::schedulers::SimpleScheduler::default(),
+        &SimpleSpec::default(),
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
         || async move {},
+        task_change_notify,
         MockInstantWrapped::default,
+        None,
     );
+    let worker_id = WorkerId("worker_id".to_string());
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
     let rx_from_worker =
-        setup_new_worker(&scheduler, worker_id, PlatformProperties::default()).await?;
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
 
     // Now act like the worker disconnected.
     drop(rx_from_worker);
@@ -714,12 +885,13 @@ async fn worker_disconnects_does_not_schedule_for_execution_test() -> Result<(),
         setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp).await?;
     {
         // Client should get notification saying it's being queued not executed.
-        let action_state = action_listener.changed().await.unwrap();
+        let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
-            operation_id: action_state.operation_id.clone(),
+            client_operation_id: action_state.client_operation_id.clone(),
             stage: ActionStage::Queued,
             action_digest: action_state.action_digest,
+            last_transition_timestamp: SystemTime::now(),
         };
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
@@ -727,30 +899,263 @@ async fn worker_disconnects_does_not_schedule_for_execution_test() -> Result<(),
     Ok(())
 }
 
+// TODO(palfrey) These should be gneralized and expanded for more tests.
+struct MockAwaitedActionSubscriber {}
+impl AwaitedActionSubscriber for MockAwaitedActionSubscriber {
+    async fn changed(&mut self) -> Result<AwaitedAction, Error> {
+        unreachable!();
+    }
+
+    async fn borrow(&self) -> Result<AwaitedAction, Error> {
+        Ok(AwaitedAction::new(
+            OperationId::default(),
+            make_base_action_info(SystemTime::UNIX_EPOCH, DigestInfo::zero_digest()),
+            MockSystemTime::now().into(),
+        ))
+    }
+}
+
+struct TxMockSenders {
+    get_awaited_action_by_id:
+        mpsc::UnboundedSender<Result<Option<MockAwaitedActionSubscriber>, Error>>,
+    get_by_operation_id: mpsc::UnboundedSender<Result<Option<MockAwaitedActionSubscriber>, Error>>,
+    get_range_of_actions: mpsc::UnboundedSender<Vec<Result<MockAwaitedActionSubscriber, Error>>>,
+    update_awaited_action: mpsc::UnboundedSender<Result<(), Error>>,
+}
+
+#[derive(MetricsComponent)]
+struct RxMockAwaitedAction {
+    get_awaited_action_by_id:
+        Mutex<mpsc::UnboundedReceiver<Result<Option<MockAwaitedActionSubscriber>, Error>>>,
+    get_by_operation_id:
+        Mutex<mpsc::UnboundedReceiver<Result<Option<MockAwaitedActionSubscriber>, Error>>>,
+    get_range_of_actions:
+        Mutex<mpsc::UnboundedReceiver<Vec<Result<MockAwaitedActionSubscriber, Error>>>>,
+    update_awaited_action: Mutex<mpsc::UnboundedReceiver<Result<(), Error>>>,
+}
+impl RxMockAwaitedAction {
+    fn new() -> (TxMockSenders, Self) {
+        let (tx_get_awaited_action_by_id, rx_get_awaited_action_by_id) = mpsc::unbounded_channel();
+        let (tx_get_by_operation_id, rx_get_by_operation_id) = mpsc::unbounded_channel();
+        let (tx_get_range_of_actions, rx_get_range_of_actions) = mpsc::unbounded_channel();
+        let (tx_update_awaited_action, rx_update_awaited_action) = mpsc::unbounded_channel();
+        (
+            TxMockSenders {
+                get_awaited_action_by_id: tx_get_awaited_action_by_id,
+                get_by_operation_id: tx_get_by_operation_id,
+                get_range_of_actions: tx_get_range_of_actions,
+                update_awaited_action: tx_update_awaited_action,
+            },
+            Self {
+                get_awaited_action_by_id: Mutex::new(rx_get_awaited_action_by_id),
+                get_by_operation_id: Mutex::new(rx_get_by_operation_id),
+                get_range_of_actions: Mutex::new(rx_get_range_of_actions),
+                update_awaited_action: Mutex::new(rx_update_awaited_action),
+            },
+        )
+    }
+}
+impl AwaitedActionDb for RxMockAwaitedAction {
+    type Subscriber = MockAwaitedActionSubscriber;
+
+    async fn get_awaited_action_by_id(
+        &self,
+        _client_operation_id: &OperationId,
+    ) -> Result<Option<Self::Subscriber>, Error> {
+        let mut rx_get_awaited_action_by_id = self.get_awaited_action_by_id.lock().await;
+        rx_get_awaited_action_by_id
+            .try_recv()
+            .expect("Could not receive msg in mpsc")
+    }
+
+    async fn get_all_awaited_actions(
+        &self,
+    ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error> {
+        Ok(futures::stream::empty())
+    }
+
+    async fn get_by_operation_id(
+        &self,
+        _operation_id: &OperationId,
+    ) -> Result<Option<Self::Subscriber>, Error> {
+        let mut rx_get_by_operation_id = self.get_by_operation_id.lock().await;
+        rx_get_by_operation_id
+            .try_recv()
+            .expect("Could not receive msg in mpsc")
+    }
+
+    async fn get_range_of_actions(
+        &self,
+        _state: SortedAwaitedActionState,
+        _start: Bound<SortedAwaitedAction>,
+        _end: Bound<SortedAwaitedAction>,
+        _desc: bool,
+    ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error> {
+        let mut rx_get_range_of_actions = self.get_range_of_actions.lock().await;
+        let items = rx_get_range_of_actions
+            .try_recv()
+            .expect("Could not receive msg in mpsc");
+        Ok(futures::stream::iter(items))
+    }
+
+    async fn update_awaited_action(&self, _new_awaited_action: AwaitedAction) -> Result<(), Error> {
+        let mut rx_update_awaited_action = self.update_awaited_action.lock().await;
+        rx_update_awaited_action
+            .try_recv()
+            .expect("Could not receive msg in mpsc")
+    }
+
+    async fn add_action(
+        &self,
+        _client_operation_id: OperationId,
+        _action_info: Arc<ActionInfo>,
+        _no_event_action_timeout: Duration,
+    ) -> Result<Self::Subscriber, Error> {
+        unreachable!();
+    }
+}
+
+#[nativelink_test]
+async fn matching_engine_fails_sends_abort() -> Result<(), Error> {
+    {
+        let task_change_notify = Arc::new(Notify::new());
+        let (senders, awaited_action) = RxMockAwaitedAction::new();
+
+        let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+            &SimpleSpec::default(),
+            awaited_action,
+            || async move {},
+            task_change_notify,
+            MockInstantWrapped::default,
+            None,
+        );
+        // Initial worker calls do_try_match, so send it no items.
+        senders.get_range_of_actions.send(vec![]).unwrap();
+        let _worker_rx = setup_new_worker(
+            &scheduler,
+            WorkerId("worker_id".to_string()),
+            PlatformProperties::default(),
+        )
+        .await
+        .unwrap();
+
+        senders
+            .get_awaited_action_by_id
+            .send(Ok(Some(MockAwaitedActionSubscriber {})))
+            .unwrap();
+        senders
+            .get_by_operation_id
+            .send(Ok(Some(MockAwaitedActionSubscriber {})))
+            .unwrap();
+        // This one gets called twice because of Abort triggers retry, just return item not exist on retry.
+        senders.get_by_operation_id.send(Ok(None)).unwrap();
+        senders
+            .get_range_of_actions
+            .send(vec![Ok(MockAwaitedActionSubscriber {})])
+            .unwrap();
+        senders
+            .update_awaited_action
+            .send(Err(make_err!(
+                Code::Aborted,
+                "This means data version did not match."
+            )))
+            .unwrap();
+
+        assert_eq!(scheduler.do_try_match_for_test().await, Ok(()));
+    }
+    {
+        let task_change_notify = Arc::new(Notify::new());
+        let (senders, awaited_action) = RxMockAwaitedAction::new();
+
+        let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+            &SimpleSpec::default(),
+            awaited_action,
+            || async move {},
+            task_change_notify,
+            MockInstantWrapped::default,
+            None,
+        );
+        // senders.tx_get_awaited_action_by_id.send(Ok(None)).unwrap();
+        senders.get_range_of_actions.send(vec![]).unwrap();
+        let _worker_rx = setup_new_worker(
+            &scheduler,
+            WorkerId("worker_id".to_string()),
+            PlatformProperties::default(),
+        )
+        .await
+        .unwrap();
+
+        senders
+            .get_awaited_action_by_id
+            .send(Ok(Some(MockAwaitedActionSubscriber {})))
+            .unwrap();
+        senders
+            .get_by_operation_id
+            .send(Ok(Some(MockAwaitedActionSubscriber {})))
+            .unwrap();
+        senders
+            .get_range_of_actions
+            .send(vec![Ok(MockAwaitedActionSubscriber {})])
+            .unwrap();
+        senders
+            .update_awaited_action
+            .send(Err(make_err!(
+                Code::Internal,
+                "This means an internal error happened."
+            )))
+            .unwrap();
+
+        assert_eq!(
+            scheduler.do_try_match_for_test().await.unwrap_err().code,
+            Code::Internal
+        );
+    }
+
+    Ok(())
+}
+
 #[nativelink_test]
 async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
-    let worker_id1: WorkerId = WorkerId(Uuid::new_v4());
-    let worker_id2: WorkerId = WorkerId(Uuid::new_v4());
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+
+    let worker_id1 = WorkerId("worker1".to_string());
+    let worker_id2 = WorkerId("worker2".to_string());
+    let task_change_notify = Arc::new(Notify::new());
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
-        &nativelink_config::schedulers::SimpleScheduler {
+        &SimpleSpec {
             worker_timeout_s: WORKER_TIMEOUT_S,
             ..Default::default()
         },
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
         || async move {},
+        task_change_notify,
         MockInstantWrapped::default,
+        None,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
     // Note: This needs to stay in scope or a disconnect will trigger.
-    let mut rx_from_worker1 =
-        setup_new_worker(&scheduler, worker_id1, PlatformProperties::default()).await?;
+    let mut rx_from_worker1 = setup_new_worker(
+        &scheduler,
+        worker_id1.clone(),
+        PlatformProperties::default(),
+    )
+    .await?;
     let insert_timestamp = make_system_time(1);
     let mut action_listener =
         setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp).await?;
 
     // Note: This needs to stay in scope or a disconnect will trigger.
-    let mut rx_from_worker2 =
-        setup_new_worker(&scheduler, worker_id2, PlatformProperties::default()).await?;
+    let mut rx_from_worker2 = setup_new_worker(
+        &scheduler,
+        worker_id2.clone(),
+        PlatformProperties::default(),
+    )
+    .await?;
 
     let mut start_execute = StartExecute {
         execute_request: Some(ExecuteRequest {
@@ -761,6 +1166,8 @@ async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
         }),
         operation_id: "UNKNOWN HERE, WE WILL SET IT LATER".to_string(),
         queued_timestamp: Some(insert_timestamp.into()),
+        platform: Some(Platform::default()),
+        worker_id: worker_id1.to_string(),
     };
 
     {
@@ -786,13 +1193,14 @@ async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
 
     {
         // Client should get notification saying it's being executed.
-        let action_state = action_listener.changed().await.unwrap();
+        let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
         assert_eq!(
             action_state.as_ref(),
             &ActionState {
-                operation_id: action_state.operation_id.clone(),
+                client_operation_id: action_state.client_operation_id.clone(),
                 stage: ActionStage::Executing,
                 action_digest: action_state.action_digest,
+                last_transition_timestamp: SystemTime::now(),
             }
         );
     }
@@ -819,25 +1227,25 @@ async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
     }
     {
         // Client should get notification saying it's being executed.
-        let action_state = action_listener.changed().await.unwrap();
+        let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
         assert_eq!(
             action_state.as_ref(),
             &ActionState {
-                operation_id: action_state.operation_id.clone(),
+                client_operation_id: action_state.client_operation_id.clone(),
                 stage: ActionStage::Executing,
                 action_digest: action_state.action_digest,
+                last_transition_timestamp: SystemTime::now(),
             }
         );
     }
     {
+        start_execute.worker_id = worker_id2.to_string();
         // Worker2 should now see execution request.
         let msg_for_worker = rx_from_worker2.recv().await.unwrap();
         assert_eq!(
             msg_for_worker,
             UpdateForWorker {
-                update: Some(update_for_worker::Update::StartAction(
-                    start_execute.clone()
-                )),
+                update: Some(update_for_worker::Update::StartAction(start_execute)),
             }
         );
     }
@@ -847,17 +1255,25 @@ async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn update_action_sends_completed_result_to_client_test() -> Result<(), Error> {
-    let worker_id: WorkerId = WorkerId(Uuid::new_v4());
+    let worker_id = WorkerId("worker_id".to_string());
 
+    let task_change_notify = Arc::new(Notify::new());
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
-        &nativelink_config::schedulers::SimpleScheduler::default(),
+        &SimpleSpec::default(),
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
         || async move {},
+        task_change_notify,
         MockInstantWrapped::default,
+        None,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
     let mut rx_from_worker =
-        setup_new_worker(&scheduler, worker_id, PlatformProperties::default()).await?;
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
     let insert_timestamp = make_system_time(1);
     let mut action_listener =
         setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp).await?;
@@ -868,7 +1284,7 @@ async fn update_action_sends_completed_result_to_client_test() -> Result<(), Err
             Some(update_for_worker::Update::StartAction(start_execute)) => {
                 // Other tests check full data. We only care if client thinks we are Executing.
                 assert_eq!(
-                    action_listener.changed().await.unwrap().stage,
+                    action_listener.changed().await.unwrap().0.stage,
                     ActionStage::Executing
                 );
                 start_execute.operation_id
@@ -918,18 +1334,21 @@ async fn update_action_sends_completed_result_to_client_test() -> Result<(), Err
         .update_action(
             &worker_id,
             &OperationId::from(operation_id),
-            Ok(ActionStage::Completed(action_result.clone())),
+            UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(
+                action_result.clone(),
+            )),
         )
         .await?;
 
     {
         // Client should get notification saying it has been completed.
-        let action_state = action_listener.changed().await.unwrap();
+        let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
-            operation_id: action_state.operation_id.clone(),
+            client_operation_id: action_state.client_operation_id.clone(),
             stage: ActionStage::Completed(action_result),
             action_digest: action_state.action_digest,
+            last_transition_timestamp: SystemTime::now(),
         };
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
@@ -939,17 +1358,25 @@ async fn update_action_sends_completed_result_to_client_test() -> Result<(), Err
 
 #[nativelink_test]
 async fn update_action_sends_completed_result_after_disconnect() -> Result<(), Error> {
-    let worker_id: WorkerId = WorkerId(Uuid::new_v4());
+    let worker_id = WorkerId("worker_id".to_string());
 
+    let task_change_notify = Arc::new(Notify::new());
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
-        &nativelink_config::schedulers::SimpleScheduler::default(),
+        &SimpleSpec::default(),
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
         || async move {},
+        task_change_notify,
         MockInstantWrapped::default,
+        None,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
     let mut rx_from_worker =
-        setup_new_worker(&scheduler, worker_id, PlatformProperties::default()).await?;
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
     let insert_timestamp = make_system_time(1);
     let action_listener =
         setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp).await?;
@@ -958,7 +1385,8 @@ async fn update_action_sends_completed_result_after_disconnect() -> Result<(), E
         .as_state()
         .await
         .unwrap()
-        .operation_id
+        .0
+        .client_operation_id
         .clone();
 
     // Drop our receiver and don't reconnect until completed.
@@ -1015,7 +1443,9 @@ async fn update_action_sends_completed_result_after_disconnect() -> Result<(), E
         .update_action(
             &worker_id,
             &operation_id,
-            Ok(ActionStage::Completed(action_result.clone())),
+            UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(
+                action_result.clone(),
+            )),
         )
         .await?;
 
@@ -1032,12 +1462,13 @@ async fn update_action_sends_completed_result_after_disconnect() -> Result<(), E
         .expect("Action not found");
     {
         // Client should get notification saying it has been completed.
-        let action_state = action_listener.changed().await.unwrap();
+        let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
-            operation_id: action_state.operation_id.clone(),
+            client_operation_id: action_state.client_operation_id.clone(),
             stage: ActionStage::Completed(action_result),
             action_digest: action_state.action_digest,
+            last_transition_timestamp: SystemTime::now(),
         };
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
@@ -1047,18 +1478,30 @@ async fn update_action_sends_completed_result_after_disconnect() -> Result<(), E
 
 #[nativelink_test]
 async fn update_action_with_wrong_worker_id_errors_test() -> Result<(), Error> {
-    let good_worker_id: WorkerId = WorkerId(Uuid::new_v4());
-    let rogue_worker_id: WorkerId = WorkerId(Uuid::new_v4());
+    let good_worker_id = WorkerId("good_worker_id".to_string());
+    let rogue_worker_id = WorkerId("rogue_worker_id".to_string());
 
+    let task_change_notify = Arc::new(Notify::new());
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
-        &nativelink_config::schedulers::SimpleScheduler::default(),
+        &SimpleSpec::default(),
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
         || async move {},
+        task_change_notify,
         MockInstantWrapped::default,
+        None,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
-    let mut rx_from_worker =
-        setup_new_worker(&scheduler, good_worker_id, PlatformProperties::default()).await?;
+    let mut rx_from_worker = setup_new_worker(
+        &scheduler,
+        good_worker_id.clone(),
+        PlatformProperties::default(),
+    )
+    .await?;
     let insert_timestamp = make_system_time(1);
     let mut action_listener =
         setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp).await?;
@@ -1071,11 +1514,18 @@ async fn update_action_with_wrong_worker_id_errors_test() -> Result<(), Error> {
         }
         // Other tests check full data. We only care if client thinks we are Executing.
         assert_eq!(
-            action_listener.changed().await.unwrap().stage,
+            action_listener.changed().await.unwrap().0.stage,
             ActionStage::Executing
         );
     }
-    let _ = setup_new_worker(&scheduler, rogue_worker_id, PlatformProperties::default()).await?;
+    drop(
+        setup_new_worker(
+            &scheduler,
+            rogue_worker_id.clone(),
+            PlatformProperties::default(),
+        )
+        .await?,
+    );
 
     let action_result = ActionResult {
         output_files: Vec::default(),
@@ -1105,7 +1555,9 @@ async fn update_action_with_wrong_worker_id_errors_test() -> Result<(), Error> {
         .update_action(
             &rogue_worker_id,
             &OperationId::default(),
-            Ok(ActionStage::Completed(action_result.clone())),
+            UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(
+                action_result.clone(),
+            )),
         )
         .await;
 
@@ -1137,20 +1589,29 @@ async fn update_action_with_wrong_worker_id_errors_test() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Error> {
-    let worker_id: WorkerId = WorkerId(Uuid::new_v4());
+    let worker_id = WorkerId("worker_id".to_string());
 
+    let task_change_notify = Arc::new(Notify::new());
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
-        &nativelink_config::schedulers::SimpleScheduler::default(),
+        &SimpleSpec::default(),
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
         || async move {},
+        task_change_notify,
         MockInstantWrapped::default,
+        None,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
-    let operation_id = OperationId::default();
+    let client_operation_id = OperationId::default();
     let mut expected_action_state = ActionState {
-        operation_id,
+        client_operation_id,
         stage: ActionStage::Executing,
         action_digest,
+        last_transition_timestamp: SystemTime::now(),
     };
 
     let insert_timestamp = make_system_time(1);
@@ -1158,9 +1619,10 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
         setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp)
             .await
             .unwrap();
-    let mut rx_from_worker = setup_new_worker(&scheduler, worker_id, PlatformProperties::default())
-        .await
-        .unwrap();
+    let mut rx_from_worker =
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default())
+            .await
+            .unwrap();
 
     let operation_id = {
         // Worker should have been sent an execute command.
@@ -1174,6 +1636,8 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
                 }),
                 operation_id: "Unknown Generated internally".to_string(),
                 queued_timestamp: Some(insert_timestamp.into()),
+                platform: Some(Platform::default()),
+                worker_id: worker_id.clone().into(),
             })),
         };
         let msg_for_worker = rx_from_worker.recv().await.unwrap();
@@ -1193,9 +1657,9 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
 
     {
         // Client should get notification saying it's being executed.
-        let action_state = action_listener.changed().await.unwrap();
+        let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
         // We now know the name of the action so populate it.
-        expected_action_state.operation_id = action_state.operation_id.clone();
+        expected_action_state.client_operation_id = action_state.client_operation_id.clone();
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
 
@@ -1228,7 +1692,9 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
         .update_action(
             &worker_id,
             &operation_id,
-            Ok(ActionStage::Completed(action_result.clone())),
+            UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(
+                action_result.clone(),
+            )),
         )
         .await
         .unwrap();
@@ -1236,8 +1702,9 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
     {
         // Action should now be executing.
         expected_action_state.stage = ActionStage::Completed(action_result.clone());
+        expected_action_state.last_transition_timestamp = SystemTime::now();
         assert_eq!(
-            action_listener.changed().await.unwrap().as_ref(),
+            action_listener.changed().await.unwrap().0.as_ref(),
             &expected_action_state
         );
     }
@@ -1253,9 +1720,10 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
                 .unwrap();
         // We didn't disconnect our worker, so it will have scheduled it to the worker.
         expected_action_state.stage = ActionStage::Executing;
-        let action_state = action_listener.changed().await.unwrap();
+        expected_action_state.last_transition_timestamp = SystemTime::now();
+        let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
         // The name of the action changed (since it's a new action), so update it.
-        expected_action_state.operation_id = action_state.operation_id.clone();
+        expected_action_state.client_operation_id = action_state.client_operation_id.clone();
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
 
@@ -1266,17 +1734,25 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
 /// a job finished on a specific worker (eg: restore platform properties).
 #[nativelink_test]
 async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> Result<(), Error> {
-    let worker_id: WorkerId = WorkerId(Uuid::new_v4());
+    let worker_id = WorkerId("worker_id".to_string());
 
     let mut supported_props = HashMap::new();
     supported_props.insert("prop1".to_string(), PropertyType::Minimum);
+    let task_change_notify = Arc::new(Notify::new());
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
-        &nativelink_config::schedulers::SimpleScheduler {
+        &SimpleSpec {
             supported_platform_properties: Some(supported_props),
             ..Default::default()
         },
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
         || async move {},
+        task_change_notify,
         MockInstantWrapped::default,
+        None,
     );
     let action_digest1 = DigestInfo::new([11u8; 32], 512);
     let action_digest2 = DigestInfo::new([99u8; 32], 512);
@@ -1290,9 +1766,10 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
         .iter()
         .map(|(k, v)| (k.clone(), v.as_str().into_owned()))
         .collect();
-    let mut rx_from_worker = setup_new_worker(&scheduler, worker_id, platform_properties.clone())
-        .await
-        .unwrap();
+    let mut rx_from_worker =
+        setup_new_worker(&scheduler, worker_id.clone(), platform_properties.clone())
+            .await
+            .unwrap();
     let insert_timestamp1 = make_system_time(1);
     let mut client1_action_listener = setup_action(
         &scheduler,
@@ -1315,8 +1792,8 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
         v => panic!("Expected StartAction, got : {v:?}"),
     };
     {
-        let state_1 = client1_action_listener.changed().await.unwrap();
-        let state_2 = client2_action_listener.changed().await.unwrap();
+        let (state_1, _maybe_origin_metadata) = client1_action_listener.changed().await.unwrap();
+        let (state_2, _maybe_origin_metadata) = client2_action_listener.changed().await.unwrap();
         // First client should be in an Executing state.
         assert_eq!(state_1.stage, ActionStage::Executing);
         // Second client should be in a queued state.
@@ -1353,19 +1830,23 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
         .update_action(
             &worker_id,
             &operation_id1,
-            Ok(ActionStage::Completed(action_result.clone())),
+            UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(
+                action_result.clone(),
+            )),
         )
         .await
         .unwrap();
 
     {
         // First action should now be completed.
-        let action_state = client1_action_listener.changed().await.unwrap();
+        let (action_state, _maybe_origin_metadata) =
+            client1_action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
-            operation_id: action_state.operation_id.clone(),
+            client_operation_id: action_state.client_operation_id.clone(),
             stage: ActionStage::Completed(action_result.clone()),
             action_digest: action_state.action_digest,
+            last_transition_timestamp: SystemTime::now(),
         };
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
@@ -1383,7 +1864,7 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
         };
         // Other tests check full data. We only care if client thinks we are Executing.
         assert_eq!(
-            client2_action_listener.changed().await.unwrap().stage,
+            client2_action_listener.changed().await.unwrap().0.stage,
             ActionStage::Executing
         );
         operation_id
@@ -1394,19 +1875,23 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
         .update_action(
             &worker_id,
             &operation_id2,
-            Ok(ActionStage::Completed(action_result.clone())),
+            UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(
+                action_result.clone(),
+            )),
         )
         .await
         .unwrap();
 
     {
         // Our second client should be notified it completed.
-        let action_state = client2_action_listener.changed().await.unwrap();
+        let (action_state, _maybe_origin_metadata) =
+            client2_action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
-            operation_id: action_state.operation_id.clone(),
+            client_operation_id: action_state.client_operation_id.clone(),
             stage: ActionStage::Completed(action_result.clone()),
             action_digest: action_state.action_digest,
+            last_transition_timestamp: SystemTime::now(),
         };
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
@@ -1417,17 +1902,25 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
 /// This tests that actions are performed in the order they were queued.
 #[nativelink_test]
 async fn run_jobs_in_the_order_they_were_queued() -> Result<(), Error> {
-    let worker_id: WorkerId = WorkerId(Uuid::new_v4());
+    let worker_id = WorkerId("worker_id".to_string());
 
     let mut supported_props = HashMap::new();
     supported_props.insert("prop1".to_string(), PropertyType::Minimum);
+    let task_change_notify = Arc::new(Notify::new());
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
-        &nativelink_config::schedulers::SimpleScheduler {
+        &SimpleSpec {
             supported_platform_properties: Some(supported_props),
             ..Default::default()
         },
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
         || async move {},
+        task_change_notify,
         MockInstantWrapped::default,
+        None,
     );
     let action_digest1 = DigestInfo::new([11u8; 32], 512);
     let action_digest2 = DigestInfo::new([99u8; 32], 512);
@@ -1464,12 +1957,12 @@ async fn run_jobs_in_the_order_they_were_queued() -> Result<(), Error> {
     {
         // First client should be in an Executing state.
         assert_eq!(
-            client1_action_listener.changed().await.unwrap().stage,
+            client1_action_listener.changed().await.unwrap().0.stage,
             ActionStage::Executing
         );
         // Second client should be in a queued state.
         assert_eq!(
-            client2_action_listener.changed().await.unwrap().stage,
+            client2_action_listener.changed().await.unwrap().0.stage,
             ActionStage::Queued
         );
     }
@@ -1479,20 +1972,28 @@ async fn run_jobs_in_the_order_they_were_queued() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> {
-    let worker_id: WorkerId = WorkerId(Uuid::new_v4());
+    let worker_id = WorkerId("worker_id".to_string());
 
+    let task_change_notify = Arc::new(Notify::new());
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
-        &nativelink_config::schedulers::SimpleScheduler {
+        &SimpleSpec {
             max_job_retries: 1,
             ..Default::default()
         },
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
         || async move {},
+        task_change_notify,
         MockInstantWrapped::default,
+        None,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
     let mut rx_from_worker =
-        setup_new_worker(&scheduler, worker_id, PlatformProperties::default()).await?;
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
     let insert_timestamp = make_system_time(1);
     let mut action_listener =
         setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp).await?;
@@ -1505,35 +2006,38 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
         };
         // Other tests check full data. We only care if client thinks we are Executing.
         assert_eq!(
-            action_listener.changed().await.unwrap().stage,
+            action_listener.changed().await.unwrap().0.stage,
             ActionStage::Executing
         );
-        OperationId::from(operation_id)
+        OperationId::from(operation_id.as_str())
     };
 
-    let _ = scheduler
-        .update_action(
-            &worker_id,
-            &operation_id,
-            Err(make_err!(Code::Internal, "Some error")),
-        )
-        .await;
+    drop(
+        scheduler
+            .update_action(
+                &worker_id,
+                &operation_id,
+                UpdateOperationType::UpdateWithError(make_err!(Code::Internal, "Some error")),
+            )
+            .await,
+    );
 
     {
         // Client should get notification saying it has been queued again.
-        let action_state = action_listener.changed().await.unwrap();
+        let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
-            operation_id: action_state.operation_id.clone(),
+            client_operation_id: action_state.client_operation_id.clone(),
             stage: ActionStage::Queued,
             action_digest: action_state.action_digest,
+            last_transition_timestamp: SystemTime::now(),
         };
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
 
     // Now connect a new worker and it should pickup the action.
     let mut rx_from_worker =
-        setup_new_worker(&scheduler, worker_id, PlatformProperties::default()).await?;
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
     {
         // Other tests check full data. We only care if we got StartAction.
         match rx_from_worker.recv().await.unwrap().update {
@@ -1542,23 +2046,29 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
         }
         // Other tests check full data. We only care if client thinks we are Executing.
         assert_eq!(
-            action_listener.changed().await.unwrap().stage,
+            action_listener.changed().await.unwrap().0.stage,
             ActionStage::Executing
         );
     }
 
     let err = make_err!(Code::Internal, "Some error");
     // Send internal error from worker again.
-    let _ = scheduler
-        .update_action(&worker_id, &operation_id, Err(err.clone()))
-        .await;
+    drop(
+        scheduler
+            .update_action(
+                &worker_id,
+                &operation_id,
+                UpdateOperationType::UpdateWithError(err.clone()),
+            )
+            .await,
+    );
 
     {
         // Client should get notification saying it has been queued again.
-        let action_state = action_listener.changed().await.unwrap();
+        let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
-            operation_id: action_state.operation_id.clone(),
+            client_operation_id: action_state.client_operation_id.clone(),
             stage: ActionStage::Completed(ActionResult {
                 output_files: Vec::default(),
                 output_folders: Vec::default(),
@@ -1584,21 +2094,200 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
                 message: String::new(),
             }),
             action_digest: action_state.action_digest,
+            last_transition_timestamp: SystemTime::now(),
         };
         let mut received_state = action_state.as_ref().clone();
         if let ActionStage::Completed(stage) = &mut received_state.stage {
             if let Some(real_err) = &mut stage.error {
                 assert!(
-                    real_err.to_string().contains("Job cancelled because it attempted to execute too many times and failed"),
-                    "{real_err} did not contain 'Job cancelled because it attempted to execute too many times and failed'",
+                    real_err
+                        .to_string()
+                        .contains("Job cancelled because it attempted to execute too many times"),
+                    "{real_err} did not contain 'Job cancelled because it attempted to execute too many times'",
                 );
                 *real_err = err;
             }
         } else {
             panic!("Expected Completed, got : {:?}", action_state.stage);
-        };
+        }
         assert_eq!(received_state, expected_action_state);
     }
+
+    Ok(())
+}
+
+/// Worker crash-loop regression: an action whose worker keeps disconnecting
+/// (e.g. `OOMKill`) used to bypass `max_job_retries` because
+/// `UpdateWithDisconnect` requeued without counting as an attempt. The build
+/// would only terminate when the Bazel client's `--test_timeout` fired,
+/// hiding the cluster-side root cause behind a TIMEOUT/NO STATUS surface.
+/// After the fix, disconnects count as attempts and exceed the cap.
+#[nativelink_test]
+async fn worker_disconnect_loop_caps_at_max_job_retries_test() -> Result<(), Error> {
+    let worker_id = WorkerId("worker_id".to_string());
+
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec {
+            max_job_retries: 1,
+            ..Default::default()
+        },
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+    );
+    let action_digest = DigestInfo::new([99u8; 32], 512);
+
+    let mut rx_from_worker =
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
+    let insert_timestamp = make_system_time(1);
+    let mut action_listener =
+        setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp).await?;
+
+    let operation_id = {
+        let operation_id = match rx_from_worker.recv().await.unwrap().update {
+            Some(update_for_worker::Update::StartAction(exec)) => exec.operation_id,
+            v => panic!("Expected StartAction, got : {v:?}"),
+        };
+        assert_eq!(
+            action_listener.changed().await.unwrap().0.stage,
+            ActionStage::Executing
+        );
+        OperationId::from(operation_id.as_str())
+    };
+
+    // First disconnect: should requeue (attempts=1, not yet > max_job_retries=1).
+    drop(
+        scheduler
+            .update_action(
+                &worker_id,
+                &operation_id,
+                UpdateOperationType::UpdateWithDisconnect,
+            )
+            .await,
+    );
+    {
+        let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
+        assert_eq!(
+            action_state.stage,
+            ActionStage::Queued,
+            "First disconnect should requeue, got: {:?}",
+            action_state.stage,
+        );
+    }
+
+    // Reattach worker so it picks up the requeued action.
+    let mut rx_from_worker =
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
+    {
+        match rx_from_worker.recv().await.unwrap().update {
+            Some(update_for_worker::Update::StartAction(_)) => { /* Success */ }
+            v => panic!("Expected StartAction, got : {v:?}"),
+        }
+        assert_eq!(
+            action_listener.changed().await.unwrap().0.stage,
+            ActionStage::Executing
+        );
+    }
+
+    // Second disconnect: now attempts=2 > max_job_retries=1, so the action
+    // must transition to Completed with an error mentioning the disconnect
+    // loop, not silently requeue.
+    drop(
+        scheduler
+            .update_action(
+                &worker_id,
+                &operation_id,
+                UpdateOperationType::UpdateWithDisconnect,
+            )
+            .await,
+    );
+    {
+        let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
+        let ActionStage::Completed(action_result) = &action_state.stage else {
+            panic!(
+                "Second disconnect should mark action Completed-with-error, got: {:?}",
+                action_state.stage
+            );
+        };
+        let err = action_result
+            .error
+            .as_ref()
+            .expect("Completed action from disconnect cap must carry an error");
+        assert!(
+            err.to_string()
+                .contains("Worker disconnected repeatedly while executing this action"),
+            "Error message did not mention disconnect loop: {err}",
+        );
+    }
+
+    Ok(())
+}
+
+/// `Action.timeout` from the RBE protocol must be enforced backend-side.
+/// Without this, an action that hangs forever only terminates when the
+/// Bazel client's `--remote_timeout` (gRPC deadline) or `--test_timeout`
+/// (client-side) fires; from the operator's perspective the cluster never
+/// surfaces the slow action.
+#[nativelink_test]
+async fn action_timeout_is_enforced_backend_side_test() -> Result<(), Error> {
+    use nativelink_scheduler::awaited_action_db::AwaitedAction;
+    use nativelink_scheduler::simple_scheduler_state_manager::SimpleSchedulerStateManager;
+
+    // Anchor MockClock so MockInstantWrapped::now() == make_system_time(0).
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let executing_started_at = make_system_time(0);
+
+    let action_digest = DigestInfo::new([7u8; 32], 1);
+    let mut action_info = make_base_action_info(executing_started_at, action_digest);
+    Arc::make_mut(&mut action_info).timeout = Duration::from_secs(2);
+
+    let operation_id = OperationId::default();
+    let mut awaited_action =
+        AwaitedAction::new(operation_id.clone(), action_info, executing_started_at);
+    awaited_action.worker_set_state(
+        Arc::new(ActionState {
+            stage: ActionStage::Executing,
+            client_operation_id: operation_id,
+            action_digest,
+            last_transition_timestamp: executing_started_at,
+        }),
+        executing_started_at,
+    );
+
+    let task_change_notify = Arc::new(Notify::new());
+    let state_mgr = SimpleSchedulerStateManager::new(
+        /* max_job_retries */ 1,
+        /* no_event_action_timeout */ Duration::from_secs(60),
+        /* client_action_timeout */ Duration::from_secs(60),
+        /* max_executing_timeout */ Duration::ZERO,
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        MockInstantWrapped::default,
+        /* worker_registry */ None,
+    );
+
+    assert!(
+        !state_mgr.should_timeout_operation(&awaited_action).await,
+        "Should not time out before Action.timeout elapses",
+    );
+
+    // Advance past the 2s per-action deadline.
+    MockClock::advance(Duration::from_secs(5));
+
+    assert!(
+        state_mgr.should_timeout_operation(&awaited_action).await,
+        "Scheduler must mark Executing action timed out once Action.timeout has elapsed",
+    );
 
     Ok(())
 }
@@ -1622,14 +2311,22 @@ async fn ensure_scheduler_drops_inner_spawn() -> Result<(), Error> {
     // Since the inner spawn owns this callback, we can use the callback to know if the
     // inner spawn was dropped because our callback would be dropped, which dropps our
     // DropChecker.
+    let task_change_notify = Arc::new(Notify::new());
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
-        &nativelink_config::schedulers::SimpleScheduler::default(),
+        &SimpleSpec::default(),
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
         move || {
             // This will ensure dropping happens if this function is ever dropped.
             let _drop_checker = drop_checker.clone();
             async move {}
         },
+        task_change_notify,
         MockInstantWrapped::default,
+        None,
     );
     assert_eq!(dropped.load(Ordering::Relaxed), false);
 
@@ -1642,21 +2339,33 @@ async fn ensure_scheduler_drops_inner_spawn() -> Result<(), Error> {
     Ok(())
 }
 
-/// Regression test for: https://github.com/TraceMachina/nativelink/issues/257.
+/// Regression test for: <https://github.com/TraceMachina/nativelink/issues/257>.
 #[nativelink_test]
 async fn ensure_task_or_worker_change_notification_received_test() -> Result<(), Error> {
-    let worker_id1: WorkerId = WorkerId(Uuid::new_v4());
-    let worker_id2: WorkerId = WorkerId(Uuid::new_v4());
+    let worker_id1 = WorkerId("worker1".to_string());
+    let worker_id2 = WorkerId("worker2".to_string());
 
+    let task_change_notify = Arc::new(Notify::new());
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
-        &nativelink_config::schedulers::SimpleScheduler::default(),
+        &SimpleSpec::default(),
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
         || async move {},
+        task_change_notify,
         MockInstantWrapped::default,
+        None,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
-    let mut rx_from_worker1 =
-        setup_new_worker(&scheduler, worker_id1, PlatformProperties::default()).await?;
+    let mut rx_from_worker1 = setup_new_worker(
+        &scheduler,
+        worker_id1.clone(),
+        PlatformProperties::default(),
+    )
+    .await?;
     let mut action_listener = setup_action(
         &scheduler,
         action_digest,
@@ -1665,8 +2374,12 @@ async fn ensure_task_or_worker_change_notification_received_test() -> Result<(),
     )
     .await?;
 
-    let mut rx_from_worker2 =
-        setup_new_worker(&scheduler, worker_id2, PlatformProperties::default()).await?;
+    let mut rx_from_worker2 = setup_new_worker(
+        &scheduler,
+        worker_id2.clone(),
+        PlatformProperties::default(),
+    )
+    .await?;
 
     let operation_id = {
         // Other tests check full data. We only care if we got StartAction.
@@ -1676,19 +2389,21 @@ async fn ensure_task_or_worker_change_notification_received_test() -> Result<(),
         };
         // Other tests check full data. We only care if client thinks we are Executing.
         assert_eq!(
-            action_listener.changed().await.unwrap().stage,
+            action_listener.changed().await.unwrap().0.stage,
             ActionStage::Executing
         );
-        OperationId::from(operation_id)
+        OperationId::from(operation_id.as_str())
     };
 
-    let _ = scheduler
-        .update_action(
-            &worker_id1,
-            &operation_id,
-            Err(make_err!(Code::NotFound, "Some error")),
-        )
-        .await;
+    drop(
+        scheduler
+            .update_action(
+                &worker_id1,
+                &operation_id,
+                UpdateOperationType::UpdateWithError(make_err!(Code::NotFound, "Some error")),
+            )
+            .await,
+    );
 
     tokio::task::yield_now().await; // Allow task<->worker matcher to run.
 
@@ -1701,7 +2416,7 @@ async fn ensure_task_or_worker_change_notification_received_test() -> Result<(),
             .err_tip(|| "worker went away")?;
         // Other tests check full data. We only care if client thinks we are Executing.
         assert_eq!(
-            action_listener.changed().await.unwrap().stage,
+            action_listener.changed().await.unwrap().0.stage,
             ActionStage::Executing
         );
     }
@@ -1713,10 +2428,21 @@ async fn ensure_task_or_worker_change_notification_received_test() -> Result<(),
 // https://github.com/TraceMachina/nativelink/issues/1197
 #[nativelink_test]
 async fn client_reconnect_keeps_action_alive() -> Result<(), Error> {
+    let task_change_notify = Arc::new(Notify::new());
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
-        &nativelink_config::schedulers::SimpleScheduler::default(),
+        &SimpleSpec {
+            worker_timeout_s: WORKER_TIMEOUT_S,
+            ..Default::default()
+        },
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
         || async move {},
+        task_change_notify,
         MockInstantWrapped::default,
+        None,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -1729,7 +2455,8 @@ async fn client_reconnect_keeps_action_alive() -> Result<(), Error> {
         .as_state()
         .await
         .unwrap()
-        .operation_id
+        .0
+        .client_operation_id
         .clone();
 
     // Simulate client disconnecting.
@@ -1748,7 +2475,7 @@ async fn client_reconnect_keeps_action_alive() -> Result<(), Error> {
 
     // We should get one notification saying it's queued.
     assert_eq!(
-        new_action_listener.changed().await.unwrap().stage,
+        new_action_listener.changed().await.unwrap().0.stage,
         ActionStage::Queued
     );
 
@@ -1762,21 +2489,140 @@ async fn client_reconnect_keeps_action_alive() -> Result<(), Error> {
         assert_eq!(poll!(&mut changed_fut), Poll::Pending);
         tokio::task::yield_now().await;
         // Eviction happens when someone touches the internal
-        // evicting map. So we constantly ask for some other client
-        // to trigger eviction logic.
-        assert!(scheduler
+        // evicting map.  So we constantly ask for all queued actions.
+        // Regression: https://github.com/TraceMachina/nativelink/issues/1579
+        let mut stream = scheduler
             .filter_operations(OperationFilter {
-                client_operation_id: Some(OperationId::from_raw_string(
-                    "dummy_client_id".to_string(),
-                )),
+                stages: OperationStageFlags::Queued,
                 ..Default::default()
             })
-            .await
-            .unwrap()
-            .next()
-            .await
-            .is_none());
+            .await?;
+        while stream.next().await.is_some() {}
     }
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn client_timesout_job_then_same_action_requested() -> Result<(), Error> {
+    const CLIENT_ACTION_TIMEOUT_S: u64 = 60;
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec {
+            worker_timeout_s: WORKER_TIMEOUT_S,
+            client_action_timeout_s: CLIENT_ACTION_TIMEOUT_S,
+            ..Default::default()
+        },
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+    );
+    let action_digest = DigestInfo::new([99u8; 32], 512);
+
+    {
+        let insert_timestamp = make_system_time(1);
+        let mut action_listener =
+            setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp)
+                .await
+                .unwrap();
+
+        // We should get one notification saying it's queued.
+        assert_eq!(
+            action_listener.changed().await.unwrap().0.stage,
+            ActionStage::Queued
+        );
+
+        let changed_fut = action_listener.changed();
+        tokio::pin!(changed_fut);
+
+        MockClock::advance(Duration::from_secs(2));
+        scheduler.do_try_match_for_test().await.unwrap();
+        assert_eq!(poll!(&mut changed_fut), Poll::Pending);
+    }
+
+    MockClock::advance(Duration::from_secs(CLIENT_ACTION_TIMEOUT_S + 1));
+
+    {
+        let insert_timestamp = make_system_time(1);
+        let mut action_listener =
+            setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp)
+                .await
+                .unwrap();
+
+        // We should get one notification saying it's queued.
+        assert_eq!(
+            action_listener.changed().await.unwrap().0.stage,
+            ActionStage::Queued
+        );
+
+        let changed_fut = action_listener.changed();
+        tokio::pin!(changed_fut);
+
+        MockClock::advance(Duration::from_secs(2));
+        tokio::task::yield_now().await;
+        assert_eq!(poll!(&mut changed_fut), Poll::Pending);
+    }
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn logs_when_no_workers_match() -> Result<(), Error> {
+    let worker_id = WorkerId("worker_id".to_string());
+
+    let mut prop_defs = HashMap::new();
+    prop_defs.insert("prop".to_string(), PropertyType::Minimum);
+
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec {
+            worker_match_logging_interval_s: 1,
+            supported_platform_properties: Some(prop_defs),
+            ..Default::default()
+        },
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+    );
+    let action_digest = DigestInfo::new([99u8; 32], 512);
+
+    let mut required_platform_properties = HashMap::new();
+    required_platform_properties.insert("prop".to_string(), "1".to_string());
+
+    let mut worker_properties = PlatformProperties::default();
+    worker_properties
+        .properties
+        .insert("prop".to_string(), PlatformPropertyValue::Minimum(0));
+
+    setup_new_worker(&scheduler, worker_id.clone(), worker_properties).await?;
+
+    setup_action(
+        &scheduler,
+        action_digest,
+        required_platform_properties,
+        make_system_time(1),
+    )
+    .await
+    .unwrap();
+
+    scheduler.do_try_match_for_test().await?;
+
+    assert!(logs_contain(
+        "Property mismatch on worker property prop. Minimum(0) < Minimum(1)"
+    ));
+    assert!(logs_contain("No workers matched"));
 
     Ok(())
 }

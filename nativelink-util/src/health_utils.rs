@@ -1,10 +1,10 @@
 // Copyright 2024 The Native Link Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,16 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::fmt::Debug;
+use core::pin::Pin;
+use core::time::Duration;
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::fmt::Debug;
-use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::{Stream, StreamExt};
 use parking_lot::Mutex;
 use serde::Serialize;
+use tokio::time::timeout;
+use tracing::warn;
 
 /// Struct name health indicator component.
 type StructName = str;
@@ -47,6 +50,9 @@ pub enum HealthStatus {
         struct_name: &'static StructName,
         message: Cow<'static, Message>,
     },
+    Timeout {
+        struct_name: &'static StructName,
+    },
 }
 
 impl HealthStatus {
@@ -63,7 +69,7 @@ impl HealthStatus {
     pub fn new_initializing(
         component: &(impl HealthStatusIndicator + ?Sized),
         message: Cow<'static, str>,
-    ) -> HealthStatus {
+    ) -> Self {
         Self::Initializing {
             struct_name: component.struct_name(),
             message,
@@ -73,7 +79,7 @@ impl HealthStatus {
     pub fn new_warning(
         component: &(impl HealthStatusIndicator + ?Sized),
         message: Cow<'static, str>,
-    ) -> HealthStatus {
+    ) -> Self {
         Self::Warning {
             struct_name: component.struct_name(),
             message,
@@ -83,7 +89,7 @@ impl HealthStatus {
     pub fn new_failed(
         component: &(impl HealthStatusIndicator + ?Sized),
         message: Cow<'static, str>,
-    ) -> HealthStatus {
+    ) -> Self {
         Self::Failed {
             struct_name: component.struct_name(),
             message,
@@ -107,7 +113,7 @@ pub trait HealthStatusIndicator: Sync + Send + Unpin {
 
     /// Returns the name of the struct implementing the trait.
     fn struct_name(&self) -> &'static str {
-        std::any::type_name::<Self>()
+        core::any::type_name::<Self>()
     }
 
     /// Check the health status of the component. This function should be
@@ -117,17 +123,26 @@ pub trait HealthStatusIndicator: Sync + Send + Unpin {
 
 type HealthRegistryBuilderState =
     Arc<Mutex<HashMap<Cow<'static, str>, Arc<dyn HealthStatusIndicator>>>>;
+
 pub struct HealthRegistryBuilder {
     namespace: Cow<'static, str>,
     state: HealthRegistryBuilderState,
 }
 
+impl Debug for HealthRegistryBuilder {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("HealthRegistryBuilder")
+            .field("namespace", &self.namespace)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Health registry builder that is used to build a health registry.
 /// The builder provides creation, registering of health status indicators,
-/// sub building scoped health registries and building the health registry.
+/// sub-building scoped health registries and building the health registry.
 /// `build()` should be called once for finalizing the production of a health registry.
 impl HealthRegistryBuilder {
-    pub fn new(namespace: Cow<'static, str>) -> Self {
+    pub fn new(namespace: &str) -> Self {
         Self {
             namespace: format!("/{namespace}").into(),
             state: Arc::new(Mutex::new(HashMap::new())),
@@ -141,8 +156,9 @@ impl HealthRegistryBuilder {
     }
 
     /// Create a sub builder for a namespace.
-    pub fn sub_builder(&mut self, namespace: Cow<'static, str>) -> HealthRegistryBuilder {
-        HealthRegistryBuilder {
+    #[must_use]
+    pub fn sub_builder(&mut self, namespace: &str) -> Self {
+        Self {
             namespace: format!("{}/{}", self.namespace, namespace).into(),
             state: self.state.clone(),
         }
@@ -161,26 +177,70 @@ pub struct HealthRegistry {
     indicators: Vec<(Cow<'static, str>, Arc<dyn HealthStatusIndicator>)>,
 }
 
+impl Debug for HealthRegistry {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("HealthRegistry")
+            .field(
+                "indicators",
+                &self
+                    .indicators
+                    .iter()
+                    .map(|(name, _)| name)
+                    .collect::<Vec<_>>(),
+            )
+            .finish()
+    }
+}
+
 pub trait HealthStatusReporter {
     fn health_status_report(
         &self,
+        timeout: &Duration,
     ) -> Pin<Box<dyn Stream<Item = HealthStatusDescription> + Send + '_>>;
 }
 
 /// Health status reporter implementation for the health registry that provides a stream
 /// of health status descriptions.
+///
+/// Indicator checks run **in parallel**: each indicator's
+/// `check_health` does real I/O against its store (write/has/read
+/// roundtrip per [`StoreDriver::check_health`]), so iterating
+/// indicators serially makes the total response time `N * timeout`.
+/// Under load that easily exceeds Kubernetes liveness probe budgets,
+/// causing kubelet to kill an otherwise-healthy pod whose only sin
+/// was that one congested store made the probe handler queue behind
+/// it. Parallel execution caps the total at ~`timeout` regardless of
+/// how many stores are registered.
 impl HealthStatusReporter for HealthRegistry {
     fn health_status_report(
         &self,
+        timeout_limit: &Duration,
     ) -> Pin<Box<dyn Stream<Item = HealthStatusDescription> + Send + '_>> {
-        Box::pin(futures::stream::iter(self.indicators.iter()).then(
-            |(namespace, indicator)| async move {
-                HealthStatusDescription {
-                    namespace: namespace.clone(),
-                    status: indicator.check_health(namespace.clone()).await,
-                }
-            },
-        ))
+        let local_timeout_limit = *timeout_limit;
+        Box::pin(
+            futures::stream::iter(self.indicators.iter().map(
+                move |(namespace, indicator)| async move {
+                    let status_res = timeout(
+                        local_timeout_limit,
+                        indicator.check_health(namespace.clone()),
+                    )
+                    .await;
+                    HealthStatusDescription {
+                        namespace: namespace.clone(),
+                        status: status_res.unwrap_or_else(|_| {
+                            let struct_name = indicator.struct_name();
+                            warn!(struct_name, "Timeout during health check");
+                            HealthStatus::Timeout { struct_name }
+                        }),
+                    }
+                },
+            ))
+            // Drive every indicator's check concurrently rather than
+            // serially. The order of the resulting descriptions is
+            // not part of the API contract; collect-into-Vec callers
+            // already ignore order.
+            .buffer_unordered(usize::MAX),
+        )
     }
 }
 

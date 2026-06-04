@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,46 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::mem::forget;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::thread_local;
+use core::mem::forget;
+use core::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use futures::Future;
 use nativelink_metric::{
-    group, publish, MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
+    MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent, group, publish,
 };
 
-thread_local! {
-    /// This is a thread local variable that will enable or disable metrics for
-    /// the current thread. This does not mean that metrics are "disabled"
-    /// everywhere. It only means that metrics gathering for this specific thread
-    /// will be disabled. Because tokio uses thread pools, if you change this
-    /// value you'll need to change it on every thread tokio is using, often using
-    /// the `tokio::runtime::Builder::on_thread_start` function. This field also
-    /// does not mean that metrics cannot be pulled from the registry. It only
-    /// removes the ability for metrics that are collected at runtime (hot path)
-    /// from being collected.
-    pub static METRICS_ENABLED: AtomicBool = const { AtomicBool::new(true) };
-}
-
-#[inline]
-pub fn metrics_enabled() -> bool {
-    METRICS_ENABLED.with(
-        #[inline]
-        |v| v.load(Ordering::Acquire),
-    )
-}
-
-/// This function will enable or disable metrics for the current thread.
-/// WARNING: This will only happen for this thread. Tokio uses thread pools
-/// so you'd need to run this function on every thread in the thread pool in
-/// order to enable it everywhere.
-pub fn set_metrics_enabled_for_this_thread(enabled: bool) {
-    METRICS_ENABLED.with(|v| v.store(enabled, Ordering::Release));
-}
-
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct FuncCounterWrapper {
     pub successes: AtomicU64,
     pub failures: AtomicU64,
@@ -105,42 +75,39 @@ impl MetricsComponent for FuncCounterWrapper {
 /// This is a utility that will only increment the referenced counter when it is dropped.
 /// This struct is zero cost and has a runtime cost only when it is dropped.
 /// This struct is very useful for tracking when futures are dropped.
+#[derive(Debug)]
 struct DropCounter<'a> {
     counter: &'a AtomicU64,
 }
 
 impl<'a> DropCounter<'a> {
     #[inline]
-    pub fn new(counter: &'a AtomicU64) -> Self {
+    pub(crate) const fn new(counter: &'a AtomicU64) -> Self {
         Self { counter }
     }
 }
 
-impl<'a> Drop for DropCounter<'a> {
+impl Drop for DropCounter<'_> {
     #[inline]
     fn drop(&mut self) {
-        if !metrics_enabled() {
-            return;
-        }
         self.counter.fetch_add(1, Ordering::Acquire);
     }
 }
 
+#[derive(Debug)]
 pub struct AsyncTimer<'a> {
     start: Instant,
     drop_counter: DropCounter<'a>,
     counter: &'a AsyncCounterWrapper,
 }
 
-impl<'a> AsyncTimer<'a> {
+impl AsyncTimer<'_> {
     #[inline]
     pub fn measure(self) {
-        if !metrics_enabled() {
-            return;
-        }
-        self.counter
-            .sum_func_duration_ns
-            .fetch_add(self.start.elapsed().as_nanos() as u64, Ordering::Acquire);
+        self.counter.sum_func_duration_ns.fetch_add(
+            u64::try_from(self.start.elapsed().as_nanos()).unwrap_or(u64::MAX),
+            Ordering::Acquire,
+        );
         self.counter.calls.fetch_add(1, Ordering::Acquire);
         self.counter.successes.fetch_add(1, Ordering::Acquire);
         // This causes DropCounter's drop to never be called.
@@ -151,13 +118,13 @@ impl<'a> AsyncTimer<'a> {
 /// Tracks the number of calls, successes, failures, and drops of an async function.
 /// call `.wrap(future)` to wrap a future and stats about the future are automatically
 /// tracked and can be published to a `CollectorState`.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct AsyncCounterWrapper {
     pub calls: AtomicU64,
     pub successes: AtomicU64,
     pub failures: AtomicU64,
     pub drops: AtomicU64,
-    // Time spent in nano seconds in the future.
+    // Time spent in nanoseconds in the future.
     // 64 bit address space gives ~584 years of nanoseconds.
     pub sum_func_duration_ns: AtomicU64,
 }
@@ -166,6 +133,10 @@ pub struct AsyncCounterWrapper {
 // is now a group with the name of the group as the field so we
 // can attach multiple values on the same group, so we need to
 // manually implement the `MetricsComponent` trait to do so.
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "complexity arises from macro expansion"
+)]
 impl MetricsComponent for AsyncCounterWrapper {
     fn publish(
         &self,
@@ -236,9 +207,6 @@ impl AsyncCounterWrapper {
         &'a self,
         future: F,
     ) -> Result<T, E> {
-        if !metrics_enabled() {
-            return future.await;
-        }
         let result = self.wrap_no_capture_result(future).await;
         if result.is_ok() {
             self.successes.fetch_add(1, Ordering::Acquire);
@@ -253,9 +221,6 @@ impl AsyncCounterWrapper {
         &'a self,
         future: F,
     ) -> T {
-        if !metrics_enabled() {
-            return future.await;
-        }
         self.calls.fetch_add(1, Ordering::Acquire);
         let drop_counter = DropCounter::new(&self.drops);
         let instant = Instant::now();
@@ -263,8 +228,10 @@ impl AsyncCounterWrapper {
         // By default `drop_counter` will increment the drop counter when it goes out of scope.
         // This will ensure we don't increment the counter if we make it here with a zero cost.
         forget(drop_counter);
-        self.sum_func_duration_ns
-            .fetch_add(instant.elapsed().as_nanos() as u64, Ordering::Acquire);
+        self.sum_func_duration_ns.fetch_add(
+            u64::try_from(instant.elapsed().as_nanos()).unwrap_or(u64::MAX),
+            Ordering::Acquire,
+        );
         result
     }
 
@@ -278,8 +245,8 @@ impl AsyncCounterWrapper {
     }
 }
 
-/// Tracks an number.
-#[derive(Default)]
+/// Tracks a number.
+#[derive(Debug, Default)]
 pub struct Counter(AtomicU64);
 
 impl Counter {
@@ -290,17 +257,11 @@ impl Counter {
 
     #[inline]
     pub fn add(&self, value: u64) {
-        if !metrics_enabled() {
-            return;
-        }
         self.0.fetch_add(value, Ordering::Acquire);
     }
 
     #[inline]
     pub fn sub(&self, value: u64) {
-        if !metrics_enabled() {
-            return;
-        }
         self.0.fetch_sub(value, Ordering::Acquire);
     }
 }
@@ -316,7 +277,7 @@ impl MetricsComponent for Counter {
 }
 
 /// Tracks an counter through time and the last time the counter was changed.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct CounterWithTime {
     pub counter: AtomicU64,
     pub last_time: AtomicU64,
@@ -325,9 +286,6 @@ pub struct CounterWithTime {
 impl CounterWithTime {
     #[inline]
     pub fn inc(&self) {
-        if !metrics_enabled() {
-            return;
-        }
         self.counter.fetch_add(1, Ordering::Acquire);
         self.last_time.store(
             SystemTime::now()

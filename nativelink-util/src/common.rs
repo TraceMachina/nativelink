@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,31 +12,37 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::cmp::Ordering;
+use core::cmp::{Eq, Ordering};
+use core::hash::{BuildHasher, Hash};
+use core::ops::{Deref, DerefMut};
 use std::collections::HashMap;
-use std::fmt;
-use std::hash::Hash;
+use std::io::{Cursor, Write};
+use std::{env, fmt};
 
-use bytes::{BufMut, Bytes, BytesMut};
-use hex::FromHex;
-use nativelink_error::{make_input_err, Error, ResultExt};
+use bytes::{Buf, BufMut, Bytes, BytesMut};
+use nativelink_error::{Error, ResultExt, make_input_err};
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
 };
 use nativelink_proto::build::bazel::remote::execution::v2::Digest;
 use prost::Message;
-use serde::{Deserialize, Serialize};
+use rand::Rng;
+use serde::de::Visitor;
+use serde::ser::Error as _;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use tonic::Code;
+use tracing::error;
 
 pub use crate::fs;
 
-#[derive(Serialize, Deserialize, Default, Clone, Copy, Eq, PartialEq, Hash)]
+#[derive(Default, Clone, Copy, Eq, PartialEq, Hash, wincode::SchemaRead, wincode::SchemaWrite)]
 #[repr(C)]
 pub struct DigestInfo {
     /// Raw hash in packed form.
-    pub packed_hash: [u8; 32],
+    packed_hash: PackedHash,
 
     /// Possibly the size of the digest in bytes.
-    pub size_bytes: i64,
+    size_bytes: u64,
 }
 
 impl MetricsComponent for DigestInfo {
@@ -45,53 +51,209 @@ impl MetricsComponent for DigestInfo {
         _kind: MetricKind,
         field_metadata: MetricFieldData,
     ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
-        format!("{}-{}", self.hash_str(), self.size_bytes)
-            .publish(MetricKind::String, field_metadata)
+        format!("{self}").publish(MetricKind::String, field_metadata)
     }
 }
 
 impl DigestInfo {
-    pub const fn new(packed_hash: [u8; 32], size_bytes: i64) -> Self {
-        DigestInfo {
+    pub const fn new(packed_hash: [u8; 32], size_bytes: u64) -> Self {
+        Self {
             size_bytes,
-            packed_hash,
+            packed_hash: PackedHash(packed_hash),
         }
     }
 
     pub fn try_new<T>(hash: &str, size_bytes: T) -> Result<Self, Error>
     where
-        T: TryInto<i64> + std::fmt::Display + Copy,
+        T: TryInto<u64> + fmt::Display + Copy,
     {
         let packed_hash =
-            <[u8; 32]>::from_hex(hash).err_tip(|| format!("Invalid sha256 hash: {hash}"))?;
+            PackedHash::from_hex(hash).err_tip(|| format!("Invalid sha256 hash: {hash}"))?;
         let size_bytes = size_bytes
             .try_into()
-            .map_err(|_| make_input_err!("Could not convert {} into i64", size_bytes))?;
-        Ok(DigestInfo {
-            size_bytes,
+            .map_err(|_| make_input_err!("Could not convert {} into u64", size_bytes))?;
+        // The proto `Digest` takes an i64, so to keep compatibility
+        // we only allow sizes that can fit into an i64.
+        if size_bytes > i64::MAX as u64 {
+            return Err(make_input_err!(
+                "Size bytes is too large: {} - max: {}",
+                size_bytes,
+                i64::MAX
+            ));
+        }
+        Ok(Self {
             packed_hash,
+            size_bytes,
         })
     }
 
-    pub fn hash_str(&self) -> String {
-        hex::encode(self.packed_hash)
+    pub const fn zero_digest() -> Self {
+        Self {
+            size_bytes: 0,
+            packed_hash: PackedHash::new(),
+        }
     }
 
-    pub const fn zero_digest() -> DigestInfo {
-        DigestInfo {
-            size_bytes: 0,
-            // Magic hash of a sha256 of empty string.
-            packed_hash: [0u8; 32],
+    pub const fn packed_hash(&self) -> &PackedHash {
+        &self.packed_hash
+    }
+
+    pub const fn set_packed_hash(&mut self, packed_hash: [u8; 32]) {
+        self.packed_hash = PackedHash(packed_hash);
+    }
+
+    pub const fn size_bytes(&self) -> u64 {
+        self.size_bytes
+    }
+
+    /// Returns a struct that can turn the `DigestInfo` into a string.
+    const fn stringifier(&self) -> DigestStackStringifier<'_> {
+        DigestStackStringifier::new(self)
+    }
+}
+
+/// Counts the number of digits a number needs if it were to be
+/// converted to a string.
+const fn count_digits(mut num: u64) -> usize {
+    let mut count = 0;
+    while num != 0 {
+        count += 1;
+        num /= 10;
+    }
+    count
+}
+
+/// An optimized version of a function that can convert a `DigestInfo`
+/// into a str on the stack.
+struct DigestStackStringifier<'a> {
+    digest: &'a DigestInfo,
+    /// Buffer that can hold the string representation of the `DigestInfo`.
+    /// - Hex is '2 * sizeof(PackedHash)'.
+    /// - Digits can be at most `count_digits(u64::MAX)`.
+    /// - We also have a hyphen separator.
+    buf: [u8; size_of::<PackedHash>() * 2 + count_digits(u64::MAX) + 1],
+}
+
+impl<'a> DigestStackStringifier<'a> {
+    const fn new(digest: &'a DigestInfo) -> Self {
+        DigestStackStringifier {
+            digest,
+            buf: [b'-'; size_of::<PackedHash>() * 2 + count_digits(u64::MAX) + 1],
         }
+    }
+
+    fn as_str(&mut self) -> Result<&str, Error> {
+        // Populate the buffer and return the amount of bytes written
+        // to the buffer.
+        let len = {
+            let mut cursor = Cursor::new(&mut self.buf[..]);
+            let hex = self.digest.packed_hash.to_hex().map_err(|e| {
+                Error::from_std_err(Code::InvalidArgument, &e).append(format!(
+                    "Could not convert PackedHash to hex - {:?}",
+                    self.digest
+                ))
+            })?;
+            cursor
+                .write_all(&hex)
+                .err_tip(|| format!("Could not write hex to buffer - {hex:?} - {hex:?}",))?;
+            // Note: We already have a hyphen at this point because we
+            // initialized the buffer with hyphens.
+            cursor.advance(1);
+            cursor
+                .write_fmt(format_args!("{}", self.digest.size_bytes()))
+                .err_tip(|| format!("Could not write size_bytes to buffer - {hex:?}",))?;
+            cursor.position().try_into().map_err(|e| {
+                Error::from_std_err(Code::InvalidArgument, &e)
+                    .append("Cursor position exceeds usize bounds")
+            })?
+        };
+        // Convert the buffer into utf8 string.
+        core::str::from_utf8(&self.buf[..len]).map_err(|e| {
+            Error::from_std_err(Code::InvalidArgument, &e).append(format!(
+                "Could not convert [u8] to string - {} - {:?}",
+                self.digest, self.buf
+            ))
+        })
+    }
+}
+
+/// Custom serializer for `DigestInfo` because the default Serializer
+/// would try to encode the data as a byte array, but we use {hex}-{size}.
+impl Serialize for DigestInfo {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut stringifier = self.stringifier();
+        serializer.serialize_str(
+            stringifier
+                .as_str()
+                .err_tip(|| "During serialization of DigestInfo")
+                .map_err(S::Error::custom)?,
+        )
+    }
+}
+
+/// Custom deserializer for `DigestInfo` because the default Deserializer
+/// would try to decode the data as a byte array, but we use {hex}-{size}.
+impl<'de> Deserialize<'de> for DigestInfo {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct DigestInfoVisitor;
+        impl Visitor<'_> for DigestInfoVisitor {
+            type Value = DigestInfo;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a string representing a DigestInfo")
+            }
+
+            fn visit_str<E>(self, s: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                let Some((hash, size)) = s.split_once('-') else {
+                    return Err(E::custom(
+                        "Invalid DigestInfo format, expected '-' separator",
+                    ));
+                };
+                let size_bytes = size
+                    .parse::<u64>()
+                    .map_err(|e| E::custom(format!("Could not parse size_bytes: {e:?}")))?;
+                DigestInfo::try_new(hash, size_bytes)
+                    .map_err(|e| E::custom(format!("Could not create DigestInfo: {e:?}")))
+            }
+        }
+        deserializer.deserialize_str(DigestInfoVisitor)
+    }
+}
+
+impl fmt::Display for DigestInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut stringifier = self.stringifier();
+        f.write_str(
+            stringifier
+                .as_str()
+                .err_tip(|| "During serialization of DigestInfo")
+                .map_err(|e| {
+                    error!("Could not convert DigestInfo to string - {e:?}");
+                    fmt::Error
+                })?,
+        )
     }
 }
 
 impl fmt::Debug for DigestInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("DigestInfo")
-            .field("size_bytes", &self.size_bytes)
-            .field("hash", &self.hash_str())
-            .finish()
+        let mut stringifier = self.stringifier();
+        match stringifier.as_str() {
+            Ok(s) => f.debug_tuple("DigestInfo").field(&s).finish(),
+            Err(e) => {
+                error!("Could not convert DigestInfo to string - {e:?}");
+                Err(fmt::Error)
+            }
+        }
     }
 }
 
@@ -113,11 +275,15 @@ impl TryFrom<Digest> for DigestInfo {
     type Error = Error;
 
     fn try_from(digest: Digest) -> Result<Self, Self::Error> {
-        let packed_hash = <[u8; 32]>::from_hex(&digest.hash)
+        let packed_hash = PackedHash::from_hex(&digest.hash)
             .err_tip(|| format!("Invalid sha256 hash: {}", digest.hash))?;
-        Ok(DigestInfo {
-            size_bytes: digest.size_bytes,
+        let size_bytes = digest.size_bytes.try_into().map_err(|e| {
+            Error::from_std_err(Code::InvalidArgument, &e)
+                .append(format!("Could not convert {} into u64", digest.size_bytes))
+        })?;
+        Ok(Self {
             packed_hash,
+            size_bytes,
         })
     }
 }
@@ -126,30 +292,113 @@ impl TryFrom<&Digest> for DigestInfo {
     type Error = Error;
 
     fn try_from(digest: &Digest) -> Result<Self, Self::Error> {
-        let packed_hash = <[u8; 32]>::from_hex(&digest.hash)
+        let packed_hash = PackedHash::from_hex(&digest.hash)
             .err_tip(|| format!("Invalid sha256 hash: {}", digest.hash))?;
-        Ok(DigestInfo {
-            size_bytes: digest.size_bytes,
+        let size_bytes = digest.size_bytes.try_into().map_err(|e| {
+            Error::from_std_err(Code::InvalidArgument, &e)
+                .append(format!("Could not convert {} into u64", digest.size_bytes))
+        })?;
+        Ok(Self {
             packed_hash,
+            size_bytes,
         })
     }
 }
 
 impl From<DigestInfo> for Digest {
     fn from(val: DigestInfo) -> Self {
-        Digest {
-            hash: val.hash_str(),
-            size_bytes: val.size_bytes,
+        Self {
+            hash: val.packed_hash.to_string(),
+            size_bytes: val.size_bytes.try_into().unwrap_or_else(|e| {
+                error!("Could not convert {} into u64 - {e:?}", val.size_bytes);
+                // This is a placeholder value that can help a user identify
+                // that the conversion failed.
+                -255
+            }),
         }
     }
 }
 
 impl From<&DigestInfo> for Digest {
     fn from(val: &DigestInfo) -> Self {
-        Digest {
-            hash: val.hash_str(),
-            size_bytes: val.size_bytes,
+        Self {
+            hash: val.packed_hash.to_string(),
+            size_bytes: val.size_bytes.try_into().unwrap_or_else(|e| {
+                error!("Could not convert {} into u64 - {e:?}", val.size_bytes);
+                // This is a placeholder value that can help a user identify
+                // that the conversion failed.
+                -255
+            }),
         }
+    }
+}
+
+#[derive(
+    Debug,
+    Serialize,
+    Deserialize,
+    Default,
+    Clone,
+    Copy,
+    Eq,
+    PartialEq,
+    Hash,
+    PartialOrd,
+    Ord,
+    wincode::SchemaRead,
+    wincode::SchemaWrite,
+)]
+pub struct PackedHash([u8; 32]);
+
+const SIZE_OF_PACKED_HASH: usize = 32;
+impl PackedHash {
+    const fn new() -> Self {
+        Self([0; SIZE_OF_PACKED_HASH])
+    }
+
+    fn from_hex(hash: &str) -> Result<Self, Error> {
+        let mut packed_hash = [0u8; 32];
+        hex::decode_to_slice(hash, &mut packed_hash).map_err(|e| {
+            Error::from_std_err(Code::InvalidArgument, &e)
+                .append(format!("Invalid sha256 hash: {hash}"))
+        })?;
+        Ok(Self(packed_hash))
+    }
+
+    /// Converts the packed hash into a hex string.
+    #[inline]
+    fn to_hex(self) -> Result<[u8; SIZE_OF_PACKED_HASH * 2], fmt::Error> {
+        let mut hash = [0u8; SIZE_OF_PACKED_HASH * 2];
+        hex::encode_to_slice(self.0, &mut hash).map_err(|e| {
+            error!("Could not convert PackedHash to hex - {e:?} - {:?}", self.0);
+            fmt::Error
+        })?;
+        Ok(hash)
+    }
+}
+
+impl fmt::Display for PackedHash {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let hash = self.to_hex()?;
+        match core::str::from_utf8(&hash) {
+            Ok(hash) => f.write_str(hash)?,
+            Err(_) => f.write_str(&format!("Could not convert hash to utf8 {:?}", self.0))?,
+        }
+        Ok(())
+    }
+}
+
+impl Deref for PackedHash {
+    type Target = [u8; 32];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for PackedHash {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
     }
 }
 
@@ -159,14 +408,14 @@ pub trait VecExt<T> {
     fn try_map<F, U>(self, f: F) -> Result<Vec<U>, Error>
     where
         Self: Sized,
-        F: (std::ops::Fn(T) -> Result<U, Error>) + Sized;
+        F: (Fn(T) -> Result<U, Error>) + Sized;
 }
 
 impl<T> VecExt<T> for Vec<T> {
     fn try_map<F, U>(self, f: F) -> Result<Vec<U>, Error>
     where
         Self: Sized,
-        F: (std::ops::Fn(T) -> Result<U, Error>) + Sized,
+        F: (Fn(T) -> Result<U, Error>) + Sized,
     {
         let mut output = Vec::with_capacity(self.len());
         for item in self {
@@ -179,20 +428,20 @@ impl<T> VecExt<T> for Vec<T> {
 // Simple utility trait that makes it easier to apply `.try_map` to HashMap.
 // This will convert one HashMap into another keeping the key the same, but
 // different value type.
-pub trait HashMapExt<K: std::cmp::Eq + std::hash::Hash, T> {
-    fn try_map<F, U>(self, f: F) -> Result<HashMap<K, U>, Error>
+pub trait HashMapExt<K: Eq + Hash, T, S: BuildHasher> {
+    fn try_map<F, U>(self, f: F) -> Result<HashMap<K, U, S>, Error>
     where
         Self: Sized,
-        F: (std::ops::Fn(T) -> Result<U, Error>) + Sized;
+        F: (Fn(T) -> Result<U, Error>) + Sized;
 }
 
-impl<K: std::cmp::Eq + std::hash::Hash, T> HashMapExt<K, T> for HashMap<K, T> {
-    fn try_map<F, U>(self, f: F) -> Result<HashMap<K, U>, Error>
+impl<K: Eq + Hash, T, S: BuildHasher + Clone> HashMapExt<K, T, S> for HashMap<K, T, S> {
+    fn try_map<F, U>(self, f: F) -> Result<HashMap<K, U, S>, Error>
     where
         Self: Sized,
-        F: (std::ops::Fn(T) -> Result<U, Error>) + Sized,
+        F: (Fn(T) -> Result<U, Error>) + Sized,
     {
-        let mut output = HashMap::with_capacity(self.len());
+        let mut output = HashMap::with_capacity_and_hasher(self.len(), (*self.hasher()).clone());
         for (k, v) in self {
             output.insert(k, (f)(v)?);
         }
@@ -201,11 +450,13 @@ impl<K: std::cmp::Eq + std::hash::Hash, T> HashMapExt<K, T> for HashMap<K, T> {
 }
 
 // Utility to encode our proto into GRPC stream format.
-pub fn encode_stream_proto<T: Message>(proto: &T) -> Result<Bytes, Box<dyn std::error::Error>> {
-    let mut buf = BytesMut::new();
+pub fn encode_stream_proto<T: Message>(proto: &T) -> Result<Bytes, Box<dyn core::error::Error>> {
     // See below comment on spec.
-    use std::mem::size_of;
+    use core::mem::size_of;
     const PREFIX_BYTES: usize = size_of::<u8>() + size_of::<u32>();
+
+    let mut buf = BytesMut::new();
+
     for _ in 0..PREFIX_BYTES {
         // Advance our buffer first.
         // We will backfill it once we know the size of the message.
@@ -220,9 +471,41 @@ pub fn encode_stream_proto<T: Message>(proto: &T) -> Result<Bytes, Box<dyn std::
         // Compressed-Flag -> 0 / 1 # encoded as 1 byte unsigned integer.
         buf.put_u8(0);
         // Message-Length -> {length of Message} # encoded as 4 byte unsigned integer (big endian).
-        buf.put_u32(len as u32);
+        buf.put_u32(u32::try_from(len)?);
         // Message -> *{binary octet}.
     }
 
     Ok(buf.freeze())
 }
+
+/// Small utility to reseed the global RNG.
+/// Done this way because we use it in a macro
+/// and macro's can't load external crates.
+#[inline]
+pub fn reseed_rng_for_test() -> Result<(), Error> {
+    rand::rng()
+        .reseed()
+        .map_err(|e| Error::from_std_err(Code::InvalidArgument, &e).append("Could not reseed RNG"))
+}
+
+/// Get temporary path from either `TEST_TMPDIR` or best effort temp directory if
+/// not set.
+pub fn make_temp_path(data: &str) -> String {
+    #[cfg(target_family = "unix")]
+    return format!(
+        "{}/{}/{}",
+        env::var("TEST_TMPDIR").unwrap_or_else(|_| env::temp_dir().to_str().unwrap().to_string()),
+        rand::rng().random::<u64>(),
+        data
+    );
+    #[cfg(target_family = "windows")]
+    return format!(
+        "{}\\{}\\{}",
+        env::var("TEST_TMPDIR").unwrap_or_else(|_| env::temp_dir().to_str().unwrap().to_string()),
+        rand::rng().random::<u64>(),
+        data
+    );
+}
+
+// Constant for PreconditionFailure
+pub const VIOLATION_TYPE_MISSING: &str = "MISSING";

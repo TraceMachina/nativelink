@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -32,31 +32,32 @@ const INSTANCE_NAME: &str = "test-instance";
 // Regression test for TraceMachina/nativelink#745.
 #[nativelink_test]
 async fn ensure_no_errors_if_only_first_message_has_resource_name_set() -> Result<(), Error> {
+    const RAW_DATA: &str = "thisdatafoo";
+    const DIGEST: DigestInfo = DigestInfo::new([0u8; 32], RAW_DATA.len() as u64);
+
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<WriteRequest, Error>>();
 
-    const RAW_DATA: &str = "thisdatafoo";
-    const DIGEST: DigestInfo = DigestInfo::new([0u8; 32], RAW_DATA.len() as i64);
     let message1 = WriteRequest {
         resource_name: format!(
             "{INSTANCE_NAME}/uploads/some-uuid/blobs/{}/{}",
-            DIGEST.hash_str(),
-            DIGEST.size_bytes
+            DIGEST.packed_hash(),
+            DIGEST.size_bytes()
         ),
         write_offset: 0,
         finish_write: false,
-        data: Bytes::from_static(RAW_DATA[..4].as_bytes()),
+        data: Bytes::from_static(&RAW_DATA.as_bytes()[..4]),
     };
     let message2 = WriteRequest {
         resource_name: String::new(),
         write_offset: 4,
         finish_write: false,
-        data: Bytes::from_static(RAW_DATA[4..8].as_bytes()),
+        data: Bytes::from_static(&RAW_DATA.as_bytes()[4..8]),
     };
     let message3 = WriteRequest {
         resource_name: String::new(),
         write_offset: 8,
         finish_write: true,
-        data: Bytes::from_static(RAW_DATA[8..].as_bytes()),
+        data: Bytes::from_static(&RAW_DATA.as_bytes()[8..]),
     };
 
     {

@@ -1,21 +1,31 @@
 load("@bazel_skylib//lib:selects.bzl", "selects")
+load("@rules_python//python:defs.bzl", "py_binary", "py_test")
 load(
     "@rules_rust//rust:defs.bzl",
     "rust_binary",
     "rust_doc",
-    "rust_doc_test",
     "rust_library",
 )
 
 PROTO_NAMES = [
+    "build.bazel.remote.asset.v1",
     "build.bazel.remote.execution.v2",
     "build.bazel.semver",
     "com.github.trace_machina.nativelink.remote_execution",
+    "com.github.trace_machina.nativelink.events",
     "google.api",
     "google.bytestream",
     "google.devtools.build.v1",
     "google.longrunning",
     "google.rpc",
+    "build_event_stream",
+    "command_line",
+    "devtools.build.lib.packages.metrics",
+    "blaze",
+    "options",
+    "failure_details",
+    "blaze.invocation_policy",
+    "blaze.strategy_policy",
 ]
 
 rust_binary(
@@ -28,7 +38,7 @@ rust_binary(
     ],
 )
 
-# TODO(aaronmondal): The config settings we create here don't follow good
+# TODO(palfrey): The config settings we create here don't follow good
 #                    practices and are purely created this way to work around a
 #                    suboptimal naming scheme in toolchains_protoc. Don't use
 #                    this outside of getting protoc. Consider upstreaming a
@@ -67,8 +77,10 @@ PLATFORM_NAMES = [
 genrule(
     name = "gen_rs_protos",
     srcs = [
+        "build/bazel/remote/asset/v1/remote_asset.proto",
         "build/bazel/remote/execution/v2/remote_execution.proto",
         "build/bazel/semver/semver.proto",
+        "com/github/trace_machina/nativelink/remote_execution/events.proto",
         "com/github/trace_machina/nativelink/remote_execution/worker_api.proto",
         "google/api/annotations.proto",
         "google/api/client.proto",
@@ -85,27 +97,36 @@ genrule(
         "google/protobuf/empty.proto",
         "google/protobuf/timestamp.proto",
         "google/protobuf/wrappers.proto",
+        "google/rpc/error_details.proto",
         "google/rpc/status.proto",
+        "src/main/java/com/google/devtools/build/lib/buildeventstream/proto/build_event_stream.proto",
+        "src/main/java/com/google/devtools/build/lib/packages/metrics/package_load_metrics.proto",
+        "src/main/protobuf/command_line.proto",
+        "src/main/protobuf/action_cache.proto",
+        "src/main/protobuf/option_filters.proto",
+        "src/main/protobuf/failure_details.proto",
+        "src/main/protobuf/invocation_policy.proto",
+        "src/main/protobuf/strategy_policy.proto",
     ],
     outs = ["{}.pb.rs".format(name) for name in PROTO_NAMES],
     cmd = select({
         platform: '''
         set -e
-        export PROTOC=$(execpath @@toolchains_protoc~~protoc~toolchains_protoc_hub.{}//:bin/protoc)
+        export PROTOC=$(execpath @@toolchains_protoc++protoc+toolchains_protoc_hub.{}//:bin/protoc)
 
         $(execpath :gen_protos_tool) $(SRCS) -o $(RULEDIR)
 
         for file in $(RULEDIR)/*.rs; do
             mv -- "$$file" "$${{file%.rs}}.pb.rs"
         done
-        '''.format(platform)
+        '''.format(platform)  # buildifier: disable=canonical-repository
         for platform in PLATFORM_NAMES
     }),
     tools = [
         ":gen_protos_tool",
     ] + select({
         platform: [
-            "@@toolchains_protoc~~protoc~toolchains_protoc_hub.{}//:bin/protoc".format(platform),
+            "@@toolchains_protoc++protoc+toolchains_protoc_hub.{}//:bin/protoc".format(platform),  # buildifier: disable=canonical-repository
         ]
         for platform in PLATFORM_NAMES
     }),
@@ -130,6 +151,7 @@ rust_library(
     tags = ["no-rustfmt"],
     visibility = ["//visibility:public"],
     deps = [
+        "@crates//:derive_more",
         "@crates//:prost",
         "@crates//:prost-types",
         "@crates//:tonic",
@@ -163,10 +185,4 @@ rust_doc(
     name = "docs",
     crate = ":nativelink-proto",
     visibility = ["//visibility:public"],
-)
-
-rust_doc_test(
-    name = "doc_test",
-    timeout = "short",
-    crate = ":nativelink-proto",
 )

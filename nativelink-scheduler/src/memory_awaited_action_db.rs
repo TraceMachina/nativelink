@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,46 +12,45 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::ops::{Bound, RangeBounds};
+use core::time::Duration;
+use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::ops::{Bound, RangeBounds};
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_lock::Mutex;
-use async_trait::async_trait;
 use futures::{FutureExt, Stream};
 use nativelink_config::stores::EvictionPolicy;
-use nativelink_error::{error_if, make_err, Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, error_if, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::action_messages::{
-    ActionInfo, ActionStage, ActionState, ActionUniqueKey, ActionUniqueQualifier, OperationId,
+    ActionInfo, ActionStage, ActionUniqueKey, ActionUniqueQualifier, OperationId,
 };
 use nativelink_util::chunked_stream::ChunkedStream;
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::instant_wrapper::InstantWrapper;
-use nativelink_util::operation_state_manager::ActionStateResult;
+use nativelink_util::metrics::{
+    EXECUTION_METRICS, ExecutionResult, ExecutionStage, make_execution_attributes,
+};
 use nativelink_util::spawn;
 use nativelink_util::task::JoinHandleDropGuard;
-use tokio::sync::{mpsc, watch};
-use tracing::{event, Level};
+use tokio::sync::{Notify, mpsc, watch};
+use tracing::{debug, error};
 
 use crate::awaited_action_db::{
-    AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, SortedAwaitedAction,
-    SortedAwaitedActionState,
+    AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, CLIENT_KEEPALIVE_DURATION,
+    SortedAwaitedAction, SortedAwaitedActionState,
 };
 
 /// Number of events to process per cycle.
 const MAX_ACTION_EVENTS_RX_PER_CYCLE: usize = 1024;
 
-/// Duration to wait before sending client keep alive messages.
-const CLIENT_KEEPALIVE_DURATION: Duration = Duration::from_secs(10);
-
 /// Represents a client that is currently listening to an action.
-/// When the client is dropped, it will send the [`AwaitedAction`] to the
+/// When the client is dropped, it will send the `AwaitedAction` to the
 /// `event_tx` if there are other cleanups needed.
 #[derive(Debug)]
 struct ClientAwaitedAction {
-    /// The OperationId that the client is listening to.
+    /// The `OperationId` that the client is listening to.
     operation_id: OperationId,
 
     /// The sender to notify of this struct being dropped.
@@ -59,14 +58,17 @@ struct ClientAwaitedAction {
 }
 
 impl ClientAwaitedAction {
-    pub fn new(operation_id: OperationId, event_tx: mpsc::UnboundedSender<ActionEvent>) -> Self {
+    pub(crate) const fn new(
+        operation_id: OperationId,
+        event_tx: mpsc::UnboundedSender<ActionEvent>,
+    ) -> Self {
         Self {
             operation_id,
             event_tx,
         }
     }
 
-    pub fn operation_id(&self) -> &OperationId {
+    pub(crate) const fn operation_id(&self) -> &OperationId {
         &self.operation_id
     }
 }
@@ -74,18 +76,18 @@ impl ClientAwaitedAction {
 impl Drop for ClientAwaitedAction {
     fn drop(&mut self) {
         // If we failed to send it means noone is listening.
-        let _ = self.event_tx.send(ActionEvent::ClientDroppedOperation(
+        drop(self.event_tx.send(ActionEvent::ClientDroppedOperation(
             self.operation_id.clone(),
-        ));
+        )));
     }
 }
 
-/// Trait to be able to use the EvictingMap with [`ClientAwaitedAction`].
-/// Note: We only use EvictingMap for a time based eviction, which is
+/// Trait to be able to use the `EvictingMap` with `ClientAwaitedAction`.
+/// Note: We only use `EvictingMap` for a time based eviction, which is
 /// why the implementation has fixed default values in it.
 impl LenEntry for ClientAwaitedAction {
     #[inline]
-    fn len(&self) -> usize {
+    fn len(&self) -> u64 {
         0
     }
 
@@ -95,16 +97,18 @@ impl LenEntry for ClientAwaitedAction {
     }
 }
 
-/// Actions the AwaitedActionsDb needs to process.
+/// Actions the `AwaitedActionsDb` needs to process.
+#[derive(Debug)]
 pub(crate) enum ActionEvent {
     /// A client has sent a keep alive message.
     ClientKeepAlive(OperationId),
-    /// A client has dropped and pointed to OperationId.
+    /// A client has dropped and pointed to `OperationId`.
     ClientDroppedOperation(OperationId),
 }
 
 /// Information required to track an individual client
 /// keep alive config and state.
+#[derive(Debug)]
 struct ClientInfo<I: InstantWrapper, NowFn: Fn() -> I> {
     /// The client operation id.
     client_operation_id: OperationId,
@@ -116,7 +120,8 @@ struct ClientInfo<I: InstantWrapper, NowFn: Fn() -> I> {
     event_tx: mpsc::UnboundedSender<ActionEvent>,
 }
 
-/// Subscriber that clients can be used to monitor when AwaitedActions change.
+/// Subscriber that clients can be used to monitor when `AwaitedActions` change.
+#[derive(Debug)]
 pub struct MemoryAwaitedActionSubscriber<I: InstantWrapper, NowFn: Fn() -> I> {
     /// The receiver to listen for changes.
     awaited_action_rx: watch::Receiver<AwaitedAction>,
@@ -126,14 +131,15 @@ pub struct MemoryAwaitedActionSubscriber<I: InstantWrapper, NowFn: Fn() -> I> {
 }
 
 impl<I: InstantWrapper, NowFn: Fn() -> I> MemoryAwaitedActionSubscriber<I, NowFn> {
-    pub fn new(mut awaited_action_rx: watch::Receiver<AwaitedAction>) -> Self {
+    fn new(mut awaited_action_rx: watch::Receiver<AwaitedAction>) -> Self {
         awaited_action_rx.mark_changed();
         Self {
             awaited_action_rx,
             client_info: None,
         }
     }
-    pub fn new_with_client(
+
+    fn new_with_client(
         mut awaited_action_rx: watch::Receiver<AwaitedAction>,
         client_operation_id: OperationId,
         event_tx: mpsc::UnboundedSender<ActionEvent>,
@@ -161,13 +167,11 @@ where
     NowFn: Fn() -> I + Send + Sync + 'static,
 {
     async fn changed(&mut self) -> Result<AwaitedAction, Error> {
-        {
+        let client_operation_id = {
             let changed_fut = self.awaited_action_rx.changed().map(|r| {
                 r.map_err(|e| {
-                    make_err!(
-                        Code::Internal,
-                        "Failed to wait for awaited action to change {e:?}"
-                    )
+                    Error::from_std_err(Code::Internal, &e)
+                        .append("Failed to wait for awaited action to change")
                 })
             });
             let Some(client_info) = self.client_info.as_mut() else {
@@ -179,9 +183,9 @@ where
                 if client_info.last_keep_alive.elapsed() > CLIENT_KEEPALIVE_DURATION {
                     client_info.last_keep_alive = (client_info.now_fn)();
                     // Failing to send just means our receiver dropped.
-                    let _ = client_info.event_tx.send(ActionEvent::ClientKeepAlive(
+                    drop(client_info.event_tx.send(ActionEvent::ClientKeepAlive(
                         client_info.client_operation_id.clone(),
-                    ));
+                    )));
                 }
                 let sleep_fut = (client_info.now_fn)().sleep(CLIENT_KEEPALIVE_DURATION);
                 tokio::select! {
@@ -189,85 +193,36 @@ where
                         result?;
                         break;
                     }
-                    _ = sleep_fut => {
+                    () = sleep_fut => {
                         // If we haven't received any updates for a while, we should
                         // let the database know that we are still listening to prevent
                         // the action from being dropped.
                     }
-
                 }
             }
+            client_info.client_operation_id.clone()
+        };
+        // At this stage we know that this event is a client request, so we need
+        // to populate the client_operation_id.
+        let mut awaited_action = self.awaited_action_rx.borrow().clone();
+        awaited_action.set_client_operation_id(client_operation_id);
+        Ok(awaited_action)
+    }
+
+    async fn borrow(&self) -> Result<AwaitedAction, Error> {
+        let mut awaited_action = self.awaited_action_rx.borrow().clone();
+        if let Some(client_info) = self.client_info.as_ref() {
+            awaited_action.set_client_operation_id(client_info.client_operation_id.clone());
         }
-        Ok(self.awaited_action_rx.borrow().clone())
-    }
-
-    fn borrow(&self) -> AwaitedAction {
-        self.awaited_action_rx.borrow().clone()
+        Ok(awaited_action)
     }
 }
 
-pub struct MatchingEngineActionStateResult<T: AwaitedActionSubscriber> {
-    awaited_action_sub: T,
-}
-impl<T: AwaitedActionSubscriber> MatchingEngineActionStateResult<T> {
-    pub fn new(awaited_action_sub: T) -> Self {
-        Self { awaited_action_sub }
-    }
-}
-
-#[async_trait]
-impl<T: AwaitedActionSubscriber> ActionStateResult for MatchingEngineActionStateResult<T> {
-    async fn as_state(&self) -> Result<Arc<ActionState>, Error> {
-        Ok(self.awaited_action_sub.borrow().state().clone())
-    }
-
-    async fn changed(&mut self) -> Result<Arc<ActionState>, Error> {
-        let awaited_action = self.awaited_action_sub.changed().await.map_err(|e| {
-            make_err!(
-                Code::Internal,
-                "Failed to wait for awaited action to change {e:?}"
-            )
-        })?;
-        Ok(awaited_action.state().clone())
-    }
-
-    async fn as_action_info(&self) -> Result<Arc<ActionInfo>, Error> {
-        Ok(self.awaited_action_sub.borrow().action_info().clone())
-    }
-}
-
-pub(crate) struct ClientActionStateResult<T: AwaitedActionSubscriber> {
-    inner: MatchingEngineActionStateResult<T>,
-}
-
-impl<T: AwaitedActionSubscriber> ClientActionStateResult<T> {
-    pub fn new(sub: T) -> Self {
-        Self {
-            inner: MatchingEngineActionStateResult::new(sub),
-        }
-    }
-}
-
-#[async_trait]
-impl<T: AwaitedActionSubscriber> ActionStateResult for ClientActionStateResult<T> {
-    async fn as_state(&self) -> Result<Arc<ActionState>, Error> {
-        self.inner.as_state().await
-    }
-
-    async fn changed(&mut self) -> Result<Arc<ActionState>, Error> {
-        self.inner.changed().await
-    }
-
-    async fn as_action_info(&self) -> Result<Arc<ActionInfo>, Error> {
-        self.inner.as_action_info().await
-    }
-}
-
-/// A struct that is used to keep the devloper from trying to
+/// A struct that is used to keep the developer from trying to
 /// return early from a function.
 struct NoEarlyReturn;
 
-#[derive(Default, MetricsComponent)]
+#[derive(Debug, Default, MetricsComponent)]
 struct SortedAwaitedActions {
     #[metric(group = "unknown")]
     unknown: BTreeSet<SortedAwaitedAction>,
@@ -282,21 +237,20 @@ struct SortedAwaitedActions {
 }
 
 impl SortedAwaitedActions {
-    fn btree_for_state(&mut self, state: &ActionStage) -> &mut BTreeSet<SortedAwaitedAction> {
+    const fn btree_for_state(&mut self, state: &ActionStage) -> &mut BTreeSet<SortedAwaitedAction> {
         match state {
             ActionStage::Unknown => &mut self.unknown,
             ActionStage::CacheCheck => &mut self.cache_check,
             ActionStage::Queued => &mut self.queued,
             ActionStage::Executing => &mut self.executing,
-            ActionStage::Completed(_) => &mut self.completed,
-            ActionStage::CompletedFromCache(_) => &mut self.completed,
+            ActionStage::Completed(_) | ActionStage::CompletedFromCache(_) => &mut self.completed,
         }
     }
 
     fn insert_sort_map_for_stage(
         &mut self,
         stage: &ActionStage,
-        sorted_awaited_action: SortedAwaitedAction,
+        sorted_awaited_action: &SortedAwaitedAction,
     ) -> Result<(), Error> {
         let newly_inserted = match stage {
             ActionStage::Unknown => self.unknown.insert(sorted_awaited_action.clone()),
@@ -339,24 +293,26 @@ impl SortedAwaitedActions {
             ));
         };
 
-        self.insert_sort_map_for_stage(&new_awaited_action.state().stage, sorted_awaited_action)
+        self.insert_sort_map_for_stage(&new_awaited_action.state().stage, &sorted_awaited_action)
             .err_tip(|| "In AwaitedActionDb::update_awaited_action")?;
         Ok(())
     }
 }
 
 /// The database for storing the state of all actions.
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct AwaitedActionDbImpl<I: InstantWrapper, NowFn: Fn() -> I> {
     /// A lookup table to lookup the state of an action by its client operation id.
     #[metric(group = "client_operation_ids")]
-    client_operation_to_awaited_action: EvictingMap<OperationId, Arc<ClientAwaitedAction>, I>,
+    client_operation_to_awaited_action:
+        EvictingMap<OperationId, OperationId, Arc<ClientAwaitedAction>, I>,
 
     /// A lookup table to lookup the state of an action by its worker operation id.
     #[metric(group = "operation_ids")]
     operation_id_to_awaited_action: BTreeMap<OperationId, watch::Sender<AwaitedAction>>,
 
     /// A lookup table to lookup the state of an action by its unique qualifier.
+    #[metric(group = "action_info_hash_key_to_awaited_action")]
     action_info_hash_key_to_awaited_action: HashMap<ActionUniqueKey, OperationId>,
 
     /// A sorted set of [`AwaitedAction`]s. A wrapper is used to perform sorting
@@ -386,9 +342,8 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
             .client_operation_to_awaited_action
             .get(client_operation_id)
             .await;
-        let client_awaited_action = match maybe_client_awaited_action {
-            Some(client_awaited_action) => client_awaited_action,
-            None => return Ok(None),
+        let Some(client_awaited_action) = maybe_client_awaited_action else {
+            return Ok(None);
         };
 
         self.operation_id_to_awaited_action
@@ -414,32 +369,37 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
         &mut self,
         action_events: impl IntoIterator<Item = ActionEvent>,
     ) -> NoEarlyReturn {
-        for drop_action in action_events.into_iter() {
-            match drop_action {
+        for action in action_events {
+            debug!(?action, "Handling action");
+            match action {
                 ActionEvent::ClientDroppedOperation(operation_id) => {
                     // Cleanup operation_id_to_awaited_action.
                     let Some(tx) = self.operation_id_to_awaited_action.remove(&operation_id) else {
-                        event!(
-                            Level::ERROR,
-                            ?operation_id,
+                        error!(
+                            %operation_id,
                             "operation_id_to_awaited_action does not have operation_id"
                         );
                         continue;
                     };
+
                     let connected_clients = match self
                         .connected_clients_for_operation_id
-                        .remove(&operation_id)
+                        .entry(operation_id.clone())
                     {
-                        Some(connected_clients) => connected_clients - 1,
-                        None => {
-                            event!(
-                                Level::ERROR,
-                                ?operation_id,
+                        Entry::Occupied(entry) => {
+                            let value = *entry.get();
+                            entry.remove();
+                            value - 1
+                        }
+                        Entry::Vacant(_) => {
+                            error!(
+                                %operation_id,
                                 "connected_clients_for_operation_id does not have operation_id"
                             );
                             0
                         }
                     };
+
                     // Note: It is rare to have more than one client listening
                     // to the same action, so we assume that we are the last
                     // client and insert it back into the map if we detect that
@@ -452,26 +412,26 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                             .insert(operation_id, connected_clients);
                         continue;
                     }
+                    debug!(%operation_id, "Clearing operation from state manager");
                     let awaited_action = tx.borrow().clone();
                     // Cleanup action_info_hash_key_to_awaited_action if it was marked cached.
                     match &awaited_action.action_info().unique_qualifier {
-                        ActionUniqueQualifier::Cachable(action_key) => {
+                        ActionUniqueQualifier::Cacheable(action_key) => {
                             let maybe_awaited_action = self
                                 .action_info_hash_key_to_awaited_action
                                 .remove(action_key);
                             if !awaited_action.state().stage.is_finished()
                                 && maybe_awaited_action.is_none()
                             {
-                                event!(
-                                    Level::ERROR,
-                                    ?operation_id,
+                                error!(
+                                    %operation_id,
                                     ?awaited_action,
                                     ?action_key,
                                     "action_info_hash_key_to_awaited_action and operation_id_to_awaited_action are out of sync",
                                 );
                             }
                         }
-                        ActionUniqueQualifier::Uncachable(_action_key) => {
+                        ActionUniqueQualifier::Uncacheable(_action_key) => {
                             // This Operation should not be in the hash_key map.
                         }
                     }
@@ -488,22 +448,30 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                             operation_id: operation_id.clone(),
                         });
                     if maybe_sorted_awaited_action.is_none() {
-                        event!(
-                            Level::ERROR,
-                            ?operation_id,
+                        error!(
+                            %operation_id,
                             ?sort_key,
                             "Expected maybe_sorted_awaited_action to have {sort_key:?}",
                         );
                     }
                 }
                 ActionEvent::ClientKeepAlive(client_id) => {
-                    let maybe_size = self
+                    if let Some(client_awaited_action) = self
                         .client_operation_to_awaited_action
-                        .size_for_key(&client_id)
-                        .await;
-                    if maybe_size.is_none() {
-                        event!(
-                            Level::ERROR,
+                        .get(&client_id)
+                        .await
+                    {
+                        if let Some(awaited_action_sender) = self
+                            .operation_id_to_awaited_action
+                            .get(&client_awaited_action.operation_id)
+                        {
+                            awaited_action_sender.send_if_modified(|awaited_action| {
+                                awaited_action.update_client_keep_alive((self.now_fn)().now());
+                                false
+                            });
+                        }
+                    } else {
+                        error!(
                             ?client_id,
                             "client_operation_to_awaited_action does not have client_id",
                         );
@@ -518,7 +486,8 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
         &self,
         start: Bound<&OperationId>,
         end: Bound<&OperationId>,
-    ) -> impl Iterator<Item = (&'_ OperationId, MemoryAwaitedActionSubscriber<I, NowFn>)> {
+    ) -> impl Iterator<Item = (&'_ OperationId, MemoryAwaitedActionSubscriber<I, NowFn>)>
+    + use<'_, I, NowFn> {
         self.operation_id_to_awaited_action
             .range((start, end))
             .map(|(operation_id, tx)| {
@@ -538,19 +507,19 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
             .map(|tx| MemoryAwaitedActionSubscriber::<I, NowFn>::new(tx.subscribe()))
     }
 
-    fn get_range_of_actions<'a, 'b>(
-        &'a self,
+    fn get_range_of_actions(
+        &self,
         state: SortedAwaitedActionState,
-        range: impl RangeBounds<SortedAwaitedAction> + 'b,
+        range: impl RangeBounds<SortedAwaitedAction>,
     ) -> impl DoubleEndedIterator<
         Item = Result<
             (
-                &'a SortedAwaitedAction,
+                &SortedAwaitedAction,
                 MemoryAwaitedActionSubscriber<I, NowFn>,
             ),
             Error,
         >,
-    > + 'a {
+    > {
         let btree = match state {
             SortedAwaitedActionState::CacheCheck => &self.sorted_action_info_hash_keys.cache_check,
             SortedAwaitedActionState::Queued => &self.sorted_action_info_hash_keys.queued,
@@ -574,24 +543,19 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
     fn process_state_changes_for_hash_key_map(
         action_info_hash_key_to_awaited_action: &mut HashMap<ActionUniqueKey, OperationId>,
         new_awaited_action: &AwaitedAction,
-    ) -> Result<(), Error> {
-        // Do not allow future subscribes if the action is already completed,
-        // this is the responsibility of the CacheLookupScheduler.
-        // TODO(allad) Once we land the new scheduler onto main, we can remove this check.
-        // It makes sense to allow users to subscribe to already completed items.
-        // This can be changed to `.is_error()` later.
+    ) {
+        // Only process changes if the stage is not finished.
         if !new_awaited_action.state().stage.is_finished() {
-            return Ok(());
+            return;
         }
         match &new_awaited_action.action_info().unique_qualifier {
-            ActionUniqueQualifier::Cachable(action_key) => {
+            ActionUniqueQualifier::Cacheable(action_key) => {
                 let maybe_awaited_action =
                     action_info_hash_key_to_awaited_action.remove(action_key);
                 match maybe_awaited_action {
                     Some(removed_operation_id) => {
                         if &removed_operation_id != new_awaited_action.operation_id() {
-                            event!(
-                                Level::ERROR,
+                            error!(
                                 ?removed_operation_id,
                                 ?new_awaited_action,
                                 ?action_key,
@@ -600,26 +564,26 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                         }
                     }
                     None => {
-                        event!(
-                            Level::ERROR,
+                        error!(
                             ?new_awaited_action,
                             ?action_key,
                             "action_info_hash_key_to_awaited_action out of sync, it should have had the unique_key",
                         );
                     }
                 }
-                Ok(())
             }
-            ActionUniqueQualifier::Uncachable(_action_key) => {
-                // If we are not cachable, the action should not be in the
+            ActionUniqueQualifier::Uncacheable(_action_key) => {
+                // If we are not cacheable, the action should not be in the
                 // hash_key map, so we don't need to process anything in
                 // action_info_hash_key_to_awaited_action.
-                Ok(())
             }
         }
     }
 
-    fn update_awaited_action(&mut self, new_awaited_action: AwaitedAction) -> Result<(), Error> {
+    fn update_awaited_action(
+        &mut self,
+        mut new_awaited_action: AwaitedAction,
+    ) -> Result<(), Error> {
         let tx = self
             .operation_id_to_awaited_action
             .get(new_awaited_action.operation_id())
@@ -636,7 +600,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
 
             // Do not process changes if the action version is not in sync with
             // what the sender based the update on.
-            if old_awaited_action.version() + 1 != new_awaited_action.version() {
+            if old_awaited_action.version() != new_awaited_action.version() {
                 return Err(make_err!(
                     // From: https://grpc.github.io/grpc/core/md_doc_statuscodes.html
                     // Use ABORTED if the client should retry at a higher level
@@ -644,14 +608,15 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                     // indicating the client should restart a read-modify-write
                     // sequence)
                     Code::Aborted,
-                    "{} Expected {:?} but got {:?} for operation_id {:?} - {:?}",
+                    "{} Expected {} but got {} for operation_id {:?} - {:?}",
                     "Tried to update an awaited action with an incorrect version.",
-                    old_awaited_action.version() + 1,
+                    old_awaited_action.version(),
                     new_awaited_action.version(),
                     old_awaited_action,
                     new_awaited_action,
                 ));
             }
+            new_awaited_action.increment_version();
 
             error_if!(
                 old_awaited_action.action_info().unique_qualifier
@@ -667,19 +632,78 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                 .is_same_stage(&new_awaited_action.state().stage);
 
             if !is_same_stage {
+                // Record metrics for stage transitions
+                let metrics = &*EXECUTION_METRICS;
+                let old_stage = &old_awaited_action.state().stage;
+                let new_stage = &new_awaited_action.state().stage;
+
+                // Track stage transitions
+                let base_attrs = make_execution_attributes(
+                    "unknown",
+                    None,
+                    Some(old_awaited_action.action_info().priority),
+                );
+                metrics.execution_stage_transitions.add(1, &base_attrs);
+
+                // Update active count for old stage
+                let old_stage_attrs = vec![opentelemetry::KeyValue::new(
+                    nativelink_util::metrics::EXECUTION_STAGE,
+                    ExecutionStage::from(old_stage),
+                )];
+                metrics.execution_active_count.add(-1, &old_stage_attrs);
+
+                // Update active count for new stage
+                let new_stage_attrs = vec![opentelemetry::KeyValue::new(
+                    nativelink_util::metrics::EXECUTION_STAGE,
+                    ExecutionStage::from(new_stage),
+                )];
+                metrics.execution_active_count.add(1, &new_stage_attrs);
+
+                // Record completion metrics with action digest for failure tracking
+                let action_digest = old_awaited_action.action_info().digest().to_string();
+                if let ActionStage::Completed(action_result) = new_stage {
+                    let result_attrs = vec![
+                        opentelemetry::KeyValue::new(
+                            nativelink_util::metrics::EXECUTION_RESULT,
+                            if action_result.exit_code == 0 {
+                                ExecutionResult::Success
+                            } else {
+                                ExecutionResult::Failure
+                            },
+                        ),
+                        opentelemetry::KeyValue::new(
+                            nativelink_util::metrics::EXECUTION_ACTION_DIGEST,
+                            action_digest,
+                        ),
+                    ];
+                    metrics.execution_completed_count.add(1, &result_attrs);
+                } else if let ActionStage::CompletedFromCache(_) = new_stage {
+                    let result_attrs = vec![
+                        opentelemetry::KeyValue::new(
+                            nativelink_util::metrics::EXECUTION_RESULT,
+                            ExecutionResult::CacheHit,
+                        ),
+                        opentelemetry::KeyValue::new(
+                            nativelink_util::metrics::EXECUTION_ACTION_DIGEST,
+                            action_digest,
+                        ),
+                    ];
+                    metrics.execution_completed_count.add(1, &result_attrs);
+                }
+
                 self.sorted_action_info_hash_keys
                     .process_state_changes(&old_awaited_action, &new_awaited_action)?;
                 Self::process_state_changes_for_hash_key_map(
                     &mut self.action_info_hash_key_to_awaited_action,
                     &new_awaited_action,
-                )?;
+                );
             }
         }
 
         // Notify all listeners of the new state and ignore if no one is listening.
         // Note: Do not use `.send()` as it will not update the state if all listeners
         // are dropped.
-        let _ = tx.send_replace(new_awaited_action);
+        drop(tx.send_replace(new_awaited_action));
 
         Ok(())
     }
@@ -692,7 +716,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
     /// cleanup of the other maps on drop.
     fn make_client_awaited_action(
         &mut self,
-        operation_id: OperationId,
+        operation_id: &OperationId,
         awaited_action: AwaitedAction,
     ) -> (Arc<ClientAwaitedAction>, watch::Receiver<AwaitedAction>) {
         let (tx, rx) = watch::channel(awaited_action);
@@ -728,11 +752,15 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
         }
 
         let maybe_unique_key = match &action_info.unique_qualifier {
-            ActionUniqueQualifier::Cachable(unique_key) => Some(unique_key.clone()),
-            ActionUniqueQualifier::Uncachable(_unique_key) => None,
+            ActionUniqueQualifier::Cacheable(unique_key) => Some(unique_key.clone()),
+            ActionUniqueQualifier::Uncacheable(_unique_key) => None,
         };
         let operation_id = OperationId::default();
-        let awaited_action = AwaitedAction::new(operation_id.clone(), action_info);
+        let awaited_action = AwaitedAction::new(
+            operation_id.clone(),
+            action_info.clone(),
+            (self.now_fn)().now(),
+        );
         debug_assert!(
             ActionStage::Queued == awaited_action.state().stage,
             "Expected action to be queued"
@@ -740,31 +768,46 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
         let sort_key = awaited_action.sort_key();
 
         let (client_awaited_action, rx) =
-            self.make_client_awaited_action(operation_id.clone(), awaited_action);
+            self.make_client_awaited_action(&operation_id.clone(), awaited_action);
+
+        debug!(
+            %client_operation_id,
+            %operation_id,
+            ?client_awaited_action,
+            "Adding action"
+        );
 
         self.client_operation_to_awaited_action
             .insert(client_operation_id.clone(), client_awaited_action)
             .await;
 
-        // Note: We only put items in the map that are cachable.
+        // Note: We only put items in the map that are cacheable.
         if let Some(unique_key) = maybe_unique_key {
             let old_value = self
                 .action_info_hash_key_to_awaited_action
                 .insert(unique_key, operation_id.clone());
             if let Some(old_value) = old_value {
-                event!(
-                    Level::ERROR,
-                    ?operation_id,
+                error!(
+                    %operation_id,
                     ?old_value,
                     "action_info_hash_key_to_awaited_action already has unique_key"
                 );
             }
         }
 
+        // Record metric for new action entering the queue
+        let metrics = &*EXECUTION_METRICS;
+        let _base_attrs = make_execution_attributes("unknown", None, Some(action_info.priority));
+        let queued_attrs = vec![opentelemetry::KeyValue::new(
+            nativelink_util::metrics::EXECUTION_STAGE,
+            ExecutionStage::Queued,
+        )];
+        metrics.execution_active_count.add(1, &queued_attrs);
+
         self.sorted_action_info_hash_keys
             .insert_sort_map_for_stage(
                 &ActionStage::Queued,
-                SortedAwaitedAction {
+                &SortedAwaitedAction {
                     sort_key,
                     operation_id,
                 },
@@ -783,14 +826,14 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
         &mut self,
         client_operation_id: &OperationId,
         unique_qualifier: &ActionUniqueQualifier,
-        // TODO(allada) To simplify the scheduler 2024 refactor, we
+        // TODO(palfrey) To simplify the scheduler 2024 refactor, we
         // removed the ability to upgrade priorities of actions.
         // we should add priority upgrades back in.
         _priority: i32,
     ) -> Result<Option<MemoryAwaitedActionSubscriber<I, NowFn>>, Error> {
         let unique_key = match unique_qualifier {
-            ActionUniqueQualifier::Cachable(unique_key) => unique_key,
-            ActionUniqueQualifier::Uncachable(_unique_key) => return Ok(None),
+            ActionUniqueQualifier::Cacheable(unique_key) => unique_key,
+            ActionUniqueQualifier::Uncacheable(_unique_key) => return Ok(None),
         };
 
         let Some(operation_id) = self.action_info_hash_key_to_awaited_action.get(unique_key) else {
@@ -821,6 +864,15 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
         };
         *connected_clients += 1;
 
+        // Immediately mark the keep alive, we don't need to wake anyone
+        // so we always fake that it was not actually changed.
+        // Failing update the client could lead to the client connecting
+        // then not updating the keep alive in time, resulting in the
+        // operation timing out due to async behavior.
+        tx.send_if_modified(|awaited_action| {
+            awaited_action.update_client_keep_alive((self.now_fn)().now());
+            false
+        });
         let subscription = tx.subscribe();
 
         self.client_operation_to_awaited_action
@@ -842,17 +894,22 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
     }
 }
 
-#[derive(MetricsComponent)]
+#[derive(Debug, MetricsComponent)]
 pub struct MemoryAwaitedActionDb<I: InstantWrapper, NowFn: Fn() -> I> {
     #[metric]
     inner: Arc<Mutex<AwaitedActionDbImpl<I, NowFn>>>,
+    tasks_change_notify: Arc<Notify>,
     _handle_awaited_action_events: JoinHandleDropGuard<()>,
 }
 
 impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync + 'static>
     MemoryAwaitedActionDb<I, NowFn>
 {
-    pub fn new(eviction_config: &EvictionPolicy, now_fn: NowFn) -> Self {
+    pub fn new(
+        eviction_config: &EvictionPolicy,
+        tasks_change_notify: Arc<Notify>,
+        now_fn: NowFn,
+    ) -> Self {
         let (action_event_tx, mut action_event_rx) = mpsc::unbounded_channel();
         let inner = Arc::new(Mutex::new(AwaitedActionDbImpl {
             client_operation_to_awaited_action: EvictingMap::new(eviction_config, (now_fn)()),
@@ -866,6 +923,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync + 'static>
         let weak_inner = Arc::downgrade(&inner);
         Self {
             inner,
+            tasks_change_notify,
             _handle_awaited_action_events: spawn!("handle_awaited_action_events", async move {
                 let mut dropped_operation_ids = Vec::with_capacity(MAX_ACTION_EVENTS_RX_PER_CYCLE);
                 loop {
@@ -902,8 +960,10 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync + 'static> Awaite
             .await
     }
 
-    async fn get_all_awaited_actions(&self) -> impl Stream<Item = Result<Self::Subscriber, Error>> {
-        ChunkedStream::new(
+    async fn get_all_awaited_actions(
+        &self,
+    ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>>, Error> {
+        Ok(ChunkedStream::new(
             Bound::Unbounded,
             Bound::Unbounded,
             move |start, end, mut output| async move {
@@ -920,7 +980,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync + 'static> Awaite
                 Ok(maybe_new_start
                     .map(|new_start| ((Bound::Excluded(new_start.clone()), end), output)))
             },
-        )
+        ))
     }
 
     async fn get_by_operation_id(
@@ -936,56 +996,69 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync + 'static> Awaite
         start: Bound<SortedAwaitedAction>,
         end: Bound<SortedAwaitedAction>,
         desc: bool,
-    ) -> impl Stream<Item = Result<Self::Subscriber, Error>> + Send {
-        ChunkedStream::new(start, end, move |start, end, mut output| async move {
-            let inner = self.inner.lock().await;
-            let mut done = true;
-            let mut new_start = start.as_ref();
-            let mut new_end = end.as_ref();
+    ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error> {
+        Ok(ChunkedStream::new(
+            start,
+            end,
+            move |start, end, mut output| async move {
+                let inner = self.inner.lock().await;
+                let mut done = true;
+                let mut new_start = start.as_ref();
+                let mut new_end = end.as_ref();
 
-            let iterator = inner.get_range_of_actions(state, (start.as_ref(), end.as_ref()));
-            // TODO(allada) This should probably use the `.left()/right()` pattern,
-            // but that doesn't exist in the std or any libraries we use.
-            if desc {
-                for result in iterator.rev() {
-                    let (sorted_awaited_action, item) =
-                        result.err_tip(|| "In AwaitedActionDb::get_range_of_actions")?;
-                    output.push_back(item);
-                    new_end = Bound::Excluded(sorted_awaited_action);
-                    done = false;
+                let iterator = inner
+                    .get_range_of_actions(state, (start.as_ref(), end.as_ref()))
+                    .map(|res| res.err_tip(|| "In AwaitedActionDb::get_range_of_actions"));
+
+                // TODO(palfrey) This should probably use the `.left()/right()` pattern,
+                // but that doesn't exist in the std or any libraries we use.
+                if desc {
+                    for result in iterator.rev() {
+                        let (sorted_awaited_action, item) =
+                            result.err_tip(|| "In AwaitedActionDb::get_range_of_actions")?;
+                        output.push_back(item);
+                        new_end = Bound::Excluded(sorted_awaited_action);
+                        done = false;
+                    }
+                } else {
+                    for result in iterator {
+                        let (sorted_awaited_action, item) =
+                            result.err_tip(|| "In AwaitedActionDb::get_range_of_actions")?;
+                        output.push_back(item);
+                        new_start = Bound::Excluded(sorted_awaited_action);
+                        done = false;
+                    }
                 }
-            } else {
-                for result in iterator {
-                    let (sorted_awaited_action, item) =
-                        result.err_tip(|| "In AwaitedActionDb::get_range_of_actions")?;
-                    output.push_back(item);
-                    new_start = Bound::Excluded(sorted_awaited_action);
-                    done = false;
+                if done {
+                    return Ok(None);
                 }
-            }
-            if done {
-                return Ok(None);
-            }
-            Ok(Some(((new_start.cloned(), new_end.cloned()), output)))
-        })
+                Ok(Some(((new_start.cloned(), new_end.cloned()), output)))
+            },
+        ))
     }
 
     async fn update_awaited_action(&self, new_awaited_action: AwaitedAction) -> Result<(), Error> {
         self.inner
             .lock()
             .await
-            .update_awaited_action(new_awaited_action)
+            .update_awaited_action(new_awaited_action)?;
+        self.tasks_change_notify.notify_one();
+        Ok(())
     }
 
     async fn add_action(
         &self,
         client_operation_id: OperationId,
         action_info: Arc<ActionInfo>,
+        _no_event_action_timeout: Duration,
     ) -> Result<Self::Subscriber, Error> {
-        self.inner
+        let subscriber = self
+            .inner
             .lock()
             .await
             .add_action(client_operation_id, action_info)
-            .await
+            .await?;
+        self.tasks_change_notify.notify_one();
+        Ok(subscriber)
     }
 }

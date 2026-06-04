@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,9 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::convert::AsRef;
 use std::borrow::Cow;
 
-use nativelink_error::{error_if, make_input_err, Error, ResultExt};
+use nativelink_error::{Error, ResultExt, error_if, make_input_err};
+use tonic::Code;
 
 const ERROR_MSG: &str = concat!(
     "Expected resource_name to be of pattern ",
@@ -92,7 +94,7 @@ pub struct ResourceInfo<'a> {
 }
 
 impl<'a> ResourceInfo<'a> {
-    pub fn new(resource_name: &'a str, is_upload: bool) -> Result<ResourceInfo<'a>, Error> {
+    pub fn new(resource_name: &'a str, is_upload: bool) -> Result<Self, Error> {
         // The most amount of slashes there can be to get to "(compressed-)blobs" section is 7.
         let mut rparts = resource_name.rsplitn(7, '/');
         let mut output = ResourceInfo::default();
@@ -148,7 +150,7 @@ impl<'a> ResourceInfo<'a> {
         Ok(output)
     }
 
-    /// Returns a new ResourceInfo with all fields owned.
+    /// Returns a new `ResourceInfo` with all fields owned.
     pub fn to_owned(&self) -> ResourceInfo<'static> {
         ResourceInfo {
             instance_name: Cow::Owned(self.instance_name.to_string()),
@@ -175,23 +177,17 @@ impl<'a> ResourceInfo<'a> {
         [
             Some(self.instance_name.as_ref()),
             is_upload.then_some("uploads"),
-            self.uuid.as_ref().map(|uuid| uuid.as_ref()),
+            self.uuid.as_ref().map(AsRef::as_ref),
             Some(
                 self.compressor
                     .as_ref()
                     .map_or("blobs", |_| "compressed-blobs"),
             ),
-            self.compressor
-                .as_ref()
-                .map(|compressor| compressor.as_ref()),
-            self.digest_function
-                .as_ref()
-                .map(|digest_function| digest_function.as_ref()),
+            self.compressor.as_ref().map(AsRef::as_ref),
+            self.digest_function.as_ref().map(AsRef::as_ref),
             Some(self.hash.as_ref()),
             Some(self.size.as_ref()),
-            self.optional_metadata
-                .as_ref()
-                .map(|optional_metadata| optional_metadata.as_ref()),
+            self.optional_metadata.as_ref().map(AsRef::as_ref),
         ]
         .into_iter()
         .flatten()
@@ -211,9 +207,9 @@ enum State {
     OptionalMetadata,
 }
 
-// Iterate backwards looking for "(compressed-)blobs", once found, move foward
+// Iterate backwards looking for "(compressed-)blobs", once found, move forward
 // populating the output struct. This recursive function utilises the stack to
-// temporarly hold the reference to the previous item reducing the need for
+// temporarily hold the reference to the previous item reducing the need for
 // a heap allocation.
 fn recursive_parse<'a>(
     rparts: &mut impl Iterator<Item = &'a str>,
@@ -239,7 +235,7 @@ fn recursive_parse<'a>(
             State::Unknown => {
                 return Err(make_input_err!(
                     "Unknown state should never be reached in ResourceInfo::new"
-                ))
+                ));
             }
             State::Compressor => {
                 state = State::DigestFunction;
@@ -247,9 +243,8 @@ fn recursive_parse<'a>(
                     output.compressor = Some(Cow::Borrowed(part));
                     *bytes_processed += part.len() + SLASH_SIZE;
                     return Ok(state);
-                } else {
-                    return Err(make_input_err!("Expected compressor, got {part}"));
                 }
+                return Err(make_input_err!("Expected compressor, got {part}"));
             }
             State::DigestFunction => {
                 state = State::Hash;
@@ -258,21 +253,19 @@ fn recursive_parse<'a>(
                     *bytes_processed += part.len() + SLASH_SIZE;
                     return Ok(state);
                 }
-                continue;
             }
             State::Hash => {
                 output.hash = Cow::Borrowed(part);
                 *bytes_processed += part.len() + SLASH_SIZE;
-                // TODO(allada) Set the digest_function if it is not set based on the hash size.
+                // TODO(palfrey) Set the digest_function if it is not set based on the hash size.
                 return Ok(State::Size);
             }
             State::Size => {
                 output.size = Cow::Borrowed(part);
-                output.expected_size = part.parse::<usize>().map_err(|_| {
-                    make_input_err!(
-                        "Digest size_bytes was not convertible to usize. Got: {}",
-                        part
-                    )
+                output.expected_size = part.parse::<usize>().map_err(|err| {
+                    Error::from_std_err(Code::InvalidArgument, &err).append(format!(
+                        "Digest size_bytes was not convertible to usize. Got: {part}",
+                    ))
                 })?;
                 *bytes_processed += part.len(); // Special case {size}, so it does not count one slash.
                 return Ok(State::OptionalMetadata);
