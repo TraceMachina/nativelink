@@ -24,6 +24,8 @@ writeShellScriptBin "local-image-test" ''
   # nix run .#$1.copyTo \
   #   docker-daemon:''${IMAGE_NAME}:''${IMAGE_TAG}
   nix build .#$1
+  # Double-check available disk before we run skopeo
+  df -h
   ${skopeo}/bin/skopeo --debug --insecure-policy copy nix:''${IMAGE} docker-daemon:''${IMAGE_NAME}:''${IMAGE_TAG}
 
   # Ensure that the image has minimal closure size.
