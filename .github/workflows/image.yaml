@@ -44,6 +44,10 @@ jobs:
         with:
           nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
 
+      - name: Set up Docker
+        uses: >- # v5.2.0
+          docker/setup-docker-action@0234bb73ccb40f0c430b795634f9247e2b5c2d23
+
       - name: Test image
         run: |
           nix run --fallback .#local-image-test ${{ matrix.image }}
