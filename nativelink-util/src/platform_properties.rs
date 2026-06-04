@@ -93,16 +93,16 @@ impl From<ProtoPlatform> for PlatformProperties {
 
 impl From<&PlatformProperties> for ProtoPlatform {
     fn from(val: &PlatformProperties) -> Self {
-        Self {
-            properties: val
-                .properties
-                .iter()
-                .map(|(name, value)| ProtoProperty {
-                    name: name.clone(),
-                    value: value.as_str().to_string(),
-                })
-                .collect(),
-        }
+        let mut properties = val
+            .properties
+            .iter()
+            .map(|(name, value)| ProtoProperty {
+                name: name.clone(),
+                value: value.as_str().to_string(),
+            })
+            .collect::<Vec<_>>();
+        properties.sort_unstable_by(|a, b| a.name.cmp(&b.name));
+        Self { properties }
     }
 }
 
