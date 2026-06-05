@@ -12,9 +12,10 @@ rust_library(
     srcs = [
         "src/backcompat.rs",
         "src/cas_server.rs",
+        "src/deser/mod.rs",
+        "src/deser/shellexpand.rs",
         "src/lib.rs",
         "src/schedulers.rs",
-        "src/serde_utils.rs",
         "src/stores.rs",
     ],
     compile_data = [
@@ -29,6 +30,7 @@ rust_library(
         "@crates//:serde",
         "@crates//:serde_json",
         "@crates//:serde_json5",
+        "@crates//:serde_with",
         "@crates//:shellexpand",
         "@crates//:tracing",
     ],
@@ -54,6 +56,7 @@ rust_test_suite(
         "@crates//:serde_json",
         "@crates//:serde_json5",
         "@crates//:serde_test",
+        "@crates//:serde_with",
     ],
 )
 
@@ -91,4 +94,7 @@ rust_doc_test(
     name = "doc_test",
     timeout = "short",
     crate = ":nativelink-config",
+    deps = [
+        "@crates//:serde_json5",
+    ],
 )

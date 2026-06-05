@@ -23,6 +23,7 @@ use nativelink_proto::com::github::trace_machina::nativelink::events::{
 use prost::Message;
 use rand::RngCore;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde_with::{DeserializeAs, SerializeAs, serde_as};
 
 static NODE_ID: OnceLock<[u8; 6]> = OnceLock::new();
 
@@ -95,45 +96,35 @@ pub fn get_node_id(event: Option<&Event>) -> [u8; 6] {
     node_id
 }
 
-fn serialize_request_metadata<S>(
-    value: &Option<RequestMetadata>,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    match value {
-        Some(msg) => serializer.serialize_some(&BASE64_STANDARD_NO_PAD.encode(msg.encode_to_vec())),
-        None => serializer.serialize_none(),
+// Workaround for RequestMetadata not being local
+// See https://docs.rs/serde_with/3.20.0/serde_with/guide/serde_as/index.html#using-serde_as-on-types-without-serializeas-and-serialize-implementations
+struct RequestMetadataSerialiser;
+
+impl SerializeAs<RequestMetadata> for RequestMetadataSerialiser {
+    fn serialize_as<S>(msg: &RequestMetadata, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&BASE64_STANDARD_NO_PAD.encode(msg.encode_to_vec()))
     }
 }
 
-fn deserialize_request_metadata<'de, D>(
-    deserializer: D,
-) -> Result<Option<RequestMetadata>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let opt = Option::<String>::deserialize(deserializer)?;
-    match opt {
-        Some(s) => {
-            let decoded = BASE64_STANDARD_NO_PAD
-                .decode(s.as_bytes())
-                .map_err(serde::de::Error::custom)?;
-            RequestMetadata::decode(&*decoded)
-                .map_err(serde::de::Error::custom)
-                .map(Some)
-        }
-        None => Ok(None),
+impl<'de> DeserializeAs<'de, RequestMetadata> for RequestMetadataSerialiser {
+    fn deserialize_as<D>(deserializer: D) -> Result<RequestMetadata, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let decoded = BASE64_STANDARD_NO_PAD
+            .decode(String::deserialize(deserializer)?.as_bytes())
+            .map_err(serde::de::Error::custom)?;
+        RequestMetadata::decode(&*decoded).map_err(serde::de::Error::custom)
     }
 }
 
+#[serde_as]
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct OriginMetadata {
     pub identity: String,
-    #[serde(
-        serialize_with = "serialize_request_metadata",
-        deserialize_with = "deserialize_request_metadata"
-    )]
+    #[serde_as(as = "Option<RequestMetadataSerialiser>")]
     pub bazel_metadata: Option<RequestMetadata>,
 }
