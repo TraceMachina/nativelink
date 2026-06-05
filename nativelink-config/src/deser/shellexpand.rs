@@ -14,14 +14,14 @@
 
 //! Utilities for deserializing types with intermediate shell-expansion.
 
-use std::fmt::Display;
-use std::marker::PhantomData;
-use std::str::FromStr;
-use std::time::Duration;
+use core::fmt::Display;
+use core::marker::PhantomData;
+use core::str::FromStr;
+use core::time::Duration;
 
 use byte_unit::Byte;
-use serde::{de, Deserialize, Deserializer};
-use serde_with::{serde_as, DeserializeAs, Same, SerializeAs};
+use serde::{Deserialize, Deserializer, de};
+use serde_with::{DeserializeAs, Same, SerializeAs, serde_as};
 
 #[allow(rustdoc::private_intra_doc_links)]
 /// Utility type that invokes shell-expansion if it detects a string.
@@ -128,8 +128,9 @@ use serde_with::{serde_as, DeserializeAs, Same, SerializeAs};
 /// let error = serde_json5::from_str::<ConnectionSettings>(r#"{ ttl: { minutes: 5, seconds: 30 } }"#).unwrap_err();
 /// ```
 ///
-/// For convience, the types [`ShellExpandBytes`] and [`ShellExpandSeconds`] are exported as aliases for
+/// For convenience, the types [`ShellExpandBytes`] and [`ShellExpandSeconds`] are exported as aliases for
 /// `ShellExpand<T, Byte>` and `ShellExpand<T, Duration>`, respectively.
+#[derive(Debug)]
 pub struct ShellExpand<De = Same, Conv = Same>(PhantomData<(De, Conv)>);
 
 pub trait ShellExpandable<T> {
@@ -204,7 +205,7 @@ where
     u128: TryInto<T, Error: Display>,
 {
     fn convert<'de, D: Deserializer<'de>>(s: &str) -> Result<T, D::Error> {
-        let byte_size = Byte::parse_str(s, true).map_err(de::Error::custom)?;
+        let byte_size = Self::parse_str(s, true).map_err(de::Error::custom)?;
         byte_size.as_u128().try_into().map_err(de::Error::custom)
     }
 }

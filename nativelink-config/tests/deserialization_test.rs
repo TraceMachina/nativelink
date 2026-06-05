@@ -14,7 +14,6 @@
 // limitations under the License.
 
 use nativelink_config::deser::{ShellExpandBytes, ShellExpandSeconds};
-use pretty_assertions::assert_eq;
 use serde::Deserialize;
 use serde_with::serde_as;
 
@@ -34,49 +33,55 @@ struct DataSizeEntity {
 }
 
 #[derive(Deserialize, Debug)]
+#[serde_as]
 struct OptionalDataSizeEntity {
-    #[serde(
-        default,
-        deserialize_with = "convert_optional_data_size_with_shellexpand"
-    )]
+    #[serde(default)]
+    #[serde_as(as = "Option<ShellExpandBytes>")]
     data_size: Option<usize>,
 }
 
 #[derive(Deserialize, Debug, PartialEq)]
+#[serde_as]
 struct OptionalNumericEntity {
-    #[serde(
-        default,
-        deserialize_with = "convert_optional_numeric_with_shellexpand"
-    )]
+    #[serde(default)]
+    #[serde_as(as = "Option<ShellExpand>")]
     value: Option<usize>,
 }
 
 #[derive(Deserialize, Debug)]
+#[serde_as]
 struct OptionalStringEntity {
-    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    #[serde(default)]
+    #[serde_as(as = "Option<ShellExpand>")]
     value: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
+#[serde_as]
 struct NumericEntity {
-    #[serde(deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde_as(as = "ShellExpand")]
     value: i64,
 }
+
 #[derive(Deserialize, Debug)]
+#[serde_as]
 struct StringEntity {
-    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    #[serde_as(as = "ShellExpand")]
     value: String,
 }
 
 #[derive(Deserialize, Debug)]
+#[serde_as]
 struct VecStringEntity {
-    #[serde(deserialize_with = "convert_vec_string_with_shellexpand")]
+    #[serde_as(as = "Vec<ShellExpand>")]
     values: Vec<String>,
 }
 
 #[derive(Deserialize, Debug)]
+#[serde_as]
 struct BoolEntity {
-    #[serde(default, deserialize_with = "convert_boolean_with_shellexpand")]
+    #[serde(default)]
+    #[serde_as(as = "ShellExpand")]
     value: bool,
 }
 
@@ -342,13 +347,13 @@ mod optional_values_tests {
     #[test]
     fn test_mixed_optional_values() {
         #[derive(Deserialize)]
+        #[serde_as]
         struct MixedOptionals {
-            #[serde(
-                default,
-                deserialize_with = "convert_optional_numeric_with_shellexpand"
-            )]
+            #[serde(default)]
+            #[serde_as(as = "Option<ShellExpand>")]
             number: Option<usize>,
-            #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+            #[serde(default)]
+            #[serde_as(as = "Option<ShellExpand>")]
             string: Option<String>,
         }
 
@@ -486,6 +491,7 @@ mod shellexpand_tests {
 mod convert_numeric_with_shellexpand_tests {
     use std::env;
 
+    use pretty_assertions::assert_eq;
     use serde_test::{Token, assert_de_tokens_error};
 
     use super::*;
@@ -537,11 +543,10 @@ mod convert_numeric_with_shellexpand_tests {
         let invalid_json = r#"{"value": "${UNDEFINED_ENV_VAR}"}"#;
         let result = serde_json5::from_str::<NumericEntity>(invalid_json);
         assert!(result.is_err());
+        let result_string = result.unwrap_err().to_string();
         assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("environment variable not found")
+            result_string.contains("environment variable not found"),
+            "{result_string}"
         );
     }
 
@@ -551,7 +556,10 @@ mod convert_numeric_with_shellexpand_tests {
         let result = serde_json5::from_str::<NumericEntity>(invalid_json);
         assert!(result.is_err());
         let error_message = result.unwrap_err().to_string();
-        assert!(error_message.contains("an integer or a plain number string"));
+        assert!(
+            error_message.contains("error parsing number"),
+            "{error_message}"
+        );
     }
 
     #[test]
@@ -577,6 +585,8 @@ mod convert_numeric_with_shellexpand_tests {
 #[cfg(test)]
 mod shellexpand_string_tests {
     use std::env;
+
+    use pretty_assertions::assert_eq;
 
     use super::*;
 
@@ -611,7 +621,7 @@ mod shellexpand_string_tests {
 }
 #[cfg(test)]
 mod convert_optional_numeric_with_shellexpand_tests {
-
+    use pretty_assertions::assert_eq;
     use serde_test::{Token, assert_de_tokens_error};
 
     use super::*;

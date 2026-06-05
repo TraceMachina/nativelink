@@ -17,11 +17,8 @@ use std::collections::HashMap;
 #[cfg(feature = "dev-schema")]
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
 
-use crate::serde_utils::{
-    convert_duration_with_shellexpand, convert_duration_with_shellexpand_and_negative,
-    convert_numeric_with_shellexpand,
-};
 use crate::stores::{GrpcEndpoint, Retry, StoreRefName};
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -84,6 +81,7 @@ const fn default_worker_match_logging_interval_s() -> i64 {
 
 #[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
+#[serde_as]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct SimpleSpec {
     /// A list of supported platform properties mapped to how these properties
@@ -122,7 +120,8 @@ pub struct SimpleSpec {
     /// Mark operations as completed with error if no client has updated them
     /// within this duration.
     /// Default: 60 (seconds)
-    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    #[serde_as(as = "ShellExpandSeconds")]
+    #[serde(default)]
     pub client_action_timeout_s: u64,
 
     /// Remove workers from pool once the worker has not responded in this
@@ -139,7 +138,8 @@ pub struct SimpleSpec {
     /// action. Set to 0 to disable (relies only on `worker_timeout_s`).
     ///
     /// Default: 0 (disabled)
-    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    #[serde(default)]
+    #[serde_as(as = "ShellExpandSeconds")]
     pub max_action_executing_timeout_s: u64,
 
     /// If a job returns an internal error or times out this many times when
@@ -164,10 +164,8 @@ pub struct SimpleSpec {
     /// Every N seconds, do logging of worker matching
     /// e.g. "worker busy", "can't find any worker"
     /// Defaults to 10s. Can be set to -1 to disable
-    #[serde(
-        default = "default_worker_match_logging_interval_s",
-        deserialize_with = "convert_duration_with_shellexpand_and_negative"
-    )]
+    #[serde(default = "default_worker_match_logging_interval_s")]
+    #[serde_as(as = "ShellExpandSeconds")]
     pub worker_match_logging_interval_s: i64,
 }
 
@@ -196,6 +194,7 @@ pub struct ExperimentalRedisSchedulerBackend {
 /// build at the main scheduler directly though.
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
+#[serde_as]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct GrpcSpec {
     /// The upstream scheduler to forward requests to.
@@ -208,12 +207,14 @@ pub struct GrpcSpec {
     /// Limit the number of simultaneous upstream requests to this many.  A
     /// value of zero is treated as unlimited.  If the limit is reached the
     /// request is queued.
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde_as(as = "ShellExpand")]
+    #[serde(default)]
     pub max_concurrent_requests: usize,
 
     /// The number of connections to make to each specified endpoint to balance
     /// the load over multiple TCP connections.  Default 1.
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde_as(as = "ShellExpand")]
+    #[serde(default)]
     pub connections_per_endpoint: usize,
 }
 

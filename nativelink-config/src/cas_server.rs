@@ -18,14 +18,10 @@ use nativelink_error::{Error, ResultExt};
 #[cfg(feature = "dev-schema")]
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
 
+use crate::deser::ShellExpand;
 use crate::schedulers::SchedulerSpec;
-use crate::serde_utils::{
-    convert_data_size_with_shellexpand, convert_duration_with_shellexpand,
-    convert_numeric_with_shellexpand, convert_optional_numeric_with_shellexpand,
-    convert_optional_string_with_shellexpand, convert_string_with_shellexpand,
-    convert_vec_string_with_shellexpand,
-};
 use crate::stores::{ClientTlsConfig, ConfigDigestHashFunction, StoreRefName, StoreSpec};
 
 /// Name of the scheduler. This type will be used when referencing a
@@ -106,6 +102,7 @@ pub struct HttpCompressionConfig {
 }
 
 #[derive(Deserialize, Serialize, Debug)]
+#[serde_as]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct AcStoreConfig {
@@ -122,6 +119,7 @@ pub struct AcStoreConfig {
 
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
+#[serde_as]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct CasStoreConfig {
     /// The store name referenced in the `stores` map in the main config.
@@ -132,6 +130,7 @@ pub struct CasStoreConfig {
 
 #[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
+#[serde_as]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct CapabilitiesRemoteExecutionConfig {
     /// Scheduler used to configure the capabilities of remote execution.
@@ -149,6 +148,7 @@ pub struct CapabilitiesConfig {
     pub remote_execution: Option<CapabilitiesRemoteExecutionConfig>,
 }
 
+#[serde_as]
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
@@ -166,21 +166,23 @@ pub struct ExecutionConfig {
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[serde_as]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct FetchConfig {
     /// The store name referenced in the `stores` map in the main config.
     /// This store name referenced here may be reused multiple times.
-    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    #[serde_as(as = "ShellExpand")]
     pub fetch_store: StoreRefName,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[serde_as]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct PushConfig {
     /// The store name referenced in the `stores` map in the main config.
     /// This store name referenced here may be reused multiple times.
-    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    #[serde_as(as = "ShellExpand")]
     pub push_store: StoreRefName,
 
     /// Whether the Action Cache store may be written to, this if set to false
@@ -196,6 +198,7 @@ fn is_default<T: Default + PartialEq>(t: &T) -> bool {
 
 #[derive(Deserialize, Serialize, Debug, Default, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
+#[serde_as]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ByteStreamConfig {
     /// Name of the store in the "stores" configuration.
@@ -207,11 +210,8 @@ pub struct ByteStreamConfig {
     ///
     ///
     /// Default: 64KiB
-    #[serde(
-        default,
-        deserialize_with = "convert_data_size_with_shellexpand",
-        skip_serializing_if = "is_default"
-    )]
+    #[serde(default, skip_serializing_if = "is_default")]
+    #[serde_as(as = "ShellExpandBytes")]
     pub max_bytes_per_stream: usize,
 
     /// In the event a client disconnects while uploading a blob, we will hold
@@ -220,11 +220,8 @@ pub struct ByteStreamConfig {
     /// the same blob.
     ///
     /// Default: 10 (seconds)
-    #[serde(
-        default,
-        deserialize_with = "convert_duration_with_shellexpand",
-        skip_serializing_if = "is_default"
-    )]
+    #[serde(default, skip_serializing_if = "is_default")]
+    #[serde_as(as = "ShellExpandSeconds")]
     pub persist_stream_on_disconnect_timeout: usize,
 }
 
@@ -233,30 +230,23 @@ pub struct ByteStreamConfig {
 // with newer fields, and eventually dropped
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[serde_as]
 pub struct OldByteStreamConfig {
     pub cas_stores: HashMap<InstanceName, StoreRefName>,
-    #[serde(
-        default,
-        deserialize_with = "convert_data_size_with_shellexpand",
-        skip_serializing_if = "is_default"
-    )]
+    #[serde(default, skip_serializing_if = "is_default")]
+    #[serde_as(as = "ShellExpandBytes")]
     pub max_bytes_per_stream: usize,
-    #[serde(
-        default,
-        deserialize_with = "convert_data_size_with_shellexpand",
-        skip_serializing_if = "is_default"
-    )]
+    #[serde(default, skip_serializing_if = "is_default")]
+    #[serde_as(as = "ShellExpandBytes")]
     pub max_decoding_message_size: usize,
-    #[serde(
-        default,
-        deserialize_with = "convert_duration_with_shellexpand",
-        skip_serializing_if = "is_default"
-    )]
+    #[serde(default, skip_serializing_if = "is_default")]
+    #[serde_as(as = "ShellExpandSeconds")]
     pub persist_stream_on_disconnect_timeout: usize,
 }
 
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
+#[serde_as]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct WorkerApiConfig {
     /// The scheduler name referenced in the `schedulers` map in the main config.
@@ -296,6 +286,7 @@ pub struct HealthConfig {
 
 #[derive(Deserialize, Serialize, Debug)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+#[serde_as]
 pub struct BepConfig {
     /// The store to publish build events to.
     /// The store name referenced in the `stores` map in the main config.
@@ -305,10 +296,11 @@ pub struct BepConfig {
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+#[serde_as]
 pub struct IdentityHeaderSpec {
     /// The name of the header to look for the identity in.
     /// Default: "x-identity"
-    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    #[serde_as(as = "Option<ShellExpand>")]
     pub header_name: Option<String>,
 
     /// If the header is required to be set or fail the request.
@@ -318,15 +310,17 @@ pub struct IdentityHeaderSpec {
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+#[serde_as]
 pub struct OriginEventsPublisherSpec {
     /// The store to publish nativelink events to.
     /// The store name referenced in the `stores` map in the main config.
-    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    #[serde_as(as = "ShellExpand")]
     pub store: StoreRefName,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+#[serde_as]
 pub struct OriginEventsSpec {
     /// The publisher configuration for origin events.
     pub publisher: OriginEventsPublisherSpec,
@@ -336,7 +330,8 @@ pub struct OriginEventsSpec {
     /// Zero is default.
     ///
     /// Default: 65536 (zero defaults to this)
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default)]
+    #[serde_as(as = "ShellExpand")]
     pub max_event_queue_size: usize,
 }
 
@@ -424,6 +419,7 @@ pub struct ServicesConfig {
 
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
+#[serde_as]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct TlsConfig {
     /// Path to the certificate file.
@@ -455,6 +451,7 @@ pub struct TlsConfig {
 /// specified.
 #[derive(Deserialize, Serialize, Debug, Default, Clone, Copy)]
 #[serde(deny_unknown_fields)]
+#[serde_as]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct HttpServerConfig {
     /// Interval to send keep-alive pings via HTTP2.
@@ -513,6 +510,7 @@ pub enum ListenerConfig {
 
 #[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
+#[serde_as]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct HttpListener {
     /// Address to listen on. Example: `127.0.0.1:8080` or `:8080` to listen
@@ -536,7 +534,8 @@ pub struct HttpListener {
 
     /// Maximum number of bytes to decode on each grpc stream chunk.
     /// Default: 4 MiB
-    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
+    #[serde(default)]
+    #[serde_as(as = "ShellExpandBytes")]
     pub max_decoding_message_size: usize,
 
     /// Tls Configuration for this server.
@@ -549,6 +548,7 @@ pub struct HttpListener {
 
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
+#[serde_as]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ServerConfig {
     /// Name of the server. This is used to help identify the service
@@ -573,13 +573,13 @@ pub struct ServerConfig {
 
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(rename_all = "snake_case")]
+#[serde_as]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum WorkerProperty {
     /// List of static values.
     /// Note: Generally there should only ever be 1 value, but if the platform
     /// property key is `PropertyType::Priority` it may have more than one value.
-    #[serde(deserialize_with = "convert_vec_string_with_shellexpand")]
-    Values(Vec<String>),
+    Values(#[serde_as(as = "ShellExpand")] Vec<String>),
 
     /// A dynamic configuration. The string will be executed as a command
     /// (not sell) and will be split by "\n" (new line character).
@@ -589,6 +589,7 @@ pub enum WorkerProperty {
 /// Generic config for an endpoint and associated configs.
 #[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
+#[serde_as]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct EndpointConfig {
     /// URI of the endpoint.
@@ -623,10 +624,11 @@ pub enum UploadCacheResultsStrategy {
 
 #[derive(Clone, Deserialize, Serialize, Debug)]
 #[serde(rename_all = "snake_case")]
+#[serde_as]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum EnvironmentSource {
     /// The name of the platform property in the action to get the value from.
-    Property(String),
+    Property(#[serde_as(as = "ShellExpand")] String),
 
     /// The raw value to set.
     Value(#[serde_as(as = "ShellExpand")] String),
@@ -674,6 +676,7 @@ pub enum EnvironmentSource {
 
 #[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
+#[serde_as]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct UploadActionResultConfig {
     /// Underlying AC store that the worker will use to publish execution results
@@ -737,6 +740,7 @@ pub struct UploadActionResultConfig {
 
 #[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
+#[serde_as]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct LocalWorkerConfig {
     /// Name of the worker. This is give a more friendly name to a worker for logging
@@ -763,13 +767,15 @@ pub struct LocalWorkerConfig {
     /// `DeadlineExceeded` and may be retried by the scheduler. Value in seconds.
     ///
     /// Default: 600 (seconds / 10 mins)
-    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    #[serde_as(as = "ShellExpandSeconds")]
+    #[serde(default)]
     pub max_upload_timeout: usize,
 
     /// Maximum number of inflight tasks this worker can cope with.
     ///
     /// Default: 0 (infinite tasks)
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde_as(as = "ShellExpand")]
+    #[serde(default)]
     pub max_inflight_tasks: u64,
 
     /// If timeout is handled in `entrypoint` or another wrapper script.
@@ -829,7 +835,7 @@ pub struct LocalWorkerConfig {
     /// `stores::FilesystemStore::content_path` must be on the same filesystem.
     /// Hardlinks will be used when placing files that are accessible to the jobs
     /// that are sourced from `local_filesystem_store_ref`'s `content_path`.
-    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    #[serde_as(as = "ShellExpand")]
     pub work_directory: String,
 
     /// Properties of this worker. This configuration will be sent to the scheduler
@@ -873,25 +879,26 @@ pub struct LocalWorkerConfig {
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[serde_as]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct DirectoryCacheConfig {
     /// Maximum number of cached directories.
     /// Default: 1000
     #[serde(default = "default_directory_cache_max_entries")]
+    #[serde_as(as = "ShellExpand")]
     pub max_entries: usize,
 
     /// Maximum total size in bytes for all cached directories (0 = unlimited).
     /// Default: 10737418240 (10 GB)
-    #[serde(
-        default = "default_directory_cache_max_size_bytes",
-        deserialize_with = "convert_data_size_with_shellexpand"
-    )]
+    #[serde(default = "default_directory_cache_max_size_bytes")]
+    #[serde_as(as = "ShellExpandBytes")]
     pub max_size_bytes: u64,
 
     /// Base directory for cache storage. This directory will be managed by
     /// the worker and should be on the same filesystem as `work_directory`.
     /// Default: `{work_directory}/../directory_cache`
-    #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
+    #[serde(default)]
+    #[serde_as(as = "ShellExpand")]
     pub cache_root: String,
 }
 
@@ -913,6 +920,7 @@ pub enum WorkerConfig {
 
 #[derive(Deserialize, Serialize, Debug, Clone, Copy)]
 #[serde(deny_unknown_fields)]
+#[serde_as]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct GlobalConfig {
     /// Maximum number of open files that can be opened at one time.
@@ -925,7 +933,7 @@ pub struct GlobalConfig {
     /// Note: This value must be greater than 10.
     ///
     /// Default: 24576 (= 24 * 1024)
-    #[serde(deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde_as(as = "ShellExpandBytes")]
     pub max_open_files: usize,
 
     /// Default hash function to use while uploading blobs to the CAS when not set

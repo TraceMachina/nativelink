@@ -24,6 +24,7 @@ fn deprecated(old_map: &String, new_map: &String) {
     );
 }
 
+/// FIXME: rewrite with `serde_as`
 /// Use `#[serde(default, deserialize_with = "backcompat::opt_vec_with_instance_name")]` for backwards
 /// compatibility with map-based access. A deprecation warning will be written to stderr if the
 /// old format is used.

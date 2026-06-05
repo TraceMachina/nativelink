@@ -75,6 +75,7 @@ rust_library(
         "@crates//:rand",
         "@crates//:rlimit",
         "@crates//:serde",
+        "@crates//:serde_with",
         "@crates//:sha2",
         "@crates//:tokio",
         "@crates//:tokio-util",

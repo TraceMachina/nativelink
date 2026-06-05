@@ -589,6 +589,7 @@ pub enum StoreSpec {
 /// Configuration for an individual shard of the store.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[serde_as]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ShardConfig {
     /// Store to shard the data to.
@@ -599,7 +600,7 @@ pub struct ShardConfig {
     /// all the store's weights divided by the individual store's weight.
     ///
     /// Default: 1
-    #[serde(deserialize_with = "convert_optional_numeric_with_shellexpand")]
+    #[serde_as(as = "Option<ShellExpand>")]
     pub weight: Option<u32>,
 }
 
@@ -617,7 +618,7 @@ pub struct ShardSpec {
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct CacheMetricsSpec {
     /// Low-cardinality cache type label for metrics, for example `cas` or `ac`.
-    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    #[serde_as(as = "ShellExpand")]
     pub cache_type: String,
 
     /// Store to wrap with cache operation metrics.
@@ -626,6 +627,7 @@ pub struct CacheMetricsSpec {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[serde_as]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct SizePartitioningSpec {
     /// Size to partition the data on.
@@ -697,22 +699,25 @@ pub struct FilesystemSpec {
     /// runtime.
     /// A value of 0 means unlimited (no concurrency limit).
     /// Default: 0
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde_as(as = "ShellExpand")]
+    #[serde(default)]
     pub max_concurrent_writes: usize,
 }
 
 // NetApp ONTAP S3 Spec
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 #[serde(deny_unknown_fields)]
+#[serde_as]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ExperimentalOntapS3Spec {
-    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    #[serde_as(as = "ShellExpand")]
     pub endpoint: String,
-    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    #[serde_as(as = "ShellExpand")]
     pub vserver_name: String,
-    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    #[serde_as(as = "ShellExpand")]
     pub bucket: String,
-    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    #[serde(default)]
+    #[serde_as(as = "Option<ShellExpand>")]
     pub root_certificates: Option<String>,
 
     /// Common retry and upload configuration
@@ -723,23 +728,26 @@ pub struct ExperimentalOntapS3Spec {
 // Cloudflare R2 Spec
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 #[serde(deny_unknown_fields)]
+#[serde_as]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ExperimentalR2Spec {
     /// Cloudflare account ID. Endpoint is derived as
     /// `https://{account_id}.r2.cloudflarestorage.com`.
-    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    #[serde_as(as = "ShellExpand")]
     pub account_id: String,
 
     /// Bucket name to use as the backend.
-    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    #[serde_as(as = "ShellExpand")]
     pub bucket: String,
 
     /// Explicit R2 access key.
-    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    #[serde(default)]
+    #[serde_as(as = "Option<ShellExpand>")]
     pub access_key_id: Option<String>,
 
     /// Explicit R2 secret key.
-    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    #[serde(default)]
+    #[serde_as(as = "Option<ShellExpand>")]
     pub secret_access_key: Option<String>,
 
     /// Retry and upload settings.
@@ -749,11 +757,12 @@ pub struct ExperimentalR2Spec {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[serde_as]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct OntapS3ExistenceCacheSpec {
-    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    #[serde_as(as = "ShellExpand")]
     pub index_path: String,
-    #[serde(deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde_as(as = "ShellExpand")]
     pub sync_interval_seconds: u32,
     pub backend: Box<ExperimentalOntapS3Spec>,
 }
@@ -892,6 +901,7 @@ pub struct ExistenceCacheSpec {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[serde_as]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct VerifySpec {
     /// The underlying store wrap around. All content will first flow
@@ -905,7 +915,8 @@ pub struct VerifySpec {
     /// an upload of data.
     ///
     /// This should be set to false for AC, but true for CAS stores.
-    #[serde(default, deserialize_with = "convert_boolean_with_shellexpand")]
+    #[serde(default)]
+    #[serde_as(as = "ShellExpand")]
     pub verify_size: bool,
 
     /// If the data should be hashed and verify that the key matches the
@@ -913,7 +924,8 @@ pub struct VerifySpec {
     /// request and if not set will use the global default.
     ///
     /// This should be set to false for AC, but true for CAS stores.
-    #[serde(default, deserialize_with = "convert_boolean_with_shellexpand")]
+    #[serde(default)]
+    #[serde_as(as = "ShellExpand")]
     pub verify_hash: bool,
 }
 
@@ -988,7 +1000,7 @@ pub struct CompressionSpec {
 /// Eviction policy always works on LRU (Least Recently Used). Any time an entry
 /// is touched it updates the timestamp. Inserts and updates will execute the
 /// eviction policy removing any expired entries and/or the oldest entries
-/// until the store size becomes smaller than max_bytes.
+/// until the store size becomes smaller than `max_bytes`.
 #[serde_as]
 #[derive(Serialize, Deserialize, Debug, Default, Clone, Copy)]
 #[serde(deny_unknown_fields)]
@@ -1062,19 +1074,19 @@ pub struct ExperimentalAwsSpec {
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 #[serde(deny_unknown_fields)]
+#[serde_as]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ExperimentalGcsSpec {
     /// Bucket name to use as the backend.
-    #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
+    #[serde(default)]
+    #[serde_as(as = "ShellExpand")]
     pub bucket: String,
 
     /// Chunk size for resumable uploads.
     ///
     /// Default: 2MB
-    #[serde(
-        default,
-        deserialize_with = "convert_optional_data_size_with_shellexpand"
-    )]
+    #[serde(default)]
+    #[serde_as(as = "Option<ShellExpandBytes>")]
     pub resumable_chunk_size: Option<usize>,
 
     /// Common retry and upload configuration
@@ -1082,30 +1094,36 @@ pub struct ExperimentalGcsSpec {
     pub common: CommonObjectSpec,
 
     /// Error if authentication was not found.
-    #[serde(default, deserialize_with = "convert_boolean_with_shellexpand")]
+    #[serde(default)]
+    #[serde_as(as = "ShellExpand")]
     pub authentication_required: bool,
 
     /// Connection timeout in milliseconds.
     /// Default: 3000
-    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    #[serde(default)]
+    #[serde_as(as = "ShellExpandSeconds")]
     pub connection_timeout_s: u64,
 
     /// Read timeout in milliseconds.
     /// Default: 3000
-    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    #[serde(default)]
+    #[serde_as(as = "ShellExpandSeconds")]
     pub read_timeout_s: u64,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 #[serde(deny_unknown_fields)]
+#[serde_as]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ExperimentalAzureSpec {
     /// The Azure Storage account name.
-    #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
+    #[serde(default)]
+    #[serde_as(as = "ShellExpand")]
     pub account_name: String,
 
     /// The container name to use as the backend.
-    #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
+    #[serde(default)]
+    #[serde_as(as = "ShellExpand")]
     pub container: String,
 
     /// Common retry and upload configuration.
@@ -1114,16 +1132,19 @@ pub struct ExperimentalAzureSpec {
 
     /// Connection timeout in milliseconds.
     /// Default: 3000
-    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    #[serde(default)]
+    #[serde_as(as = "ShellExpandSeconds")]
     pub connection_timeout_s: u64,
 
     /// Read timeout in milliseconds.
     /// Default: 3000
-    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    #[serde(default)]
+    #[serde_as(as = "ShellExpandSeconds")]
     pub read_timeout_s: u64,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[serde_as]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct CommonObjectSpec {
     /// If you wish to prefix the location in the bucket. If None, no prefix will be used.
@@ -1155,26 +1176,23 @@ pub struct CommonObjectSpec {
     /// upload will be aborted and the client will likely receive an error.
     ///
     /// Default: 5MB.
-    #[serde(
-        default,
-        deserialize_with = "convert_optional_data_size_with_shellexpand"
-    )]
+    #[serde(default)]
+    #[serde_as(as = "Option<ShellExpandBytes>")]
     pub max_retry_buffer_per_request: Option<usize>,
 
     /// Maximum number of concurrent `UploadPart` requests per `MultipartUpload`.
     ///
     /// Default: 10.
     ///
-    #[serde(
-        default,
-        deserialize_with = "convert_optional_numeric_with_shellexpand"
-    )]
+    #[serde(default)]
+    #[serde_as(as = "Option<ShellExpand>")]
     pub multipart_max_concurrent_uploads: Option<usize>,
 
     /// Allow unencrypted HTTP connections. Only use this for local testing.
     ///
     /// Default: false
-    #[serde(default, deserialize_with = "convert_boolean_with_shellexpand")]
+    #[serde(default)]
+    #[serde_as(as = "ShellExpand")]
     pub insecure_allow_http: bool,
 
     /// Disable http/2 connections and only use http/1.1. Default client
@@ -1184,7 +1202,8 @@ pub struct CommonObjectSpec {
     /// underlying network environment, S3, or GCS API servers specify otherwise.
     ///
     /// Default: false
-    #[serde(default, deserialize_with = "convert_boolean_with_shellexpand")]
+    #[serde(default)]
+    #[serde_as(as = "ShellExpand")]
     pub disable_http2: bool,
 }
 
@@ -1241,33 +1260,35 @@ pub struct GrpcEndpoint {
     /// The TLS configuration to use to connect to the endpoint (if grpcs).
     pub tls_config: Option<ClientTlsConfig>,
     /// The maximum concurrency to allow on this endpoint.
-    #[serde(
-        default,
-        deserialize_with = "convert_optional_numeric_with_shellexpand"
-    )]
+    #[serde(default)]
+    #[serde_as(as = "Option<ShellExpand>")]
     pub concurrency_limit: Option<usize>,
 
     /// Timeout for establishing a TCP connection to the endpoint (seconds).
     /// If not set or 0, defaults to 30 seconds.
-    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    #[serde(default)]
+    #[serde_as(as = "ShellExpandSeconds")]
     pub connect_timeout_s: u64,
 
     /// TCP keepalive interval (seconds). Sends TCP keepalive probes at this
     /// interval to detect dead connections at the OS level.
     /// If not set or 0, defaults to 30 seconds.
-    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    #[serde(default)]
+    #[serde_as(as = "ShellExpandSeconds")]
     pub tcp_keepalive_s: u64,
 
     /// HTTP/2 keepalive interval (seconds). Sends HTTP/2 PING frames at this
     /// interval to detect dead connections at the application level.
     /// If not set or 0, defaults to 30 seconds.
-    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    #[serde(default)]
+    #[serde_as(as = "ShellExpandSeconds")]
     pub http2_keepalive_interval_s: u64,
 
     /// HTTP/2 keepalive timeout (seconds). If a PING response is not received
     /// within this duration, the connection is considered dead.
     /// If not set or 0, defaults to 20 seconds.
-    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    #[serde(default)]
+    #[serde_as(as = "ShellExpandSeconds")]
     pub http2_keepalive_timeout_s: u64,
 }
 
@@ -1352,6 +1373,7 @@ pub struct GrpcSpec {
     /// `NativeLink` also automatically injects the current OpenTelemetry trace
     /// context (`traceparent` / `tracestate`) into every outgoing request.
     #[serde(default)]
+    #[serde_as(as = "Vec<ShellExpand>")]
     pub forward_headers: Vec<String>,
 }
 
@@ -1420,7 +1442,8 @@ pub struct RedisSpec {
     /// organize your data according to the shared prefix.
     ///
     /// Default: (Empty String / No Prefix)
-    #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
+    #[serde(default)]
+    #[serde_as(as = "ShellExpand")]
     pub key_prefix: String,
 
     /// Set the mode Redis is operating in.
@@ -1435,7 +1458,8 @@ pub struct RedisSpec {
     pub mode: RedisMode,
 
     /// Deprecated as redis-rs doesn't use it
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default)]
+    #[serde_as(as = "ShellExpand")]
     pub broadcast_channel_capacity: usize,
 
     /// The amount of time in milliseconds until the redis store considers the
@@ -1443,7 +1467,8 @@ pub struct RedisSpec {
     /// potentially a reconnection to the redis server.
     ///
     /// Default: 10000 (10 seconds)
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default)]
+    #[serde_as(as = "ShellExpand")]
     pub command_timeout_ms: u64,
 
     /// The amount of time in milliseconds until the redis store considers the
@@ -1451,13 +1476,15 @@ pub struct RedisSpec {
     /// redis server.
     ///
     /// Default: 3000 (3 seconds)
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default)]
+    #[serde_as(as = "ShellExpand")]
     pub connection_timeout_ms: u64,
 
     /// Per-call ceiling for the `check_health` PING in milliseconds.
     ///
     /// Default: 4000 (4 seconds)
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default)]
+    #[serde_as(as = "ShellExpand")]
     pub health_check_timeout_ms: u64,
 
     /// The amount of data to read from the redis server at a time.
@@ -1470,13 +1497,15 @@ pub struct RedisSpec {
     /// server is too low.
     ///
     /// Default: 64KiB
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default)]
+    #[serde_as(as = "ShellExpand")]
     pub read_chunk_size: usize,
 
     /// The number of connections to keep open to the redis server(s).
     ///
     /// Default: 3
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default)]
+    #[serde_as(as = "ShellExpand")]
     pub connection_pool_size: usize,
 
     /// The maximum number of upload chunks to allow per update.
@@ -1487,14 +1516,16 @@ pub struct RedisSpec {
     /// (note: it is a good idea to divide `AVAIL_MAX_MEMORY` by ~10 to account for other memory usage)
     ///
     /// Default: 10
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default)]
+    #[serde_as(as = "ShellExpand")]
     pub max_chunk_uploads_per_update: usize,
 
     /// The COUNT value passed when scanning keys in Redis.
     /// This is used to hint the amount of work that should be done per response.
     ///
     /// Default: 10000
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default)]
+    #[serde_as(as = "ShellExpand")]
     pub scan_count: usize,
 
     /// Retry configuration to use when a network request fails.
@@ -1514,13 +1545,15 @@ pub struct RedisSpec {
     /// Maximum number of permitted actions to the Redis store at any one time
     /// This stops problems with timeouts due to many, many inflight actions
     /// Default: 500
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default)]
+    #[serde_as(as = "ShellExpand")]
     pub max_client_permits: usize,
 
     /// Maximum number of items returned per cursor for the search indexes
     /// May reduce thundering herd issues with worker provisioner at higher node counts,
     /// Default: 1500
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default)]
+    #[serde_as(as = "ShellExpand")]
     pub max_count_per_cursor: u64,
 }
 
@@ -1603,64 +1636,75 @@ pub struct Retry {
 /// Configuration for `ExperimentalMongoDB` store.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[serde_as]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ExperimentalMongoSpec {
     /// `ExperimentalMongoDB` connection string.
     /// Example: <mongodb://localhost:27017> or <mongodb+srv://cluster.mongodb.net>
-    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    #[serde_as(as = "ShellExpand")]
     pub connection_string: String,
 
     /// The database name to use.
     /// Default: "nativelink"
-    #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
+    #[serde(default)]
+    #[serde_as(as = "ShellExpand")]
     pub database: String,
 
     /// The collection name for CAS data.
     /// Default: "cas"
-    #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
+    #[serde(default)]
+    #[serde_as(as = "ShellExpand")]
     pub cas_collection: String,
 
     /// The collection name for scheduler data.
     /// Default: "scheduler"
-    #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
+    #[serde(default)]
+    #[serde_as(as = "ShellExpand")]
     pub scheduler_collection: String,
 
     /// Prefix to prepend to all keys stored in `MongoDB`.
     /// Default: ""
-    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    #[serde(default)]
+    #[serde_as(as = "Option<ShellExpand>")]
     pub key_prefix: Option<String>,
 
     /// The maximum amount of data to read from `MongoDB` in a single chunk (in bytes).
     /// Default: 65536 (64KB)
-    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
+    #[serde(default)]
+    #[serde_as(as = "ShellExpandBytes")]
     pub read_chunk_size: usize,
 
     /// Deprecated, unused
     /// Maximum number of concurrent uploads allowed.
     /// Default: 10
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default)]
+    #[serde_as(as = "ShellExpand")]
     pub max_concurrent_uploads: usize,
 
     /// Connection timeout in milliseconds.
     /// Default: 3000
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default)]
+    #[serde_as(as = "ShellExpand")]
     pub connection_timeout_ms: u64,
 
     /// Command timeout in milliseconds.
     /// Default: 10000
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default)]
+    #[serde_as(as = "ShellExpand")]
     pub command_timeout_ms: u64,
 
     /// Enable `MongoDB` change streams for real-time updates.
     /// Required for scheduler subscriptions.
     /// Default: false
-    #[serde(default, deserialize_with = "convert_boolean_with_shellexpand")]
+    #[serde(default)]
+    #[serde_as(as = "ShellExpand")]
     pub enable_change_streams: bool,
 
     /// Write concern 'w' parameter.
     /// Can be a number (e.g., 1) or string (e.g., "majority").
     /// Default: None (uses `MongoDB` default)
-    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    #[serde(default)]
+    #[serde_as(as = "Option<ShellExpand>")]
     pub write_concern_w: Option<String>,
 
     /// Write concern 'j' parameter (journal acknowledgment).
@@ -1670,18 +1714,14 @@ pub struct ExperimentalMongoSpec {
 
     /// Write concern timeout in milliseconds.
     /// Default: None (uses `MongoDB` default)
-    #[serde(
-        default,
-        deserialize_with = "convert_optional_numeric_with_shellexpand"
-    )]
+    #[serde(default)]
+    #[serde_as(as = "Option<ShellExpand>")]
     pub write_concern_timeout_ms: Option<u32>,
 
     /// Limits the number of requests at any one time
     /// Default: Unlimited
-    #[serde(
-        default,
-        deserialize_with = "convert_optional_numeric_with_shellexpand"
-    )]
+    #[serde(default)]
+    #[serde_as(as = "Option<ShellExpand>")]
     pub max_requests: Option<usize>,
 }
 
