@@ -1657,3 +1657,47 @@ async fn executable_hardlink_source_created_once_and_readonly() -> Result<(), Er
 
     Ok(())
 }
+
+/// This test simulates a full disk without needing one. It writes past the `RLIMIT_FSIZE`
+/// cap, thus failing with `EFBIG`, which tokio defers exactly like `ENOSPC`. The
+/// [`SIGXFSZ`](`libc::SIGXFSZ`) signal must be ignored or the kernel will kill the process
+/// instead of failing the write.
+///
+/// SAFETY: [`SIG_IGN`](`libc::SIG_IGN`) is process-wide but no other test relies on
+/// [`SIGXFSZ`](`libc::SIGXFSZ`).
+#[cfg(unix)]
+#[nativelink_test]
+async fn deferred_write_error_does_not_emplace_truncated_file() -> Result<(), Error> {
+    use rlimit::Resource;
+
+    const FILE_SIZE_LIMIT: u64 = 1024 * 1024;
+
+    let content_path = make_temp_path("content_path");
+    let store = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+        content_path: content_path.clone(),
+        temp_path: make_temp_path("temp_path"),
+        ..Default::default()
+    })
+    .await?;
+    let data = vec![0u8; 2 * 1024 * 1024]; // 2MiB
+    let digest = DigestInfo::try_new(&"aa".repeat(32), data.len())?;
+
+    unsafe { libc::signal(libc::SIGXFSZ, libc::SIG_IGN) };
+    let (old_soft, hard) = Resource::FSIZE.get()?;
+    Resource::FSIZE.set(FILE_SIZE_LIMIT, hard)?;
+
+    let result = store.update_oneshot(digest, data.into()).await;
+    Resource::FSIZE.set(old_soft, hard)?;
+
+    assert!(result.is_err(), "deferred write error must surface");
+
+    let ghosts = std::fs::read_dir(format!("{content_path}/{DIGEST_FOLDER}"))?
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect::<Vec<String>>();
+    assert!(
+        ghosts.is_empty(),
+        "no file may reach the content path, found {ghosts:?}"
+    );
+    Ok(())
+}
