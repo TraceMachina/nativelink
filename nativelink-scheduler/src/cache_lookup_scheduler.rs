@@ -34,7 +34,9 @@ use nativelink_util::known_platform_property_provider::KnownPlatformPropertyProv
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, OperationFilter,
 };
-use nativelink_util::origin_event::OriginMetadata;
+use nativelink_util::origin_event::{
+    BAZEL_METADATA_KEY, OriginMetadata, request_metadata_from_baggage,
+};
 use nativelink_util::store_trait::Store;
 use opentelemetry::baggage::BaggageExt;
 use opentelemetry::context::Context;
@@ -275,12 +277,15 @@ impl CacheLookupScheduler {
                     let maybe_origin_metadata = if baggage.is_empty() {
                         None
                     } else {
+                        let bazel_metadata = baggage
+                            .get(BAZEL_METADATA_KEY)
+                            .and_then(|value| request_metadata_from_baggage(value.as_str()).ok());
                         Some(OriginMetadata {
                             identity: baggage
                                 .get(ENDUSER_ID)
                                 .map(|v| v.as_str().to_string())
                                 .unwrap_or_default(),
-                            bazel_metadata: None, // TODO(palfrey): Implement conversion.
+                            bazel_metadata,
                         })
                     };
 

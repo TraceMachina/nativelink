@@ -115,6 +115,7 @@ fn get_id_for_event_test() {
                     Some(response_event::Event::Empty(())) => [0x02, 0x09],
                     Some(response_event::Event::FetchBlobResponse(_)) => [0x02, 0x0A],
                     Some(response_event::Event::PushBlobResponse(_)) => [0x02, 0x0B],
+                    Some(response_event::Event::ActionResourceUsage(_)) => [0x02, 0x0C],
                     // Don't forget to add new entries to test cases.
                 }
             }
@@ -161,6 +162,7 @@ fn get_id_for_event_test() {
     test_event!(Response, WriteResponse);
     test_event!(Response, QueryWriteStatusResponse);
     test_event!(Response, Empty);
+    test_event!(Response, ActionResourceUsage);
 
     test_event!(Stream, None);
     test_event!(Stream, Error);

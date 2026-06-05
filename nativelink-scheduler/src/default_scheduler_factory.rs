@@ -30,6 +30,7 @@ use tokio::sync::{Notify, mpsc};
 
 use crate::cache_lookup_scheduler::CacheLookupScheduler;
 use crate::grpc_scheduler::GrpcScheduler;
+use crate::historical_resource_scheduler::HistoricalResourceScheduler;
 use crate::memory_awaited_action_db::MemoryAwaitedActionDb;
 use crate::property_modifier_scheduler::PropertyModifierScheduler;
 use crate::simple_scheduler::SimpleScheduler;
@@ -94,6 +95,20 @@ async fn inner_scheduler_factory(
                 action_scheduler.err_tip(|| "Nested scheduler is not an action scheduler")?,
             ));
             (Some(property_modifier_scheduler), worker_scheduler)
+        }
+        SchedulerSpec::HistoricalResource(spec) => {
+            let (action_scheduler, worker_scheduler) = Box::pin(inner_scheduler_factory(
+                &spec.scheduler,
+                store_manager,
+                maybe_origin_event_tx,
+            ))
+            .await
+            .err_tip(|| "In nested HistoricalResourceScheduler construction")?;
+            let historical_resource_scheduler = Arc::new(HistoricalResourceScheduler::new(
+                spec,
+                action_scheduler.err_tip(|| "Nested scheduler is not an action scheduler")?,
+            ));
+            (Some(historical_resource_scheduler), worker_scheduler)
         }
     };
 

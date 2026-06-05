@@ -50,7 +50,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
     Tree as ProtoTree, UpdateActionResultRequest,
 };
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    HistoricalExecuteResponse, StartExecute,
+    ActionResourceUsage, HistoricalExecuteResponse, StartExecute,
 };
 use nativelink_store::ac_utils::{
     ESTIMATED_DIGEST_SIZE, compute_buf_digest, get_and_decode_digest, serialize_and_upload_message,
@@ -98,6 +98,113 @@ const REQUIRES_WORKER_PROTOCOL_PROPERTY: &str = "requires-worker-protocol";
 /// should reflect it.
 const DEFAULT_HISTORICAL_RESULTS_STRATEGY: UploadCacheResultsStrategy =
     UploadCacheResultsStrategy::FailuresOnly;
+
+#[cfg(target_os = "linux")]
+const RESOURCE_USAGE_SAMPLE_INTERVAL: Duration = Duration::from_millis(250);
+
+#[cfg(target_os = "linux")]
+struct ActionResourceUsageSampler {
+    stop_tx: watch::Sender<bool>,
+    handle: tokio::task::JoinHandle<u64>,
+}
+
+#[cfg(target_os = "linux")]
+fn start_action_resource_usage_sampler(root_pid: u32) -> ActionResourceUsageSampler {
+    let (stop_tx, stop_rx) = watch::channel(false);
+    let handle = background_spawn!(
+        "action_resource_usage_sampler",
+        sample_action_peak_memory_kb(root_pid, stop_rx)
+    );
+    ActionResourceUsageSampler { stop_tx, handle }
+}
+
+#[cfg(target_os = "linux")]
+async fn finish_action_resource_usage_sampler(sampler: ActionResourceUsageSampler) -> Option<u64> {
+    let _ = sampler.stop_tx.send(true);
+    sampler.handle.await.ok()
+}
+
+#[cfg(target_os = "linux")]
+async fn sample_action_peak_memory_kb(root_pid: u32, mut stop_rx: watch::Receiver<bool>) -> u64 {
+    let mut peak_memory_kb = 0;
+    loop {
+        if let Some(memory_kb) = sample_process_tree_memory_kb(root_pid) {
+            peak_memory_kb = peak_memory_kb.max(memory_kb);
+        } else if !Path::new(&format!("/proc/{root_pid}")).exists() {
+            break;
+        }
+
+        if *stop_rx.borrow() {
+            break;
+        }
+
+        tokio::select! {
+            changed = stop_rx.changed() => {
+                if changed.is_ok() && *stop_rx.borrow() {
+                    if let Some(memory_kb) = sample_process_tree_memory_kb(root_pid) {
+                        peak_memory_kb = peak_memory_kb.max(memory_kb);
+                    }
+                    break;
+                }
+            }
+            () = tokio::time::sleep(RESOURCE_USAGE_SAMPLE_INTERVAL) => {}
+        }
+    }
+    peak_memory_kb
+}
+
+#[cfg(target_os = "linux")]
+fn sample_process_tree_memory_kb(root_pid: u32) -> Option<u64> {
+    let mut stack = vec![root_pid];
+    let mut seen = HashSet::new();
+    let mut total_kb = 0;
+    let mut found_any_process = false;
+
+    while let Some(pid) = stack.pop() {
+        if !seen.insert(pid) {
+            continue;
+        }
+
+        if let Some(memory_kb) = read_process_rss_kb(pid) {
+            total_kb += memory_kb;
+            found_any_process = true;
+        }
+
+        stack.extend(read_child_pids(pid));
+    }
+
+    found_any_process.then_some(total_kb)
+}
+
+#[cfg(target_os = "linux")]
+fn read_process_rss_kb(pid: u32) -> Option<u64> {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    status.lines().find_map(|line| {
+        let rest = line.strip_prefix("VmRSS:")?;
+        rest.split_whitespace().next()?.parse().ok()
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn read_child_pids(pid: u32) -> Vec<u32> {
+    let Ok(task_entries) = std::fs::read_dir(format!("/proc/{pid}/task")) else {
+        return Vec::new();
+    };
+
+    let mut child_pids = Vec::new();
+    for task_entry in task_entries.flatten() {
+        let children_path = task_entry.path().join("children");
+        let Ok(children) = std::fs::read_to_string(children_path) else {
+            continue;
+        };
+        child_pids.extend(
+            children
+                .split_whitespace()
+                .filter_map(|pid| pid.parse::<u32>().ok()),
+        );
+    }
+    child_pids
+}
 
 /// Valid string reasons for a failure.
 /// Note: If these change, the documentation should be updated.
@@ -873,6 +980,9 @@ pub trait RunningAction: Sync + Send + Sized + Unpin + 'static {
         self: Arc<Self>,
     ) -> impl Future<Output = Result<ActionResult, Error>> + Send;
 
+    /// Returns worker-observed resource usage captured while this action ran.
+    fn resource_usage(&self) -> Option<ActionResourceUsage>;
+
     /// Returns the work directory of the action.
     fn get_work_directory(&self) -> &String;
 }
@@ -882,6 +992,7 @@ struct RunningActionImplExecutionResult {
     stdout: Bytes,
     stderr: Bytes,
     exit_code: i32,
+    resource_usage: Option<ActionResourceUsage>,
 }
 
 #[derive(Debug)]
@@ -893,6 +1004,7 @@ struct RunningActionImplState {
     kill_channel_rx: Option<oneshot::Receiver<()>>,
     execution_result: Option<RunningActionImplExecutionResult>,
     action_result: Option<ActionResult>,
+    resource_usage: Option<ActionResourceUsage>,
     execution_metadata: ExecutionMetadata,
     // If there was an internal error, this will be set.
     // This should NOT be set if everything was fine, but the process had a
@@ -939,6 +1051,7 @@ impl RunningActionImpl {
                 kill_channel_tx: Some(kill_channel_tx),
                 execution_result: None,
                 action_result: None,
+                resource_usage: None,
                 execution_metadata,
                 error: None,
             }),
@@ -1192,6 +1305,7 @@ impl RunningActionImpl {
                                                 stdout: Bytes::new(),
                                                 stderr: Bytes::new(),
                                                 exit_code: EXIT_CODE_FOR_SIGNAL,
+                                                resource_usage: None,
                                             });
                                         state.execution_metadata.execution_completed_timestamp =
                                             (self.running_actions_manager.callbacks.now_fn)();
@@ -1214,6 +1328,7 @@ impl RunningActionImpl {
                                     stdout: Bytes::new(),
                                     stderr: Bytes::from(response.output),
                                     exit_code: response.exit_code,
+                                    resource_usage: None,
                                 });
                                 state.execution_metadata.execution_completed_timestamp =
                                     (self.running_actions_manager.callbacks.now_fn)();
@@ -1370,6 +1485,10 @@ impl RunningActionImpl {
             child_process,
         );
 
+        #[cfg(target_os = "linux")]
+        let mut maybe_resource_usage_sampler =
+            child_process.id().map(start_action_resource_usage_sampler);
+
         let mut child_process_guard = guard(child_process, |mut child_process| {
             let result: Result<Option<std::process::ExitStatus>, std::io::Error> =
                 child_process.try_wait();
@@ -1493,6 +1612,23 @@ impl RunningActionImpl {
                         exit_code
                     });
 
+                    #[cfg(target_os = "linux")]
+                    let resource_usage = match maybe_resource_usage_sampler.take() {
+                        Some(sampler) => finish_action_resource_usage_sampler(sampler)
+                            .await
+                            .and_then(|peak_memory_kb| {
+                                (peak_memory_kb > 0).then_some(ActionResourceUsage {
+                                    peak_memory_kb,
+                                    sampled: true,
+                                    operation_id: String::new(),
+                                    worker_id: String::new(),
+                                })
+                            }),
+                        None => None,
+                    };
+                    #[cfg(not(target_os = "linux"))]
+                    let resource_usage = None;
+
                     info!(?args, "Command complete");
 
                     let maybe_error_override = if let Some(side_channel_file) = maybe_side_channel_file {
@@ -1510,6 +1646,7 @@ impl RunningActionImpl {
                             stdout,
                             stderr,
                             exit_code,
+                            resource_usage,
                         });
                         state.execution_metadata.execution_completed_timestamp = (self.running_actions_manager.callbacks.now_fn)();
                     }
@@ -1867,6 +2004,7 @@ impl RunningActionImpl {
             success = upload_result.is_ok(),
             "upload_results: all uploads completed",
         );
+        let resource_usage = execution_result.resource_usage.clone();
         let (stdout_digest, stderr_digest) = match upload_result {
             Ok((stdout_digest, stderr_digest, ())) => (stdout_digest, stderr_digest),
             Err(e) => return Err(e).err_tip(|| "Error while uploading results"),
@@ -1897,6 +2035,7 @@ impl RunningActionImpl {
                 error: state.error.clone(),
                 message: String::new(), // Will be filled in on cache_action_result if needed.
             });
+            state.resource_usage = resource_usage;
         }
         debug!(
             operation_id = ?self.operation_id,
@@ -2061,6 +2200,10 @@ impl RunningAction for RunningActionImpl {
             .get_finished_result
             .wrap(Self::inner_get_finished_result(self))
             .await
+    }
+
+    fn resource_usage(&self) -> Option<ActionResourceUsage> {
+        self.state.lock().resource_usage.clone()
     }
 
     fn get_work_directory(&self) -> &String {

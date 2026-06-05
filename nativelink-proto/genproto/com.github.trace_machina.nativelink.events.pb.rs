@@ -166,7 +166,10 @@ pub mod request_event {
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ResponseEvent {
-    #[prost(oneof = "response_event::Event", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11")]
+    #[prost(
+        oneof = "response_event::Event",
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12"
+    )]
     pub event: ::core::option::Option<response_event::Event>,
 }
 /// Nested message and enum types in `ResponseEvent`.
@@ -211,6 +214,8 @@ pub mod response_event {
         PushBlobResponse(
             super::super::super::super::super::super::build::bazel::remote::asset::v1::PushBlobResponse,
         ),
+        #[prost(message, tag = "12")]
+        ActionResourceUsage(super::super::remote_execution::ActionResourceUsage),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]

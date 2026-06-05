@@ -32,8 +32,8 @@ use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_worker::Update;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::worker_api_client::WorkerApiClient;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    ExecuteComplete, ExecuteResult, GoingAwayRequest, KeepAliveRequest, UpdateForWorker,
-    execute_result,
+    ActionResourceUsage, ExecuteComplete, ExecuteResult, GoingAwayRequest, KeepAliveRequest,
+    UpdateForWorker, execute_result,
 };
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_util::action_messages::{ActionResult, ActionStage, OperationId};
@@ -73,6 +73,11 @@ const DEFAULT_ENDPOINT_TIMEOUT_S: f32 = 5.;
 /// If this value gets modified the documentation in `cas_server.rs` must also be updated.
 const DEFAULT_MAX_ACTION_TIMEOUT: Duration = Duration::from_mins(20);
 const DEFAULT_MAX_UPLOAD_TIMEOUT: Duration = Duration::from_mins(10);
+
+struct FinishedActionResult {
+    action_result: ActionResult,
+    resource_usage: Option<ActionResourceUsage>,
+}
 
 struct LocalWorkerImpl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> {
     config: &'a LocalWorkerConfig,
@@ -270,6 +275,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                             instance_name,
                                             operation_id: start_execute.operation_id,
                                             result: Some(execute_result::Result::InternalError(make_err!(Code::ResourceExhausted, "Worker shutting down").into())),
+                                            resource_usage: None,
                                         }
                                     ).await?;
                                 }
@@ -338,11 +344,18 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                                 Ok(result)
                                             })
                                             .and_then(RunningAction::upload_results)
-                                            .and_then(RunningAction::get_finished_result)
+                                            .and_then(|action| async move {
+                                                let resource_usage = action.resource_usage();
+                                                let action_result = action.get_finished_result().await?;
+                                                Ok(FinishedActionResult {
+                                                    action_result,
+                                                    resource_usage,
+                                                })
+                                            })
                                             // Note: We need ensure we run cleanup even if one of the other steps fail.
                                             .then(|result| async move {
                                                 if let Err(e) = action.cleanup().await {
-                                                    return Result::<ActionResult, Error>::Err(e).merge(result);
+                                                    return Result::<FinishedActionResult, Error>::Err(e).merge(result);
                                                 }
                                                 result
                                             })
@@ -354,11 +367,12 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                 let mut grpc_client = self.grpc_client.clone();
 
                                 let running_actions_manager = self.running_actions_manager.clone();
-                                move |res: Result<ActionResult, Error>| async move {
+                                let worker_id = self.worker_id.clone();
+                                move |res: Result<FinishedActionResult, Error>| async move {
                                     let instance_name = maybe_instance_name
                                         .err_tip(|| "`instance_name` could not be resolved; this is likely an internal error in local_worker.")?;
                                     match res {
-                                        Ok(mut action_result) => {
+                                        Ok(FinishedActionResult { mut action_result, resource_usage }) => {
                                             // Save in the action cache before notifying the scheduler that we've completed.
                                             if let Some(digest_info) = action_digest.clone().and_then(|action_digest| action_digest.try_into().ok()) &&
                                                 let Err(err) = running_actions_manager.cache_action_result(digest_info, &mut action_result, digest_hasher).await {
@@ -369,11 +383,17 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                                     );
                                                 }
                                             let action_stage = ActionStage::Completed(action_result);
+                                            let resource_usage = resource_usage.map(|mut resource_usage| {
+                                                resource_usage.operation_id.clone_from(&operation_id);
+                                                resource_usage.worker_id.clone_from(&worker_id);
+                                                resource_usage
+                                            });
                                             grpc_client.execution_response(
                                                 ExecuteResult{
                                                     instance_name,
                                                     operation_id,
                                                     result: Some(execute_result::Result::ExecuteResponse(action_stage.into())),
+                                                    resource_usage,
                                                 }
                                             )
                                             .await
@@ -400,12 +420,14 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                                     instance_name,
                                                     operation_id,
                                                     result: Some(execute_result::Result::ExecuteResponse(action_stage.into())),
+                                                    resource_usage: None,
                                                 }).await.err_tip(|| "Error calling execution_response with missing inputs")?;
                                             } else {
                                                 grpc_client.execution_response(ExecuteResult{
                                                     instance_name,
                                                     operation_id,
                                                     result: Some(execute_result::Result::InternalError(e.into())),
+                                                    resource_usage: None,
                                                 }).await.err_tip(|| "Error calling execution_response with error")?;
                                             }
                                         },
