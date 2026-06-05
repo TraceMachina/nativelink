@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::serde_utils::{
     convert_duration_with_shellexpand, convert_duration_with_shellexpand_and_negative,
-    convert_numeric_with_shellexpand,
+    convert_numeric_with_shellexpand, convert_string_with_shellexpand,
 };
 use crate::stores::{GrpcEndpoint, Retry, StoreRefName};
 
@@ -323,12 +323,18 @@ pub struct HistoricalResourceSpec {
 
     /// Platform property name used for CPU minimums.
     /// Default: `cpu_count`
-    #[serde(default = "default_historical_resource_cpu_property_name", deserialize_with = "convert_string_with_shellexpand")]
+    #[serde(
+        default = "default_historical_resource_cpu_property_name",
+        deserialize_with = "convert_string_with_shellexpand"
+    )]
     pub cpu_property_name: String,
 
     /// Platform property name used for memory minimums, expressed in KiB.
     /// Default: `memory_kb`
-    #[serde(default = "default_historical_resource_memory_property_name", deserialize_with = "convert_string_with_shellexpand")]
+    #[serde(
+        default = "default_historical_resource_memory_property_name",
+        deserialize_with = "convert_string_with_shellexpand"
+    )]
     pub memory_property_name: String,
 
     /// The nested scheduler to use after applying resource hints.
