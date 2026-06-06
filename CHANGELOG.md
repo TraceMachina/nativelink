@@ -18,7 +18,6 @@ All notable changes to this project will be documented in this file.
 
 ### 📚 Documentation
 
-- Update dependency fumadocs-mdx to v15 ([#2383](https://github.com/TraceMachina/nativelink/issues/2383)) - ([cd11280](https://github.com/TraceMachina/nativelink/commit/cd11280d0f5fbec52fdfe857a56135889760dc47))
 - Clarify NativeLink licensing docs ([#2380](https://github.com/TraceMachina/nativelink/issues/2380)) - ([6b16a50](https://github.com/TraceMachina/nativelink/commit/6b16a50736486094018831f91f2aa9ec8bf0e157))
 
 ### 🧪 Testing & CI
@@ -29,25 +28,26 @@ All notable changes to this project will be documented in this file.
 
 ### ⚙️ Miscellaneous
 
-- *(deps)* update dependency typescript to v6 ([#2364](https://github.com/TraceMachina/nativelink/issues/2364)) - ([48bf9cb](https://github.com/TraceMachina/nativelink/commit/48bf9cb451460d0f32b51a48f22f6360164d6f67))
 - *(nix)* retry transient Bazel external-fetch failures ([#2397](https://github.com/TraceMachina/nativelink/issues/2397)) - ([776fa53](https://github.com/TraceMachina/nativelink/commit/776fa534ce01f5bf38489cce0aa24fe7ff2598db))
 - support `IP_FREEBIND` to bind not-yet-assigned addresses ([#2399](https://github.com/TraceMachina/nativelink/issues/2399)) - ([3a9a8bc](https://github.com/TraceMachina/nativelink/commit/3a9a8bcfb6232031f4fbc72e8c94b29cb3deddb6))
 - Drop unnecessary checks section ([#2388](https://github.com/TraceMachina/nativelink/issues/2388)) - ([fce7ba0](https://github.com/TraceMachina/nativelink/commit/fce7ba0953295ec7eac42ce4bfc4c2d45d777ecf))
 - replace deprecated `pkgs.system` with `stdenv.hostPlatform.system` ([#2381](https://github.com/TraceMachina/nativelink/issues/2381)) - ([6081fa7](https://github.com/TraceMachina/nativelink/commit/6081fa7069f08ff02887556fc8ba6156ec1c2f2a))
 - Clarify error when TCP Listener binding fails ([#2394](https://github.com/TraceMachina/nativelink/issues/2394)) - ([f4b57b9](https://github.com/TraceMachina/nativelink/commit/f4b57b97f359b3407c4996ea83055308f23775f7))
 - Remove extra Github icon ([#2387](https://github.com/TraceMachina/nativelink/issues/2387)) - ([4711eb3](https://github.com/TraceMachina/nativelink/commit/4711eb309ca648e60beffcc30c42203942a66bcc))
-- Upgrade aws-smithy components to drop hyper 0.x ([#2384](https://github.com/TraceMachina/nativelink/issues/2384)) - ([f97e865](https://github.com/TraceMachina/nativelink/commit/f97e865a45693825d41151aef6cff969dd100c3f))
 - gcs_store, filesystem_store: lightweight check_health probes ([#2361](https://github.com/TraceMachina/nativelink/issues/2361)) - ([c5d5691](https://github.com/TraceMachina/nativelink/commit/c5d5691c06ca8487c6d3c549274a19859d989234))
 - migrate off deprecated crane `stdenv` arg to `stdenvSelector` ([#2379](https://github.com/TraceMachina/nativelink/issues/2379)) - ([f4429b6](https://github.com/TraceMachina/nativelink/commit/f4429b605b36abd61bf7e7f6553be930b063132e))
 
 ### ⬆️ Bumps & Version Updates
 
+- *(deps)* update dependency typescript to v6 ([#2364](https://github.com/TraceMachina/nativelink/issues/2364)) - ([48bf9cb](https://github.com/TraceMachina/nativelink/commit/48bf9cb451460d0f32b51a48f22f6360164d6f67))
 - Update hoverkraft-tech/compose-action action to v3 ([#2400](https://github.com/TraceMachina/nativelink/issues/2400)) - ([fe6d437](https://github.com/TraceMachina/nativelink/commit/fe6d437c0e867b2f41de3429cb869e4a86371f24))
 - Update coverage for nativelink-error ([#1482](https://github.com/TraceMachina/nativelink/issues/1482)) - ([01eff09](https://github.com/TraceMachina/nativelink/commit/01eff099765ef12d78ed860a5187554566c0b52d))
+- Update dependency fumadocs-mdx to v15 ([#2383](https://github.com/TraceMachina/nativelink/issues/2383)) - ([cd11280](https://github.com/TraceMachina/nativelink/commit/cd11280d0f5fbec52fdfe857a56135889760dc47))
 - Update dependency tailwind-merge to v3 ([#2386](https://github.com/TraceMachina/nativelink/issues/2386)) - ([3c783c0](https://github.com/TraceMachina/nativelink/commit/3c783c01ed56e82114442c9feb0a71f2005f11ce))
 - Update dependency motion to v12 ([#2385](https://github.com/TraceMachina/nativelink/issues/2385)) - ([eaf3270](https://github.com/TraceMachina/nativelink/commit/eaf3270643d29246c537bb63249380f5e602cf77))
 - Update dependency @types/node to v25 ([#2372](https://github.com/TraceMachina/nativelink/issues/2372)) - ([c524dba](https://github.com/TraceMachina/nativelink/commit/c524dbaa852c4995c75bf7dda8c945d9aa57f766))
 - Update Rust crate tar to v0.4.46 [SECURITY] ([#2378](https://github.com/TraceMachina/nativelink/issues/2378)) - ([e5873e5](https://github.com/TraceMachina/nativelink/commit/e5873e5ad96bc79348ec5a4340cd50fc882eb40c))
+- Upgrade aws-smithy components to drop hyper 0.x ([#2384](https://github.com/TraceMachina/nativelink/issues/2384)) - ([f97e865](https://github.com/TraceMachina/nativelink/commit/f97e865a45693825d41151aef6cff969dd100c3f))
 
 ## [1.3.2](https://github.com/TraceMachina/nativelink/compare/v1.3.1..v1.3.2) - 2026-05-29
 
