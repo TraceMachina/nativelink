@@ -99,13 +99,33 @@ message ExecuteResult {
         google.rpc.Status internal_error = 4;
     }
 
-    reserved 5; // NextId.
+    /// Worker-observed resource usage for this action execution.
+    ActionResourceUsage resource_usage = 5;
+
+    reserved 6; // NextId.
 }
 
 /// The result of an ExecutionComplete.
 message ExecuteComplete {
     /// The operation ID that was executed.
     string operation_id = 1;
+}
+
+/// Resource usage observed by the worker while running one action.
+message ActionResourceUsage {
+    /// Peak resident memory observed for the action process tree.
+    uint64 peak_memory_kb = 1;
+
+    /// Whether this value came from worker-side sampling.
+    bool sampled = 2;
+
+    /// The operation ID that was sampled.
+    string operation_id = 3;
+
+    /// The worker ID that observed the resource usage.
+    string worker_id = 4;
+
+    reserved 5; // NextId.
 }
 
 /// Result sent back from the server when a node connects.

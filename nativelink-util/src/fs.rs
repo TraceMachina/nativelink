@@ -16,7 +16,9 @@ use core::pin::Pin;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::task::{Context, Poll};
 use std::fs::{Metadata, Permissions};
-use std::io::{IoSlice, Seek};
+use std::io::{self, IoSlice, Seek};
+#[cfg(target_os = "linux")]
+use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 
 use nativelink_error::{Code, Error, ResultExt, make_err};
@@ -46,7 +48,6 @@ impl FileSlot {
     /// Only available on Linux;
     #[cfg(target_os = "linux")]
     pub fn advise_dontneed(&self) {
-        use std::os::unix::io::AsRawFd;
         let fd = self.inner.as_raw_fd();
         let ret = unsafe { libc::posix_fadvise(fd, 0, 0, libc::POSIX_FADV_DONTNEED) };
         if ret != 0 {
@@ -62,6 +63,35 @@ impl FileSlot {
     pub const fn advise_dontneed(&self) {
         // No-op: posix_fadvise is not available on Mac or Windows.
     }
+}
+
+/// Enable [`IP_FREEBIND`](`libc::IP_FREEBIND`) before binding a socket.
+#[cfg(target_os = "linux")]
+pub fn set_freebind<F: AsRawFd>(socket: &F) -> Result<(), io::Error> {
+    let enable = 1;
+    let optlen = libc::socklen_t::try_from(size_of::<libc::c_int>())
+        .expect("size of c_int always fits in socklen_t");
+
+    // SAFETY: we pass in a valid fd, initialized optval, and matching optlen.
+    let ret = unsafe {
+        libc::setsockopt(
+            socket.as_raw_fd(),
+            libc::IPPROTO_IP,
+            libc::IP_FREEBIND,
+            core::ptr::addr_of!(enable).cast(),
+            optlen,
+        )
+    };
+    if ret == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub const fn set_freebind<F>(_socket: &F) -> Result<(), io::Error> {
+    Ok(())
 }
 
 impl AsRef<tokio::fs::File> for FileSlot {

@@ -985,6 +985,13 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             None
         };
 
+        // tokio defers write errors to the next write or flush call, so without an explicit flush
+        // the final write's failure is silently swallowed by `sync_all`, and a truncated file would
+        // be renamed into the content path.
+        temp_file
+            .flush()
+            .await
+            .err_tip(|| "Failed to flush in filesystem store")?;
         temp_file
             .as_ref()
             .sync_all()
@@ -1222,6 +1229,11 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
             None
         };
 
+        // See comment in `update_file` above.
+        temp_file
+            .flush()
+            .await
+            .err_tip(|| "Failed to flush in filesystem store update_oneshot")?;
         temp_file
             .as_ref()
             .sync_all()

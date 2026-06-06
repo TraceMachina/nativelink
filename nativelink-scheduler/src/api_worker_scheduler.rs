@@ -394,7 +394,10 @@ impl ApiWorkerSchedulerImpl {
     ) -> Result<(), Error> {
         if let Some(worker) = self.workers.get_mut(&worker_id) {
             let notify_worker_result = worker
-                .notify_update(WorkerUpdate::RunAction((operation_id, action_info.clone())))
+                .notify_update(WorkerUpdate::RunAction(Box::new((
+                    operation_id,
+                    action_info.clone(),
+                ))))
                 .await;
 
             if let Err(notify_worker_result) = notify_worker_result {
@@ -534,6 +537,19 @@ impl ApiWorkerScheduler {
         inner
             .worker_notify_run_action(worker_id, operation_id, action_info)
             .await
+    }
+
+    pub async fn running_action_info(
+        &self,
+        worker_id: &WorkerId,
+        operation_id: &OperationId,
+    ) -> Option<ActionInfoWithProps> {
+        let inner = self.inner.lock().await;
+        inner
+            .workers
+            .peek(worker_id)
+            .and_then(|worker| worker.running_action_infos.get(operation_id))
+            .map(|pending_action_info| pending_action_info.action_info.clone())
     }
 
     /// Returns the scheduler metrics for observability.

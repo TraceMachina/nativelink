@@ -26,6 +26,21 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 static NODE_ID: OnceLock<[u8; 6]> = OnceLock::new();
 
+/// Custom OpenTelemetry baggage key used to carry Bazel `RequestMetadata`.
+pub const BAZEL_METADATA_KEY: &str = "bazel.metadata";
+
+#[must_use]
+pub fn request_metadata_to_baggage(metadata: &RequestMetadata) -> String {
+    BASE64_STANDARD_NO_PAD.encode(metadata.encode_to_vec())
+}
+
+pub fn request_metadata_from_baggage(value: &str) -> Result<RequestMetadata, prost::DecodeError> {
+    let decoded = BASE64_STANDARD_NO_PAD
+        .decode(value.as_bytes())
+        .map_err(|err| prost::DecodeError::new(err.to_string()))?;
+    RequestMetadata::decode(&*decoded)
+}
+
 /// Returns a unique ID for the given event.
 /// This ID is used to identify the event type.
 /// The max value that could be output is 0x0FFF,
@@ -66,6 +81,7 @@ pub const fn get_id_for_event(event: &Event) -> [u8; 2] {
             Some(response_event::Event::Empty(())) => [0x02, 0x09],
             Some(response_event::Event::FetchBlobResponse(_)) => [0x02, 0x0A],
             Some(response_event::Event::PushBlobResponse(_)) => [0x02, 0x0B],
+            Some(response_event::Event::ActionResourceUsage(_)) => [0x02, 0x0C],
         },
         Some(event::Event::Stream(stream)) => match stream.event {
             None => [0x03, 0x00],

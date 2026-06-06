@@ -24,6 +24,7 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
 };
 use nativelink_util::action_messages::{ActionInfo, OperationId, WorkerId};
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime, FuncCounterWrapper};
+use nativelink_util::origin_event::OriginMetadata;
 use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -41,13 +42,17 @@ pub struct ActionInfoWithProps {
     /// The platform properties of the action.
     #[metric(group = "platform_properties")]
     pub platform_properties: PlatformProperties,
+    /// Origin metadata used when publishing scheduler-side telemetry for this action.
+    pub origin_metadata: OriginMetadata,
+    /// `OriginEvent` id for the `scheduler_start_execute` request.
+    pub scheduler_start_execute_event_id: Option<String>,
 }
 
 /// Notifications to send worker about a requested state change.
 #[derive(Debug)]
 pub enum WorkerUpdate {
     /// Requests that the worker begin executing this action.
-    RunAction((OperationId, ActionInfoWithProps)),
+    RunAction(Box<(OperationId, ActionInfoWithProps)>),
 
     /// Request that the worker is no longer in the pool and may discard any jobs.
     Disconnect,
@@ -178,7 +183,8 @@ impl Worker {
     /// Notifies the worker of a requested state change.
     pub async fn notify_update(&mut self, worker_update: WorkerUpdate) -> Result<(), Error> {
         match worker_update {
-            WorkerUpdate::RunAction((operation_id, action_info)) => {
+            WorkerUpdate::RunAction(action) => {
+                let (operation_id, action_info) = *action;
                 self.run_action(operation_id, action_info).await
             }
             WorkerUpdate::Disconnect => {

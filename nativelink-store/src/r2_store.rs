@@ -34,6 +34,7 @@ use crate::s3_store::S3Store;
 pub struct R2Store;
 
 impl R2Store {
+    #[allow(clippy::new_ret_no_self)] // Because usually everyone returns themselves
     pub async fn new<I, NowFn>(
         spec: &ExperimentalR2Spec,
         now_fn: NowFn,
@@ -59,23 +60,27 @@ impl R2Store {
             .endpoint_url(&endpoint)
             .http_client(http_client.clone());
 
-        config_loader =
-            match (&spec.access_key_id, &spec.secret_access_key) {
-                (Some(key_id), Some(secret)) => config_loader.credentials_provider(
-                    Credentials::new(key_id, secret, None, None, "r2-explicit"),
-                ),
-                _ => {
-                    let default_chain = DefaultCredentialsChain::builder()
-                        .configure(
-                            ProviderConfig::without_region()
-                                .with_region(Some(Region::new("auto")))
-                                .with_http_client(http_client),
-                        )
-                        .build()
-                        .await;
-                    config_loader.credentials_provider(default_chain)
-                }
-            };
+        config_loader = if let Some(key_id) = &spec.access_key_id
+            && let Some(secret) = &spec.secret_access_key
+        {
+            config_loader.credentials_provider(Credentials::new(
+                key_id,
+                secret,
+                None,
+                None,
+                "r2-explicit",
+            ))
+        } else {
+            let default_chain = DefaultCredentialsChain::builder()
+                .configure(
+                    ProviderConfig::without_region()
+                        .with_region(Some(Region::new("auto")))
+                        .with_http_client(http_client),
+                )
+                .build()
+                .await;
+            config_loader.credentials_provider(default_chain)
+        };
 
         let config = config_loader.load().await;
         let s3_client = Client::new(&config);
