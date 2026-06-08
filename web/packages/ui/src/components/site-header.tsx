@@ -10,7 +10,11 @@ export interface NavLink {
 }
 
 const opensInNewTab = (label: string, href: string) =>
-  label === "Docs" || label === "Get started" || label === "Start free" || href === "/docs";
+  label === "Docs" ||
+  label === "Get started" ||
+  label === "Start free" ||
+  href === "/docs" ||
+  href.startsWith("http");
 
 interface SiteHeaderProps {
   links?: NavLink[];
@@ -26,6 +30,7 @@ const defaultLinks: NavLink[] = [
   { label: "Company", href: "/company" },
   { label: "Resources", href: "/resources" },
   { label: "Docs", href: "/docs" },
+  { label: "Enterprise", href: "https://enterprise.nativelink.com" },
 ];
 
 export function SiteHeader({

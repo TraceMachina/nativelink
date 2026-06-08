@@ -173,6 +173,19 @@ export default function CompliancePage() {
                 </h3>
                 <p className="mt-2 text-[15px] leading-relaxed text-muted-foreground">
                   {c.body}
+                  {c.title === "Data residency" && (
+                    <>
+                      {" "}
+                      <a
+                        href="https://enterprise.nativelink.com"
+                        target="_blank"
+                        rel="noreferrer"
+                        className="font-medium text-brand underline-offset-4 hover:underline"
+                      >
+                        Deploy on-prem with our Helm charts →
+                      </a>
+                    </>
+                  )}
                 </p>
               </div>
             </Reveal>
