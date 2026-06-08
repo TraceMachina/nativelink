@@ -16,7 +16,11 @@ interface MobileNavProps {
 }
 
 const opensInNewTab = (label: string, href: string) =>
-  label === "Docs" || label === "Get started" || label === "Start free" || href === "/docs";
+  label === "Docs" ||
+  label === "Get started" ||
+  label === "Start free" ||
+  href === "/docs" ||
+  href.startsWith("http");
 
 export function MobileNav({
   links,
