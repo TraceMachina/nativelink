@@ -340,12 +340,20 @@ impl WorkerConnection {
         let operation_id = OperationId::from(execute_result.operation_id.clone());
 
         if let Some(resource_usage) = execute_result.resource_usage {
+            warn!(
+                %operation_id,
+                peak_memory_kb = resource_usage.peak_memory_kb,
+                sampled = resource_usage.sampled,
+                "RESOURCE_USAGE_DEBUG scheduler received resource_usage",
+            );
             self.scheduler
                 .record_action_resource_usage(&self.worker_id, &operation_id, resource_usage)
                 .await
                 .err_tip(|| {
                     format!("Failed to record resource usage for operation {operation_id}")
                 })?;
+        } else {
+            warn!(%operation_id, "RESOURCE_USAGE_DEBUG scheduler received ExecuteResult with NO resource_usage");
         }
 
         match execute_result

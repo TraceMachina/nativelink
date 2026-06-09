@@ -1633,17 +1633,23 @@ impl RunningActionImpl {
 
                     #[cfg(target_os = "linux")]
                     let resource_usage = match maybe_resource_usage_sampler.take() {
-                        Some(sampler) => finish_action_resource_usage_sampler(sampler)
-                            .await
-                            .and_then(|peak_memory_kb| {
+                        Some(sampler) => {
+                            let peak_memory_kb =
+                                finish_action_resource_usage_sampler(sampler).await;
+                            warn!(?peak_memory_kb, "RESOURCE_USAGE_DEBUG sampler finished");
+                            peak_memory_kb.and_then(|peak_memory_kb| {
                                 (peak_memory_kb > 0).then_some(ActionResourceUsage {
                                     peak_memory_kb,
                                     sampled: true,
                                     operation_id: String::new(),
                                     worker_id: String::new(),
                                 })
-                            }),
-                        None => None,
+                            })
+                        }
+                        None => {
+                            warn!("RESOURCE_USAGE_DEBUG sampler was None (child pid missing)");
+                            None
+                        }
                     };
                     #[cfg(not(target_os = "linux"))]
                     let resource_usage = None;

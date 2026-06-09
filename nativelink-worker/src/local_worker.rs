@@ -388,6 +388,12 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                                 resource_usage.worker_id.clone_from(&worker_id);
                                                 resource_usage
                                             });
+                                            warn!(
+                                                %operation_id,
+                                                resource_usage_present = resource_usage.is_some(),
+                                                peak_memory_kb = ?resource_usage.as_ref().map(|r| r.peak_memory_kb),
+                                                "RESOURCE_USAGE_DEBUG worker sending execution_response",
+                                            );
                                             grpc_client.execution_response(
                                                 ExecuteResult{
                                                     instance_name,

@@ -774,8 +774,17 @@ impl WorkerScheduler for SimpleScheduler {
             .running_action_info(worker_id, operation_id)
             .await
         else {
+            warn!(
+                %worker_id,
+                %operation_id,
+                "RESOURCE_USAGE_DEBUG record_action_resource_usage: running_action_info=None, NOT publishing",
+            );
             return Ok(());
         };
+        warn!(
+            %operation_id,
+            "RESOURCE_USAGE_DEBUG record_action_resource_usage: running_action_info=Some, publishing",
+        );
 
         if resource_usage.operation_id.is_empty() {
             resource_usage.operation_id = operation_id.to_string();
