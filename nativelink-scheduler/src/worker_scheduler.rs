@@ -15,6 +15,7 @@
 use async_trait::async_trait;
 use nativelink_error::Error;
 use nativelink_metric::RootMetricsComponent;
+use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::ActionResourceUsage;
 use nativelink_util::action_messages::{OperationId, WorkerId};
 use nativelink_util::operation_state_manager::UpdateOperationType;
 use nativelink_util::shutdown_guard::ShutdownGuard;
@@ -39,6 +40,16 @@ pub trait WorkerScheduler: Sync + Send + Unpin + RootMetricsComponent + 'static 
         operation_id: &OperationId,
         update: UpdateOperationType,
     ) -> Result<(), Error>;
+
+    /// Records worker-observed resource usage for a running action.
+    async fn record_action_resource_usage(
+        &self,
+        _worker_id: &WorkerId,
+        _operation_id: &OperationId,
+        _resource_usage: ActionResourceUsage,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
 
     /// Event for when the keep alive message was received from the worker.
     async fn worker_keep_alive_received(

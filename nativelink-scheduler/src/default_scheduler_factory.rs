@@ -24,12 +24,13 @@ use nativelink_proto::com::github::trace_machina::nativelink::events::OriginEven
 use nativelink_store::redis_store::{RedisStore, StandardRedisManager};
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::instant_wrapper::InstantWrapper;
-use nativelink_util::operation_state_manager::ClientStateManager;
 use redis::aio::ConnectionManager;
 use tokio::sync::{Notify, mpsc};
 
 use crate::cache_lookup_scheduler::CacheLookupScheduler;
 use crate::grpc_scheduler::GrpcScheduler;
+use crate::historical_resource_scheduler::HistoricalResourceScheduler;
+use crate::known_platform_property_provider::KnownPlatformPropertyProvider;
 use crate::memory_awaited_action_db::MemoryAwaitedActionDb;
 use crate::property_modifier_scheduler::PropertyModifierScheduler;
 use crate::simple_scheduler::SimpleScheduler;
@@ -41,7 +42,7 @@ use crate::worker_scheduler::WorkerScheduler;
 const DEFAULT_RETAIN_COMPLETED_FOR_S: u32 = 60;
 
 pub type SchedulerFactoryResults = (
-    Option<Arc<dyn ClientStateManager>>,
+    Option<Arc<dyn KnownPlatformPropertyProvider>>,
     Option<Arc<dyn WorkerScheduler>>,
 );
 
@@ -94,6 +95,20 @@ async fn inner_scheduler_factory(
                 action_scheduler.err_tip(|| "Nested scheduler is not an action scheduler")?,
             ));
             (Some(property_modifier_scheduler), worker_scheduler)
+        }
+        SchedulerSpec::HistoricalResource(spec) => {
+            let (action_scheduler, worker_scheduler) = Box::pin(inner_scheduler_factory(
+                &spec.scheduler,
+                store_manager,
+                maybe_origin_event_tx,
+            ))
+            .await
+            .err_tip(|| "In nested HistoricalResourceScheduler construction")?;
+            let historical_resource_scheduler = Arc::new(HistoricalResourceScheduler::new(
+                spec,
+                action_scheduler.err_tip(|| "Nested scheduler is not an action scheduler")?,
+            ));
+            (Some(historical_resource_scheduler), worker_scheduler)
         }
     };
 

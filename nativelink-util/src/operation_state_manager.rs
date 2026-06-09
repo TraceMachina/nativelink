@@ -26,7 +26,6 @@ use crate::action_messages::{
     ActionInfo, ActionStage, ActionState, ActionUniqueKey, OperationId, WorkerId,
 };
 use crate::common::DigestInfo;
-use crate::known_platform_property_provider::KnownPlatformPropertyProvider;
 use crate::origin_event::OriginMetadata;
 
 bitflags! {
@@ -112,14 +111,6 @@ pub trait ClientStateManager: Sync + Send + Unpin + MetricsComponent + 'static {
         &self,
         filter: OperationFilter,
     ) -> Result<ActionStateResultStream, Error>;
-
-    /// Returns the known platform property provider for the given instance
-    /// if this implementation supports it.
-    // TODO(https://github.com/rust-lang/rust/issues/65991) When this lands we can
-    // remove this and have the call sites instead try to cast the ClientStateManager
-    // into a KnownPlatformPropertyProvider instead. Rust currently does not support
-    // casting traits to other traits.
-    fn as_known_platform_property_provider(&self) -> Option<&dyn KnownPlatformPropertyProvider>;
 }
 
 /// The type of update to perform on an operation.

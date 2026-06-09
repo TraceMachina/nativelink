@@ -30,11 +30,12 @@ use nativelink_util::action_messages::{
 use nativelink_util::background_spawn;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
-use nativelink_util::known_platform_property_provider::KnownPlatformPropertyProvider;
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, OperationFilter,
 };
-use nativelink_util::origin_event::OriginMetadata;
+use nativelink_util::origin_event::{
+    BAZEL_METADATA_KEY, OriginMetadata, request_metadata_from_baggage,
+};
 use nativelink_util::store_trait::Store;
 use opentelemetry::baggage::BaggageExt;
 use opentelemetry::context::Context;
@@ -44,6 +45,8 @@ use scopeguard::guard;
 use tokio::sync::oneshot;
 use tonic::{Request, Response};
 use tracing::error;
+
+use crate::known_platform_property_provider::KnownPlatformPropertyProvider;
 
 /// Actions that are having their cache checked or failed cache lookup and are
 /// being forwarded upstream.  Missing the `skip_cache_check` actions which are
@@ -65,7 +68,7 @@ pub struct CacheLookupScheduler {
     /// The "real" scheduler to use to perform actions if they were not found
     /// in the action cache.
     #[metric(group = "action_scheduler")]
-    action_scheduler: Arc<dyn ClientStateManager>,
+    action_scheduler: Arc<dyn KnownPlatformPropertyProvider>,
     /// Actions that are currently performing a `CacheCheck`.
     inflight_cache_checks: Arc<Mutex<CheckActions>>,
 }
@@ -162,7 +165,7 @@ impl ActionStateResult for CacheLookupActionStateResult {
 impl CacheLookupScheduler {
     pub fn new(
         ac_store: Store,
-        action_scheduler: Arc<dyn ClientStateManager>,
+        action_scheduler: Arc<dyn KnownPlatformPropertyProvider>,
     ) -> Result<Self, Error> {
         Ok(Self {
             ac_store,
@@ -275,12 +278,15 @@ impl CacheLookupScheduler {
                     let maybe_origin_metadata = if baggage.is_empty() {
                         None
                     } else {
+                        let bazel_metadata = baggage
+                            .get(BAZEL_METADATA_KEY)
+                            .and_then(|value| request_metadata_from_baggage(value.as_str()).ok());
                         Some(OriginMetadata {
                             identity: baggage
                                 .get(ENDUSER_ID)
                                 .map(|v| v.as_str().to_string())
                                 .unwrap_or_default(),
-                            bazel_metadata: None, // TODO(palfrey): Implement conversion.
+                            bazel_metadata,
                         })
                     };
 
@@ -373,9 +379,14 @@ impl ClientStateManager for CacheLookupScheduler {
     ) -> Result<ActionStateResultStream, Error> {
         self.inner_filter_operations(filter).await
     }
+}
 
-    fn as_known_platform_property_provider(&self) -> Option<&dyn KnownPlatformPropertyProvider> {
-        self.action_scheduler.as_known_platform_property_provider()
+#[async_trait]
+impl KnownPlatformPropertyProvider for CacheLookupScheduler {
+    async fn get_known_properties(&self, instance_name: &str) -> Result<Vec<String>, Error> {
+        self.action_scheduler
+            .get_known_properties(instance_name)
+            .await
     }
 }
 

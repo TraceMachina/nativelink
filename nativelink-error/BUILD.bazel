@@ -38,9 +38,16 @@ rust_test_suite(
     timeout = "short",
     srcs = [
         "tests/error_tests.rs",
+        "tests/lib_tests.rs",
     ],
     deps = [
         "//nativelink-error",
+        "//nativelink-metric",
+        "//nativelink-proto",
+        "@crates//:prost",
+        "@crates//:redis",
+        "@crates//:tokio",
+        "@crates//:tonic",
         "@crates//:walkdir",
     ],
 )

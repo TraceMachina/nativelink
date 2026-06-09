@@ -5,9 +5,10 @@ lints.workspace = true
 autobenches = false
 autobins = false
 autoexamples = false
+autotests = true
 edition = "2024"
 name = "nativelink-error"
-version = "1.3.2"
+version = "1.4.0"
 
 [dependencies]
 nativelink-metric = { path = "../nativelink-metric" }
@@ -24,7 +25,7 @@ prost-types = { version = "0.13.5", default-features = false, features = [
 redis = { version = "1.0.0", default-features = false }
 reqwest = { version = "0.12", default-features = false }
 rustls-pki-types = { version = "1.13.1", default-features = false }
-serde = { version = "1.0.219", default-features = false }
+serde = { version = "1.0.219", default-features = false, features = ["derive"] }
 serde_json5 = { version = "0.2.1", default-features = false }
 tokio = { version = "1.52.2", features = [
   "fs",

@@ -501,7 +501,8 @@ mod tests {
             .acquire(key.clone(), Path::new("/bin/sh"), dir.path())
             .await
             .unwrap();
-        let release_handle = tokio::spawn(lease.release(false));
+        let release_handle =
+            background_spawn!("persistent_worker_release_test", lease.release(false));
         tokio::time::sleep(Duration::from_millis(50)).await;
         release_handle.abort();
         assert!(release_handle.await.unwrap_err().is_cancelled());

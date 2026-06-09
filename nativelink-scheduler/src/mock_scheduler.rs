@@ -18,12 +18,13 @@ use async_trait::async_trait;
 use nativelink_error::Error;
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_util::action_messages::{ActionInfo, OperationId};
-use nativelink_util::known_platform_property_provider::KnownPlatformPropertyProvider;
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, OperationFilter,
 };
 use tokio::sync::{Mutex, mpsc};
 use tonic::Code;
+
+use crate::known_platform_property_provider::KnownPlatformPropertyProvider;
 
 #[allow(
     clippy::large_enum_variant,
@@ -197,10 +198,6 @@ impl ClientStateManager for MockActionScheduler {
             ActionSchedulerReturns::FilterOperations(result) => result,
             _ => panic!("Expected find_by_client_operation_id return value"),
         }
-    }
-
-    fn as_known_platform_property_provider(&self) -> Option<&dyn KnownPlatformPropertyProvider> {
-        Some(self)
     }
 }
 

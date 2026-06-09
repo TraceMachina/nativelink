@@ -25,6 +25,7 @@ const defaultColumns: FooterColumn[] = [
       { label: "Product", href: "/product" },
       { label: "Pricing", href: "/pricing" },
       { label: "Docs", href: "/docs" },
+      { label: "Enterprise", href: "https://enterprise.nativelink.com" },
       { label: "Status", href: "/status" },
     ],
   },
@@ -112,6 +113,8 @@ export function SiteFooter({
                 <li key={link.href}>
                   <a
                     href={link.href}
+                    target={link.href.startsWith("http") ? "_blank" : undefined}
+                    rel={link.href.startsWith("http") ? "noreferrer" : undefined}
                     className="inline-flex min-h-[36px] items-center text-sm text-muted-foreground transition-colors hover:text-foreground"
                   >
                     {link.label}

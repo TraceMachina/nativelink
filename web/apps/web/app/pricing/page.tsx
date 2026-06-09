@@ -49,7 +49,7 @@ const tiers = [
       "Procurement support",
       "Priority feature requests",
     ],
-    cta: { label: "Request quote", href: "mailto:hello@nativelink.com" },
+    cta: { label: "Subscribe now", href: "https://enterprise.nativelink.com" },
     variant: "ghost" as const,
   },
 ];
@@ -298,7 +298,18 @@ export default function PricingPage() {
                           <Cell value={row.cloud} />
                         </td>
                         <td className="px-6 py-4">
-                          <Cell value={row.ent} />
+                          {row.label === "Hosting" ? (
+                            <a
+                              href="https://enterprise.nativelink.com"
+                              target="_blank"
+                              rel="noreferrer"
+                              className="font-mono text-sm text-brand underline-offset-4 hover:underline"
+                            >
+                              {row.ent}
+                            </a>
+                          ) : (
+                            <Cell value={row.ent} />
+                          )}
                         </td>
                       </tr>
                     ))}

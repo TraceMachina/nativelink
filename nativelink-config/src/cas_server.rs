@@ -536,6 +536,12 @@ pub struct HttpListener {
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub socket_address: String,
 
+    /// Allow binding `socket_address` before it is assigned locally.
+    ///
+    /// Default: false
+    #[serde(default)]
+    pub freebind: bool,
+
     /// Data transport compression configuration to use for this service.
     #[serde(default)]
     pub compression: HttpCompressionConfig,

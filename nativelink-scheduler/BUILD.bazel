@@ -16,7 +16,9 @@ rust_library(
         "src/cache_lookup_scheduler.rs",
         "src/default_scheduler_factory.rs",
         "src/grpc_scheduler.rs",
+        "src/historical_resource_scheduler.rs",
         "src/lib.rs",
+        "src/known_platform_property_provider.rs",
         "src/memory_awaited_action_db.rs",
         "src/mock_scheduler.rs",
         "src/platform_property_manager.rs",
@@ -57,6 +59,7 @@ rust_library(
         "@crates//:tokio-stream",
         "@crates//:tonic",
         "@crates//:tracing",
+        "@crates//:uuid",
     ],
 )
 
@@ -66,6 +69,7 @@ rust_test_suite(
     srcs = [
         "tests/action_messages_test.rs",
         "tests/cache_lookup_scheduler_test.rs",
+        "tests/historical_resource_scheduler_test.rs",
         "tests/property_modifier_scheduler_test.rs",
         "tests/redis_store_awaited_action_db_test.rs",
         "tests/simple_scheduler_state_manager_test.rs",
@@ -94,6 +98,8 @@ rust_test_suite(
         "@crates//:bytes",
         "@crates//:futures",
         "@crates//:mock_instant",
+        "@crates//:opentelemetry",
+        "@crates//:opentelemetry-semantic-conventions",
         "@crates//:parking_lot",
         "@crates//:pretty_assertions",
         "@crates//:prost",

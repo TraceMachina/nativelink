@@ -30,10 +30,13 @@ use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_metric::MetricsComponent;
 use nativelink_proto::build::bazel::remote::execution::v2::{
-    ExecuteRequest, Platform, digest_function,
+    ExecuteRequest, Platform, RequestMetadata, digest_function, platform,
+};
+use nativelink_proto::com::github::trace_machina::nativelink::events::{
+    event, request_event, response_event,
 };
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    ConnectionResult, StartExecute, UpdateForWorker, update_for_worker,
+    ActionResourceUsage, ConnectionResult, StartExecute, UpdateForWorker, update_for_worker,
 };
 use nativelink_scheduler::awaited_action_db::{
     AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, SortedAwaitedAction,
@@ -53,7 +56,12 @@ use nativelink_util::operation_state_manager::{
     ActionStateResult, ClientStateManager, OperationFilter, OperationStageFlags,
     UpdateOperationType,
 };
+use nativelink_util::origin_event::{BAZEL_METADATA_KEY, request_metadata_to_baggage};
 use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
+use opentelemetry::KeyValue;
+use opentelemetry::baggage::BaggageExt;
+use opentelemetry::context::{Context, FutureExt as OtelFutureExt};
+use opentelemetry_semantic_conventions::attribute::ENDUSER_ID;
 use pretty_assertions::assert_eq;
 use tokio::sync::{Notify, mpsc};
 use utils::scheduler_utils::{INSTANCE_NAME, make_base_action_info, update_eq};
@@ -177,6 +185,161 @@ async fn basic_add_action_with_one_worker_test() -> Result<(), Error> {
         };
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn scheduler_start_execute_origin_event_includes_resource_hints() -> Result<(), Error> {
+    let worker_id = WorkerId("worker_id".to_string());
+    let task_change_notify = Arc::new(Notify::new());
+    let (origin_event_tx, mut origin_event_rx) = mpsc::channel(8);
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec {
+            supported_platform_properties: Some(HashMap::from([
+                ("cpu_count".to_string(), PropertyType::Minimum),
+                ("memory_kb".to_string(), PropertyType::Minimum),
+            ])),
+            ..Default::default()
+        },
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        Some(origin_event_tx),
+    );
+    let mut rx_from_worker = setup_new_worker(
+        &scheduler,
+        worker_id.clone(),
+        PlatformProperties::new(HashMap::from([
+            ("cpu_count".to_string(), PlatformPropertyValue::Minimum(8)),
+            (
+                "memory_kb".to_string(),
+                PlatformPropertyValue::Minimum(16_000_000),
+            ),
+        ])),
+    )
+    .await?;
+
+    let action_digest = DigestInfo::new([42u8; 32], 512);
+    let insert_timestamp = make_system_time(2);
+    let mut action_info = make_base_action_info(insert_timestamp, action_digest);
+    Arc::make_mut(&mut action_info).platform_properties = HashMap::from([
+        ("cpu_count".to_string(), "2".to_string()),
+        ("memory_kb".to_string(), "12_000_000".replace('_', "")),
+    ]);
+    let request_metadata = RequestMetadata {
+        tool_invocation_id: "00000000-0000-0000-0000-000000000001".to_string(),
+        target_id: "//pkg:high_mem_test".to_string(),
+        action_mnemonic: "TestRunner".to_string(),
+        ..Default::default()
+    };
+    let context = Context::current_with_baggage(vec![
+        KeyValue::new(ENDUSER_ID, "dev@example.com"),
+        KeyValue::new(
+            BAZEL_METADATA_KEY,
+            request_metadata_to_baggage(&request_metadata),
+        ),
+    ]);
+
+    let mut action_listener = scheduler
+        .add_action(OperationId::from("client-op"), action_info)
+        .with_context(context)
+        .await?;
+    tokio::task::yield_now().await;
+    scheduler.do_try_match_for_test().await?;
+
+    let start_action = match rx_from_worker.recv().await.unwrap().update.unwrap() {
+        update_for_worker::Update::StartAction(start_action) => start_action,
+        update_for_worker::Update::ConnectionResult(connection_result) => {
+            panic!("Unexpected connection result: {connection_result:?}");
+        }
+        update_for_worker::Update::Disconnect(()) => {
+            panic!("Unexpected disconnect");
+        }
+        event => {
+            panic!("Unexpected worker update: {event:?}");
+        }
+    };
+    assert_eq!(start_action.worker_id, "worker_id");
+    let start_action_platform = start_action.platform.unwrap();
+    assert_eq!(
+        start_action_platform.properties,
+        vec![
+            platform::Property {
+                name: "cpu_count".to_string(),
+                value: "2".to_string(),
+            },
+            platform::Property {
+                name: "memory_kb".to_string(),
+                value: "12000000".to_string(),
+            },
+        ]
+    );
+
+    let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
+    assert_eq!(action_state.stage, ActionStage::Executing);
+
+    let scheduler_start_execute_event = origin_event_rx.recv().await.unwrap();
+    let scheduler_start_execute_event_id = scheduler_start_execute_event.event_id.clone();
+    assert_eq!(scheduler_start_execute_event.identity, "dev@example.com");
+    assert_eq!(
+        scheduler_start_execute_event
+            .bazel_request_metadata
+            .unwrap(),
+        request_metadata
+    );
+    let origin_event = scheduler_start_execute_event.event.unwrap().event.unwrap();
+    let request_event = match origin_event {
+        event::Event::Request(request_event) => request_event,
+        event => panic!("Unexpected origin event: {event:?}"),
+    };
+    let scheduler_start_execute = match request_event.event.unwrap() {
+        request_event::Event::SchedulerStartExecute(scheduler_start_execute) => {
+            scheduler_start_execute
+        }
+        event => panic!("Unexpected request event: {event:?}"),
+    };
+    assert_eq!(scheduler_start_execute.worker_id, "worker_id");
+    assert_eq!(
+        scheduler_start_execute.platform.unwrap().properties,
+        start_action_platform.properties
+    );
+
+    scheduler
+        .record_action_resource_usage(
+            &worker_id,
+            &OperationId::from(start_action.operation_id.as_str()),
+            ActionResourceUsage {
+                peak_memory_kb: 12_345,
+                sampled: true,
+                ..Default::default()
+            },
+        )
+        .await?;
+
+    let resource_usage_event = origin_event_rx.recv().await.unwrap();
+    assert_eq!(
+        resource_usage_event.parent_event_id,
+        scheduler_start_execute_event_id
+    );
+    let origin_event = resource_usage_event.event.unwrap().event.unwrap();
+    let response_event = match origin_event {
+        event::Event::Response(response_event) => response_event,
+        event => panic!("Unexpected origin event: {event:?}"),
+    };
+    let resource_usage = match response_event.event.unwrap() {
+        response_event::Event::ActionResourceUsage(resource_usage) => resource_usage,
+        event => panic!("Unexpected response event: {event:?}"),
+    };
+    assert_eq!(resource_usage.operation_id, start_action.operation_id);
+    assert_eq!(resource_usage.worker_id, "worker_id");
+    assert_eq!(resource_usage.peak_memory_kb, 12_345);
+    assert!(resource_usage.sampled);
 
     Ok(())
 }
