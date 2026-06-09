@@ -109,11 +109,11 @@ struct ActionResourceUsageSampler {
 }
 
 #[cfg(target_os = "linux")]
-fn start_action_resource_usage_sampler(root_pid: u32) -> ActionResourceUsageSampler {
+fn start_action_resource_usage_sampler(pgid: u32) -> ActionResourceUsageSampler {
     let (stop_tx, stop_rx) = watch::channel(false);
     let handle = background_spawn!(
         "action_resource_usage_sampler",
-        sample_action_peak_memory_kb(root_pid, stop_rx)
+        sample_action_peak_memory_kb(pgid, stop_rx)
     );
     ActionResourceUsageSampler { stop_tx, handle }
 }
@@ -125,12 +125,14 @@ async fn finish_action_resource_usage_sampler(sampler: ActionResourceUsageSample
 }
 
 #[cfg(target_os = "linux")]
-async fn sample_action_peak_memory_kb(root_pid: u32, mut stop_rx: watch::Receiver<bool>) -> u64 {
+async fn sample_action_peak_memory_kb(pgid: u32, mut stop_rx: watch::Receiver<bool>) -> u64 {
     let mut peak_memory_kb = 0;
     loop {
-        if let Some(memory_kb) = sample_process_tree_memory_kb(root_pid) {
+        if let Some(memory_kb) = sample_process_group_memory_kb(pgid) {
             peak_memory_kb = peak_memory_kb.max(memory_kb);
-        } else if !Path::new(&format!("/proc/{root_pid}")).exists() {
+        } else if !Path::new(&format!("/proc/{pgid}")).exists() {
+            // The group leader has been reaped and no member process remains,
+            // so the action is finished.
             break;
         }
 
@@ -141,7 +143,7 @@ async fn sample_action_peak_memory_kb(root_pid: u32, mut stop_rx: watch::Receive
         tokio::select! {
             changed = stop_rx.changed() => {
                 if changed.is_ok() && *stop_rx.borrow() {
-                    if let Some(memory_kb) = sample_process_tree_memory_kb(root_pid) {
+                    if let Some(memory_kb) = sample_process_group_memory_kb(pgid) {
                         peak_memory_kb = peak_memory_kb.max(memory_kb);
                     }
                     break;
@@ -153,24 +155,36 @@ async fn sample_action_peak_memory_kb(root_pid: u32, mut stop_rx: watch::Receive
     peak_memory_kb
 }
 
+/// Sums the resident memory of every process in the action's process group.
+///
+/// The action is spawned as its own process-group leader (see
+/// `command_builder.process_group(0)` in `inner_execute`), so `pgid` equals
+/// the spawned child's pid and every descendant inherits it. Sampling by
+/// process group — rather than walking the parent/child tree from the spawned
+/// pid — is required because an intermediate shell frequently exits and
+/// reparents the real workload to the worker (PID 1); the tree walk then sees
+/// only a childless zombie and reports zero. Process-group membership is
+/// inherited and survives reparenting, and excludes the worker's own group.
+/// Returns `None` when no member process can be read (the group is empty).
 #[cfg(target_os = "linux")]
-fn sample_process_tree_memory_kb(root_pid: u32) -> Option<u64> {
-    let mut stack = vec![root_pid];
-    let mut seen = HashSet::new();
+fn sample_process_group_memory_kb(pgid: u32) -> Option<u64> {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return None;
+    };
+
     let mut total_kb = 0;
     let mut found_any_process = false;
-
-    while let Some(pid) = stack.pop() {
-        if !seen.insert(pid) {
+    for entry in entries.flatten() {
+        let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+            continue;
+        };
+        if read_process_pgid(pid) != Some(pgid) {
             continue;
         }
-
         if let Some(memory_kb) = read_process_rss_kb(pid) {
             total_kb += memory_kb;
             found_any_process = true;
         }
-
-        stack.extend(read_child_pids(pid));
     }
 
     found_any_process.then_some(total_kb)
@@ -185,25 +199,16 @@ fn read_process_rss_kb(pid: u32) -> Option<u64> {
     })
 }
 
+/// Reads a process's group id (`pgrp`, field 5 of `/proc/<pid>/stat`).
+///
+/// `comm` (field 2) can contain spaces and parentheses, so fields are parsed
+/// relative to the final `)` to avoid miscounting.
 #[cfg(target_os = "linux")]
-fn read_child_pids(pid: u32) -> Vec<u32> {
-    let Ok(task_entries) = std::fs::read_dir(format!("/proc/{pid}/task")) else {
-        return Vec::new();
-    };
-
-    let mut child_pids = Vec::new();
-    for task_entry in task_entries.flatten() {
-        let children_path = task_entry.path().join("children");
-        let Ok(children) = std::fs::read_to_string(children_path) else {
-            continue;
-        };
-        child_pids.extend(
-            children
-                .split_whitespace()
-                .filter_map(|pid| pid.parse::<u32>().ok()),
-        );
-    }
-    child_pids
+fn read_process_pgid(pid: u32) -> Option<u32> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let after_comm = stat.rsplit_once(')')?.1;
+    // After the final ')': state(0) ppid(1) pgrp(2) ...
+    after_comm.split_whitespace().nth(2)?.parse().ok()
 }
 
 /// Valid string reasons for a failure.
@@ -1460,6 +1465,13 @@ impl RunningActionImpl {
                     ),
                 });
             }
+
+            // Run the action as its own process-group leader (pgid == child
+            // pid). The resource-usage sampler attributes memory by process
+            // group, so this keeps the whole action together — including
+            // processes reparented to the worker when an intermediate shell
+            // exits — and never conflates it with the worker's own group.
+            command_builder.process_group(0);
         }
 
         let mut child_process = command_builder
