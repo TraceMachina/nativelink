@@ -22,11 +22,9 @@ use nativelink_config::schedulers::SimpleSpec;
 use nativelink_error::{Code, Error, ResultExt};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_proto::com::github::trace_machina::nativelink::events::{
-    Event, OriginEvent, RequestEvent, ResponseEvent, event, request_event, response_event,
+    Event, OriginEvent, RequestEvent, event, request_event,
 };
-use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    ActionResourceUsage, StartExecute,
-};
+use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::StartExecute;
 use nativelink_util::action_messages::{ActionInfo, ActionState, OperationId, WorkerId};
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::known_platform_property_provider::KnownPlatformPropertyProvider;
@@ -218,35 +216,6 @@ impl SimpleScheduler {
                 ?err,
                 "Failed to publish scheduler start execute origin event"
             );
-        }
-    }
-
-    fn publish_action_resource_usage(
-        maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
-        origin_metadata: &OriginMetadata,
-        parent_event_id: Option<&str>,
-        resource_usage: ActionResourceUsage,
-    ) {
-        let Some(origin_event_tx) = maybe_origin_event_tx else {
-            return;
-        };
-
-        let event = Event {
-            event: Some(event::Event::Response(ResponseEvent {
-                event: Some(response_event::Event::ActionResourceUsage(resource_usage)),
-            })),
-        };
-        let origin_event = OriginEvent {
-            version: 0,
-            event_id: Self::origin_event_id(&event),
-            parent_event_id: parent_event_id.unwrap_or_default().to_string(),
-            bazel_request_metadata: origin_metadata.bazel_metadata.clone(),
-            identity: origin_metadata.identity.clone(),
-            event: Some(event),
-        };
-
-        if let Err(err) = origin_event_tx.try_send(origin_event) {
-            warn!(?err, "Failed to publish action resource usage origin event");
         }
     }
 
@@ -554,6 +523,7 @@ impl SimpleScheduler {
             worker_change_notify.clone(),
             worker_timeout_s,
             worker_registry,
+            maybe_origin_event_tx.clone(),
         );
 
         let worker_scheduler_clone = worker_scheduler.clone();
@@ -761,36 +731,6 @@ impl WorkerScheduler for SimpleScheduler {
         self.worker_scheduler
             .update_action(worker_id, operation_id, update)
             .await
-    }
-
-    async fn record_action_resource_usage(
-        &self,
-        worker_id: &WorkerId,
-        operation_id: &OperationId,
-        mut resource_usage: ActionResourceUsage,
-    ) -> Result<(), Error> {
-        let Some(action_info) = self
-            .worker_scheduler
-            .running_action_info(worker_id, operation_id)
-            .await
-        else {
-            return Ok(());
-        };
-
-        if resource_usage.operation_id.is_empty() {
-            resource_usage.operation_id = operation_id.to_string();
-        }
-        if resource_usage.worker_id.is_empty() {
-            resource_usage.worker_id = worker_id.to_string();
-        }
-
-        Self::publish_action_resource_usage(
-            self.maybe_origin_event_tx.as_ref(),
-            &action_info.origin_metadata,
-            action_info.scheduler_start_execute_event_id.as_deref(),
-            resource_usage,
-        );
-        Ok(())
     }
 
     async fn worker_keep_alive_received(

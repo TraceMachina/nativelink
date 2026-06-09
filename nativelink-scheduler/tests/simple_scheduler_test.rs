@@ -194,7 +194,7 @@ async fn scheduler_start_execute_origin_event_includes_resource_hints() -> Resul
     let worker_id = WorkerId("worker_id".to_string());
     let task_change_notify = Arc::new(Notify::new());
     let (origin_event_tx, mut origin_event_rx) = mpsc::channel(8);
-    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+    let (scheduler, worker_scheduler) = SimpleScheduler::new_with_callback(
         &SimpleSpec {
             supported_platform_properties: Some(HashMap::from([
                 ("cpu_count".to_string(), PropertyType::Minimum),
@@ -310,7 +310,7 @@ async fn scheduler_start_execute_origin_event_includes_resource_hints() -> Resul
         start_action_platform.properties
     );
 
-    scheduler
+    worker_scheduler
         .record_action_resource_usage(
             &worker_id,
             &OperationId::from(start_action.operation_id.as_str()),
