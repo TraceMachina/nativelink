@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use core::pin::Pin;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use core::time::Duration;
 use std::sync::{Arc, Mutex};
 
@@ -53,6 +53,7 @@ fn make_stores_direction(
             slow: StoreSpec::Memory(MemorySpec::default()),
             fast_direction,
             slow_direction,
+            bypass_dedup_threshold_bytes: 0,
         },
         fast_store.clone(),
         slow_store.clone(),
@@ -356,6 +357,7 @@ async fn drop_on_eof_completes_store_futures() -> Result<(), Error> {
             slow: StoreSpec::Memory(MemorySpec::default()),
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
         },
         fast_store,
         slow_store,
@@ -399,6 +401,7 @@ async fn ignore_value_in_fast_store() -> Result<(), Error> {
             slow: StoreSpec::Memory(MemorySpec::default()),
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
         },
         fast_store.clone(),
         slow_store,
@@ -424,6 +427,7 @@ async fn has_checks_fast_store_when_noop() -> Result<(), Error> {
         slow: StoreSpec::Noop(NoopSpec::default()),
         fast_direction: StoreDirection::default(),
         slow_direction: StoreDirection::default(),
+        bypass_dedup_threshold_bytes: 0,
     };
     let fast_slow_store = Arc::new(FastSlowStore::new(
         &fast_slow_store_config,
@@ -660,6 +664,7 @@ fn make_stores_with_lazy_slow() -> (Store, Store, Store) {
             slow: StoreSpec::Memory(MemorySpec::default()),
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
         },
         fast_store.clone(),
         slow_store.clone(),
@@ -791,6 +796,7 @@ fn make_fast_slow_with_instrumented_slow(
     digest: DigestInfo,
     data: Vec<u8>,
     gate: Option<tokio::sync::oneshot::Receiver<()>>,
+    bypass_dedup_threshold_bytes: u64,
 ) -> (Store, Arc<InstrumentedSlowStore>) {
     let slow = Arc::new(InstrumentedSlowStore {
         digest,
@@ -805,6 +811,7 @@ fn make_fast_slow_with_instrumented_slow(
             slow: StoreSpec::Memory(MemorySpec::default()),
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes,
         },
         fast,
         Store::new(slow.clone()),
@@ -822,7 +829,7 @@ async fn concurrent_reads_dedup_to_a_single_slow_store_call() -> Result<(), Erro
 
     let (gate_tx, gate_rx) = tokio::sync::oneshot::channel();
     let (fast_slow_store, slow) =
-        make_fast_slow_with_instrumented_slow(digest, original_data.clone(), Some(gate_rx));
+        make_fast_slow_with_instrumented_slow(digest, original_data.clone(), Some(gate_rx), 0);
 
     let mut handles = Vec::with_capacity(N_CONCURRENT);
     for _ in 0..N_CONCURRENT {
@@ -863,6 +870,51 @@ async fn concurrent_reads_dedup_to_a_single_slow_store_call() -> Result<(), Erro
     Ok(())
 }
 
+/// With an opt-in threshold set, reads of blobs at or above it skip the
+/// dedup map and hit the slow store on every concurrent read. This is the
+/// counterpart to `concurrent_reads_dedup_to_a_single_slow_store_call`,
+/// which leaves the threshold at 0 (disabled) and therefore dedups.
+#[nativelink_test]
+async fn concurrent_reads_bypass_dedup_above_threshold() -> Result<(), Error> {
+    const N_CONCURRENT: usize = 8;
+    let original_data = make_random_data(4096);
+    let digest = DigestInfo::try_new(VALID_HASH, original_data.len()).unwrap();
+    let blob_size = u64::try_from(original_data.len()).unwrap();
+
+    // Threshold == blob size, so every read is at-or-above and bypasses
+    // dedup. No gate: each reader hits the slow store directly.
+    let (fast_slow_store, slow) =
+        make_fast_slow_with_instrumented_slow(digest, original_data.clone(), None, blob_size);
+
+    let mut handles = Vec::with_capacity(N_CONCURRENT);
+    for _ in 0..N_CONCURRENT {
+        let store = fast_slow_store.clone();
+        handles.push(tokio::spawn(async move {
+            store.get_part_unchunked(digest, 0, None).await
+        }));
+    }
+
+    let results = join_all(handles).await;
+    for r in results {
+        let bytes = r
+            .map_err(|e| make_err!(Code::Internal, "join error: {e:?}"))?
+            .err_tip(|| "Concurrent bypass get_part_unchunked failed")?;
+        assert_eq!(
+            bytes.as_ref(),
+            original_data.as_slice(),
+            "Every bypassed reader must still observe the full, correct payload"
+        );
+    }
+
+    let slow_calls = slow.get_part_count.load(Ordering::Acquire);
+    assert_eq!(
+        slow_calls, N_CONCURRENT as u64,
+        "With the bypass threshold set, each of {N_CONCURRENT} reads must hit the slow store directly (no dedup), got {slow_calls}",
+    );
+
+    Ok(())
+}
+
 /// Dropping a follower's outer future must not cancel the leader's
 /// populate.
 #[nativelink_test]
@@ -872,7 +924,7 @@ async fn dropping_a_follower_does_not_cancel_the_leader() -> Result<(), Error> {
 
     let (gate_tx, gate_rx) = tokio::sync::oneshot::channel();
     let (fast_slow_store, slow) =
-        make_fast_slow_with_instrumented_slow(digest, original_data.clone(), Some(gate_rx));
+        make_fast_slow_with_instrumented_slow(digest, original_data.clone(), Some(gate_rx), 0);
 
     let store_for_a = fast_slow_store.clone();
     let leader_handle =
@@ -1003,6 +1055,7 @@ async fn has_sees_in_flight_slow_writes() -> Result<(), Error> {
             slow: StoreSpec::Memory(MemorySpec::default()),
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
         },
         fast,
         Store::new(slow.clone()),
@@ -1158,6 +1211,7 @@ async fn has_does_not_consult_fast_store_when_slow_store_hits() -> Result<(), Er
             slow: StoreSpec::Memory(MemorySpec::default()),
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
         },
         fast,
         slow.clone(),
@@ -1275,6 +1329,7 @@ async fn dropping_update_future_cleans_up_in_flight_entry() -> Result<(), Error>
             slow: StoreSpec::Memory(MemorySpec::default()),
             fast_direction: StoreDirection::ReadOnly,
             slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
         },
         fast,
         Store::new(slow.clone()),
@@ -1440,6 +1495,7 @@ async fn has_with_results_handles_mixed_key_sources() -> Result<(), Error> {
             slow: StoreSpec::Memory(MemorySpec::default()),
             fast_direction: StoreDirection::ReadOnly,
             slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
         },
         fast.clone(),
         Store::new(slow.clone()),
@@ -1511,5 +1567,254 @@ async fn has_with_results_handles_mixed_key_sources() -> Result<(), Error> {
     );
     assert_eq!(results[3], None, "missing key must stay None");
 
+    Ok(())
+}
+
+// Huge-blob dedup bypass: a `CountingSlowStore` counts get_part calls.
+// Under dedup all readers collapse to one call; under bypass each reader
+// drives its own and the fast tier stays empty.
+
+/// `MemoryStore` wrapper that counts `get_part` invocations.
+#[derive(MetricsComponent)]
+struct CountingSlowStore {
+    inner: Arc<MemoryStore>,
+    get_part_calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl StoreDriver for CountingSlowStore {
+    async fn has_with_results(
+        self: Pin<&Self>,
+        keys: &[StoreKey<'_>],
+        results: &mut [Option<u64>],
+    ) -> Result<(), Error> {
+        Pin::new(self.inner.as_ref())
+            .has_with_results(keys, results)
+            .await
+    }
+
+    async fn update(
+        self: Pin<&Self>,
+        key: StoreKey<'_>,
+        reader: DropCloserReadHalf,
+        size_info: UploadSizeInfo,
+    ) -> Result<u64, Error> {
+        Pin::new(self.inner.as_ref())
+            .update(key, reader, size_info)
+            .await
+    }
+
+    async fn get_part(
+        self: Pin<&Self>,
+        key: StoreKey<'_>,
+        writer: &mut DropCloserWriteHalf,
+        offset: u64,
+        length: Option<u64>,
+    ) -> Result<(), Error> {
+        self.get_part_calls.fetch_add(1, Ordering::AcqRel);
+        Pin::new(self.inner.as_ref())
+            .get_part(key, writer, offset, length)
+            .await
+    }
+
+    fn inner_store(&self, _digest: Option<StoreKey>) -> &dyn StoreDriver {
+        self
+    }
+    fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
+        self
+    }
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+        self
+    }
+    fn register_remove_callback(
+        self: Arc<Self>,
+        _callback: Arc<dyn RemoveItemCallback>,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+default_health_status_indicator!(CountingSlowStore);
+
+#[nativelink_test]
+async fn huge_blob_bypasses_dedup_and_skips_populate() -> Result<(), Error> {
+    // 1 KiB threshold so a 2 KiB blob trips the bypass.
+    const THRESHOLD: u64 = 1024;
+    const BLOB_SIZE: usize = 2 * 1024;
+    const READERS: usize = 8;
+
+    let original_data = make_random_data(BLOB_SIZE);
+    let digest = DigestInfo::try_new(VALID_HASH, original_data.len()).unwrap();
+
+    // Seed the slow tier directly so the fast tier starts empty.
+    let inner_slow = MemoryStore::new(&MemorySpec::default());
+    inner_slow
+        .update_oneshot(digest, original_data.clone().into())
+        .await?;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counting = Arc::new(CountingSlowStore {
+        inner: inner_slow,
+        get_part_calls: calls.clone(),
+    });
+    let fast_store = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let slow_store = Store::new(counting);
+    let fast_slow_store = Store::new(FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: THRESHOLD,
+        },
+        fast_store.clone(),
+        slow_store,
+    ));
+
+    // Fan out READERS concurrent get_part calls.
+    let mut joins = Vec::with_capacity(READERS);
+    for _ in 0..READERS {
+        let store = fast_slow_store.clone();
+        let expected = original_data.clone();
+        joins.push(tokio::spawn(async move {
+            let got = store.get_part_unchunked(digest, 0, None).await?;
+            assert_eq!(got.as_ref(), expected.as_slice(), "data mismatch");
+            Ok::<_, Error>(())
+        }));
+    }
+    for j in joins {
+        j.await
+            .map_err(|e| make_err!(Code::Internal, "join failed: {e}"))??;
+    }
+
+    // Bypass: one slow-store call per reader.
+    assert_eq!(
+        calls.load(Ordering::Acquire),
+        READERS,
+        "expected {READERS} slow-store get_part calls under bypass, observed dedup"
+    );
+
+    // Fast tier must stay empty.
+    assert!(
+        fast_store.has(digest).await?.is_none(),
+        "huge-blob bypass populated the fast tier; that defeats the point of the bypass"
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn small_blob_still_dedups_and_populates() -> Result<(), Error> {
+    // 64-byte blob sits below the 1 MiB threshold, so dedup runs.
+    const THRESHOLD: u64 = 1024 * 1024;
+    const BLOB_SIZE: usize = 64;
+    const READERS: usize = 8;
+
+    let original_data = make_random_data(BLOB_SIZE);
+    let digest = DigestInfo::try_new(VALID_HASH, original_data.len()).unwrap();
+
+    let inner_slow = MemoryStore::new(&MemorySpec::default());
+    inner_slow
+        .update_oneshot(digest, original_data.clone().into())
+        .await?;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counting = Arc::new(CountingSlowStore {
+        inner: inner_slow,
+        get_part_calls: calls.clone(),
+    });
+    let fast_store = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let slow_store = Store::new(counting);
+    let fast_slow_store = Store::new(FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: THRESHOLD,
+        },
+        fast_store.clone(),
+        slow_store,
+    ));
+
+    let mut joins = Vec::with_capacity(READERS);
+    for _ in 0..READERS {
+        let store = fast_slow_store.clone();
+        let expected = original_data.clone();
+        joins.push(tokio::spawn(async move {
+            let got = store.get_part_unchunked(digest, 0, None).await?;
+            assert_eq!(got.as_ref(), expected.as_slice(), "data mismatch");
+            Ok::<_, Error>(())
+        }));
+    }
+    for j in joins {
+        j.await
+            .map_err(|e| make_err!(Code::Internal, "join failed: {e}"))??;
+    }
+
+    // Dedup: all readers collapse to one slow-store call.
+    assert_eq!(
+        calls.load(Ordering::Acquire),
+        1,
+        "small-blob path lost dedup; observed >1 slow-store call"
+    );
+
+    // Fast tier should be populated.
+    assert!(
+        fast_store.has(digest).await?.is_some(),
+        "small-blob path failed to populate the fast tier"
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn bypass_threshold_is_inclusive_at_exact_size() -> Result<(), Error> {
+    // Bypass is `size >= threshold`, so size == threshold must bypass.
+    const SIZE: usize = 4096;
+    const READERS: usize = 4;
+
+    let original_data = make_random_data(SIZE);
+    let digest = DigestInfo::try_new(VALID_HASH, original_data.len()).unwrap();
+
+    let inner_slow = MemoryStore::new(&MemorySpec::default());
+    inner_slow
+        .update_oneshot(digest, original_data.clone().into())
+        .await?;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counting = Arc::new(CountingSlowStore {
+        inner: inner_slow,
+        get_part_calls: calls.clone(),
+    });
+    let fast_store = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let slow_store = Store::new(counting);
+    let fast_slow_store = Store::new(FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: SIZE as u64,
+        },
+        fast_store.clone(),
+        slow_store,
+    ));
+
+    let mut joins = Vec::with_capacity(READERS);
+    for _ in 0..READERS {
+        let store = fast_slow_store.clone();
+        joins.push(tokio::spawn(async move {
+            let _ignored = store.get_part_unchunked(digest, 0, None).await?;
+            Ok::<_, Error>(())
+        }));
+    }
+    for j in joins {
+        j.await
+            .map_err(|e| make_err!(Code::Internal, "join failed: {e}"))??;
+    }
+
+    assert_eq!(
+        calls.load(Ordering::Acquire),
+        READERS,
+        "size == threshold should bypass dedup but observed dedup",
+    );
     Ok(())
 }
