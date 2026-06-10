@@ -67,6 +67,13 @@ const DEFAULT_PERSIST_STREAM_ON_DISCONNECT_TIMEOUT: Duration = Duration::from_mi
 /// If this value changes update the documentation in the config definition.
 const DEFAULT_MAX_BYTES_PER_STREAM: usize = 64 * 1024;
 
+/// Maximum uncompressed size allowed for compressed uploads.
+/// Compressed uploads must buffer both compressed and decompressed data,
+/// so this caps memory usage. Uploads exceeding this size should be sent
+/// uncompressed (Identity) via the regular streaming path.
+/// 4 GiB is generous — Bazel's default max-action-output is 256 MiB.
+const MAX_COMPRESSED_UPLOAD_SIZE: usize = 4 * 1024 * 1024 * 1024;
+
 /// Metrics for `ByteStream` server operations.
 /// Tracks upload/download activity, throughput, and latency.
 #[derive(Debug, Default)]
@@ -958,17 +965,69 @@ impl ByteStreamServer {
         let expected_size = usize::try_from(digest.size_bytes())
             .err_tip(|| "Digest size_bytes was not convertible to usize")?;
 
+        // Reject compressed uploads that exceed our memory budget.
+        // Compressed uploads must buffer both compressed and decompressed
+        // data simultaneously, so we enforce a hard cap.
+        if expected_size > MAX_COMPRESSED_UPLOAD_SIZE {
+            return Err(make_input_err!(
+                "Compressed upload of {} bytes exceeds maximum of {} bytes. \
+                 Use uncompressed (Identity) upload for large blobs.",
+                expected_size,
+                MAX_COMPRESSED_UPLOAD_SIZE
+            ));
+        }
+
+        // Register the upload in active_uploads so QueryWriteStatus can report
+        // progress while we buffer and decompress. This mirrors what
+        // create_or_join_upload_stream does for uncompressed uploads.
+        let uuid_str = stream
+            .resource_info
+            .uuid
+            .as_deref()
+            .ok_or_else(|| make_input_err!("UUID must be set if writing compressed data"))?;
+        let uuid_key = parse_uuid_to_key(uuid_str);
+        let bytes_received = Arc::new(AtomicU64::new(0));
+        instance
+            .active_uploads
+            .lock()
+            .insert(uuid_key, (bytes_received.clone(), None));
+        instance.metrics.active_uploads.fetch_add(1, Ordering::Relaxed);
+
+        // Ensure cleanup on any exit path (error or success).
+        struct UploadGuard {
+            uuid_key: u128,
+            active_uploads: Arc<Mutex<HashMap<UuidKey, BytesWrittenAndIdleStream>>>,
+            metrics: Arc<ByteStreamMetrics>,
+        }
+        impl Drop for UploadGuard {
+            fn drop(&mut self) {
+                self.active_uploads.lock().remove(&self.uuid_key);
+                self.metrics.active_uploads.fetch_sub(1, Ordering::Relaxed);
+            }
+        }
+        let _guard = UploadGuard {
+            uuid_key,
+            active_uploads: instance.active_uploads.clone(),
+            metrics: instance.metrics.clone(),
+        };
+
         // Collect all compressed data from the client stream.
         // Cap the buffer to prevent memory exhaustion from malicious clients.
         // Zstd compression ratio on valid data rarely exceeds 10:1, so
         // 2x the expected uncompressed size is a generous upper bound.
-        let max_compressed_size = expected_size.saturating_mul(2).max(64 * 1024 * 1024);
+        // We use a minimum of 64 MiB to allow for small expected_size values
+        // with highly compressible data.
+        let max_compressed_size = expected_size
+            .saturating_mul(2)
+            .clamp(64 * 1024 * 1024, MAX_COMPRESSED_UPLOAD_SIZE);
         let mut compressed_data = BytesMut::new();
         let mut stream = std::pin::pin!(stream);
         loop {
             match stream.next().await {
                 Some(Ok(write_request)) => {
                     compressed_data.extend_from_slice(&write_request.data);
+                    // Update progress so QueryWriteStatus can report it.
+                    bytes_received.store(compressed_data.len() as u64, Ordering::Release);
                     if compressed_data.len() > max_compressed_size {
                         return Err(make_err!(
                             Code::InvalidArgument,
@@ -1055,6 +1114,12 @@ impl ByteStreamServer {
             .err_tip(|| "Failed to read blob for wire compression")?;
 
         // Compress the data.
+        // Note: The REAPI spec requires the server to return data in the format
+        // indicated by the URI. When a client requests compressed-blobs/zstd/...,
+        // we must return zstd-compressed data even if compression expands the
+        // payload. The spec allows choosing any compression level, so for
+        // incompressible data we could use a faster level, but we currently
+        // use the default level for simplicity.
         let compressed_data = crate::wire_compression::compress(&raw_data, wire_compressor)?;
 
         // Stream the compressed bytes back in chunks.

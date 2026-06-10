@@ -282,8 +282,12 @@ impl CasServer {
                                         compressor::Value::Zstd,
                                     ) {
                                         Ok(compressed) => {
-                                            output_data = compressed;
-                                            chosen_compressor = compressor::Value::Zstd;
+                                            // Only use compressed data if it's actually smaller.
+                                            // For incompressible data zstd can expand the payload.
+                                            if compressed.len() < output_data.len() {
+                                                output_data = compressed;
+                                                chosen_compressor = compressor::Value::Zstd;
+                                            }
                                             break;
                                         }
                                         Err(e) => {
