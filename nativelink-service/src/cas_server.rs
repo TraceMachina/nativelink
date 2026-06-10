@@ -20,7 +20,7 @@ use std::collections::{HashMap, VecDeque};
 use bytes::Bytes;
 use futures::stream::{FuturesUnordered, Stream};
 use futures::{StreamExt, TryStreamExt};
-use nativelink_config::cas_server::{CasStoreConfig, WithInstanceName};
+use nativelink_config::cas_server::{CapabilitiesConfig, CasStoreConfig, WireCompressor, WithInstanceName};
 use nativelink_error::{Code, Error, ResultExt, error_if, make_err, make_input_err};
 use nativelink_proto::build::bazel::remote::execution::v2::content_addressable_storage_server::{
     ContentAddressableStorage, ContentAddressableStorageServer as Server,
@@ -40,11 +40,12 @@ use nativelink_util::digest_hasher::make_ctx_for_hash_func;
 use nativelink_util::store_trait::{Store, StoreLike};
 use opentelemetry::context::FutureExt;
 use tonic::{Request, Response, Status};
-use tracing::{Instrument, Level, debug, error_span, instrument};
+use tracing::{Instrument, Level, debug, error_span, instrument, warn};
 
 #[derive(Debug)]
 pub struct CasServer {
     stores: HashMap<String, Store>,
+    supported_wire_compressors_for_instance: HashMap<String, Vec<WireCompressor>>,
 }
 
 type GetTreeStream = Pin<Box<dyn Stream<Item = Result<GetTreeResponse, Status>> + Send + 'static>>;
@@ -56,6 +57,7 @@ impl CasServer {
     pub fn new(
         configs: &[WithInstanceName<CasStoreConfig>],
         store_manager: &StoreManager,
+        capabilities_configs: &[WithInstanceName<CapabilitiesConfig>],
     ) -> Result<Self, Error> {
         let mut stores = HashMap::with_capacity(configs.len());
         for config in configs {
@@ -64,7 +66,15 @@ impl CasServer {
             })?;
             stores.insert(config.instance_name.clone(), store);
         }
-        Ok(Self { stores })
+        let mut supported_wire_compressors_for_instance = HashMap::new();
+        for config in capabilities_configs {
+            supported_wire_compressors_for_instance
+                .insert(config.instance_name.clone(), config.supported_wire_compressors.clone());
+        }
+        Ok(Self {
+            stores,
+            supported_wire_compressors_for_instance,
+        })
     }
 
     pub fn into_service(self) -> Server<Self> {
@@ -121,44 +131,81 @@ impl CasServer {
         }
 
         let store_ref = &store;
+        let supported_compressors = self
+            .supported_wire_compressors_for_instance
+            .get(instance_name)
+            .map(|c| c.as_slice())
+            .unwrap_or(&[]);
         let update_futures: FuturesUnordered<_> = request
             .requests
             .into_iter()
-            .map(|request| async move {
-                let digest = request
-                    .digest
-                    .clone()
-                    .err_tip(|| "Digest not found in request")?;
-                let request_data = request.data;
-                let digest_info = DigestInfo::try_from(digest.clone())?;
-                let size_bytes = usize::try_from(digest_info.size_bytes())
-                    .err_tip(|| "Digest size_bytes was not convertible to usize")?;
-                error_if!(
-                    size_bytes != request_data.len(),
-                    "Digest for upload had mismatching sizes, digest said {} data  said {}",
-                    size_bytes,
-                    request_data.len()
-                );
-                // Apply a per-blob deadline so one slow upload does not
-                // make the whole batch hit the client's overall deadline.
-                let result = match tokio::time::timeout(
-                    BATCH_PER_BLOB_TIMEOUT,
-                    store_ref.update_oneshot(digest_info, request_data),
-                )
-                .await
-                {
-                    Ok(r) => r.err_tip(|| "Error writing to store"),
-                    Err(_elapsed) => Err(make_err!(
-                        Code::DeadlineExceeded,
-                        "BatchUpdateBlobs per-blob timeout ({} s) elapsed for digest {}",
-                        BATCH_PER_BLOB_TIMEOUT.as_secs(),
-                        digest_info,
-                    )),
-                };
-                Ok::<_, Error>(batch_update_blobs_response::Response {
-                    digest: Some(digest),
-                    status: Some(result.map_or_else(Into::into, |()| GrpcStatus::default())),
-                })
+            .map(|request| {
+                async move {
+                    let digest = request
+                        .digest
+                        .clone()
+                        .err_tip(|| "Digest not found in request")?;
+                    let request_compressor = compressor::Value::try_from(request.compressor)
+                        .map_err(|_| make_input_err!("Unknown compressor value: {}", request.compressor))?;
+                    let request_data = request.data;
+                    let digest_info = DigestInfo::try_from(digest.clone())?;
+                    let size_bytes = usize::try_from(digest_info.size_bytes())
+                        .err_tip(|| "Digest size_bytes was not convertible to usize")?;
+
+                    // If the client sent compressed data, decompress it before storing.
+                    let store_data = if request_compressor == compressor::Value::Identity {
+                        request_data
+                    } else {
+                        // Validate the compressor is supported.
+                        let config_compressor = match request_compressor {
+                            compressor::Value::Zstd => WireCompressor::Zstd,
+                            other => {
+                                return Err(make_input_err!(
+                                    "Unsupported compressor in BatchUpdateBlobs: {:?}",
+                                    other
+                                ));
+                            }
+                        };
+                        if !supported_compressors.contains(&config_compressor) {
+                            return Err(make_input_err!(
+                                "Compressor {:?} is not supported by this instance",
+                                config_compressor
+                            ));
+                        }
+                        crate::wire_compression::decompress(
+                            &request_data,
+                            request_compressor,
+                            size_bytes,
+                        )?
+                    };
+
+                    error_if!(
+                        size_bytes != store_data.len(),
+                        "Digest for upload had mismatching sizes, digest said {} data  said {}",
+                        size_bytes,
+                        store_data.len()
+                    );
+                    // Apply a per-blob deadline so one slow upload does not
+                    // make the whole batch hit the client's overall deadline.
+                    let result = match tokio::time::timeout(
+                        BATCH_PER_BLOB_TIMEOUT,
+                        store_ref.update_oneshot(digest_info, store_data),
+                    )
+                    .await
+                    {
+                        Ok(r) => r.err_tip(|| "Error writing to store"),
+                        Err(_elapsed) => Err(make_err!(
+                            Code::DeadlineExceeded,
+                            "BatchUpdateBlobs per-blob timeout ({} s) elapsed for digest {}",
+                            BATCH_PER_BLOB_TIMEOUT.as_secs(),
+                            digest_info,
+                        )),
+                    };
+                    Ok::<_, Error>(batch_update_blobs_response::Response {
+                        digest: Some(digest),
+                        status: Some(result.map_or_else(Into::into, |()| GrpcStatus::default())),
+                    })
+                }
             })
             .collect();
         let responses = update_futures
@@ -188,46 +235,85 @@ impl CasServer {
         }
 
         let store_ref = &store;
+        let supported_compressors = self
+            .supported_wire_compressors_for_instance
+            .get(instance_name)
+            .map(|c| c.as_slice())
+            .unwrap_or(&[]);
         let read_futures: FuturesUnordered<_> = request
             .digests
             .into_iter()
-            .map(|digest| async move {
-                let digest_copy = DigestInfo::try_from(digest.clone())?;
-                // TODO(palfrey) There is a security risk here of someone taking all the memory on the instance.
-                // Apply a per-blob deadline so one slow read does not
-                // make the whole batch hit the client's overall deadline.
-                let result = match tokio::time::timeout(
-                    BATCH_PER_BLOB_TIMEOUT,
-                    store_ref.get_part_unchunked(digest_copy, 0, None),
-                )
-                .await
-                {
-                    Ok(r) => r.err_tip(|| "Error reading from store"),
-                    Err(_elapsed) => Err(make_err!(
-                        Code::DeadlineExceeded,
-                        "BatchReadBlobs per-blob timeout ({} s) elapsed for digest {}",
-                        BATCH_PER_BLOB_TIMEOUT.as_secs(),
-                        digest_copy,
-                    )),
-                };
-                let (status, data) = result.map_or_else(
-                    |mut e| {
-                        if e.code == Code::NotFound {
-                            // Trim the error code. Not Found is quite common and we don't want to send a large
-                            // error (debug) message for something that is common. We resize to just the last
-                            // message as it will be the most relevant.
-                            e.messages.resize_with(1, String::new);
+            .zip(core::iter::repeat(request.acceptable_compressors.clone()))
+            .map(|(digest, acceptable_compressors)| {
+                async move {
+                    let digest_copy = DigestInfo::try_from(digest.clone())?;
+                    // TODO(palfrey) There is a security risk here of someone taking all the memory on the instance.
+                    // Apply a per-blob deadline so one slow read does not
+                    // make the whole batch hit the client's overall deadline.
+                    let result = match tokio::time::timeout(
+                        BATCH_PER_BLOB_TIMEOUT,
+                        store_ref.get_part_unchunked(digest_copy, 0, None),
+                    )
+                    .await
+                    {
+                        Ok(r) => r.err_tip(|| "Error reading from store"),
+                        Err(_elapsed) => Err(make_err!(
+                            Code::DeadlineExceeded,
+                            "BatchReadBlobs per-blob timeout ({} s) elapsed for digest {}",
+                            BATCH_PER_BLOB_TIMEOUT.as_secs(),
+                            digest_copy,
+                        )),
+                    };
+                    let (status, data, response_compressor) = match result {
+                        Ok(raw_data) => {
+                            // Check if the client accepts a compression we support.
+                            let mut chosen_compressor = compressor::Value::Identity;
+                            let mut output_data = raw_data;
+
+                            for &accept_i32 in &acceptable_compressors {
+                                let Ok(accept) = compressor::Value::try_from(accept_i32) else {
+                                    continue; // Skip unknown compressor values from client.
+                                };
+                                if accept == compressor::Value::Zstd
+                                    && supported_compressors.contains(&WireCompressor::Zstd)
+                                {
+                                    match crate::wire_compression::compress(
+                                        &output_data,
+                                        compressor::Value::Zstd,
+                                    ) {
+                                        Ok(compressed) => {
+                                            output_data = compressed;
+                                            chosen_compressor = compressor::Value::Zstd;
+                                            break;
+                                        }
+                                        Err(e) => {
+                                            // Compression failed; fall back to Identity.
+                                            warn!("Wire compression failed for digest {:?}, falling back to identity: {}", digest, e);
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+
+                            (GrpcStatus::default(), output_data, chosen_compressor)
                         }
-                        (e.into(), Bytes::new())
-                    },
-                    |v| (GrpcStatus::default(), v),
-                );
-                Ok::<_, Error>(batch_read_blobs_response::Response {
-                    status: Some(status),
-                    digest: Some(digest),
-                    compressor: compressor::Value::Identity.into(),
-                    data,
-                })
+                        Err(mut e) => {
+                            if e.code == Code::NotFound {
+                                // Trim the error code. Not Found is quite common and we don't want to send a large
+                                // error (debug) message for something that is common. We resize to just the last
+                                // message as it will be the most relevant.
+                                e.messages.resize_with(1, String::new);
+                            }
+                            (e.into(), Bytes::new(), compressor::Value::Identity)
+                        }
+                    };
+                    Ok::<_, Error>(batch_read_blobs_response::Response {
+                        status: Some(status),
+                        digest: Some(digest),
+                        compressor: response_compressor.into(),
+                        data,
+                    })
+                }
             })
             .collect();
         let responses = read_futures

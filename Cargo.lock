@@ -3042,6 +3042,7 @@ dependencies = [
  "tracing",
  "tracing-test",
  "uuid",
+ "zstd",
 ]
 
 [[package]]

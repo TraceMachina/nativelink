@@ -26,11 +26,14 @@ use bytes::BytesMut;
 use futures::future::pending;
 use futures::stream::unfold;
 use futures::{Future, Stream, TryFutureExt, try_join};
-use nativelink_config::cas_server::{ByteStreamConfig, InstanceName, WithInstanceName};
-use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
+use nativelink_config::cas_server::{
+    ByteStreamConfig, CapabilitiesConfig, InstanceName, WireCompressor, WithInstanceName,
+};
+use nativelink_error::{Code, Error, ResultExt, error_if, make_err, make_input_err};
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent, group, publish,
 };
+use nativelink_proto::build::bazel::remote::execution::v2::compressor;
 use nativelink_proto::google::bytestream::byte_stream_server::{
     ByteStream, ByteStreamServer as Server,
 };
@@ -254,6 +257,10 @@ pub struct InstanceInfo {
     metrics: Arc<ByteStreamMetrics>,
     /// Handle to the global sweeper task. Kept alive for the lifetime of the instance.
     _sweeper_handle: Arc<JoinHandleDropGuard<()>>,
+    /// Wire compression algorithms supported for this instance.
+    /// When a client requests compressed-blobs with a supported compressor,
+    /// the server will compress/decompress data at the service boundary.
+    supported_wire_compressors: Vec<WireCompressor>,
 }
 
 impl Debug for InstanceInfo {
@@ -264,6 +271,10 @@ impl Debug for InstanceInfo {
             .field("active_uploads", &self.active_uploads)
             .field("idle_stream_timeout", &self.idle_stream_timeout)
             .field("metrics", &self.metrics)
+            .field(
+                "supported_wire_compressors",
+                &self.supported_wire_compressors,
+            )
             .finish()
     }
 }
@@ -375,7 +386,14 @@ impl ByteStreamServer {
     pub fn new(
         configs: &[WithInstanceName<ByteStreamConfig>],
         store_manager: &StoreManager,
+        capabilities_configs: &[WithInstanceName<CapabilitiesConfig>],
     ) -> Result<Self, Error> {
+        // Build per-instance compressor map from capabilities configs.
+        let compressors_by_instance: HashMap<String, Vec<WireCompressor>> = capabilities_configs
+            .iter()
+            .map(|c| (c.instance_name.clone(), c.supported_wire_compressors.clone()))
+            .collect();
+
         let mut instance_infos: HashMap<String, InstanceInfo> = HashMap::new();
         for config in configs {
             let idle_stream_timeout = if config.persist_stream_on_disconnect_timeout == 0 {
@@ -383,9 +401,18 @@ impl ByteStreamServer {
             } else {
                 Duration::from_secs(config.persist_stream_on_disconnect_timeout as u64)
             };
+            let instance_compressors = compressors_by_instance
+                .get(&config.instance_name)
+                .cloned()
+                .unwrap_or_default();
             let _old_value = instance_infos.insert(
                 config.instance_name.clone(),
-                Self::new_with_timeout(config, store_manager, idle_stream_timeout)?,
+                Self::new_with_timeout(
+                    config,
+                    store_manager,
+                    idle_stream_timeout,
+                    instance_compressors,
+                )?,
             );
         }
         Ok(Self { instance_infos })
@@ -395,6 +422,7 @@ impl ByteStreamServer {
         config: &WithInstanceName<ByteStreamConfig>,
         store_manager: &StoreManager,
         idle_stream_timeout: Duration,
+        supported_wire_compressors: Vec<WireCompressor>,
     ) -> Result<InstanceInfo, Error> {
         let store = store_manager
             .get_store(&config.cas_store)
@@ -467,6 +495,7 @@ impl ByteStreamServer {
             idle_stream_timeout,
             metrics,
             _sweeper_handle: Arc::new(sweeper_handle),
+            supported_wire_compressors,
         })
     }
 
@@ -917,6 +946,140 @@ impl ByteStreamServer {
         }))
     }
 
+    /// Handle a compressed upload: buffer the full compressed stream from the
+    /// client, decompress it, validate the size, and store the raw bytes.
+    async fn inner_write_compressed(
+        &self,
+        instance: &InstanceInfo,
+        digest: DigestInfo,
+        wire_compressor: compressor::Value,
+        stream: WriteRequestStreamWrapper<impl Stream<Item = Result<WriteRequest, Status>> + Unpin>,
+    ) -> Result<Response<WriteResponse>, Error> {
+        let expected_size = usize::try_from(digest.size_bytes())
+            .err_tip(|| "Digest size_bytes was not convertible to usize")?;
+
+        // Collect all compressed data from the client stream.
+        // Cap the buffer to prevent memory exhaustion from malicious clients.
+        // Zstd compression ratio on valid data rarely exceeds 10:1, so
+        // 2x the expected uncompressed size is a generous upper bound.
+        let max_compressed_size = expected_size.saturating_mul(2).max(64 * 1024 * 1024);
+        let mut compressed_data = BytesMut::new();
+        let mut stream = std::pin::pin!(stream);
+        loop {
+            match stream.next().await {
+                Some(Ok(write_request)) => {
+                    compressed_data.extend_from_slice(&write_request.data);
+                    if compressed_data.len() > max_compressed_size {
+                        return Err(make_err!(
+                            Code::InvalidArgument,
+                            "Compressed data exceeds maximum allowed size ({} bytes)",
+                            max_compressed_size
+                        ));
+                    }
+                    if write_request.finish_write {
+                        break;
+                    }
+                }
+                Some(Err(e)) => {
+                    return Err(e);
+                }
+                None => {
+                    return Err(make_err!(
+                        Code::InvalidArgument,
+                        "Compressed write stream ended without finish_write"
+                    ));
+                }
+            }
+        }
+
+        // Decompress the data.
+        let raw_data =
+            crate::wire_compression::decompress(&compressed_data, wire_compressor, expected_size)?;
+
+        // Defense-in-depth: validate size matches the digest. The decompress()
+        // function already checks this, but we verify again here since this is
+        // the last gate before persisting to the store.
+        error_if!(
+            raw_data.len() != expected_size,
+            "Decompressed size {} does not match expected size {}",
+            raw_data.len(),
+            expected_size
+        );
+
+        // Store the decompressed data.
+        instance
+            .store
+            .update_oneshot(digest, raw_data)
+            .await
+            .err_tip(|| "Failed to store decompressed data")?;
+
+        Ok(Response::new(WriteResponse {
+            committed_size: expected_size as i64,
+        }))
+    }
+
+    /// Resolve the wire compressor from the `resource_info` and validate it
+    /// against the instance's supported compressors.
+    fn resolve_wire_compressor(
+        resource_info: &ResourceInfo<'_>,
+        supported: &[WireCompressor],
+    ) -> Result<compressor::Value, Error> {
+        match resource_info.compressor.as_deref() {
+            None | Some("identity") => Ok(compressor::Value::Identity),
+            Some("zstd") => {
+                if supported.contains(&WireCompressor::Zstd) {
+                    Ok(compressor::Value::Zstd)
+                } else {
+                    Err(make_input_err!(
+                        "Wire compressor 'zstd' is not supported by this instance"
+                    ))
+                }
+            }
+            Some(other) => Err(make_input_err!("Unsupported wire compressor: '{}'", other)),
+        }
+    }
+
+    /// Read a blob from the store, compress it with the given wire compressor,
+    /// and return it as a stream of chunked `ReadResponse`s.
+    async fn inner_read_compressed(
+        &self,
+        instance: &InstanceInfo,
+        digest: DigestInfo,
+        wire_compressor: compressor::Value,
+    ) -> Result<ReadStream, Error> {
+        // Read the full uncompressed blob from the store.
+        let raw_data = instance
+            .store
+            .get_part_unchunked(digest, 0, None)
+            .await
+            .err_tip(|| "Failed to read blob for wire compression")?;
+
+        // Compress the data.
+        let compressed_data = crate::wire_compression::compress(&raw_data, wire_compressor)?;
+
+        // Stream the compressed bytes back in chunks.
+        let max_bytes_per_stream = instance.max_bytes_per_stream;
+        let stream = unfold(
+            (compressed_data, 0usize, max_bytes_per_stream),
+            |(data, offset, max_bytes)| {
+                let result = if offset >= data.len() {
+                    None
+                } else {
+                    let end = (offset + max_bytes).min(data.len());
+                    let chunk = data.slice(offset..end);
+                    let new_offset = end;
+                    Some((
+                        Ok(ReadResponse { data: chunk }),
+                        (data, new_offset, max_bytes),
+                    ))
+                };
+                core::future::ready(result)
+            },
+        );
+
+        Ok(Box::pin(stream))
+    }
+
     async fn inner_query_write_status(
         &self,
         query_request: &QueryWriteStatusRequest,
@@ -1025,15 +1188,34 @@ impl ByteStream for ByteStreamServer {
             DigestHasherFunc::try_from,
         )?;
 
-        let resp = self
-            .inner_read(instance, digest, read_request)
-            .instrument(error_span!("bytestream_read"))
-            .with_context(
-                make_ctx_for_hash_func(digest_function).err_tip(|| "In BytestreamServer::read")?,
-            )
-            .await
-            .err_tip(|| "In ByteStreamServer::read")
-            .map(|stream| -> Response<Self::ReadStream> { Response::new(Box::pin(stream)) });
+        // Determine if the client requested wire-compressed data via compressed-blobs URI.
+        let wire_compressor =
+            Self::resolve_wire_compressor(&resource_info, &instance.supported_wire_compressors)?;
+
+        let resp = if wire_compressor == compressor::Value::Identity {
+            // Uncompressed path — use the existing streaming read.
+            self.inner_read(instance, digest, read_request)
+                .instrument(error_span!("bytestream_read"))
+                .with_context(
+                    make_ctx_for_hash_func(digest_function)
+                        .err_tip(|| "In BytestreamServer::read")?,
+                )
+                .await
+                .err_tip(|| "In ByteStreamServer::read")
+                .map(|stream| -> Response<Self::ReadStream> { Response::new(Box::pin(stream)) })
+        } else {
+            // Compressed path — read the full blob, compress it, then stream
+            // the compressed bytes back in chunks.
+            self.inner_read_compressed(instance, digest, wire_compressor)
+                .instrument(error_span!("bytestream_read_compressed"))
+                .with_context(
+                    make_ctx_for_hash_func(digest_function)
+                        .err_tip(|| "In BytestreamServer::read_compressed")?,
+                )
+                .await
+                .err_tip(|| "In ByteStreamServer::read_compressed")
+                .map(|stream| -> Response<Self::ReadStream> { Response::new(Box::pin(stream)) })
+        };
 
         // Track metrics based on result
         #[allow(clippy::cast_possible_truncation)]
@@ -1119,6 +1301,55 @@ impl ByteStream for ByteStreamServer {
                 || Ok(default_digest_hasher_func()),
                 DigestHasherFunc::try_from,
             )?;
+
+        // Determine if the client is sending wire-compressed data via compressed-blobs URI.
+        let wire_compressor = Self::resolve_wire_compressor(
+            &stream.resource_info,
+            &instance.supported_wire_compressors,
+        )?;
+
+        // For compressed uploads, we take a dedicated path that buffers the
+        // full compressed stream, decompresses it, and stores the raw bytes.
+        if wire_compressor != compressor::Value::Identity {
+            let result = self
+                .inner_write_compressed(instance, digest, wire_compressor, stream)
+                .instrument(error_span!("bytestream_write_compressed"))
+                .with_context(
+                    make_ctx_for_hash_func(digest_function)
+                        .err_tip(|| "In BytestreamServer::write_compressed")?,
+                )
+                .await
+                .err_tip(|| "In ByteStreamServer::write_compressed");
+
+            // Track metrics based on result
+            #[allow(clippy::cast_possible_truncation)]
+            let elapsed_ns = start_time.elapsed().as_nanos() as u64;
+            instance
+                .metrics
+                .write_duration_ns
+                .fetch_add(elapsed_ns, Ordering::Relaxed);
+
+            match &result {
+                Ok(_) => {
+                    instance
+                        .metrics
+                        .write_requests_success
+                        .fetch_add(1, Ordering::Relaxed);
+                    instance
+                        .metrics
+                        .bytes_written_total
+                        .fetch_add(expected_size, Ordering::Relaxed);
+                }
+                Err(_) => {
+                    instance
+                        .metrics
+                        .write_requests_failure
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+            }
+
+            return result.map_err(Into::into);
+        }
 
         // Check if store supports direct oneshot updates (bypasses channel overhead).
         // Use fast-path only when:
