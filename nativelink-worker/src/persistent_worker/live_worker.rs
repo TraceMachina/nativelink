@@ -46,7 +46,7 @@ use super::protocol::{WireFormat, WorkRequest, WorkResponse};
 /// Default time we wait for a single `WorkResponse` after writing a request.
 /// Beyond this we kill the worker and surface a `DeadlineExceeded` error.
 /// Callers may override via `LiveWorker::dispatch_with_timeout`.
-const DEFAULT_DISPATCH_TIMEOUT: Duration = Duration::from_secs(60 * 10);
+const DEFAULT_DISPATCH_TIMEOUT: Duration = Duration::from_mins(10);
 
 /// One persistent-worker child process.
 #[derive(Debug)]
