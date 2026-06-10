@@ -39,6 +39,7 @@ use nativelink_proto::google::longrunning::{
 use nativelink_proto::google::rpc::{
     PreconditionFailure, Status as GrpcStatusProto, precondition_failure,
 };
+use nativelink_scheduler::known_platform_property_provider::KnownPlatformPropertyProvider;
 use nativelink_store::ac_utils::get_and_decode_digest;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::action_messages::{
@@ -47,9 +48,7 @@ use nativelink_util::action_messages::{
 };
 use nativelink_util::common::{self, DigestInfo};
 use nativelink_util::digest_hasher::{DigestHasherFunc, make_ctx_for_hash_func};
-use nativelink_util::operation_state_manager::{
-    ActionStateResult, ClientStateManager, OperationFilter,
-};
+use nativelink_util::operation_state_manager::{ActionStateResult, OperationFilter};
 use nativelink_util::store_trait::{Store, StoreLike};
 use opentelemetry::context::FutureExt;
 use prost::Message as _;
@@ -160,7 +159,7 @@ impl fmt::Display for NativelinkOperationId {
 
 #[derive(Clone)]
 struct InstanceInfo {
-    scheduler: Arc<dyn ClientStateManager>,
+    scheduler: Arc<dyn KnownPlatformPropertyProvider>,
     cas_store: Store,
 }
 
@@ -252,7 +251,7 @@ type ExecuteStream = Pin<Box<dyn Stream<Item = Result<Operation, Status>> + Send
 impl ExecutionServer {
     pub fn new(
         configs: &[WithInstanceName<ExecutionConfig>],
-        scheduler_map: &HashMap<String, Arc<dyn ClientStateManager>>,
+        scheduler_map: &HashMap<String, Arc<dyn KnownPlatformPropertyProvider>>,
         store_manager: &StoreManager,
     ) -> Result<Self, Error> {
         let mut instance_infos = HashMap::with_capacity(configs.len());
