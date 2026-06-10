@@ -793,6 +793,7 @@ mod tests {
                 slow: StoreSpec::Memory(slow_spec),
                 fast_direction: StoreDirection::default(),
                 slow_direction: StoreDirection::default(),
+                bypass_dedup_threshold_bytes: 0,
             },
             Store::new(fast_store),
             Store::new(slow_store.clone()),

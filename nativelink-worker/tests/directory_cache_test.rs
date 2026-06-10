@@ -52,6 +52,7 @@ async fn make_cas_store(slow_store: Arc<MemoryStore>) -> Arc<FastSlowStore> {
             slow: StoreSpec::Memory(MemorySpec::default()),
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
         },
         Store::new(fast_store),
         Store::new(slow_store),
