@@ -84,7 +84,14 @@ fn make_bytestream_server(
             },
         }]
     });
-    ByteStreamServer::new(&config, store_manager)
+    ByteStreamServer::new(
+        &config,
+        store_manager,
+        &[WithInstanceName {
+            instance_name: "foo_instance_name".to_string(),
+            config: nativelink_config::cas_server::CapabilitiesConfig::default(),
+        }],
+    )
 }
 
 fn make_stream(

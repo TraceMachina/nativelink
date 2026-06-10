@@ -15,8 +15,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use nativelink_config::cas_server::{CapabilitiesConfig, InstanceName, WithInstanceName};
+use nativelink_config::cas_server::{
+    CapabilitiesConfig, InstanceName, WireCompressor, WithInstanceName,
+};
 use nativelink_error::{Error, ResultExt};
+use crate::wire_compression::wire_compressor_to_proto;
 use nativelink_proto::build::bazel::remote::execution::v2::capabilities_server::{
     Capabilities, CapabilitiesServer as Server,
 };
@@ -38,6 +41,7 @@ const MAX_BATCH_TOTAL_SIZE: i64 = 64 * 1024;
 #[derive(Debug, Default)]
 pub struct CapabilitiesServer {
     supported_node_properties_for_instance: HashMap<InstanceName, Vec<String>>,
+    supported_wire_compressors_for_instance: HashMap<InstanceName, Vec<WireCompressor>>,
 }
 
 impl CapabilitiesServer {
@@ -73,8 +77,16 @@ impl CapabilitiesServer {
             }
             supported_node_properties_for_instance.insert(config.instance_name.clone(), properties);
         }
+        let mut supported_wire_compressors_for_instance = HashMap::new();
+        for config in configs {
+            supported_wire_compressors_for_instance.insert(
+                config.instance_name.clone(),
+                config.supported_wire_compressors.clone(),
+            );
+        }
         Ok(Self {
             supported_node_properties_for_instance,
+            supported_wire_compressors_for_instance,
         })
     }
 
@@ -131,8 +143,28 @@ impl Capabilities for CapabilitiesServer {
                 cache_priority_capabilities: None,
                 max_batch_total_size_bytes: MAX_BATCH_TOTAL_SIZE,
                 symlink_absolute_path_strategy: SymlinkAbsolutePathStrategy::Disallowed.into(),
-                supported_compressors: vec![],
-                supported_batch_update_compressors: vec![],
+                supported_compressors: self
+                    .supported_wire_compressors_for_instance
+                    .get(&instance_name)
+                    .map(|compressors| {
+                        compressors
+                            .iter()
+                            .filter_map(|c| wire_compressor_to_proto(*c))
+                            .map(Into::into)
+                            .collect::<Vec<i32>>()
+                    })
+                    .unwrap_or_default(),
+                supported_batch_update_compressors: self
+                    .supported_wire_compressors_for_instance
+                    .get(&instance_name)
+                    .map(|compressors| {
+                        compressors
+                            .iter()
+                            .filter_map(|c| wire_compressor_to_proto(*c))
+                            .map(Into::into)
+                            .collect::<Vec<i32>>()
+                    })
+                    .unwrap_or_default(),
             }),
             execution_capabilities,
             deprecated_api_version: None,
