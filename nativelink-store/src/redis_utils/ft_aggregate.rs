@@ -43,7 +43,7 @@ pub(crate) struct FtAggregateOptions {
 /// lookup fails. When dedup fails the scheduler creates a duplicate
 /// operation for an action that is already in flight — observed as
 /// "two same actions running on different PRs" with each running the
-/// full `maxActionExecutingTimeoutS` window before completing. Pass an
+/// full `max_action_executing_timeout_s` window before completing. Pass an
 /// explicit value generous enough to absorb 1M+ document scans on a
 /// busy `RediSearch` instance.
 const FT_AGGREGATE_TIMEOUT_MS: u64 = 10_000;
