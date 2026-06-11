@@ -15,7 +15,7 @@ bazel_dep(name = "rules_shell", version = "0.6.1")
 # via --extra_toolchains, which outranks the MODULE.bazel registration below,
 # so Nix users keep getting LRE-CC unchanged. Outside Nix (no lre.bazelrc),
 # these hermetic toolchains replace the host autodetect path.
-bazel_dep(name = "llvm", version = "0.8.0")
+bazel_dep(name = "llvm", version = "0.8.3")
 
 register_toolchains("@llvm//toolchain:all")
 
@@ -50,10 +50,10 @@ register_toolchains(
     dev_dependency = True,
 )
 
-bazel_dep(name = "rules_rs", version = "0.0.82")
+bazel_dep(name = "rules_rs", version = "0.0.86")
 
 # Pin rules_rust to the hermeticbuild fork (the same commit rules_rs provisions
-# see https://github.com/hermeticbuild/rules_rs/blob/v0.0.82/rs/rules_rust.bzl)
+# see https://github.com/hermeticbuild/rules_rs/blob/v0.0.86/rs/rules_rust.bzl)
 # so all `@rules_rust//...` references resolve to the patched ruleset. The
 # bazel_dep + archive_override is the form that keeps `@rules_rust` visible to
 # subsequent `use_extension(...)` calls in this MODULE.bazel — the alternative
@@ -66,12 +66,12 @@ bazel_dep(name = "rules_rs", version = "0.0.82")
 bazel_dep(name = "rules_rust", version = "0.70.0")
 archive_override(
     module_name = "rules_rust",
-    integrity = "sha256-/a9KfF83cNiK/bvRenQT664cn2tHTZuVMrE9kmPf89s=",
+    integrity = "sha256-rBeNFqLJYJWNaSKZ4MDCAI18nul8V7vDpK995YHemmg=",
     patch_strip = 1,
     patches = ["//tools:rules_rust-musl-platforms.diff"],
-    strip_prefix = "rules_rust-50f00f8c00ccafaccb983432dade3526f926aafc",
+    strip_prefix = "rules_rust-5406a29e83e91e4b9ec391c7c078417535cd8c16",
     urls = [
-        "https://github.com/hermeticbuild/rules_rust/archive/50f00f8c00ccafaccb983432dade3526f926aafc.tar.gz",
+        "https://github.com/hermeticbuild/rules_rust/archive/5406a29e83e91e4b9ec391c7c078417535cd8c16.tar.gz",
     ],
 )
 
