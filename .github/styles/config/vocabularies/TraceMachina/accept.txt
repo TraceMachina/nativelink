@@ -257,4 +257,12 @@ scheduler's
 semver
 systemd
 walkthrough
+gh
+npm
+npx
+passthrough
+subcommands
+tsc
+vitest
+wget
 zstd

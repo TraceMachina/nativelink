@@ -33,8 +33,8 @@ prost-types = { version = "0.13.5", default-features = false, features = [
 rand = { version = "0.9.0", default-features = false, features = [
   "thread_rng",
 ] }
-zstd = { version = "0.13.3", default-features = false }
 serde_json5 = { version = "0.2.1", default-features = false }
+zstd = { version = "0.13.3", default-features = false }
 tokio = { version = "1.52.2", features = [
   "fs",
   "io-util",

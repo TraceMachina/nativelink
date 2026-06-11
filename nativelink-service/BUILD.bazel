@@ -1,5 +1,6 @@
 load(
     "@rules_rust//rust:defs.bzl",
+    "rust_binary",
     "rust_doc",
     "rust_doc_test",
     "rust_library",
@@ -21,8 +22,8 @@ rust_library(
         "src/lib.rs",
         "src/push_server.rs",
         "src/remote_asset_proto.rs",
-        "src/worker_api_server.rs",
         "src/wire_compression.rs",
+        "src/worker_api_server.rs",
     ],
     visibility = ["//visibility:public"],
     deps = [

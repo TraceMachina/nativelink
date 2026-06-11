@@ -398,7 +398,12 @@ impl ByteStreamServer {
         // Build per-instance compressor map from capabilities configs.
         let compressors_by_instance: HashMap<String, Vec<WireCompressor>> = capabilities_configs
             .iter()
-            .map(|c| (c.instance_name.clone(), c.supported_wire_compressors.clone()))
+            .map(|c| {
+                (
+                    c.instance_name.clone(),
+                    c.supported_wire_compressors.clone(),
+                )
+            })
             .collect();
 
         let mut instance_infos: HashMap<String, InstanceInfo> = HashMap::new();
@@ -962,6 +967,19 @@ impl ByteStreamServer {
         wire_compressor: compressor::Value,
         stream: WriteRequestStreamWrapper<impl Stream<Item = Result<WriteRequest, Status>> + Unpin>,
     ) -> Result<Response<WriteResponse>, Error> {
+        // Ensure cleanup on any exit path (error or success).
+        struct UploadGuard {
+            uuid_key: u128,
+            active_uploads: Arc<Mutex<HashMap<UuidKey, BytesWrittenAndIdleStream>>>,
+            metrics: Arc<ByteStreamMetrics>,
+        }
+        impl Drop for UploadGuard {
+            fn drop(&mut self) {
+                self.active_uploads.lock().remove(&self.uuid_key);
+                self.metrics.active_uploads.fetch_sub(1, Ordering::Relaxed);
+            }
+        }
+
         let expected_size = usize::try_from(digest.size_bytes())
             .err_tip(|| "Digest size_bytes was not convertible to usize")?;
 
@@ -991,20 +1009,11 @@ impl ByteStreamServer {
             .active_uploads
             .lock()
             .insert(uuid_key, (bytes_received.clone(), None));
-        instance.metrics.active_uploads.fetch_add(1, Ordering::Relaxed);
+        instance
+            .metrics
+            .active_uploads
+            .fetch_add(1, Ordering::Relaxed);
 
-        // Ensure cleanup on any exit path (error or success).
-        struct UploadGuard {
-            uuid_key: u128,
-            active_uploads: Arc<Mutex<HashMap<UuidKey, BytesWrittenAndIdleStream>>>,
-            metrics: Arc<ByteStreamMetrics>,
-        }
-        impl Drop for UploadGuard {
-            fn drop(&mut self) {
-                self.active_uploads.lock().remove(&self.uuid_key);
-                self.metrics.active_uploads.fetch_sub(1, Ordering::Relaxed);
-            }
-        }
         let _guard = UploadGuard {
             uuid_key,
             active_uploads: instance.active_uploads.clone(),
