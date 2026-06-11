@@ -21,7 +21,10 @@ use futures::{Future, StreamExt, future};
 use nativelink_config::schedulers::SimpleSpec;
 use nativelink_error::{Code, Error, ResultExt};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
-use nativelink_proto::com::github::trace_machina::nativelink::events::OriginEvent;
+use nativelink_proto::com::github::trace_machina::nativelink::events::{
+    Event, OriginEvent, RequestEvent, event, request_event,
+};
+use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::StartExecute;
 use nativelink_util::action_messages::{ActionInfo, ActionState, OperationId, WorkerId};
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::known_platform_property_provider::KnownPlatformPropertyProvider;
@@ -29,7 +32,7 @@ use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager,
     OperationFilter, OperationStageFlags, OrderDirection, UpdateOperationType,
 };
-use nativelink_util::origin_event::OriginMetadata;
+use nativelink_util::origin_event::{OriginMetadata, get_node_id};
 use nativelink_util::shutdown_guard::ShutdownGuard;
 use nativelink_util::spawn;
 use nativelink_util::task::JoinHandleDropGuard;
@@ -40,6 +43,7 @@ use opentelemetry_semantic_conventions::attribute::ENDUSER_ID;
 use tokio::sync::{Notify, mpsc};
 use tokio::time::Duration;
 use tracing::{debug, error, info, info_span, warn};
+use uuid::Uuid;
 
 use crate::api_worker_scheduler::ApiWorkerScheduler;
 use crate::awaited_action_db::{AwaitedActionDb, CLIENT_KEEPALIVE_DURATION};
@@ -163,6 +167,58 @@ impl core::fmt::Debug for SimpleScheduler {
 }
 
 impl SimpleScheduler {
+    fn origin_event_id(event: &Event) -> String {
+        Uuid::now_v6(&get_node_id(Some(event)))
+            .hyphenated()
+            .to_string()
+    }
+
+    fn scheduler_start_execute_event(
+        worker_id: &WorkerId,
+        operation_id: &OperationId,
+        action_info: &ActionInfoWithProps,
+    ) -> Event {
+        let start_execute = StartExecute {
+            execute_request: Some(action_info.inner.as_ref().into()),
+            operation_id: operation_id.to_string(),
+            queued_timestamp: Some(action_info.inner.insert_timestamp.into()),
+            platform: Some((&action_info.platform_properties).into()),
+            worker_id: worker_id.to_string(),
+        };
+        Event {
+            event: Some(event::Event::Request(RequestEvent {
+                event: Some(request_event::Event::SchedulerStartExecute(start_execute)),
+            })),
+        }
+    }
+
+    fn publish_scheduler_start_execute(
+        maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
+        origin_metadata: &OriginMetadata,
+        event_id: String,
+        event: Event,
+    ) {
+        let Some(origin_event_tx) = maybe_origin_event_tx else {
+            return;
+        };
+
+        let origin_event = OriginEvent {
+            version: 0,
+            event_id,
+            parent_event_id: String::new(),
+            bazel_request_metadata: origin_metadata.bazel_metadata.clone(),
+            identity: origin_metadata.identity.clone(),
+            event: Some(event),
+        };
+
+        if let Err(err) = origin_event_tx.try_send(origin_event) {
+            warn!(
+                ?err,
+                "Failed to publish scheduler start execute origin event"
+            );
+        }
+    }
+
     /// Attempts to find a worker to execute an action and begins executing it.
     /// If an action is already running that is cacheable it may merge this
     /// action with the results and state changes of the already running
@@ -221,6 +277,7 @@ impl SimpleScheduler {
             workers: &ApiWorkerScheduler,
             matching_engine_state_manager: &dyn MatchingEngineStateManager,
             platform_property_manager: &PlatformPropertyManager,
+            maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
             full_worker_logging: bool,
         ) -> Result<(), Error> {
             let (action_info, maybe_origin_metadata) =
@@ -237,9 +294,12 @@ impl SimpleScheduler {
                     || "Failed to make platform properties in SimpleScheduler::do_try_match",
                 )?;
 
+            let origin_metadata = maybe_origin_metadata.unwrap_or_default();
             let action_info = ActionInfoWithProps {
                 inner: action_info,
                 platform_properties,
+                origin_metadata: origin_metadata.clone(),
+                scheduler_start_execute_event_id: None,
             };
 
             // Try to find a worker for the action.
@@ -255,6 +315,7 @@ impl SimpleScheduler {
                 }
             };
 
+            let event_origin_metadata = origin_metadata.clone();
             let attach_operation_fut = async move {
                 // Extract the operation_id from the action_state.
                 let operation_id = {
@@ -280,17 +341,38 @@ impl SimpleScheduler {
                     return Err(err);
                 }
 
+                let mut action_info = action_info;
+                let scheduler_start_execute_event = maybe_origin_event_tx.map(|_| {
+                    let event = SimpleScheduler::scheduler_start_execute_event(
+                        &worker_id,
+                        &operation_id,
+                        &action_info,
+                    );
+                    let event_id = SimpleScheduler::origin_event_id(&event);
+                    action_info.scheduler_start_execute_event_id = Some(event_id.clone());
+                    (event_id, event)
+                });
+
                 debug!(%worker_id, %operation_id, ?action_info, "Notifying worker of operation");
                 workers
                     .worker_notify_run_action(worker_id, operation_id, action_info)
                     .await
                     .err_tip(|| {
                         "Failed to run worker_notify_run_action in SimpleScheduler::do_try_match"
-                    })
+                    })?;
+
+                if let Some((event_id, event)) = scheduler_start_execute_event {
+                    SimpleScheduler::publish_scheduler_start_execute(
+                        maybe_origin_event_tx,
+                        &event_origin_metadata,
+                        event_id,
+                        event,
+                    );
+                }
+
+                Ok(())
             };
             tokio::pin!(attach_operation_fut);
-
-            let origin_metadata = maybe_origin_metadata.unwrap_or_default();
 
             let ctx = Context::current_with_baggage(vec![KeyValue::new(
                 ENDUSER_ID,
@@ -327,6 +409,7 @@ impl SimpleScheduler {
                     self.worker_scheduler.as_ref(),
                     self.matching_engine_state_manager.as_ref(),
                     self.platform_property_manager.as_ref(),
+                    self.maybe_origin_event_tx.as_ref(),
                     full_worker_logging,
                 )
                 .await,
@@ -440,6 +523,7 @@ impl SimpleScheduler {
             worker_change_notify.clone(),
             worker_timeout_s,
             worker_registry,
+            maybe_origin_event_tx.clone(),
         );
 
         let worker_scheduler_clone = worker_scheduler.clone();

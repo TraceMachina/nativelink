@@ -16,6 +16,7 @@ use core::fmt::{Debug, Formatter};
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use core::time::Duration;
+use std::borrow::Cow;
 use std::ffi::{OsStr, OsString};
 use std::path::Path;
 use std::sync::{Arc, LazyLock};
@@ -36,6 +37,7 @@ use nativelink_store::filesystem_store::{
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::{DigestInfo, fs, make_temp_path};
 use nativelink_util::evicting_map::LenEntry;
+use nativelink_util::health_utils::{HealthStatus, HealthStatusIndicator};
 use nativelink_util::store_trait::{Store, StoreKey, StoreLike, UploadSizeInfo};
 use nativelink_util::{background_spawn, spawn};
 use opentelemetry::context::{Context, FutureExt as OtelFutureExt};
@@ -1507,6 +1509,58 @@ async fn add_too_early_files() -> Result<(), Error> {
     Ok(())
 }
 
+#[nativelink_test]
+async fn check_health_ok_when_content_path_is_a_directory() -> Result<(), Error> {
+    let content_path = make_temp_path("content_path");
+    let temp_path = make_temp_path("temp_path");
+    fs::create_dir_all(&content_path).await?;
+    fs::create_dir_all(&temp_path).await?;
+
+    let store = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+        content_path: content_path.clone(),
+        temp_path,
+        eviction_policy: None,
+        ..Default::default()
+    })
+    .await?;
+
+    match HealthStatusIndicator::check_health(&*store, Cow::Borrowed("test")).await {
+        HealthStatus::Ok { .. } => Ok(()),
+        other => panic!("expected HealthStatus::Ok, got {other:?}"),
+    }
+}
+
+#[nativelink_test]
+async fn check_health_failed_when_content_path_is_missing() -> Result<(), Error> {
+    // Construct the store against a real path, then delete it so the
+    // stat() inside check_health fails with ENOENT.
+    let content_path = make_temp_path("content_path");
+    let temp_path = make_temp_path("temp_path");
+    fs::create_dir_all(&content_path).await?;
+    fs::create_dir_all(&temp_path).await?;
+
+    let store = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+        content_path: content_path.clone(),
+        temp_path,
+        eviction_policy: None,
+        ..Default::default()
+    })
+    .await?;
+
+    fs::remove_dir_all(&content_path).await?;
+
+    match HealthStatusIndicator::check_health(&*store, Cow::Borrowed("test")).await {
+        HealthStatus::Failed { message, .. } => {
+            assert!(
+                message.contains("stat") || message.contains("not a directory"),
+                "unexpected failure message: {message}",
+            );
+            Ok(())
+        }
+        other => panic!("expected HealthStatus::Failed, got {other:?}"),
+    }
+}
+
 /// `get_executable_hardlink_source` must return a private **0o555** inode that
 /// is created exactly once: distinct from the read-only **0o444** CAS blob,
 /// stable across calls (so callers hardlink-many), and leaving the CAS blob's
@@ -1601,5 +1655,49 @@ async fn executable_hardlink_source_created_once_and_readonly() -> Result<(), Er
         "materialized executable must carry the +x bits"
     );
 
+    Ok(())
+}
+
+/// This test simulates a full disk without needing one. It writes past the `RLIMIT_FSIZE`
+/// cap, thus failing with `EFBIG`, which tokio defers exactly like `ENOSPC`. The
+/// [`SIGXFSZ`](`libc::SIGXFSZ`) signal must be ignored or the kernel will kill the process
+/// instead of failing the write.
+///
+/// SAFETY: [`SIG_IGN`](`libc::SIG_IGN`) is process-wide but no other test relies on
+/// [`SIGXFSZ`](`libc::SIGXFSZ`).
+#[cfg(unix)]
+#[nativelink_test]
+async fn deferred_write_error_does_not_emplace_truncated_file() -> Result<(), Error> {
+    use rlimit::Resource;
+
+    const FILE_SIZE_LIMIT: u64 = 1024 * 1024;
+
+    let content_path = make_temp_path("content_path");
+    let store = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+        content_path: content_path.clone(),
+        temp_path: make_temp_path("temp_path"),
+        ..Default::default()
+    })
+    .await?;
+    let data = vec![0u8; 2 * 1024 * 1024]; // 2MiB
+    let digest = DigestInfo::try_new(&"aa".repeat(32), data.len())?;
+
+    unsafe { libc::signal(libc::SIGXFSZ, libc::SIG_IGN) };
+    let (old_soft, hard) = Resource::FSIZE.get()?;
+    Resource::FSIZE.set(FILE_SIZE_LIMIT, hard)?;
+
+    let result = store.update_oneshot(digest, data.into()).await;
+    Resource::FSIZE.set(old_soft, hard)?;
+
+    assert!(result.is_err(), "deferred write error must surface");
+
+    let ghosts = std::fs::read_dir(format!("{content_path}/{DIGEST_FOLDER}"))?
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect::<Vec<String>>();
+    assert!(
+        ghosts.is_empty(),
+        "no file may reach the content path, found {ghosts:?}"
+    );
     Ok(())
 }

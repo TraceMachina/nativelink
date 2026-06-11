@@ -29,6 +29,10 @@ impl MaybeNamespacedChild {
         Self { namespaced, child }
     }
 
+    pub fn id(&self) -> Option<u32> {
+        self.child.id()
+    }
+
     /// Send SIGTERM if namespaced which sends SIGKILL to the child, otherwise
     /// send SIGKILL to the child.
     pub async fn kill(&mut self) -> Result<(), Error> {

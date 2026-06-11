@@ -50,7 +50,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
     Tree as ProtoTree, UpdateActionResultRequest,
 };
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    HistoricalExecuteResponse, StartExecute,
+    ActionResourceUsage, HistoricalExecuteResponse, StartExecute,
 };
 use nativelink_store::ac_utils::{
     ESTIMATED_DIGEST_SIZE, compute_buf_digest, get_and_decode_digest, serialize_and_upload_message,
@@ -98,6 +98,125 @@ const REQUIRES_WORKER_PROTOCOL_PROPERTY: &str = "requires-worker-protocol";
 /// should reflect it.
 const DEFAULT_HISTORICAL_RESULTS_STRATEGY: UploadCacheResultsStrategy =
     UploadCacheResultsStrategy::FailuresOnly;
+
+#[cfg(target_os = "linux")]
+const RESOURCE_USAGE_SAMPLE_INTERVAL: Duration = Duration::from_millis(250);
+
+#[cfg(target_os = "linux")]
+struct ActionResourceUsageSampler {
+    stop_tx: watch::Sender<bool>,
+    handle: tokio::task::JoinHandle<u64>,
+}
+
+#[cfg(target_os = "linux")]
+fn start_action_resource_usage_sampler(pgid: u32) -> ActionResourceUsageSampler {
+    let (stop_tx, stop_rx) = watch::channel(false);
+    let handle = background_spawn!(
+        "action_resource_usage_sampler",
+        sample_action_peak_memory_kb(pgid, stop_rx)
+    );
+    ActionResourceUsageSampler { stop_tx, handle }
+}
+
+#[cfg(target_os = "linux")]
+async fn finish_action_resource_usage_sampler(sampler: ActionResourceUsageSampler) -> Option<u64> {
+    let _ = sampler.stop_tx.send(true);
+    sampler.handle.await.ok()
+}
+
+#[cfg(target_os = "linux")]
+async fn sample_action_peak_memory_kb(pgid: u32, mut stop_rx: watch::Receiver<bool>) -> u64 {
+    let mut peak_memory_kb = 0;
+    loop {
+        if let Some(memory_kb) = sample_process_group_memory_kb(pgid) {
+            peak_memory_kb = peak_memory_kb.max(memory_kb);
+        } else if !Path::new(&format!("/proc/{pgid}")).exists() {
+            // The group leader has been reaped and no member process remains,
+            // so the action is finished.
+            break;
+        }
+
+        if *stop_rx.borrow() {
+            break;
+        }
+
+        tokio::select! {
+            changed = stop_rx.changed() => {
+                if changed.is_ok() && *stop_rx.borrow() {
+                    if let Some(memory_kb) = sample_process_group_memory_kb(pgid) {
+                        peak_memory_kb = peak_memory_kb.max(memory_kb);
+                    }
+                    break;
+                }
+            }
+            () = tokio::time::sleep(RESOURCE_USAGE_SAMPLE_INTERVAL) => {}
+        }
+    }
+    peak_memory_kb
+}
+
+/// Sums the resident memory of every process in the action's process group.
+///
+/// The action is spawned as its own process-group leader (see
+/// `command_builder.process_group(0)` in `inner_execute`), so `pgid` equals
+/// the spawned child's pid and every descendant inherits it. Sampling by
+/// process group — rather than walking the parent/child tree from the spawned
+/// pid — is required because an intermediate shell frequently exits and
+/// reparents the real workload to the worker (PID 1); the tree walk then sees
+/// only a childless zombie and reports zero. Process-group membership is
+/// inherited and survives reparenting, and excludes the worker's own group.
+/// Returns `None` when no member process can be read (the group is empty).
+#[cfg(target_os = "linux")]
+fn sample_process_group_memory_kb(pgid: u32) -> Option<u64> {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return None;
+    };
+
+    let mut total_kb = 0;
+    let mut found_any_process = false;
+    for entry in entries.flatten() {
+        let Ok(member_pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+            continue;
+        };
+        if read_process_pgid(member_pid) != Some(pgid) {
+            continue;
+        }
+        if let Some(memory_kb) = read_process_rss_kb(member_pid) {
+            total_kb += memory_kb;
+            found_any_process = true;
+        }
+    }
+
+    found_any_process.then_some(total_kb)
+}
+
+#[cfg(target_os = "linux")]
+fn read_process_rss_kb(pid: u32) -> Option<u64> {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    status.lines().find_map(|line| {
+        let rest = line.strip_prefix("VmRSS:")?;
+        rest.split_whitespace().next()?.parse().ok()
+    })
+}
+
+/// Reads a process's group id (`pgrp`) from `/proc/<pid>/stat`.
+#[cfg(target_os = "linux")]
+fn read_process_pgid(pid: u32) -> Option<u32> {
+    parse_pgid_from_stat(&std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)
+}
+
+/// Parses the process group id (`pgrp`, field 5) from the contents of a
+/// `/proc/<pid>/stat` line.
+///
+/// `comm` (field 2) can contain spaces and parentheses, so fields are parsed
+/// relative to the final `)` to avoid miscounting. Returns `None` when the
+/// line is malformed.
+#[cfg(target_os = "linux")]
+pub fn parse_pgid_from_stat(stat: &str) -> Option<u32> {
+    let after_comm = stat.rsplit_once(')')?.1;
+    // Fields after the final ')': state(0) ppid(1) pgrp(2) ...
+    after_comm.split_whitespace().nth(2)?.parse().ok()
+}
 
 /// Valid string reasons for a failure.
 /// Note: If these change, the documentation should be updated.
@@ -229,12 +348,12 @@ pub fn download_to_directory<'a>(
                             let src_path = file_entry
                                 .get_file_path_locked(|src| async move { Ok(src) })
                                 .await?;
-                            let dst = dest.clone();
+                            let spawned_dest = dest.clone();
                             spawn_blocking!("download_to_directory_private_copy", move || {
-                                std::fs::copy(&src_path, &dst).map(|_| ()).map_err(|e| {
+                                std::fs::copy(&src_path, &spawned_dest).map(|_| ()).map_err(|e| {
                                     make_err!(
                                         Code::Internal,
-                                        "Failed to copy CAS blob into a private inode at {dst}: {e:?}"
+                                        "Failed to copy CAS blob into a private inode at {spawned_dest}: {e:?}"
                                     )
                                 })
                             })
@@ -314,14 +433,14 @@ pub fn download_to_directory<'a>(
                             }
                         }
                         if let Some(mtime) = mtime {
-                            let dst = dest.clone();
+                            let spawned_dest = dest.clone();
                             spawn_blocking!("download_to_directory_set_mtime", move || {
                                 set_file_mtime(
-                                    &dst,
+                                    &spawned_dest,
                                     FileTime::from_unix_time(mtime.seconds, mtime.nanos as u32),
                                 )
                                 .err_tip(|| {
-                                    format!("Failed to set mtime in download_to_directory {dst}")
+                                    format!("Failed to set mtime in download_to_directory {spawned_dest}")
                                 })
                             })
                             .await
@@ -873,6 +992,9 @@ pub trait RunningAction: Sync + Send + Sized + Unpin + 'static {
         self: Arc<Self>,
     ) -> impl Future<Output = Result<ActionResult, Error>> + Send;
 
+    /// Returns worker-observed resource usage captured while this action ran.
+    fn resource_usage(&self) -> Option<ActionResourceUsage>;
+
     /// Returns the work directory of the action.
     fn get_work_directory(&self) -> &String;
 }
@@ -882,6 +1004,7 @@ struct RunningActionImplExecutionResult {
     stdout: Bytes,
     stderr: Bytes,
     exit_code: i32,
+    resource_usage: Option<ActionResourceUsage>,
 }
 
 #[derive(Debug)]
@@ -893,6 +1016,7 @@ struct RunningActionImplState {
     kill_channel_rx: Option<oneshot::Receiver<()>>,
     execution_result: Option<RunningActionImplExecutionResult>,
     action_result: Option<ActionResult>,
+    resource_usage: Option<ActionResourceUsage>,
     execution_metadata: ExecutionMetadata,
     // If there was an internal error, this will be set.
     // This should NOT be set if everything was fine, but the process had a
@@ -939,6 +1063,7 @@ impl RunningActionImpl {
                 kill_channel_tx: Some(kill_channel_tx),
                 execution_result: None,
                 action_result: None,
+                resource_usage: None,
                 execution_metadata,
                 error: None,
             }),
@@ -1192,6 +1317,7 @@ impl RunningActionImpl {
                                                 stdout: Bytes::new(),
                                                 stderr: Bytes::new(),
                                                 exit_code: EXIT_CODE_FOR_SIGNAL,
+                                                resource_usage: None,
                                             });
                                         state.execution_metadata.execution_completed_timestamp =
                                             (self.running_actions_manager.callbacks.now_fn)();
@@ -1214,6 +1340,7 @@ impl RunningActionImpl {
                                     stdout: Bytes::new(),
                                     stderr: Bytes::from(response.output),
                                     exit_code: response.exit_code,
+                                    resource_usage: None,
                                 });
                                 state.execution_metadata.execution_completed_timestamp =
                                     (self.running_actions_manager.callbacks.now_fn)();
@@ -1345,6 +1472,13 @@ impl RunningActionImpl {
                     ),
                 });
             }
+
+            // Run the action as its own process-group leader (pgid == child
+            // pid). The resource-usage sampler attributes memory by process
+            // group, so this keeps the whole action together — including
+            // processes reparented to the worker when an intermediate shell
+            // exits — and never conflates it with the worker's own group.
+            command_builder.process_group(0);
         }
 
         let mut child_process = command_builder
@@ -1369,6 +1503,10 @@ impl RunningActionImpl {
             ),
             child_process,
         );
+
+        #[cfg(target_os = "linux")]
+        let mut maybe_resource_usage_sampler =
+            child_process.id().map(start_action_resource_usage_sampler);
 
         let mut child_process_guard = guard(child_process, |mut child_process| {
             let result: Result<Option<std::process::ExitStatus>, std::io::Error> =
@@ -1493,6 +1631,23 @@ impl RunningActionImpl {
                         exit_code
                     });
 
+                    #[cfg(target_os = "linux")]
+                    let resource_usage = match maybe_resource_usage_sampler.take() {
+                        Some(sampler) => finish_action_resource_usage_sampler(sampler)
+                            .await
+                            .and_then(|peak_memory_kb| {
+                                (peak_memory_kb > 0).then_some(ActionResourceUsage {
+                                    peak_memory_kb,
+                                    sampled: true,
+                                    operation_id: String::new(),
+                                    worker_id: String::new(),
+                                })
+                            }),
+                        None => None,
+                    };
+                    #[cfg(not(target_os = "linux"))]
+                    let resource_usage = None;
+
                     info!(?args, "Command complete");
 
                     let maybe_error_override = if let Some(side_channel_file) = maybe_side_channel_file {
@@ -1510,6 +1665,7 @@ impl RunningActionImpl {
                             stdout,
                             stderr,
                             exit_code,
+                            resource_usage,
                         });
                         state.execution_metadata.execution_completed_timestamp = (self.running_actions_manager.callbacks.now_fn)();
                     }
@@ -1867,6 +2023,7 @@ impl RunningActionImpl {
             success = upload_result.is_ok(),
             "upload_results: all uploads completed",
         );
+        let resource_usage = execution_result.resource_usage.clone();
         let (stdout_digest, stderr_digest) = match upload_result {
             Ok((stdout_digest, stderr_digest, ())) => (stdout_digest, stderr_digest),
             Err(e) => return Err(e).err_tip(|| "Error while uploading results"),
@@ -1897,6 +2054,7 @@ impl RunningActionImpl {
                 error: state.error.clone(),
                 message: String::new(), // Will be filled in on cache_action_result if needed.
             });
+            state.resource_usage = resource_usage;
         }
         debug!(
             operation_id = ?self.operation_id,
@@ -2061,6 +2219,10 @@ impl RunningAction for RunningActionImpl {
             .get_finished_result
             .wrap(Self::inner_get_finished_result(self))
             .await
+    }
+
+    fn resource_usage(&self) -> Option<ActionResourceUsage> {
+        self.state.lock().resource_usage.clone()
     }
 
     fn get_work_directory(&self) -> &String {

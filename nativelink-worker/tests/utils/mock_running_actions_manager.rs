@@ -16,7 +16,9 @@ use std::sync::Arc;
 
 use async_lock::Mutex;
 use nativelink_error::{Error, make_input_err};
-use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::StartExecute;
+use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
+    ActionResourceUsage, StartExecute,
+};
 use nativelink_util::action_messages::{ActionResult, OperationId};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
@@ -434,6 +436,10 @@ impl RunningAction for MockRunningAction {
                 panic!("execution_response expected GetFinishedResult response, received {resp:?}")
             }
         }
+    }
+
+    fn resource_usage(&self) -> Option<ActionResourceUsage> {
+        None
     }
 
     fn get_work_directory(&self) -> &String {

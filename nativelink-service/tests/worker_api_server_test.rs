@@ -45,6 +45,7 @@ use nativelink_util::action_messages::{
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::operation_state_manager::{UpdateOperationType, WorkerStateManager};
+use nativelink_util::origin_event::OriginMetadata;
 use nativelink_util::platform_properties::PlatformProperties;
 use pretty_assertions::assert_eq;
 use tokio::join;
@@ -167,6 +168,7 @@ async fn setup_api_server_with_task_limit(
         tasks_or_worker_change_notify,
         worker_timeout,
         worker_registry,
+        None,
     );
 
     let mut schedulers: HashMap<String, Arc<dyn WorkerScheduler>> = HashMap::new();
@@ -443,6 +445,8 @@ pub async fn execution_response_success_test() -> Result<(), Box<dyn core::error
             ActionInfoWithProps {
                 inner: action_info,
                 platform_properties,
+                origin_metadata: OriginMetadata::default(),
+                scheduler_start_execute_event_id: None,
             },
         )
         .await
@@ -519,6 +523,7 @@ pub async fn execution_response_success_test() -> Result<(), Box<dyn core::error
         result: Some(execute_result::Result::ExecuteResponse(
             execute_response.clone(),
         )),
+        resource_usage: None,
     };
 
     let update_for_worker = test_context
@@ -609,6 +614,8 @@ pub async fn workers_only_allow_max_tasks() -> Result<(), Box<dyn core::error::E
             ActionInfoWithProps {
                 inner: action_info,
                 platform_properties,
+                origin_metadata: OriginMetadata::default(),
+                scheduler_start_execute_event_id: None,
             },
         )
         .await

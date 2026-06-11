@@ -1,3 +1,4 @@
+#![allow(clippy::decimal_literal_representation)]
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
@@ -14,8 +15,10 @@
 
 use nativelink_config::serde_utils::{
     convert_boolean_with_shellexpand, convert_data_size_with_shellexpand,
-    convert_duration_with_shellexpand, convert_optional_data_size_with_shellexpand,
-    convert_optional_numeric_with_shellexpand, convert_optional_string_with_shellexpand,
+    convert_duration_with_shellexpand, convert_numeric_with_shellexpand,
+    convert_optional_data_size_with_shellexpand, convert_optional_numeric_with_shellexpand,
+    convert_optional_string_with_shellexpand, convert_string_with_shellexpand,
+    convert_vec_string_with_shellexpand,
 };
 use serde::Deserialize;
 
@@ -27,8 +30,8 @@ struct DurationEntity {
 
 #[derive(Deserialize, Debug)]
 struct DataSizeEntity {
-    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
-    data_size: usize,
+    #[serde(deserialize_with = "convert_data_size_with_shellexpand")]
+    data_size: u128,
 }
 
 #[derive(Deserialize, Debug)]
@@ -40,7 +43,7 @@ struct OptionalDataSizeEntity {
     data_size: Option<usize>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, PartialEq)]
 struct OptionalNumericEntity {
     #[serde(
         default,
@@ -53,6 +56,22 @@ struct OptionalNumericEntity {
 struct OptionalStringEntity {
     #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
     value: Option<String>,
+}
+#[derive(Deserialize, Debug)]
+struct NumericEntity {
+    #[serde(deserialize_with = "convert_numeric_with_shellexpand")]
+    value: i64,
+}
+#[derive(Deserialize, Debug)]
+struct StringEntity {
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    value: String,
+}
+
+#[derive(Deserialize, Debug)]
+struct VecStringEntity {
+    #[serde(deserialize_with = "convert_vec_string_with_shellexpand")]
+    values: Vec<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -408,12 +427,10 @@ mod shellexpand_tests {
             std::env::set_var("TEST_BAD_BOOL", "wibble");
         };
 
-        // Test duration with environment variable
         let duration_result =
             serde_json5::from_str::<DurationEntity>(r#"{"duration": "${TEST_DURATION}"}"#).unwrap();
         assert_eq!(duration_result.duration, 300);
 
-        // Test data size with environment variable
         let size_result =
             serde_json5::from_str::<DataSizeEntity>(r#"{"data_size": "${TEST_SIZE}"}"#).unwrap();
         assert_eq!(size_result.data_size, 1_000_000_000);
@@ -429,17 +446,14 @@ mod shellexpand_tests {
                 .unwrap();
         assert_eq!(numeric_result.value, Some(42));
 
-        // Test optional string with environment variable
         let string_result =
             serde_json5::from_str::<OptionalStringEntity>(r#"{"value": "${TEST_VAR}"}"#).unwrap();
         assert_eq!(string_result.value, Some("test_value".to_string()));
 
-        // Test optional string with empty environment variable
         let empty_string_result =
             serde_json5::from_str::<OptionalStringEntity>(r#"{"value": "${EMPTY_VAR}"}"#).unwrap();
         assert_eq!(empty_string_result.value, Some(String::new()));
 
-        // Test undefined environment variable
         let undefined_result =
             serde_json5::from_str::<OptionalNumericEntity>(r#"{"value": "${UNDEFINED_VAR}"}"#);
         assert!(
@@ -465,5 +479,200 @@ mod shellexpand_tests {
                 })
             }
         );
+    }
+}
+
+#[cfg(test)]
+mod convert_numeric_with_shellexpand_tests {
+    use std::env;
+
+    use serde_test::{Token, assert_de_tokens_error};
+
+    use super::*;
+
+    #[test]
+    fn test_numeric_parsing() {
+        let json = r#"{"value": 42}"#;
+        let deserialized: NumericEntity = serde_json5::from_str(json).unwrap();
+        assert_eq!(deserialized.value, 42);
+
+        let json_str = r#"{"value": "42"}"#;
+        let deserialized_str: NumericEntity = serde_json5::from_str(json_str).unwrap();
+        assert_eq!(deserialized_str.value, 42);
+    }
+
+    #[test]
+    fn test_numeric_parsing_with_env_var() {
+        unsafe {
+            env::set_var("TEST_NUMERIC", "42");
+        }
+        let json_env = r#"{"value": "${TEST_NUMERIC}"}"#;
+        let deserialized_env: NumericEntity = serde_json5::from_str(json_env).unwrap();
+        assert_eq!(deserialized_env.value, 42);
+    }
+
+    #[test]
+    fn test_numeric_parsing_with_large_values() {
+        let large_value = "9223372036854775807"; // i64::MAX
+        let json = format!(r#"{{"value": "{large_value}"}}"#);
+        let deserialized: NumericEntity = serde_json5::from_str(&json).unwrap();
+        assert_eq!(deserialized.value, 9_223_372_036_854_775_807);
+    }
+
+    #[test]
+    fn test_numeric_invalid_value_error() {
+        let invalid_json = r#"{"value": "not_a_number"}"#;
+        let result = serde_json5::from_str::<NumericEntity>(invalid_json);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("invalid digit found in string")
+        );
+    }
+
+    #[test]
+    fn test_numeric_invalid_env_var_error() {
+        let invalid_json = r#"{"value": "${UNDEFINED_ENV_VAR}"}"#;
+        let result = serde_json5::from_str::<NumericEntity>(invalid_json);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("environment variable not found")
+        );
+    }
+
+    #[test]
+    fn test_expectation_error_message() {
+        let invalid_json = r#"{"value": true}"#;
+        let result = serde_json5::from_str::<NumericEntity>(invalid_json);
+        assert!(result.is_err());
+        let error_message = result.unwrap_err().to_string();
+        assert!(error_message.contains("an integer or a plain number string"));
+    }
+
+    #[test]
+    fn test_visit_u64_within_i64_range() {
+        let json = r#"{"value": 9223372036854775807}"#;
+        let deserialized: NumericEntity = serde_json5::from_str(json).unwrap();
+        assert_eq!(deserialized.value, 9_223_372_036_854_775_807);
+    }
+
+    #[test]
+    fn test_visit_u64_exceeds_i64_range() {
+        assert_de_tokens_error::<NumericEntity>(
+            &[
+                Token::Map { len: Some(1) },
+                Token::Str("value"),
+                Token::U64(9_223_372_036_854_775_808),
+                Token::MapEnd,
+            ],
+            "out of range integral type conversion attempted",
+        );
+    }
+}
+#[cfg(test)]
+mod shellexpand_string_tests {
+    use std::env;
+
+    use super::*;
+
+    #[test]
+    fn test_convert_string_with_shellexpand() {
+        unsafe {
+            env::set_var("TEST_STRING", "expanded_value");
+        }
+
+        let json = r#"{"value": "${TEST_STRING}"}"#;
+
+        let deserialized: StringEntity = serde_json5::from_str(json).unwrap();
+
+        assert_eq!(deserialized.value, "expanded_value");
+    }
+
+    #[test]
+    fn test_convert_vec_string_with_shellexpand() {
+        unsafe {
+            env::set_var("TEST_VAR1", "value1");
+            env::set_var("TEST_VAR2", "value2");
+        }
+
+        let json = r#"{"values": ["${TEST_VAR1}", "static_value", "${TEST_VAR2}"]}"#;
+        let deserialized: VecStringEntity = serde_json5::from_str(json).unwrap();
+
+        assert_eq!(
+            deserialized.values,
+            vec!["value1", "static_value", "value2"]
+        );
+    }
+}
+#[cfg(test)]
+mod convert_optional_numeric_with_shellexpand_tests {
+
+    use serde_test::{Token, assert_de_tokens_error};
+
+    use super::*;
+
+    #[test]
+    fn test_visit_unit_returns_none() {
+        serde_test::assert_de_tokens(
+            &OptionalNumericEntity { value: None },
+            &[
+                Token::Map { len: Some(1) },
+                Token::Str("value"),
+                Token::Unit,
+                Token::MapEnd,
+            ],
+        );
+    }
+
+    #[test]
+    fn test_visit_u64_within_i64_range() {
+        let json = r#"{"value": 9223372036854775807}"#;
+        let deserialized: OptionalNumericEntity = serde_json5::from_str(json).unwrap();
+        assert_eq!(deserialized.value, Some(9_223_372_036_854_775_807));
+    }
+
+    #[test]
+    fn test_visit_u64_exceeds_i64_range() {
+        assert_de_tokens_error::<OptionalNumericEntity>(
+            &[
+                Token::Map { len: Some(1) },
+                Token::Str("value"),
+                Token::U64(9_223_372_036_854_775_808),
+                Token::MapEnd,
+            ],
+            "out of range integral type conversion attempted",
+        );
+    }
+
+    #[test]
+    fn test_visit_some_valid_value() {
+        let json = r#"{"value": "42"}"#;
+        let deserialized: OptionalNumericEntity = serde_json5::from_str(json).unwrap();
+        assert_eq!(deserialized.value, Some(42));
+    }
+
+    #[test]
+    fn test_visit_str_empty_string_error() {
+        let json = r#"{"value": ""}"#;
+        let result = serde_json5::from_str::<OptionalNumericEntity>(json);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("empty string is not a valid number")
+        );
+    }
+
+    #[test]
+    fn test_visit_str_whitespace_only() {
+        let json = r#"{"value": "   "}"#;
+        let deserialized: OptionalNumericEntity = serde_json5::from_str(json).unwrap();
+        assert_eq!(deserialized.value, None);
     }
 }

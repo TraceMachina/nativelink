@@ -408,6 +408,7 @@ async fn simple_worker_start_action_test() -> Result<(), Error> {
             result: Some(execute_result::Result::ExecuteResponse(
                 ActionStage::Completed(action_result).into()
             )),
+            resource_usage: None,
         }
     );
 
@@ -423,6 +424,7 @@ async fn new_local_worker_creates_work_directory_test() -> Result<(), Error> {
             slow: StoreSpec::Memory(MemorySpec::default()),
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
         },
         Store::new(
             <FilesystemStore>::new(&FilesystemSpec {
@@ -464,6 +466,7 @@ async fn new_local_worker_removes_work_directory_before_start_test() -> Result<(
             slow: StoreSpec::Memory(MemorySpec::default()),
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
         },
         Store::new(
             <FilesystemStore>::new(&FilesystemSpec {
@@ -637,6 +640,7 @@ async fn experimental_precondition_script_fails() -> Result<(), Error> {
             result: Some(execute_result::Result::InternalError(
                 make_err!(Code::ResourceExhausted, "{}", EXPECTED_MSG,).into()
             )),
+            resource_usage: None,
         }
     );
 
@@ -846,6 +850,7 @@ async fn cas_not_found_returns_failed_precondition_test() -> Result<(), Error> {
             result: Some(execute_result::Result::ExecuteResponse(
                 ActionStage::Completed(expected_action_result).into()
             )),
+            resource_usage: None,
         }
     );
 
@@ -945,6 +950,7 @@ async fn non_cas_not_found_returns_internal_error_test() -> Result<(), Error> {
             result: Some(execute_result::Result::InternalError(
                 other_not_found_error.into()
             )),
+            resource_usage: None,
         }
     );
 

@@ -57,6 +57,9 @@ pub struct ExecuteResult {
     /// / The operation ID that was executed.
     #[prost(string, tag = "2")]
     pub operation_id: ::prost::alloc::string::String,
+    /// / Worker-observed resource usage for this action execution.
+    #[prost(message, optional, tag = "5")]
+    pub resource_usage: ::core::option::Option<ActionResourceUsage>,
     /// / The actual response data.
     #[prost(oneof = "execute_result::Result", tags = "3, 4")]
     pub result: ::core::option::Option<execute_result::Result>,
@@ -85,6 +88,22 @@ pub struct ExecuteComplete {
     /// / The operation ID that was executed.
     #[prost(string, tag = "1")]
     pub operation_id: ::prost::alloc::string::String,
+}
+/// / Resource usage observed by the worker while running one action.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ActionResourceUsage {
+    /// / Peak resident memory observed for the action process tree.
+    #[prost(uint64, tag = "1")]
+    pub peak_memory_kb: u64,
+    /// / Whether this value came from worker-side sampling.
+    #[prost(bool, tag = "2")]
+    pub sampled: bool,
+    /// / The operation ID that was sampled.
+    #[prost(string, tag = "3")]
+    pub operation_id: ::prost::alloc::string::String,
+    /// / The worker ID that observed the resource usage.
+    #[prost(string, tag = "4")]
+    pub worker_id: ::prost::alloc::string::String,
 }
 /// / Result sent back from the server when a node connects.
 #[derive(Clone, PartialEq, ::prost::Message)]

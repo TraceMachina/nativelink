@@ -14,7 +14,7 @@ export const terminalTabs: TerminalTab[] = [
     name: "Quick Start",
     lines: [
       {
-        text: "curl -O https://raw.githubusercontent.com/TraceMachina/nativelink/v1.3.2/nativelink-config/examples/basic_cas.json5",
+        text: "curl -O https://raw.githubusercontent.com/TraceMachina/nativelink/v1.4.0/nativelink-config/examples/basic_cas.json5",
         delay: 0,
         instant: true,
       },
@@ -22,13 +22,13 @@ export const terminalTabs: TerminalTab[] = [
       { text: "100  2841  100  2841    0:00:01", delay: 50, instant: true },
       { text: "", delay: 300 },
       {
-        text: "docker run -v $(pwd)/basic_cas.json5:/config -p 50051:50051 ghcr.io/tracemachina/nativelink:v1.3.2 config",
+        text: "docker run -v $(pwd)/basic_cas.json5:/config -p 50051:50051 ghcr.io/tracemachina/nativelink:v1.4.0 config",
         delay: 200,
         instant: true,
       },
       { text: "", delay: 400 },
       { text: "Unable to find image locally", delay: 200, instant: true },
-      { text: "v1.3.2: Pulling from tracemachina/nativelink", delay: 100, instant: true },
+      { text: "v1.4.0: Pulling from tracemachina/nativelink", delay: 100, instant: true },
       { text: "a1d0c7532777: Downloading [=>              ] 15%", delay: 120, instant: true },
       { text: "a1d0c7532777: Downloading [=======>        ] 45%", delay: 120, instant: true },
       { text: "a1d0c7532777: Downloading [==============> ] 75%", delay: 120, instant: true },

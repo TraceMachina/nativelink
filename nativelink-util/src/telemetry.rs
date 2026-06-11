@@ -44,6 +44,8 @@ use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer, Registry, fmt, registry};
 use uuid::Uuid;
 
+use crate::origin_event::{BAZEL_METADATA_KEY, request_metadata_to_baggage};
+
 /// The OTLP "service.name" field for all nativelink services.
 const NATIVELINK_SERVICE_NAME: &str = "nativelink";
 
@@ -192,9 +194,6 @@ pub fn init_tracing() -> Result<(), nativelink_error::Error> {
     Ok(())
 }
 
-/// Custom metadata key field for Bazel metadata.
-const BAZEL_METADATA_KEY: &str = "bazel.metadata";
-
 /// This is the header that bazel sends when using the `--remote_header` flag.
 /// TODO(palfrey): There are various other headers that bazel supports.
 ///                    Optimize their usage.
@@ -308,7 +307,7 @@ NativeLink instance configured to require this OpenTelemetry Baggage header:
             let metadata_str = format!("{metadata:?}");
             debug!("Baggage Bazel request metadata: {metadata_str}");
             cx = cx.with_baggage(vec![
-                KeyValue::new(BAZEL_METADATA_KEY, metadata_str),
+                KeyValue::new(BAZEL_METADATA_KEY, request_metadata_to_baggage(&metadata)),
                 KeyValue::new(ENDUSER_ID, identity),
             ]);
         }

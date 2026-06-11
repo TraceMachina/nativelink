@@ -15,6 +15,7 @@
 use core::net::SocketAddr;
 use core::time::Duration;
 use std::collections::{HashMap, HashSet};
+use std::io::ErrorKind;
 use std::sync::Arc;
 
 use async_lock::Mutex as AsyncMutex;
@@ -63,7 +64,7 @@ use nativelink_util::{background_spawn, fs, spawn};
 use nativelink_worker::local_worker::new_local_worker;
 use rustls_pki_types::pem::PemObject;
 use rustls_pki_types::{CertificateRevocationListDer, PrivateKeyDer};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpSocket};
 use tokio::select;
 #[cfg(target_family = "unix")]
 use tokio::signal::unix::{SignalKind, signal};
@@ -93,6 +94,17 @@ const DEFAULT_MAX_QUEUE_EVENTS: usize = 0x0001_0000;
 /// Broadcast Channel Capacity
 /// Note: The actual capacity may be greater than the provided capacity.
 const BROADCAST_CAPACITY: usize = 1;
+
+/// Bind a [`TcpListener`] with `IP_FREEBIND` set.
+fn bind_freebind(socket_addr: SocketAddr) -> Result<TcpListener, std::io::Error> {
+    let socket = match socket_addr {
+        SocketAddr::V4(_) => TcpSocket::new_v4(),
+        SocketAddr::V6(_) => TcpSocket::new_v6(),
+    }?;
+    fs::set_freebind(&socket)?;
+    socket.bind(socket_addr)?;
+    socket.listen(1024)
+}
 
 /// Backend for bazel remote execution / cache API.
 #[derive(Parser, Debug)]
@@ -510,7 +522,26 @@ async fn inner_main(
                 Error::from_std_err(Code::InvalidArgument, &e)
                     .append(format!("Invalid address '{}'", http_config.socket_address))
             })?;
-        let tcp_listener = TcpListener::bind(&socket_addr).await?;
+        let tcp_listener = if http_config.freebind {
+            bind_freebind(socket_addr)
+        } else {
+            TcpListener::bind(&socket_addr).await
+        }
+        .map_err(|e| match e.kind() {
+            ErrorKind::AddrInUse => make_err!(
+                Code::AlreadyExists,
+                "Address '{socket_addr}' is already in use by another process.",
+            ),
+            ErrorKind::PermissionDenied => make_err!(
+                Code::PermissionDenied,
+                "Permission denied. You may need root privileges to bind to address '{socket_addr}'.",
+            ),
+            ErrorKind::InvalidInput => {
+                make_input_err!("The provided address '{socket_addr}' is invalid.")
+            }
+            _ => Error::from_std_err(Code::Internal, &e)
+                .append(format!("Failed to bind to socket address '{socket_addr}'")),
+        })?;
         let mut http = auto::Builder::new(TaskExecutor::default());
 
         let http_config = &http_config.advanced_http;

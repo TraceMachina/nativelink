@@ -47,6 +47,7 @@ use nativelink_util::store_trait::{
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt, Take};
 use tokio::sync::Semaphore;
+use tokio::time::timeout;
 use tokio_stream::wrappers::ReadDirStream;
 use tracing::{debug, error, info, trace, warn};
 
@@ -984,6 +985,13 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             None
         };
 
+        // tokio defers write errors to the next write or flush call, so without an explicit flush
+        // the final write's failure is silently swallowed by `sync_all`, and a truncated file would
+        // be renamed into the content path.
+        temp_file
+            .flush()
+            .await
+            .err_tip(|| "Failed to flush in filesystem store")?;
         temp_file
             .as_ref()
             .sync_all()
@@ -1221,6 +1229,11 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
             None
         };
 
+        // See comment in `update_file` above.
+        temp_file
+            .flush()
+            .await
+            .err_tip(|| "Failed to flush in filesystem store update_oneshot")?;
         temp_file
             .as_ref()
             .sync_all()
@@ -1368,7 +1381,47 @@ impl<Fe: FileEntry> HealthStatusIndicator for FilesystemStore<Fe> {
         "FilesystemStore"
     }
 
-    async fn check_health(&self, namespace: Cow<'static, str>) -> HealthStatus {
-        StoreDriver::check_health(Pin::new(self), namespace).await
+    /// Lightweight probe: `stat()` the `content_path` directory. No
+    /// write-semaphore / eviction-map contention with production
+    /// traffic, and bounded so a hung NFS / EBS mount can't wedge the
+    /// indicator.
+    async fn check_health(&self, _namespace: Cow<'static, str>) -> HealthStatus {
+        const HEALTH_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+
+        let content_path = &self.shared_context.content_path;
+        let stat = tokio::fs::metadata(&content_path);
+        match timeout(HEALTH_PROBE_TIMEOUT, stat).await {
+            Ok(Ok(meta)) if meta.is_dir() => {
+                HealthStatus::new_ok(self, "FilesystemStore::check_health: ok".into())
+            }
+            Ok(Ok(_)) => HealthStatus::new_failed(
+                self,
+                format!(
+                    "FilesystemStore::check_health: content_path {content_path} is not a directory"
+                )
+                .into(),
+            ),
+            Ok(Err(e)) => {
+                warn!(
+                    ?e,
+                    %content_path,
+                    "FilesystemStore::check_health: stat errored",
+                );
+                HealthStatus::new_failed(
+                    self,
+                    format!("FilesystemStore::check_health: stat errored: {e}").into(),
+                )
+            }
+            Err(_) => {
+                warn!(
+                    %content_path,
+                    timeout_secs = HEALTH_PROBE_TIMEOUT.as_secs(),
+                    "FilesystemStore::check_health: stat timed out",
+                );
+                HealthStatus::Timeout {
+                    struct_name: self.struct_name(),
+                }
+            }
+        }
     }
 }

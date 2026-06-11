@@ -34,6 +34,9 @@ pub trait SubscriptionManagerNotify {
 pub struct FakeRedisBackend<S: SubscriptionManagerNotify> {
     /// Contains a list of all of the Redis keys -> fields.
     pub table: Arc<Mutex<HashMap<String, HashMap<String, Value>>>>,
+    /// TTL (seconds) attached to each key via `EXPIRE`, so tests can
+    /// assert a key was given a bounded lifetime.
+    pub expiries: Arc<Mutex<HashMap<String, i64>>>,
     subscription_manager: Arc<Mutex<Option<Arc<S>>>>,
 }
 
@@ -55,6 +58,7 @@ impl<S: SubscriptionManagerNotify + Send + 'static + Sync> FakeRedisBackend<S> {
     pub fn new() -> Self {
         Self {
             table: Arc::new(Mutex::new(HashMap::new())),
+            expiries: Arc::new(Mutex::new(HashMap::new())),
             subscription_manager: Arc::new(Mutex::new(None)),
         }
     }
@@ -137,9 +141,21 @@ impl<S: SubscriptionManagerNotify + Send + 'static + Sync> FakeRedisBackend<S> {
                             panic!("Aggregate query should be a string: {args:?}");
                         };
                         let query = str::from_utf8(raw_query).unwrap();
+                        // The real ft_aggregate caller now passes an explicit
+                        // `TIMEOUT <ms>` clause before `LOAD`. Tolerate both
+                        // shapes here so this fake doesn't break older callers
+                        // and the LOAD-args check still validates the bit we
+                        // actually care about.
+                        let load_offset = if matches!(args.get(2), Some(OwnedFrame::BulkString(b)) if b == b"TIMEOUT")
+                        {
+                            // Skip "TIMEOUT" and its millisecond argument.
+                            4
+                        } else {
+                            2
+                        };
                         // Lazy implementation making assumptions.
                         assert_eq!(
-                            args[2..6],
+                            args[load_offset..load_offset + 4],
                             vec![
                                 OwnedFrame::BulkString(b"LOAD".to_vec()),
                                 OwnedFrame::BulkString(b"2".to_vec()),
@@ -320,6 +336,28 @@ impl<S: SubscriptionManagerNotify + Send + 'static + Sync> FakeRedisBackend<S> {
                         debug!(%key, ?values, "Inserting with HMSET");
                         self.table.lock().unwrap().insert(key, values);
                         Value::Okay
+                    }
+
+                    "EXPIRE" => {
+                        // `EXPIRE key seconds`: record the TTL; return 1
+                        // if the key existed, else 0 (as real Redis does).
+                        let key_name =
+                            str::from_utf8(args[0].as_bytes().expect("Key argument is not bytes"))
+                                .expect("Unable to parse key name")
+                                .to_string();
+                        let seconds = str::from_utf8(
+                            args[1].as_bytes().expect("EXPIRE seconds is not bytes"),
+                        )
+                        .expect("EXPIRE seconds is not utf8")
+                        .parse::<i64>()
+                        .expect("EXPIRE seconds is not an integer");
+                        let exists = self.table.lock().unwrap().contains_key(&key_name);
+                        if exists {
+                            self.expiries.lock().unwrap().insert(key_name, seconds);
+                            Value::Int(1)
+                        } else {
+                            Value::Int(0)
+                        }
                     }
 
                     "HMGET" => {

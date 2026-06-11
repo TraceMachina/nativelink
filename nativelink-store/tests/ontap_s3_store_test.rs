@@ -16,7 +16,7 @@ use core::time::Duration;
 use std::sync::Arc;
 
 use aws_sdk_s3::config::{BehaviorVersion, Builder, Region};
-use aws_smithy_runtime::client::http::test_util::{ReplayEvent, StaticReplayClient};
+use aws_smithy_http_client::test_util::{ReplayEvent, StaticReplayClient};
 use aws_smithy_types::body::SdkBody;
 use bytes::{BufMut, Bytes, BytesMut};
 use futures::join;
@@ -228,15 +228,14 @@ async fn simple_update_ac() -> Result<(), Error> {
     }
     let send_data = send_data.freeze();
 
-    let (mock_client, request_receiver) =
-        aws_smithy_runtime::client::http::test_util::capture_request(Some(
-            aws_smithy_runtime_api::http::Response::new(
-                StatusCode::OK.into(),
-                SdkBody::empty(), // This is an upload, so server does not send a body.
-            )
-            .try_into_http02x()
-            .unwrap(),
-        ));
+    let (mock_client, request_receiver) = aws_smithy_http_client::test_util::capture_request(Some(
+        aws_smithy_runtime_api::http::Response::new(
+            StatusCode::OK.into(),
+            SdkBody::empty(), // This is an upload, so server does not send a body.
+        )
+        .try_into_http1x()
+        .unwrap(),
+    ));
 
     let test_config = Builder::new()
         .behavior_version(BehaviorVersion::latest())

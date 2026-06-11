@@ -117,6 +117,7 @@ mod tests {
                 slow: StoreSpec::Memory(slow_config),
                 fast_direction: StoreDirection::default(),
                 slow_direction: StoreDirection::default(),
+                bypass_dedup_threshold_bytes: 0,
             },
             Store::new(fast_store.clone()),
             Store::new(slow_store.clone()),
@@ -4896,5 +4897,37 @@ done
 
         ));
         Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn parse_pgid_from_stat_extracts_field_after_comm() {
+        use nativelink_worker::running_actions_manager::parse_pgid_from_stat;
+        // /proc/<pid>/stat layout: pid (comm) state ppid pgrp ...
+        assert_eq!(
+            parse_pgid_from_stat("315 (perl) S 1 60 60 0 -1 0"),
+            Some(60)
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn parse_pgid_from_stat_handles_comm_with_spaces_and_parens() {
+        use nativelink_worker::running_actions_manager::parse_pgid_from_stat;
+        // `comm` may contain spaces and parentheses; parsing must be relative
+        // to the final ')'. Here pgrp == 777.
+        assert_eq!(
+            parse_pgid_from_stat("1234 (weird )( name) R 1 777 777 0 -1 0"),
+            Some(777)
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn parse_pgid_from_stat_rejects_malformed_input() {
+        use nativelink_worker::running_actions_manager::parse_pgid_from_stat;
+        assert_eq!(parse_pgid_from_stat("no parenthesis here"), None);
+        assert_eq!(parse_pgid_from_stat("123 (only) S"), None); // too few fields
+        assert_eq!(parse_pgid_from_stat(""), None);
     }
 }

@@ -18,6 +18,11 @@ runs:
 
       - name: Attic push
         if: ${{ inputs.nix_name != '' && inputs.nativelink_attic_token != '' }}
-        run: |
-          /tmp/result/bin/attic push nativelink $(nix eval --raw ${{ inputs.nix_name }})
-        shell: bash
+        uses: >- # v4
+          nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60
+        with:
+          timeout_minutes: 30
+          max_attempts: 3
+          command: |
+            /tmp/result/bin/attic push nativelink $(nix eval --raw ${{ inputs.nix_name }})
+          shell: bash

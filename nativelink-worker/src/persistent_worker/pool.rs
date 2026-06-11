@@ -39,7 +39,7 @@ pub const DEFAULT_MAX_WORKERS_PER_KEY: usize = 4;
 
 /// Default idle timeout. A worker that has not handled a request for this
 /// duration is shut down by the background sweeper.
-pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(60 * 5);
+pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_mins(5);
 
 /// Default per-worker request cap. After this many `dispatch` calls a worker is
 /// dropped on `release` (helps recycle accumulated JVM state).
@@ -501,7 +501,8 @@ mod tests {
             .acquire(key.clone(), Path::new("/bin/sh"), dir.path())
             .await
             .unwrap();
-        let release_handle = tokio::spawn(lease.release(false));
+        let release_handle =
+            background_spawn!("persistent_worker_release_test", lease.release(false));
         tokio::time::sleep(Duration::from_millis(50)).await;
         release_handle.abort();
         assert!(release_handle.await.unwrap_err().is_cancelled());
