@@ -20,12 +20,11 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use nativelink_config::schedulers::HistoricalResourceSpec;
-use nativelink_error::{Code, Error};
+use nativelink_error::{Error, ResultExt};
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent, RootMetricsComponent,
 };
 use nativelink_util::action_messages::{ActionInfo, OperationId};
-use nativelink_util::known_platform_property_provider::KnownPlatformPropertyProvider;
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, OperationFilter,
 };
@@ -35,6 +34,8 @@ use opentelemetry::context::Context;
 use parking_lot::Mutex;
 use serde::Deserialize;
 use tracing::{debug, warn};
+
+use crate::known_platform_property_provider::KnownPlatformPropertyProvider;
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 struct HintKey {
@@ -101,7 +102,7 @@ pub struct HistoricalResourceScheduler {
     refresh_interval: Duration,
     cpu_property_name: String,
     memory_property_name: String,
-    scheduler: Arc<dyn ClientStateManager>,
+    scheduler: Option<Arc<dyn KnownPlatformPropertyProvider>>,
     known_properties: Mutex<HashMap<String, Vec<String>>>,
     hint_state: Mutex<HintState>,
 }
@@ -120,13 +121,16 @@ impl core::fmt::Debug for HistoricalResourceScheduler {
 
 impl HistoricalResourceScheduler {
     #[must_use]
-    pub fn new(spec: &HistoricalResourceSpec, scheduler: Arc<dyn ClientStateManager>) -> Self {
+    pub fn new(
+        spec: &HistoricalResourceSpec,
+        scheduler: Arc<dyn KnownPlatformPropertyProvider>,
+    ) -> Self {
         Self {
             hints_file: spec.hints_file.clone(),
             refresh_interval: Duration::from_secs(spec.refresh_interval_s),
             cpu_property_name: spec.cpu_property_name.clone(),
             memory_property_name: spec.memory_property_name.clone(),
-            scheduler,
+            scheduler: Some(scheduler),
             known_properties: Mutex::new(HashMap::new()),
             hint_state: Mutex::default(),
         }
@@ -228,14 +232,8 @@ impl HistoricalResourceScheduler {
         }
         let known_platform_property_provider = self
             .scheduler
-            .as_known_platform_property_provider()
-            .ok_or_else(|| {
-                Error::new(
-                    Code::Internal,
-                    "Inner scheduler does not implement KnownPlatformPropertyProvider for HistoricalResourceScheduler"
-                        .to_string(),
-                )
-            })?;
+            .as_ref()
+            .err_tip(|| "Inner scheduler does not implement KnownPlatformPropertyProvider for HistoricalResourceScheduler")?;
         let mut known_properties = HashSet::<String>::from_iter(
             known_platform_property_provider
                 .get_known_properties(instance_name)
@@ -290,6 +288,8 @@ impl ClientStateManager for HistoricalResourceScheduler {
             self.apply_hint(Arc::make_mut(&mut action_info), &hint);
         }
         self.scheduler
+            .as_ref()
+            .err_tip(|| "Inner scheduler not available for HistoricalResourceScheduler")?
             .add_action(client_operation_id, action_info)
             .await
     }
@@ -298,11 +298,11 @@ impl ClientStateManager for HistoricalResourceScheduler {
         &'a self,
         filter: OperationFilter,
     ) -> Result<ActionStateResultStream<'a>, Error> {
-        self.scheduler.filter_operations(filter).await
-    }
-
-    fn as_known_platform_property_provider(&self) -> Option<&dyn KnownPlatformPropertyProvider> {
-        Some(self)
+        self.scheduler
+            .as_ref()
+            .err_tip(|| "Inner scheduler not available for HistoricalResourceScheduler")?
+            .filter_operations(filter)
+            .await
     }
 }
 
@@ -312,7 +312,10 @@ impl MetricsComponent for HistoricalResourceScheduler {
         kind: MetricKind,
         field_metadata: MetricFieldData,
     ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
-        self.scheduler.publish(kind, field_metadata)
+        match &self.scheduler {
+            Some(scheduler) => scheduler.publish(kind, field_metadata),
+            None => Ok(MetricPublishKnownKindData::Component),
+        }
     }
 }
 

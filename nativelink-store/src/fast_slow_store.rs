@@ -59,6 +59,8 @@ pub struct FastSlowStore {
     #[metric(group = "slow_store")]
     slow_store: Store,
     slow_direction: StoreDirection,
+    /// See [`FastSlowSpec::bypass_dedup_threshold_bytes`].
+    bypass_dedup_threshold_bytes: u64,
     weak_self: Weak<Self>,
     #[metric]
     metrics: FastSlowStoreMetrics,
@@ -159,6 +161,8 @@ impl FastSlowStore {
             fast_direction: spec.fast_direction,
             slow_store,
             slow_direction: spec.slow_direction,
+            // 0 (default) disables the bypass entirely (always dedup).
+            bypass_dedup_threshold_bytes: spec.bypass_dedup_threshold_bytes,
             weak_self: weak_self.clone(),
             metrics: FastSlowStoreMetrics::default(),
             populating_digests: Mutex::new(HashMap::new()),
@@ -181,6 +185,22 @@ impl FastSlowStore {
             key: Some(owned),
             write_complete_guard,
         }
+    }
+
+    /// Digest size in bytes, or `None` for non-digest keys.
+    const fn digest_size_bytes(key: &StoreKey<'_>) -> Option<u64> {
+        match key {
+            StoreKey::Digest(d) => Some(d.size_bytes()),
+            StoreKey::Str(_) => None,
+        }
+    }
+
+    /// Whether a read should skip dedup and hit the slow store directly. A
+    /// threshold of 0 disables the bypass so every read goes through dedup.
+    fn should_bypass_dedup(&self, key: &StoreKey<'_>) -> bool {
+        self.bypass_dedup_threshold_bytes != 0
+            && Self::digest_size_bytes(key)
+                .is_some_and(|size| size >= self.bypass_dedup_threshold_bytes)
     }
 
     pub const fn fast_store(&self) -> &Store {
@@ -773,6 +793,26 @@ impl StoreDriver for FastSlowStore {
             return Ok(());
         }
 
+        // Huge blobs: dedup is a net loss (followers time out anyway and
+        // the fast tier is evicted), so read straight from the slow store.
+        if self.should_bypass_dedup(&key) {
+            self.metrics
+                .huge_blob_dedup_bypasses
+                .fetch_add(1, Ordering::Acquire);
+            self.metrics
+                .slow_store_hit_count
+                .fetch_add(1, Ordering::Acquire);
+            debug!(%key, threshold_bytes = self.bypass_dedup_threshold_bytes, "Bypassing dedup for huge blob");
+            self.slow_store
+                .get_part(key, writer.borrow_mut(), offset, length)
+                .await
+                .err_tip(|| "In FastSlowStore::get_part huge-blob bypass")?;
+            self.metrics
+                .slow_store_downloaded_bytes
+                .fetch_add(writer.get_bytes_written(), Ordering::Acquire);
+            return Ok(());
+        }
+
         let mut writer = Some(writer);
 
         // Drive the dedup loader. Two distinct paths:
@@ -887,6 +927,8 @@ struct FastSlowStoreMetrics {
         help = "Number of times a follower bypassed the populating-digests dedup because the leader exceeded LEADER_WAIT_TIMEOUT"
     )]
     leader_wait_timeouts: AtomicU64,
+    #[metric(help = "get_part calls that bypassed dedup for huge blobs")]
+    huge_blob_dedup_bypasses: AtomicU64,
 }
 
 /// Maximum time a follower will wait on the leader-populator before

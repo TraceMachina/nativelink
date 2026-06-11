@@ -22,17 +22,18 @@ use nativelink_config::schedulers::{
 use nativelink_error::{Error, ResultExt};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_util::action_messages::{ActionInfo, OperationId};
-use nativelink_util::known_platform_property_provider::KnownPlatformPropertyProvider;
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, OperationFilter,
 };
 use parking_lot::Mutex;
 
+use crate::known_platform_property_provider::KnownPlatformPropertyProvider;
+
 #[derive(MetricsComponent)]
 pub struct PropertyModifierScheduler {
     modifications: Vec<PropertyModification>,
     #[metric(group = "scheduler")]
-    scheduler: Arc<dyn ClientStateManager>,
+    scheduler: Option<Arc<dyn KnownPlatformPropertyProvider>>,
     #[metric(group = "property_manager")]
     known_properties: Mutex<HashMap<String, Vec<String>>>,
 }
@@ -47,10 +48,13 @@ impl core::fmt::Debug for PropertyModifierScheduler {
 }
 
 impl PropertyModifierScheduler {
-    pub fn new(spec: &PropertyModifierSpec, scheduler: Arc<dyn ClientStateManager>) -> Self {
+    pub fn new(
+        spec: &PropertyModifierSpec,
+        scheduler: Arc<dyn KnownPlatformPropertyProvider>,
+    ) -> Self {
         Self {
             modifications: spec.modifications.clone(),
-            scheduler,
+            scheduler: Some(scheduler),
             known_properties: Mutex::new(HashMap::new()),
         }
     }
@@ -64,7 +68,7 @@ impl PropertyModifierScheduler {
         }
         let known_platform_property_provider = self
             .scheduler
-            .as_known_platform_property_provider()
+            .as_ref()
             .err_tip(|| "Inner scheduler does not implement KnownPlatformPropertyProvider for PropertyModifierScheduler")?;
         let mut known_properties = HashSet::<String>::from_iter(
             known_platform_property_provider
@@ -128,6 +132,8 @@ impl PropertyModifierScheduler {
             }
         }
         self.scheduler
+            .as_ref()
+            .err_tip(|| "Inner scheduler not available for PropertyModifierScheduler")?
             .add_action(client_operation_id, action_info)
             .await
     }
@@ -136,7 +142,11 @@ impl PropertyModifierScheduler {
         &self,
         filter: OperationFilter,
     ) -> Result<ActionStateResultStream<'_>, Error> {
-        self.scheduler.filter_operations(filter).await
+        self.scheduler
+            .as_ref()
+            .err_tip(|| "Inner scheduler not available for PropertyModifierScheduler")?
+            .filter_operations(filter)
+            .await
     }
 }
 
@@ -163,10 +173,6 @@ impl ClientStateManager for PropertyModifierScheduler {
         filter: OperationFilter,
     ) -> Result<ActionStateResultStream<'a>, Error> {
         self.inner_filter_operations(filter).await
-    }
-
-    fn as_known_platform_property_provider(&self) -> Option<&dyn KnownPlatformPropertyProvider> {
-        Some(self)
     }
 }
 
