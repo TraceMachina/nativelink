@@ -27,7 +27,6 @@ use nativelink_util::action_messages::{
     OperationId, WorkerId,
 };
 use nativelink_util::instant_wrapper::InstantWrapper;
-use nativelink_util::known_platform_property_provider::KnownPlatformPropertyProvider;
 use nativelink_util::metrics::{
     EXECUTION_METRICS, EXECUTION_RESULT, EXECUTION_STAGE, ExecutionResult, ExecutionStage,
 };
@@ -1153,10 +1152,6 @@ where
             ))
         })
         .await
-    }
-
-    fn as_known_platform_property_provider(&self) -> Option<&dyn KnownPlatformPropertyProvider> {
-        None
     }
 }
 

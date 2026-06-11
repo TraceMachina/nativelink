@@ -27,11 +27,11 @@ use nativelink_config::schedulers::{
 };
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
+use nativelink_scheduler::known_platform_property_provider::KnownPlatformPropertyProvider;
 use nativelink_scheduler::mock_scheduler::MockActionScheduler;
 use nativelink_scheduler::property_modifier_scheduler::PropertyModifierScheduler;
 use nativelink_util::action_messages::{ActionStage, ActionState, OperationId};
 use nativelink_util::common::DigestInfo;
-use nativelink_util::known_platform_property_provider::KnownPlatformPropertyProvider;
 use nativelink_util::operation_state_manager::{ClientStateManager, OperationFilter};
 use pretty_assertions::assert_eq;
 use tokio::sync::watch;

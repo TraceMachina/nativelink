@@ -17,6 +17,7 @@ rust_library(
         "src/default_scheduler_factory.rs",
         "src/grpc_scheduler.rs",
         "src/historical_resource_scheduler.rs",
+        "src/known_platform_property_provider.rs",
         "src/lib.rs",
         "src/memory_awaited_action_db.rs",
         "src/mock_scheduler.rs",

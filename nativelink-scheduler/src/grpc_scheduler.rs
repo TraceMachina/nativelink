@@ -33,7 +33,6 @@ use nativelink_util::action_messages::{
     ActionInfo, ActionState, ActionUniqueQualifier, DEFAULT_EXECUTION_PRIORITY, OperationId,
 };
 use nativelink_util::connection_manager::ConnectionManager;
-use nativelink_util::known_platform_property_provider::KnownPlatformPropertyProvider;
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, OperationFilter,
 };
@@ -46,6 +45,8 @@ use tokio::sync::watch;
 use tokio::time::sleep;
 use tonic::{Request, Streaming};
 use tracing::{error, info, warn};
+
+use crate::known_platform_property_provider::KnownPlatformPropertyProvider;
 
 struct GrpcActionStateResult {
     client_operation_id: OperationId,
@@ -347,10 +348,6 @@ impl ClientStateManager for GrpcScheduler {
         filter: OperationFilter,
     ) -> Result<ActionStateResultStream<'a>, Error> {
         self.inner_filter_operations(filter).await
-    }
-
-    fn as_known_platform_property_provider(&self) -> Option<&dyn KnownPlatformPropertyProvider> {
-        Some(self)
     }
 }
 

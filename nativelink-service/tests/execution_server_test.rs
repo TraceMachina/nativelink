@@ -32,6 +32,7 @@ use nativelink_proto::google::longrunning::{
     WaitOperationRequest,
 };
 use nativelink_proto::google::rpc::{PreconditionFailure, Status as GrpcStatusProto};
+use nativelink_scheduler::known_platform_property_provider::KnownPlatformPropertyProvider;
 use nativelink_scheduler::mock_scheduler::MockActionScheduler;
 use nativelink_service::execution_server::ExecutionServer;
 use nativelink_store::ac_utils::serialize_and_upload_message;
@@ -42,9 +43,7 @@ use nativelink_util::action_messages::{
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
-use nativelink_util::operation_state_manager::{
-    ActionStateResult, ActionStateResultStream, ClientStateManager,
-};
+use nativelink_util::operation_state_manager::{ActionStateResult, ActionStateResultStream};
 use nativelink_util::origin_event::OriginMetadata;
 use nativelink_util::store_trait::StoreLike;
 use prost::Message as _;
@@ -70,7 +69,8 @@ fn make_execution_server(
     store_manager: &StoreManager,
 ) -> Result<(ExecutionServer, Arc<MockActionScheduler>), Error> {
     let mock_scheduler = Arc::new(MockActionScheduler::new());
-    let mut action_schedulers: HashMap<String, Arc<dyn ClientStateManager>> = HashMap::new();
+    let mut action_schedulers: HashMap<String, Arc<dyn KnownPlatformPropertyProvider>> =
+        HashMap::new();
     action_schedulers.insert("main_scheduler".to_string(), mock_scheduler.clone());
     let server = ExecutionServer::new(
         &[WithInstanceName {
