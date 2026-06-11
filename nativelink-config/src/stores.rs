@@ -800,6 +800,16 @@ pub struct FastSlowSpec {
     /// and you wish to have an upstream read only store.
     #[serde(default)]
     pub slow_direction: StoreDirection,
+
+    /// Reads of blobs at or above this size skip the leader/follower dedup
+    /// map and stream straight from the slow store without populating the
+    /// fast tier. `0` (the default) disables the bypass: every read goes
+    /// through dedup, matching the prior behaviour. Enable it by setting a
+    /// threshold — 256 MiB is a reasonable starting point for backends where
+    /// large-blob dedup is a net loss (followers tend to time out anyway),
+    /// but the right value is workload-dependent.
+    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
+    pub bypass_dedup_threshold_bytes: u64,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone, Copy)]
