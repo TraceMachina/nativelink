@@ -1,0 +1,204 @@
+---
+title: "CMake with NativeLink (via recc)"
+description: "Accelerate CMake builds with NativeLink as a remote cache, using recc as the bridge."
+pagefind: true
+---
+
+<Callout title="Inspired by Reid Kleckner" type="idea">
+This tutorial follows the approach Reid Kleckner laid out in
+[Distributed builds of LLVM with CMake, recc, and NativeLink](https://reidkleckner.dev/posts/llvm-recc-nativelink/).
+Read his post for the LLVM-scale walkthrough and the reasoning behind
+each piece. This page is the short, hands-on version for your own
+projects.
+</Callout>
+
+*Read time: ~5 minutes. Hands-on time: another ~5 if you have Docker and a
+package manager handy; longer on Linux if you build `recc` from source.*
+
+This tutorial gets you from zero to a CMake build hitting a NativeLink
+remote cache. Works on Linux and macOS (tested on macOS Apple Silicon;
+Linux x86_64 follows the exact same commands).
+
+We use [`recc`](https://buildgrid.gitlab.io/recc)—a small Remote Execution
+v2 client originally from Bloomberg—as a CMake compiler launcher. We run
+it in **cache-only mode**: compiles still happen on your machine, only the
+*outputs* travel through NativeLink. That keeps the setup tiny while still
+giving you cross-machine and cross-branch caching.
+
+## Prerequisites
+
+- Docker
+- CMake 3.16+
+- A C/C++ compiler (clang or gcc)
+
+## 1. Start NativeLink
+
+```sh
+curl -O https://raw.githubusercontent.com/TraceMachina/nativelink/v1.0.0/nativelink-config/examples/basic_cas.json5
+
+docker run -d --name nativelink \
+  --platform linux/amd64 \
+  -v $(pwd)/basic_cas.json5:/config \
+  -p 50051:50051 -p 50061:50061 \
+  ghcr.io/tracemachina/nativelink:v1.0.0 config
+```
+
+The prebuilt image is x86_64. `--platform linux/amd64` is a no-op on Linux
+x86_64 and triggers fast emulation on Apple Silicon. (Linux arm64 users:
+build NativeLink with `nix run github:TraceMachina/nativelink ./basic_cas.json5`
+instead.)
+
+Confirm it came up:
+
+```sh
+docker logs nativelink 2>&1 | grep "Ready, listening on 0.0.0.0:50051"
+```
+
+## 2. Install recc
+
+<Tabs items={["macOS / Homebrew", "Linux from source (apt)"]}>
+  <Tab value="macOS / Homebrew">
+    ```sh
+    brew install recc
+    ```
+
+    Works on Linux too if you have [Homebrew on Linux](https://docs.brew.sh/Homebrew-on-Linux).
+  </Tab>
+  <Tab value="Linux from source (apt)">
+    On Ubuntu / Debian, install the build deps:
+
+    ```sh
+    sudo apt-get update
+    sudo apt-get install -y build-essential cmake git pkg-config \
+      libssl-dev libgrpc++-dev libprotobuf-dev protobuf-compiler-grpc \
+      libabsl-dev libc-ares-dev nlohmann-json3-dev libgtest-dev google-mock
+    ```
+
+    `recc` links against `buildbox-common`, so build that first:
+
+    ```sh
+    git clone https://gitlab.com/BuildGrid/buildbox/buildbox-common.git
+    cd buildbox-common && mkdir build && cd build
+    cmake .. && make -j"$(nproc)"
+    sudo make install && sudo ldconfig
+    cd ../..
+    ```
+
+    Then build and install `recc`:
+
+    ```sh
+    git clone https://gitlab.com/BuildGrid/recc.git
+    cd recc && mkdir build && cd build
+    cmake .. && make -j"$(nproc)"
+    sudo make install
+    ```
+
+    `recc` is now on your `PATH`. If you hit issues, see the
+    [official install docs](https://buildgrid.gitlab.io/recc/installation.html).
+  </Tab>
+</Tabs>
+
+## 3. Create the example
+
+Drop these two files into a fresh project directory and `cd` into it.
+You can also copy them from
+[`templates/cmake/`](https://github.com/TraceMachina/nativelink/tree/main/templates/cmake)
+in the repo.
+
+```cmake
+# CMakeLists.txt
+cmake_minimum_required(VERSION 3.16)
+project(hello LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 17)
+add_executable(hello main.cpp)
+```
+
+```cpp
+// main.cpp
+#include <iostream>
+
+int main() {
+    std::cout << "Hello, NativeLink!\n";
+    return 0;
+}
+```
+
+## 4. Point recc at NativeLink
+
+```sh
+export RECC_SERVER=localhost:50051
+export RECC_INSTANCE=main
+export RECC_CACHE_ONLY=1
+export RECC_CACHE_UPLOAD_LOCAL_BUILD=1
+```
+
+What each one does:
+
+- `RECC_SERVER`: gRPC endpoint for the CAS / Action Cache.
+- `RECC_INSTANCE=main`: must match an `instance_name` in your NativeLink
+  config. `basic_cas.json5` exposes both `""` and `"main"`; `recc`'s
+  compiled-in default doesn't match either, so set this explicitly.
+- `RECC_CACHE_ONLY=1`: if there's no cached result, build locally
+  instead of waiting on a remote worker.
+- `RECC_CACHE_UPLOAD_LOCAL_BUILD=1`: push the result of a local compile
+  back up so the next build (or the next teammate) gets a hit.
+
+## 5. Build it
+
+```sh
+RECC=$(command -v recc)
+
+cmake -B build -S . \
+  -DCMAKE_C_COMPILER_LAUNCHER=$RECC \
+  -DCMAKE_CXX_COMPILER_LAUNCHER=$RECC
+
+cmake --build build
+./build/hello
+```
+
+You should see `Hello, NativeLink!`.
+
+## 6. Confirm the cache is live
+
+Wipe the build directory and rebuild. This time the compile output
+should come straight out of NativeLink:
+
+```sh
+rm -rf build
+
+cmake -B build -S . \
+  -DCMAKE_C_COMPILER_LAUNCHER=$RECC \
+  -DCMAKE_CXX_COMPILER_LAUNCHER=$RECC
+
+RECC_LOG_LEVEL=info cmake --build build
+```
+
+You should see an `Action Cache hit` line for the compile, like the
+captured output below:
+
+```text
+[ 50%] Building CXX object CMakeFiles/hello.dir/main.cpp.o
+[INFO] Action Cache hit for [cf20db769511312cf9c66cb3ac1b82512bf4572b42b99f9a73b13a00e90e14d3/199]
+[100%] Linking CXX executable hello
+[100%] Built target hello
+```
+
+That's NativeLink serving the compile result instead of the compiler
+running again. Linking still happens locally. `recc` only ships compile
+actions, not link actions, by default.
+
+## Teardown
+
+```sh
+docker stop nativelink && docker rm nativelink
+```
+
+## Going further
+
+- Point `RECC_SERVER` at a shared NativeLink deployment (cloud or
+  self-hosted) to share the cache across your team.
+- Drop `RECC_CACHE_ONLY` once you have remote workers configured to
+  actually offload compile work. See the
+  [deployment examples](/docs/deployment-examples/kubernetes).
+- For PCH, LTO, and other gnarly C++ build features at scale, read
+  [Reid Kleckner's writeup][reid].
