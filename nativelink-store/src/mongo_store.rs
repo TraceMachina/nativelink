@@ -489,7 +489,7 @@ impl StoreDriver for ExperimentalMongoStore {
             data.extend_from_slice(&chunk);
         }
 
-        let size = data.len() as i64;
+        let size = data.len().try_into().unwrap_or(i64::MAX);
 
         // Create document
         let doc = doc! {

@@ -2296,7 +2296,7 @@ exit 0
                 }],
             }),
             timeout: Some(prost_types::Duration {
-                seconds: TASK_TIMEOUT.as_secs() as i64,
+                seconds: TASK_TIMEOUT.as_secs().try_into().unwrap_or(i64::MAX),
                 nanos: 0,
             }),
             ..Default::default()
@@ -2990,7 +2990,7 @@ exit 1
                 command_digest: Some(command_digest.into()),
                 input_root_digest: Some(input_root_digest.into()),
                 timeout: Some(prost_types::Duration {
-                    seconds: TASK_TIMEOUT.as_secs() as i64,
+                    seconds: TASK_TIMEOUT.as_secs().try_into().unwrap_or(i64::MAX),
                     nanos: 0,
                 }),
                 ..Default::default()
@@ -3078,7 +3078,7 @@ exit 1
                 command_digest: Some(command_digest.into()),
                 input_root_digest: Some(input_root_digest.into()),
                 timeout: Some(prost_types::Duration {
-                    seconds: TASK_TIMEOUT.as_secs() as i64,
+                    seconds: TASK_TIMEOUT.as_secs().try_into().unwrap_or(i64::MAX),
                     nanos: 0,
                 }),
                 ..Default::default()
@@ -3166,7 +3166,7 @@ exit 1
                 command_digest: Some(command_digest.into()),
                 input_root_digest: Some(input_root_digest.into()),
                 timeout: Some(prost_types::Duration {
-                    seconds: TASK_TIMEOUT.as_secs() as i64,
+                    seconds: TASK_TIMEOUT.as_secs().try_into().unwrap_or(i64::MAX),
                     nanos: 0,
                 }),
                 ..Default::default()

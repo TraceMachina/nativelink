@@ -913,7 +913,7 @@ impl ByteStreamServer {
         // Note: bytes_written_total is updated in the caller (bytestream_write) based on result
 
         Ok(Response::new(WriteResponse {
-            committed_size: expected_size as i64,
+            committed_size: expected_size.try_into().unwrap_or(i64::MAX),
         }))
     }
 

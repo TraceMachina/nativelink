@@ -190,7 +190,10 @@ where
                             if self.consider_expired_after_s != 0
                                 && let Some(last_modified) = head_object_output.last_modified
                             {
-                                let now_s = (self.now_fn)().unix_timestamp() as i64;
+                                let now_s = (self.now_fn)()
+                                    .unix_timestamp()
+                                    .try_into()
+                                    .unwrap_or(i64::MAX);
                                 if last_modified.secs() + self.consider_expired_after_s <= now_s {
                                     let remove_callbacks = self.remove_callbacks.lock().clone();
                                     let mut callbacks: FuturesUnordered<_> = remove_callbacks

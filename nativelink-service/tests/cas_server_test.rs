@@ -760,7 +760,7 @@ async fn batch_update_blobs_per_blob_timeout_returns_deadline_exceeded()
 
     let digest = Digest {
         hash: HASH1.to_string(),
-        size_bytes: VALUE.len() as i64,
+        size_bytes: VALUE.len().try_into().unwrap_or(i64::MAX),
     };
     let raw_response = cas_server
         .batch_update_blobs(Request::new(BatchUpdateBlobsRequest {

@@ -43,9 +43,15 @@ impl MaybeNamespacedChild {
             // self.child.std_child().send_signal(Signal::SIGTERM)?;
             // return self.child.wait().await.map(|_| ());
             if let Some(pid) = self.child.id() {
+                let pid_t: libc::pid_t = pid.try_into().map_err(|e| {
+                    Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!("pid larger than pid_t type ({pid}): {e}"),
+                    )
+                })?;
                 // SAFETY: pid is valid as provided by the wrapper and we are
                 // sending a signal to the namespaced stub.
-                unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+                unsafe { libc::kill(pid_t, libc::SIGTERM) };
                 return self.child.wait().await.map(|_| ());
             }
         }
