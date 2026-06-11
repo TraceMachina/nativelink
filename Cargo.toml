@@ -168,6 +168,7 @@ manual-is-variant-and = "deny"
 map-unwrap-or = "deny"
 new-ret-no-self = "deny"
 or-fun-call = "deny"
+print-stdout = "deny"
 ptr-arg = "deny"
 redundant-closure = "deny"
 redundant-closure-for-method-calls = "deny"
@@ -180,6 +181,7 @@ string-lit-as-bytes = "deny"
 todo = "deny"
 unchecked-time-subtraction = "deny"
 unnecessary-semicolon = "deny"
+use-debug = "deny"
 used-underscore-binding = "deny"
 useless-format = "deny"
 
@@ -188,11 +190,9 @@ dbg-macro = "warn"
 decimal-literal-representation = "warn"
 get-unwrap = "allow"                    # TODO(jhpratt) Flip
 missing-docs-in-private-items = "allow" # TODO(jhpratt) Flip
-print-stdout = "warn"
 unimplemented = "warn"
 unwrap-in-result = "allow"              # TODO(jhpratt) Flip
 unwrap-used = "allow"                   # TODO(jhpratt) Flip
-use-debug = "warn"
 
 # Nursery denies we want once they get out of Nursery
 missing-const-for-fn = "deny"

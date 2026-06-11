@@ -41,3 +41,6 @@ url = { version = "2.5.7", default-features = false }
 uuid = { version = "1.16.0", default-features = false, features = ["std"] }
 walkdir = { version = "2.5.0", default-features = false }
 zip = { version = "8.0.0", default-features = false }
+
+[dev-dependencies]
+tracing = { version = "0.1.41", default-features = false }
