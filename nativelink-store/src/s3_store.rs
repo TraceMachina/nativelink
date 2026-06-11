@@ -59,7 +59,7 @@ use crate::common_s3_utils::{BodyWrapper, TlsClient};
 
 // S3 object cannot be larger than this number. See:
 // https://docs.aws.amazon.com/AmazonS3/latest/userguide/qfacts.html
-const MAX_UPLOAD_SIZE: u64 = 5 * 1024 * 1024 * 1024 * 1024; // 5TB.
+const MAX_UPLOAD_SIZE: u64 = 48 * 1024 * 1024 * 1024 * 1024; // 48TiB (technically should be 48.8 TiB, but close enough)
 
 // S3 parts cannot be smaller than this number. See:
 // https://docs.aws.amazon.com/AmazonS3/latest/userguide/qfacts.html
