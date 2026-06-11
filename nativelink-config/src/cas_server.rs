@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 
-use nativelink_error::{Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 #[cfg(feature = "dev-schema")]
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -992,6 +992,42 @@ impl CasConfig {
     pub fn try_from_json5_file(config_file: &str) -> Result<Self, Error> {
         let json_contents = std::fs::read_to_string(config_file)
             .err_tip(|| format!("Could not open config file {config_file}"))?;
-        Ok(serde_json5::from_str(&json_contents)?)
+        let config: Self = serde_json5::from_str(&json_contents)?;
+        for server in &config.servers {
+            if let Some(services) = &server.services {
+                Self::check_store_conflict(services)?;
+            }
+        }
+        Ok(config)
+    }
+
+    fn check_store_conflict(services: &ServicesConfig) -> Result<(), Error> {
+        if let Some(cas_config) = &services.cas
+            && let Some(ac_config) = &services.ac
+        {
+            // Create a hashmap from the CAS configuration for quick lookup
+            let cas_store_map: HashMap<_, _> = cas_config
+                .iter()
+                .map(|with_instance_name| {
+                    (
+                        &with_instance_name.instance_name,
+                        &with_instance_name.cas_store,
+                    )
+                })
+                .collect();
+
+            for with_instance_name in ac_config {
+                if let Some(cas_store) = cas_store_map.get(&with_instance_name.instance_name)
+                    && cas_store == &&with_instance_name.ac_store
+                {
+                    return Err(make_err!(
+                        Code::InvalidArgument,
+                        "CAS and AC use the same store '{}' in the config",
+                        cas_store
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 }

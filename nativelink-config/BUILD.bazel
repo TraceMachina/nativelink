@@ -39,11 +39,12 @@ rust_test_suite(
     timeout = "short",
     srcs = [
         "tests/deserialization_test.rs",
+        "tests/duplicate_servers_test.rs",
         "tests/json5_test.rs",
     ],
     data = glob(
         ["examples/*.json5"],
-    ),
+    ) + ["tests/duplicate_servers.json5"],
     deps = [
         "//nativelink-config",
         "//nativelink-error",
