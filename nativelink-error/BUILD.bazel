@@ -48,6 +48,7 @@ rust_test_suite(
         "@crates//:redis",
         "@crates//:tokio",
         "@crates//:tonic",
+        "@crates//:tracing",
         "@crates//:walkdir",
     ],
 )

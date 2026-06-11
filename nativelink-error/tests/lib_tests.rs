@@ -23,6 +23,7 @@ use redis::ErrorKind as RedisErrorKind;
 use tokio::runtime::Runtime;
 use tokio::task;
 use tonic::{Code as TonicCode, Status as TonicStatus};
+use tracing::info;
 
 #[test]
 fn test_err_tip_with_code_some() {
@@ -201,7 +202,7 @@ fn test_metrics_component_publish() {
     let result = error.publish(kind, field_metadata);
     match result {
         Ok(data) => {
-            println!("Published data: {data:?}");
+            info!(?data, "Published data");
         }
         Err(e) => panic!("Publish failed with error: {e:?}"),
     }
