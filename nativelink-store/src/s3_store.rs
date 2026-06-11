@@ -306,7 +306,7 @@ where
                                 .put_object()
                                 .bucket(&self.bucket)
                                 .key(s3_path.clone())
-                                .content_length(sz as i64)
+                                .content_length(sz.try_into().unwrap_or(i64::MAX))
                                 .body(ByteStream::from_body_1_x(BodyWrapper {
                                     reader: rx,
                                     size: sz,
