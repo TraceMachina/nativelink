@@ -258,3 +258,11 @@ semver
 systemd
 walkthrough
 zstd
+Kleckner
+recc
+Bloomberg
+gcc
+[Ww]alkthrough
+[Tt]eardown
+repo
+buildbox
