@@ -20,7 +20,9 @@ use std::collections::{HashMap, VecDeque};
 use bytes::Bytes;
 use futures::stream::{FuturesUnordered, Stream};
 use futures::{StreamExt, TryStreamExt};
-use nativelink_config::cas_server::{CapabilitiesConfig, CasStoreConfig, WireCompressor, WithInstanceName};
+use nativelink_config::cas_server::{
+    CapabilitiesConfig, CasStoreConfig, WireCompressor, WithInstanceName,
+};
 use nativelink_error::{Code, Error, ResultExt, error_if, make_err, make_input_err};
 use nativelink_proto::build::bazel::remote::execution::v2::content_addressable_storage_server::{
     ContentAddressableStorage, ContentAddressableStorageServer as Server,
@@ -68,8 +70,10 @@ impl CasServer {
         }
         let mut supported_wire_compressors_for_instance = HashMap::new();
         for config in capabilities_configs {
-            supported_wire_compressors_for_instance
-                .insert(config.instance_name.clone(), config.supported_wire_compressors.clone());
+            supported_wire_compressors_for_instance.insert(
+                config.instance_name.clone(),
+                config.supported_wire_compressors.clone(),
+            );
         }
         Ok(Self {
             stores,
@@ -131,11 +135,10 @@ impl CasServer {
         }
 
         let store_ref = &store;
-        let supported_compressors = self
+        let supported_compressors: &[WireCompressor] = self
             .supported_wire_compressors_for_instance
             .get(instance_name)
-            .map(|c| c.as_slice())
-            .unwrap_or(&[]);
+            .map_or(&[], Vec::as_slice);
         let update_futures: FuturesUnordered<_> = request
             .requests
             .into_iter()
@@ -146,7 +149,9 @@ impl CasServer {
                         .clone()
                         .err_tip(|| "Digest not found in request")?;
                     let request_compressor = compressor::Value::try_from(request.compressor)
-                        .map_err(|_| make_input_err!("Unknown compressor value: {}", request.compressor))?;
+                        .map_err(|_| {
+                            make_input_err!("Unknown compressor value: {}", request.compressor)
+                        })?;
                     let request_data = request.data;
                     let digest_info = DigestInfo::try_from(digest.clone())?;
                     let size_bytes = usize::try_from(digest_info.size_bytes())
@@ -235,11 +240,10 @@ impl CasServer {
         }
 
         let store_ref = &store;
-        let supported_compressors = self
+        let supported_compressors: &[WireCompressor] = self
             .supported_wire_compressors_for_instance
             .get(instance_name)
-            .map(|c| c.as_slice())
-            .unwrap_or(&[]);
+            .map_or(&[], Vec::as_slice);
         let read_futures: FuturesUnordered<_> = request
             .digests
             .into_iter()

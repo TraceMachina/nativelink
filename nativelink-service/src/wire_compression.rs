@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2026 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@
 
 use bytes::Bytes;
 use nativelink_config::cas_server::WireCompressor;
-use nativelink_error::{make_err, make_input_err, Code, Error};
+use nativelink_error::{Code, Error, make_err, make_input_err};
 use nativelink_proto::build::bazel::remote::execution::v2::compressor;
 
 /// Zstd compression level for wire compression.

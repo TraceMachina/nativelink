@@ -19,7 +19,6 @@ use nativelink_config::cas_server::{
     CapabilitiesConfig, InstanceName, WireCompressor, WithInstanceName,
 };
 use nativelink_error::{Error, ResultExt};
-use crate::wire_compression::wire_compressor_to_proto;
 use nativelink_proto::build::bazel::remote::execution::v2::capabilities_server::{
     Capabilities, CapabilitiesServer as Server,
 };
@@ -35,6 +34,8 @@ use nativelink_scheduler::known_platform_property_provider::KnownPlatformPropert
 use nativelink_util::digest_hasher::default_digest_hasher_func;
 use tonic::{Request, Response, Status};
 use tracing::{Level, instrument};
+
+use crate::wire_compression::wire_compressor_to_proto;
 
 const MAX_BATCH_TOTAL_SIZE: i64 = 64 * 1024;
 
