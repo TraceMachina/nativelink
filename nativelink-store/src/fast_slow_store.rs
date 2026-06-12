@@ -758,19 +758,36 @@ impl StoreDriver for FastSlowStore {
         offset: u64,
         length: Option<u64>,
     ) -> Result<(), Error> {
-        // TODO(palfrey) Investigate if we should maybe ignore errors here instead of
-        // forwarding them up.
+        // `has()` can report a stale map entry whose file is gone, so
+        // get_part may still return NotFound; fall through to the slow
+        // store unless we have already streamed bytes to the caller.
         if self.fast_store.has(key.borrow()).await?.is_some() {
-            self.metrics
-                .fast_store_hit_count
-                .fetch_add(1, Ordering::Acquire);
-            self.fast_store
-                .get_part(key, writer.borrow_mut(), offset, length)
-                .await?;
-            self.metrics
-                .fast_store_downloaded_bytes
-                .fetch_add(writer.get_bytes_written(), Ordering::Acquire);
-            return Ok(());
+            let bytes_before = writer.get_bytes_written();
+            match self
+                .fast_store
+                .get_part(key.borrow(), writer.borrow_mut(), offset, length)
+                .await
+            {
+                Ok(()) => {
+                    self.metrics
+                        .fast_store_hit_count
+                        .fetch_add(1, Ordering::Acquire);
+                    self.metrics
+                        .fast_store_downloaded_bytes
+                        .fetch_add(writer.get_bytes_written(), Ordering::Acquire);
+                    return Ok(());
+                }
+                Err(e)
+                    if e.code == Code::NotFound && writer.get_bytes_written() == bytes_before =>
+                {
+                    self.metrics
+                        .fast_store_stale_map_falls_through
+                        .fetch_add(1, Ordering::Acquire);
+                    warn!(%key, ?e, "Stale fast-store map entry; falling through to slow store");
+                    // fall through to populate path
+                }
+                Err(e) => return Err(e),
+            }
         }
 
         // If the fast store is noop or read only or update only then bypass it.
@@ -929,6 +946,8 @@ struct FastSlowStoreMetrics {
     leader_wait_timeouts: AtomicU64,
     #[metric(help = "get_part calls that bypassed dedup for huge blobs")]
     huge_blob_dedup_bypasses: AtomicU64,
+    #[metric(help = "Stale fast-store map entries that fell through to the slow store")]
+    fast_store_stale_map_falls_through: AtomicU64,
 }
 
 /// Maximum time a follower will wait on the leader-populator before
