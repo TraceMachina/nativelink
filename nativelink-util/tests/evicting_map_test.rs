@@ -807,3 +807,73 @@ async fn get_of_expired_key_reaps_only_that_key() -> Result<(), Error> {
 
     Ok(())
 }
+
+#[nativelink_test]
+async fn snapshot_display_empty() -> Result<(), Error> {
+    let policies = vec![
+        (
+            EvictionPolicy {
+                max_count: 3,
+                max_seconds: 0,
+                max_bytes: 0,
+                evict_bytes: 0,
+            },
+            "Bytes: 0 of unlimited; Items: 0 of 3 (0.000%); Timeout: unlimited",
+        ),
+        (
+            EvictionPolicy {
+                max_count: 0,
+                max_seconds: 0,
+                max_bytes: 100,
+                evict_bytes: 0,
+            },
+            "Bytes: 0 of 100 (0.000%); Items: 0 of unlimited; Timeout: unlimited",
+        ),
+        (
+            EvictionPolicy {
+                max_count: 0,
+                max_seconds: 20,
+                max_bytes: 0,
+                evict_bytes: 0,
+            },
+            "Bytes: 0 of unlimited; Items: 0 of unlimited; Timeout: 20s",
+        ),
+    ];
+    for (policy, display) in policies {
+        let evicting_map =
+            EvictingMap::<DigestInfo, DigestInfo, BytesWrapper, MockInstantWrapped>::new(
+                &policy,
+                MockInstantWrapped::default(),
+            );
+        let snapshot = evicting_map.get_snapshot();
+        assert_eq!(format!("{snapshot}"), display);
+    }
+    Ok(())
+}
+
+#[nativelink_test]
+async fn snapshot_display_info() -> Result<(), Error> {
+    const KEY1: &str = "key-123";
+    const DATA1: &str = "123";
+
+    let evicting_map = EvictingMap::<String, String, BytesWrapper, MockInstantWrapped>::new(
+        &EvictionPolicy {
+            max_count: 6,
+            max_seconds: 0,
+            max_bytes: 11,
+            evict_bytes: 0,
+        },
+        MockInstantWrapped::default(),
+    );
+
+    evicting_map
+        .insert(KEY1.into(), Bytes::from(DATA1).into())
+        .await;
+
+    let snapshot = evicting_map.get_snapshot();
+    assert_eq!(
+        format!("{snapshot}"),
+        "Bytes: 3 of 11 (27.273%); Items: 1 of 6 (16.667%); Timeout: unlimited"
+    );
+    Ok(())
+}

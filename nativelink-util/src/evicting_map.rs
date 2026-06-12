@@ -14,7 +14,7 @@
 
 use core::borrow::Borrow;
 use core::cmp::Eq;
-use core::fmt::Debug;
+use core::fmt::{Debug, Display};
 use core::future::Future;
 use core::hash::Hash;
 use core::marker::PhantomData;
@@ -218,6 +218,49 @@ pub struct EvictingMap<
     max_count: u64,
 }
 
+// debugging helper used mostly to get a snapshot of what eviction threshold might be causing issues
+#[derive(Debug, Copy, Clone)]
+pub struct EvictionSnapshot {
+    max_bytes: u64,
+    current_bytes: u64,
+    max_items: u64,
+    current_items: usize,
+    max_seconds: i32,
+}
+
+impl Display for EvictionSnapshot {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        if self.max_bytes != 0 {
+            write!(
+                f,
+                "Bytes: {} of {} ({:.3}%); ",
+                self.current_bytes,
+                self.max_bytes,
+                (self.current_bytes as f64 * 100.0) / (self.max_bytes as f64)
+            )?;
+        } else {
+            write!(f, "Bytes: {} of unlimited; ", self.current_bytes)?;
+        }
+        if self.max_items != 0 {
+            write!(
+                f,
+                "Items: {} of {} ({:.3}%); ",
+                self.current_items,
+                self.max_items,
+                (self.current_items as f64 * 100.0) / (self.max_items as f64)
+            )?;
+        } else {
+            write!(f, "Items: {} of unlimited; ", self.current_items)?;
+        }
+        if self.max_seconds > 0 {
+            write!(f, "Timeout: {}s", self.max_seconds)?;
+        } else {
+            write!(f, "Timeout: unlimited")?;
+        }
+        Ok(())
+    }
+}
+
 impl<K, Q, T, I, C> EvictingMap<K, Q, T, I, C>
 where
     K: Ord + Hash + Eq + Clone + Debug + Send + Sync + Borrow<Q>,
@@ -316,6 +359,19 @@ where
         is_over_size || old_item_exists || is_over_count
     }
 
+    // Gets a debugging snapshot of the state of the map. It's inevitably out of date by the time it gets sent to the user
+    // but does provide a momentary glimpse into possible issues e.g. if current_bytes is close to max_bytes
+    pub fn get_snapshot(&self) -> EvictionSnapshot {
+        let state = self.state.lock();
+        EvictionSnapshot {
+            max_bytes: self.max_bytes,
+            current_bytes: state.sum_store_size,
+            max_items: self.max_count,
+            current_items: state.lru.len(),
+            max_seconds: self.max_seconds,
+        }
+    }
+
     #[must_use]
     fn evict_items(&self, state: &mut State<K, Q, T, C>) -> (Vec<T>, Vec<RemoveFuture>) {
         let Some((_, mut peek_entry)) = state.lru.peek_lru() else {
@@ -343,7 +399,7 @@ where
                 .lru
                 .pop_lru()
                 .expect("Tried to peek() then pop() but failed");
-            debug!(?key, "Evicting",);
+            debug!(?key, "Evicting");
             let (data, futures) = state.remove(key.borrow(), &eviction_item, false);
             items_to_unref.push(data);
             removal_futures.extend(futures.into_iter());
@@ -575,6 +631,7 @@ where
 
             if let Some((old_item, futures)) = state.put(&key, eviction_item) {
                 removal_futures.extend(futures.into_iter());
+                debug!(?key, "Evicting old item");
                 replaced_items.push(old_item);
             }
             state.sum_store_size += new_item_size;
@@ -621,6 +678,7 @@ where
 
         // Unref removed item if any
         if let Some(item) = removed_item {
+            debug!(?key, "Evicting (direct remove)");
             item.unref().await;
             return true;
         }
@@ -669,6 +727,7 @@ where
 
         // Unref removed item if any
         if let Some(item) = removed_item {
+            debug!(?key, "Evicting (conditional remove)");
             item.unref().await;
             true
         } else {
