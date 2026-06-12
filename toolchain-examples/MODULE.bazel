@@ -37,9 +37,8 @@ use_repo(pip, "pip")
 bazel_dep(name = "rules_go", version = "0.60.0")
 
 # Rust
-#
-bazel_dep(name = "rules_rs", version = "0.0.76")
-bazel_dep(name = "llvm", version = "0.7.7")
+bazel_dep(name = "rules_rs", version = "0.0.86")
+bazel_dep(name = "llvm", version = "0.8.3")
 
 rust_toolchains = use_extension("@rules_rs//rs/toolchains:module_extension.bzl", "toolchains")
 rust_toolchains.toolchain(

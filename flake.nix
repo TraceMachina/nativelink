@@ -171,6 +171,9 @@
           (craneLibFor p).buildPackage ((commonArgsFor p)
             // {
               cargoArtifacts = cargoArtifactsFor p;
+              # If you're testing Nativelink images, doing a dev profile will
+              # massively speedup build times. Just don't commit/push them!
+              # CARGO_PROFILE = "dev";
             });
 
         nativeTargetPkgs =
