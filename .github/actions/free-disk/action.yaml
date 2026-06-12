@@ -6,7 +6,7 @@ runs:
   steps:
     - name: Check disk space
       run: df -h /
-      shell: bash
+      shell: bash -euo pipefail {0}
     - if: runner.os == 'Linux' # Only works on Linux
       name: Free disk space
       uses: >- # v3.2.2
@@ -29,7 +29,7 @@ runs:
     # using hints from https://github.com/actions/runner-images/issues/10511#issuecomment-3984466720
     - if: runner.os == 'macOS'
       name: Free Disk space
-      shell: bash
+      shell: bash -euo pipefail {0}
       run: |
         # Remove unnecessary pre-installed tools (saves 5-10GB)
         sudo rm -rf /usr/local/share/powershell
@@ -41,4 +41,4 @@ runs:
         xcrun simctl runtime list
     - name: Check disk space
       run: df -h /
-      shell: bash
+      shell: bash -euo pipefail {0}
