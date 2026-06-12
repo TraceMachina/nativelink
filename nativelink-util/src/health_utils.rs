@@ -204,7 +204,7 @@ pub trait HealthStatusReporter {
 ///
 /// Indicator checks run **in parallel**: each indicator's
 /// `check_health` does real I/O against its store (write/has/read
-/// roundtrip per [`StoreDriver::check_health`]), so iterating
+/// roundtrip per [`nativelink_util::store_trait::StoreDriver::check_health`]), so iterating
 /// indicators serially makes the total response time `N * timeout`.
 /// Under load that easily exceeds Kubernetes liveness probe budgets,
 /// causing kubelet to kill an otherwise-healthy pod whose only sin

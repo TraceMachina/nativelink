@@ -28,10 +28,10 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
     GetCapabilitiesRequest, PriorityCapabilities, ServerCapabilities,
 };
 use nativelink_proto::build::bazel::semver::SemVer;
+use nativelink_scheduler::known_platform_property_provider::KnownPlatformPropertyProvider;
 use nativelink_util::digest_hasher::default_digest_hasher_func;
-use nativelink_util::operation_state_manager::ClientStateManager;
 use tonic::{Request, Response, Status};
-use tracing::{Level, instrument, warn};
+use tracing::{Level, instrument};
 
 const MAX_BATCH_TOTAL_SIZE: i64 = 64 * 1024;
 
@@ -43,7 +43,7 @@ pub struct CapabilitiesServer {
 impl CapabilitiesServer {
     pub async fn new(
         configs: &[WithInstanceName<CapabilitiesConfig>],
-        scheduler_map: &HashMap<String, Arc<dyn ClientStateManager>>,
+        scheduler_map: &HashMap<String, Arc<dyn KnownPlatformPropertyProvider>>,
     ) -> Result<Self, Error> {
         let mut supported_node_properties_for_instance = HashMap::new();
         for config in configs {
@@ -58,24 +58,17 @@ impl CapabilitiesServer {
                                 remote_execution_cfg.scheduler
                             )
                         })?;
-                if let Some(props_provider) = scheduler.as_known_platform_property_provider() {
-                    for platform_key in props_provider
-                        .get_known_properties(&config.instance_name)
-                        .await
-                        .err_tip(|| {
-                            format!(
-                                "Failed to get platform properties for {}",
-                                config.instance_name
-                            )
-                        })?
-                    {
-                        properties.push(platform_key.clone());
-                    }
-                } else {
-                    warn!(
-                        "Scheduler '{}' does not implement KnownPlatformPropertyProvider",
-                        remote_execution_cfg.scheduler
-                    );
+                for platform_key in scheduler
+                    .get_known_properties(&config.instance_name)
+                    .await
+                    .err_tip(|| {
+                        format!(
+                            "Failed to get platform properties for {}",
+                            config.instance_name
+                        )
+                    })?
+                {
+                    properties.push(platform_key.clone());
                 }
             }
             supported_node_properties_for_instance.insert(config.instance_name.clone(), properties);
