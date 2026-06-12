@@ -17,7 +17,7 @@
     };
     nix2container = {
       # TODO(SchahinRohani): Use a specific commit hash until nix2container is stable.
-      url = "github:nlewo/nix2container/66f4b8a47e92aa744ec43acbb5e9185078983909";
+      url = "github:nlewo/nix2container/76be9608a7f4d6c985d28b0e7be903ae2547df3e";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
