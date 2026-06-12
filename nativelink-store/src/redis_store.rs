@@ -1010,13 +1010,13 @@ where
         // We want to read the data at the key from `offset` to `offset + length`.
         let data_start = offset;
         let data_end = data_start
-            .saturating_add(length.unwrap_or(isize::MAX as usize) as isize)
+            .saturating_add(length.map_or(isize::MAX, |l| isize::try_from(l).unwrap_or(isize::MAX)))
             .saturating_sub(1);
 
         // And we don't ever want to read more than `read_chunk_size` bytes at a time, so we'll need to iterate.
         let mut chunk_start = data_start;
         let mut chunk_end = cmp::min(
-            data_start.saturating_add(self.read_chunk_size as isize) - 1,
+            data_start.saturating_add(self.read_chunk_size.try_into().unwrap_or(isize::MAX)) - 1,
             data_end,
         );
 
@@ -1051,7 +1051,8 @@ where
             // ...and go grab the next chunk.
             chunk_start = chunk_end + 1;
             chunk_end = cmp::min(
-                chunk_start.saturating_add(self.read_chunk_size as isize) - 1,
+                chunk_start.saturating_add(self.read_chunk_size.try_into().unwrap_or(isize::MAX))
+                    - 1,
                 data_end,
             );
         }
