@@ -204,26 +204,19 @@
         inherit (nix2container.packages.${system}.nix2container) pullImage;
         inherit (nix2container.packages.${system}.nix2container) buildImage;
 
-        # TODO(palfrey): Allow "crosscompiling" this image. At the moment
-        #                    this would set a wrong container architecture. See:
-        #                    https://github.com/nlewo/nix2container/issues/138.
-        nativelink-image = let
-          nativelinkForImage =
-            if pkgs.stdenv.isx86_64
-            then nativelink-x86_64-linux
-            else nativelink-aarch64-linux;
-        in
+        nativelinkImageFor = archPackages: arch:
           buildImage {
+            inherit arch;
             name = "nativelink";
             copyToRoot = [
               (pkgs.buildEnv {
                 name = "nativelink-buildEnv";
-                paths = [nativelinkForImage];
+                paths = [archPackages];
                 pathsToLink = ["/bin"];
               })
             ];
             config = {
-              Entrypoint = [(pkgs.lib.getExe' nativelinkForImage "nativelink")];
+              Entrypoint = [(pkgs.lib.getExe' archPackages "nativelink")];
               Labels = {
                 "org.opencontainers.image.description" = "An RBE compatible, high-performance cache and remote executor.";
                 "org.opencontainers.image.documentation" = "https://github.com/TraceMachina/nativelink";
@@ -235,6 +228,14 @@
               };
             };
           };
+
+        nativelinkImageForX64 = nativelinkImageFor nativelink-x86_64-linux "amd64";
+        nativelinkImageForAarch64 = nativelinkImageFor nativelink-aarch64-linux "arm64";
+
+        nativelink-image =
+          if pkgs.stdenv.isx86_64
+          then nativelinkImageForX64
+          else nativelinkImageForAarch64;
 
         nativelink-worker-init = pkgs.callPackage ./tools/nativelink-worker-init.nix {inherit buildImage self nativelink-image;};
 
@@ -387,6 +388,8 @@
               nativelinkCoverageForHost
               nativelink-aarch64-linux
               nativelink-image
+              nativelinkImageForAarch64
+              nativelinkImageForX64
               nativelink-is-executable-test
               nativelink-worker-init
               nativelink-x86_64-linux
