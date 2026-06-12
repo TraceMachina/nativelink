@@ -1,5 +1,5 @@
 ---
-title: "Directory Cache Configuration"
+title: "Directory Cache"
 description: "Enable high-performance directory caching for faster builds"
 pagefind: true
 ---
@@ -103,7 +103,7 @@ Here's a complete working configuration with directory caching enabled:
         content_path: "/tmp/nativelink/cas",
         temp_path: "/tmp/nativelink/tmp",
         eviction_policy: {
-          max_bytes: 10000000000, // 10GB
+          max_bytes: "10GB",
         },
       },
     },
@@ -112,7 +112,7 @@ Here's a complete working configuration with directory caching enabled:
         content_path: "/tmp/nativelink/ac",
         temp_path: "/tmp/nativelink/tmp",
         eviction_policy: {
-          max_bytes: 1000000000, // 1GB
+          max_bytes: "1GB",
         },
       },
     },
@@ -237,6 +237,6 @@ This is normal for builds that frequently change inputs. The cache is most effec
 
 ## Additional Resources
 
-- Check out the [Basic Config Examples](/docs/config/basic-configs) for more configuration patterns
-- See [Production Config](/docs/config/production-config) for enterprise deployments
+- Check out the [Basic Config Examples](/configuration/basic) for more configuration patterns
+- See [Production Config](/configuration/production) for enterprise deployments
 - Join our [Slack](https://forms.gle/LtaWSixEC6bYi5xF7) for help with configuration

@@ -67,7 +67,6 @@
         //   max_entries: 1000,
         //   max_size_bytes: "10GB",
         // },
-
         platform_properties: {
           cpu_count: {
             query_cmd: "nproc",
