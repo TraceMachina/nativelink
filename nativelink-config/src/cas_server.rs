@@ -139,6 +139,22 @@ pub struct CapabilitiesRemoteExecutionConfig {
     pub scheduler: SchedulerRefName,
 }
 
+/// Wire compression algorithm for REAPI compressed-blobs.
+/// This is the compression applied on the gRPC wire between client and server,
+/// as described in the REAPI compressed-blobs specification.
+/// This is distinct from at-rest compression (CompressionStore/LZ4).
+#[derive(Deserialize, Serialize, Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub enum WireCompressor {
+    /// No wire compression (default, backwards compatible).
+    #[default]
+    Identity,
+    /// Zstandard compression. This is the only algorithm Bazel uses with
+    /// `--remote_cache_compression`.
+    Zstd,
+}
+
 #[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
@@ -147,6 +163,21 @@ pub struct CapabilitiesConfig {
     /// If not set the capabilities service will inform the client that remote
     /// execution is not supported.
     pub remote_execution: Option<CapabilitiesRemoteExecutionConfig>,
+
+    /// Wire compression algorithms supported for REAPI compressed-blobs.
+    /// When set, the capabilities service will advertise these compressors
+    /// and the ByteStream/CAS services will handle compressed data.
+    ///
+    /// Note: This is wire-level compression per the REAPI spec, which is
+    /// orthogonal to at-rest compression (`CompressionStore` with LZ4).
+    /// Wire compression reduces bytes on the network; at-rest compression
+    /// reduces bytes in the storage backend.
+    ///
+    /// Bazel clients enable this with `--remote_cache_compression`.
+    ///
+    /// Default: empty (no wire compression, backwards compatible)
+    #[serde(default)]
+    pub supported_wire_compressors: Vec<WireCompressor>,
 }
 
 #[derive(Deserialize, Serialize, Debug)]

@@ -161,6 +161,12 @@
             # FIXME(palfrey): Attempted workaround from https://github.com/llvm/llvm-project/issues/32849#issuecomment-2353071071 but doesn't work
             # CFLAGS = "-femit-all-decls";
             ${linkerEnvVar} = linkerPath;
+            # musl libc does not provide __memcpy_chk (a glibc _FORTIFY_SOURCE extension).
+            # C crates compiled for musl (e.g. zstd-sys via opentelemetry-otlp's zstd-tonic
+            # feature) fail to link when the nixpkgs cc-wrapper injects -D_FORTIFY_SOURCE=2.
+            # hardeningDisable removes "fortify" from NIX_HARDENING_ENABLE so the cc-wrapper
+            # never emits that flag for this derivation.
+            hardeningDisable = ["fortify"];
           });
 
         # Additional target for external dependencies to simplify caching.

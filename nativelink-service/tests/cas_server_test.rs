@@ -37,7 +37,7 @@ use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
-use nativelink_util::digest_hasher::DigestHasherFunc;
+use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::store_trait::{
     RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
@@ -75,6 +75,31 @@ fn make_cas_server(store_manager: &StoreManager) -> Result<CasServer, Error> {
             },
         }],
         store_manager,
+        &[WithInstanceName {
+            instance_name: "foo_instance_name".to_string(),
+            config: nativelink_config::cas_server::CapabilitiesConfig::default(),
+        }],
+    )
+}
+
+fn make_cas_server_with_zstd(store_manager: &StoreManager) -> Result<CasServer, Error> {
+    CasServer::new(
+        &[WithInstanceName {
+            instance_name: "foo_instance_name".to_string(),
+            config: nativelink_config::cas_server::CasStoreConfig {
+                cas_store: "main_cas".to_string(),
+            },
+        }],
+        store_manager,
+        &[WithInstanceName {
+            instance_name: "foo_instance_name".to_string(),
+            config: nativelink_config::cas_server::CapabilitiesConfig {
+                supported_wire_compressors: vec![
+                    nativelink_config::cas_server::WireCompressor::Zstd,
+                ],
+                ..Default::default()
+            },
+        }],
     )
 }
 
@@ -746,6 +771,10 @@ fn make_cas_server_with_stall_store(delay: Duration) -> Result<CasServer, Error>
             },
         }],
         &store_manager,
+        &[WithInstanceName {
+            instance_name: INSTANCE_NAME.to_string(),
+            config: nativelink_config::cas_server::CapabilitiesConfig::default(),
+        }],
     )
 }
 
@@ -829,5 +858,105 @@ async fn batch_read_blobs_per_blob_timeout_returns_deadline_exceeded()
         "unexpected message: {}",
         status.message,
     );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn batch_update_blobs_zstd_compressed() -> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let cas_server = make_cas_server_with_zstd(&store_manager)?;
+
+    // Use repetitive data so zstd compresses well.
+    let raw_data: Vec<u8> = "hello world ".repeat(100).into_bytes();
+
+    // Compute the sha256 digest.
+    let mut hasher = DigestHasherFunc::Sha256.hasher();
+    DigestHasher::update(&mut hasher, &raw_data);
+    let digest_info = hasher.finalize_digest();
+    let digest = Digest::from(&digest_info);
+    let compressed_data = zstd::bulk::compress(&raw_data, 3)?;
+
+    let raw_response = cas_server
+        .batch_update_blobs(Request::new(BatchUpdateBlobsRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            requests: vec![batch_update_blobs_request::Request {
+                digest: Some(digest.clone()),
+                data: compressed_data.into(),
+                compressor: compressor::Value::Zstd.into(),
+                ..Default::default()
+            }],
+            digest_function: digest_function::Value::Sha256.into(),
+        }))
+        .await;
+
+    let response = raw_response.unwrap().into_inner();
+    assert_eq!(response.responses.len(), 1);
+    let entry = &response.responses[0];
+    assert_eq!(entry.status.as_ref().map(|s| s.code), Some(Code::Ok as i32));
+
+    // Verify we can read the data back uncompressed (store holds raw data).
+    let raw_response = cas_server
+        .batch_read_blobs(Request::new(BatchReadBlobsRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            digests: vec![digest.clone()],
+            acceptable_compressors: vec![compressor::Value::Identity.into()],
+            digest_function: digest_function::Value::Sha256.into(),
+        }))
+        .await;
+
+    let response = raw_response.unwrap().into_inner();
+    assert_eq!(response.responses.len(), 1);
+    let entry = &response.responses[0];
+    assert_eq!(entry.data.as_ref(), &raw_data);
+    assert_eq!(entry.compressor, compressor::Value::Identity as i32);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn batch_read_blobs_zstd_compressed() -> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let cas_server = make_cas_server_with_zstd(&store_manager)?;
+
+    // Upload uncompressed data first.
+    let raw_data: Vec<u8> = "hello world ".repeat(100).into_bytes();
+    let raw_size = raw_data.len() as i64;
+
+    // Compute the sha256 digest.
+    let mut hasher = DigestHasherFunc::Sha256.hasher();
+    DigestHasher::update(&mut hasher, &raw_data);
+    let digest_info = hasher.finalize_digest();
+    let digest = Digest::from(&digest_info);
+
+    cas_server
+        .batch_update_blobs(Request::new(BatchUpdateBlobsRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            requests: vec![batch_update_blobs_request::Request {
+                digest: Some(digest.clone()),
+                data: raw_data.clone().into(),
+                compressor: compressor::Value::Identity.into(),
+                ..Default::default()
+            }],
+            digest_function: digest_function::Value::Sha256.into(),
+        }))
+        .await?;
+
+    // Request compressed data.
+    let raw_response = cas_server
+        .batch_read_blobs(Request::new(BatchReadBlobsRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            digests: vec![digest.clone()],
+            acceptable_compressors: vec![compressor::Value::Zstd.into()],
+            digest_function: digest_function::Value::Sha256.into(),
+        }))
+        .await;
+
+    let response = raw_response.unwrap().into_inner();
+    assert_eq!(response.responses.len(), 1);
+    let entry = &response.responses[0];
+    assert_eq!(entry.compressor, compressor::Value::Zstd as i32);
+
+    // Decompress and verify the data matches.
+    let decompressed = zstd::bulk::decompress(&entry.data, raw_size as usize)?;
+    assert_eq!(decompressed.as_slice(), raw_data.as_slice());
     Ok(())
 }
