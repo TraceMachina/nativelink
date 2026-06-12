@@ -5,8 +5,6 @@ on:
     branches:
       - main
   pull_request:
-    branches:
-      - main
     paths-ignore:
       - '.github/styles/**'
       - 'web/**'
@@ -30,6 +28,11 @@ jobs:
       id-token: write
       security-events: write
     timeout-minutes: 30
+    services:
+      registry:
+        image: registry:3
+        ports:
+          - 5000:5000
     steps:
       - name: Checkout
         uses: >- # v6.0.2
@@ -40,18 +43,38 @@ jobs:
         with:
           nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
 
+      - id: version
+        uses: ./.github/actions/generate-version
+
+      # FIXME: merge the multi-arch and single-arch paths
+      - name: Test multi-arch image
+        if: ${{ matrix.image == 'image'}}
+        run: |
+          nix run --fallback .#create-multi-arch-image localhost:5000 nativelink:${{ steps.version.outputs.version-string }} nativelink-image-for-x64 nativelink-image-for-aarch64
+          nix run --fallback .#local-image-test localhost:5000/nativelink:${{ steps.version.outputs.version-string }}
+
+      - name: Upload multi-arch image
+        if: ${{ matrix.image != 'image' && github.ref == 'refs/heads/main'}}
+        run: |
+          nix run --fallback .#regctl-ghcr-login
+          nix run --fallback .#create-multi-arch-image ghcr.io ${{ github.repository_owner }}/nativelink:${{ steps.version.outputs.version-string }} nativelink-image-for-x64 nativelink-image-for-aarch64
+        env:
+          GHCR_USERNAME: ${{ github.actor }}
+          GHCR_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Test image
+        if: ${{ matrix.image != 'image'}}
         run: |
           nix run --fallback .#local-image-test ${{ matrix.image }}
 
       - name: Upload image
+        if: ${{ matrix.image != 'image' && github.ref == 'refs/heads/main'}}
         run: |
           nix run --fallback .#publish-ghcr ${{ matrix.image }}
         env:
           GHCR_REGISTRY: ghcr.io/${{ github.repository_owner }}
           GHCR_USERNAME: ${{ github.actor }}
           GHCR_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
-        if: github.ref == 'refs/heads/main'
 
       - name: Upload trivy scan results to GitHub Security tab
         uses: >- # v2.16.3
