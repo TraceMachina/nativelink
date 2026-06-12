@@ -3,10 +3,12 @@
 conly = "conly"
 
 [default]
-# Old wrong spelling support
 extend-ignore-re = [
+  # Old wrong spelling support
   "alias = \"Cachable\"",
   "old_unique_qualifier_cachable_works",
+  # Argument in .github/workflows/image.yaml
+  "sme=off",
 ]
 
 [files]

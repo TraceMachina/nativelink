@@ -2,11 +2,13 @@
   dive,
   trivy,
   writeShellScriptBin,
+  skopeo,
 }:
 writeShellScriptBin "local-image-test" ''
-  set -xeuo pipefail
+  set -euo pipefail
 
   echo "Testing image: $1"
+  set -x
 
   # Commit hashes would not be a good choice here as they are not
   # fully dependent on the inputs to the image. For instance, amending
@@ -15,9 +17,16 @@ writeShellScriptBin "local-image-test" ''
   # didn't change.
   IMAGE_TAG=$(nix eval .#$1.imageTag --raw)
   IMAGE_NAME=$(nix eval .#$1.imageName --raw)
+  IMAGE=$(nix eval .#$1 --raw)
 
-  nix run .#$1.copyTo \
-    docker-daemon:''${IMAGE_NAME}:''${IMAGE_TAG}
+  # Inlining from https://github.com/nlewo/nix2container/blob/76be9608a7f4d6c985d28b0e7be903ae2547df3e/default.nix#L88
+  # so we can run --debug on skopeo
+  # nix run .#$1.copyTo \
+  #   docker-daemon:''${IMAGE_NAME}:''${IMAGE_TAG}
+  nix build .#$1
+  # Double-check available disk before we run skopeo
+  df -h
+  ${skopeo}/bin/skopeo --debug --insecure-policy copy nix:''${IMAGE} docker-daemon:''${IMAGE_NAME}:''${IMAGE_TAG}
 
   # Ensure that the image has minimal closure size.
   # TODO(palfrey): The default allows 10% inefficiency. Since we control all
