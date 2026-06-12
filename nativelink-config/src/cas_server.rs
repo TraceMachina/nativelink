@@ -597,7 +597,7 @@ pub enum WorkerProperty {
     Values(Vec<String>),
 
     /// A dynamic configuration. The string will be executed as a command
-    /// (not sell) and will be split by "\n" (new line character).
+    /// (not shell) and will be split by "\n" (new line character).
     QueryCmd(String),
 }
 
