@@ -303,7 +303,17 @@
         };
 
         nativelinkCoverageFor = p: let
-          coverageArgs = commonArgsFor p;
+          coverageArgs =
+            (commonArgsFor p)
+                        // {
+                          # TODO(palfrey): For some reason we're triggering an edgecase where
+                          #                    mimalloc builds against glibc headers in coverage
+                          #                    builds. This leads to nonexistend __memcpy_chk and
+                          #                    __memset_chk symbols if fortification is enabled.
+                          #                    Our regular builds also have this issue, but we
+                          #                    should investigate further.
+                          hardeningDisable = ["fortify"];
+                        };
         in
           (nightlyCraneLibFor p).cargoLlvmCov (coverageArgs
             // {
