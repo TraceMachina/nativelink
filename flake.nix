@@ -334,7 +334,7 @@
               '';
               doInstallCargoArtifacts = false;
               pnameSuffix = "-llvm-cov";
-              nativeBuildInputs = [p.cargo-llvm-cov];
+              nativeBuildInputs = [(p.callPackage ./tools/cargo-llvm-cov/package.nix {})];
 
               cargoArtifacts = nightlyCargoArtifactsFor p;
               preConfigurePhases = ["tempHome"];
