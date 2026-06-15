@@ -152,13 +152,15 @@ impl Drop for EncodedFilePath {
             "Spawned a filesystem_delete_file"
         );
         background_spawn!("filesystem_delete_file", async move {
-            let result = fs::remove_file(&file_path)
-                .await
-                .err_tip(|| format!("Failed to remove file {}", file_path.display()));
-            if let Err(err) = result {
-                error!(?file_path, ?err, "Failed to delete file",);
-            } else {
-                debug!(?file_path, "File deleted",);
+            match fs::remove_file(&file_path).await {
+                Ok(()) => debug!(?file_path, "File deleted"),
+                // The file already being gone is the desired end state of a
+                // delete, not a failure — e.g. an entry marked Temp after an
+                // already-gone unref points at a path that was never created.
+                Err(err) if err.code == Code::NotFound => {
+                    debug!(?file_path, "File already gone, nothing to delete");
+                }
+                Err(err) => error!(?file_path, ?err, "Failed to delete file"),
             }
             // .fetch_sub returns previous value, so we subtract one to get approximate current value
             let current_active_drop_spawns = shared_context
@@ -406,28 +408,34 @@ impl LenEntry for FileEntryImpl {
         let to_path = to_full_path_from_key(&encoded_file_path.shared_context.temp_path, &new_key);
 
         if let Err(err) = fs::rename(&from_path, &to_path).await {
-            // ENOENT here means the file we expected at `from_path`
-            // was already gone — typically because another thread's
-            // eviction beat us to the unref, or because the entry
-            // ended up in our map without its file ever landing on
-            // disk (the "phantom-map" case the runtime recovers from
-            // via `FastSlowStore::get_part`'s slow-store fallback).
-            // It is benign at this site — there is no file to move
-            // — and historically dominates the log volume of this
-            // store under heavy write+evict concurrency, fast enough
-            // to drown the runtime under sustained pressure. Demote
-            // to `debug` and drop the per-emission path fields so it
-            // stops costing serialization in the hot path.
-            //
-            // Other rename failures (EACCES, EXDEV, EBUSY, …) are
-            // genuinely unexpected and stay at `warn` with full
-            // context.
-            if err.code == Code::NotFound {
+            // ENOENT from rename is ambiguous: the source may be gone, or
+            // a directory component of the destination (the temp dir) may
+            // be missing. Confirm the source is genuinely gone before
+            // treating it as benign — otherwise a removed temp dir would
+            // flip an intact content file to Temp and orphan it on disk.
+            let source_gone = err.code == Code::NotFound
+                && matches!(
+                    fs::metadata(&from_path).await,
+                    Err(meta_err) if meta_err.code == Code::NotFound
+                );
+            if source_gone {
+                // The file is already gone — typically another thread's
+                // eviction beat us, or the entry never got its file on
+                // disk. Benign here, and it dominates log volume under
+                // heavy write+evict concurrency, so keep it at `debug`.
+                // Mark the entry Temp (as a successful rename would) so a
+                // repeat unref is a no-op and drop stops claiming the
+                // content path.
                 debug!(
                     key = ?encoded_file_path.key,
                     "Failed to rename file (already gone, treating as benign)",
                 );
+                encoded_file_path.path_type = PathType::Temp;
+                encoded_file_path.key = new_key;
             } else {
+                // Either a non-ENOENT failure (EACCES, EXDEV, EBUSY, …) or
+                // ENOENT with the source still present (missing temp dir).
+                // The content file is intact; leave the entry as Content.
                 warn!(
                     key = ?encoded_file_path.key,
                     ?from_path,
@@ -1441,10 +1449,14 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         let mut temp_file = entry.read_file_part(offset, read_limit).or_else(|err| async move {
             // If the file is not found, we need to remove it from the eviction map.
             if err.code == Code::NotFound {
-                error!(
+                // Map said the file was present but `open()` hit ENOENT.
+                // Self-heals: we remove the stale entry below and a
+                // fast/slow caller re-populates from the slow store, so
+                // this is a recoverable warn, not a fatal error.
+                warn!(
                     ?err,
                     key = ?owned_key,
-                    "Entry was in our map, but not found on disk. Removing from map as a precaution, but process probably need restarted."
+                    "Filesystem store map/disk divergence: removing entry; reader will fall through to slow store",
                 );
                 self.evicting_map.remove(&owned_key).await;
             }

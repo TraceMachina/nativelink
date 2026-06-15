@@ -6,11 +6,13 @@ pagefind: true
 
 <Callout title="Inspired by Reid Kleckner" type="idea">
 This tutorial follows the approach Reid Kleckner laid out in
-[Distributed builds of LLVM with CMake, recc, and NativeLink](https://reidkleckner.dev/posts/llvm-recc-nativelink/).
+[Distributed builds of LLVM with CMake, recc, and NativeLink](reid).
 Read his post for the LLVM-scale walkthrough and the reasoning behind
 each piece. This page is the short, hands-on version for your own
 projects.
 </Callout>
+
+[reid]: https://reidkleckner.dev/posts/llvm-recc-nativelink/
 
 *Read time: ~5 minutes. Hands-on time: another ~5 if you have Docker and a
 package manager handy; longer on Linux if you build `recc` from source.*
@@ -201,4 +203,4 @@ docker stop nativelink && docker rm nativelink
   actually offload compile work. See the
   [deployment examples](/docs/deployment-examples/kubernetes).
 - For PCH, LTO, and other gnarly C++ build features at scale, read
-  [Reid Kleckner's writeup][reid].
+  [Reid Kleckner's writeup](reid).
