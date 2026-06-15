@@ -62,7 +62,6 @@ jobs:
           done
           echo "::error::Bazel still failing after 3 attempts."
           exit 1
-        shell: bash
 
       - name: Teardown Worker
         uses: ./.github/actions/end-nix

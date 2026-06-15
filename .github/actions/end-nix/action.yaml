@@ -14,7 +14,7 @@ runs:
         if: ${{ inputs.nativelink_attic_token != '' }}
         run: |
           cat /tmp/attic-push.log
-        shell: bash
+        shell: bash -euo pipefail {0}
 
       - name: Attic push
         if: ${{ inputs.nix_name != '' && inputs.nativelink_attic_token != '' }}
@@ -24,5 +24,6 @@ runs:
           timeout_minutes: 30
           max_attempts: 3
           command: |
+            set -euo pipefail
             /tmp/result/bin/attic push nativelink $(nix eval --raw ${{ inputs.nix_name }})
           shell: bash
