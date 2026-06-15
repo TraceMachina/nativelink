@@ -44,7 +44,6 @@ jobs:
           nix build --fallback -L .#nativelinkCoverageForHost
 
       - name: Upload coverage artifact
-        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         uses: >- # v3.0.1
           actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa
         with:
