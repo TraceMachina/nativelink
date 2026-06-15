@@ -314,9 +314,28 @@
               #                    should investigate further.
               hardeningDisable = ["fortify"];
             };
+          cargoExtraArgs = builtins.concatStringsSep " " [
+            "--workspace"
+            "--locked"
+            "--features nix"
+            # "--branch" # FIXME(palfrey): because of https://github.com/llvm/llvm-project/issues/119558
+            "--ignore-filename-regex '.*(genproto|vendor-cargo-deps|crates).*'"
+          ];
         in
-          (nightlyCraneLibFor p).cargoLlvmCov (coverageArgs
+          (nightlyCraneLibFor p).mkCargoDerivation (coverageArgs
             // {
+              # We build our own custom command so we can run with report for both html and text output
+              # Mostly derived from the upstream cargoLlvmCov though
+              # See https://github.com/ipetkov/crane/blob/59a82a1222dd3b2080b5cc52a1a2e8d5f1b77f37/lib/cargoLlvmCov.nix
+              installPhaseCommand = "";
+              buildPhaseCargoCommand = ''
+                cargoWithProfile llvm-cov test ${cargoExtraArgs} --html --output-dir $out
+                cargoWithProfile llvm-cov report --workspace --text --output-dir $out
+              '';
+              doInstallCargoArtifacts = false;
+              pnameSuffix = "-llvm-cov";
+              nativeBuildInputs = [p.cargo-llvm-cov];
+
               cargoArtifacts = nightlyCargoArtifactsFor p;
               preConfigurePhases = ["tempHome"];
               tempHome = ''
@@ -338,14 +357,6 @@
                 ln -s ${p.mongodb}/bin/mongod ''${MONGOD}
                 ''${MONGOD} --version
               '';
-              cargoExtraArgs = builtins.concatStringsSep " " [
-                "--all"
-                "--locked"
-                "--features nix"
-                # "--branch" # FIXME(palfrey): because of https://github.com/llvm/llvm-project/issues/119558
-                "--ignore-filename-regex '.*(genproto|vendor-cargo-deps|crates).*'"
-              ];
-              cargoLlvmCovExtraArgs = "--html --output-dir $out";
             });
 
         nativelinkCoverageForHost = nativelinkCoverageFor pkgs;
