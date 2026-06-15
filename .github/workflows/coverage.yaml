@@ -42,6 +42,7 @@ jobs:
       - name: Generate coverage
         run: |
           nix build --fallback -L .#nativelinkCoverageForHost
+          cat result/text/index.txt
 
       - name: Upload coverage artifact
         uses: >- # v3.0.1

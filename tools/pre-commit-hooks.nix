@@ -84,7 +84,10 @@ in {
 
   # Nix
   alejandra.enable = true;
-  deadnix.enable = true;
+  deadnix = {
+    excludes = ["tools/cargo-llvm-cov/package.nix"] ++ excludes; # because the upstream pattern has some things we don't want to drop
+    enable = true;
+  };
   statix.enable = true;
 
   # Rust
