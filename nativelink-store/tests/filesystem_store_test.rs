@@ -1798,3 +1798,131 @@ async fn detect_same_key_different_contents() -> Result<(), Error> {
     assert!(logs_contain("Files are different, so non-duplicate"));
     Ok(())
 }
+
+/// Map/disk divergence (map says present, file is gone) must surface as a
+/// recoverable warn and remove the stale entry — not a fatal error.
+#[nativelink_test]
+async fn get_part_on_map_disk_divergence_warns_and_removes_entry() -> Result<(), Error> {
+    let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
+    let content_path = make_temp_path("content_path");
+    let store = Box::pin(
+        FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+            content_path: content_path.clone(),
+            temp_path: make_temp_path("temp_path"),
+            eviction_policy: None,
+            ..Default::default()
+        })
+        .await?,
+    );
+    store.update_oneshot(digest, VALUE1.into()).await?;
+
+    // Delete the backing file out from under the still-present map entry.
+    let content_file = OsString::from(format!("{content_path}/{DIGEST_FOLDER}/{digest}"));
+    fs::remove_file(&content_file).await?;
+
+    let err = store
+        .get_part_unchunked(digest, 0, None)
+        .await
+        .expect_err("divergent read must fail");
+    assert_eq!(
+        err.code,
+        Code::NotFound,
+        "divergent read must surface NotFound"
+    );
+
+    assert!(
+        logs_contain("Filesystem store map/disk divergence"),
+        "divergence must be logged as a recoverable warn"
+    );
+    assert!(
+        !logs_contain("process probably need restarted"),
+        "stale fatal-sounding message must be gone"
+    );
+    assert_eq!(
+        store.has(digest).await?,
+        None,
+        "stale entry must be removed from the map"
+    );
+
+    Ok(())
+}
+
+/// unref must be idempotent when the file is already gone: the entry is
+/// marked Temp so a second unref early-returns instead of racing the
+/// vanished path again.
+#[nativelink_test]
+async fn unref_is_idempotent_when_file_already_gone() -> Result<(), Error> {
+    let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
+    let content_path = make_temp_path("content_path");
+    let store = Box::pin(
+        FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+            content_path: content_path.clone(),
+            temp_path: make_temp_path("temp_path"),
+            eviction_policy: None,
+            ..Default::default()
+        })
+        .await?,
+    );
+    store.update_oneshot(digest, VALUE1.into()).await?;
+    let file_entry = store.get_file_entry_for_digest(&digest).await?;
+
+    let content_file = OsString::from(format!("{content_path}/{DIGEST_FOLDER}/{digest}"));
+    fs::remove_file(&content_file).await?;
+
+    // First unref: rename hits ENOENT (benign) and flips the entry to Temp.
+    file_entry.unref().await;
+    // Second unref: must hit the Temp early-return, proving the flip stuck.
+    file_entry.unref().await;
+
+    assert!(
+        logs_contain("File is already a temp file"),
+        "second unref should early-return as a Temp file (idempotent)"
+    );
+
+    Ok(())
+}
+
+/// rename ENOENT is ambiguous: a missing temp directory must not be mistaken
+/// for a vanished source. With the source still present, unref must warn and
+/// leave the content file intact rather than flip to Temp and orphan it.
+#[nativelink_test]
+async fn unref_does_not_orphan_content_file_when_temp_dir_missing() -> Result<(), Error> {
+    let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
+    let content_path = make_temp_path("content_path");
+    let temp_path = make_temp_path("temp_path");
+    let store = Box::pin(
+        FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+            content_path: content_path.clone(),
+            temp_path: temp_path.clone(),
+            eviction_policy: None,
+            ..Default::default()
+        })
+        .await?,
+    );
+    store.update_oneshot(digest, VALUE1.into()).await?;
+    let file_entry = store.get_file_entry_for_digest(&digest).await?;
+
+    // Remove the temp dir so rename's destination parent is gone (ENOENT)
+    // while the source content file is perfectly intact.
+    fs::remove_dir_all(format!("{temp_path}/{DIGEST_FOLDER}")).await?;
+
+    file_entry.unref().await;
+
+    assert!(
+        logs_contain("Failed to rename file"),
+        "missing temp dir (source present) must warn, not be treated as benign"
+    );
+    assert!(
+        !logs_contain("treating as benign"),
+        "an intact content file must not take the benign vanished-source path"
+    );
+    // The content file must still exist — not orphaned by a wrong Temp flip.
+    let content_file = OsString::from(format!("{content_path}/{DIGEST_FOLDER}/{digest}"));
+    assert_eq!(
+        read_file_contents(&content_file).await?,
+        VALUE1.as_bytes(),
+        "content file must remain intact after a failed unref rename"
+    );
+
+    Ok(())
+}

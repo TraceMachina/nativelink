@@ -3,6 +3,43 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.0](https://github.com/TraceMachina/nativelink/compare/v1.4.0..v1.5.0) - 2026-06-12
+
+### ⛰️  Features
+
+- opt-in bypass of leader/follower dedup for huge blobs ([#2415](https://github.com/TraceMachina/nativelink/issues/2415)) - ([b4ee17c](https://github.com/TraceMachina/nativelink/commit/b4ee17c657c6fc246cede512b213ad8f9fe71168))
+- *(scheduler)* publish resource-usage origin event from ApiWorkerScheduler ([#2413](https://github.com/TraceMachina/nativelink/issues/2413)) - ([08a2f24](https://github.com/TraceMachina/nativelink/commit/08a2f24d59e53b4aeb1627f23eb9102bf274c2be))
+- *(worker)* sample action peak memory by process group ([#2409](https://github.com/TraceMachina/nativelink/issues/2409)) - ([5a9259e](https://github.com/TraceMachina/nativelink/commit/5a9259e7eb07a0026a74df1140418d94625d0130))
+
+### 🐛 Bug Fixes
+
+- ⚠️ **Breaking:** Prevent CAS and AC from using the same store ([#1177](https://github.com/TraceMachina/nativelink/issues/1177)) - ([9a5843b](https://github.com/TraceMachina/nativelink/commit/9a5843b61cf8531d84432a4a12828b9b5744d3be))
+  Configs that point an instance's `cas_store` and `ac_store` at the same store now fail at startup with `InvalidArgument`. Give the AC its own store before upgrading.
+- make unref ENOENT idempotent and demote map/disk divergence to warn ([#2424](https://github.com/TraceMachina/nativelink/issues/2424)) - ([f200e10](https://github.com/TraceMachina/nativelink/commit/f200e10776d593aef7d0c0476cc2856421438ddd))
+- single-acquire active_uploads in create_or_join_upload_stream ([#2429](https://github.com/TraceMachina/nativelink/issues/2429)) - ([f1032f8](https://github.com/TraceMachina/nativelink/commit/f1032f86059e402b77bf9dd89b578e29af056875))
+- fall through to slow on stale fast-tier map entries ([#2414](https://github.com/TraceMachina/nativelink/issues/2414)) - ([5186a3b](https://github.com/TraceMachina/nativelink/commit/5186a3b79ac3b4cefd6048d13328cdd3fca374dc))
+- bound cid_* lifetime to stop orphan accumulation ([#2417](https://github.com/TraceMachina/nativelink/issues/2417)) - ([d9403b0](https://github.com/TraceMachina/nativelink/commit/d9403b0a554d549477a68d97f04e2cc52899afab))
+- pass explicit TIMEOUT to absorb RediSearch slow scans ([#2393](https://github.com/TraceMachina/nativelink/issues/2393)) - ([081a2c4](https://github.com/TraceMachina/nativelink/commit/081a2c42351b5338717db6f45a4ea4da9c0c6706))
+- Fix calculation of multipart S3 upload chunk size ([#1648](https://github.com/TraceMachina/nativelink/issues/1648)) ([#2091](https://github.com/TraceMachina/nativelink/issues/2091)) - ([1ca2373](https://github.com/TraceMachina/nativelink/commit/1ca23736598cfc3a0c4f5707d010aeffe944fc3a))
+- Fix println/debug warnings ([#2423](https://github.com/TraceMachina/nativelink/issues/2423)) - ([c9a63e7](https://github.com/TraceMachina/nativelink/commit/c9a63e7dd6f5d46df64fe0f3032d069bdb032b53))
+
+### 📚 Documentation
+
+- Add cmake and recc tutorial blog ([#2297](https://github.com/TraceMachina/nativelink/issues/2297)) - ([9760b94](https://github.com/TraceMachina/nativelink/commit/9760b94b8c71ac2769e08cc6b02584afd7eb77ef))
+- Fix broken reid link at the bottom of cmake-recc ([#2426](https://github.com/TraceMachina/nativelink/issues/2426)) - ([b15745d](https://github.com/TraceMachina/nativelink/commit/b15745ddb2a3f0ba22843077a17cd8839b62833d))
+- link to enterprise.nativelink.com for self-serve Helm licensing ([#2407](https://github.com/TraceMachina/nativelink/issues/2407)) - ([1a4953e](https://github.com/TraceMachina/nativelink/commit/1a4953e50af349467331870b5b2b666332a2af95))
+
+### ⚙️ Miscellaneous
+
+- De-duplicate filesystem emplace ([#2396](https://github.com/TraceMachina/nativelink/issues/2396)) - ([73029bb](https://github.com/TraceMachina/nativelink/commit/73029bb1acff31b74ba6693a37d2e88658d4e2a4))
+- Drop as_know_platform_property_provider ([#2410](https://github.com/TraceMachina/nativelink/issues/2410)) - ([1794d85](https://github.com/TraceMachina/nativelink/commit/1794d85f816be0fd1bb92bdfb95af9f70ee71924))
+- Drop vercel.json ([#2425](https://github.com/TraceMachina/nativelink/issues/2425)) - ([6422b0e](https://github.com/TraceMachina/nativelink/commit/6422b0e507b9670af59a1cc81db785329fe11c98))
+- use Duration::from_mins() for timeout constants ([#2411](https://github.com/TraceMachina/nativelink/issues/2411)) - ([ab0f881](https://github.com/TraceMachina/nativelink/commit/ab0f881a898ee05d0449b59913ecfad0eee7350c))
+
+### 📦 Bumps & Version Updates
+
+- *(deps)* update rust crate zip to v8 ([#2422](https://github.com/TraceMachina/nativelink/issues/2422)) - ([bc6c7db](https://github.com/TraceMachina/nativelink/commit/bc6c7dbfad0eb4686e3b2645674eb8d84975b94d))
+
 ## [1.4.0](https://github.com/TraceMachina/nativelink/compare/v1.3.2..v1.4.0) - 2026-06-06
 
 
