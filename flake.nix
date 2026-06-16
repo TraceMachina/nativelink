@@ -109,6 +109,7 @@
         commonArgsFor = p: let
           isLinuxBuild = p.stdenv.buildPlatform.isLinux;
           isLinuxTarget = p.stdenv.targetPlatform.isLinux;
+          isCrossCompile = p.stdenv.targetPlatform.system != pkgs.stdenv.targetPlatform.system;
           # Map the nix system to the Rust target triple that we'd want to target
           # by default.
           targetArch =
@@ -155,9 +156,12 @@
               ];
             CARGO_BUILD_TARGET = targetArch;
           }
+          // (pkgs.lib.optionalAttrs (isLinuxTarget && !isCrossCompile) {
+            # customClang is only defined for the host compiler, so doesn't work for cross-compiling
+            TARGET_CC = "${pkgs.lre.clang}/bin/customClang"; # So mimalloc gets the right compiler not defaulting to gcc
+          })
           // (pkgs.lib.optionalAttrs isLinuxTarget {
             CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
-            TARGET_CC = "${pkgs.lre.clang}/bin/customClang"; # So mimalloc gets the right compiler not defaulting to gcc
             # FIXME(palfrey): Attempted workaround from https://github.com/llvm/llvm-project/issues/32849#issuecomment-2353071071 but doesn't work
             # CFLAGS = "-femit-all-decls";
             ${linkerEnvVar} = linkerPath;
