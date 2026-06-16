@@ -42,7 +42,7 @@ const announcements = [
   {
     tag: "Announcement",
     title: "Trace Machina raises $15M to build the Bazel-grade cache for everyone.",
-    excerpt: "Sequoia leads the round with participation from Lux. We're hiring across systems, distributed storage, and developer experience.",
+    excerpt: "We're hiring across systems, distributed storage, and developer experience.",
     date: "March 28, 2026",
     readingTime: "3 min",
     accent: "default" as const,
