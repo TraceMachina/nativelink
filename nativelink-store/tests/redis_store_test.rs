@@ -186,6 +186,82 @@ async fn upload_and_get_data() -> Result<(), Error> {
     Ok(())
 }
 
+// Regression test for Redis-replica/failover handling in RedisStore::update.
+// If the post-write STRLEN reads 0 (the connection points at a node that doesn't
+// yet have the freshly written temp key — e.g. a failover moved the master, or
+// brief replica lag), update must re-resolve the master and retry rather than
+// failing the write with a "Data length mismatch" error.
+#[nativelink_test]
+async fn update_retries_after_transient_zero_length() -> Result<(), Error> {
+    let data = Bytes::from_static(b"14");
+    let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
+    let packed_hash_hex = format!("{digest}");
+    let temp_key = make_temp_key(&packed_hash_hex);
+    let real_key = packed_hash_hex;
+
+    let commands = vec![
+        MockCmd::new(
+            redis::cmd("SETRANGE")
+                .arg(temp_key.clone())
+                .arg(0)
+                .arg(data.to_vec()),
+            Ok(Value::Int(0)),
+        ),
+        // First verify hits a stale/replica connection that can't see the temp key.
+        MockCmd::new(
+            redis::cmd("STRLEN").arg(temp_key.clone()),
+            Ok(Value::Int(0)),
+        ),
+        // After re-resolving the master, the retry sees the real length.
+        MockCmd::new(
+            redis::cmd("STRLEN").arg(temp_key.clone()),
+            Ok(Value::Int(data.len() as i64)),
+        ),
+        MockCmd::new(
+            redis::cmd("RENAME").arg(temp_key).arg(real_key),
+            Ok(Value::Nil),
+        ),
+    ];
+
+    let store = make_mock_store(commands).await;
+    // Must succeed despite the transient zero-length read.
+    store.update_oneshot(digest, data).await?;
+    Ok(())
+}
+
+// If the value never becomes visible (genuine loss / persistent failure), update
+// still errors after exhausting its retries rather than hanging.
+#[nativelink_test]
+async fn update_errors_when_length_never_matches() -> Result<(), Error> {
+    let data = Bytes::from_static(b"14");
+    let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
+    let packed_hash_hex = format!("{digest}");
+    let temp_key = make_temp_key(&packed_hash_hex);
+
+    let mut commands = vec![MockCmd::new(
+        redis::cmd("SETRANGE")
+            .arg(temp_key.clone())
+            .arg(0)
+            .arg(data.to_vec()),
+        Ok(Value::Int(0)),
+    )];
+    // MAX_UPDATE_VERIFY_ATTEMPTS (5) STRLEN reads that all return 0.
+    for _ in 0..5 {
+        commands.push(MockCmd::new(
+            redis::cmd("STRLEN").arg(temp_key.clone()),
+            Ok(Value::Int(0)),
+        ));
+    }
+
+    let store = make_mock_store(commands).await;
+    let result = store.update_oneshot(digest, data).await;
+    assert!(
+        result.is_err(),
+        "expected a Data length mismatch error after exhausting retries",
+    );
+    Ok(())
+}
+
 #[nativelink_test]
 async fn upload_and_get_data_with_prefix() -> Result<(), Error> {
     let data = Bytes::from_static(b"14");
