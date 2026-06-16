@@ -42,8 +42,79 @@ function escapeTableCell(text) {
   return text.replace(/\|/g, "&#124;");
 }
 
+const displayNames = new Map([
+  ["NamedConfig", "NamedStoreConfig"],
+  ["NamedConfig2", "NamedSchedulerConfig"],
+  ["GrpcSpec2", "SchedulerGrpcSpec"],
+  ["WithInstanceName", "CasServiceConfig"],
+  ["WithInstanceName2", "ActionCacheServiceConfig"],
+  ["WithInstanceName3", "CapabilitiesServiceConfig"],
+  ["WithInstanceName4", "ExecutionServiceConfig"],
+  ["WithInstanceName5", "ByteStreamServiceConfig"],
+  ["WithInstanceName6", "FetchServiceConfig"],
+  ["WithInstanceName7", "PushServiceConfig"],
+]);
+
+function displayName(name) {
+  return displayNames.get(name) || name;
+}
+
+function defaultFromDescription(md) {
+  if (!md) return "";
+  const zeroMeansDefault = /If not set or 0, defaults to ([^.]+)\./i.exec(md);
+  if (zeroMeansDefault) return `0 (uses ${zeroMeansDefault[1]})`;
+
+  const codeDefault = /Default:\s*(`[^`]+`)/.exec(md);
+  if (codeDefault) return codeDefault[1];
+
+  const explicitDefault = /Default:\s*([^\n]+)/.exec(md);
+  if (!explicitDefault) return "";
+
+  const value = explicitDefault[1].trim().match(/^(.+?)(?:\.\s|$)/)?.[1]?.trim().replace(/\.$/, "") || "";
+  return /^none\b/i.test(value) ? "" : value;
+}
+
+function stripDescriptionDefault(md) {
+  if (!md) return "";
+  return md
+    .replace(/\s*If not set or 0, defaults to [^.]+\./gi, "")
+    .replace(/\s*Default:\s*`[^`]+`\.?/g, "")
+    .replace(/\s*Default:\s*[^.\n]+\.?/g, "")
+    .trim();
+}
+
+function normalizeMarkdown(md) {
+  return md
+    .replace(/Example JSON Config/g, "Example JSON5 config")
+    .replace(/```json(?=\n)/g, "```json5")
+    .replace(
+      /will result in:\nAttempt - Delay\n1\s+0ms\n2\s+75ms - 125ms\n3\s+150ms - 250ms\n4\s+300ms - 500ms\n5\s+600ms - 1s\n6\s+1\.2s - 2s\n7\s+2\.4s - 4s\n8\s+4\.8s - 8s/g,
+      [
+        "will result in:",
+        "",
+        "| Attempt | Delay |",
+        "| --- | --- |",
+        "| 1 | 0 ms |",
+        "| 2 | 75 to 125 ms |",
+        "| 3 | 150 to 250 ms |",
+        "| 4 | 300 to 500 ms |",
+        "| 5 | 600 ms to 1 s |",
+        "| 6 | 1.2 to 2 s |",
+        "| 7 | 2.4 to 4 s |",
+        "| 8 | 4.8 to 8 s |",
+      ].join("\n"),
+    )
+    .replace(
+      /Remember that to get total results is additive, meaning the above results\nwould mean a single request would have a total delay of 9\.525s - 15\.875s\./g,
+      "The total delay is additive, so this example produces 9.525 to 15.875 s of total delay for a single request.",
+    );
+}
+
 function normalizeProseText(text) {
   return text
+    .replace(/Example JSON Config/g, "Example JSON5 config")
+    .replace(/\bmins\b/g, "minutes")
+    .replace(/\bminimums\b/g, "minimum values")
     .replace(/\bhashmap\b/g, "hash map")
     .replace(/\bie:/g, "i.e.,")
     .replace(/\bbootup\b/g, "startup")
@@ -102,6 +173,7 @@ function sanitizeProse(text) {
  *  (e.g. the `**Example JSON Config:**` blocks) exactly as written. */
 export function sanitizeMarkdown(md) {
   if (!md) return "";
+  md = normalizeMarkdown(md);
   const fence = /(^|\n)([ \t]*)(```|~~~)[^\n]*\n[\s\S]*?\n\2\3[ \t]*(?=\n|$)/g;
   let out = "";
   let last = 0;
@@ -119,8 +191,11 @@ export function sanitizeMarkdown(md) {
 /** First paragraph of a description, flattened to a single safe table cell. */
 function cellText(md) {
   if (!md) return "";
+  md = stripDescriptionDefault(md);
   // Stop at the first blank line or code fence — keep cells short.
   let head = md.split(/\n\s*\n/)[0].split(/\n[ \t]*(?:```|~~~)/)[0];
+  head = head.replace(/\n\s*-\s*/g, "; ");
+  head = head.replace(/\.;/g, ":");
   head = head.replace(/\s*\n\s*/g, " ").trim();
   return escapeTableCell(sanitizeProse(head));
 }
@@ -148,7 +223,8 @@ function slug(name) {
 const refName = (ref) => ref.split("/").pop();
 
 function typeLink(name, known) {
-  return known.has(name) ? `[${name}](#${slug(name)})` : `\`${name}\``;
+  const label = displayName(name);
+  return known.has(name) ? `[${label}](#${slug(label)})` : `\`${label}\``;
 }
 
 /** @param {JsonSchema} s @param {Set<string>} known */
@@ -160,25 +236,22 @@ function typeToString(s, known) {
   const union = s.anyOf || s.oneOf;
   if (union) {
     const nonNull = union.filter((x) => x && x.type !== "null");
-    const nullable = nonNull.length !== union.length;
-    const inner = nonNull.map((x) => typeToString(x, known)).join(" \\| ");
-    return nullable && nonNull.length === 1 ? `${inner}?` : inner || "null";
+    return nonNull.map((x) => typeToString(x, known)).join(" or ") || "null";
   }
 
   const type = s.type;
   if (Array.isArray(type)) {
     const nn = type.filter((t) => t !== "null");
-    const nullable = nn.length !== type.length;
     const base = typeToString({ ...s, type: nn.length === 1 ? nn[0] : nn }, known);
-    return nullable ? `${base}?` : base;
+    return base;
   }
 
   if (type === "array") {
-    return `${s.items ? typeToString(s.items, known) : "any"}[]`;
+    return `array of ${s.items ? typeToString(s.items, known) : "any"}`;
   }
   if (type === "object") {
     if (s.additionalProperties && typeof s.additionalProperties === "object") {
-      return `map&lt;string, ${typeToString(s.additionalProperties, known)}&gt;`;
+      return `map of string to ${typeToString(s.additionalProperties, known)}`;
     }
     return "object";
   }
@@ -187,14 +260,18 @@ function typeToString(s, known) {
     return s.format ? `${type} (${s.format})` : type;
   }
   if (Array.isArray(s.enum)) {
-    return s.enum.map((v) => `\`${JSON.stringify(v)}\``).join(" \\| ");
+    return s.enum.map((v) => `\`${JSON.stringify(v)}\``).join(" or ");
   }
   if (s.const !== undefined) return `\`${JSON.stringify(s.const)}\``;
   return "any";
 }
 
 function defaultCell(p) {
-  if (!p || !("default" in p)) return "—";
+  if (!p) return "—";
+  const docDefault = defaultFromDescription(p.description);
+  if (docDefault) return escapeTableCell(sanitizeProse(docDefault));
+  if (!("default" in p)) return "—";
+  if (p.default === null || typeof p.default === "object") return "—";
   return `\`${escapeTableCell(JSON.stringify(p.default))}\``;
 }
 
@@ -240,14 +317,14 @@ function renderPropsTable(def, known) {
 }
 
 function renderObject(name, def, known) {
-  const out = [`## ${name}`, ""];
+  const out = [`## ${displayName(name)}`, ""];
   if (def.description) out.push(sanitizeMarkdown(def.description), "");
   out.push(renderPropsTable(def, known));
   return out.join("\n");
 }
 
 function renderTaggedEnum(name, def, known) {
-  const out = [`## ${name}`, ""];
+  const out = [`## ${displayName(name)}`, ""];
   if (def.description) out.push(sanitizeMarkdown(def.description), "");
   // Some types (e.g. NamedConfig) carry common fields alongside a flattened
   // tagged spec — `{ name, #[serde(flatten)] spec }`. Render those first.
@@ -265,8 +342,20 @@ function renderTaggedEnum(name, def, known) {
   return out.join("\n");
 }
 
+function enumDescription(name, value, description) {
+  if (description) return description;
+  if (name === "RedisMode") {
+    return {
+      cluster: "Use Redis Cluster.",
+      sentinel: "Use Redis Sentinel.",
+      standard: "Use a standalone Redis server.",
+    }[value] || "";
+  }
+  return "";
+}
+
 function renderStringEnum(name, def) {
-  const out = [`## ${name}`, ""];
+  const out = [`## ${displayName(name)}`, ""];
   if (def.description) out.push(sanitizeMarkdown(def.description), "");
   const variants = def.oneOf
     ? def.oneOf.map((b) => ({ value: b.const, description: b.description }))
@@ -274,26 +363,41 @@ function renderStringEnum(name, def) {
   out.push(
     "| Value | Description |",
     "| --- | --- |",
-    ...variants.map((v) => `| \`${JSON.stringify(v.value)}\` | ${cellText(v.description)} |`),
+    ...variants.map(
+      (v) => `| \`${JSON.stringify(v.value)}\` | ${cellText(enumDescription(name, v.value, v.description))} |`,
+    ),
     "",
   );
   return out.join("\n");
 }
 
 function renderAlias(name, def, known) {
-  const out = [`## ${name}`, ""];
+  const out = [`## ${displayName(name)}`, ""];
   if (def.description) out.push(sanitizeMarkdown(def.description), "");
   out.push(`**Type:** ${typeToString(def, known)}`, "");
   return out.join("\n");
 }
 
+function unionBranchType(branch, known) {
+  if (
+    branch?.type === "object" &&
+    Array.isArray(branch.required) &&
+    branch.required.length === 1 &&
+    branch.properties?.[branch.required[0]]
+  ) {
+    const key = branch.required[0];
+    return `\`${key}\`: ${typeToString(branch.properties[key], known)}`;
+  }
+  return typeToString(branch, known);
+}
+
 function renderUnion(name, def, known) {
-  const out = [`## ${name}`, ""];
+  const out = [`## ${displayName(name)}`, ""];
   if (def.description) out.push(sanitizeMarkdown(def.description), "");
   out.push("One of:", "");
   for (const branch of def.oneOf) {
     const desc = branch.description ? ` — ${cellText(branch.description)}` : "";
-    out.push(`- ${typeToString(branch, known)}${desc}`);
+    out.push(`- ${unionBranchType(branch, known)}${desc}`);
   }
   out.push("");
   return out.join("\n");
