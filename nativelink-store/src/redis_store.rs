@@ -79,6 +79,12 @@ const DEFAULT_CONNECTION_POOL_SIZE: usize = 3;
 /// Note: If this changes it should be updated in the config documentation.
 const DEFAULT_RETRY_DELAY: f32 = 0.1;
 
+/// Maximum attempts to verify a freshly written value (re-resolving the master
+/// each time) in `RedisStore::update`. Covers a Redis failover or brief replica
+/// lag between the chunk writes and the length check, so a transient topology
+/// change doesn't fail an otherwise healthy write.
+const MAX_UPDATE_VERIFY_ATTEMPTS: u32 = 5;
+
 /// The default connection timeout in milliseconds if not specified.
 /// Note: If this changes it should be updated in the config documentation.
 const DEFAULT_CONNECTION_TIMEOUT_MS: u64 = 3000;
@@ -946,29 +952,83 @@ where
             }
         }
 
-        let blob_len: usize = client
-            .connection_manager
-            .strlen(&temp_key)
-            .await
-            .err_tip(|| format!("In RedisStore::update strlen check for {temp_key}"))?;
-        // This is a safety check to ensure that in the event some kind of retry was to happen
-        // and the data was appended to the key twice, we reject the data.
-        if blob_len != usize::try_from(total_len).unwrap_or(usize::MAX) {
-            return Err(make_input_err!(
-                "Data length mismatch in RedisStore::update for {}({}) - expected {} bytes, got {} bytes",
-                key.borrow().as_str(),
-                temp_key,
-                total_len,
-                blob_len,
-            ));
-        }
+        let expected_len = usize::try_from(total_len).unwrap_or(usize::MAX);
+
+        // The chunk writes above reconnect on ReadOnly, so on a mid-write Redis
+        // failover the data lands on the *current* master. The length check and
+        // rename below must run against that same master: the connection
+        // captured before the writes may now point at a demoted replica, where
+        // strlen reads 0 and would fail an otherwise healthy write. Re-resolve
+        // the master and retry so a transient topology change (failover or brief
+        // replica lag) doesn't drop the value.
+        let mut attempt: u32 = 0;
+        let blob_len = loop {
+            attempt += 1;
+            let blob_len: usize = client
+                .connection_manager
+                .strlen(&temp_key)
+                .await
+                .err_tip(|| format!("In RedisStore::update strlen check for {temp_key}"))?;
+            // Safety check: reject if a retried append double-wrote the data.
+            if blob_len > expected_len {
+                return Err(make_input_err!(
+                    "Data length mismatch in RedisStore::update for {}({}) - expected {} bytes, got {} bytes",
+                    key.borrow().as_str(),
+                    temp_key,
+                    total_len,
+                    blob_len,
+                ));
+            }
+            if blob_len == expected_len {
+                break blob_len;
+            }
+            // blob_len < expected (typically 0): the temp key isn't visible on
+            // this connection yet — re-resolve the master and retry.
+            if attempt >= MAX_UPDATE_VERIFY_ATTEMPTS {
+                return Err(make_input_err!(
+                    "Data length mismatch in RedisStore::update for {}({}) - expected {} bytes, got {} bytes after {} attempts",
+                    key.borrow().as_str(),
+                    temp_key,
+                    total_len,
+                    blob_len,
+                    attempt,
+                ));
+            }
+            let (connection_manager, uuid) = self.connection_manager.reconnect(client.uuid).await?;
+            client.connection_manager = connection_manager;
+            client.uuid = uuid;
+            sleep(Duration::from_secs_f32(DEFAULT_RETRY_DELAY)).await;
+        };
 
         // Rename the temp key so that the data appears under the real key. Any data already present in the real key is lost.
-        client
+        // Reconnect once on ReadOnly in case the master moved between the verify and here.
+        match client
             .connection_manager
             .rename::<_, _, ()>(&temp_key, final_key.as_ref())
             .await
-            .err_tip(|| "While queueing key rename in RedisStore::update()")?;
+        {
+            Ok(()) => {}
+            Err(err)
+                if err.kind() == redis::ErrorKind::Server(redis::ServerErrorKind::ReadOnly) =>
+            {
+                let (connection_manager, uuid) =
+                    self.connection_manager.reconnect(client.uuid).await?;
+                client.connection_manager = connection_manager;
+                client.uuid = uuid;
+                client
+                    .connection_manager
+                    .rename::<_, _, ()>(&temp_key, final_key.as_ref())
+                    .await
+                    .err_tip(
+                        || "While queueing key rename (after reconnect) in RedisStore::update()",
+                    )?;
+            }
+            Err(err) => {
+                return Err(
+                    Error::from(err).append("While queueing key rename in RedisStore::update()")
+                );
+            }
+        }
 
         // If we have a publish channel configured, send a notice that the key has been set.
         if let Some(pub_sub_channel) = &self.pub_sub_channel {
