@@ -79,11 +79,22 @@ const DEFAULT_CONNECTION_POOL_SIZE: usize = 3;
 /// Note: If this changes it should be updated in the config documentation.
 const DEFAULT_RETRY_DELAY: f32 = 0.1;
 
-/// Maximum attempts to verify a freshly written value (re-resolving the master
-/// each time) in `RedisStore::update`. Covers a Redis failover or brief replica
-/// lag between the chunk writes and the length check, so a transient topology
-/// change doesn't fail an otherwise healthy write.
-const MAX_UPDATE_VERIFY_ATTEMPTS: u32 = 5;
+/// Maximum attempts (re-resolving the master each time) for an operation to
+/// ride out a transient Redis topology change — a failover, a dropped
+/// connection, or brief replica lag. Used by `update`'s verify and by the read
+/// paths so a transient error doesn't fail an otherwise healthy request.
+const MAX_REDIS_RETRY_ATTEMPTS: u32 = 5;
+
+/// Whether a Redis error is worth re-resolving the master and retrying: a
+/// dropped/refused connection, an IO error, or a write that hit a freshly
+/// demoted replica. Anything else (e.g. a real protocol/logic error) is
+/// returned as-is.
+fn is_retryable_redis_error(err: &redis::RedisError) -> bool {
+    err.is_connection_dropped()
+        || err.is_connection_refusal()
+        || err.is_io_error()
+        || err.kind() == redis::ErrorKind::Server(redis::ServerErrorKind::ReadOnly)
+}
 
 /// The default connection timeout in milliseconds if not specified.
 /// Note: If this changes it should be updated in the config documentation.
@@ -767,12 +778,34 @@ where
                 // AND when the key exists with value of length 0.
                 // Therefore, we need to check both length and existence
                 // and do it in a pipeline for efficiency
-                let (blob_len, exists) = pipe()
-                    .strlen(encoded_key.as_ref())
-                    .exists(encoded_key.as_ref())
-                    .query_async::<(u64, bool)>(&mut client.connection_manager)
-                    .await
-                    .err_tip(|| "In RedisStore::has_with_results::all")?;
+                // Re-resolve the master and retry on a transient failover so a
+                // topology change doesn't fail the existence check.
+                let (blob_len, exists) = {
+                    let mut attempt: u32 = 0;
+                    loop {
+                        attempt += 1;
+                        match pipe()
+                            .strlen(encoded_key.as_ref())
+                            .exists(encoded_key.as_ref())
+                            .query_async::<(u64, bool)>(&mut client.connection_manager)
+                            .await
+                        {
+                            Ok(v) => break v,
+                            Err(err)
+                                if attempt < MAX_REDIS_RETRY_ATTEMPTS
+                                    && is_retryable_redis_error(&err) =>
+                            {
+                                client.reconnect(&self.connection_manager).await?;
+                                sleep(Duration::from_secs_f32(DEFAULT_RETRY_DELAY)).await;
+                            }
+                            Err(err) => {
+                                return Err(
+                                    Error::from(err).append("In RedisStore::has_with_results::all")
+                                );
+                            }
+                        }
+                    }
+                };
 
                 *result = if exists { Some(blob_len) } else { None };
 
@@ -811,47 +844,81 @@ where
         };
         let mut client = self.get_client().await?;
         trace!(%pattern, count=self.scan_count, "Running SCAN");
-        let opts = ScanOptions::default()
-            .with_pattern(pattern)
-            .with_count(self.scan_count);
-        let mut scan_stream: AsyncIter<Value> = client
-            .connection_manager
-            .scan_options(opts)
-            .await
-            .err_tip(|| "During scan_options")?;
-        let mut iterations = 0;
-        let mut errors = vec![];
-        while let Some(key) = scan_stream.next_item().await {
-            if let Ok(Value::BulkString(raw_key)) = key {
-                let Ok(str_key) = str::from_utf8(&raw_key) else {
-                    error!(?raw_key, "Non-utf8 key");
-                    errors.push(format!("Non-utf8 key {raw_key:?}"));
+        // Restart the scan on a transient failover. Redis SCAN may re-emit keys
+        // even without failures, so callers already tolerate duplicates;
+        // re-resolving the master and rescanning is within that contract and
+        // avoids failing on a topology change mid-iteration.
+        let mut attempt: u32 = 0;
+        loop {
+            attempt += 1;
+            let opts = ScanOptions::default()
+                .with_pattern(pattern.clone())
+                .with_count(self.scan_count);
+            // Scan via a cloned connection handle so the iterator doesn't hold a
+            // borrow on `client` across a reconnect.
+            let mut conn = client.connection_manager.clone();
+            let mut scan_stream: AsyncIter<Value> = match conn.scan_options(opts).await {
+                Ok(s) => s,
+                Err(err)
+                    if attempt < MAX_REDIS_RETRY_ATTEMPTS && is_retryable_redis_error(&err) =>
+                {
+                    client.reconnect(&self.connection_manager).await?;
+                    sleep(Duration::from_secs_f32(DEFAULT_RETRY_DELAY)).await;
                     continue;
-                };
-                if let Some(key) = str_key.strip_prefix(&self.key_prefix) {
-                    let key = StoreKey::new_str(key);
-                    if range.contains(&key) {
-                        iterations += 1;
-                        if !handler(&key) {
-                            error!("Issue in handler");
-                            errors.push("Issue in handler".to_string());
-                        }
-                    } else {
-                        trace!(%key, ?range, "Key not in range");
-                    }
-                } else {
-                    errors.push("Key doesn't match prefix".to_string());
                 }
-            } else {
-                error!(?key, "Non-string in key");
-                errors.push("Non-string in key".to_string());
+                Err(err) => return Err(Error::from(err).append("During scan_options")),
+            };
+            let mut iterations = 0;
+            let mut errors = vec![];
+            let mut transient_err = false;
+            while let Some(key) = scan_stream.next_item().await {
+                match key {
+                    Ok(Value::BulkString(raw_key)) => {
+                        let Ok(str_key) = str::from_utf8(&raw_key) else {
+                            error!(?raw_key, "Non-utf8 key");
+                            errors.push(format!("Non-utf8 key {raw_key:?}"));
+                            continue;
+                        };
+                        if let Some(key) = str_key.strip_prefix(&self.key_prefix) {
+                            let key = StoreKey::new_str(key);
+                            if range.contains(&key) {
+                                iterations += 1;
+                                if !handler(&key) {
+                                    error!("Issue in handler");
+                                    errors.push("Issue in handler".to_string());
+                                }
+                            } else {
+                                trace!(%key, ?range, "Key not in range");
+                            }
+                        } else {
+                            errors.push("Key doesn't match prefix".to_string());
+                        }
+                    }
+                    Err(err)
+                        if attempt < MAX_REDIS_RETRY_ATTEMPTS && is_retryable_redis_error(&err) =>
+                    {
+                        // Connection dropped mid-scan; restart from scratch.
+                        transient_err = true;
+                        break;
+                    }
+                    other => {
+                        error!(?other, "Non-string in key");
+                        errors.push("Non-string in key".to_string());
+                    }
+                }
             }
-        }
-        if errors.is_empty() {
-            Ok(iterations)
-        } else {
-            error!(?errors, "Errors in scan stream");
-            Err(Error::new(Code::Internal, format!("Errors: {errors:?}")))
+            if transient_err {
+                drop(scan_stream);
+                client.reconnect(&self.connection_manager).await?;
+                sleep(Duration::from_secs_f32(DEFAULT_RETRY_DELAY)).await;
+                continue;
+            }
+            return if errors.is_empty() {
+                Ok(iterations)
+            } else {
+                error!(?errors, "Errors in scan stream");
+                Err(Error::new(Code::Internal, format!("Errors: {errors:?}")))
+            };
         }
     }
 
@@ -984,7 +1051,7 @@ where
             }
             // blob_len < expected (typically 0): the temp key isn't visible on
             // this connection yet — re-resolve the master and retry.
-            if attempt >= MAX_UPDATE_VERIFY_ATTEMPTS {
+            if attempt >= MAX_REDIS_RETRY_ATTEMPTS {
                 return Err(make_input_err!(
                     "Data length mismatch in RedisStore::update for {}({}) - expected {} bytes, got {} bytes after {} attempts",
                     key.borrow().as_str(),
@@ -1082,11 +1149,34 @@ where
 
         let mut client = self.get_client().await?;
         loop {
-            let chunk: Bytes = client
-                .connection_manager
-                .getrange(encoded_key, chunk_start, chunk_end)
-                .await
-                .err_tip(|| "In RedisStore::get_part::getrange")?;
+            // getrange is position-based and idempotent, so re-resolve the
+            // master and retry on a transient failover without re-sending
+            // already-written chunks.
+            let chunk: Bytes = {
+                let mut attempt: u32 = 0;
+                loop {
+                    attempt += 1;
+                    match client
+                        .connection_manager
+                        .getrange(encoded_key, chunk_start, chunk_end)
+                        .await
+                    {
+                        Ok(v) => break v,
+                        Err(err)
+                            if attempt < MAX_REDIS_RETRY_ATTEMPTS
+                                && is_retryable_redis_error(&err) =>
+                        {
+                            client.reconnect(&self.connection_manager).await?;
+                            sleep(Duration::from_secs_f32(DEFAULT_RETRY_DELAY)).await;
+                        }
+                        Err(err) => {
+                            return Err(
+                                Error::from(err).append("In RedisStore::get_part::getrange")
+                            );
+                        }
+                    }
+                }
+            };
 
             let didnt_receive_full_chunk = chunk.len() < self.read_chunk_size;
             let reached_end_of_data = chunk_end == data_end;
@@ -1120,11 +1210,27 @@ where
         // This is required by spec.
         if writer.get_bytes_written() == 0 {
             // We're supposed to read 0 bytes, so just check if the key exists.
-            let exists: bool = client
-                .connection_manager
-                .exists(encoded_key)
-                .await
-                .err_tip(|| "In RedisStore::get_part::zero_exists")?;
+            let exists: bool = {
+                let mut attempt: u32 = 0;
+                loop {
+                    attempt += 1;
+                    match client.connection_manager.exists(encoded_key).await {
+                        Ok(v) => break v,
+                        Err(err)
+                            if attempt < MAX_REDIS_RETRY_ATTEMPTS
+                                && is_retryable_redis_error(&err) =>
+                        {
+                            client.reconnect(&self.connection_manager).await?;
+                            sleep(Duration::from_secs_f32(DEFAULT_RETRY_DELAY)).await;
+                        }
+                        Err(err) => {
+                            return Err(
+                                Error::from(err).append("In RedisStore::get_part::zero_exists")
+                            );
+                        }
+                    }
+                }
+            };
 
             if !exists {
                 return Err(make_err!(

@@ -245,7 +245,7 @@ async fn update_errors_when_length_never_matches() -> Result<(), Error> {
             .arg(data.to_vec()),
         Ok(Value::Int(0)),
     )];
-    // MAX_UPDATE_VERIFY_ATTEMPTS (5) STRLEN reads that all return 0.
+    // MAX_REDIS_RETRY_ATTEMPTS (5) STRLEN reads that all return 0.
     for _ in 0..5 {
         commands.push(MockCmd::new(
             redis::cmd("STRLEN").arg(temp_key.clone()),
@@ -258,6 +258,48 @@ async fn update_errors_when_length_never_matches() -> Result<(), Error> {
     assert!(
         result.is_err(),
         "expected a Data length mismatch error after exhausting retries",
+    );
+    Ok(())
+}
+
+// The read paths must ride out a transient Redis error (e.g. a connection
+// dropped by a failover) by re-resolving the master and retrying, rather than
+// surfacing the transient error. has() exercises the read-path retry.
+#[nativelink_test]
+async fn has_retries_after_transient_error() -> Result<(), Error> {
+    let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
+    let key = format!("{digest}");
+
+    let commands = vec![
+        // First existence pipeline fails with a retryable connection error.
+        MockCmd::with_values(
+            redis::pipe()
+                .cmd("STRLEN")
+                .arg(key.clone())
+                .cmd("EXISTS")
+                .arg(key.clone()),
+            Err::<Vec<Value>, _>(RedisError::from(std::io::Error::new(
+                std::io::ErrorKind::ConnectionReset,
+                "transient",
+            ))),
+        ),
+        // The retry (after re-resolving the master) succeeds.
+        MockCmd::with_values(
+            redis::pipe()
+                .cmd("STRLEN")
+                .arg(key.clone())
+                .cmd("EXISTS")
+                .arg(key.clone()),
+            Ok(vec![Value::Int(2), Value::Boolean(true)]),
+        ),
+    ];
+
+    let store = make_mock_store(commands).await;
+    let result = store.has(digest).await?;
+    assert_eq!(
+        result,
+        Some(2),
+        "has should recover from the transient error"
     );
     Ok(())
 }
