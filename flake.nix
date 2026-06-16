@@ -400,7 +400,7 @@
               ;
 
             # Used by the CI
-            inherit (pkgs.nativelink-tools) local-image-test publish-ghcr;
+            inherit (pkgs.nativelink-tools) local-image-test publish-ghcr create-multi-arch-image;
 
             default = nativelink;
 
@@ -554,6 +554,7 @@
               pkgs.lre.lre-cc.lre-cc-configs-gen
               pkgs.nativelink-tools.local-image-test
               pkgs.nativelink-tools.create-local-image
+              pkgs.nativelink-tools.create-multi-arch-image
               pkgs.attic-client
             ]
             ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
