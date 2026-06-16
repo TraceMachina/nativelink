@@ -217,6 +217,14 @@ where
     /// for this connection in order to avoid multiple reconnection attempts.
     connection_manager: tokio::sync::RwLock<(C, Uuid)>,
 
+    /// Serializes reconnect attempts so a Sentinel master failover triggers a
+    /// single re-resolution instead of a thundering herd. Kept separate from
+    /// `connection_manager` on purpose: the (potentially multi-second) connect
+    /// runs while holding only this lock, so in-flight `get_connection` readers
+    /// keep using the existing handle and are never frozen behind a slow
+    /// reconnect. See [`Self::reconnect`].
+    reconnect_lock: tokio::sync::Mutex<()>,
+
     /// A list of subscription that should be performed on reconnect.
     subscriptions: Mutex<HashSet<String>>,
 }
@@ -254,6 +262,7 @@ where
             connect_func,
             update_if_version_matches_script,
             connection_manager: tokio::sync::RwLock::new((connection_manager, Uuid::new_v4())),
+            reconnect_lock: tokio::sync::Mutex::new(()),
             subscriptions: Mutex::new(HashSet::new()),
         };
         {
@@ -270,14 +279,30 @@ impl RedisManager<ConnectionManager> for StandardRedisManager<ConnectionManager>
     }
 
     async fn reconnect(&self, uuid: Uuid) -> Result<(ConnectionManager, Uuid), Error> {
-        let mut guard = self.connection_manager.write().await;
-        if guard.1 != uuid {
-            let connection = guard.clone();
-            drop(guard);
-            return Ok(connection);
+        // Fast path: another caller already reconnected past this generation,
+        // so the handle is fresh — hand it back without re-resolving.
+        {
+            let guard = self.connection_manager.read().await;
+            if guard.1 != uuid {
+                return Ok(guard.clone());
+            }
+        }
+        // Serialize reconnect attempts on a dedicated lock so a failover storm
+        // resolves the new master once. Critically this is NOT the
+        // `connection_manager` lock, so the slow connect below does not block
+        // the `get_connection` readers that every Redis op needs — they keep
+        // using the old (now-failing) handle and fail fast on their own
+        // command timeout instead of all freezing behind one reconnect.
+        let _reconnect_guard = self.reconnect_lock.lock().await;
+        // Re-check: a reconnect may have completed while we waited for the lock.
+        {
+            let guard = self.connection_manager.read().await;
+            if guard.1 != uuid {
+                return Ok(guard.clone());
+            }
         }
         let mut connection_manager = (self.connect_func)().await?;
-        let uuid = Uuid::new_v4();
+        let new_uuid = Uuid::new_v4();
         self.configure(&mut connection_manager).await?;
         let subscriptions = {
             let guard = self.subscriptions.lock();
@@ -286,8 +311,13 @@ impl RedisManager<ConnectionManager> for StandardRedisManager<ConnectionManager>
         for subscription in subscriptions {
             connection_manager.psubscribe(&subscription).await?;
         }
-        *guard = (connection_manager.clone(), uuid);
-        Ok((connection_manager, uuid))
+        // Publish the new handle under a brief exclusive lock.
+        {
+            let mut guard = self.connection_manager.write().await;
+            *guard = (connection_manager.clone(), new_uuid);
+        }
+        info!(old = %uuid, new = %new_uuid, "StandardRedisManager re-resolved the Redis master");
+        Ok((connection_manager, new_uuid))
     }
 
     fn update_script(&self, key: &str) -> redis::ScriptInvocation<'_> {
@@ -1312,16 +1342,55 @@ where
                 .query_async::<()>(&mut client.connection_manager)
                 .await
         };
+        let retry_reason = match timeout(self.health_check_timeout, ping).await {
+            Ok(Ok(())) => {
+                return HealthStatus::new_ok(self, "RedisStore::check_health: PING ok".into());
+            }
+            // A PING that errors connection-wise or times out means the handle
+            // points at a master that went away (a Sentinel failover). Without
+            // re-resolving here, a store with no other traffic stays wedged on
+            // the dead handle and reports unhealthy forever — shedding readiness
+            // traffic from an otherwise-recovered pod until it is restarted.
+            Ok(Err(e)) if is_retryable_redis_error(&e) => format!("PING errored: {e}"),
+            Ok(Err(e)) => {
+                return HealthStatus::new_failed(
+                    self,
+                    format!("RedisStore::check_health: PING errored: {e}").into(),
+                );
+            }
+            Err(_) => format!(
+                "PING exceeded {}ms timeout",
+                self.health_check_timeout.as_millis()
+            ),
+        };
+
+        // The reconnect (re-resolving the master via Sentinel) is logged by
+        // `StandardRedisManager::reconnect`; `retry_reason` is surfaced in the
+        // failure message below if the second PING still doesn't come back.
+        if let Err(e) = client.reconnect(&self.connection_manager).await {
+            return HealthStatus::new_failed(
+                self,
+                format!("RedisStore::check_health: {retry_reason}; reconnect failed: {e}").into(),
+            );
+        }
+        let ping = async {
+            redis::cmd("PING")
+                .query_async::<()>(&mut client.connection_manager)
+                .await
+        };
         match timeout(self.health_check_timeout, ping).await {
-            Ok(Ok(())) => HealthStatus::new_ok(self, "RedisStore::check_health: PING ok".into()),
+            Ok(Ok(())) => HealthStatus::new_ok(
+                self,
+                "RedisStore::check_health: PING ok after re-resolving master".into(),
+            ),
             Ok(Err(e)) => HealthStatus::new_failed(
                 self,
-                format!("RedisStore::check_health: PING errored: {e}").into(),
+                format!("RedisStore::check_health: PING still errored after reconnect: {e}").into(),
             ),
             Err(_) => HealthStatus::new_failed(
                 self,
                 format!(
-                    "RedisStore::check_health: PING exceeded {}ms timeout",
+                    "RedisStore::check_health: PING still exceeded {}ms timeout after reconnect",
                     self.health_check_timeout.as_millis()
                 )
                 .into(),
@@ -1960,9 +2029,13 @@ where
 
         let (connection_manager, connect_id) = self.connection_manager.get_connection().await?;
         let stream = match run_ft_aggregate(connection_manager.clone()).await {
-            Err(err)
-                if err.kind() == redis::ErrorKind::Server(redis::ServerErrorKind::ReadOnly) =>
-            {
+            // A demoted master answers READONLY and a dead/old master drops the
+            // connection or times the command out. Both mean the master moved
+            // (Sentinel failover) — re-resolve it and retry rather than letting
+            // the scheduler's matching loop spin on a stale handle. (A missing
+            // index is not retryable here; it falls through to the create path
+            // below, which re-runs on the next matching cycle if needed.)
+            Err(err) if is_retryable_redis_error(&err) => {
                 let (connection_manager, _connect_id) =
                     self.connection_manager.reconnect(connect_id).await?;
                 run_ft_aggregate(connection_manager).await.err_tip(|| {

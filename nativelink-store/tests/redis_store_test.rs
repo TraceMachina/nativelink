@@ -813,6 +813,38 @@ async fn test_health() {
     }
 }
 
+// After a Sentinel master failover the health PING hits a dead/old master and
+// fails. check_health must re-resolve the master and PING again so a store with
+// no other traffic self-heals — otherwise it reports unhealthy until restart and
+// the readiness probe sheds traffic from an otherwise-recovered pod.
+#[nativelink_test]
+async fn check_health_recovers_after_failed_ping() {
+    let commands = vec![
+        // First PING hits the dead/old master.
+        MockCmd::new(
+            redis::cmd("PING"),
+            Err::<Value, _>(RedisError::from(std::io::Error::new(
+                std::io::ErrorKind::ConnectionReset,
+                "connection reset by peer",
+            ))),
+        ),
+        // After re-resolving the master, the PING succeeds.
+        MockCmd::new(redis::cmd("PING"), Ok(Value::Okay)),
+    ];
+    let store = make_mock_store(commands).await;
+    // The readiness probe uses the HealthStatusIndicator impl (a PING), not the
+    // StoreLike default (update_oneshot) that `store.check_health` resolves to.
+    let health = nativelink_util::health_utils::HealthStatusIndicator::check_health(
+        &store,
+        std::borrow::Cow::Borrowed("foo"),
+    )
+    .await;
+    assert!(
+        matches!(health, HealthStatus::Ok { .. }),
+        "expected Ok after re-resolving the master on a failed PING, got: {health:?}",
+    );
+}
+
 #[nativelink_test]
 async fn test_deprecated_broadcast_channel_capacity() {
     let port = make_fake_redis().await;
@@ -1232,6 +1264,78 @@ fn test_search_by_index() -> Result<(), Error> {
         "Content should match search pattern: '{}'",
         search_results[0].content
     );
+
+    Ok(())
+}
+
+// A Sentinel master failover surfaces on the scheduler's index query as a
+// dropped connection / command timeout against the old master. The matching
+// loop must re-resolve the master and retry rather than spinning on the dead
+// handle until the CAS is restarted.
+#[nativelink_test]
+fn test_search_by_index_retries_on_failover() -> Result<(), Error> {
+    fn make_ft_aggregate(result: Result<Value, RedisError>) -> MockCmd {
+        MockCmd::new(
+            redis::cmd("FT.AGGREGATE")
+                .arg("test:_content_prefix_sort_key_3e762c15")
+                .arg("@content_prefix:{ Searchable }")
+                .arg("TIMEOUT")
+                .arg(10000_u64)
+                .arg("LOAD")
+                .arg(2)
+                .arg("data")
+                .arg("version")
+                .arg("WITHCURSOR")
+                .arg("COUNT")
+                .arg(1500)
+                .arg("MAXIDLE")
+                .arg(30000)
+                .arg("SORTBY")
+                .arg(2usize)
+                .arg("@sort_key")
+                .arg("ASC"),
+            result,
+        )
+    }
+
+    let commands = vec![
+        // First query hits the dead/old master mid-failover.
+        make_ft_aggregate(Err(RedisError::from(std::io::Error::new(
+            std::io::ErrorKind::ConnectionReset,
+            "connection reset by peer",
+        )))),
+        // After re-resolving the master, the retry succeeds.
+        make_ft_aggregate(Ok(Value::Array(vec![
+            Value::Array(vec![
+                Value::Int(1),
+                Value::Array(vec![
+                    Value::BulkString(b"data".to_vec()),
+                    Value::BulkString(b"1234".to_vec()),
+                    Value::BulkString(b"version".to_vec()),
+                    Value::BulkString(b"1".to_vec()),
+                ]),
+            ]),
+            Value::Int(0),
+        ]))),
+    ];
+    let store = make_mock_store(commands).await;
+    let search_provider = SearchByContentPrefix {
+        prefix: "Searchable".to_string(),
+    };
+
+    let search_results: Vec<TestSchedulerDataUnversioned> = store
+        .search_by_index_prefix(search_provider)
+        .await
+        .err_tip(|| "search should re-resolve the master and retry past the failover")?
+        .try_collect()
+        .await?;
+
+    assert_eq!(
+        search_results.len(),
+        1,
+        "Should find the entry after retrying on the re-resolved master",
+    );
+    assert_eq!(search_results[0].content, "1234");
 
     Ok(())
 }
