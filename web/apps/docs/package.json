@@ -28,6 +28,7 @@
     "build": "next build",
     "clean": "rm -rf .next .turbo .source",
     "dev": "next dev --port 3001",
+    "gen:config-reference": "node scripts/gen-config-reference.mjs",
     "lint": "biome check .",
     "start": "next start --port 3001",
     "typecheck": "tsc --noEmit"
