@@ -192,7 +192,7 @@ impl SimpleScheduler {
         }
     }
 
-    fn publish_scheduler_start_execute(
+    async fn publish_scheduler_start_execute(
         maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
         origin_metadata: &OriginMetadata,
         event_id: String,
@@ -211,7 +211,10 @@ impl SimpleScheduler {
             event: Some(event),
         };
 
-        if let Err(err) = origin_event_tx.try_send(origin_event) {
+        // Awaited send (not try_send): backpressure rather than drop, so the
+        // start-execute event that later resource-usage events reference as
+        // their parent isn't silently lost when the queue is full.
+        if let Err(err) = origin_event_tx.send(origin_event).await {
             warn!(
                 ?err,
                 "Failed to publish scheduler start execute origin event"
@@ -367,7 +370,8 @@ impl SimpleScheduler {
                         &event_origin_metadata,
                         event_id,
                         event,
-                    );
+                    )
+                    .await;
                 }
 
                 Ok(())

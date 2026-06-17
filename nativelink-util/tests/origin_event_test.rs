@@ -12,12 +12,139 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::pin::Pin;
+use core::sync::atomic::{AtomicUsize, Ordering};
+use core::time::Duration;
+use std::sync::Arc;
+
+use nativelink_error::{Code, Error, make_err};
 use nativelink_macro::nativelink_test;
+use nativelink_metric::MetricsComponent;
 use nativelink_proto::com::github::trace_machina::nativelink::events::{
-    Event, RequestEvent, ResponseEvent, StreamEvent, event, request_event, response_event,
-    stream_event,
+    Event, OriginEvent, RequestEvent, ResponseEvent, StreamEvent, event, request_event,
+    response_event, stream_event,
 };
+use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
+use nativelink_util::default_health_status_indicator;
+use nativelink_util::health_utils::HealthStatusIndicator;
 use nativelink_util::origin_event::get_id_for_event;
+use nativelink_util::origin_event_publisher::OriginEventPublisher;
+use nativelink_util::store_trait::{
+    RemoveItemCallback, Store, StoreDriver, StoreKey, UploadSizeInfo,
+};
+use tokio::sync::{broadcast, mpsc};
+use tokio::time::sleep;
+use tonic::async_trait;
+
+/// A store whose `update` fails the first `fail_until` calls, then succeeds —
+/// to verify the origin-event publisher retries a transient upload failure
+/// instead of dropping the events (the resource-sizing durability gap).
+#[derive(Debug, MetricsComponent)]
+struct FlakyStore {
+    fail_until: usize,
+    attempts: AtomicUsize,
+}
+
+#[async_trait]
+#[allow(clippy::todo)]
+impl StoreDriver for FlakyStore {
+    async fn has_with_results(
+        self: Pin<&Self>,
+        _keys: &[StoreKey<'_>],
+        _results: &mut [Option<u64>],
+    ) -> Result<(), Error> {
+        todo!();
+    }
+
+    async fn update(
+        self: Pin<&Self>,
+        _key: StoreKey<'_>,
+        mut reader: DropCloserReadHalf,
+        _upload_size: UploadSizeInfo,
+    ) -> Result<u64, Error> {
+        // Drain so the writer side completes.
+        reader.consume(None).await?;
+        let attempt = self.attempts.fetch_add(1, Ordering::SeqCst) + 1;
+        if attempt <= self.fail_until {
+            return Err(make_err!(
+                Code::Unavailable,
+                "flaky store failure {attempt}"
+            ));
+        }
+        Ok(0)
+    }
+
+    async fn get_part(
+        self: Pin<&Self>,
+        _key: StoreKey<'_>,
+        _writer: &mut DropCloserWriteHalf,
+        _offset: u64,
+        _length: Option<u64>,
+    ) -> Result<(), Error> {
+        todo!();
+    }
+
+    fn inner_store(&self, _digest: Option<StoreKey>) -> &dyn StoreDriver {
+        self
+    }
+
+    fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
+        self
+    }
+
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+        self
+    }
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        _callback: Arc<dyn RemoveItemCallback>,
+    ) -> Result<(), Error> {
+        todo!();
+    }
+}
+
+default_health_status_indicator!(FlakyStore);
+
+// Regression test for the action-level resource-sizing durability gap: a
+// transient store-upload failure (e.g. a Redis Sentinel failover) must NOT drop
+// origin events — the publisher retries until the upload succeeds.
+#[nativelink_test]
+async fn origin_event_publisher_retries_store_upload() {
+    let store = Arc::new(FlakyStore {
+        fail_until: 2,
+        attempts: AtomicUsize::new(0),
+    });
+    let (tx, rx) = mpsc::channel::<OriginEvent>(16);
+    let (shutdown_tx, _shutdown_rx) = broadcast::channel(1);
+    let publisher = OriginEventPublisher::new(Store::new(store.clone()), rx, shutdown_tx);
+    let task = tokio::spawn(publisher.run());
+
+    tx.send(OriginEvent {
+        version: 0,
+        event_id: "e1".to_string(),
+        parent_event_id: String::new(),
+        bazel_request_metadata: None,
+        identity: String::new(),
+        event: None,
+    })
+    .await
+    .unwrap();
+
+    // 2 transient failures + 1 success = 3 attempts.
+    for _ in 0..100 {
+        if store.attempts.load(Ordering::SeqCst) >= 3 {
+            break;
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        store.attempts.load(Ordering::SeqCst),
+        3,
+        "publisher must retry the upload past transient failures instead of dropping events",
+    );
+    task.abort();
+}
 
 macro_rules! event_assert {
     ($event:ident, $val:expr) => {
