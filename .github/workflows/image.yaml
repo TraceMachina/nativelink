@@ -44,6 +44,11 @@ jobs:
         run: |
           nix run --fallback .#local-image-test ${{ matrix.image }}
 
+      - name: Test multi-arch image
+        if: ${{ matrix.image == "image"}}
+        run: |
+          nix run --fallback .#create-multi-arch-image nativelinkImageForX64 nativelinkImageForAarch64
+
       - name: Upload image
         run: |
           nix run --fallback .#publish-ghcr ${{ matrix.image }}
