@@ -45,6 +45,7 @@ jobs:
           nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
 
       - name: Set up Docker
+        id: docker
         uses: >- # v5.2.0
           docker/setup-docker-action@0234bb73ccb40f0c430b795634f9247e2b5c2d23
         if: runner.os == 'macOS' # already setup for Linux
@@ -63,9 +64,14 @@ jobs:
           # [this comment](https://github.com/lima-vm/lima/pull/3173#issuecomment-2623130310).
           QEMU_SYSTEM_AARCH64: "qemu-system-aarch64 -machine virt -cpu max,pmu=off,sve=on,sve128=on,sme=off,pauth=off"
 
+      - name: Set docker host
+        if: runner.os == 'macOS' # already setup for Linux
+        run: |
+          echo "DOCKER_HOST=${{steps.docker.outputs.sock}}" >> "$GITHUB_ENV"
+
       - name: Test image
         run: |
-          nix run --fallback .#local-image-test ${{ matrix.image }}
+          nix run --fallback --impure .#local-image-test ${{ matrix.image }}
 
       - name: Upload image
         run: |
