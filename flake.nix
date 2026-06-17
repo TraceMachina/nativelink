@@ -303,10 +303,39 @@
         };
 
         nativelinkCoverageFor = p: let
-          coverageArgs = commonArgsFor p;
-        in
-          (nightlyCraneLibFor p).cargoLlvmCov (coverageArgs
+          coverageArgs =
+            (commonArgsFor p)
             // {
+              # TODO(palfrey): For some reason we're triggering an edgecase where
+              #                    mimalloc builds against glibc headers in coverage
+              #                    builds. This leads to nonexistend __memcpy_chk and
+              #                    __memset_chk symbols if fortification is enabled.
+              #                    Our regular builds also have this issue, but we
+              #                    should investigate further.
+              hardeningDisable = ["fortify"];
+            };
+          cargoExtraArgs = builtins.concatStringsSep " " [
+            "--workspace"
+            "--locked"
+            "--features nix"
+            # "--branch" # FIXME(palfrey): because of https://github.com/llvm/llvm-project/issues/119558
+            "--ignore-filename-regex '.*(genproto|vendor-cargo-deps|crates).*'"
+          ];
+        in
+          (nightlyCraneLibFor p).mkCargoDerivation (coverageArgs
+            // {
+              # We build our own custom command so we can run with report for both html and text output
+              # Mostly derived from the upstream cargoLlvmCov though
+              # See https://github.com/ipetkov/crane/blob/59a82a1222dd3b2080b5cc52a1a2e8d5f1b77f37/lib/cargoLlvmCov.nix
+              installPhaseCommand = "";
+              buildPhaseCargoCommand = ''
+                cargoWithProfile llvm-cov test ${cargoExtraArgs} --html --output-dir $out
+                cargoWithProfile llvm-cov report --workspace --text --output-dir $out
+              '';
+              doInstallCargoArtifacts = false;
+              pnameSuffix = "-llvm-cov";
+              nativeBuildInputs = [(p.callPackage ./tools/cargo-llvm-cov/package.nix {})];
+
               cargoArtifacts = nightlyCargoArtifactsFor p;
               preConfigurePhases = ["tempHome"];
               tempHome = ''
@@ -328,14 +357,6 @@
                 ln -s ${p.mongodb}/bin/mongod ''${MONGOD}
                 ''${MONGOD} --version
               '';
-              cargoExtraArgs = builtins.concatStringsSep " " [
-                "--all"
-                "--locked"
-                "--features nix"
-                # "--branch" # FIXME(palfrey): because of https://github.com/llvm/llvm-project/issues/119558
-                "--ignore-filename-regex '.*(genproto|vendor-cargo-deps|crates).*'"
-              ];
-              cargoLlvmCovExtraArgs = "--html --output-dir $out";
             });
 
         nativelinkCoverageForHost = nativelinkCoverageFor pkgs;

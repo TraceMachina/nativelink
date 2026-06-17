@@ -63,7 +63,6 @@ jobs:
             echo "Unknown runner OS: $RUNNER_OS"
             exit 1
           fi
-        shell: bash
 
   redis-store-tester:
     name: Redis store tester
@@ -96,7 +95,6 @@ jobs:
           RUST_LOG: trace
           REDIS_HOST: localhost
           MAX_LOOPS: 10 # running sequentially just to test all the actions work
-        shell: bash
 
       - name: Run Store tester with standard
         run: |
@@ -108,7 +106,6 @@ jobs:
           RUST_LOG: trace
           REDIS_HOST: localhost
           MAX_LOOPS: 10 # running sequentially just to test all the actions work
-        shell: bash
 
       - name: Run Store tester with cluster
         run: |
@@ -120,4 +117,3 @@ jobs:
           RUST_LOG: trace
           REDIS_HOST: localhost
           MAX_LOOPS: 10 # running sequentially just to test all the actions work
-        shell: bash

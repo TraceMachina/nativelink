@@ -680,7 +680,10 @@ impl WorkerScheduler for ApiWorkerScheduler {
             identity: action_info.origin_metadata.identity,
             event: Some(event),
         };
-        if let Err(err) = origin_event_tx.try_send(origin_event) {
+        // Awaited send (not try_send): apply backpressure when the publisher
+        // queue is full instead of silently dropping the resource-usage event,
+        // which is what drives action-level resource sizing in the UI.
+        if let Err(err) = origin_event_tx.send(origin_event).await {
             warn!(?err, "Failed to publish action resource usage origin event");
         }
         Ok(())
