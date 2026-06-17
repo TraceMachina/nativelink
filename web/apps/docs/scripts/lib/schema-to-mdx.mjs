@@ -62,7 +62,7 @@ function displayName(name) {
 function defaultFromDescription(md) {
   if (!md) return "";
   const zeroMeansDefault = /If not set or 0, defaults to ([^.]+)\./i.exec(md);
-  if (zeroMeansDefault) return `0 (uses ${zeroMeansDefault[1]})`;
+  if (zeroMeansDefault) return `${zeroMeansDefault[1]}`;
 
   const codeDefault = /Default:\s*(`[^`]+`)/.exec(md);
   if (codeDefault) return codeDefault[1];
@@ -106,7 +106,7 @@ function normalizeMarkdown(md) {
     )
     .replace(
       /Remember that to get total results is additive, meaning the above results\nwould mean a single request would have a total delay of 9\.525s - 15\.875s\./g,
-      "The total delay is additive, so this example produces 9.525 to 15.875 s of total delay for a single request.",
+      "\nThe total delay is additive, so this example produces 9.525 to 15.875 s of total delay for a single request.",
     );
 }
 
@@ -146,6 +146,7 @@ function normalizeProseText(text) {
     .replace(/\bA scheduler that simply forwards\b/g, "A scheduler that forwards")
     .replace(/\bThe the value\b/g, "The value")
     .replace(/\bset to -1 to disable\b/g, "set to `-1` to disable")
+    .replace(/TODO\(.+\)/, "")
     .replace(/([.!?]) {2,}(?=[A-Z`])/g, "$1 ");
 }
 
@@ -344,6 +345,7 @@ function renderTaggedEnum(name, def, known) {
 
 function enumDescription(name, value, description) {
   if (description) return description;
+  // Backfill for versions up to 1.5.1 that don't have comments for RedisMode
   if (name === "RedisMode") {
     return {
       cluster: "Use Redis Cluster.",
@@ -393,11 +395,15 @@ function unionBranchType(branch, known) {
 
 function renderUnion(name, def, known) {
   const out = [`## ${displayName(name)}`, ""];
-  if (def.description) out.push(sanitizeMarkdown(def.description), "");
-  out.push("One of:", "");
-  for (const branch of def.oneOf) {
-    const desc = branch.description ? ` — ${cellText(branch.description)}` : "";
-    out.push(`- ${unionBranchType(branch, known)}${desc}`);
+  if (name == "ExperimentalCloudObjectSpec") {
+    out.push("See [`experimental_cloud_object_store`](#experimental_cloud_object_store-1) for details")
+  } else {
+    if (def.description) out.push(sanitizeMarkdown(def.description), "");
+    out.push("One of:", "");
+    for (const branch of def.oneOf) {
+      const desc = branch.description ? ` — ${cellText(branch.description)}` : "";
+      out.push(`- ${unionBranchType(branch, known)}${desc}`);
+    }
   }
   out.push("");
   return out.join("\n");
