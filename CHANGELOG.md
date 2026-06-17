@@ -3,6 +3,32 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.1](https://github.com/TraceMachina/nativelink/compare/v1.5.0..v1.5.1) - 2026-06-16
+
+### ⛰️  Features
+
+- Introduce load-balanced channel for OpenTelemetry exporters ([#2175](https://github.com/TraceMachina/nativelink/issues/2175)) - ([82fe6e4](https://github.com/TraceMachina/nativelink/commit/82fe6e4864ac303766d97565542b6a0bc44338c2))
+
+### 🐛 Bug Fixes
+
+- *(redis_store)* recover connections through a Sentinel master failover ([#2438](https://github.com/TraceMachina/nativelink/issues/2438)) - ([06e0caf](https://github.com/TraceMachina/nativelink/commit/06e0caff19bd827ba63080a6f1663356393e1850))
+- *(redis_store)* retry has/get_part/list on failover too ([#2437](https://github.com/TraceMachina/nativelink/issues/2437)) - ([d4565e6](https://github.com/TraceMachina/nativelink/commit/d4565e655a844a0983b39d0831d999ee9df78246))
+- *(redis_store)* re-resolve master on update verify/rename for failover safety ([#2435](https://github.com/TraceMachina/nativelink/issues/2435)) - ([54918b6](https://github.com/TraceMachina/nativelink/commit/54918b629f5394fa2eac6b68278869e1671aa3bc))
+
+### 📚 Documentation
+
+- Autogenerate docs again ([#2433](https://github.com/TraceMachina/nativelink/issues/2433)) - ([dc3702c](https://github.com/TraceMachina/nativelink/commit/dc3702c25e229fc5a20146d4b9c8e6d6f4c0a499))
+
+### 🧪 Testing & CI
+
+- Dump coverage in text form during CI ([#2432](https://github.com/TraceMachina/nativelink/issues/2432)) - ([04c2f49](https://github.com/TraceMachina/nativelink/commit/04c2f4976e8aadec587f64bb9fe65cfcb90973ad))
+- Make bash shell scripts actually fall over ([#2428](https://github.com/TraceMachina/nativelink/issues/2428)) - ([d537003](https://github.com/TraceMachina/nativelink/commit/d537003b2eb7ccae69bd126fbec4ea4a9e73aa03))
+- worker_utils test coverage to 100% ([#2427](https://github.com/TraceMachina/nativelink/issues/2427)) - ([729c88d](https://github.com/TraceMachina/nativelink/commit/729c88dcf65dd40da4736ddf328fb6a2dbbecd63))
+
+### ⚙️ Miscellaneous
+
+- wtf did this come from ([#2434](https://github.com/TraceMachina/nativelink/issues/2434)) - ([6abc5d8](https://github.com/TraceMachina/nativelink/commit/6abc5d87e3127ec8eaf7b8a802c47e2aa3a4f7e2))
+
 ## [1.5.0](https://github.com/TraceMachina/nativelink/compare/v1.4.0..v1.5.0) - 2026-06-12
 
 ### ⛰️  Features
