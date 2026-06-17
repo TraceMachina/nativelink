@@ -30,12 +30,42 @@ const integrations = [
 ];
 
 const customerLogos = [
-  { name: "Menlo Security", Logo: MenloSecurityLogo, className: "h-6 md:h-7" },
-  { name: "Citrix", Logo: CitrixLogo, className: "h-5 md:h-6" },
-  { name: "Tesla", Logo: TeslaLogo, className: "h-4 md:h-5" },
-  { name: "Meta", Logo: MetaLogo, className: "h-7 md:h-8" },
-  { name: "Samsung", Logo: SamsungLogo, className: "h-4 md:h-5" },
-  { name: "Third Wave", Logo: ThirdWaveLogo, className: "h-7 md:h-8" },
+  {
+    name: "Menlo Security",
+    href: "https://www.menlosecurity.com/",
+    Logo: MenloSecurityLogo,
+    className: "h-9 md:h-10",
+  },
+  {
+    name: "Citrix",
+    href: "https://www.citrix.com/",
+    Logo: CitrixLogo,
+    className: "h-7 md:h-8",
+  },
+  {
+    name: "Tesla",
+    href: "https://www.tesla.com/",
+    Logo: TeslaLogo,
+    className: "h-6 md:h-7",
+  },
+  {
+    name: "Meta",
+    href: "https://www.meta.com/about/",
+    Logo: MetaLogo,
+    className: "h-10 md:h-11",
+  },
+  {
+    name: "Samsung",
+    href: "https://www.samsung.com/",
+    Logo: SamsungLogo,
+    className: "h-6 md:h-7",
+  },
+  {
+    name: "Third Wave",
+    href: "https://thirdwave.ai/",
+    Logo: ThirdWaveLogo,
+    className: "h-10 md:h-11",
+  },
 ];
 
 const stats = [
@@ -251,7 +281,16 @@ export default function HomePage() {
           <ul className="flex flex-wrap items-center justify-center gap-x-12 gap-y-8 md:gap-x-16">
             {customerLogos.map((c) => (
               <li key={c.name}>
-                <c.Logo className={`${c.className} w-auto text-foreground/60 transition-colors hover:text-foreground`} />
+                <a
+                  href={c.href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label={`Visit ${c.name}`}
+                  title={c.name}
+                  className="inline-flex items-center justify-center text-foreground/65 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-4 focus-visible:ring-offset-background"
+                >
+                  <c.Logo className={`${c.className} w-auto text-current`} />
+                </a>
               </li>
             ))}
           </ul>
