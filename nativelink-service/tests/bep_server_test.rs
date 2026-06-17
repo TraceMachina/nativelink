@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::pin::Pin;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use std::borrow::Cow;
 use std::sync::Arc;
 
@@ -19,8 +21,9 @@ use futures::StreamExt;
 use hyper::body::Frame;
 use nativelink_config::cas_server::BepConfig;
 use nativelink_config::stores::{MemorySpec, StoreSpec};
-use nativelink_error::{Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
+use nativelink_metric::MetricsComponent;
 use nativelink_proto::com::github::trace_machina::nativelink::events::{BepEvent, bep_event};
 use nativelink_proto::google::devtools::build::v1::build_event::console_output::Output;
 use nativelink_proto::google::devtools::build::v1::build_event::{
@@ -37,15 +40,21 @@ use nativelink_proto::google::devtools::build::v1::{
 use nativelink_service::bep_server::BepServer;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
-use nativelink_util::buf_channel::make_buf_channel_pair;
+use nativelink_util::buf_channel::{
+    DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
+};
 use nativelink_util::channel_body_for_tests::ChannelBody;
 use nativelink_util::common::encode_stream_proto;
-use nativelink_util::store_trait::{Store, StoreKey, StoreLike};
+use nativelink_util::default_health_status_indicator;
+use nativelink_util::health_utils::HealthStatusIndicator;
+use nativelink_util::store_trait::{
+    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+};
 use pretty_assertions::assert_eq;
 use prost::Message;
 use prost_types::Timestamp;
 use tonic::codec::{Codec, ProstCodec};
-use tonic::{Request, Streaming};
+use tonic::{Request, Streaming, async_trait};
 
 const BEP_STORE_NAME: &str = "main_bep";
 
@@ -78,6 +87,120 @@ fn get_bep_store(store_manager: &StoreManager) -> Result<Store, Error> {
     store_manager
         .get_store(BEP_STORE_NAME)
         .err_tip(|| format!("While retrieving bep_store {BEP_STORE_NAME}"))
+}
+
+/// A store whose `update` fails the first `fail_until` calls, then succeeds —
+/// to verify the BEP server retries a transient upload failure (e.g. a Redis
+/// Sentinel failover) instead of dropping the event.
+#[derive(Debug, MetricsComponent)]
+struct FlakyStore {
+    fail_until: usize,
+    attempts: AtomicUsize,
+}
+
+#[async_trait]
+#[allow(clippy::todo)]
+impl StoreDriver for FlakyStore {
+    async fn has_with_results(
+        self: Pin<&Self>,
+        _keys: &[StoreKey<'_>],
+        _results: &mut [Option<u64>],
+    ) -> Result<(), Error> {
+        todo!();
+    }
+
+    async fn update(
+        self: Pin<&Self>,
+        _key: StoreKey<'_>,
+        mut reader: DropCloserReadHalf,
+        _upload_size: UploadSizeInfo,
+    ) -> Result<u64, Error> {
+        // Drain so the writer side completes.
+        reader.consume(None).await?;
+        let attempt = self.attempts.fetch_add(1, Ordering::SeqCst) + 1;
+        if attempt <= self.fail_until {
+            return Err(make_err!(
+                Code::Unavailable,
+                "flaky store failure {attempt}"
+            ));
+        }
+        Ok(0)
+    }
+
+    async fn get_part(
+        self: Pin<&Self>,
+        _key: StoreKey<'_>,
+        _writer: &mut DropCloserWriteHalf,
+        _offset: u64,
+        _length: Option<u64>,
+    ) -> Result<(), Error> {
+        todo!();
+    }
+
+    fn inner_store(&self, _digest: Option<StoreKey>) -> &dyn StoreDriver {
+        self
+    }
+
+    fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
+        self
+    }
+
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+        self
+    }
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        _callback: Arc<dyn RemoveItemCallback>,
+    ) -> Result<(), Error> {
+        todo!();
+    }
+}
+
+default_health_status_indicator!(FlakyStore);
+
+/// A transient store-upload failure (e.g. a Redis Sentinel failover) must NOT
+/// drop a BEP lifecycle event — the server retries the upload until it lands.
+#[nativelink_test]
+async fn publish_lifecycle_event_retries_transient_store_failure()
+-> Result<(), Box<dyn core::error::Error>> {
+    let flaky = Arc::new(FlakyStore {
+        fail_until: 2,
+        attempts: AtomicUsize::new(0),
+    });
+    let store_manager = Arc::new(StoreManager::new());
+    store_manager.add_store(BEP_STORE_NAME, Store::new(flaky.clone()));
+    let bep_server = make_bep_server(&store_manager)?;
+
+    let request = PublishLifecycleEventRequest {
+        service_level: ServiceLevel::Interactive as i32,
+        build_event: Some(OrderedBuildEvent {
+            stream_id: Some(StreamId {
+                build_id: "some-build-id".to_string(),
+                invocation_id: "some-invocation-id".to_string(),
+                component: BuildComponent::Controller as i32,
+            }),
+            sequence_number: 1,
+            event: None,
+        }),
+        stream_timeout: None,
+        notification_keywords: vec![],
+        project_id: "some-project-id".to_string(),
+        check_preceding_lifecycle_events_present: false,
+    };
+
+    // Must succeed despite the first two transient failures.
+    bep_server
+        .publish_lifecycle_event(Request::new(request))
+        .await
+        .err_tip(|| "publish_lifecycle_event should succeed after retrying")?;
+
+    assert_eq!(
+        flaky.attempts.load(Ordering::SeqCst),
+        3,
+        "the BEP publish must retry past transient store failures (2 failures + 1 success)",
+    );
+    Ok(())
 }
 
 /// Asserts that a gRPC request for a [`PublishLifecycleEventRequest`] is correctly dumped into a [`Store`]

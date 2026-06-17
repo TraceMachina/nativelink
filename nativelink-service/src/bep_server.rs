@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use core::pin::Pin;
+use core::time::Duration;
 use std::borrow::Cow;
 
 use bytes::BytesMut;
@@ -33,8 +34,14 @@ use opentelemetry::baggage::BaggageExt;
 use opentelemetry::context::Context;
 use opentelemetry_semantic_conventions::attribute::ENDUSER_ID;
 use prost::Message;
+use tokio::time::sleep;
 use tonic::{Request, Response, Result, Status, Streaming};
-use tracing::{Level, instrument};
+use tracing::{Level, instrument, warn};
+
+/// Bounded retries for persisting a BEP event so a transient store failure
+/// (e.g. a Redis Sentinel failover) doesn't drop it — BEP events are the
+/// authoritative build record, the same durability class as origin events.
+const MAX_BEP_UPLOAD_ATTEMPTS: u32 = 5;
 
 /// Current version of the BEP event. This might be used in the future if
 /// there is a breaking change in the BEP event format.
@@ -100,10 +107,33 @@ impl BepServer {
             .encode(&mut buf)
             .err_tip(|| "Could not encode PublishLifecycleEventRequest proto")?;
 
-        self.store
-            .update_oneshot(store_key.clone(), buf.freeze())
-            .await
-            .err_tip(|| format!("Failed to store PublishLifecycleEventRequest for {store_key}",))?;
+        let data = buf.freeze();
+        for attempt in 1..=MAX_BEP_UPLOAD_ATTEMPTS {
+            match self
+                .store
+                .update_oneshot(store_key.borrow(), data.clone())
+                .await
+            {
+                Ok(()) => break,
+                Err(err) if attempt < MAX_BEP_UPLOAD_ATTEMPTS => {
+                    warn!(
+                        attempt,
+                        max = MAX_BEP_UPLOAD_ATTEMPTS,
+                        ?err,
+                        %store_key,
+                        "Failed to store BEP lifecycle event, retrying"
+                    );
+                    sleep(Duration::from_secs_f32(0.1 * attempt as f32)).await;
+                }
+                Err(err) => {
+                    return Err(err).err_tip(|| {
+                        format!(
+                            "Failed to store PublishLifecycleEventRequest for {store_key} after retries"
+                        )
+                    });
+                }
+            }
+        }
 
         Ok(Response::new(()))
     }
@@ -141,16 +171,31 @@ impl BepServer {
                 .encode(&mut buf)
                 .err_tip(|| "Could not encode PublishBuildToolEventStreamRequest proto")?;
 
-            store
-                .update_oneshot(
-                    StoreKey::Str(Cow::Owned(format!(
-                        "BepEvent:be:{}:{}:{}",
-                        &stream_id.build_id, &stream_id.invocation_id, sequence_number,
-                    ))),
-                    buf.freeze(),
-                )
-                .await
-                .err_tip(|| "Failed to store PublishBuildToolEventStreamRequest")?;
+            let store_key = StoreKey::Str(Cow::Owned(format!(
+                "BepEvent:be:{}:{}:{}",
+                &stream_id.build_id, &stream_id.invocation_id, sequence_number,
+            )));
+            let data = buf.freeze();
+            for attempt in 1..=MAX_BEP_UPLOAD_ATTEMPTS {
+                match store.update_oneshot(store_key.borrow(), data.clone()).await {
+                    Ok(()) => break,
+                    Err(err) if attempt < MAX_BEP_UPLOAD_ATTEMPTS => {
+                        warn!(
+                            attempt,
+                            max = MAX_BEP_UPLOAD_ATTEMPTS,
+                            ?err,
+                            %store_key,
+                            "Failed to store BEP build-tool event, retrying"
+                        );
+                        sleep(Duration::from_secs_f32(0.1 * attempt as f32)).await;
+                    }
+                    Err(err) => {
+                        return Err(err).err_tip(
+                            || "Failed to store PublishBuildToolEventStreamRequest after retries",
+                        )?;
+                    }
+                }
+            }
 
             Ok(PublishBuildToolEventStreamResponse {
                 stream_id: Some(stream_id.clone()),

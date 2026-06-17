@@ -686,7 +686,7 @@ pub struct FilesystemSpec {
     /// The block size of the filesystem for the running machine
     /// value is used to determine an entry's actual size on disk consumed
     /// For a 4KB block size filesystem, a 1B file actually consumes 4KB
-    /// Default: 4096
+    /// Default: 4kb
     #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub block_size: u64,
 
@@ -696,7 +696,7 @@ pub struct FilesystemSpec {
     /// Limiting concurrency prevents disk saturation from blocking the async
     /// runtime.
     /// A value of 0 means unlimited (no concurrency limit).
-    /// Default: 0
+    /// Default: unlimited
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_concurrent_writes: usize,
 }
@@ -808,6 +808,7 @@ pub struct FastSlowSpec {
     /// threshold — 256 MiB is a reasonable starting point for backends where
     /// large-blob dedup is a net loss (followers tend to time out anyway),
     /// but the right value is workload-dependent.
+    /// Default: disabled (0)
     #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub bypass_dedup_threshold_bytes: u64,
 }
@@ -839,7 +840,7 @@ pub struct DedupSpec {
     /// because it will actually not check this number of bytes when
     /// deciding where to partition the data.
     ///
-    /// Default: 65536 (64k)
+    /// Default: 64k
     #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub min_size: u32,
 
@@ -853,13 +854,13 @@ pub struct DedupSpec {
     /// value will be about `normal_size * 1.3` due to implementation
     /// details.
     ///
-    /// Default: 262144 (256k)
+    /// Default: 256k
     #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub normal_size: u32,
 
     /// Maximum size a chunk is allowed to be.
     ///
-    /// Default: 524288 (512k)
+    /// Default: 512k
     #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub max_size: u32,
 
@@ -951,7 +952,7 @@ pub struct Lz4Config {
     /// so if there was a bad actor, they could upload an extremely large
     /// `block_size`'ed entry and we'd allocate a large amount of memory
     /// when retrieving the data. To prevent this from happening, we
-    /// allow you to specify the maximum that we'll attempt deserialize.
+    /// allow you to specify the maximum that we'll attempt to deserialize.
     ///
     /// Default: value in `block_size`.
     #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
@@ -1478,16 +1479,6 @@ pub struct RedisSpec {
     pub scan_count: usize,
 
     /// Retry configuration to use when a network request fails.
-    /// See the `Retry` struct for more information.
-    ///
-    /// ```txt
-    /// Default: Retry {
-    ///   max_retries: 0, /* unlimited */
-    ///   delay: 0.1, /* 100ms */
-    ///   jitter: 0.5, /* 50% */
-    ///   retry_on_errors: None, /* not used in redis store */
-    /// }
-    /// ```
     #[serde(default)]
     pub retry: Retry,
 
@@ -1508,8 +1499,13 @@ pub struct RedisSpec {
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum RedisMode {
+    /// Use Redis Cluster.
     Cluster,
+
+    /// Use Redis Sentinel.
     Sentinel,
+
+    /// Use a standalone Redis server.
     #[default]
     Standard,
 }

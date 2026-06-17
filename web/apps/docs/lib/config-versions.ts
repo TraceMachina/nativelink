@@ -28,11 +28,19 @@ export const CONFIG_VERSIONS: ConfigVersion[] = [
     "isDev": true
   },
   {
-    "version": "v1.5.1",
-    "label": "v1.5.1 (latest)",
+    "version": "v1.5.2",
+    "label": "v1.5.2 (latest)",
     "href": "/reference/nativelink-config",
-    "ref": "v1.5.1",
+    "ref": "v1.5.2",
     "isLatest": true,
+    "isDev": false
+  },
+  {
+    "version": "v1.5.1",
+    "label": "v1.5.1",
+    "href": "/reference/nativelink-config/v1.5.1",
+    "ref": "v1.5.1",
+    "isLatest": false,
     "isDev": false
   },
   {
@@ -88,6 +96,14 @@ export const CONFIG_VERSIONS: ConfigVersion[] = [
     "label": "v1.1.0",
     "href": "/reference/nativelink-config/v1.1.0",
     "ref": "v1.1.0",
+    "isLatest": false,
+    "isDev": false
+  },
+  {
+    "version": "v1.0.1",
+    "label": "v1.0.1",
+    "href": "/reference/nativelink-config/v1.0.1",
+    "ref": "v1.0.1",
     "isLatest": false,
     "isDev": false
   },
