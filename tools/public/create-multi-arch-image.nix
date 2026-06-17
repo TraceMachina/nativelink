@@ -1,11 +1,11 @@
 # FIXME: Really this should be using nix2container or skopeo, but they can't do that
 # See https://github.com/podman-container-tools/skopeo/issues/1136
-# docker manifest create also bugs out if you're not logged in
-# So we're down to podman, so have to copy stuff in and out
+# * docker manifest create requires you to have pushed already
+# * Podman breaks in CI because fun with permissions
+# So we're down to regctl, but better options welcomed
 {
   writeShellScriptBin,
-  podman,
-  skopeo,
+  regctl,
 }:
 writeShellScriptBin "create-multi-arch-image" ''
   set -euo pipefail
@@ -13,29 +13,19 @@ writeShellScriptBin "create-multi-arch-image" ''
   echo "Testing images: $@"
   set -x
 
-  # We use the first image name/tags as a base
-  IMAGE_TAG=$(nix eval .#$1.imageTag --raw)
-  IMAGE_NAME=$(nix eval .#$1.imageName --raw)-multi
-  IMAGE_TARGET=''${IMAGE_NAME}:''${IMAGE_TAG}
+  # We use a fixed image target to make later copying easier
+  IMAGE_TARGET=nativelink-multi-arch:latest
 
   IMAGES=
-
-  # Starting with Podman 5.x, a policy.json file is required.
-  # If none exists, use skopeo's default permissive policy.
-  # https://github.com/containers/image/blob/main/docs/containers-policy.json.5.md
-  # https://github.com/NixOS/nixpkgs/blob/nixos-unstable/nixos/modules/virtualisation/containers.nix
-  if [[ ! -f "/etc/containers/policy.json" && ! -f "$HOME/.config/containers/policy.json" ]]; then
-    echo "No policy found, using skopeo's default instead."
-    install -Dm444 "${skopeo.policy}/default-policy.json" "$HOME/.config/containers/policy.json"
-  fi
 
   for image in "$@"
   do
     NEW_IMAGE="$(nix eval .#$image.imageName --raw):$(nix eval .#$image.imageTag --raw)"
-    nix run .#$image.copyTo docker-daemon:''${NEW_IMAGE}
-    ${podman}/bin/podman pull docker-daemon:''${NEW_IMAGE}
-    IMAGES="$IMAGES ''${NEW_IMAGE}"
+    IMAGE_DIR=$(mktemp -d)
+    nix run .#$image.copyTo oci:''${IMAGE_DIR}
+    IMAGES="$IMAGES --ref ocidir://''${IMAGE_DIR}"
+    break
   done
 
-  ${podman}/bin/podman manifest create --all --amend ''${IMAGE_TARGET} ''${IMAGES}
+  ${regctl}/bin/regctl -v trace index create ''${IMAGE_TARGET} ''${IMAGES}
 ''

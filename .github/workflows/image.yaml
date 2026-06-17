@@ -38,14 +38,14 @@ jobs:
         with:
           nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
 
-      - name: Test image
-        run: |
-          nix run --fallback .#local-image-test ${{ matrix.image }}
-
       - name: Test multi-arch image
         if: ${{ matrix.image == 'image'}}
         run: |
           nix run --fallback .#create-multi-arch-image nativelink-image-for-x64 nativelink-image-for-aarch64
+
+      - name: Test image
+        run: |
+          nix run --fallback .#local-image-test ${{ matrix.image }}
 
       - name: Upload image
         run: |
