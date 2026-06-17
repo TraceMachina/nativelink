@@ -3,6 +3,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.2](https://github.com/TraceMachina/nativelink/compare/v1.5.1..v1.5.2) - 2026-06-17
+
+### 🐛 Bug Fixes
+
+- *(redis)* ride out a Sentinel failover on the write paths ([#2445](https://github.com/TraceMachina/nativelink/issues/2445)) by @amankrx - ([a776234](https://github.com/TraceMachina/nativelink/commit/a77623428757dc8d228aa4932edcfd4dac81cea8))
+- *(origin-events)* don't drop resource-usage events on transient failure ([#2442](https://github.com/TraceMachina/nativelink/issues/2442)) by @amankrx - ([78af03a](https://github.com/TraceMachina/nativelink/commit/78af03a7e5c96fb8553b903d87fe6943e34932ee))
+
+### 📚 Documentation
+
+- Makes various docs improvements ([#2444](https://github.com/TraceMachina/nativelink/issues/2444)) by @palfrey - ([2d7d6b3](https://github.com/TraceMachina/nativelink/commit/2d7d6b325008f5e1a15657eb2bee8f1a8da0e0db))
+
+### ⚙️ Miscellaneous
+
+- Adds latest tag with bun ([#2440](https://github.com/TraceMachina/nativelink/issues/2440)) by @MarcusSorealheis - ([3bca6f7](https://github.com/TraceMachina/nativelink/commit/3bca6f7ec75af659dd015e7c9df08a85cc163365))
+
 ## [1.5.1](https://github.com/TraceMachina/nativelink/compare/v1.5.0..v1.5.1) - 2026-06-16
 
 ### ⛰️  Features
