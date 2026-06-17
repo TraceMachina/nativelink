@@ -20,13 +20,13 @@ writeShellScriptBin "local-image-test" ''
   IMAGE=$(nix eval .#$1 --raw)
 
   # Inlining from https://github.com/nlewo/nix2container/blob/76be9608a7f4d6c985d28b0e7be903ae2547df3e/default.nix#L88
-  # so we can run --debug on skopeo
+  # so we can add parameters to skopeo
   # nix run .#$1.copyTo \
   #   docker-daemon:''${IMAGE_NAME}:''${IMAGE_TAG}
   nix build .#$1
   # Double-check available disk before we run skopeo
   df -h
-  ${skopeo}/bin/skopeo --debug --insecure-policy copy --dest-daemon-host=''${DOCKER_HOST:-unix:///var/run/docker.sock} nix:''${IMAGE} docker-daemon:''${IMAGE_NAME}:''${IMAGE_TAG}
+  ${skopeo}/bin/skopeo --insecure-policy copy --dest-daemon-host=''${DOCKER_HOST:-unix:///var/run/docker.sock} nix:''${IMAGE} docker-daemon:''${IMAGE_NAME}:''${IMAGE_TAG}
 
   # Ensure that the image has minimal closure size.
   # TODO(palfrey): The default allows 10% inefficiency. Since we control all

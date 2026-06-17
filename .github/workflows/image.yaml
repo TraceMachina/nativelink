@@ -33,7 +33,7 @@ jobs:
       packages: write
       id-token: write
       security-events: write
-    timeout-minutes: 30
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: >- # v6.0.2
