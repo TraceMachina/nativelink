@@ -156,7 +156,17 @@ export default function HomePage() {
             </Reveal>
 
             <Reveal delay={0.15}>
-              <HeroVisual />
+              <div className="relative w-full overflow-hidden rounded-2xl border border-border shadow-[0_30px_80px_-25px_rgb(0_0_0_/_0.25)]">
+                <iframe
+                  className="aspect-video w-full"
+                  src="https://www.youtube.com/embed/WLpqFuyLMUQ?si=ZIqaR3taGNgXEyE_"
+                  title="YouTube video player"
+                  frameBorder="0"
+                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                  referrerPolicy="strict-origin-when-cross-origin"
+                  allowFullScreen
+                />
+              </div>
             </Reveal>
           </div>
         </Section>
@@ -250,6 +260,12 @@ export default function HomePage() {
             <h2 className="text-balance text-4xl font-semibold leading-[1.05] tracking-[-0.03em] md:text-[56px]">
               Fast builds without idle infrastructure.
             </h2>
+          </div>
+        </Reveal>
+
+        <Reveal delay={0.08}>
+          <div className="mx-auto mb-12 max-w-[900px]">
+            <HeroVisual />
           </div>
         </Reveal>
 
