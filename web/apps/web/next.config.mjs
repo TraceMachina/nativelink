@@ -19,28 +19,14 @@ const nextConfig = {
         ? process.env.DOCS_URL
         : (process.env.DOCS_DEV_URL ?? "http://localhost:3001");
 
-    const redirects = [];
-
-    // Redirect www to apex domain
-    if (process.env.NODE_ENV === "production") {
-      redirects.push({
-        source: "/:path*",
-        has: [{ type: "host", value: "www.nativelink.com" }],
-        destination: "https://nativelink.com/:path*",
-        permanent: true,
-      });
-    }
-
-    // If we're in production and DOCS_URL isn't set, skip the docs redirect
+    // If we're in production and DOCS_URL isn't set, skip the redirect
     // entirely — better to 404 cleanly than to redirect to nothing.
-    if (target) {
-      redirects.push(
-        { source: "/docs", destination: target, permanent: false },
-        { source: "/docs/:path*", destination: `${target}/:path*`, permanent: false }
-      );
-    }
+    if (!target) return [];
 
-    return redirects;
+    return [
+      { source: "/docs", destination: target, permanent: false },
+      { source: "/docs/:path*", destination: `${target}/:path*`, permanent: false },
+    ];
   },
 };
 
