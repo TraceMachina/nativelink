@@ -437,12 +437,36 @@ most automatically generated changelogs provide.
    git push upstream v0.x.y
    ```
 
-8. The images for the release are now being created. Go to the [Tags](https://github.com/TraceMachina/nativelink/tags)
-   tab in GitHub and double-check that the tag has a green `Verified` marker
-   next to it. If it does, select `Create a release from tag` and create release
-   notes. You can use previous release notes as template by clicking on the
-   "Edit" button on a previous release and copy-pasting the contents into the
-   new release notes.
+8. Regenerate the latest config reference docs now that the upstream tag exists.
+   Passing the new tag updates `web/apps/docs/lib/config-versions.ts`, which
+   determines the latest version shown in the docs UI, rewrites
+   `web/apps/docs/content/docs/reference/nativelink-config/index.mdx` from that
+   tag, and creates a versioned page for the previous latest release. You do not
+   need to regenerate every historical version.
+
+   ```bash
+   git fetch --tags upstream
+   cd web
+   bun --filter @nativelink/docs gen:config-reference v0.x.y
+   cd ..
+   ```
+
+   Confirm that `web/apps/docs/lib/config-versions.ts` marks `v0.x.y` as the
+   latest release and that
+   `web/apps/docs/content/docs/reference/nativelink-config/index.mdx` says it was
+   sourced from `nativelink-config @ v0.x.y`. Then run the docs lint and commit
+   the generated docs update:
+
+   ```bash
+   nix develop -c vale web/apps/docs/content/docs/reference/nativelink-config/*.mdx
+   ```
+
+9. The images for the release are now being created. Go to the
+   [Tags](https://github.com/TraceMachina/nativelink/tags) tab in GitHub and
+   double-check that the tag has a green `Verified` marker next to it. If it
+   does, select `Create a release from tag` and create release notes. You can
+   use previous release notes as template by clicking on the "Edit" button on a
+   previous release and copy-pasting the contents into the new release notes.
 
    Make sure to include migration instructions for all breaking changes.
 
@@ -450,7 +474,7 @@ most automatically generated changelogs provide.
    changes`. This is a fairly free-form section that doesn't have any explicit
    requirements other than being a best-effort summary of notable changes.
 
-9. Once all notes are in line, click `Publish Release`.
+10. Once all notes are in line, click `Publish Release`.
 
 ## Conduct
 
