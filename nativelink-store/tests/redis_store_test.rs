@@ -304,6 +304,55 @@ async fn has_retries_after_transient_error() -> Result<(), Error> {
     Ok(())
 }
 
+// The write path must also ride out a transient Redis error (e.g. a connection
+// dropped by a Sentinel failover) by re-resolving the master and retrying the
+// chunk write, rather than hard-failing the upload. Previously the chunk write
+// only retried a ReadOnly reply (a demoted replica), so a dropped connection —
+// the more common failover symptom — failed the upload and dropped the data.
+#[nativelink_test]
+async fn update_retries_after_transient_write_error() -> Result<(), Error> {
+    let data = Bytes::from_static(b"14");
+    let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
+    let packed_hash_hex = format!("{digest}");
+    let temp_key = make_temp_key(&packed_hash_hex);
+    let real_key = packed_hash_hex;
+
+    let commands = vec![
+        // First chunk write fails with a retryable connection error.
+        MockCmd::new(
+            redis::cmd("SETRANGE")
+                .arg(temp_key.clone())
+                .arg(0)
+                .arg(data.to_vec()),
+            Err::<Value, _>(RedisError::from(std::io::Error::new(
+                std::io::ErrorKind::ConnectionReset,
+                "transient",
+            ))),
+        ),
+        // After re-resolving the master, the retried chunk write succeeds.
+        MockCmd::new(
+            redis::cmd("SETRANGE")
+                .arg(temp_key.clone())
+                .arg(0)
+                .arg(data.to_vec()),
+            Ok(Value::Int(0)),
+        ),
+        MockCmd::new(
+            redis::cmd("STRLEN").arg(temp_key.clone()),
+            Ok(Value::Int(data.len() as i64)),
+        ),
+        MockCmd::new(
+            redis::cmd("RENAME").arg(temp_key).arg(real_key),
+            Ok(Value::Nil),
+        ),
+    ];
+
+    let store = make_mock_store(commands).await;
+    // Must succeed despite the transient write error.
+    store.update_oneshot(digest, data).await?;
+    Ok(())
+}
+
 #[nativelink_test]
 async fn upload_and_get_data_with_prefix() -> Result<(), Error> {
     let data = Bytes::from_static(b"14");
@@ -794,13 +843,16 @@ async fn test_health() {
                 struct_name,
                 "nativelink_store::redis_store::RedisStore<redis::aio::connection_manager::ConnectionManager, nativelink_store::redis_store::StandardRedisManager<redis::aio::connection_manager::ConnectionManager>>"
             );
+            // The write path treats a timeout as retryable (a failover symptom),
+            // so it re-resolves the master and retries the chunk write once before
+            // surfacing the error — hence the "(after reconnect)" prefix.
             assert!(
-                message.starts_with("Store.update_oneshot() failed: Error { code: DeadlineExceeded, messages: [\"Io: timed out\", \"While appending to temp key ("),
+                message.starts_with("Store.update_oneshot() failed: Error { code: DeadlineExceeded, messages: [\"Io: timed out\", \"(after reconnect) while appending to temp key ("),
                 "message: '{message}'"
             );
             logs_assert(|logs| {
                 for log in logs {
-                    if log.contains("check_health Store.update_oneshot() failed e=Error { code: DeadlineExceeded, messages: [\"Io: timed out\", \"While appending to temp key (") {
+                    if log.contains("check_health Store.update_oneshot() failed e=Error { code: DeadlineExceeded, messages: [\"Io: timed out\", \"(after reconnect) while appending to temp key (") {
                         return Ok(())
                     }
                 }
