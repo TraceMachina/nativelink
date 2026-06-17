@@ -1,5 +1,13 @@
 import { AnimatedTerminal } from "@/components/animated-terminal";
 import { ArchitectureDiagram } from "@/components/architecture-diagram";
+import {
+  CitrixLogo,
+  MenloSecurityLogo,
+  MetaLogo,
+  SamsungLogo,
+  TeslaLogo,
+  ThirdWaveLogo,
+} from "@/components/customer-logos";
 import { Badge, Button, Eyebrow, HeroVisual, Marquee, Reveal, Section } from "@nativelink/ui";
 
 export const metadata = {
@@ -21,13 +29,13 @@ const integrations = [
   "Soong",
 ];
 
-const customers: { name: string; cls: string }[] = [
-  { name: "Menlo Security", cls: "font-semibold tracking-[-0.04em]" },
-  { name: "Citrix", cls: "font-extralight uppercase tracking-[0.18em] text-base" },
-  { name: "Tesla", cls: "font-mono uppercase tracking-[0.05em] text-base" },
-  { name: "Meta", cls: "font-semibold tracking-[-0.05em]" },
-  { name: "Samsung", cls: "font-semibold tracking-[-0.04em]" },
-  { name: "Third Wave", cls: "italic font-light tracking-tight" },
+const customerLogos = [
+  { name: "Menlo Security", Logo: MenloSecurityLogo, className: "h-6 md:h-7" },
+  { name: "Citrix", Logo: CitrixLogo, className: "h-5 md:h-6" },
+  { name: "Tesla", Logo: TeslaLogo, className: "h-4 md:h-5" },
+  { name: "Meta", Logo: MetaLogo, className: "h-7 md:h-8" },
+  { name: "Samsung", Logo: SamsungLogo, className: "h-4 md:h-5" },
+  { name: "Third Wave", Logo: ThirdWaveLogo, className: "h-7 md:h-8" },
 ];
 
 const stats = [
@@ -171,15 +179,15 @@ export default function HomePage() {
           </div>
         </Section>
 
-        <div className="relative border-y border-border/60 bg-surface-elevated/40 py-6">
-          <p className="mb-3 text-center font-mono text-[11px] uppercase tracking-[0.18em] text-muted">
+        <div className="relative border-y border-border/60 bg-surface-elevated/40 py-8">
+          <p className="mb-4 text-center font-mono text-[11px] uppercase tracking-[0.18em] text-muted">
             Speaks every major build system
           </p>
           <Marquee speed={45}>
             {integrations.map((name) => (
               <span
                 key={name}
-                className="text-xl font-semibold text-muted-foreground transition-colors hover:text-brand md:text-2xl"
+                className="font-mono text-xl font-medium tracking-tight text-muted-foreground transition-colors hover:text-brand md:text-2xl"
               >
                 {name}
               </span>
@@ -200,7 +208,7 @@ export default function HomePage() {
               Built for AI-assisted development.
             </h2>
             <p className="mt-5 text-base leading-relaxed text-gray-300 md:text-lg">
-              Start in 10 minutes with Docker. Develop with Claude Code skills that guide storage
+              Start in 10 minutes with Docker. Develop with Claude Code, Cursor or Codex skills that guide storage
               changes, config updates, debugging, and multi-worker test clusters, the same workflows
               NativeLink engineers use in production.
             </p>
@@ -240,13 +248,10 @@ export default function HomePage() {
           <p className="mb-10 text-center font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
             Some companies we are building with
           </p>
-          <ul className="flex flex-wrap items-center justify-center gap-x-12 gap-y-8 text-foreground/70 md:gap-x-16">
-            {customers.map((c) => (
-              <li
-                key={c.name}
-                className={`text-xl transition-opacity hover:text-foreground md:text-2xl ${c.cls}`}
-              >
-                {c.name}
+          <ul className="flex flex-wrap items-center justify-center gap-x-12 gap-y-8 md:gap-x-16">
+            {customerLogos.map((c) => (
+              <li key={c.name}>
+                <c.Logo className={`${c.className} w-auto text-foreground/60 transition-colors hover:text-foreground`} />
               </li>
             ))}
           </ul>

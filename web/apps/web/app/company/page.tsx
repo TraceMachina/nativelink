@@ -102,13 +102,12 @@ export default function CompanyPage() {
         </Section>
       </section>
 
-      {/* MISSION / 3-PARA */}
+      {/* MISSION */}
       <Section width="narrow" className="pb-24">
         <Reveal>
           <div className="space-y-6 text-balance text-center text-base leading-relaxed text-muted-foreground md:text-lg">
-            <p>
-              We empower engineers to build the future of technology by making advanced build and
-              simulation processes that move at machine speed.
+            <p className="text-2xl font-semibold leading-[1.3] tracking-[-0.02em] text-foreground md:text-3xl">
+              Mission: Accelerate the progress of humanity in the machine age.
             </p>
             <p>
               Our products amplify the rate at which companies can innovate across mission-critical
