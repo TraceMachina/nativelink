@@ -233,13 +233,13 @@
             };
           };
 
-        nativelinkImageForX64 = nativelinkImageFor nativelink-x86_64-linux "amd64";
-        nativelinkImageForAarch64 = nativelinkImageFor nativelink-aarch64-linux "arm64";
+        nativelink-image-for-x64 = nativelinkImageFor nativelink-x86_64-linux "amd64";
+        nativelink-image-for-aarch64 = nativelinkImageFor nativelink-aarch64-linux "arm64";
 
         nativelink-image =
           if pkgs.stdenv.isx86_64
-          then nativelinkImageForX64
-          else nativelinkImageForAarch64;
+          then nativelink-image-for-x64
+          else nativelink-image-for-aarch64;
 
         nativelink-worker-init = pkgs.callPackage ./tools/nativelink-worker-init.nix {inherit buildImage self nativelink-image;};
 
@@ -392,8 +392,8 @@
               nativelinkCoverageForHost
               nativelink-aarch64-linux
               nativelink-image
-              nativelinkImageForAarch64
-              nativelinkImageForX64
+              nativelink-image-for-aarch64
+              nativelink-image-for-x64
               nativelink-is-executable-test
               nativelink-worker-init
               nativelink-x86_64-linux
