@@ -210,6 +210,11 @@ impl<I: InstantWrapper> ExistenceCacheStore<I> {
 
 #[async_trait]
 impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        self.inner_store.clone().into_inner().post_init().await?;
+        Ok(())
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         digests: &[StoreKey<'_>],
