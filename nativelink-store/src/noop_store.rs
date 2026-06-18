@@ -47,6 +47,10 @@ impl NoopStore {
 
 #[async_trait]
 impl StoreDriver for NoopStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         _keys: &[StoreKey<'_>],

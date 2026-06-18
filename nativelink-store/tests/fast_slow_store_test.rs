@@ -254,6 +254,10 @@ async fn drop_on_eof_completes_store_futures() -> Result<(), Error> {
 
     #[async_trait]
     impl StoreDriver for DropCheckStore {
+        async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+            Ok(())
+        }
+
         async fn has_with_results(
             self: Pin<&Self>,
             digests: &[StoreKey<'_>],
@@ -589,6 +593,10 @@ fn make_stores_with_lazy_slow() -> (Store, Store, Store) {
 
     #[async_trait]
     impl StoreDriver for LazyStore {
+        async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+            Ok(())
+        }
+
         async fn has_with_results(
             self: Pin<&Self>,
             digests: &[StoreKey<'_>],
@@ -728,6 +736,10 @@ struct InstrumentedSlowStore {
 
 #[async_trait]
 impl StoreDriver for InstrumentedSlowStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],
@@ -983,6 +995,10 @@ async fn has_sees_in_flight_slow_writes() -> Result<(), Error> {
 
     #[async_trait]
     impl StoreDriver for GatedSlowStore {
+        async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+            Ok(())
+        }
+
         async fn has_with_results(
             self: Pin<&Self>,
             _keys: &[StoreKey<'_>],
@@ -1142,6 +1158,10 @@ async fn has_does_not_consult_fast_store_when_slow_store_hits() -> Result<(), Er
 
     #[async_trait]
     impl StoreDriver for CountingFastStore {
+        async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+            Ok(())
+        }
+
         async fn has_with_results(
             self: Pin<&Self>,
             keys: &[StoreKey<'_>],
@@ -1248,6 +1268,10 @@ struct GatedSlowStore2 {
 
 #[async_trait]
 impl StoreDriver for GatedSlowStore2 {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         _keys: &[StoreKey<'_>],
@@ -1405,6 +1429,10 @@ struct MapBackedSlow {
 }
 #[async_trait]
 impl StoreDriver for MapBackedSlow {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],
@@ -1583,6 +1611,10 @@ struct CountingSlowStore {
 
 #[async_trait]
 impl StoreDriver for CountingSlowStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],
@@ -1831,6 +1863,10 @@ struct StaleFastStore {
 
 #[async_trait]
 impl StoreDriver for StaleFastStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         _digests: &[StoreKey<'_>],
