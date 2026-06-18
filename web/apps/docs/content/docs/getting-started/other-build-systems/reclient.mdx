@@ -1,0 +1,82 @@
+---
+title: Reclient
+description: Point Reclient at NativeLink for Chromium-style remote caching and execution.
+---
+
+Reclient speaks the Remote Execution API through a local daemon,
+`reproxy`, and command wrapper, `rewrapper`. NativeLink can be the
+backend for Reclient clients such as Chromium and other GN/Ninja builds.
+
+For a production Chromium walkthrough, see
+[Deployment → Chromium](/deployment/chromium).
+
+## Local cache-only setup
+
+Start NativeLink on `localhost:50051` with instance name `main`, then
+export the environment variables Reclient reads:
+
+```bash
+export RBE_service=localhost:50051
+export RBE_instance=main
+export RBE_service_no_security=true
+```
+
+For cache-only compiler wrapping, run `reproxy` and invoke a command with
+`rewrapper`:
+
+```bash
+reproxy &
+rewrapper -- clang++ -c hello.cc -o hello.o
+```
+
+For CMake projects, [`recc`](/getting-started/other-build-systems/cmake-recc)
+is often the smaller setup. It uses the same Remote Execution API but fits
+CMake compiler-launcher workflows directly.
+
+## Chromium-style setup
+
+Chromium checks in Reclient configs. Point them at NativeLink by enabling
+remote execution in GN:
+
+```bash
+gn gen out/Default --args='
+  use_remoteexec=true
+  use_goma=false
+  use_siso=false
+  reclient_cfg_dir="../../buildtools/reclient_cfgs/chromium-browser-clang"
+'
+```
+
+Start the daemon before building:
+
+```bash
+buildtools/reclient/bootstrap --re_proxy=buildtools/reclient/reproxy
+autoninja -C out/Default chrome
+```
+
+## Production TLS settings
+
+For a secured NativeLink endpoint, set the Reclient TLS variables instead
+of `RBE_service_no_security=true`:
+
+```bash
+export RBE_service=cas.nativelink.internal:50051
+export RBE_instance=main
+export RBE_service_no_security=false
+export RBE_tls_client_auth_cert=/etc/nativelink/tls/client.crt
+export RBE_tls_client_auth_key=/etc/nativelink/tls/client.key
+export RBE_tls_ca_cert=/etc/nativelink/tls/ca.crt
+```
+
+## Confirm it is working
+
+Use Reclient stats after a build:
+
+```bash
+reclient stats
+```
+
+On a warm cache, cache hits should climb and network errors should stay at
+zero. If actions fall back to local execution, compare the platform
+properties Reclient requests with the properties your NativeLink workers
+advertise.

@@ -1,0 +1,37 @@
+---
+title: Other build systems
+description: Use NativeLink without Bazel — Buck2, Reclient, Pants, BuildStream, and CMake with recc.
+---
+
+NativeLink speaks the standard Remote Execution API. If your build tool
+speaks the same protocol, you can point it at NativeLink without rewriting
+your build files.
+
+## Options
+
+- [Buck2](/getting-started/other-build-systems/buck2) — use Buck2's
+  built-in remote execution client with NativeLink as CAS, Action Cache,
+  and executor.
+- [Reclient](/getting-started/other-build-systems/reclient) — configure
+  `reproxy` and `rewrapper` for Chromium-style builds.
+- [Pants](/getting-started/other-build-systems/pants) — enable remote
+  cache reads and writes from `pants.toml`.
+- [BuildStream](/getting-started/other-build-systems/buildstream) — point
+  BuildStream artifact storage and remote execution at NativeLink.
+- [CMake with recc](/getting-started/other-build-systems/cmake-recc) —
+  wrap CMake compile actions with `recc` and share compile outputs
+  through NativeLink.
+
+## Common NativeLink endpoint
+
+The examples below assume a NativeLink server exposing CAS, Action Cache,
+execution, capabilities, and ByteStream on port `50051` with instance name
+`main`.
+
+The BuildStream page follows the checked-in integration test, which uses
+the default empty instance on the same local port.
+
+For a local Docker server, start with
+[Getting Started → Setup](/getting-started/setup). For the Buck2 integration
+test shape, see
+[`integration_tests/buck2/buck2_cas.json5`](https://github.com/TraceMachina/nativelink/tree/main/integration_tests/buck2/buck2_cas.json5).
