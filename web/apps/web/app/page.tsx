@@ -52,7 +52,7 @@ const customerLogos = [
     name: "Meta",
     href: "https://www.meta.com/about/",
     Logo: MetaLogo,
-    className: "h-10 md:h-11",
+    className: "h-7 md:h-8",
   },
   {
     name: "Samsung",
@@ -238,9 +238,9 @@ export default function HomePage() {
               Built for AI-assisted development.
             </h2>
             <p className="mt-5 text-base leading-relaxed text-gray-300 md:text-lg">
-              Start in 10 minutes with Docker. Develop with Claude Code, Cursor or Codex skills that guide storage
-              changes, config updates, debugging, and multi-worker test clusters, the same workflows
-              NativeLink engineers use in production.
+              Start in 10 minutes with Docker. Develop with Claude Code, Cursor or Codex skills that
+              guide storage changes, config updates, debugging, and multi-worker test clusters, the
+              same workflows NativeLink engineers use in production.
             </p>
           </Reveal>
         </div>
