@@ -2,6 +2,7 @@
 [workspace]
 exclude = [
   "nativelink-config/generate-stores-config",
+  "nativelink-test/fuzz",
   "tools/generate-bazel-rc",
 ]
 resolver = "2"
