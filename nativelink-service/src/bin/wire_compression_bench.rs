@@ -28,7 +28,7 @@
 
 use std::time::Instant;
 
-/// Zstd compression level used in the wire_compression module.
+/// Zstd compression level used in the `wire_compression` module.
 const ZSTD_COMPRESSION_LEVEL: i32 = 3;
 
 // --- Data generators ---
@@ -49,6 +49,7 @@ fn gen_repetitive(size: usize) -> Vec<u8> {
     data
 }
 
+#[allow(clippy::cast_possible_truncation)]
 fn gen_semi_random(size: usize) -> Vec<u8> {
     // Simulates compiled binary: mix of structured and random bytes.
     // Uses a simple PRNG for reproducibility.
@@ -73,6 +74,7 @@ fn gen_semi_random(size: usize) -> Vec<u8> {
     data
 }
 
+#[allow(clippy::cast_possible_truncation)]
 fn gen_protobuf_like(size: usize) -> Vec<u8> {
     // Simulates protobuf-encoded CAS messages: field tags + varint lengths + data
     let mut data = Vec::with_capacity(size);
@@ -122,6 +124,7 @@ struct BenchResult {
     decompress_ns: u64,
 }
 
+#[allow(clippy::cast_possible_truncation)]
 fn bench(label: &str, data: &[u8]) -> BenchResult {
     // Warmup
     let _warmup = zstd::bulk::compress(data, ZSTD_COMPRESSION_LEVEL);
@@ -171,6 +174,7 @@ fn format_throughput(bytes: usize, ns: u64) -> String {
     format!("{:.1} MB/s", mb / secs)
 }
 
+#[allow(clippy::print_stdout)]
 fn main() {
     let sizes: &[(usize, &str)] = &[
         (1_024, "1 KB"),

@@ -956,7 +956,7 @@ async fn batch_read_blobs_zstd_compressed() -> Result<(), Box<dyn core::error::E
     assert_eq!(entry.compressor, compressor::Value::Zstd as i32);
 
     // Decompress and verify the data matches.
-    let decompressed = zstd::bulk::decompress(&entry.data, raw_size as usize)?;
+    let decompressed = zstd::bulk::decompress(&entry.data, usize::try_from(raw_size)?)?;
     assert_eq!(decompressed.as_slice(), raw_data.as_slice());
     Ok(())
 }

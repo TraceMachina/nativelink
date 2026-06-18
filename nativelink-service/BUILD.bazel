@@ -102,6 +102,7 @@ rust_test_suite(
         "@crates//:tower",
         "@crates//:tracing",
         "@crates//:tracing-test",
+        "@crates//:zstd",
     ],
 )
 

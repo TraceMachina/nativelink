@@ -274,11 +274,7 @@ async fn inner_main(
             .err_tip(|| "Could not create Execution service")?;
 
         // Get the capabilities configs for per-instance wire compressor support.
-        let capabilities_configs = services
-            .capabilities
-            .as_ref()
-            .map(|c| c.as_slice())
-            .unwrap_or_default();
+        let capabilities_configs = services.capabilities.as_deref().unwrap_or_default();
 
         let tonic_services = Routes::builder()
             .routes()
