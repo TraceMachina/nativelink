@@ -44,17 +44,24 @@ jobs:
 
           # Bazel's downloader retry only covers truncated downloads, not HTTP 5xx/403 failures,
           # so a flaky GitHub fetch aborts the build with no retry. We retry the download in this case.
+          bazel_flags=(
+            //...
+            --verbose_failures
+            --lockfile_mode=error
+          )
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            bazel_flags+=(
+              --@rules_rust//:extra_rustc_flag=-Clink-arg=-Wl,-u,sscanf
+              --@rules_rust//:extra_rustc_flag=-Clink-arg=-Wl,-u,strtol
+              --@rules_rust//:extra_rustc_flag=-Clink-arg=-Wl,--defsym,__isoc23_sscanf=sscanf
+              --@rules_rust//:extra_rustc_flag=-Clink-arg=-Wl,--defsym,__isoc23_strtol=strtol
+            )
+          fi
+
           delay=5
           for attempt in 1 2 3; do
             if nix develop --fallback --impure --command \
-                bazel test //... \
-                  --verbose_failures \
-                  --lockfile_mode=error \
-                  --@rules_rust//:extra_rustc_flag=-Clink-arg=-Wl,-u,sscanf \
-                  --@rules_rust//:extra_rustc_flag=-Clink-arg=-Wl,-u,strtol \
-                  --@rules_rust//:extra_rustc_flag=-Clink-arg=-Wl,--defsym,__isoc23_sscanf=sscanf \
-                  --@rules_rust//:extra_rustc_flag=-Clink-arg=-Wl,--defsym,__isoc23_strtol=strtol \
-                2>&1 | tee bazel.log; then
+                bazel test "${bazel_flags[@]}" 2>&1 | tee bazel.log; then
               exit 0
             fi
             grep -E '^ERROR:' bazel.log \
