@@ -278,6 +278,11 @@ impl CompressionStore {
 
 #[async_trait]
 impl StoreDriver for CompressionStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        self.inner_store.clone().into_inner().post_init().await?;
+        Ok(())
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         digests: &[StoreKey<'_>],

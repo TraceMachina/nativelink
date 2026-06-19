@@ -1,0 +1,57 @@
+---
+title: Pants
+description: Enable Pants remote caching with NativeLink.
+---
+
+Pants can read and write remote cache entries through the Remote Execution
+API. NativeLink can provide the remote store and Action Cache for Pants
+goals without changing BUILD files.
+
+## Start NativeLink
+
+Start a NativeLink server that exposes CAS and Action Cache on
+`localhost:50051` with instance name `main`. The Docker quickstart in
+[Getting Started → Setup](/getting-started/setup) is enough for local
+cache validation.
+
+## Configure Pants
+
+Add the remote cache settings to `pants.toml`:
+
+```toml
+[GLOBAL]
+remote_cache_read = true
+remote_cache_write = true
+remote_store_address = "grpc://localhost:50051"
+remote_instance_name = "main"
+```
+
+For a shared deployment, replace `localhost:50051` with your NativeLink
+endpoint and use the same instance name your server config exposes.
+
+## Run a goal
+
+Run any Pants goal as usual:
+
+```bash
+pants test ::
+```
+
+The first run uploads results. A second run against the same inputs should
+read cached process results from NativeLink.
+
+## Remote execution
+
+Pants remote execution uses the same Remote Execution API, but it needs a
+worker environment that matches the actions Pants sends. Start with remote
+caching, then add remote execution once you have worker platform properties
+and toolchains aligned.
+
+## Troubleshooting
+
+- **No cache hits on the second run.** Check that `remote_cache_write` and
+  `remote_cache_read` are both enabled.
+- **Instance-name errors.** Match `remote_instance_name` to the NativeLink
+  config. The local examples use `main`.
+- **Connection failures.** Pants expects a `grpc://` URL in
+  `remote_store_address`.

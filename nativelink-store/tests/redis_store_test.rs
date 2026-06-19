@@ -186,6 +186,173 @@ async fn upload_and_get_data() -> Result<(), Error> {
     Ok(())
 }
 
+// Regression test for Redis-replica/failover handling in RedisStore::update.
+// If the post-write STRLEN reads 0 (the connection points at a node that doesn't
+// yet have the freshly written temp key — e.g. a failover moved the master, or
+// brief replica lag), update must re-resolve the master and retry rather than
+// failing the write with a "Data length mismatch" error.
+#[nativelink_test]
+async fn update_retries_after_transient_zero_length() -> Result<(), Error> {
+    let data = Bytes::from_static(b"14");
+    let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
+    let packed_hash_hex = format!("{digest}");
+    let temp_key = make_temp_key(&packed_hash_hex);
+    let real_key = packed_hash_hex;
+
+    let commands = vec![
+        MockCmd::new(
+            redis::cmd("SETRANGE")
+                .arg(temp_key.clone())
+                .arg(0)
+                .arg(data.to_vec()),
+            Ok(Value::Int(0)),
+        ),
+        // First verify hits a stale/replica connection that can't see the temp key.
+        MockCmd::new(
+            redis::cmd("STRLEN").arg(temp_key.clone()),
+            Ok(Value::Int(0)),
+        ),
+        // After re-resolving the master, the retry sees the real length.
+        MockCmd::new(
+            redis::cmd("STRLEN").arg(temp_key.clone()),
+            Ok(Value::Int(data.len() as i64)),
+        ),
+        MockCmd::new(
+            redis::cmd("RENAME").arg(temp_key).arg(real_key),
+            Ok(Value::Nil),
+        ),
+    ];
+
+    let store = make_mock_store(commands).await;
+    // Must succeed despite the transient zero-length read.
+    store.update_oneshot(digest, data).await?;
+    Ok(())
+}
+
+// If the value never becomes visible (genuine loss / persistent failure), update
+// still errors after exhausting its retries rather than hanging.
+#[nativelink_test]
+async fn update_errors_when_length_never_matches() -> Result<(), Error> {
+    let data = Bytes::from_static(b"14");
+    let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
+    let packed_hash_hex = format!("{digest}");
+    let temp_key = make_temp_key(&packed_hash_hex);
+
+    let mut commands = vec![MockCmd::new(
+        redis::cmd("SETRANGE")
+            .arg(temp_key.clone())
+            .arg(0)
+            .arg(data.to_vec()),
+        Ok(Value::Int(0)),
+    )];
+    // MAX_REDIS_RETRY_ATTEMPTS (5) STRLEN reads that all return 0.
+    for _ in 0..5 {
+        commands.push(MockCmd::new(
+            redis::cmd("STRLEN").arg(temp_key.clone()),
+            Ok(Value::Int(0)),
+        ));
+    }
+
+    let store = make_mock_store(commands).await;
+    let result = store.update_oneshot(digest, data).await;
+    assert!(
+        result.is_err(),
+        "expected a Data length mismatch error after exhausting retries",
+    );
+    Ok(())
+}
+
+// The read paths must ride out a transient Redis error (e.g. a connection
+// dropped by a failover) by re-resolving the master and retrying, rather than
+// surfacing the transient error. has() exercises the read-path retry.
+#[nativelink_test]
+async fn has_retries_after_transient_error() -> Result<(), Error> {
+    let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
+    let key = format!("{digest}");
+
+    let commands = vec![
+        // First existence pipeline fails with a retryable connection error.
+        MockCmd::with_values(
+            redis::pipe()
+                .cmd("STRLEN")
+                .arg(key.clone())
+                .cmd("EXISTS")
+                .arg(key.clone()),
+            Err::<Vec<Value>, _>(RedisError::from(std::io::Error::new(
+                std::io::ErrorKind::ConnectionReset,
+                "transient",
+            ))),
+        ),
+        // The retry (after re-resolving the master) succeeds.
+        MockCmd::with_values(
+            redis::pipe()
+                .cmd("STRLEN")
+                .arg(key.clone())
+                .cmd("EXISTS")
+                .arg(key.clone()),
+            Ok(vec![Value::Int(2), Value::Boolean(true)]),
+        ),
+    ];
+
+    let store = make_mock_store(commands).await;
+    let result = store.has(digest).await?;
+    assert_eq!(
+        result,
+        Some(2),
+        "has should recover from the transient error"
+    );
+    Ok(())
+}
+
+// The write path must also ride out a transient Redis error (e.g. a connection
+// dropped by a Sentinel failover) by re-resolving the master and retrying the
+// chunk write, rather than hard-failing the upload. Previously the chunk write
+// only retried a ReadOnly reply (a demoted replica), so a dropped connection —
+// the more common failover symptom — failed the upload and dropped the data.
+#[nativelink_test]
+async fn update_retries_after_transient_write_error() -> Result<(), Error> {
+    let data = Bytes::from_static(b"14");
+    let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
+    let packed_hash_hex = format!("{digest}");
+    let temp_key = make_temp_key(&packed_hash_hex);
+    let real_key = packed_hash_hex;
+
+    let commands = vec![
+        // First chunk write fails with a retryable connection error.
+        MockCmd::new(
+            redis::cmd("SETRANGE")
+                .arg(temp_key.clone())
+                .arg(0)
+                .arg(data.to_vec()),
+            Err::<Value, _>(RedisError::from(std::io::Error::new(
+                std::io::ErrorKind::ConnectionReset,
+                "transient",
+            ))),
+        ),
+        // After re-resolving the master, the retried chunk write succeeds.
+        MockCmd::new(
+            redis::cmd("SETRANGE")
+                .arg(temp_key.clone())
+                .arg(0)
+                .arg(data.to_vec()),
+            Ok(Value::Int(0)),
+        ),
+        MockCmd::new(
+            redis::cmd("STRLEN").arg(temp_key.clone()),
+            Ok(Value::Int(data.len() as i64)),
+        ),
+        MockCmd::new(
+            redis::cmd("RENAME").arg(temp_key).arg(real_key),
+            Ok(Value::Nil),
+        ),
+    ];
+
+    let store = make_mock_store(commands).await;
+    // Must succeed despite the transient write error.
+    store.update_oneshot(digest, data).await?;
+    Ok(())
+}
+
 #[nativelink_test]
 async fn upload_and_get_data_with_prefix() -> Result<(), Error> {
     let data = Bytes::from_static(b"14");
@@ -676,13 +843,16 @@ async fn test_health() {
                 struct_name,
                 "nativelink_store::redis_store::RedisStore<redis::aio::connection_manager::ConnectionManager, nativelink_store::redis_store::StandardRedisManager<redis::aio::connection_manager::ConnectionManager>>"
             );
+            // The write path treats a timeout as retryable (a failover symptom),
+            // so it re-resolves the master and retries the chunk write once before
+            // surfacing the error — hence the "(after reconnect)" prefix.
             assert!(
-                message.starts_with("Store.update_oneshot() failed: Error { code: DeadlineExceeded, messages: [\"Io: timed out\", \"While appending to temp key ("),
+                message.starts_with("Store.update_oneshot() failed: Error { code: DeadlineExceeded, messages: [\"Io: timed out\", \"(after reconnect) while appending to temp key ("),
                 "message: '{message}'"
             );
             logs_assert(|logs| {
                 for log in logs {
-                    if log.contains("check_health Store.update_oneshot() failed e=Error { code: DeadlineExceeded, messages: [\"Io: timed out\", \"While appending to temp key (") {
+                    if log.contains("check_health Store.update_oneshot() failed e=Error { code: DeadlineExceeded, messages: [\"Io: timed out\", \"(after reconnect) while appending to temp key (") {
                         return Ok(())
                     }
                 }
@@ -693,6 +863,38 @@ async fn test_health() {
             panic!("Other result: {health_result:?}");
         }
     }
+}
+
+// After a Sentinel master failover the health PING hits a dead/old master and
+// fails. check_health must re-resolve the master and PING again so a store with
+// no other traffic self-heals — otherwise it reports unhealthy until restart and
+// the readiness probe sheds traffic from an otherwise-recovered pod.
+#[nativelink_test]
+async fn check_health_recovers_after_failed_ping() {
+    let commands = vec![
+        // First PING hits the dead/old master.
+        MockCmd::new(
+            redis::cmd("PING"),
+            Err::<Value, _>(RedisError::from(std::io::Error::new(
+                std::io::ErrorKind::ConnectionReset,
+                "connection reset by peer",
+            ))),
+        ),
+        // After re-resolving the master, the PING succeeds.
+        MockCmd::new(redis::cmd("PING"), Ok(Value::Okay)),
+    ];
+    let store = make_mock_store(commands).await;
+    // The readiness probe uses the HealthStatusIndicator impl (a PING), not the
+    // StoreLike default (update_oneshot) that `store.check_health` resolves to.
+    let health = nativelink_util::health_utils::HealthStatusIndicator::check_health(
+        &store,
+        std::borrow::Cow::Borrowed("foo"),
+    )
+    .await;
+    assert!(
+        matches!(health, HealthStatus::Ok { .. }),
+        "expected Ok after re-resolving the master on a failed PING, got: {health:?}",
+    );
 }
 
 #[nativelink_test]
@@ -1114,6 +1316,78 @@ fn test_search_by_index() -> Result<(), Error> {
         "Content should match search pattern: '{}'",
         search_results[0].content
     );
+
+    Ok(())
+}
+
+// A Sentinel master failover surfaces on the scheduler's index query as a
+// dropped connection / command timeout against the old master. The matching
+// loop must re-resolve the master and retry rather than spinning on the dead
+// handle until the CAS is restarted.
+#[nativelink_test]
+fn test_search_by_index_retries_on_failover() -> Result<(), Error> {
+    fn make_ft_aggregate(result: Result<Value, RedisError>) -> MockCmd {
+        MockCmd::new(
+            redis::cmd("FT.AGGREGATE")
+                .arg("test:_content_prefix_sort_key_3e762c15")
+                .arg("@content_prefix:{ Searchable }")
+                .arg("TIMEOUT")
+                .arg(10000_u64)
+                .arg("LOAD")
+                .arg(2)
+                .arg("data")
+                .arg("version")
+                .arg("WITHCURSOR")
+                .arg("COUNT")
+                .arg(1500)
+                .arg("MAXIDLE")
+                .arg(30000)
+                .arg("SORTBY")
+                .arg(2usize)
+                .arg("@sort_key")
+                .arg("ASC"),
+            result,
+        )
+    }
+
+    let commands = vec![
+        // First query hits the dead/old master mid-failover.
+        make_ft_aggregate(Err(RedisError::from(std::io::Error::new(
+            std::io::ErrorKind::ConnectionReset,
+            "connection reset by peer",
+        )))),
+        // After re-resolving the master, the retry succeeds.
+        make_ft_aggregate(Ok(Value::Array(vec![
+            Value::Array(vec![
+                Value::Int(1),
+                Value::Array(vec![
+                    Value::BulkString(b"data".to_vec()),
+                    Value::BulkString(b"1234".to_vec()),
+                    Value::BulkString(b"version".to_vec()),
+                    Value::BulkString(b"1".to_vec()),
+                ]),
+            ]),
+            Value::Int(0),
+        ]))),
+    ];
+    let store = make_mock_store(commands).await;
+    let search_provider = SearchByContentPrefix {
+        prefix: "Searchable".to_string(),
+    };
+
+    let search_results: Vec<TestSchedulerDataUnversioned> = store
+        .search_by_index_prefix(search_provider)
+        .await
+        .err_tip(|| "search should re-resolve the master and retry past the failover")?
+        .try_collect()
+        .await?;
+
+    assert_eq!(
+        search_results.len(),
+        1,
+        "Should find the entry after retrying on the re-resolved master",
+    );
+    assert_eq!(search_results[0].content, "1234");
 
     Ok(())
 }

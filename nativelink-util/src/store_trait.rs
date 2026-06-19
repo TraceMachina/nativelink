@@ -621,6 +621,10 @@ pub trait StoreLike: Send + Sync + Sized + Unpin + 'static {
 pub trait StoreDriver:
     Sync + Send + Unpin + MetricsComponent + HealthStatusIndicator + 'static
 {
+    // Do "all the stores are setup" init e.g. if we need access to the store manager
+    // for ref stores
+    async fn post_init(self: Arc<Self>) -> Result<(), Error>;
+
     /// See: [`StoreLike::has`] for details.
     #[inline]
     async fn has(self: Pin<&Self>, key: StoreKey<'_>) -> Result<Option<u64>, Error> {

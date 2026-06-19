@@ -1,7 +1,7 @@
 [package]
 edition = "2024"
 name = "nativelink-metric-macro-derive"
-version = "1.5.0"
+version = "1.5.2"
 
 [lib]
 proc-macro = true

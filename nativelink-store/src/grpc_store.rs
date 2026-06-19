@@ -703,6 +703,10 @@ impl GrpcStore {
 
 #[async_trait]
 impl StoreDriver for GrpcStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
     // NOTE: This function can only be safely used on CAS stores. AC stores may return a size that
     // is incorrect.
     async fn has_with_results(

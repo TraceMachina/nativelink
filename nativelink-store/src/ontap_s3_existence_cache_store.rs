@@ -442,6 +442,11 @@ where
     I: InstantWrapper,
     NowFn: Fn() -> I + Send + Sync + Unpin + Clone + 'static,
 {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        self.inner_store.clone().into_inner().post_init().await?;
+        Ok(())
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],

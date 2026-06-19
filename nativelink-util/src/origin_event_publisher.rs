@@ -12,12 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::time::Duration;
+
 use bytes::BytesMut;
 use futures::{FutureExt, future};
 use nativelink_proto::com::github::trace_machina::nativelink::events::{OriginEvent, OriginEvents};
 use prost::Message;
 use tokio::sync::{broadcast, mpsc};
-use tracing::error;
+use tokio::time::sleep;
+use tracing::{error, warn};
 use uuid::{Timestamp, Uuid};
 
 use crate::shutdown_guard::{Priority, ShutdownGuard};
@@ -92,6 +95,10 @@ impl OriginEventPublisher {
     }
 
     async fn handle_batch(&self, batch: &mut Vec<OriginEvent>) {
+        // Bounded so a sustained store outage can't block the publisher (and
+        // thus the schedulers feeding it) forever; enough to ride out a
+        // Sentinel failover.
+        const MAX_UPLOAD_ATTEMPTS: u32 = 5;
         // UUID v6 requires a timestamp and node ID
         // Create timestamp from current system time with nanosecond precision
         let now = std::time::SystemTime::now()
@@ -119,16 +126,39 @@ impl OriginEventPublisher {
             error!("Failed to encode origin events: {}", e);
             return;
         }
-        let update_result = self
-            .store
-            .as_store_driver_pin()
-            .update_oneshot(
-                format!("OriginEvents:{}", uuid.hyphenated()).into(),
-                data.freeze(),
-            )
-            .await;
-        if let Err(err) = update_result {
-            error!("Failed to upload origin events: {}", err);
+        // The batch has already been drained out of `batch`, so a failed store
+        // write would silently lose these events (the source of the recurring
+        // "No action-level resource sizing records" — origin events dropped
+        // during a transient Redis disruption such as a Sentinel failover).
+        // Retry the upload, re-resolving the master each time, so a transient
+        // failure doesn't drop the events.
+        let key = format!("OriginEvents:{}", uuid.hyphenated());
+        let data = data.freeze();
+        for attempt in 1..=MAX_UPLOAD_ATTEMPTS {
+            match self
+                .store
+                .as_store_driver_pin()
+                .update_oneshot(key.clone().into(), data.clone())
+                .await
+            {
+                Ok(()) => return,
+                Err(err) if attempt < MAX_UPLOAD_ATTEMPTS => {
+                    warn!(
+                        attempt,
+                        max = MAX_UPLOAD_ATTEMPTS,
+                        ?err,
+                        "Failed to upload origin events, retrying"
+                    );
+                    sleep(Duration::from_secs_f32(0.1 * attempt as f32)).await;
+                }
+                Err(err) => {
+                    error!(
+                        attempts = MAX_UPLOAD_ATTEMPTS,
+                        ?err,
+                        "Failed to upload origin events after retries"
+                    );
+                }
+            }
         }
     }
 }

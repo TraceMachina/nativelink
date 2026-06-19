@@ -24,7 +24,7 @@ use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
 use futures::stream::{FuturesUnordered, StreamExt};
-use futures::{FutureExt, join};
+use futures::{FutureExt, join, try_join};
 use nativelink_config::stores::{FastSlowSpec, StoreDirection};
 use nativelink_error::{Code, Error, ErrorContext, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
@@ -428,6 +428,14 @@ impl FastSlowStore {
 
 #[async_trait]
 impl StoreDriver for FastSlowStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        try_join!(
+            self.fast_store.clone().into_inner().post_init(),
+            self.slow_store.clone().into_inner().post_init()
+        )?;
+        Ok(())
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         key: &[StoreKey<'_>],

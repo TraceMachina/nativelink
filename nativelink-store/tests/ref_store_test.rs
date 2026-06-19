@@ -24,10 +24,11 @@ use nativelink_store::store_manager::StoreManager;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::store_trait::{Store, StoreDriver, StoreLike};
 use pretty_assertions::assert_eq;
+use tonic::Code;
 
 const VALID_HASH1: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
 
-fn setup_stores() -> (Arc<StoreManager>, Store, Store) {
+async fn setup_stores() -> (Arc<StoreManager>, Store, Store) {
     let store_manager = Arc::new(StoreManager::new());
 
     let memory_store = Store::new(MemoryStore::new(&MemorySpec::default()));
@@ -40,6 +41,7 @@ fn setup_stores() -> (Arc<StoreManager>, Store, Store) {
         Arc::downgrade(&store_manager),
     ));
     store_manager.add_store("bar", ref_store.clone());
+    store_manager.run_post_init().await.unwrap();
     (store_manager, memory_store, ref_store)
 }
 
@@ -47,7 +49,7 @@ fn setup_stores() -> (Arc<StoreManager>, Store, Store) {
 async fn has_test() -> Result<(), Error> {
     const VALUE1: &str = "13";
 
-    let (_store_manager, memory_store, ref_store) = setup_stores();
+    let (_store_manager, memory_store, ref_store) = setup_stores().await;
 
     {
         // Insert data into memory store.
@@ -77,7 +79,7 @@ async fn has_test() -> Result<(), Error> {
 async fn get_test() -> Result<(), Error> {
     const VALUE1: &str = "13";
 
-    let (_store_manager, memory_store, ref_store) = setup_stores();
+    let (_store_manager, memory_store, ref_store) = setup_stores().await;
 
     {
         // Insert data into memory store.
@@ -108,7 +110,7 @@ async fn get_test() -> Result<(), Error> {
 async fn update_test() -> Result<(), Error> {
     const VALUE1: &str = "13";
 
-    let (_store_manager, memory_store, ref_store) = setup_stores();
+    let (_store_manager, memory_store, ref_store) = setup_stores().await;
 
     {
         // Insert data into ref_store.
@@ -158,12 +160,40 @@ async fn inner_store_test() -> Result<(), Error> {
     ));
     store_manager.add_store("ref_store_outer", ref_store_outer.clone());
 
+    store_manager.run_post_init().await.unwrap();
+
     // Ensure the result of inner_store() points to exact same memory store.
     assert_eq!(
         from_ref::<dyn StoreDriver>(ref_store_outer.inner_store(Option::<DigestInfo>::None))
             .cast::<()>(),
         from_ref::<dyn StoreDriver>(memory_store.into_inner().as_ref()).cast::<()>(),
         "Expected inner store to be memory store"
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn no_post_init_failure() -> Result<(), Error> {
+    let store_manager = Arc::new(StoreManager::new());
+
+    let memory_store = Store::new(MemoryStore::new(&MemorySpec::default()));
+    store_manager.add_store("mem_store", memory_store.clone());
+
+    let ref_store = Store::new(RefStore::new(
+        &RefSpec {
+            name: "mem_store".to_string(),
+        },
+        Arc::downgrade(&store_manager),
+    ));
+    store_manager.add_store("ref_store", ref_store.clone());
+
+    // Should fail because we never called post_init
+    assert_eq!(
+        ref_store.has(DigestInfo::try_new(VALID_HASH1, 1)?).await,
+        Err(Error::new(
+            Code::InvalidArgument,
+            "ref_store cannot get store 'mem_store', was post_init called?".into()
+        ))
     );
     Ok(())
 }

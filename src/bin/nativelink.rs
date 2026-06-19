@@ -213,6 +213,7 @@ async fn inner_main(
                 .err_tip(|| format!("Failed to create store '{name}'"))?;
             store_manager.add_store(&name, store);
         }
+        store_manager.run_post_init().await?;
     }
 
     let mut root_futures: Vec<BoxFuture<Result<(), Error>>> = Vec::new();
@@ -824,13 +825,13 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
             .expect("Failed to listen to SIGTERM")
             .recv()
             .await;
-        warn!("Process terminated via SIGTERM",);
+        warn!("Process terminated via SIGTERM");
         drop(shutdown_tx_clone.send(shutdown_guard.clone()));
         scheduler_shutdown_rx
             .await
             .expect("Failed to receive scheduler shutdown");
         let () = shutdown_guard.wait_for(Priority::P0).await;
-        warn!("Successfully shut down nativelink.",);
+        warn!("Successfully shut down nativelink.");
         std::process::exit(143);
     });
 
