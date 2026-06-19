@@ -48,12 +48,6 @@ build --@llvm//config:experimental_stub_libgcc_s=True
 build --@rules_cc//cc/toolchains/args/archiver_flags:use_libtool_on_macos=False
 build --@rules_rust//cargo/settings:experimental_symlink_execroot
 
-# aws-lc-sys built by newer Clang can reference glibc C23 entry points that
-# musl does not define. Linux Bazel builds link through the C compiler driver,
-# so pass the aliases with -Wl.
-build:linux --@rules_rust//:extra_rustc_flag=-Clink-arg=-Wl,--defsym,__isoc23_sscanf=sscanf
-build:linux --@rules_rust//:extra_rustc_flag=-Clink-arg=-Wl,--defsym,__isoc23_strtol=strtol
-
 # Don't use legacy repository rules.
 build --incompatible_disable_native_repo_rules
 

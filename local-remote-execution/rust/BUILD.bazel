@@ -144,6 +144,8 @@ config_setting(
                 ],
                 "@local-remote-execution//libc:musl": [
                     "-fuse-ld=mold",
+                    "-Wl,-u,sscanf",
+                    "-Wl,-u,strtol",
                     "-Wl,--defsym,__isoc23_sscanf=sscanf",
                     "-Wl,--defsym,__isoc23_strtol=strtol",
                 ],

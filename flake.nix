@@ -158,6 +158,8 @@
           // (pkgs.lib.optionalAttrs isLinuxTarget {
             CARGO_BUILD_RUSTFLAGS = builtins.concatStringsSep " " [
               "-C target-feature=+crt-static"
+              "-C link-arg=--undefined=sscanf"
+              "-C link-arg=--undefined=strtol"
               "-C link-arg=--defsym=__isoc23_sscanf=sscanf"
               "-C link-arg=--defsym=__isoc23_strtol=strtol"
             ];
