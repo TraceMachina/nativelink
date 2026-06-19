@@ -158,8 +158,8 @@
           // (pkgs.lib.optionalAttrs isLinuxTarget {
             CARGO_BUILD_RUSTFLAGS = builtins.concatStringsSep " " [
               "-C target-feature=+crt-static"
-              "-C link-arg=-Wl,--defsym,__isoc23_sscanf=sscanf"
-              "-C link-arg=-Wl,--defsym,__isoc23_strtol=strtol"
+              "-C link-arg=--defsym=__isoc23_sscanf=sscanf"
+              "-C link-arg=--defsym=__isoc23_strtol=strtol"
             ];
             TARGET_CC = "${pkgs.lre.clang}/bin/customClang"; # So mimalloc gets the right compiler not defaulting to gcc
             TARGET_CFLAGS = "-std=gnu17 -D__isoc23_sscanf=sscanf -D__isoc23_strtol=strtol";
