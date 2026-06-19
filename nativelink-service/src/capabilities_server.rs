@@ -139,6 +139,18 @@ impl Capabilities for CapabilitiesServer {
                 ],
             });
 
+        let supported_compressors: Vec<i32> = self
+            .supported_wire_compressors_for_instance
+            .get(&instance_name)
+            .map(|compressors| {
+                compressors
+                    .iter()
+                    .filter_map(|c| wire_compressor_to_proto(*c))
+                    .map(Into::into)
+                    .collect()
+            })
+            .unwrap_or_default();
+
         let resp = ServerCapabilities {
             cache_capabilities: Some(CacheCapabilities {
                 digest_functions: vec![
@@ -151,28 +163,8 @@ impl Capabilities for CapabilitiesServer {
                 cache_priority_capabilities: None,
                 max_batch_total_size_bytes: MAX_BATCH_TOTAL_SIZE,
                 symlink_absolute_path_strategy: SymlinkAbsolutePathStrategy::Disallowed.into(),
-                supported_compressors: self
-                    .supported_wire_compressors_for_instance
-                    .get(&instance_name)
-                    .map(|compressors| {
-                        compressors
-                            .iter()
-                            .filter_map(|c| wire_compressor_to_proto(*c))
-                            .map(Into::into)
-                            .collect::<Vec<i32>>()
-                    })
-                    .unwrap_or_default(),
-                supported_batch_update_compressors: self
-                    .supported_wire_compressors_for_instance
-                    .get(&instance_name)
-                    .map(|compressors| {
-                        compressors
-                            .iter()
-                            .filter_map(|c| wire_compressor_to_proto(*c))
-                            .map(Into::into)
-                            .collect::<Vec<i32>>()
-                    })
-                    .unwrap_or_default(),
+                supported_compressors: supported_compressors.clone(),
+                supported_batch_update_compressors: supported_compressors,
             }),
             execution_capabilities,
             deprecated_api_version: None,

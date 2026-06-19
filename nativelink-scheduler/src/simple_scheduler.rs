@@ -769,7 +769,7 @@ impl WorkerScheduler for SimpleScheduler {
         operation_id: &OperationId,
         mut resource_usage: ActionResourceUsage,
     ) -> Result<(), Error> {
-        let Some(action_info) = self
+        let Some(action_telemetry) = self
             .worker_scheduler
             .running_action_info(worker_id, operation_id)
             .await
@@ -786,8 +786,8 @@ impl WorkerScheduler for SimpleScheduler {
 
         Self::publish_action_resource_usage(
             self.maybe_origin_event_tx.as_ref(),
-            &action_info.origin_metadata,
-            action_info.scheduler_start_execute_event_id.as_deref(),
+            &action_telemetry.origin_metadata,
+            action_telemetry.scheduler_start_execute_event_id.as_deref(),
             resource_usage,
         );
         Ok(())

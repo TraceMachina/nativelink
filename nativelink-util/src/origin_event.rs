@@ -20,6 +20,9 @@ use nativelink_proto::build::bazel::remote::execution::v2::RequestMetadata;
 use nativelink_proto::com::github::trace_machina::nativelink::events::{
     Event, event, request_event, response_event, stream_event,
 };
+use opentelemetry::baggage::BaggageExt;
+use opentelemetry::context::Context;
+use opentelemetry_semantic_conventions::attribute::ENDUSER_ID;
 use prost::Message;
 use rand::RngCore;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -39,6 +42,34 @@ pub fn request_metadata_from_baggage(value: &str) -> Result<RequestMetadata, pro
         .decode(value.as_bytes())
         .map_err(|err| prost::DecodeError::new(err.to_string()))?;
     RequestMetadata::decode(&*decoded)
+}
+
+/// Extracts the Bazel [`RequestMetadata`] from the current OpenTelemetry
+/// context's baggage, if present.
+#[must_use]
+pub fn request_metadata_from_context() -> Option<RequestMetadata> {
+    Context::current()
+        .baggage()
+        .get(BAZEL_METADATA_KEY)
+        .and_then(|value| request_metadata_from_baggage(value.as_str()).ok())
+}
+
+/// Extracts the full [`OriginMetadata`] from the given OpenTelemetry baggage,
+/// if Bazel request metadata is present.
+#[must_use]
+pub fn origin_metadata_from_baggage(
+    baggage: &opentelemetry::baggage::Baggage,
+) -> Option<OriginMetadata> {
+    let bazel_metadata = baggage
+        .get(BAZEL_METADATA_KEY)
+        .and_then(|value| request_metadata_from_baggage(value.as_str()).ok())?;
+    Some(OriginMetadata {
+        identity: baggage
+            .get(ENDUSER_ID)
+            .map(|v| v.as_str().to_string())
+            .unwrap_or_default(),
+        bazel_metadata: Some(bazel_metadata),
+    })
 }
 
 /// Returns a unique ID for the given event.

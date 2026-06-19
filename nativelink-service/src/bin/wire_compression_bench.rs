@@ -26,10 +26,9 @@
 //!   - Semi-random: compiled binary with some structure (most common real case)
 //!   - Protobuf-like: small structured messages with field tags and varints
 
+use nativelink_proto::build::bazel::remote::execution::v2::compressor;
+use nativelink_service::wire_compression::{self, ZSTD_COMPRESSION_LEVEL};
 use std::time::Instant;
-
-/// Zstd compression level used in the `wire_compression` module.
-const ZSTD_COMPRESSION_LEVEL: i32 = 3;
 
 // --- Data generators ---
 
@@ -127,21 +126,22 @@ struct BenchResult {
 #[allow(clippy::cast_possible_truncation)]
 fn bench(label: &str, data: &[u8]) -> BenchResult {
     // Warmup
-    let _warmup = zstd::bulk::compress(data, ZSTD_COMPRESSION_LEVEL);
+    let _warmup = wire_compression::compress(data, compressor::Value::Zstd);
 
     // Compress
     let start = Instant::now();
-    let compressed =
-        zstd::bulk::compress(data, ZSTD_COMPRESSION_LEVEL).expect("compression should not fail");
+    let compressed = wire_compression::compress(data, compressor::Value::Zstd)
+        .expect("compression should not fail");
     let compress_ns = start.elapsed().as_nanos() as u64;
 
     // Decompress
     let start = Instant::now();
     let decompressed =
-        zstd::bulk::decompress(&compressed, data.len()).expect("decompression should not fail");
+        wire_compression::decompress(&compressed, compressor::Value::Zstd, data.len())
+            .expect("decompression should not fail");
     let decompress_ns = start.elapsed().as_nanos() as u64;
 
-    assert_eq!(decompressed.as_slice(), data, "round-trip must be lossless");
+    assert_eq!(&decompressed[..], data, "round-trip must be lossless");
 
     BenchResult {
         label: label.to_string(),

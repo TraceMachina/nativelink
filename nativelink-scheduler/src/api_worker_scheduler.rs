@@ -28,6 +28,7 @@ use nativelink_metric::{
 };
 use nativelink_util::action_messages::{OperationId, WorkerId};
 use nativelink_util::operation_state_manager::{UpdateOperationType, WorkerStateManager};
+use nativelink_util::origin_event::OriginMetadata;
 use nativelink_util::platform_properties::PlatformProperties;
 use nativelink_util::shutdown_guard::ShutdownGuard;
 use tokio::sync::Notify;
@@ -64,6 +65,17 @@ use crate::worker::{ActionInfoWithProps, Worker, WorkerTimestamp, WorkerUpdate};
 use crate::worker_capability_index::WorkerCapabilityIndex;
 use crate::worker_registry::SharedWorkerRegistry;
 use crate::worker_scheduler::WorkerScheduler;
+
+/// Lightweight telemetry describing a running action, exposed for resource-usage
+/// reporting without cloning the full `ActionInfoWithProps` (which can carry
+/// large action/platform data).
+#[derive(Clone, Debug)]
+pub struct RunningActionTelemetry {
+    /// Origin metadata used when publishing scheduler-side telemetry for this action.
+    pub origin_metadata: OriginMetadata,
+    /// `OriginEvent` id for the `scheduler_start_execute` request.
+    pub scheduler_start_execute_event_id: Option<String>,
+}
 
 #[derive(Debug)]
 struct Workers(LruCache<WorkerId, Worker>);
@@ -394,10 +406,10 @@ impl ApiWorkerSchedulerImpl {
     ) -> Result<(), Error> {
         if let Some(worker) = self.workers.get_mut(&worker_id) {
             let notify_worker_result = worker
-                .notify_update(WorkerUpdate::RunAction(Box::new((
+                .notify_update(WorkerUpdate::RunAction {
                     operation_id,
-                    action_info.clone(),
-                ))))
+                    action_info: Box::new(action_info.clone()),
+                })
                 .await;
 
             if let Err(notify_worker_result) = notify_worker_result {
@@ -543,13 +555,19 @@ impl ApiWorkerScheduler {
         &self,
         worker_id: &WorkerId,
         operation_id: &OperationId,
-    ) -> Option<ActionInfoWithProps> {
+    ) -> Option<RunningActionTelemetry> {
         let inner = self.inner.lock().await;
         inner
             .workers
             .peek(worker_id)
             .and_then(|worker| worker.running_action_infos.get(operation_id))
-            .map(|pending_action_info| pending_action_info.action_info.clone())
+            .map(|pending_action_info| RunningActionTelemetry {
+                origin_metadata: pending_action_info.action_info.origin_metadata.clone(),
+                scheduler_start_execute_event_id: pending_action_info
+                    .action_info
+                    .scheduler_start_execute_event_id
+                    .clone(),
+            })
     }
 
     /// Returns the scheduler metrics for observability.

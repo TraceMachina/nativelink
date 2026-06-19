@@ -53,6 +53,7 @@ use nativelink_util::digest_hasher::{
 use nativelink_util::proto_stream_utils::WriteRequestStreamWrapper;
 use nativelink_util::resource_info::ResourceInfo;
 use nativelink_util::spawn;
+use nativelink_util::spawn_blocking;
 use nativelink_util::store_trait::{Store, StoreLike, StoreOptimizations, UploadSizeInfo};
 use nativelink_util::task::JoinHandleDropGuard;
 use opentelemetry::context::FutureExt;
@@ -1060,9 +1061,24 @@ impl ByteStreamServer {
             }
         }
 
-        // Decompress the data.
-        let raw_data =
-            crate::wire_compression::decompress(&compressed_data, wire_compressor, expected_size)?;
+        // Decompress the data on a blocking thread pool. Zstd decompression is
+        // CPU-bound, so running it inline would stall the async executor. Using
+        // `spawn_blocking!` (which maps to `tokio::task::spawn_blocking`) keeps
+        // the work off async worker threads.
+        //
+        // Note: we still buffer the full compressed payload before
+        // decompressing (the REAPI compressed-blobs write path does not lend
+        // itself to a trivial streaming decode without a framing protocol), but
+        // we avoid the previous double-buffering where decompressed bytes were
+        // held in a separate allocation on top of the compressed one — `decompress`
+        // writes directly into a single output buffer sized to `expected_size`
+        // and the compressed buffer is dropped before the store write.
+        let compressed_bytes = compressed_data.freeze();
+        let raw_data = spawn_blocking!("bytestream_decompress_upload", move || {
+            crate::wire_compression::decompress(&compressed_bytes, wire_compressor, expected_size)
+        })
+        .await
+        .map_err(|e| make_err!(Code::Internal, "Decompression task failed: {}", e))??;
 
         // Defense-in-depth: validate size matches the digest. The decompress()
         // function already checks this, but we verify again here since this is
@@ -1088,23 +1104,17 @@ impl ByteStreamServer {
 
     /// Resolve the wire compressor from the `resource_info` and validate it
     /// against the instance's supported compressors.
+    ///
+    /// Delegates to [`crate::wire_compression::resolve_wire_compressor`] so the
+    /// URI-to-compressor parsing logic lives in one shared place.
     fn resolve_wire_compressor(
         resource_info: &ResourceInfo<'_>,
         supported: &[WireCompressor],
     ) -> Result<compressor::Value, Error> {
-        match resource_info.compressor.as_deref() {
-            None | Some("identity") => Ok(compressor::Value::Identity),
-            Some("zstd") => {
-                if supported.contains(&WireCompressor::Zstd) {
-                    Ok(compressor::Value::Zstd)
-                } else {
-                    Err(make_input_err!(
-                        "Wire compressor 'zstd' is not supported by this instance"
-                    ))
-                }
-            }
-            Some(other) => Err(make_input_err!("Unsupported wire compressor: '{}'", other)),
-        }
+        crate::wire_compression::resolve_wire_compressor(
+            resource_info.compressor.as_deref(),
+            supported,
+        )
     }
 
     /// Read a blob from the store, compress it with the given wire compressor,
@@ -1122,14 +1132,28 @@ impl ByteStreamServer {
             .await
             .err_tip(|| "Failed to read blob for wire compression")?;
 
-        // Compress the data.
+        // Compress the data on a blocking thread pool. Zstd compression is
+        // CPU-bound, so running it inline would stall the async executor. Using
+        // `spawn_blocking!` (which maps to `tokio::task::spawn_blocking`) keeps
+        // the work off async worker threads.
+        //
         // Note: The REAPI spec requires the server to return data in the format
         // indicated by the URI. When a client requests compressed-blobs/zstd/...,
         // we must return zstd-compressed data even if compression expands the
         // payload. The spec allows choosing any compression level, so for
         // incompressible data we could use a faster level, but we currently
         // use the default level for simplicity.
-        let compressed_data = crate::wire_compression::compress(&raw_data, wire_compressor)?;
+        //
+        // Identity is short-circuited here to avoid the spawn_blocking overhead
+        // and to preserve the store-owned `Bytes` zero-copy (no clone).
+        let compressed_data = match wire_compressor {
+            compressor::Value::Identity => raw_data,
+            _ => spawn_blocking!("bytestream_compress_download", move || {
+                crate::wire_compression::compress_bytes(raw_data, wire_compressor)
+            })
+            .await
+            .map_err(|e| make_err!(Code::Internal, "Compression task failed: {}", e))??,
+        };
 
         // Stream the compressed bytes back in chunks.
         let max_bytes_per_stream = instance.max_bytes_per_stream;

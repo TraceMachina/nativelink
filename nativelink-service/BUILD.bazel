@@ -142,6 +142,7 @@ rust_binary(
     visibility = ["//visibility:public"],
     deps = [
         ":nativelink-service",
+        "//nativelink-proto",
         "@crates//:zstd",
     ],
 )

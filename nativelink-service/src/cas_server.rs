@@ -39,6 +39,7 @@ use nativelink_store::grpc_store::GrpcStore;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::make_ctx_for_hash_func;
+use nativelink_util::spawn_blocking;
 use nativelink_util::store_trait::{Store, StoreLike};
 use opentelemetry::context::FutureExt;
 use tonic::{Request, Response, Status};
@@ -162,26 +163,26 @@ impl CasServer {
                         request_data
                     } else {
                         // Validate the compressor is supported.
-                        let config_compressor = match request_compressor {
-                            compressor::Value::Zstd => WireCompressor::Zstd,
-                            other => {
-                                return Err(make_input_err!(
-                                    "Unsupported compressor in BatchUpdateBlobs: {:?}",
-                                    other
-                                ));
-                            }
-                        };
+                        let config_compressor =
+                            crate::wire_compression::proto_to_wire_compressor(request_compressor)?;
                         if !supported_compressors.contains(&config_compressor) {
                             return Err(make_input_err!(
                                 "Compressor {:?} is not supported by this instance",
                                 config_compressor
                             ));
                         }
-                        crate::wire_compression::decompress(
-                            &request_data,
-                            request_compressor,
-                            size_bytes,
-                        )?
+                        let compressor_for_blocking = request_compressor;
+                        spawn_blocking!("cas_decompress_upload", move || {
+                            crate::wire_compression::decompress(
+                                &request_data,
+                                compressor_for_blocking,
+                                size_bytes,
+                            )
+                        })
+                        .await
+                        .map_err(|e| {
+                            make_err!(Code::Internal, "Decompression task failed: {}", e)
+                        })??
                     };
 
                     error_if!(
