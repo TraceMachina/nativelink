@@ -108,6 +108,14 @@ crate.from_cargo(
     use_legacy_rules_rust_platforms = True,
 )
 crate.annotation(
+    build_script_env_select = {
+        "aarch64-unknown-linux-musl": '{"TARGET_CFLAGS": "-std=gnu17"}',
+        "x86_64-unknown-linux-musl": '{"TARGET_CFLAGS": "-std=gnu17"}',
+    },
+    crate = "aws-lc-sys",
+    repositories = ["crates"],
+)
+crate.annotation(
     crate = "zstd-sys",
     gen_build_script = "on",
 )
