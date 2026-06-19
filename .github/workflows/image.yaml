@@ -54,7 +54,7 @@ jobs:
           nix run --fallback .#local-image-test localhost:5000/nativelink:${{ steps.version.outputs.version-string }}
 
       - name: Upload multi-arch image
-        if: ${{ matrix.image != 'image' && github.ref == 'refs/heads/main'}}
+        if: ${{ matrix.image == 'image' && github.ref == 'refs/heads/main'}}
         run: |
           nix run --fallback .#regctl-ghcr-login
           nix run --fallback .#create-multi-arch-image ghcr.io ${{ github.repository_owner }}/nativelink:${{ steps.version.outputs.version-string }} nativelink-image-for-x64 nativelink-image-for-aarch64
