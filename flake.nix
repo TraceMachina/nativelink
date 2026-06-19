@@ -17,7 +17,7 @@
     };
     nix2container = {
       # TODO(SchahinRohani): Use a specific commit hash until nix2container is stable.
-      url = "github:nlewo/nix2container/66f4b8a47e92aa744ec43acbb5e9185078983909";
+      url = "github:nlewo/nix2container/76be9608a7f4d6c985d28b0e7be903ae2547df3e";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
@@ -109,6 +109,7 @@
         commonArgsFor = p: let
           isLinuxBuild = p.stdenv.buildPlatform.isLinux;
           isLinuxTarget = p.stdenv.targetPlatform.isLinux;
+          isCrossCompile = p.stdenv.targetPlatform.system != pkgs.stdenv.targetPlatform.system;
           # Map the nix system to the Rust target triple that we'd want to target
           # by default.
           targetArch =
@@ -155,6 +156,10 @@
               ];
             CARGO_BUILD_TARGET = targetArch;
           }
+          // (pkgs.lib.optionalAttrs (isLinuxTarget && !isCrossCompile) {
+            # customClang is only defined for the host compiler, so doesn't work for cross-compiling
+            TARGET_CC = "${pkgs.lre.clang}/bin/customClang"; # So mimalloc gets the right compiler not defaulting to gcc
+          })
           // (pkgs.lib.optionalAttrs isLinuxTarget {
             CARGO_BUILD_RUSTFLAGS = builtins.concatStringsSep " " [
               "-C target-feature=+crt-static"
@@ -211,26 +216,19 @@
         inherit (nix2container.packages.${system}.nix2container) pullImage;
         inherit (nix2container.packages.${system}.nix2container) buildImage;
 
-        # TODO(palfrey): Allow "crosscompiling" this image. At the moment
-        #                    this would set a wrong container architecture. See:
-        #                    https://github.com/nlewo/nix2container/issues/138.
-        nativelink-image = let
-          nativelinkForImage =
-            if pkgs.stdenv.isx86_64
-            then nativelink-x86_64-linux
-            else nativelink-aarch64-linux;
-        in
+        nativelinkImageFor = archPackages: arch:
           buildImage {
+            inherit arch;
             name = "nativelink";
             copyToRoot = [
               (pkgs.buildEnv {
                 name = "nativelink-buildEnv";
-                paths = [nativelinkForImage];
+                paths = [archPackages];
                 pathsToLink = ["/bin"];
               })
             ];
             config = {
-              Entrypoint = [(pkgs.lib.getExe' nativelinkForImage "nativelink")];
+              Entrypoint = [(pkgs.lib.getExe' archPackages "nativelink")];
               Labels = {
                 "org.opencontainers.image.description" = "An RBE compatible, high-performance cache and remote executor.";
                 "org.opencontainers.image.documentation" = "https://github.com/TraceMachina/nativelink";
@@ -242,6 +240,14 @@
               };
             };
           };
+
+        nativelink-image-for-x64 = nativelinkImageFor nativelink-x86_64-linux "amd64";
+        nativelink-image-for-aarch64 = nativelinkImageFor nativelink-aarch64-linux "arm64";
+
+        nativelink-image =
+          if pkgs.stdenv.isx86_64
+          then nativelink-image-for-x64
+          else nativelink-image-for-aarch64;
 
         nativelink-worker-init = pkgs.callPackage ./tools/nativelink-worker-init.nix {inherit buildImage self nativelink-image;};
 
@@ -394,13 +400,15 @@
               nativelinkCoverageForHost
               nativelink-aarch64-linux
               nativelink-image
+              nativelink-image-for-aarch64
+              nativelink-image-for-x64
               nativelink-is-executable-test
               nativelink-worker-init
               nativelink-x86_64-linux
               ;
 
             # Used by the CI
-            inherit (pkgs.nativelink-tools) local-image-test publish-ghcr;
+            inherit (pkgs.nativelink-tools) local-image-test publish-ghcr create-multi-arch-image regctl-ghcr-login;
 
             default = nativelink;
 
@@ -554,6 +562,7 @@
               pkgs.lre.lre-cc.lre-cc-configs-gen
               pkgs.nativelink-tools.local-image-test
               pkgs.nativelink-tools.create-local-image
+              pkgs.nativelink-tools.create-multi-arch-image
               pkgs.attic-client
             ]
             ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
