@@ -22,12 +22,9 @@ use nativelink_metric::{
 use nativelink_util::action_messages::{
     ActionInfo, ActionStage, ActionState, OperationId, WorkerId,
 };
-use nativelink_util::origin_event::{
-    BAZEL_METADATA_KEY, OriginMetadata, request_metadata_from_baggage,
-};
+use nativelink_util::origin_event::{OriginMetadata, origin_metadata_from_baggage};
 use opentelemetry::baggage::BaggageExt;
 use opentelemetry::context::Context;
-use opentelemetry_semantic_conventions::attribute::ENDUSER_ID;
 use serde::{Deserialize, Serialize};
 use static_assertions::{assert_eq_size, const_assert, const_assert_eq};
 
@@ -118,16 +115,7 @@ impl AwaitedAction {
         let maybe_origin_metadata = if baggage.is_empty() {
             None
         } else {
-            let bazel_metadata = baggage
-                .get(BAZEL_METADATA_KEY)
-                .and_then(|value| request_metadata_from_baggage(value.as_str()).ok());
-            Some(OriginMetadata {
-                identity: baggage
-                    .get(ENDUSER_ID)
-                    .map(|v| v.as_str().to_string())
-                    .unwrap_or_default(),
-                bazel_metadata,
-            })
+            origin_metadata_from_baggage(baggage)
         };
 
         Self {

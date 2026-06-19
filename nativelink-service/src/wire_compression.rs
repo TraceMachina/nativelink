@@ -26,7 +26,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::compressor;
 /// Zstd compression level for wire compression.
 /// Level 0 in the zstd crate means "use default" (currently 3).
 /// We use an explicit level for clarity.
-const ZSTD_COMPRESSION_LEVEL: i32 = 3;
+pub const ZSTD_COMPRESSION_LEVEL: i32 = 3;
 
 /// Convert a `WireCompressor` config value to a proto `compressor::Value`.
 /// Returns `None` for `Identity` (identity is always implied per spec and
@@ -48,6 +48,32 @@ pub fn proto_to_wire_compressor(c: compressor::Value) -> Result<WireCompressor, 
     }
 }
 
+/// Resolve a wire compressor from a URI compressor string (as it appears in
+/// the `compressed-blobs/{compressor}/...` resource name) and validate it
+/// against the list of compressors the instance supports.
+///
+/// Returns `compressor::Value::Identity` when `compressor_str` is `None` or
+/// `"identity"`. This is the single source of truth for URI-to-compressor
+/// parsing so that `ByteStream` and any other callers stay consistent.
+pub fn resolve_wire_compressor(
+    compressor_str: Option<&str>,
+    supported: &[WireCompressor],
+) -> Result<compressor::Value, Error> {
+    match compressor_str {
+        None | Some("identity") => Ok(compressor::Value::Identity),
+        Some("zstd") => {
+            if supported.contains(&WireCompressor::Zstd) {
+                Ok(compressor::Value::Zstd)
+            } else {
+                Err(make_input_err!(
+                    "Wire compressor 'zstd' is not supported by this instance"
+                ))
+            }
+        }
+        Some(other) => Err(make_input_err!("Unsupported wire compressor: '{}'", other)),
+    }
+}
+
 /// Compress data using the specified wire compressor.
 ///
 /// `data` is the raw (uncompressed) bytes from the store.
@@ -57,6 +83,22 @@ pub fn compress(data: &[u8], compressor_value: compressor::Value) -> Result<Byte
         compressor::Value::Identity => Ok(Bytes::copy_from_slice(data)),
         compressor::Value::Zstd => {
             let compressed = zstd::bulk::compress(data, ZSTD_COMPRESSION_LEVEL)
+                .map_err(|e| make_err!(Code::Internal, "Zstd compression failed: {}", e))?;
+            Ok(Bytes::from(compressed))
+        }
+        _ => Err(make_input_err!(
+            "Unsupported wire compressor for compression: {:?}",
+            compressor_value
+        )),
+    }
+}
+
+/// Like [`compress`] but takes `Bytes` to enable zero-copy for identity.
+pub fn compress_bytes(data: Bytes, compressor_value: compressor::Value) -> Result<Bytes, Error> {
+    match compressor_value {
+        compressor::Value::Identity => Ok(data),
+        compressor::Value::Zstd => {
+            let compressed = zstd::bulk::compress(&data, ZSTD_COMPRESSION_LEVEL)
                 .map_err(|e| make_err!(Code::Internal, "Zstd compression failed: {}", e))?;
             Ok(Bytes::from(compressed))
         }
