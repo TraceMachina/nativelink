@@ -96,6 +96,23 @@ echo "" # New line.
 export NATIVELINK_DIR="$CACHE_DIR/nativelink"
 mkdir -p "$NATIVELINK_DIR"
 
+wait_for_tcp() {
+    local host="$1"
+    local port="$2"
+    local deadline=$((SECONDS + 30))
+
+    until (true > "/dev/tcp/$host/$port") 2> /dev/null; do
+        if ((SECONDS >= deadline)); then
+            echo "TCP endpoint $host:$port did not become ready within 30 seconds."
+            sudo docker compose logs
+            exit 1
+        fi
+        sleep 1
+    done
+
+    echo "TCP endpoint $host:$port is ready."
+}
+
 for pattern in "${TEST_PATTERNS[@]}"; do
     find "$SELF_DIR/integration_tests/" -name "$pattern" -type f -print0 | while IFS= read -r -d $'\0' fullpath; do
         # Cleanup.
@@ -118,6 +135,9 @@ for pattern in "${TEST_PATTERNS[@]}"; do
             sudo docker compose logs
             exit 1
         fi
+        wait_for_tcp 127.0.0.1 50051
+        wait_for_tcp 127.0.0.1 50052
+        wait_for_tcp 127.0.0.1 50071
         set +e
         bash -euo pipefail "$fullpath"
         EXIT_CODE="$?"
