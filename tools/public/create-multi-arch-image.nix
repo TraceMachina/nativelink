@@ -12,7 +12,7 @@ writeShellScriptBin "create-multi-arch-image" ''
 
   REGISTRY=$1
   shift
-  IMAGE_TARGET=$1
+  IMAGE_TARGET=$(echo $1 | tr '[:upper:]' '[:lower:]')
   shift
   FULL_IMAGE_TARGET=''${REGISTRY}/''${IMAGE_TARGET}
   echo "Creating multi-arch image for ''${FULL_IMAGE_TARGET} from: $@"
