@@ -36,13 +36,13 @@ use nativelink_metric::MetricsComponent;
 use nativelink_redis_tester::SubscriptionManagerNotify;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
-use nativelink_util::spawn;
 use nativelink_util::store_trait::{
     BoolValue, RemoveItemCallback, SchedulerCurrentVersionProvider, SchedulerIndexProvider,
     SchedulerStore, SchedulerStoreDataProvider, SchedulerStoreDecodeTo, SchedulerStoreKeyProvider,
     SchedulerSubscription, SchedulerSubscriptionManager, StoreDriver, StoreKey, UploadSizeInfo,
 };
 use nativelink_util::task::JoinHandleDropGuard;
+use nativelink_util::{background_spawn, spawn};
 use parking_lot::{Mutex, RwLock};
 use patricia_tree::StringPatriciaMap;
 use redis::aio::{ConnectionLike, ConnectionManager, ConnectionManagerConfig};
@@ -55,7 +55,7 @@ use redis::{
 };
 use tokio::select;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{OnceCell, OwnedSemaphorePermit, Semaphore};
 use tokio::time::{sleep, timeout};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::{debug, error, info, trace, warn};
@@ -386,7 +386,7 @@ where
     max_count_per_cursor: u64,
 
     /// A manager for subscriptions to keys in Redis.
-    subscription_manager: tokio::sync::OnceCell<Arc<RedisSubscriptionManager>>,
+    subscription_manager: OnceCell<Arc<RedisSubscriptionManager>>,
 
     /// Channel for getting subscription messages
     subscriber_channel: Mutex<Option<UnboundedReceiver<PushInfo>>>,
@@ -398,6 +398,9 @@ where
 
     /// Per-call ceiling for `check_health` PING.
     health_check_timeout: Duration,
+
+    /// Have we done a subscribe for messages for remove_callback subscribes?
+    has_remove_callback_subscribe: OnceCell<()>,
 }
 
 impl<C, M> Debug for RedisStore<C, M>
@@ -478,11 +481,12 @@ where
             read_chunk_size,
             max_chunk_uploads_per_update,
             scan_count,
-            subscription_manager: tokio::sync::OnceCell::new(),
+            subscription_manager: OnceCell::new(),
             subscriber_channel: Mutex::new(Some(subscriber_channel)),
             client_permits: Arc::new(Semaphore::new(max_client_permits)),
             max_count_per_cursor,
             health_check_timeout,
+            has_remove_callback_subscribe: OnceCell::const_new(),
         })
     }
 
@@ -1295,9 +1299,36 @@ where
 
     fn register_remove_callback(
         self: Arc<Self>,
-        _callback: Arc<dyn RemoveItemCallback>,
+        callback: Arc<dyn RemoveItemCallback>,
     ) -> Result<(), Error> {
-        // As redis doesn't drop stuff, we can just ignore this
+        debug!(?callback, "New callback");
+        let local_self = self.clone();
+        background_spawn!("remove_callback_subscribe", async move {
+            if let Err(err) = local_self.clone().has_remove_callback_subscribe
+                .get_or_try_init(|| async move {
+                    let mut client = local_self.get_client().await?;
+                    let cfg = redis::cmd("CONFIG").arg("GET").arg("notify-keyspace-events").to_owned().query_async::<Vec<(String,String)>>(&mut client.connection_manager).await?;
+                    if cfg.len() != 1 {
+                        warn!(?cfg, "Got multiple items for CONFIG GET, expected one");
+                        return Err(make_input_err!("Got multiple items for CONFIG GET, expected one"));
+                    }
+                    let events_cfg = &cfg.first().expect("Only one item").1;
+                    if events_cfg == "" {
+                        error!("notify-keyspace-events not enabled for Redis, will fail to get remove callbacks");
+                    } else if !events_cfg.contains("K") {
+                        error!(notify_keyspace_events=events_cfg, "notify-keyspace-events does not contain `K` so won't get keyspace events we need for eviction events");
+                    } else if !events_cfg.contains("e") && !events_cfg.contains("A") {
+                        error!(notify_keyspace_events=events_cfg, "notify-keyspace-events does not contain either 'e' or 'A' so we won't get eviction events");
+                    } else {
+                        info!(notify_keyspace_events=events_cfg, "Subscribing to eviction events");
+                        self.connection_manager.psubscribe("__key*__:*").await?;
+                    }
+                    Ok::<(), Error>(())
+                 })
+                .await {
+                    error!(?err, "Error while trying to initialise remove_callback_subscribe");
+                }
+        });
         Ok(())
     }
 }
