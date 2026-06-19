@@ -8,7 +8,12 @@
     };
     publish-ghcr = final.callPackage ./publish-ghcr.nix {};
     create-local-image = final.callPackage ./create-local-image.nix {};
-    create-multi-arch-image = final.callPackage ./create-multi-arch-image.nix {};
+    create-multi-arch-image = final.callPackage ./create-multi-arch-image.nix {
+      regclient = final.callPackage ../regclient.nix {};
+    };
+    regctl-ghcr-login = final.callPackage ./regctl-ghcr-login.nix {
+      regclient = final.callPackage ../regclient.nix {};
+    };
 
     lib = {
       createWorker = self:

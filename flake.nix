@@ -400,7 +400,7 @@
               ;
 
             # Used by the CI
-            inherit (pkgs.nativelink-tools) local-image-test publish-ghcr create-multi-arch-image;
+            inherit (pkgs.nativelink-tools) local-image-test publish-ghcr create-multi-arch-image regctl-ghcr-login;
 
             default = nativelink;
 
