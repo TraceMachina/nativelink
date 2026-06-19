@@ -50,6 +50,7 @@ jobs:
         if: ${{ matrix.image == 'image'}}
         run: |
           nix run --fallback .#create-multi-arch-image localhost:5000 nativelink:${{ steps.version.outputs.version-string }} nativelink-image-for-x64 nativelink-image-for-aarch64
+          nix run --fallback .#local-image-test localhost:5000/nativelink:${{ steps.version.outputs.version-string }}
 
       - name: Upload multi-arch image
         if: ${{ matrix.image == 'image'}}

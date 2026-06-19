@@ -6,8 +6,6 @@
 {
   writeShellScriptBin,
   regclient,
-  dive,
-  trivy,
 }:
 writeShellScriptBin "create-multi-arch-image" ''
   set -euo pipefail
@@ -35,16 +33,4 @@ writeShellScriptBin "create-multi-arch-image" ''
   done
 
   ${regclient}/bin/regctl -v info index create ''${FULL_IMAGE_TARGET} ''${IMAGES}
-
-  # Ensure that the image has minimal closure size.
-  # TODO(palfrey): The default allows 10% inefficiency. Since we control all
-  #                    our images fully we should enforce 0% inefficiency. At
-  #                    the moment this breaks lre-cc.
-  CI=1 ${dive}/bin/dive ''${FULL_IMAGE_TARGET}
-
-  # TODO(palfrey): Keep monitoring this for better solutions to ratelimits:
-  #                    https://github.com/aquasecurity/trivy-action/issues/389
-  ${trivy}/bin/trivy image \
-    ''${FULL_IMAGE_TARGET} \
-    --db-repository public.ecr.aws/aquasecurity/trivy-db:2
 ''
