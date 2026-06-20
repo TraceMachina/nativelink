@@ -34,7 +34,7 @@ use crate::s3_store::S3Store;
 pub struct R2Store;
 
 impl R2Store {
-    #[allow(clippy::new_ret_no_self)] // Returns a pinned future for async construction.
+    #[allow(clippy::new_ret_no_self)] // Because usually everyone returns themselves
     pub async fn new<I, NowFn>(
         spec: &ExperimentalR2Spec,
         now_fn: NowFn,

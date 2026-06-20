@@ -52,10 +52,7 @@ pub struct ActionInfoWithProps {
 #[derive(Debug)]
 pub enum WorkerUpdate {
     /// Requests that the worker begin executing this action.
-    RunAction {
-        operation_id: OperationId,
-        action_info: Box<ActionInfoWithProps>,
-    },
+    RunAction(Box<(OperationId, ActionInfoWithProps)>),
 
     /// Request that the worker is no longer in the pool and may discard any jobs.
     Disconnect,
@@ -186,10 +183,10 @@ impl Worker {
     /// Notifies the worker of a requested state change.
     pub async fn notify_update(&mut self, worker_update: WorkerUpdate) -> Result<(), Error> {
         match worker_update {
-            WorkerUpdate::RunAction {
-                operation_id,
-                action_info,
-            } => self.run_action(operation_id, *action_info).await,
+            WorkerUpdate::RunAction(action) => {
+                let (operation_id, action_info) = *action;
+                self.run_action(operation_id, action_info).await
+            }
             WorkerUpdate::Disconnect => {
                 self.metrics.notify_disconnect.inc();
                 send_msg_to_worker(&self.tx, update_for_worker::Update::Disconnect(()))

@@ -13,7 +13,8 @@
 // limitations under the License.
 
 use core::time::Duration;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::fs;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -27,10 +28,11 @@ use nativelink_util::action_messages::{ActionInfo, OperationId};
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, OperationFilter,
 };
-use nativelink_util::origin_event::request_metadata_from_context;
+use nativelink_util::origin_event::{BAZEL_METADATA_KEY, request_metadata_from_baggage};
+use opentelemetry::baggage::BaggageExt;
+use opentelemetry::context::Context;
 use parking_lot::Mutex;
 use serde::Deserialize;
-use tokio::fs;
 use tracing::{debug, warn};
 
 use crate::known_platform_property_provider::KnownPlatformPropertyProvider;
@@ -93,9 +95,6 @@ impl HistoricalResourceHintFile {
 struct HintState {
     hints: HashMap<HintKey, HistoricalResourceHint>,
     last_loaded: Option<Instant>,
-    /// When the last refresh attempt was made (success or failure). Used to
-    /// throttle retries and provide single-flight loading.
-    last_attempt: Option<Instant>,
 }
 
 pub struct HistoricalResourceScheduler {
@@ -137,37 +136,23 @@ impl HistoricalResourceScheduler {
         }
     }
 
-    async fn refresh_hints(&self) {
+    fn refresh_hints(&self) {
         let now = Instant::now();
         {
-            let mut hint_state = self.hint_state.lock();
-            // If the hints were loaded recently, no refresh is needed.
+            let hint_state = self.hint_state.lock();
             if let Some(last_loaded) = hint_state.last_loaded
                 && (self.refresh_interval.is_zero()
                     || now.duration_since(last_loaded) < self.refresh_interval)
             {
                 return;
             }
-            // Throttle retries: if a recent attempt was made (even on failure),
-            // don't retry until the refresh interval elapses. Recording
-            // last_attempt while still holding the lock also provides
-            // single-flight behavior — concurrent callers that observed an
-            // expired last_loaded will see last_attempt already set and return
-            // early instead of all reading the file at once.
-            if let Some(last_attempt) = hint_state.last_attempt
-                && (self.refresh_interval.is_zero()
-                    || now.duration_since(last_attempt) < self.refresh_interval)
-            {
-                return;
-            }
-            hint_state.last_attempt = Some(now);
         }
 
-        let hints_file_contents = match fs::read_to_string(&self.hints_file).await {
+        let hints_file_contents = match fs::read_to_string(&self.hints_file) {
             Ok(contents) => contents,
             Err(err) => {
                 warn!(?err, hints_file = %self.hints_file, "Failed to read historical resource hints");
-                // last_attempt is already set, so the next call is throttled.
+                self.hint_state.lock().last_loaded = Some(now);
                 return;
             }
         };
@@ -175,7 +160,7 @@ impl HistoricalResourceScheduler {
             Ok(hints_file) => hints_file.into_hints(),
             Err(err) => {
                 warn!(?err, hints_file = %self.hints_file, "Failed to parse historical resource hints");
-                // last_attempt is already set, so the next call is throttled.
+                self.hint_state.lock().last_loaded = Some(now);
                 return;
             }
         };
@@ -186,15 +171,18 @@ impl HistoricalResourceScheduler {
         debug!(hints_file = %self.hints_file, hints = hints.len(), "Loaded historical resource hints");
         let mut hint_state = self.hint_state.lock();
         hint_state.hints = hints;
-        hint_state.last_loaded = Some(Instant::now());
+        hint_state.last_loaded = Some(now);
     }
 
-    async fn hint_for_current_action(&self) -> Option<HistoricalResourceHint> {
-        self.refresh_hints().await;
-        let metadata = request_metadata_from_context()?;
-        let target_id = (!metadata.target_id.is_empty()).then_some(metadata.target_id);
-        let action_mnemonic =
-            (!metadata.action_mnemonic.is_empty()).then_some(metadata.action_mnemonic);
+    fn hint_for_current_action(&self) -> Option<HistoricalResourceHint> {
+        self.refresh_hints();
+        let ctx = Context::current();
+        let metadata = ctx
+            .baggage()
+            .get(BAZEL_METADATA_KEY)
+            .and_then(|value| request_metadata_from_baggage(value.as_str()).ok())?;
+        let target_id = non_empty_string(metadata.target_id);
+        let action_mnemonic = non_empty_string(metadata.action_mnemonic);
         let hint_state = self.hint_state.lock();
         let exact_key = HintKey {
             target_id: target_id.clone(),
@@ -246,18 +234,23 @@ impl HistoricalResourceScheduler {
             .scheduler
             .as_ref()
             .err_tip(|| "Inner scheduler does not implement KnownPlatformPropertyProvider for HistoricalResourceScheduler")?;
-        let mut known_properties: Vec<String> = known_platform_property_provider
-            .get_known_properties(instance_name)
-            .await?;
-        known_properties.push(self.cpu_property_name.clone());
-        known_properties.push(self.memory_property_name.clone());
-        known_properties.sort();
-        known_properties.dedup();
+        let mut known_properties = HashSet::<String>::from_iter(
+            known_platform_property_provider
+                .get_known_properties(instance_name)
+                .await?,
+        );
+        known_properties.insert(self.cpu_property_name.clone());
+        known_properties.insert(self.memory_property_name.clone());
+        let final_known_properties: Vec<String> = known_properties.into_iter().collect();
         self.known_properties
             .lock()
-            .insert(instance_name.to_string(), known_properties.clone());
-        Ok(known_properties)
+            .insert(instance_name.to_string(), final_known_properties.clone());
+        Ok(final_known_properties)
     }
+}
+
+fn non_empty_string(value: String) -> Option<String> {
+    if value.is_empty() { None } else { Some(value) }
 }
 
 fn apply_minimum_platform_property(
@@ -291,7 +284,7 @@ impl ClientStateManager for HistoricalResourceScheduler {
         client_operation_id: OperationId,
         mut action_info: Arc<ActionInfo>,
     ) -> Result<Box<dyn ActionStateResult>, Error> {
-        if let Some(hint) = self.hint_for_current_action().await {
+        if let Some(hint) = self.hint_for_current_action() {
             self.apply_hint(Arc::make_mut(&mut action_info), &hint);
         }
         self.scheduler

@@ -33,10 +33,13 @@ use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, OperationFilter,
 };
-use nativelink_util::origin_event::{OriginMetadata, origin_metadata_from_baggage};
+use nativelink_util::origin_event::{
+    BAZEL_METADATA_KEY, OriginMetadata, request_metadata_from_baggage,
+};
 use nativelink_util::store_trait::Store;
 use opentelemetry::baggage::BaggageExt;
 use opentelemetry::context::Context;
+use opentelemetry_semantic_conventions::attribute::ENDUSER_ID;
 use parking_lot::{Mutex, MutexGuard};
 use scopeguard::guard;
 use tokio::sync::oneshot;
@@ -275,7 +278,16 @@ impl CacheLookupScheduler {
                     let maybe_origin_metadata = if baggage.is_empty() {
                         None
                     } else {
-                        origin_metadata_from_baggage(baggage)
+                        let bazel_metadata = baggage
+                            .get(BAZEL_METADATA_KEY)
+                            .and_then(|value| request_metadata_from_baggage(value.as_str()).ok());
+                        Some(OriginMetadata {
+                            identity: baggage
+                                .get(ENDUSER_ID)
+                                .map(|v| v.as_str().to_string())
+                                .unwrap_or_default(),
+                            bazel_metadata,
+                        })
                     };
 
                     for (client_operation_id, pending_tx) in pending_txs {

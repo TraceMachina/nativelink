@@ -239,7 +239,7 @@ impl HealthStatusReporter for HealthRegistry {
             // serially. The order of the resulting descriptions is
             // not part of the API contract; collect-into-Vec callers
             // already ignore order.
-            .buffer_unordered(16),
+            .buffer_unordered(usize::MAX),
         )
     }
 }
