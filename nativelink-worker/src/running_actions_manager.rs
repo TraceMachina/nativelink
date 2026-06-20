@@ -2560,6 +2560,8 @@ pub struct RunningActionsManagerArgs<'a> {
     pub upload_action_result_config: &'a UploadActionResultConfig,
     pub max_action_timeout: Duration,
     pub max_upload_timeout: Duration,
+    pub max_cleanup_wait: Duration,
+    pub max_cleanup_backoff: Duration,
     pub timeout_handled_externally: bool,
     pub directory_cache: Option<Arc<crate::directory_cache::DirectoryCache>>,
     #[cfg(target_os = "linux")]
@@ -2607,6 +2609,8 @@ pub struct RunningActionsManagerImpl {
     /// attempt's directory is fully cleaned up before creating a new one.
     /// See: <https://github.com/TraceMachina/nativelink/issues/1859>
     cleaning_up_operations: Mutex<HashSet<OperationId>>,
+    max_cleanup_wait: Duration,
+    max_cleanup_backoff: Duration,
     /// Notify waiters when a cleanup operation completes. This is used in conjunction with
     /// `cleaning_up_operations` to coordinate directory cleanup and creation.
     cleanup_complete_notify: Arc<Notify>,
@@ -2617,11 +2621,6 @@ pub struct RunningActionsManagerImpl {
 }
 
 impl RunningActionsManagerImpl {
-    /// Maximum time to wait for a cleanup operation to complete before timing out.
-    /// TODO(marcussorealheis): Consider making cleanup wait timeout configurable in the future
-    const MAX_WAIT: Duration = Duration::from_secs(30);
-    /// Maximum backoff duration for exponential backoff when waiting for cleanup.
-    const MAX_BACKOFF: Duration = Duration::from_millis(500);
     pub fn new_with_callbacks(
         args: RunningActionsManagerArgs<'_>,
         callbacks: Callbacks,
@@ -2656,6 +2655,8 @@ impl RunningActionsManagerImpl {
             callbacks,
             metrics: Arc::new(Metrics::default()),
             cleaning_up_operations: Mutex::new(HashSet::new()),
+            max_cleanup_wait: args.max_cleanup_wait,
+            max_cleanup_backoff: args.max_cleanup_backoff,
             cleanup_complete_notify: Arc::new(Notify::new()),
             directory_cache: args.directory_cache,
             persistent_worker_pool: PersistentWorkerPool::default(),
@@ -2741,7 +2742,7 @@ impl RunningActionsManagerImpl {
                 return Ok(());
             }
 
-            if start.elapsed() > Self::MAX_WAIT {
+            if start.elapsed() > self.max_cleanup_wait {
                 self.metrics.cleanup_wait_timeouts.inc();
                 warn!(%operation_id, waited=?start.elapsed(), "Timeout waiting for previous operation cleanup");
                 return Err(make_err!(
@@ -2768,7 +2769,7 @@ impl RunningActionsManagerImpl {
                 () = self.cleanup_complete_notify.notified() => {},
                 () = tokio::time::sleep(backoff) => {
                     // Exponential backoff
-                    backoff = (backoff * 2).min(Self::MAX_BACKOFF);
+                    backoff = (backoff * 2).min(self.max_cleanup_backoff);
                 },
             }
         }
