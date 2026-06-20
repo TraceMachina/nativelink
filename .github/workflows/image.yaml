@@ -74,7 +74,6 @@ jobs:
           GHCR_REGISTRY: ghcr.io/${{ github.repository_owner }}
           GHCR_USERNAME: ${{ github.actor }}
           GHCR_PASSWORD: ${{ secrets.GHCR_PUBLISH_TOKEN }}
-        if: github.ref == 'refs/heads/main'
 
       - name: Upload trivy scan results to GitHub Security tab
         uses: >- # v2.16.3
