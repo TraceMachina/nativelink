@@ -108,13 +108,6 @@ crate.from_cargo(
     use_legacy_rules_rust_platforms = True,
 )
 crate.annotation(
-    build_script_env = {
-        "TARGET_CFLAGS": "-std=gnu17 -D__isoc23_sscanf=sscanf -D__isoc23_strtol=strtol",
-    },
-    crate = "aws-lc-sys",
-    repositories = ["crates"],
-)
-crate.annotation(
     crate = "zstd-sys",
     gen_build_script = "on",
 )
