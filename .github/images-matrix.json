@@ -6,8 +6,9 @@
       "multi-arch": true
     },
     {
+      "components": "nativelink-init-for-x64 nativelink-init-for-aarch64",
       "image": "nativelink-worker-init",
-      "multi-arch": false
+      "multi-arch": true
     },
     {
       "image": "nativelink-worker-lre-cc",
