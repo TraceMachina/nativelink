@@ -95,6 +95,10 @@ const DEFAULT_MAX_QUEUE_EVENTS: usize = 0x0001_0000;
 /// Note: The actual capacity may be greater than the provided capacity.
 const BROADCAST_CAPACITY: usize = 1;
 
+fn install_default_rustls_crypto_provider() {
+    drop(tokio_rustls::rustls::crypto::ring::default_provider().install_default());
+}
+
 /// Bind a [`TcpListener`] with `IP_FREEBIND` set.
 fn bind_freebind(socket_addr: SocketAddr) -> Result<TcpListener, std::io::Error> {
     let socket = match socket_addr {
@@ -750,6 +754,8 @@ fn get_config() -> Result<CasConfig, Error> {
 }
 
 fn main() -> Result<(), Box<dyn core::error::Error>> {
+    install_default_rustls_crypto_provider();
+
     // Set QoS to USER_INITIATED on the main thread *before* the tokio
     // runtime is built so the spawned worker threads inherit P-core
     // scheduling preference via pthread QoS inheritance on Apple

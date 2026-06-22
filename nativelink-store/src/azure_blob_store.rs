@@ -53,6 +53,7 @@ use tokio::time::sleep;
 use tracing::{Level, event};
 
 use crate::cas_utils::is_zero_digest;
+use crate::common_s3_utils::install_default_rustls_crypto_provider;
 
 // Check the below doc for the limits specific to Azure.
 // https://learn.microsoft.com/en-us/azure/storage/blobs/scalability-targets#scale-targets-for-blob-storage
@@ -347,6 +348,8 @@ impl AzureClient {
     }
 
     fn build_connector(config: &ExperimentalAzureSpec) -> HttpsConnector<LegacyHttpConnector> {
+        install_default_rustls_crypto_provider();
+
         let builder = HttpsConnectorBuilder::new().with_webpki_roots();
 
         let builder_with_schemes = if config.common.insecure_allow_http {

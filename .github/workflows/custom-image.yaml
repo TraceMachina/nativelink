@@ -23,13 +23,13 @@ on:
 
 permissions:
   contents: read
-  packages: write
-  pull-requests: write
-  id-token: write
 
 jobs:
   check-trigger:
     runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: read
     outputs:
       should_build: ${{ steps.check.outputs.should_build }}
       pr_sha: ${{ steps.check.outputs.pr_sha }}
@@ -97,6 +97,9 @@ jobs:
     needs: check-trigger
     if: needs.check-trigger.outputs.should_build == 'true'
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      issues: write
     timeout-minutes: 45
     steps:
       - name: Checkout
@@ -121,7 +124,7 @@ jobs:
         env:
           GHCR_REGISTRY: ghcr.io/${{ github.repository_owner }}
           GHCR_USERNAME: ${{ github.actor }}
-          GHCR_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_PASSWORD: ${{ secrets.GHCR_PUBLISH_TOKEN }}
           SKIP_SIGNING: "true"
           SKIP_TRIVY: "true"
 

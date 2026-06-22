@@ -1,4 +1,5 @@
 name: 'Version generator'
+description: 'Generate a date-prefixed image version string.'
 outputs:
   version-string:
     description: "Version string"

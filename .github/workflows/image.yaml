@@ -24,10 +24,9 @@ jobs:
     name: Publish ${{ matrix.image }}
     runs-on: ubuntu-24.04
     permissions:
-      packages: write
       id-token: write
       security-events: write
-    timeout-minutes: 30
+    timeout-minutes: 90
     services:
       registry:
         image: registry:3
@@ -48,33 +47,33 @@ jobs:
 
       # FIXME: merge the multi-arch and single-arch paths
       - name: Test multi-arch image
-        if: ${{ matrix.image == 'image'}}
+        if: ${{ matrix.image == 'image' && github.ref == 'refs/heads/main' }}
         run: |
           nix run --fallback .#create-multi-arch-image localhost:5000 nativelink:${{ steps.version.outputs.version-string }} nativelink-image-for-x64 nativelink-image-for-aarch64
           nix run --fallback .#local-image-test localhost:5000/nativelink:${{ steps.version.outputs.version-string }}
 
       - name: Upload multi-arch image
-        if: ${{ matrix.image == 'image' && github.ref == 'refs/heads/main'}}
+        if: ${{ matrix.image == 'image' && github.ref == 'refs/heads/main' }}
         run: |
           nix run --fallback .#regctl-ghcr-login
           nix run --fallback .#create-multi-arch-image ghcr.io ${{ github.repository_owner }}/nativelink:${{ steps.version.outputs.version-string }} nativelink-image-for-x64 nativelink-image-for-aarch64
         env:
           GHCR_USERNAME: ${{ github.actor }}
-          GHCR_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_PASSWORD: ${{ secrets.GHCR_PUBLISH_TOKEN }}
 
       - name: Test image
-        if: ${{ matrix.image != 'image'}}
+        if: ${{ matrix.image != 'image' || github.ref != 'refs/heads/main' }}
         run: |
           nix run --fallback .#local-image-test ${{ matrix.image }}
 
       - name: Upload image
-        if: ${{ matrix.image != 'image' && github.ref == 'refs/heads/main'}}
+        if: ${{ matrix.image != 'image' && github.ref == 'refs/heads/main' }}
         run: |
           nix run --fallback .#publish-ghcr ${{ matrix.image }}
         env:
           GHCR_REGISTRY: ghcr.io/${{ github.repository_owner }}
           GHCR_USERNAME: ${{ github.actor }}
-          GHCR_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_PASSWORD: ${{ secrets.GHCR_PUBLISH_TOKEN }}
 
       - name: Upload trivy scan results to GitHub Security tab
         uses: >- # v2.16.3

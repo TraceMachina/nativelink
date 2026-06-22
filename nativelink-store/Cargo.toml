@@ -43,7 +43,7 @@ byteorder = { version = "1.5.0", default-features = false }
 bytes = { version = "1.10.1", default-features = false }
 const_format = { version = "0.2.34", default-features = false }
 futures = { version = "0.3.31", default-features = false, features = ["std"] }
-gcloud-auth = { version = "1.2", default-features = false, features = [
+gcloud-auth = { version = "=1.2.0", default-features = false, features = [
   "jwt-rust-crypto",
 ] }
 gcloud-storage = { version = "1", default-features = false, features = [
@@ -91,7 +91,7 @@ redis = { version = "1.0.0", default-features = false, features = [
 regex = { version = "1.11.1", default-features = false }
 reqwest = { version = "0.12", default-features = false }
 reqwest-middleware = { version = "0.4.2", default-features = false }
-rustls = { version = "0.23.27", default-features = false, features = [] }
+rustls = { version = "0.23.27", default-features = false, features = ["ring"] }
 rustls-pki-types = { version = "1.13.1", default-features = false }
 serde = { version = "1.0.219", default-features = false }
 serde_json = { version = "1.0.140", default-features = false }

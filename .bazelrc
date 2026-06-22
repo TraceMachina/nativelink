@@ -46,6 +46,7 @@ build --incompatible_strict_action_env
 # change.
 build --@llvm//config:experimental_stub_libgcc_s=True
 build --@rules_cc//cc/toolchains/args/archiver_flags:use_libtool_on_macos=False
+build --@rules_rust//cargo/settings:experimental_symlink_execroot
 
 # Don't use legacy repository rules.
 build --incompatible_disable_native_repo_rules
