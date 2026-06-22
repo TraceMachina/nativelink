@@ -26,7 +26,7 @@ permissions:
 
 jobs:
   check-trigger:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       issues: write
       pull-requests: read
@@ -34,21 +34,30 @@ jobs:
       should_build: ${{ steps.check.outputs.should_build }}
       pr_sha: ${{ steps.check.outputs.pr_sha }}
       image: ${{ steps.check.outputs.image }}
+      multi-arch: ${{ steps.check.outputs.multi-arch }}
+      components: ${{ steps.check.outputs.components }}
     steps:
+      - name: Checkout
+        uses: >- # v6.0.2
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
       - name: Check trigger
         id: check
         uses: >- #v8.0.0
           actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
         with:
           script: |
+            var fs = require('fs');
+            var matrix = JSON.parse(fs.readFileSync('.github/images-matrix.json', 'utf8'));
+            var validImages = [];
+            for (const option of matrix['include']) {
+              validImages.append(option['image']);
+            }
             if (context.eventName === 'workflow_dispatch') {
               core.setOutput('should_build', 'true');
               core.setOutput('pr_sha', context.sha);
-              core.setOutput('image', '${{ inputs.image }}');
-              return;
+              image = '${{ inputs.image }}';
             }
-
-            if (context.eventName === 'issue_comment') {
+            else if (context.eventName === 'issue_comment') {
               const body = context.payload.comment.body.trim();
               const isPR = !!context.payload.issue.pull_request;
 
@@ -63,7 +72,6 @@ jobs:
                 });
 
                 const image = match[1] || 'image';
-                const validImages = ['image', 'nativelink-worker-init', 'nativelink-worker-lre-cc'];
 
                 if (!validImages.includes(image)) {
                   await github.rest.issues.createComment({
@@ -86,11 +94,19 @@ jobs:
                   comment_id: context.payload.comment.id,
                   content: 'rocket'
                 });
-                return;
+              }
+            } else {
+              core.setOutput('should_build', 'false');
+              return
+            }
+            core.setOutput('image', image);
+            for (const option of matrix['include']) {
+              if (option['image'] == image) {
+                core.setOutput('multi-arch', option['multi-arch'] ?? false);
+                core.setOutput('components', option['components'] ?? "");
+                return
               }
             }
-
-            core.setOutput('should_build', 'false');
 
   build-image:
     name: Build and Push Image
@@ -113,26 +129,25 @@ jobs:
         with:
           nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
 
-      - name: Upload image
-        id: upload
-        run: |
-          GIT_HASH=$(git rev-parse --short HEAD)
-          nix run --fallback .#publish-ghcr ${{ needs.check-trigger.outputs.image }} "$GIT_HASH"
+      - id: version
+        uses: ./.github/actions/generate-version
 
-          IMAGE_NAME=$(nix eval .#${{ needs.check-trigger.outputs.image }}.imageName --raw)
-          echo "image_tag=ghcr.io/${{ github.repository_owner }}/${IMAGE_NAME}:${GIT_HASH}" >> $GITHUB_OUTPUT
-        env:
-          GHCR_REGISTRY: ghcr.io/${{ github.repository_owner }}
+      - name: Upload image
+        uses: ./.github/actions/test-and-upload-image
+        with:
+          testing: false
+          image: ${{ needs.check-trigger.outputs.image }}
+          multi-arch: ${{ needs.check-trigger.outputs.multi-arch }}
+          components: ${{ needs.check-trigger.outputs.components }}
+          tag: ${{ steps.version.outputs.version-string }}
           GHCR_USERNAME: ${{ vars.GHCR_PUBLISH_USER }}
           GHCR_PASSWORD: ${{ secrets.GHCR_PUBLISH_TOKEN }}
-          SKIP_SIGNING: "true"
-          SKIP_TRIVY: "true"
 
       - name: Output image info
         run: |
           echo "### Published Image" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          echo "${{ steps.upload.outputs.image_tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "ghcr.io/${{ github.repository_owner }}/${{ needs.check-trigger.outputs.image }}:${{ steps.version.outputs.version-string }}" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Comment on PR
