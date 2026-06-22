@@ -57,7 +57,7 @@ use tokio::time::sleep;
 use tracing::{Level, event, warn};
 
 use crate::cas_utils::is_zero_digest;
-use crate::common_s3_utils::TlsClient;
+use crate::common_s3_utils::{TlsClient, install_default_rustls_crypto_provider};
 
 // S3 parts cannot be smaller than this number
 const MIN_MULTIPART_SIZE: u64 = 5 * 1024 * 1024; // 5MB
@@ -129,6 +129,8 @@ where
     NowFn: Fn() -> I + Send + Sync + Unpin + 'static,
 {
     pub async fn new(spec: &ExperimentalOntapS3Spec, now_fn: NowFn) -> Result<Arc<Self>, Error> {
+        install_default_rustls_crypto_provider();
+
         // Load custom CA config
         let ca_config = if let Some(cert_path) = &spec.root_certificates {
             load_custom_certs(cert_path)?
@@ -292,6 +294,10 @@ where
     I: InstantWrapper,
     NowFn: Fn() -> I + Send + Sync + Unpin + 'static,
 {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],

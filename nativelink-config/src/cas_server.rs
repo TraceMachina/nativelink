@@ -38,6 +38,7 @@ pub type InstanceName = String;
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct WithInstanceName<T> {
+    /// Used when the config references `instance_name` in the protocol.
     #[serde(default)]
     pub instance_name: InstanceName,
     #[serde(flatten)]
@@ -219,7 +220,7 @@ pub struct ByteStreamConfig {
     /// This allows clients that disconnect to reconnect and continue uploading
     /// the same blob.
     ///
-    /// Default: 10 (seconds)
+    /// Default: 10 seconds
     #[serde(
         default,
         deserialize_with = "convert_duration_with_shellexpand",
@@ -289,7 +290,7 @@ pub struct HealthConfig {
     #[serde(default)]
     pub path: String,
 
-    // Timeout on health checks. Defaults to 5s.
+    /// Timeout on health checks. Default: 5s.
     #[serde(default)]
     pub timeout_seconds: u64,
 }
@@ -611,7 +612,7 @@ pub struct EndpointConfig {
     pub uri: String,
 
     /// Timeout in seconds that a request should take.
-    /// Default: 5 (seconds)
+    /// Default: 5 seconds
     pub timeout: Option<f32>,
 
     /// The TLS configuration to use to connect to the endpoint.
@@ -701,7 +702,7 @@ pub struct UploadActionResultConfig {
     /// if set to `SuccessOnly` then only results with an exit code of 0 will be
     /// uploaded, if set to Everything all completed results will be uploaded.
     ///
-    /// Default: `UploadCacheResultsStrategy::SuccessOnly`
+    /// Default: `SuccessOnly`
     #[serde(default)]
     pub upload_ac_results_strategy: UploadCacheResultsStrategy,
 
@@ -715,7 +716,7 @@ pub struct UploadActionResultConfig {
     /// to the CAS key-value lookup format and are always a `HistoricalExecuteResponse`
     /// serialized message.
     ///
-    /// Default: `UploadCacheResultsStrategy::FailuresOnly`
+    /// Default: `FailuresOnly`
     #[serde(default)]
     pub upload_historical_results_strategy: Option<UploadCacheResultsStrategy>,
 
@@ -765,7 +766,7 @@ pub struct LocalWorkerConfig {
     /// The maximum time an action is allowed to run. If a task requests for a timeout
     /// longer than this time limit, the task will be rejected. Value in seconds.
     ///
-    /// Default: 1200 (seconds / 20 mins)
+    /// Default: 20 minutes
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub max_action_timeout: usize,
 
@@ -773,7 +774,7 @@ pub struct LocalWorkerConfig {
     /// completes. If upload takes longer than this, the action fails with
     /// `DeadlineExceeded` and may be retried by the scheduler. Value in seconds.
     ///
-    /// Default: 600 (seconds / 10 mins)
+    /// Default: 10 minutes
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub max_upload_timeout: usize,
 

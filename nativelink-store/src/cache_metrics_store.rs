@@ -101,6 +101,11 @@ impl MetricsComponent for CacheMetricsStore {
 
 #[async_trait]
 impl StoreDriver for CacheMetricsStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        self.backend.clone().into_inner().post_init().await?;
+        Ok(())
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],

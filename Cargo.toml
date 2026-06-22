@@ -2,6 +2,7 @@
 [workspace]
 exclude = [
   "nativelink-config/generate-stores-config",
+  "nativelink-test/fuzz",
   "tools/generate-bazel-rc",
 ]
 resolver = "2"
@@ -10,7 +11,7 @@ resolver = "2"
 edition = "2024"
 name = "nativelink"
 rust-version = "1.93.1"
-version = "1.5.1"
+version = "1.5.2"
 
 [profile.release]
 lto = true

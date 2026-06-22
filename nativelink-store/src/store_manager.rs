@@ -14,6 +14,7 @@
 
 use std::collections::HashMap;
 
+use nativelink_error::Error;
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_util::store_trait::Store;
 use parking_lot::RwLock;
@@ -42,6 +43,17 @@ impl StoreManager {
             return Some(store.clone());
         }
         None
+    }
+
+    pub async fn run_post_init(&self) -> Result<(), Error> {
+        let stores = {
+            let lock = self.stores.read();
+            lock.values().cloned().collect::<Vec<_>>()
+        };
+        for store in stores {
+            store.into_inner().post_init().await?;
+        }
+        Ok(())
     }
 }
 

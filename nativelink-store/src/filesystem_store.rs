@@ -1260,6 +1260,10 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
 
 #[async_trait]
 impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],

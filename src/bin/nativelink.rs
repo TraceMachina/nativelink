@@ -95,6 +95,10 @@ const DEFAULT_MAX_QUEUE_EVENTS: usize = 0x0001_0000;
 /// Note: The actual capacity may be greater than the provided capacity.
 const BROADCAST_CAPACITY: usize = 1;
 
+fn install_default_rustls_crypto_provider() {
+    drop(tokio_rustls::rustls::crypto::ring::default_provider().install_default());
+}
+
 /// Bind a [`TcpListener`] with `IP_FREEBIND` set.
 fn bind_freebind(socket_addr: SocketAddr) -> Result<TcpListener, std::io::Error> {
     let socket = match socket_addr {
@@ -213,6 +217,7 @@ async fn inner_main(
                 .err_tip(|| format!("Failed to create store '{name}'"))?;
             store_manager.add_store(&name, store);
         }
+        store_manager.run_post_init().await?;
     }
 
     let mut root_futures: Vec<BoxFuture<Result<(), Error>>> = Vec::new();
@@ -749,6 +754,8 @@ fn get_config() -> Result<CasConfig, Error> {
 }
 
 fn main() -> Result<(), Box<dyn core::error::Error>> {
+    install_default_rustls_crypto_provider();
+
     // Set QoS to USER_INITIATED on the main thread *before* the tokio
     // runtime is built so the spawned worker threads inherit P-core
     // scheduling preference via pthread QoS inheritance on Apple
@@ -824,13 +831,13 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
             .expect("Failed to listen to SIGTERM")
             .recv()
             .await;
-        warn!("Process terminated via SIGTERM",);
+        warn!("Process terminated via SIGTERM");
         drop(shutdown_tx_clone.send(shutdown_guard.clone()));
         scheduler_shutdown_rx
             .await
             .expect("Failed to receive scheduler shutdown");
         let () = shutdown_guard.wait_for(Priority::P0).await;
-        warn!("Successfully shut down nativelink.",);
+        warn!("Successfully shut down nativelink.");
         std::process::exit(143);
     });
 

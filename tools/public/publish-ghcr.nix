@@ -2,7 +2,7 @@
   writeShellScriptBin,
   skopeo,
   cosign,
-  trivy,
+  trivy-report,
 }:
 writeShellScriptBin "publish-ghcr" ''
   set -xeuo pipefail
@@ -48,16 +48,7 @@ writeShellScriptBin "publish-ghcr" ''
     echo "Skipping cosign signing (SKIP_SIGNING=true)"
   fi
 
-  # Skip trivy scan if SKIP_TRIVY is set
-  if [[ "''${SKIP_TRIVY:-false}" != "true" ]]; then
-    ${trivy}/bin/trivy \
-      image \
-      --format sarif \
-      ''${TAGGED_IMAGE} \
-    > trivy-results.sarif
-  else
-    echo "Skipping trivy scan (SKIP_TRIVY=true)"
-  fi
+  ${trivy-report}/bin/trivy-report ''${TAGGED_IMAGE}
 
   echo "Published: ''${TAGGED_IMAGE}"
 ''

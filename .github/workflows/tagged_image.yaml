@@ -12,14 +12,27 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  get-images-matrix:
+    runs-on: ubuntu-24.04
+    outputs:
+       matrix: ${{ steps.setmatrix.outputs.matrix }}
+    steps:
+      - name: Checkout
+        uses: >- # v6.0.2
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - name: Set Images matrix
+        id: setmatrix
+        run: |
+          MATRIX_STRINGIFIED=$(jq -c . < .github/images-matrix.json)
+          echo "::set-output name=matrix::$MATRIX_STRINGIFIED"
+
   publish-image:
+    needs: get-images-matrix
     strategy:
       fail-fast: false
-      matrix:
-        image: [image, nativelink-worker-init, nativelink-worker-lre-cc]
+      matrix: ${{ fromJson(needs.get-images-matrix.outputs.matrix) }}
     runs-on: ubuntu-24.04
     permissions:
-      packages: write
       id-token: write
     timeout-minutes: 60
     steps:
@@ -32,17 +45,16 @@ jobs:
         with:
           nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
 
-      - name: Test image
-        run: |
-          nix run --fallback .#local-image-test ${{ matrix.image }}
-
       - name: Upload image
-        run: |
-          nix run --fallback .#publish-ghcr ${{ matrix.image }} ${{github.ref_name}}
-        env:
-          GHCR_REGISTRY: ghcr.io/${{ github.repository_owner }}
-          GHCR_USERNAME: ${{ github.actor }}
-          GHCR_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/test-and-upload-image
+        with:
+          testing: false
+          image: ${{ matrix.image }}
+          multi-arch: ${{ matrix.multi-arch }}
+          components: ${{ matrix.components }}
+          tag: ${{github.ref_name}}
+          GHCR_USERNAME: ${{ vars.GHCR_PUBLISH_USER }}
+          GHCR_PASSWORD: ${{ secrets.GHCR_PUBLISH_TOKEN }}
 
       - name: Teardown Worker
         uses: ./.github/actions/end-nix

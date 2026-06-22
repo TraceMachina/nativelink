@@ -783,6 +783,10 @@ where
     C: ConnectionLike + Clone + Send + Sync + Unpin + 'static,
     M: RedisManager<C> + Unpin + Send + Sync + 'static,
 {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],
@@ -1019,7 +1023,7 @@ where
                         .await {
                         Ok(_) => {},
                         Err(err)
-                            if err.kind() == redis::ErrorKind::Server(redis::ServerErrorKind::ReadOnly) =>
+                            if is_retryable_redis_error(&err) =>
                         {
                             let (mut connection_manager, _connect_id) = self.connection_manager.reconnect(connect_id).await?;
                             connection_manager
@@ -1051,7 +1055,7 @@ where
 
         let expected_len = usize::try_from(total_len).unwrap_or(usize::MAX);
 
-        // The chunk writes above reconnect on ReadOnly, so on a mid-write Redis
+        // The chunk writes above reconnect on any transient failover error, so on a mid-write Redis
         // failover the data lands on the *current* master. The length check and
         // rename below must run against that same master: the connection
         // captured before the writes may now point at a demoted replica, where
@@ -1098,16 +1102,14 @@ where
         };
 
         // Rename the temp key so that the data appears under the real key. Any data already present in the real key is lost.
-        // Reconnect once on ReadOnly in case the master moved between the verify and here.
+        // Reconnect once on a transient failover error in case the master moved between the verify and here.
         match client
             .connection_manager
             .rename::<_, _, ()>(&temp_key, final_key.as_ref())
             .await
         {
             Ok(()) => {}
-            Err(err)
-                if err.kind() == redis::ErrorKind::Server(redis::ServerErrorKind::ReadOnly) =>
-            {
+            Err(err) if is_retryable_redis_error(&err) => {
                 let (connection_manager, uuid) =
                     self.connection_manager.reconnect(client.uuid).await?;
                 client.connection_manager = connection_manager;
@@ -1835,9 +1837,7 @@ where
                 .await
             {
                 Ok(v) => v,
-                Err(err)
-                    if err.kind() == redis::ErrorKind::Server(redis::ServerErrorKind::ReadOnly) =>
-                {
+                Err(err) if is_retryable_redis_error(&err) => {
                     client.reconnect(&self.connection_manager).await?;
                     script_invocation
                         .invoke_async(&mut client.connection_manager)
@@ -1922,9 +1922,7 @@ where
                         }
                     }
                 }
-                Err(err)
-                    if err.kind() == redis::ErrorKind::Server(redis::ServerErrorKind::ReadOnly) =>
-                {
+                Err(err) if is_retryable_redis_error(&err) => {
                     client.reconnect(&self.connection_manager).await?;
                     client
                         .connection_manager
@@ -2048,10 +2046,7 @@ where
             Err(_) => {
                 let (connection_manager, result) =
                     match run_ft_create(connection_manager.clone()).await {
-                        Err(err)
-                            if err.kind()
-                                == redis::ErrorKind::Server(redis::ServerErrorKind::ReadOnly) =>
-                        {
+                        Err(err) if is_retryable_redis_error(&err) => {
                             let (connection_manager, _connect_id) =
                                 self.connection_manager.reconnect(connect_id).await?;
                             (
@@ -2194,14 +2189,36 @@ where
         let key = key.get_key();
         let key = self.encode_key(&key);
         let mut client = self.get_client().await?;
-        let results: Vec<Value> = client
-            .connection_manager
-            .hmget::<_, Vec<String>, Vec<Value>>(
-                key.as_ref(),
-                vec![VERSION_FIELD_NAME.into(), DATA_FIELD_NAME.into()],
-            )
-            .await
-            .err_tip(|| format!("In RedisStore::get_without_version::notversioned {key}"))?;
+        // hmget is idempotent, so re-resolve the master and retry on a transient
+        // failover (matching the read paths in get_part/list) instead of failing
+        // a scheduler-state read while the master is moving.
+        let results: Vec<Value> = {
+            let mut attempt: u32 = 0;
+            loop {
+                attempt += 1;
+                match client
+                    .connection_manager
+                    .hmget::<_, Vec<String>, Vec<Value>>(
+                        key.as_ref(),
+                        vec![VERSION_FIELD_NAME.into(), DATA_FIELD_NAME.into()],
+                    )
+                    .await
+                {
+                    Ok(v) => break v,
+                    Err(err)
+                        if attempt < MAX_REDIS_RETRY_ATTEMPTS && is_retryable_redis_error(&err) =>
+                    {
+                        client.reconnect(&self.connection_manager).await?;
+                        sleep(Duration::from_secs_f32(DEFAULT_RETRY_DELAY)).await;
+                    }
+                    Err(err) => {
+                        return Err(Error::from(err).append(format!(
+                            "In RedisStore::get_without_version::notversioned {key}"
+                        )));
+                    }
+                }
+            }
+        };
         let Some(Value::BulkString(data)) = results.get(1) else {
             return Ok(None);
         };

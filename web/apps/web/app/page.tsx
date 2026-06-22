@@ -1,5 +1,13 @@
 import { AnimatedTerminal } from "@/components/animated-terminal";
 import { ArchitectureDiagram } from "@/components/architecture-diagram";
+import {
+  CitrixLogo,
+  MenloSecurityLogo,
+  MetaLogo,
+  SamsungLogo,
+  TeslaLogo,
+  ThirdWaveLogo,
+} from "@/components/customer-logos";
 import { Badge, Button, Eyebrow, HeroVisual, Marquee, Reveal, Section } from "@nativelink/ui";
 
 export const metadata = {
@@ -21,13 +29,43 @@ const integrations = [
   "Soong",
 ];
 
-const customers: { name: string; cls: string }[] = [
-  { name: "Menlo Security", cls: "font-semibold tracking-[-0.04em]" },
-  { name: "Citrix", cls: "font-extralight uppercase tracking-[0.18em] text-base" },
-  { name: "Tesla", cls: "font-mono uppercase tracking-[0.05em] text-base" },
-  { name: "Meta", cls: "font-semibold tracking-[-0.05em]" },
-  { name: "Samsung", cls: "font-semibold tracking-[-0.04em]" },
-  { name: "Third Wave", cls: "italic font-light tracking-tight" },
+const customerLogos = [
+  {
+    name: "Menlo Security",
+    href: "https://www.menlosecurity.com/",
+    Logo: MenloSecurityLogo,
+    className: "h-9 md:h-10",
+  },
+  {
+    name: "Citrix",
+    href: "https://www.citrix.com/",
+    Logo: CitrixLogo,
+    className: "h-7 md:h-8",
+  },
+  {
+    name: "Tesla",
+    href: "https://www.tesla.com/",
+    Logo: TeslaLogo,
+    className: "h-6 md:h-7",
+  },
+  {
+    name: "Meta",
+    href: "https://www.meta.com/about/",
+    Logo: MetaLogo,
+    className: "h-7 md:h-8",
+  },
+  {
+    name: "Samsung",
+    href: "https://www.samsung.com/",
+    Logo: SamsungLogo,
+    className: "h-6 md:h-7",
+  },
+  {
+    name: "Third Wave",
+    href: "https://thirdwave.ai/",
+    Logo: ThirdWaveLogo,
+    className: "h-10 md:h-11",
+  },
 ];
 
 const stats = [
@@ -156,20 +194,30 @@ export default function HomePage() {
             </Reveal>
 
             <Reveal delay={0.15}>
-              <HeroVisual />
+              <div className="relative w-full overflow-hidden rounded-2xl border border-border shadow-[0_30px_80px_-25px_rgb(0_0_0_/_0.25)]">
+                <iframe
+                  className="aspect-video w-full"
+                  src="https://www.youtube.com/embed/WLpqFuyLMUQ?si=ZIqaR3taGNgXEyE_"
+                  title="YouTube video player"
+                  frameBorder="0"
+                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                  referrerPolicy="strict-origin-when-cross-origin"
+                  allowFullScreen
+                />
+              </div>
             </Reveal>
           </div>
         </Section>
 
-        <div className="relative border-y border-border/60 bg-surface-elevated/40 py-6">
-          <p className="mb-3 text-center font-mono text-[11px] uppercase tracking-[0.18em] text-muted">
+        <div className="relative border-y border-border/60 bg-surface-elevated/40 py-8">
+          <p className="mb-4 text-center font-mono text-[11px] uppercase tracking-[0.18em] text-muted">
             Speaks every major build system
           </p>
           <Marquee speed={45}>
             {integrations.map((name) => (
               <span
                 key={name}
-                className="text-xl font-semibold text-muted-foreground transition-colors hover:text-brand md:text-2xl"
+                className="font-mono text-xl font-medium tracking-tight text-muted-foreground transition-colors hover:text-brand md:text-2xl"
               >
                 {name}
               </span>
@@ -190,9 +238,9 @@ export default function HomePage() {
               Built for AI-assisted development.
             </h2>
             <p className="mt-5 text-base leading-relaxed text-gray-300 md:text-lg">
-              Start in 10 minutes with Docker. Develop with Claude Code skills that guide storage
-              changes, config updates, debugging, and multi-worker test clusters, the same workflows
-              NativeLink engineers use in production.
+              Start in 10 minutes with Docker. Develop with Claude Code, Cursor or Codex skills that
+              guide storage changes, config updates, debugging, and multi-worker test clusters, the
+              same workflows NativeLink engineers use in production.
             </p>
           </Reveal>
         </div>
@@ -230,13 +278,19 @@ export default function HomePage() {
           <p className="mb-10 text-center font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
             Some companies we are building with
           </p>
-          <ul className="flex flex-wrap items-center justify-center gap-x-12 gap-y-8 text-foreground/70 md:gap-x-16">
-            {customers.map((c) => (
-              <li
-                key={c.name}
-                className={`text-xl transition-opacity hover:text-foreground md:text-2xl ${c.cls}`}
-              >
-                {c.name}
+          <ul className="flex flex-wrap items-center justify-center gap-x-12 gap-y-8 md:gap-x-16">
+            {customerLogos.map((c) => (
+              <li key={c.name}>
+                <a
+                  href={c.href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label={`Visit ${c.name}`}
+                  title={c.name}
+                  className="inline-flex items-center justify-center text-foreground/65 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-4 focus-visible:ring-offset-background"
+                >
+                  <c.Logo className={`${c.className} w-auto text-current`} />
+                </a>
               </li>
             ))}
           </ul>
@@ -250,6 +304,12 @@ export default function HomePage() {
             <h2 className="text-balance text-4xl font-semibold leading-[1.05] tracking-[-0.03em] md:text-[56px]">
               Fast builds without idle infrastructure.
             </h2>
+          </div>
+        </Reveal>
+
+        <Reveal delay={0.08}>
+          <div className="mx-auto mb-12 max-w-[900px]">
+            <HeroVisual />
           </div>
         </Reveal>
 

@@ -18,6 +18,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::stream::{self, FuturesOrdered, StreamExt, TryStreamExt};
+use futures::try_join;
 use nativelink_config::stores::DedupSpec;
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
@@ -176,6 +177,14 @@ impl DedupStore {
 
 #[async_trait]
 impl StoreDriver for DedupStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        try_join!(
+            self.index_store.clone().into_inner().post_init(),
+            self.content_store.clone().into_inner().post_init(),
+        )?;
+        Ok(())
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         digests: &[StoreKey<'_>],

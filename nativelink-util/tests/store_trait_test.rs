@@ -18,6 +18,10 @@ struct FakeStore {}
 #[async_trait]
 #[allow(clippy::todo)]
 impl StoreDriver for FakeStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         _keys: &[StoreKey<'_>],

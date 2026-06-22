@@ -1,0 +1,21 @@
+[package]
+edition = "2024"
+name = "nativelink-fuzz"
+publish = false
+version = "0.0.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+nativelink-config = { path = "../../nativelink-config" }
+
+libfuzzer-sys = "0.4"
+serde_json5 = { version = "0.2.1", default-features = false }
+
+[[bin]]
+bench = false
+doc = false
+name = "cas_config"
+path = "fuzz_targets/cas_config.rs"
+test = false

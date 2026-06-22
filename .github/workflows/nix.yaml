@@ -47,7 +47,10 @@ jobs:
           delay=5
           for attempt in 1 2 3; do
             if nix develop --fallback --impure --command \
-                bash -c "bazel test //... --verbose_failures --lockfile_mode=error" 2>&1 | tee bazel.log; then
+                bazel test //... \
+                  --verbose_failures \
+                  --lockfile_mode=error \
+                2>&1 | tee bazel.log; then
               exit 0
             fi
             grep -E '^ERROR:' bazel.log \

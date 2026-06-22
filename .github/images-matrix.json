@@ -1,0 +1,30 @@
+{
+  "include": [
+    {
+      "components": "nativelink-image-for-x64 nativelink-image-for-aarch64",
+      "image": "nativelink",
+      "multi-arch": true,
+      "os": "ubuntu-24.04"
+    },
+    {
+      "image": "nativelink-worker-init",
+      "multi-arch": false,
+      "os": "ubuntu-24.04"
+    },
+    {
+      "image": "nativelink-worker-lre-cc",
+      "multi-arch": false,
+      "os": "ubuntu-24.04"
+    },
+    {
+      "image": "nativelink-worker-lre-rs",
+      "multi-arch": false,
+      "os": "ubuntu-24.04"
+    },
+    {
+      "image": "nativelink-worker-lre-rs",
+      "multi-arch": false,
+      "os": "macos-26"
+    }
+  ]
+}
