@@ -47,13 +47,15 @@ jobs:
 
       # FIXME: merge the multi-arch and single-arch paths
       - name: Test multi-arch image
-        if: ${{ matrix.image == 'image' && github.ref == 'refs/heads/main' }}
+        if: ${{ matrix.image == 'image' }}
         run: |
           nix run --fallback .#create-multi-arch-image localhost:5000 nativelink:${{ steps.version.outputs.version-string }} nativelink-image-for-x64 nativelink-image-for-aarch64
           nix run --fallback .#local-image-test localhost:5000/nativelink:${{ steps.version.outputs.version-string }}
 
+      # FIXME: after we've merged this and made sure it all works _then_ remove the 2457 ref
+      # See https://github.com/TraceMachina/nativelink/pull/2457
       - name: Upload multi-arch image
-        if: ${{ matrix.image == 'image' && github.ref == 'refs/heads/main' }}
+        if: ${{ matrix.image == 'image' && contains(fromJson('["refs/heads/main", "refs/remotes/pull/2457/merge"]'), github.ref) }}
         run: |
           nix run --fallback .#regctl-ghcr-login
           nix run --fallback .#create-multi-arch-image ghcr.io ${{ github.repository_owner }}/nativelink:${{ steps.version.outputs.version-string }} nativelink-image-for-x64 nativelink-image-for-aarch64
@@ -62,12 +64,12 @@ jobs:
           GHCR_PASSWORD: ${{ secrets.GHCR_PUBLISH_TOKEN }}
 
       - name: Test image
-        if: ${{ matrix.image != 'image' || github.ref != 'refs/heads/main' }}
+        if: ${{ matrix.image != 'image' }}
         run: |
           nix run --fallback .#local-image-test ${{ matrix.image }}
 
       - name: Upload image
-        if: ${{ matrix.image != 'image' && github.ref == 'refs/heads/main' }}
+        if: ${{ matrix.image != 'image' && contains(fromJson('["refs/heads/main", "refs/remotes/pull/2457/merge"]'), github.ref) }}
         run: |
           nix run --fallback .#publish-ghcr ${{ matrix.image }}
         env:

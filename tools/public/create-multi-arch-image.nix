@@ -6,6 +6,7 @@
 {
   writeShellScriptBin,
   regclient,
+  trivy-report,
 }:
 writeShellScriptBin "create-multi-arch-image" ''
   set -euo pipefail
@@ -33,4 +34,6 @@ writeShellScriptBin "create-multi-arch-image" ''
   done
 
   ${regclient}/bin/regctl -v info index create ''${FULL_IMAGE_TARGET} ''${IMAGES}
+
+  ${trivy-report}/bin/trivy-report
 ''
