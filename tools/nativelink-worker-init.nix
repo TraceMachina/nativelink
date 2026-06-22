@@ -2,8 +2,9 @@
   buildImage,
   self,
   lib,
-  pkgsMusl,
+  archPackages,
   nativelink-image,
+  arch,
 }:
 # This image copies a bundled `nativelink` executable to a specified location.
 #
@@ -15,7 +16,7 @@
 # Deployment. Then mount that volume into the toolchain container and set the
 # Deployment's entrypoint to the mounted `nativelink` executable.
 let
-  copyToDestination = pkgsMusl.writeShellScriptBin "copyToDestination" ''
+  copyToDestination = archPackages.writeShellScriptBin "copyToDestination" ''
     cp -Lv /bin/nativelink "$@"
   '';
 in
@@ -26,7 +27,8 @@ in
     # manage multiple tags.
     fromImage = nativelink-image;
     tag = nativelink-image.imageTag;
-    copyToRoot = [pkgsMusl.coreutils];
+    copyToRoot = [archPackages.coreutils];
+    inherit arch;
     config = {
       Entrypoint = [(lib.getExe' copyToDestination "copyToDestination")];
       Labels = {
