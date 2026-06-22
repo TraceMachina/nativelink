@@ -40,7 +40,7 @@ jobs:
           nix run --fallback .#publish-ghcr ${{ matrix.image }} ${{github.ref_name}}
         env:
           GHCR_REGISTRY: ghcr.io/${{ github.repository_owner }}
-          GHCR_USERNAME: ${{ github.actor }}
+          GHCR_USERNAME: ${{ vars.GHCR_PUBLISH_USER }}
           GHCR_PASSWORD: ${{ secrets.GHCR_PUBLISH_TOKEN }}
 
       - name: Teardown Worker

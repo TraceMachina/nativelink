@@ -123,7 +123,7 @@ jobs:
           echo "image_tag=ghcr.io/${{ github.repository_owner }}/${IMAGE_NAME}:${GIT_HASH}" >> $GITHUB_OUTPUT
         env:
           GHCR_REGISTRY: ghcr.io/${{ github.repository_owner }}
-          GHCR_USERNAME: ${{ github.actor }}
+          GHCR_USERNAME: ${{ vars.GHCR_PUBLISH_USER }}
           GHCR_PASSWORD: ${{ secrets.GHCR_PUBLISH_TOKEN }}
           SKIP_SIGNING: "true"
           SKIP_TRIVY: "true"
