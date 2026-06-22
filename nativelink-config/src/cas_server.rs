@@ -224,9 +224,10 @@ pub struct ByteStreamConfig {
     #[serde(
         default,
         deserialize_with = "convert_duration_with_shellexpand",
-        skip_serializing_if = "is_default"
+        skip_serializing_if = "is_default",
+        alias = "persist_stream_on_disconnect_timeout"
     )]
-    pub persist_stream_on_disconnect_timeout: usize,
+    pub persist_stream_on_disconnect_timeout_s: usize,
 }
 
 // Older bytestream config. All fields are as per the newer docs, but this requires
@@ -251,9 +252,10 @@ pub struct OldByteStreamConfig {
     #[serde(
         default,
         deserialize_with = "convert_duration_with_shellexpand",
-        skip_serializing_if = "is_default"
+        skip_serializing_if = "is_default",
+        alias = "persist_stream_on_disconnect_timeout"
     )]
-    pub persist_stream_on_disconnect_timeout: usize,
+    pub persist_stream_on_disconnect_timeout_s: usize,
 }
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -497,12 +499,12 @@ pub struct HttpServerConfig {
     )]
     pub experimental_http2_max_concurrent_streams: Option<u32>,
 
-    /// Note: This is in seconds.
     #[serde(
         default,
-        deserialize_with = "convert_optional_numeric_with_shellexpand"
+        deserialize_with = "convert_optional_numeric_with_shellexpand",
+        alias = "experimental_http2_keep_alive_timeout"
     )]
-    pub experimental_http2_keep_alive_timeout: Option<u32>,
+    pub experimental_http2_keep_alive_timeout_s: Option<u32>,
 
     #[serde(
         default,
@@ -767,16 +769,24 @@ pub struct LocalWorkerConfig {
     /// longer than this time limit, the task will be rejected. Value in seconds.
     ///
     /// Default: 20 minutes
-    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
-    pub max_action_timeout: usize,
+    #[serde(
+        default,
+        deserialize_with = "convert_duration_with_shellexpand",
+        alias = "max_action_timeout"
+    )]
+    pub max_action_timeout_s: usize,
 
     /// Maximum time allowed for uploading action results to CAS after execution
     /// completes. If upload takes longer than this, the action fails with
     /// `DeadlineExceeded` and may be retried by the scheduler. Value in seconds.
     ///
     /// Default: 10 minutes
-    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
-    pub max_upload_timeout: usize,
+    #[serde(
+        default,
+        deserialize_with = "convert_duration_with_shellexpand",
+        alias = "max_upload_timeout"
+    )]
+    pub max_upload_timeout_s: usize,
 
     /// Maximum number of inflight tasks this worker can cope with.
     ///
