@@ -241,7 +241,19 @@
           then nativelink-image-for-x64
           else nativelink-image-for-aarch64;
 
-        nativelink-worker-init = pkgs.callPackage ./tools/nativelink-worker-init.nix {inherit buildImage self nativelink-image;};
+        nativelinkWorkerInitFor = archImage: archPackages: arch:
+          pkgs.callPackage ./tools/nativelink-worker-init.nix {
+            inherit buildImage self arch archPackages;
+            nativelink-image = archImage;
+          };
+
+        nativelink-init-for-x64 = nativelinkWorkerInitFor nativelink-image-for-x64 pkgs.pkgsCross.musl64 "amd64";
+        nativelink-init-for-aarch64 = nativelinkWorkerInitFor nativelink-image-for-aarch64 pkgs.pkgsCross.aarch64-multiplatform-musl "arm64";
+
+        nativelink-worker-init =
+          if pkgs.stdenv.isx86_64
+          then nativelink-init-for-x64
+          else nativelink-init-for-aarch64;
 
         createWorker = pkgs.nativelink-tools.lib.createWorker self;
 
@@ -396,6 +408,8 @@
               nativelink-image-for-x64
               nativelink-is-executable-test
               nativelink-worker-init
+              nativelink-init-for-x64
+              nativelink-init-for-aarch64
               nativelink-x86_64-linux
               ;
 
