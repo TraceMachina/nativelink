@@ -35,7 +35,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.get-images-matrix.outputs.matrix) }}
-    name: Publish ${{ matrix.image }}
+    name: Publish ${{ matrix.image }} / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     permissions:
       id-token: write
