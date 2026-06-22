@@ -16,11 +16,25 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  get-images-matrix:
+    runs-on: ubuntu-24.04
+    outputs:
+       matrix: ${{ steps.setmatrix.outputs.matrix }}
+    steps:
+      - name: Checkout
+        uses: >- # v6.0.2
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - name: Set Images matrix
+        id: setmatrix
+        run: |
+          MATRIX_STRINGIFIED=$(jq -c . < .github/images-matrix.json)
+          echo "matrix=$MATRIX_STRINGIFIED" >> $GITHUB_OUTPUT
+
   publish-image:
+    needs: get-images-matrix
     strategy:
       fail-fast: false
-      matrix:
-        image: [image, nativelink-worker-init, nativelink-worker-lre-cc, nativelink-worker-lre-rs]
+      matrix: ${{ fromJson(needs.get-images-matrix.outputs.matrix) }}
     name: Publish ${{ matrix.image }}
     runs-on: ubuntu-24.04
     permissions:
@@ -45,42 +59,22 @@ jobs:
       - id: version
         uses: ./.github/actions/generate-version
 
-      # FIXME: merge the multi-arch and single-arch paths
-      - name: Test multi-arch image
-        if: ${{ matrix.image == 'image' && github.ref == 'refs/heads/main' }}
-        run: |
-          nix run --fallback .#create-multi-arch-image localhost:5000 nativelink:${{ steps.version.outputs.version-string }} nativelink-image-for-x64 nativelink-image-for-aarch64
-          nix run --fallback .#local-image-test localhost:5000/nativelink:${{ steps.version.outputs.version-string }}
-
-      - name: Upload multi-arch image
-        if: ${{ matrix.image == 'image' && github.ref == 'refs/heads/main' }}
-        run: |
-          nix run --fallback .#regctl-ghcr-login
-          nix run --fallback .#create-multi-arch-image ghcr.io ${{ github.repository_owner }}/nativelink:${{ steps.version.outputs.version-string }} nativelink-image-for-x64 nativelink-image-for-aarch64
-        env:
-          GHCR_USERNAME: ${{ github.actor }}
-          GHCR_PASSWORD: ${{ secrets.GHCR_PUBLISH_TOKEN }}
-
-      - name: Test image
-        if: ${{ matrix.image != 'image' || github.ref != 'refs/heads/main' }}
-        run: |
-          nix run --fallback .#local-image-test ${{ matrix.image }}
-
-      - name: Upload image
-        if: ${{ matrix.image != 'image' && github.ref == 'refs/heads/main' }}
-        run: |
-          nix run --fallback .#publish-ghcr ${{ matrix.image }}
-        env:
-          GHCR_REGISTRY: ghcr.io/${{ github.repository_owner }}
-          GHCR_USERNAME: ${{ github.actor }}
+      - name: Test and upload ${{ matrix.image }}
+        uses: ./.github/actions/test-and-upload-image
+        with:
+          image: ${{ matrix.image }}
+          multi-arch: ${{ matrix.multi-arch }}
+          components: ${{ matrix.components }}
+          tag: ${{ steps.version.outputs.version-string }}
+          GHCR_USERNAME: ${{ vars.GHCR_PUBLISH_USER }}
           GHCR_PASSWORD: ${{ secrets.GHCR_PUBLISH_TOKEN }}
 
       - name: Upload trivy scan results to GitHub Security tab
-        uses: >- # v2.16.3
-          github/codeql-action/upload-sarif@592977e6ae857384aa79bb31e7a1d62d63449ec5
+        uses: >- # v4.36.2
+          github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e
         with:
           sarif_file: 'trivy-results.sarif'
-        if: github.ref == 'refs/heads/main'
+        if: ${{ contains(fromJson('["refs/heads/main", "refs/pull/2457/merge"]'), github.ref) }}
 
       - name: Teardown Worker
         uses: ./.github/actions/end-nix

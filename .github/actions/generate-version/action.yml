@@ -10,4 +10,4 @@ runs:
     - name: Generate version
       run: echo "version=$(date +%Y-%m-%d)-${{ github.sha }}" >> $GITHUB_OUTPUT
       id: generate-version
-      shell: bash
+      shell: bash -euo pipefail {0}
