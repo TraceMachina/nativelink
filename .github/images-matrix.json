@@ -3,29 +3,20 @@
     {
       "components": "nativelink-image-for-x64 nativelink-image-for-aarch64",
       "image": "nativelink",
-      "multi-arch": true,
-      "os": "ubuntu-24.04"
+      "multi-arch": true
     },
     {
       "components": "nativelink-init-for-x64 nativelink-init-for-aarch64",
       "image": "nativelink-worker-init",
-      "multi-arch": true,
-      "os": "ubuntu-24.04"
+      "multi-arch": true
     },
     {
       "image": "nativelink-worker-lre-cc",
-      "multi-arch": false,
-      "os": "ubuntu-24.04"
+      "multi-arch": false
     },
     {
       "image": "nativelink-worker-lre-rs",
-      "multi-arch": false,
-      "os": "ubuntu-24.04"
-    },
-    {
-      "image": "nativelink-worker-lre-rs",
-      "multi-arch": false,
-      "os": "macos-26"
+      "multi-arch": false
     }
   ]
 }

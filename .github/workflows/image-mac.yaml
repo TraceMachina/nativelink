@@ -1,5 +1,5 @@
 ---
-name: Create OCI image
+name: Create nativelink-worker-lre-rs image for Mac
 on:
   push:
     branches:
@@ -16,36 +16,13 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
-  get-images-matrix:
-    runs-on: ubuntu-24.04
-    outputs:
-       matrix: ${{ steps.setmatrix.outputs.matrix }}
-    steps:
-      - name: Checkout
-        uses: >- # v6.0.2
-          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
-      - name: Set Images matrix
-        id: setmatrix
-        run: |
-          MATRIX_STRINGIFIED=$(jq -c . < .github/images-matrix.json)
-          echo "matrix=$MATRIX_STRINGIFIED" >> $GITHUB_OUTPUT
-
   publish-image:
-    needs: get-images-matrix
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJson(needs.get-images-matrix.outputs.matrix) }}
-    name: Publish ${{ matrix.image }}
-    runs-on: ubuntu-24.04
+    name: Publish nativelink-worker-lre-rs for Mac
+    runs-on: macos-26
     permissions:
       id-token: write
       security-events: write
     timeout-minutes: 90
-    services:
-      registry:
-        image: registry:3
-        ports:
-          - 5000:5000
     steps:
       - name: Checkout
         uses: >- # v6.0.2
@@ -56,15 +33,37 @@ jobs:
         with:
           nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
 
+      - name: Set up Docker
+        id: docker
+        uses: >- # v5.2.0
+          docker/setup-docker-action@0234bb73ccb40f0c430b795634f9247e2b5c2d23
+        env:
+          # m1 chips, as seen in the GitHub CI, don't support nested hardware virtualization.
+          #
+          # We need `-machine virt` to stop Lima from providing `accel=hvf`due to this
+          # [QEMU issue](https://gitlab.com/qemu-project/qemu/-/issues/2981).
+          #
+          # We also need `-cpu *` to stop Lima from providing `-cpu host` as:
+          # 1) `-cpu host` requires `kvm` or `hvf` (which we don't have)
+          # 2) `-cpu host` implies `host-phys-bits=on` which is borked in this environment
+          # From which CPU to actually emulate, we choose what will be the most performant.
+          #
+          # We accomplish both of these goals with the methodology from
+          # [this comment](https://github.com/lima-vm/lima/pull/3173#issuecomment-2623130310).
+          QEMU_SYSTEM_AARCH64: "qemu-system-aarch64 -machine virt -cpu max,pmu=off,sve=on,sve128=on,sme=off,pauth=off"
+
+      - name: Set docker host
+        run: |
+          echo "DOCKER_HOST=${{steps.docker.outputs.sock}}" >> "$GITHUB_ENV"
+
       - id: version
         uses: ./.github/actions/generate-version
 
-      - name: Test and upload ${{ matrix.image }}
+      - name: Test and upload nativelink-worker-lre-rs
         uses: ./.github/actions/test-and-upload-image
         with:
-          image: ${{ matrix.image }}
-          multi-arch: ${{ matrix.multi-arch }}
-          components: ${{ matrix.components }}
+          image: nativelink-worker-lre-rs
+          multi-arch: false
           tag: ${{ steps.version.outputs.version-string }}
           GHCR_USERNAME: ${{ vars.GHCR_PUBLISH_USER }}
           GHCR_PASSWORD: ${{ secrets.GHCR_PUBLISH_TOKEN }}
