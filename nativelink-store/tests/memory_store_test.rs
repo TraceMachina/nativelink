@@ -82,6 +82,56 @@ async fn insert_one_item_then_update() -> Result<(), Error> {
     Ok(())
 }
 
+// A write whose exact size exceeds the store's `max_bytes` is skipped (drained,
+// never buffered) rather than materialized-then-evicted. It could never be
+// retained anyway, and buffering it is an OOM vector under concurrent large
+// writes (e.g. a `memory` fast tier in a `fast_slow` store fronting CAS).
+#[nativelink_test]
+async fn skips_writes_larger_than_max_bytes() -> Result<(), Error> {
+    const SMALL: &str = "ab";
+    const BIG: &str = "0123456789"; // 10 bytes > 4 max_bytes
+
+    let spec = MemorySpec {
+        eviction_policy: Some(nativelink_config::stores::EvictionPolicy {
+            max_bytes: 4,
+            ..Default::default()
+        }),
+    };
+    let store = MemoryStore::new(&spec);
+
+    // A write within budget is retained as normal.
+    store
+        .update_oneshot(
+            DigestInfo::try_new(VALID_HASH1, SMALL.len() as u64)?,
+            SMALL.into(),
+        )
+        .await?;
+    assert_eq!(
+        store
+            .has(DigestInfo::try_new(VALID_HASH1, SMALL.len() as u64)?)
+            .await,
+        Ok(Some(SMALL.len() as u64)),
+        "within-budget write should be stored",
+    );
+
+    // A write larger than max_bytes succeeds but is NOT cached.
+    store
+        .update_oneshot(
+            DigestInfo::try_new(VALID_HASH2, BIG.len() as u64)?,
+            BIG.into(),
+        )
+        .await?;
+    assert_eq!(
+        store
+            .has(DigestInfo::try_new(VALID_HASH2, BIG.len() as u64)?)
+            .await,
+        Ok(None),
+        "oversized write should be skipped, not stored",
+    );
+
+    Ok(())
+}
+
 // Regression test for: https://github.com/TraceMachina/nativelink/issues/289.
 #[nativelink_test]
 async fn ensure_full_copy_of_bytes_is_made_test() -> Result<(), Error> {
