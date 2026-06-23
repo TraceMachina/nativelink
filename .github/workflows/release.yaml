@@ -1,0 +1,210 @@
+---
+# Builds the NativeLink binaries for every supported target, signs each release
+# asset with keyless Sigstore cosign, generates an SBOM, and produces SLSA Build
+# Level 3 provenance that is attached to the GitHub Release.
+#
+# This is what the OpenSSF Scorecard "Signed-Releases" check inspects: it reads
+# the GitHub Releases API and looks for a cryptographic signature (`*.sig`) plus
+# SLSA provenance (`*.intoto.jsonl`) among the release assets. The cosign image
+# signatures in GHCR are NOT visible to that check, which is why container-only
+# signing left the score at zero.
+name: Signed release artifacts
+
+on:
+  # Fires automatically the moment a maintainer clicks "Publish release".
+  release:
+    types: [published]
+  # Manual entry point for (re)building and signing assets on an existing
+  # release tag, e.g. to backfill releases that predate this workflow.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to build, sign and attach assets to (e.g. v1.5.2).'
+        required: true
+        type: string
+
+permissions: read-all
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  setup:
+    name: Resolve release tag
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - name: Resolve tag and version
+        id: resolve
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.release.tag_name || inputs.tag }}"
+          if [[ -z "${TAG}" ]]; then
+            echo "::error::No release tag could be determined."
+            exit 1
+          fi
+          echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
+          echo "version=${TAG#v}" >> "${GITHUB_OUTPUT}"
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: setup
+    permissions:
+      contents: write # upload assets to the release
+      id-token: write # keyless cosign signing via Sigstore
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-24.04
+            attr: nativelink-x86_64-linux
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04
+            attr: nativelink-aarch64-linux
+          - target: aarch64-apple-darwin
+            os: macos-26
+            attr: nativelink-aarch64-darwin
+          # macos-26-intel is the x86_64 macOS runner; drop this entry if Intel
+          # macOS runners are retired and x86_64 macOS binaries aren't required.
+          - target: x86_64-apple-darwin
+            os: macos-26-intel
+            attr: nativelink-x86_64-darwin
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout ${{ needs.setup.outputs.tag }}
+        uses: >- # v6.0.2
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ needs.setup.outputs.tag }}
+          persist-credentials: false
+
+      - name: Prepare Worker
+        uses: ./.github/actions/prepare-nix
+        with:
+          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
+
+      - name: Install Cosign
+        uses: >- # v4.1.2
+          sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
+
+      - name: Build static binary
+        run: |
+          nix build --fallback -L ".#${{ matrix.attr }}"
+
+      - name: Package artifact
+        id: package
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.setup.outputs.version }}"
+          ASSET="nativelink-${VERSION}-${{ matrix.target }}"
+
+          # macOS runners ship `shasum` rather than coreutils `sha256sum`; both
+          # emit the "<hash>  <name>" format the SLSA generator expects.
+          sha256() {
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "$1"
+            else
+              shasum -a 256 "$1"
+            fi
+          }
+
+          STAGE="$(mktemp -d)"
+          install -m 0755 result/bin/nativelink "${STAGE}/nativelink"
+          install -m 0644 LICENSE "${STAGE}/LICENSE"
+          install -m 0644 README.md "${STAGE}/README.md"
+          tar -C "${STAGE}" -czf "${ASSET}.tar.gz" nativelink LICENSE README.md
+
+          sha256 "${ASSET}.tar.gz" | tee "${ASSET}.tar.gz.sha256"
+          echo "asset=${ASSET}" >> "${GITHUB_OUTPUT}"
+
+      - name: Generate SBOM
+        uses: >- # v0.24.0
+          anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
+        with:
+          file: result/bin/nativelink
+          format: spdx-json
+          output-file: ${{ steps.package.outputs.asset }}.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Sign artifact and SBOM (keyless)
+        run: |
+          set -euo pipefail
+          ASSET="${{ steps.package.outputs.asset }}"
+          for f in "${ASSET}.tar.gz" "${ASSET}.spdx.json"; do
+            cosign sign-blob --yes \
+              --output-signature "${f}.sig" \
+              --output-certificate "${f}.pem" \
+              "${f}"
+          done
+
+      - name: Upload assets to release
+        run: |
+          set -euo pipefail
+          ASSET="${{ steps.package.outputs.asset }}"
+          gh release upload "${{ needs.setup.outputs.tag }}" \
+            "${ASSET}.tar.gz" \
+            "${ASSET}.tar.gz.sig" \
+            "${ASSET}.tar.gz.pem" \
+            "${ASSET}.spdx.json" \
+            "${ASSET}.spdx.json.sig" \
+            "${ASSET}.spdx.json.pem" \
+            --clobber
+
+      - name: Upload hash for provenance
+        uses: >- # v4.6.0
+          actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08
+        with:
+          name: sha256-${{ matrix.target }}
+          path: ${{ steps.package.outputs.asset }}.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 5
+
+  combine-hashes:
+    name: Combine artifact hashes
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      subjects: ${{ steps.hashes.outputs.subjects }}
+    steps:
+      - name: Download hashes
+        uses: >- # v4.3.0
+          actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: sha256-*
+          path: hashes
+          merge-multiple: true
+
+      - name: Combine into base64 subjects
+        id: hashes
+        run: |
+          set -euo pipefail
+          cat hashes/*.sha256 > combined.sha256
+          echo "subjects=$(base64 -w0 < combined.sha256)" >> "${GITHUB_OUTPUT}"
+
+  provenance:
+    name: Generate SLSA provenance
+    needs: [setup, combine-hashes]
+    permissions:
+      actions: read # read the workflow run to build provenance
+      id-token: write # keyless signing of the provenance
+      contents: write # attach provenance to the release
+    # The SLSA generator MUST be referenced by an immutable semver tag, not a
+    # commit SHA: slsa-verifier validates the reusable-workflow ref to confirm a
+    # trusted builder produced the provenance, so a SHA pin would fail
+    # verification. This is the one intentional exception to SHA-pinning here.
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    with:
+      base64-subjects: ${{ needs.combine-hashes.outputs.subjects }}
+      upload-assets: true
+      upload-tag-name: ${{ needs.setup.outputs.tag }}
+      provenance-name: nativelink-${{ needs.setup.outputs.version }}.intoto.jsonl

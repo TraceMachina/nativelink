@@ -476,6 +476,39 @@ most automatically generated changelogs provide.
 
 10. Once all notes are in line, click `Publish Release`.
 
+11. Publishing the release triggers the
+    [`Signed release artifacts`](.github/workflows/release.yaml) workflow. It
+    builds the `nativelink` binary for every supported target, signs each asset
+    with keyless Sigstore cosign, generates an SBOM, and produces SLSA Build
+    Level 3 provenance, attaching all of it to the GitHub Release. These signed
+    assets are what the OpenSSF Scorecard `Signed-Releases` check inspects — the
+    cosign signatures on the GHCR container images are not visible to that check.
+
+    Wait for the workflow to finish, then confirm the release page lists, for
+    each target, a `*.tar.gz` plus its `*.sig`/`*.pem`, an `*.spdx.json` SBOM,
+    and a `*.intoto.jsonl` provenance file. You can verify any asset locally:
+
+    ```bash
+    # Verify the SLSA provenance covers the artifact.
+    slsa-verifier verify-artifact nativelink-0.x.y-x86_64-unknown-linux-musl.tar.gz \
+      --provenance-path nativelink-0.x.y.intoto.jsonl \
+      --source-uri github.com/TraceMachina/nativelink \
+      --source-tag v0.x.y
+
+    # Verify the cosign signature.
+    cosign verify-blob nativelink-0.x.y-x86_64-unknown-linux-musl.tar.gz \
+      --signature nativelink-0.x.y-x86_64-unknown-linux-musl.tar.gz.sig \
+      --certificate nativelink-0.x.y-x86_64-unknown-linux-musl.tar.gz.pem \
+      --certificate-identity-regexp '^https://github.com/TraceMachina/nativelink/' \
+      --certificate-oidc-issuer https://token.actions.githubusercontent.com
+    ```
+
+    If a release ever ships without signed assets (for example a release created
+    before this workflow existed), re-run the workflow manually against the tag:
+    `Actions → Signed release artifacts → Run workflow`, entering the tag (e.g.
+    `v0.x.y`). It will rebuild, re-sign, and attach the assets to that existing
+    release.
+
 ## Conduct
 
 NativeLink Code of Conduct is available in the

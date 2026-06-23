@@ -6,6 +6,8 @@ Astro
 Bazel
 Bazelisk
 [Bb]oolean
+[Kk]eyless
+Sigstore
 Cloudflare
 Colab
 composable
