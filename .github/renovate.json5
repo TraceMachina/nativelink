@@ -13,6 +13,14 @@
       enabled: false,
     },
     {
+      matchDepNames: [
+        "grafana/grafana", // In deployment-examples/metrics/docker-compose.yaml which we don't test in CI
+        "azure_core", // Need to upgrade the other azure packages, which is a non-trivial upgrade
+        "ubuntu", // Ubuntu tags need hand-upgrading because of various package version changes
+      ],
+      enabled: false,
+    },
+    {
       matchPackageNames: [
         "*",
       ],
