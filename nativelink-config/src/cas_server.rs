@@ -788,6 +788,20 @@ pub struct LocalWorkerConfig {
     )]
     pub max_upload_timeout_s: usize,
 
+    /// Maximum time to wait for action directory cleanup before timing out.
+    /// Value in seconds.
+    ///
+    /// Default: 30 seconds
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub max_cleanup_wait_s: usize,
+
+    /// Maximum backoff duration for exponential backoff when waiting for cleanup.
+    /// Value in milliseconds.
+    ///
+    /// Default: 500 milliseconds
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub max_cleanup_backoff_ms: usize,
+
     /// Maximum number of inflight tasks this worker can cope with.
     ///
     /// Default: 0 (infinite tasks)
