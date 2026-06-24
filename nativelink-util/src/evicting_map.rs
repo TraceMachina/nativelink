@@ -490,6 +490,25 @@ where
         while callbacks.next().await.is_some() {}
     }
 
+    /// Fires the registered remove callbacks for `key` without touching the map.
+    /// A store uses this to invalidate downstream listeners (e.g. an
+    /// `ExistenceCacheStore`) when a write is rejected outright and never
+    /// inserted — mirroring the callbacks an insert-then-immediate-evict would
+    /// otherwise have fired. It only *notifies*; it does not remove anything from
+    /// the map (there is nothing to remove). A no-op when no callbacks are
+    /// registered.
+    pub async fn fire_remove_callbacks(&self, key: &Q) {
+        let mut callbacks: FuturesUnordered<_> = {
+            let state = self.state.lock();
+            state
+                .remove_callbacks
+                .iter()
+                .map(|callback| callback.callback(key))
+                .collect()
+        };
+        while callbacks.next().await.is_some() {}
+    }
+
     /// Returns the value for `key` if present and not expired, refreshing
     /// its LRU/atime position. If the entry is present but TTL- or
     /// count-expired, it is reaped and `None` is returned.
