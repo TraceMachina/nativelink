@@ -378,10 +378,10 @@ impl ByteStreamServer {
     ) -> Result<Self, Error> {
         let mut instance_infos: HashMap<String, InstanceInfo> = HashMap::new();
         for config in configs {
-            let idle_stream_timeout = if config.persist_stream_on_disconnect_timeout == 0 {
+            let idle_stream_timeout = if config.persist_stream_on_disconnect_timeout_s == 0 {
                 DEFAULT_PERSIST_STREAM_ON_DISCONNECT_TIMEOUT
             } else {
-                Duration::from_secs(config.persist_stream_on_disconnect_timeout as u64)
+                Duration::from_secs(config.persist_stream_on_disconnect_timeout_s as u64)
             };
             let _old_value = instance_infos.insert(
                 config.instance_name.clone(),

@@ -585,15 +585,15 @@ pub async fn new_local_worker(
     } else {
         Some(config.entrypoint.clone())
     };
-    let max_action_timeout = if config.max_action_timeout == 0 {
+    let max_action_timeout = if config.max_action_timeout_s == 0 {
         DEFAULT_MAX_ACTION_TIMEOUT
     } else {
-        Duration::from_secs(config.max_action_timeout as u64)
+        Duration::from_secs(config.max_action_timeout_s as u64)
     };
-    let max_upload_timeout = if config.max_upload_timeout == 0 {
+    let max_upload_timeout = if config.max_upload_timeout_s == 0 {
         DEFAULT_MAX_UPLOAD_TIMEOUT
     } else {
-        Duration::from_secs(config.max_upload_timeout as u64)
+        Duration::from_secs(config.max_upload_timeout_s as u64)
     };
     let max_cleanup_wait = if config.max_cleanup_wait_s == 0 {
         DEFAULT_MAX_CLEANUP_WAIT
