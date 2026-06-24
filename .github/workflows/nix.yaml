@@ -46,7 +46,7 @@ jobs:
           # so a flaky GitHub fetch aborts the build with no retry. We retry the download in this case.
           delay=5
           for attempt in 1 2 3; do
-            if nix develop --fallback --impure --command \
+            if nix develop --impure --command \
                 bazel test //... \
                   --verbose_failures \
                   --lockfile_mode=error \
@@ -92,7 +92,7 @@ jobs:
 
       - name: Invoke Cargo build in Nix shell
         run: >
-          nix develop --fallback --impure --command
+          nix develop --impure --command
           bash -c "cargo test --all --profile=smol"
 
       - name: Teardown Worker
@@ -123,7 +123,7 @@ jobs:
 
       - name: Test nix run
         run: |
-          nix run --fallback -L .#nativelink-is-executable-test
+          nix run -L .#nativelink-is-executable-test
 
       - name: Teardown Worker
         uses: ./.github/actions/end-nix
@@ -151,7 +151,7 @@ jobs:
 
       - name: Test ${{ matrix.test-name }} run
         run: |
-          nix run --fallback -L .#${{ matrix.test-name }}-with-nativelink-test
+          nix run -L .#${{ matrix.test-name }}-with-nativelink-test
 
       - name: Teardown Worker
         uses: ./.github/actions/end-nix
@@ -177,7 +177,7 @@ jobs:
 
       - name: Get commands list
         run: |
-          COMMANDS=$(nix run --fallback .#rbe-toolchain-with-nativelink-test list)
+          COMMANDS=$(nix run .#rbe-toolchain-with-nativelink-test list)
           echo "matrix={\"command\":${COMMANDS}}" >> $GITHUB_OUTPUT
         id: set-matrix
 
@@ -200,7 +200,7 @@ jobs:
 
       - name: Test ${{ matrix.command }} with rbe
         run: |
-          nix run --fallback -L .#rbe-toolchain-with-nativelink-test ${{ matrix.command }}
+          nix run -L .#rbe-toolchain-with-nativelink-test ${{ matrix.command }}
 
       - name: Teardown Worker
         uses: ./.github/actions/end-nix

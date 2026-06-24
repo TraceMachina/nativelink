@@ -24,8 +24,8 @@ runs:
       - name: Test multi-arch image
         if: ${{ inputs.multi-arch == 'true' && inputs.testing }}
         run: |
-          nix run --fallback .#create-multi-arch-image localhost:5000 ${{ inputs.image }}:${{ inputs.tag }} ${{ inputs.components }}
-          nix run --fallback .#local-image-test localhost:5000/${{ inputs.image }}:${{ inputs.tag }}
+          nix run .#create-multi-arch-image localhost:5000 ${{ inputs.image }}:${{ inputs.tag }} ${{ inputs.components }}
+          nix run .#local-image-test localhost:5000/${{ inputs.image }}:${{ inputs.tag }}
         shell: bash -euo pipefail {0}
 
       # FIXME: after we've merged this and made sure it all works _then_ remove the 2457 ref
@@ -33,8 +33,8 @@ runs:
       - name: Upload multi-arch image
         if: ${{ inputs.multi-arch == 'true' && contains(fromJson('["refs/heads/main", "refs/pull/2457/merge"]'), github.ref) }}
         run: |
-          nix run --fallback .#regctl-ghcr-login
-          nix run --fallback .#create-multi-arch-image ghcr.io ${{ github.repository_owner }}/${{ inputs.image }}:${{ inputs.tag }} ${{ inputs.components }}
+          nix run .#regctl-ghcr-login
+          nix run .#create-multi-arch-image ghcr.io ${{ github.repository_owner }}/${{ inputs.image }}:${{ inputs.tag }} ${{ inputs.components }}
         env:
           # FIXME: When https://github.com/github/roadmap/issues/558 gets fixed, replace with a fine-grained token
           GHCR_USERNAME: ${{ inputs.GHCR_USERNAME }}
@@ -46,13 +46,13 @@ runs:
       - name: Test image
         if: ${{ inputs.multi-arch == 'false' && inputs.testing }}
         run: |
-          nix run --fallback .#local-image-test ${{ inputs.image }}
+          nix run .#local-image-test ${{ inputs.image }}
         shell: bash -euo pipefail {0}
 
       - name: Upload image
         if: ${{ inputs.multi-arch == 'false' && contains(fromJson('["refs/heads/main", "refs/pull/2457/merge"]'), github.ref) }}
         run: |
-          nix run --fallback .#publish-ghcr ${{ inputs.image }}
+          nix run .#publish-ghcr ${{ inputs.image }}
         env:
           GHCR_REGISTRY: ghcr.io/${{ github.repository_owner }}
           GHCR_USERNAME: ${{ inputs.GHCR_USERNAME }}
