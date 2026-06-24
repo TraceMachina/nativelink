@@ -140,7 +140,12 @@ jobs:
           set -euo pipefail
           ASSET="${{ steps.package.outputs.asset }}"
           for f in "${ASSET}.tar.gz" "${ASSET}.spdx.json"; do
+            # Newer cosign defaults --new-bundle-format on, which ignores the
+            # --output-signature/--output-certificate flags and writes a single
+            # bundle instead. Keep the legacy split .sig/.pem outputs the
+            # release assets and verifiers expect.
             cosign sign-blob --yes \
+              --new-bundle-format=false \
               --output-signature "${f}.sig" \
               --output-certificate "${f}.pem" \
               "${f}"
