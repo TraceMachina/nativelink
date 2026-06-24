@@ -576,7 +576,7 @@ async fn inner_main(
         if let Some(value) = http_config.experimental_http2_max_concurrent_streams {
             http.http2().max_concurrent_streams(value);
         }
-        if let Some(value) = http_config.experimental_http2_keep_alive_timeout {
+        if let Some(value) = http_config.experimental_http2_keep_alive_timeout_s {
             http.http2()
                 .keep_alive_timeout(Duration::from_secs(u64::from(value)));
         }

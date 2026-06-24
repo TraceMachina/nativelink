@@ -78,7 +78,7 @@ fn make_bytestream_server(
             instance_name: "foo_instance_name".to_string(),
             config: ByteStreamConfig {
                 cas_store: "main_cas".to_string(),
-                persist_stream_on_disconnect_timeout: 0,
+                persist_stream_on_disconnect_timeout_s: 0,
                 max_bytes_per_stream: 1024,
             },
         }]
