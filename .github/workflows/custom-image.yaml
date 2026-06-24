@@ -50,7 +50,7 @@ jobs:
             var matrix = JSON.parse(fs.readFileSync('.github/images-matrix.json', 'utf8'));
             var validImages = [];
             for (const option of matrix['include']) {
-              validImages.append(option['image']);
+              validImages.push(option['image']);
             }
             if (context.eventName === 'workflow_dispatch') {
               core.setOutput('should_build', 'true');
