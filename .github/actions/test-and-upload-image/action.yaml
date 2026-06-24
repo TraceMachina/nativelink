@@ -22,7 +22,7 @@ runs:
   steps:
       # FIXME: merge the multi-arch and single-arch paths
       - name: Test multi-arch image
-        if: ${{ inputs.multi-arch == 'true' && inputs.testing }}
+        if: ${{ inputs.multi-arch == 'true' && inputs.testing == 'true' }}
         run: |
           nix run .#create-multi-arch-image localhost:5000 ${{ inputs.image }}:${{ inputs.tag }} ${{ inputs.components }}
           nix run .#local-image-test localhost:5000/${{ inputs.image }}:${{ inputs.tag }}
@@ -44,7 +44,7 @@ runs:
         shell: bash -euo pipefail {0}
 
       - name: Test image
-        if: ${{ inputs.multi-arch == 'false' && inputs.testing }}
+        if: ${{ inputs.multi-arch == 'false' && inputs.testing == 'true' }}
         run: |
           nix run .#local-image-test ${{ inputs.image }}
         shell: bash -euo pipefail {0}
