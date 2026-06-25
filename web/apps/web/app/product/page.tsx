@@ -26,8 +26,8 @@ const pillars = [
     eyebrow: "Remote build execution",
     title: "Distribute across every core you have.",
     body: "Offload compilation and tests to a worker fleet that scales horizontally — on AWS, GCP, or bare metal. Hermetic by design, deterministic by default. Specialized hardware (GPUs, ARM, Apple Silicon) supported natively.",
-    metric: "10×",
-    metricLabel: "average speedup",
+    metric: "4-15×",
+    metricLabel: "faster builds",
     icon: (
       <><circle cx="6" cy="6" r="3" /><circle cx="18" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="18" r="3" /><path d="M9 6h6M9 18h6M6 9v6M18 9v6" /></>
     ),
