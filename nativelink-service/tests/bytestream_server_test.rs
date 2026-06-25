@@ -769,6 +769,21 @@ pub async fn chunked_stream_reads_small_set_of_data() -> Result<(), Box<dyn core
             "Expected response to match what is in store"
         );
     }
+
+    assert!(logs_contain(
+        "Starting bytestream request resource_name=\"foo_instance_name/blobs/0123456789abcdef000000000000000000000000000000000123456789abcdef/19\" instance_name=\"foo_instance_name\" expected_size=19"
+    ));
+
+    logs_assert(|lines| {
+        for line in lines {
+            // elapsed value varies due to timing, so can't exact match
+            if line.contains("Completed bytestream request elapsed=") && line.contains("resource_name=\"foo_instance_name/blobs/0123456789abcdef000000000000000000000000000000000123456789abcdef/19\" instance_name=\"foo_instance_name\" expected_size=19") {
+                return Ok(());
+            }
+        }
+        Err("No completion log!".into())
+    });
+
     Ok(())
 }
 

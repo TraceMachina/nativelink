@@ -996,13 +996,19 @@ impl ByteStream for ByteStreamServer {
         let start_time = Instant::now();
 
         let read_request = grpc_request.into_inner();
-        let resource_info = ResourceInfo::new(&read_request.resource_name, false)?;
+        let resource_name = read_request.resource_name.clone();
+        let resource_info = ResourceInfo::new(&resource_name, false)?;
         let instance_name = resource_info.instance_name.as_ref();
         let expected_size = resource_info.expected_size as u64;
         let instance = self
             .instance_infos
             .get(instance_name)
             .err_tip(|| format!("'instance_name' not configured for '{instance_name}'"))?;
+
+        trace!(
+            resource_name,
+            instance_name, expected_size, "Starting bytestream request"
+        );
 
         // Track read request
         instance
@@ -1036,12 +1042,18 @@ impl ByteStream for ByteStreamServer {
             .map(|stream| -> Response<Self::ReadStream> { Response::new(Box::pin(stream)) });
 
         // Track metrics based on result
+        let elapsed = start_time.elapsed();
         #[allow(clippy::cast_possible_truncation)]
-        let elapsed_ns = start_time.elapsed().as_nanos() as u64;
+        let elapsed_ns = elapsed.as_nanos() as u64;
         instance
             .metrics
             .read_duration_ns
             .fetch_add(elapsed_ns, Ordering::Relaxed);
+
+        trace!(
+            ?elapsed,
+            resource_name, instance_name, expected_size, "Completed bytestream request"
+        );
 
         match &resp {
             Ok(_) => {
