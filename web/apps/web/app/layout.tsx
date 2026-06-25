@@ -3,7 +3,6 @@ import { GeistMono } from "geist/font/mono";
 import { GeistSans } from "geist/font/sans";
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
-import { subscribeNewsletter } from "./newsletter-action";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -43,7 +42,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
             secondaryLabel="See pricing"
             secondaryHref="/pricing"
           />
-          <SiteFooter newsletterAction={subscribeNewsletter} />
+          <SiteFooter />
         </ThemeProvider>
       </body>
     </html>
