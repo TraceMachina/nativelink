@@ -6,10 +6,10 @@ on:
       image:
         description: 'Image to build'
         required: false
-        default: 'image'
+        default: 'nativelink'
         type: choice
         options:
-          - image
+          - nativelink
           - nativelink-worker-init
           - nativelink-worker-lre-cc
       skip_signing:
@@ -50,7 +50,7 @@ jobs:
             var matrix = JSON.parse(fs.readFileSync('.github/images-matrix.json', 'utf8'));
             var validImages = [];
             for (const option of matrix['include']) {
-              validImages.append(option['image']);
+              validImages.push(option['image']);
             }
             if (context.eventName === 'workflow_dispatch') {
               core.setOutput('should_build', 'true');
@@ -142,6 +142,7 @@ jobs:
           tag: ${{ steps.version.outputs.version-string }}
           GHCR_USERNAME: ${{ vars.GHCR_PUBLISH_USER }}
           GHCR_PASSWORD: ${{ secrets.GHCR_PUBLISH_TOKEN }}
+          force-push: true
 
       - name: Output image info
         run: |

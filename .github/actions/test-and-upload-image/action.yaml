@@ -17,12 +17,15 @@ inputs:
     required: true
   GHCR_PASSWORD:
     required: true
+  force-push:
+    required: false
+    default: false
 runs:
   using: "composite"
   steps:
       # FIXME: merge the multi-arch and single-arch paths
       - name: Test multi-arch image
-        if: ${{ inputs.multi-arch == 'true' && inputs.testing }}
+        if: ${{ inputs.multi-arch == 'true' && inputs.testing == 'true' }}
         run: |
           nix run .#create-multi-arch-image localhost:5000 ${{ inputs.image }}:${{ inputs.tag }} ${{ inputs.components }}
           nix run .#local-image-test localhost:5000/${{ inputs.image }}:${{ inputs.tag }}
@@ -31,7 +34,7 @@ runs:
       # FIXME: after we've merged this and made sure it all works _then_ remove the 2457 ref
       # See https://github.com/TraceMachina/nativelink/pull/2457
       - name: Upload multi-arch image
-        if: ${{ inputs.multi-arch == 'true' && contains(fromJson('["refs/heads/main", "refs/pull/2457/merge"]'), github.ref) }}
+        if: ${{ inputs.multi-arch == 'true' && (inputs.force-push == 'true' || contains(fromJson('["refs/heads/main"]'), github.ref)) }}
         run: |
           nix run .#regctl-ghcr-login
           nix run .#create-multi-arch-image ghcr.io ${{ github.repository_owner }}/${{ inputs.image }}:${{ inputs.tag }} ${{ inputs.components }}
@@ -44,13 +47,13 @@ runs:
         shell: bash -euo pipefail {0}
 
       - name: Test image
-        if: ${{ inputs.multi-arch == 'false' && inputs.testing }}
+        if: ${{ inputs.multi-arch == 'false' && inputs.testing == 'true' }}
         run: |
           nix run .#local-image-test ${{ inputs.image }}
         shell: bash -euo pipefail {0}
 
       - name: Upload image
-        if: ${{ inputs.multi-arch == 'false' && contains(fromJson('["refs/heads/main", "refs/pull/2457/merge"]'), github.ref) }}
+        if: ${{ inputs.multi-arch == 'false' && (inputs.force-push == 'true' || contains(fromJson('["refs/heads/main"]'), github.ref)) }}
         run: |
           nix run .#publish-ghcr ${{ inputs.image }}
         env:
