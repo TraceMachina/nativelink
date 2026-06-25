@@ -1224,6 +1224,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
                     .await;
                 return Err(err);
             }
+            trace!(?key, "Finished emplace file");
             encoded_file_path.path_type = PathType::Content;
             encoded_file_path.key = key;
             Ok(())

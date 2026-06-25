@@ -440,7 +440,7 @@ fn internal_remove_dir_all(path: impl AsRef<Path>) -> Result<(), Error> {
 
     for entry in WalkDir::new(&path) {
         let Ok(entry) = &entry else {
-            debug!("Can't get into {entry:?}, assuming already deleted");
+            debug!(?entry, "Can't get entry, assuming already deleted");
             continue;
         };
         let metadata = entry.metadata()?;
