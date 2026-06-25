@@ -94,6 +94,11 @@ jobs:
       - name: Install Cosign
         uses: >- # v4.1.2
           sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
+        with:
+          # Pin cosign: v3.x forces the new bundle format and drops the legacy
+          # split signature/certificate output the release assets and verifiers
+          # depend on. v2.5.3 still emits .sig/.pem files.
+          cosign-release: v2.5.3
 
       - name: Build static binary
         run: |
@@ -140,10 +145,9 @@ jobs:
           set -euo pipefail
           ASSET="${{ steps.package.outputs.asset }}"
           for f in "${ASSET}.tar.gz" "${ASSET}.spdx.json"; do
-            # Newer cosign defaults --new-bundle-format on, which ignores the
-            # --output-signature/--output-certificate flags and writes a single
-            # bundle instead. Keep the legacy split .sig/.pem outputs the
-            # release assets and verifiers expect.
+            # Cosign is pinned to v2.5.3 (see the install step) so these flags
+            # produce the split .sig/.pem files the release assets and verifiers
+            # expect; --new-bundle-format=false keeps that explicit.
             cosign sign-blob --yes \
               --new-bundle-format=false \
               --output-signature "${f}.sig" \
