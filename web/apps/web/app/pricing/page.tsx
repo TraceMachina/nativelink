@@ -102,7 +102,6 @@ const comparison: {
         cloud: "Email + Slack",
         ent: "Dedicated engineer",
       },
-      { label: "SLA", oss: false, cloud: "99.9%", ent: "Custom" },
       { label: "Onboarding", oss: false, cloud: true, ent: "White-glove" },
     ],
   },
@@ -221,30 +220,6 @@ export default function PricingPage() {
             </Reveal>
           ))}
         </div>
-      </Section>
-
-      {/* TRUST STRIP */}
-      <Section width="default" className="border-y border-border/60 bg-surface-elevated/40 py-12">
-        <Reveal>
-          <div className="grid grid-cols-2 gap-y-6 text-center md:grid-cols-4">
-            <div>
-              <div className="text-2xl font-semibold tracking-tight text-foreground">99.99%</div>
-              <div className="mt-1 text-xs text-muted">Cloud uptime, 12-mo trailing</div>
-            </div>
-            <div>
-              <div className="text-2xl font-semibold tracking-tight text-foreground">&lt;1ms</div>
-              <div className="mt-1 text-xs text-muted">p99 cache lookup</div>
-            </div>
-            <div>
-              <div className="text-2xl font-semibold tracking-tight text-foreground">SOC 2</div>
-              <div className="mt-1 text-xs text-muted">In progress — Q3</div>
-            </div>
-            <div>
-              <div className="text-2xl font-semibold tracking-tight text-foreground">30 days</div>
-              <div className="mt-1 text-xs text-muted">No-questions trial on Cloud</div>
-            </div>
-          </div>
-        </Reveal>
       </Section>
 
       {/* COMPARISON */}
