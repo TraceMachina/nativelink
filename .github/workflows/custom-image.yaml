@@ -142,6 +142,7 @@ jobs:
           tag: ${{ steps.version.outputs.version-string }}
           GHCR_USERNAME: ${{ vars.GHCR_PUBLISH_USER }}
           GHCR_PASSWORD: ${{ secrets.GHCR_PUBLISH_TOKEN }}
+          force-push: true
 
       - name: Output image info
         run: |
