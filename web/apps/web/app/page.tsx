@@ -1,4 +1,3 @@
-import { AnimatedTerminal } from "@/components/animated-terminal";
 import { ArchitectureDiagram } from "@/components/architecture-diagram";
 import {
   CitrixLogo,
@@ -75,7 +74,7 @@ const stats = [
     body: "Demonstrated on LLVM, one of the world's largest C++ codebases.",
   },
   {
-    value: "10B+",
+    value: "1B+",
     label: "build requests per month",
     body: "served in production.",
   },
@@ -223,26 +222,6 @@ export default function HomePage() {
               </span>
             ))}
           </Marquee>
-        </div>
-      </section>
-
-      <section className="relative overflow-hidden border-b border-border/60 bg-[#0f0f23] px-6 py-24">
-        <div className="absolute inset-0 bg-gradient-to-br from-[#1a1a2e] via-[#16213e] to-[#0f0f23]" />
-        <div className="relative z-10 mx-auto grid max-w-[1200px] gap-12 lg:grid-cols-[1.05fr_0.95fr] lg:items-center">
-          <Reveal className="min-w-0">
-            <AnimatedTerminal />
-          </Reveal>
-          <Reveal delay={0.1} className="text-white">
-            <Eyebrow className="mb-4 text-gray-300">Quick start</Eyebrow>
-            <h2 className="text-balance text-4xl font-semibold leading-[1.05] tracking-[-0.03em] md:text-[56px]">
-              Built for AI-assisted development.
-            </h2>
-            <p className="mt-5 text-base leading-relaxed text-gray-300 md:text-lg">
-              Start in 10 minutes with Docker. Develop with Claude Code, Cursor or Codex skills that
-              guide storage changes, config updates, debugging, and multi-worker test clusters, the
-              same workflows NativeLink engineers use in production.
-            </p>
-          </Reveal>
         </div>
       </section>
 
