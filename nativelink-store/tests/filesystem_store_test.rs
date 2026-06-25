@@ -51,7 +51,7 @@ use tokio::sync::{Barrier, Semaphore};
 use tokio::time::sleep;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReadDirStream;
-use tracing::{Instrument, debug};
+use tracing::{Instrument, debug, info};
 
 const VALID_HASH: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
 
@@ -1765,7 +1765,8 @@ async fn detect_duplicate_upload() -> Result<(), Error> {
 
     let key = &StoreKey::Digest(digest);
     let temp_key = make_temp_key(key);
-    let (mut entry, mut temp_file, _temp_full_path) = store.make_temp_file(temp_key).await?;
+    let (mut entry, mut temp_file, temp_full_path) = store.make_temp_file(temp_key).await?;
+    info!(?temp_full_path, "Temp full path");
     let mut data = Bytes::from_static(VALUE1.as_bytes());
     temp_file.write_all_buf(&mut data).await?;
     *entry.data_size_mut() = 10;
