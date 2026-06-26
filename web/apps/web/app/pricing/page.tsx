@@ -234,8 +234,11 @@ export default function PricingPage() {
         </Reveal>
 
         <Reveal>
-          <div className="mx-auto max-w-[980px] overflow-hidden rounded-2xl border border-border bg-surface">
-            <table className="w-full border-collapse text-left">
+          <div className="mx-auto max-w-[980px] overflow-x-auto rounded-2xl border border-border bg-surface">
+            {/* overflow-x-auto + min-w let the 4-column table scroll on mobile
+                instead of squishing; on desktop it fits the wrapper, so nothing
+                scrolls and the layout is unchanged. */}
+            <table className="w-full min-w-[680px] border-collapse text-left">
               <thead>
                 <tr>
                   <th className="w-[40%] bg-surface-elevated px-6 py-4 font-mono text-[10px] uppercase tracking-widest text-muted">
