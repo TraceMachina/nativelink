@@ -21,8 +21,8 @@ futures = { version = "0.3.31", default-features = false }
 humantime = { version = "2.3.0", default-features = false }
 lru = { version = "0.16.0", default-features = false }
 mock_instant = { version = "0.5.3", default-features = false }
-opentelemetry = { version = "0.30.0", default-features = false }
-opentelemetry-semantic-conventions = { version = "0.30.0", default-features = false, features = [
+opentelemetry = { version = "0.32.0", default-features = false }
+opentelemetry-semantic-conventions = { version = "0.32.0", default-features = false, features = [
   "default",
   "semconv_experimental",
 ] }

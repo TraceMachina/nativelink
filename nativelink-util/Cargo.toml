@@ -27,21 +27,21 @@ hyper-util = { version = "0.1.11", default-features = false }
 libc = { version = "0.2.177", default-features = false }
 lru = { version = "0.16.0", default-features = false }
 mock_instant = { version = "0.5.3", default-features = false }
-opentelemetry = { version = "0.30.0", default-features = false }
-opentelemetry-appender-tracing = { version = "0.30.0", default-features = false }
-opentelemetry-http = { version = "0.30.0", default-features = false }
-opentelemetry-otlp = { version = "0.30.0", default-features = false, features = [
+opentelemetry = { version = "0.32.0", default-features = false }
+opentelemetry-appender-tracing = { version = "0.32.0", default-features = false }
+opentelemetry-http = { version = "0.32.0", default-features = false }
+opentelemetry-otlp = { version = "0.32.0", default-features = false, features = [
   "grpc-tonic",
   "logs",
   "metrics",
   "trace",
   "zstd-tonic",
 ] }
-opentelemetry-semantic-conventions = { version = "0.30.0", default-features = false, features = [
+opentelemetry-semantic-conventions = { version = "0.32.0", default-features = false, features = [
   "default",
   "semconv_experimental",
 ] }
-opentelemetry_sdk = { version = "0.32.0", default-features = false }
+opentelemetry_sdk = { version = "0.32.1", default-features = false }
 parking_lot = { version = "0.12.3", features = [
   "arc_lock",
   "send_guard",
@@ -77,7 +77,7 @@ tonic = { version = "0.13.0", features = [
 ], default-features = false }
 tower = { version = "0.5.2", default-features = false }
 tracing = { version = "0.1.41", default-features = false }
-tracing-opentelemetry = { version = "0.31.0", default-features = false, features = [
+tracing-opentelemetry = { version = "0.33.0", default-features = false, features = [
   "metrics",
 ] }
 tracing-subscriber = { version = "0.3.19", features = [
@@ -100,7 +100,7 @@ wincode = { version = "0.5.4", default-features = false, features = ["derive"] }
 [dev-dependencies]
 anyhow = { version = "1.0.100", default-features = false }
 nativelink-macro = { path = "../nativelink-macro" }
-opentelemetry-proto = { version = "0.30.0", default-features = false, features = [
+opentelemetry-proto = { version = "0.32.0", default-features = false, features = [
   "gen-tonic",
   "metrics",
 ] }
