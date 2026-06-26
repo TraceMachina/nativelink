@@ -44,7 +44,7 @@ bytes = { version = "1.10.1", default-features = false }
 const_format = { version = "0.2.34", default-features = false }
 futures = { version = "0.3.31", default-features = false, features = ["std"] }
 gcloud-auth = { version = "=1.2.0", default-features = false, features = [
-  "jwt-rust-crypto",
+  "jwt-aws-lc-rs",
 ] }
 gcloud-storage = { version = "1", default-features = false, features = [
   "auth",
