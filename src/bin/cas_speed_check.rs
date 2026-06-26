@@ -19,7 +19,7 @@ use tonic::transport::ClientTlsConfig;
 use tracing::info;
 
 #[derive(Parser, Debug)]
-#[command(version, about)]
+#[command(version)]
 struct Args {
     #[arg(short, long)]
     endpoint: String,

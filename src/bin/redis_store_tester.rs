@@ -138,7 +138,7 @@ enum TestMode {
 }
 
 #[derive(Parser, Debug)]
-#[command(version, about)]
+#[command(version)]
 struct Args {
     #[arg(value_enum, short, long, default_value_t)]
     redis_mode: RedisModeArg,
