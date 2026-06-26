@@ -386,10 +386,7 @@ where
     max_count_per_cursor: u64,
 
     /// A manager for subscriptions to keys in Redis.
-    subscription_manager: OnceCell<Arc<RedisSubscriptionManager>>,
-
-    /// Channel for getting subscription messages
-    subscriber_channel: Mutex<Option<UnboundedReceiver<PushInfo>>>,
+    subscription_manager: Arc<RedisSubscriptionManager>,
 
     /// Permits to limit inflight Redis requests. Technically only
     /// limits the calls to `get_client()`, but the requests per client
@@ -399,7 +396,7 @@ where
     /// Per-call ceiling for `check_health` PING.
     health_check_timeout: Duration,
 
-    /// Have we done a subscribe for messages for remove_callback subscribes?
+    /// Have we done a subscribe for messages for `remove_callback` subscribes?
     has_remove_callback_subscribe: OnceCell<()>,
 }
 
@@ -419,7 +416,6 @@ where
             )
             .field("scan_count", &self.scan_count)
             .field("subscription_manager", &self.subscription_manager)
-            .field("subscriber_channel", &self.subscriber_channel)
             .field("client_permits", &self.client_permits)
             .finish()
     }
@@ -471,6 +467,10 @@ where
         connection_manager: M,
     ) -> Result<Self, Error> {
         info!("Redis index fingerprint: {FINGERPRINT_CREATE_INDEX_HEX}");
+        let subscription_manager = Arc::new(RedisSubscriptionManager::new(subscriber_channel));
+        if let Some(channel) = &pub_sub_channel {
+            connection_manager.psubscribe(channel).await?;
+        }
 
         Ok(Self {
             connection_manager,
@@ -481,8 +481,7 @@ where
             read_chunk_size,
             max_chunk_uploads_per_update,
             scan_count,
-            subscription_manager: OnceCell::new(),
-            subscriber_channel: Mutex::new(Some(subscriber_channel)),
+            subscription_manager,
             client_permits: Arc::new(Semaphore::new(max_client_permits)),
             max_count_per_cursor,
             health_check_timeout,
@@ -1313,11 +1312,11 @@ where
                         return Err(make_input_err!("Got multiple items for CONFIG GET, expected one"));
                     }
                     let events_cfg = &cfg.first().expect("Only one item").1;
-                    if events_cfg == "" {
+                    if events_cfg.is_empty() {
                         error!("notify-keyspace-events not enabled for Redis, will fail to get remove callbacks");
-                    } else if !events_cfg.contains("K") {
+                    } else if !events_cfg.contains('K') {
                         error!(notify_keyspace_events=events_cfg, "notify-keyspace-events does not contain `K` so won't get keyspace events we need for eviction events");
-                    } else if !events_cfg.contains("e") && !events_cfg.contains("A") {
+                    } else if !events_cfg.contains('e') && !events_cfg.contains('A') {
                         error!(notify_keyspace_events=events_cfg, "notify-keyspace-events does not contain either 'e' or 'A' so we won't get eviction events");
                     } else {
                         info!(notify_keyspace_events=events_cfg, "Subscribing to eviction events");
@@ -1817,23 +1816,12 @@ where
     type SubscriptionManager = RedisSubscriptionManager;
 
     async fn subscription_manager(&self) -> Result<Arc<RedisSubscriptionManager>, Error> {
-        self.subscription_manager
-            .get_or_try_init(|| async move {
-                let Some(subscriber_channel) = self.subscriber_channel.lock().take() else {
-                    return Err(make_input_err!(
-                        "Multiple attempts to obtain the subscription manager in RedisStore"
-                    ));
-                };
-                let Some(pub_sub_channel) = &self.pub_sub_channel else {
-                    return Err(make_input_err!(
-                        "RedisStore must have a pubsub for Redis Scheduler if using subscriptions"
-                    ));
-                };
-                self.connection_manager.psubscribe(pub_sub_channel).await?;
-                Ok(Arc::new(RedisSubscriptionManager::new(subscriber_channel)))
-            })
-            .await
-            .map(Clone::clone)
+        if self.pub_sub_channel.is_none() {
+            return Err(make_input_err!(
+                "RedisStore must have a pubsub for Redis Scheduler if using subscriptions"
+            ));
+        }
+        Ok(self.subscription_manager.clone())
     }
 
     async fn update_data<T>(&self, data: T, expiry: Option<Duration>) -> Result<Option<i64>, Error>
