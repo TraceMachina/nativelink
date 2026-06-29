@@ -747,6 +747,53 @@ pub struct ExperimentalR2Spec {
     pub common: CommonObjectSpec,
 }
 
+// Oracle Cloud Infrastructure (OCI) Object Storage Spec.
+//
+// Uses the OCI Object Storage Amazon S3 Compatibility API. The store talks to
+// the path-style compatibility endpoint, which embeds the Object Storage
+// namespace in the host and the bucket in the request path:
+// `https://{namespace}.compat.objectstorage.{region}.oci.customer-oci.com/{bucket}/{object}`.
+// Authentication uses a Customer Secret Key (an Access Key/Secret Key pair
+// generated under User Settings in the OCI console) signed with AWS SigV4.
+#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct ExperimentalOciSpec {
+    /// OCI Object Storage namespace. This is the immutable, system-generated
+    /// top-level container assigned to the tenancy (the same name in every
+    /// region). It is the host prefix of the derived path-style endpoint:
+    /// `https://{namespace}.compat.objectstorage.{region}.oci.customer-oci.com`.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub namespace: String,
+
+    /// OCI region identifier, for example `us-phoenix-1` or `us-ashburn-1`.
+    /// Used both to build the endpoint host and as the AWS `SigV4` signing
+    /// region. If your tooling cannot set an OCI region identifier, OCI also
+    /// accepts `us-east-1` to target the tenancy home region.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub region: String,
+
+    /// Bucket name to use as the backend. Bucket names must be unique within
+    /// the Object Storage namespace.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub bucket: String,
+
+    /// Customer Secret Key access key. When omitted (along with
+    /// `secret_access_key`), the default AWS credential chain is used instead.
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub access_key_id: Option<String>,
+
+    /// Customer Secret Key secret. OCI does not allow retrieving a secret key
+    /// after generation, so store it securely (for example via `${ENV_VAR}`
+    /// shell expansion).
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub secret_access_key: Option<String>,
+
+    /// Retry and upload settings.
+    #[serde(flatten)]
+    pub common: CommonObjectSpec,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
@@ -1029,6 +1076,7 @@ pub enum ExperimentalCloudObjectSpec {
     Azure(ExperimentalAzureSpec),
     Ontap(ExperimentalOntapS3Spec),
     R2(ExperimentalR2Spec),
+    Oci(ExperimentalOciSpec),
 }
 
 impl Default for ExperimentalCloudObjectSpec {
