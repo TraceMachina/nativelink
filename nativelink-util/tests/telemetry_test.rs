@@ -238,7 +238,7 @@ impl Service<Request<Body>> for TestMetricsService {
                 );
                 // ProstCodec<T, U>: Encode = T (sent to client),
                 //                   Decode = U (received from client).
-                let mut grpc = tonic::server::Grpc::new(tonic::codec::ProstCodec::<
+                let mut grpc = tonic::server::Grpc::new(tonic_prost::ProstCodec::<
                     ExportMetricsServiceResponse,
                     ExportMetricsServiceRequest,
                 >::default());
@@ -385,6 +385,7 @@ fn expected_sum_data_points() -> Vec<(String, String, Vec<String>, String)> {
                 value: Some(AnyValue {
                     value: Some(any_value::Value::StringValue(value.to_string())),
                 }),
+                key_strindex: 0,
             }
         )
     };

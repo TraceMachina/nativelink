@@ -33,8 +33,7 @@ rust_binary(
     srcs = ["gen_protos_tool.rs"],
     deps = [
         "@crates//:clap",
-        "@crates//:prost-build",
-        "@crates//:tonic-build",
+        "@crates//:tonic-prost-build",
     ],
 )
 
@@ -155,6 +154,7 @@ rust_library(
         "@crates//:prost",
         "@crates//:prost-types",
         "@crates//:tonic",
+        "@crates//:tonic-prost",
     ],
 )
 

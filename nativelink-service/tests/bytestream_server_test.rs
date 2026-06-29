@@ -47,9 +47,10 @@ use tokio::sync::mpsc::unbounded_channel;
 use tokio::task::yield_now;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::UnboundedReceiverStream;
-use tonic::codec::{Codec, CompressionEncoding, ProstCodec};
+use tonic::codec::{Codec, CompressionEncoding};
 use tonic::transport::{Channel, Endpoint};
 use tonic::{Request, Response, Streaming};
+use tonic_prost::ProstCodec;
 use tower::service_fn;
 
 const INSTANCE_NAME: &str = "foo_instance_name";
@@ -855,7 +856,7 @@ pub async fn read_with_not_found_does_not_deadlock() -> Result<(), Error> {
         let result_fut = read_stream.next();
 
         let result = result_fut.await.err_tip(|| "Expected result to be ready")?;
-        let expected_err_str = "status: NotFound, message: \"Key Digest(DigestInfo(\\\"0123456789abcdef000000000000000000000000000000000123456789abcdef-55\\\")) not found\", details: [], metadata: MetadataMap { headers: {} }";
+        let expected_err_str = "code: 'Some requested entity was not found', message: \"Key Digest(DigestInfo(\\\"0123456789abcdef000000000000000000000000000000000123456789abcdef-55\\\")) not found\"";
         assert_eq!(
             Error::from(result.unwrap_err()),
             make_err!(Code::NotFound, "{expected_err_str}"),

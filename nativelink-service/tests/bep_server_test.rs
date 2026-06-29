@@ -53,8 +53,9 @@ use nativelink_util::store_trait::{
 use pretty_assertions::assert_eq;
 use prost::Message;
 use prost_types::Timestamp;
-use tonic::codec::{Codec, ProstCodec};
+use tonic::codec::Codec;
 use tonic::{Request, Streaming, async_trait};
+use tonic_prost::ProstCodec;
 
 const BEP_STORE_NAME: &str = "main_bep";
 

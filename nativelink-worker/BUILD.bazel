@@ -99,6 +99,7 @@ rust_test_suite(
         "@crates//:serial_test",
         "@crates//:tokio",
         "@crates//:tonic",
+        "@crates//:tonic-prost",
         "@crates//:tracing",
         "@crates//:tracing-test",
         "@crates//:uuid",
