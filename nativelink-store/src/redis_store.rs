@@ -325,6 +325,7 @@ impl RedisManager<ConnectionManager> for StandardRedisManager<ConnectionManager>
     }
 
     async fn psubscribe(&self, pattern: &str) -> Result<(), Error> {
+        info!(pattern, "new psubscribe");
         let mut connection = self.get_connection().await?.0;
         let new_subscription = self.subscriptions.lock().insert(String::from(pattern));
         if new_subscription {
@@ -1686,6 +1687,7 @@ impl RedisSubscriptionManager {
             _subscription_spawn: Arc::new(Mutex::new(spawn!(
                 "redis_subscribe_spawn",
                 async move {
+                    debug!("running subscribe loop");
                     loop {
                         loop {
                             let key = select! {
@@ -1712,7 +1714,7 @@ impl RedisSubscriptionManager {
                                             error!(?push_info, "Expected exactly 3 values on subscriber channel (pattern, channel, value)");
                                             continue;
                                         }
-                                        match push_info.data.last().unwrap() {
+                                        let value = match push_info.data.last().unwrap() {
                                             Value::SimpleString(s) => {
                                                 s.clone()
                                             }
@@ -1723,7 +1725,24 @@ impl RedisSubscriptionManager {
                                                 error!(?other, "Received non-string message in RedisSubscriptionManager");
                                                 continue;
                                             }
+                                        };
+                                        if value == "evicted" {
+                                            trace!(?push_info, "Eviction event");
+                                            let eviction_key = if let Some(key) = push_info.data.get(1) {
+                                                if let Value::BulkString(s) = key {
+                                                    String::from_utf8(s.clone()).expect("String message")
+                                                } else {
+                                                    error!(?push_info, "Eviction key wasn't bulk-string");
+                                                    continue;
+                                                }
+                                            } else {
+                                                error!(?push_info, "No key in eviction event");
+                                                continue;
+                                            };
+                                            trace!(?push_info, "Eviction event");
+                                            continue
                                         }
+                                        value
                                     } else {
                                         error!("Error receiving message in RedisSubscriptionManager from subscriber_channel");
                                         break;
