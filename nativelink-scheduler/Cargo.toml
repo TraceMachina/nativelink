@@ -27,7 +27,7 @@ opentelemetry-semantic-conventions = { version = "0.32.0", default-features = fa
   "semconv_experimental",
 ] }
 parking_lot = { version = "0.12.3", default-features = false }
-prost = { version = "0.13.5", default-features = false }
+prost = { version = "0.14.4", default-features = false }
 redis = { version = "1.0.0", default-features = false }
 scopeguard = { version = "1.2.0", default-features = false }
 serde = { version = "1.0.219", features = ["rc"], default-features = false }
@@ -42,7 +42,7 @@ tokio = { version = "1.52.2", features = [
 tokio-stream = { version = "0.1.17", features = [
   "fs",
 ], default-features = false }
-tonic = { version = "0.13.0", features = [
+tonic = { version = "0.14.0", features = [
   "tls-ring",
   "transport",
 ], default-features = false }

@@ -21,7 +21,7 @@
 /// event has an id that is mentioned as child id in an earlier event and a build
 /// invocation is complete if and only if all direct and indirect children of the
 /// initial event have been posted.
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct BuildEventId {
     #[prost(
         oneof = "build_event_id::Id",
@@ -34,14 +34,14 @@ pub mod build_event_id {
     /// Generic identifier for a build event. This is the default type of
     /// BuildEventId, but should not be used outside testing; nevertheless,
     /// tools should handle build events with this kind of id gracefully.
-    #[derive(Clone, PartialEq, ::prost::Message)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct UnknownBuildEventId {
         #[prost(string, tag = "1")]
         pub details: ::prost::alloc::string::String,
     }
     /// Identifier of an event reporting progress. Those events are also used to
     /// chain in events that come early.
-    #[derive(Clone, Copy, PartialEq, ::prost::Message)]
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct ProgressId {
         /// Unique identifier. No assumption should be made about how the ids are
         /// assigned; the only meaningful operation on this field is test for
@@ -51,14 +51,14 @@ pub mod build_event_id {
     }
     /// Identifier of an event indicating the beginning of a build; this will
     /// normally be the first event.
-    #[derive(Clone, Copy, PartialEq, ::prost::Message)]
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct BuildStartedId {}
     /// Identifier on an event indicating the original commandline received by
     /// the bazel server.
-    #[derive(Clone, Copy, PartialEq, ::prost::Message)]
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct UnstructuredCommandLineId {}
     /// Identifier on an event describing the commandline received by Bazel.
-    #[derive(Clone, PartialEq, ::prost::Message)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct StructuredCommandLineId {
         /// A title for this command line value, as there may be multiple.
         /// For example, a single invocation may wish to report both the literal and
@@ -68,15 +68,15 @@ pub mod build_event_id {
         pub command_line_label: ::prost::alloc::string::String,
     }
     /// Identifier of an event indicating the workspace status.
-    #[derive(Clone, Copy, PartialEq, ::prost::Message)]
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct WorkspaceStatusId {}
     /// Identifier on an event reporting on the options included in the command
     /// line, both explicitly and implicitly.
-    #[derive(Clone, Copy, PartialEq, ::prost::Message)]
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct OptionsParsedId {}
     /// Identifier of an event reporting that an external resource was fetched
     /// from.
-    #[derive(Clone, PartialEq, ::prost::Message)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct FetchId {
         /// The external resource that was fetched from.
         #[prost(string, tag = "1")]
@@ -88,18 +88,18 @@ pub mod build_event_id {
     /// have been skipped for some reason, if the actual expansion was still
     /// carried out (e.g., if keep_going is set). In this case, the
     /// pattern_skipped choice in the id field is to be made.
-    #[derive(Clone, PartialEq, ::prost::Message)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct PatternExpandedId {
         #[prost(string, repeated, tag = "1")]
         pub pattern: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     }
-    #[derive(Clone, Copy, PartialEq, ::prost::Message)]
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct WorkspaceConfigId {}
-    #[derive(Clone, Copy, PartialEq, ::prost::Message)]
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct BuildMetadataId {}
     /// Identifier of an event indicating that a target has been expanded by
     /// identifying for which configurations it should be build.
-    #[derive(Clone, PartialEq, ::prost::Message)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct TargetConfiguredId {
         #[prost(string, tag = "1")]
         pub label: ::prost::alloc::string::String,
@@ -120,7 +120,7 @@ pub mod build_event_id {
     }
     /// Identifier of an event introducing a named set of files (usually artifacts)
     /// to be referred to in later messages.
-    #[derive(Clone, PartialEq, ::prost::Message)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct NamedSetOfFilesId {
         /// Identifier of the file set; this is an opaque string valid only for the
         /// particular instance of the event stream.
@@ -128,7 +128,7 @@ pub mod build_event_id {
         pub id: ::prost::alloc::string::String,
     }
     /// Identifier of an event introducing a configuration.
-    #[derive(Clone, PartialEq, ::prost::Message)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct ConfigurationId {
         /// Identifier of the configuration; users of the protocol should not make
         /// any assumptions about it having any structure, or equality of the
@@ -141,7 +141,7 @@ pub mod build_event_id {
     }
     /// Identifier of an event indicating that a target was built completely; this
     /// does not include running the test if the target is a test target.
-    #[derive(Clone, PartialEq, ::prost::Message)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct TargetCompletedId {
         #[prost(string, tag = "1")]
         pub label: ::prost::alloc::string::String,
@@ -166,7 +166,7 @@ pub mod build_event_id {
     /// Identifier of an event reporting that an action was completed (not all
     /// actions are reported, only the ones that can be considered important;
     /// this includes all failed actions).
-    #[derive(Clone, PartialEq, ::prost::Message)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct ActionCompletedId {
         #[prost(string, tag = "1")]
         pub primary_output: ::prost::alloc::string::String,
@@ -182,7 +182,7 @@ pub mod build_event_id {
     /// any case, it will report some form of error (i.e., the payload will be an
     /// Aborted event); there are no regular events using this identifier. The
     /// purpose of those events is to serve as the root cause of a failed target.
-    #[derive(Clone, PartialEq, ::prost::Message)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct UnconfiguredLabelId {
         #[prost(string, tag = "1")]
         pub label: ::prost::alloc::string::String,
@@ -191,7 +191,7 @@ pub mod build_event_id {
     /// label, usually a visibility error. In any case, an event with such an
     /// id will always report some form of error (i.e., the payload will be an
     /// Aborted event); there are no regular events using this identifier.
-    #[derive(Clone, PartialEq, ::prost::Message)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct ConfiguredLabelId {
         #[prost(string, tag = "1")]
         pub label: ::prost::alloc::string::String,
@@ -203,7 +203,7 @@ pub mod build_event_id {
     /// in such a way as to uniquely identify the action within a build. In fact,
     /// attempts for the same test, run, shard triple are counted sequentially,
     /// starting with 1.
-    #[derive(Clone, PartialEq, ::prost::Message)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct TestResultId {
         #[prost(string, tag = "1")]
         pub label: ::prost::alloc::string::String,
@@ -217,7 +217,7 @@ pub mod build_event_id {
         pub attempt: i32,
     }
     /// Identifier of an event reporting progress of an individual test run.
-    #[derive(Clone, PartialEq, ::prost::Message)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct TestProgressId {
         /// The label of the target for the action.
         #[prost(string, tag = "1")]
@@ -241,7 +241,7 @@ pub mod build_event_id {
         pub opaque_count: i32,
     }
     /// Identifier of an event reporting the summary of a test.
-    #[derive(Clone, PartialEq, ::prost::Message)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct TestSummaryId {
         #[prost(string, tag = "1")]
         pub label: ::prost::alloc::string::String,
@@ -249,7 +249,7 @@ pub mod build_event_id {
         pub configuration: ::core::option::Option<ConfigurationId>,
     }
     /// Identifier of an event reporting the summary of a target.
-    #[derive(Clone, PartialEq, ::prost::Message)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct TargetSummaryId {
         #[prost(string, tag = "1")]
         pub label: ::prost::alloc::string::String,
@@ -257,23 +257,23 @@ pub mod build_event_id {
         pub configuration: ::core::option::Option<ConfigurationId>,
     }
     /// Identifier of the BuildFinished event, indicating the end of a build.
-    #[derive(Clone, Copy, PartialEq, ::prost::Message)]
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct BuildFinishedId {}
     /// Identifier of an event providing additional logs/statistics after
     /// completion of the build.
-    #[derive(Clone, Copy, PartialEq, ::prost::Message)]
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct BuildToolLogsId {}
     /// Identifier of an event providing build metrics after completion
     /// of the build.
-    #[derive(Clone, Copy, PartialEq, ::prost::Message)]
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct BuildMetricsId {}
     /// Identifier of an event providing convenience symlinks information.
-    #[derive(Clone, Copy, PartialEq, ::prost::Message)]
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct ConvenienceSymlinksIdentifiedId {}
     /// Identifier of an event providing the ExecRequest of a run command.
-    #[derive(Clone, Copy, PartialEq, ::prost::Message)]
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct ExecRequestId {}
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Id {
         #[prost(message, tag = "1")]
         Unknown(UnknownBuildEventId),
@@ -336,7 +336,7 @@ pub mod build_event_id {
 /// Payload of an event summarizing the progress of the build so far. Those
 /// events are also used to be parents of events where the more logical parent
 /// event cannot be posted yet as the needed information is not yet complete.
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Progress {
     /// The next chunk of stdout that bazel produced since the last progress event
     /// or the beginning of the build.
@@ -355,7 +355,7 @@ pub struct Progress {
 }
 /// Payload of an event indicating that an expected event will not come, as
 /// the build is aborted prematurely for some reason.
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Aborted {
     #[prost(enumeration = "aborted::AbortReason", tag = "1")]
     pub reason: i32,
@@ -452,7 +452,7 @@ pub mod aborted {
 /// to be build is contained in one of the announced child events; it is an
 /// invariant that precisely one of the announced child events has a non-empty
 /// target pattern.
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct BuildStarted {
     #[prost(string, tag = "1")]
     pub uuid: ::prost::alloc::string::String,
@@ -487,7 +487,7 @@ pub struct BuildStarted {
     pub server_pid: i64,
 }
 /// Configuration related to the blaze workspace and output tree.
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct WorkspaceConfig {
     /// The root of the local blaze exec root. All output files live underneath
     /// this at "blaze-out/".
@@ -500,7 +500,7 @@ pub struct WorkspaceConfig {
 /// like name and relevant entries of rc-files and client environment variables.
 /// However, it does contain enough information to reproduce the build
 /// invocation.
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UnstructuredCommandLine {
     #[prost(string, repeated, tag = "1")]
     pub args: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
@@ -528,7 +528,7 @@ pub struct OptionsParsed {
 /// Payload of an event indicating that an external resource was fetched. This
 /// event will only occur in streams where an actual fetch happened, not in ones
 /// where a cached copy of the entity to be fetched was used.
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Fetch {
     #[prost(bool, tag = "1")]
     pub success: bool,
@@ -544,7 +544,7 @@ pub struct WorkspaceStatus {
 }
 /// Nested message and enum types in `WorkspaceStatus`.
 pub mod workspace_status {
-    #[derive(Clone, PartialEq, ::prost::Message)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct Item {
         #[prost(string, tag = "1")]
         pub key: ::prost::alloc::string::String,
@@ -599,7 +599,7 @@ pub mod pattern_expanded {
     /// Represents a test_suite target and the tests that it expanded to. Nested
     /// test suites are recursively expanded. The test labels only contain the
     /// final test targets, not any nested suites.
-    #[derive(Clone, PartialEq, ::prost::Message)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct TestSuiteExpansion {
         /// The label of the test_suite rule.
         #[prost(string, tag = "1")]
@@ -615,7 +615,7 @@ pub mod pattern_expanded {
 /// been identified. As with pattern expansion the main information is in the
 /// chaining part: the id will contain the target that was configured and the
 /// children id will contain the configured targets it was configured to.
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct TargetConfigured {
     /// The kind of target (e.g.,  e.g. "cc_library rule", "source file",
     /// "generated file") where the completion is reported.
@@ -629,7 +629,7 @@ pub struct TargetConfigured {
     #[prost(string, repeated, tag = "3")]
     pub tag: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct File {
     /// A sequence of prefixes to apply to the file name to construct a full path.
     /// In most but not all cases, there will be 3 entries:
@@ -653,7 +653,7 @@ pub struct File {
 }
 /// Nested message and enum types in `File`.
 pub mod file {
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum File {
         /// A location where the contents of the file can be found. The string is
         /// encoded according to RFC2396.
@@ -907,7 +907,7 @@ pub mod test_result {
             #[prost(message, optional, tag = "4")]
             pub time: ::core::option::Option<::prost_types::Duration>,
         }
-        #[derive(Clone, PartialEq, ::prost::Message)]
+        #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
         pub struct ResourceUsage {
             #[prost(string, tag = "1")]
             pub name: ::prost::alloc::string::String,
@@ -917,7 +917,7 @@ pub mod test_result {
     }
 }
 /// Event payload providing information about an active, individual test run.
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct TestProgress {
     /// Identifies a resource that may provide information about an active test
     /// run. The resource is not necessarily a file and may need to be queried
@@ -993,7 +993,7 @@ pub struct TestSummary {
     pub total_run_duration: ::core::option::Option<::prost_types::Duration>,
 }
 /// Payload of the event summarizing a target (test or non-test).
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct TargetSummary {
     /// Conjunction of TargetComplete events for this target, including aspects.
     #[prost(bool, tag = "1")]
@@ -1039,7 +1039,7 @@ pub mod build_finished {
     /// rarely do) and are not part of the public API.
     ///
     /// A build was successful iff ExitCode.code equals 0.
-    #[derive(Clone, PartialEq, ::prost::Message)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct ExitCode {
         /// The name of the exit code.
         #[prost(string, tag = "1")]
@@ -1049,7 +1049,7 @@ pub mod build_finished {
         pub code: i32,
     }
     /// Things that happened during the build that could be of interest.
-    #[derive(Clone, Copy, PartialEq, ::prost::Message)]
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct AnomalyReport {
         /// Was the build suspended at any time during the build.
         /// Examples of suspensions are SIGSTOP, or the hardware being put to sleep.
@@ -1128,7 +1128,7 @@ pub mod build_metrics {
     }
     /// Nested message and enum types in `ActionSummary`.
     pub mod action_summary {
-        #[derive(Clone, PartialEq, ::prost::Message)]
+        #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
         pub struct ActionData {
             #[prost(string, tag = "1")]
             pub mnemonic: ::prost::alloc::string::String,
@@ -1154,7 +1154,7 @@ pub mod build_metrics {
             #[prost(int64, tag = "7")]
             pub actions_created: i64,
         }
-        #[derive(Clone, PartialEq, ::prost::Message)]
+        #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
         pub struct RunnerCount {
             #[prost(string, tag = "1")]
             pub name: ::prost::alloc::string::String,
@@ -1183,7 +1183,7 @@ pub mod build_metrics {
     }
     /// Nested message and enum types in `MemoryMetrics`.
     pub mod memory_metrics {
-        #[derive(Clone, PartialEq, ::prost::Message)]
+        #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
         pub struct GarbageMetrics {
             /// Type of garbage collected, e.g. G1 Old Gen.
             #[prost(string, tag = "1")]
@@ -1194,7 +1194,7 @@ pub mod build_metrics {
             pub garbage_collected: i64,
         }
     }
-    #[derive(Clone, Copy, PartialEq, ::prost::Message)]
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct TargetMetrics {
         /// DEPRECATED
         /// No longer populated. It never measured what it was supposed to (targets
@@ -1238,7 +1238,7 @@ pub mod build_metrics {
             super::super::devtools::build::lib::packages::metrics::PackageLoadMetrics,
         >,
     }
-    #[derive(Clone, Copy, PartialEq, ::prost::Message)]
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct TimingMetrics {
         /// For Skymeld, it's possible that
         /// analysis_phase_time_in_ms + execution_phase_time_in_ms >= wall_time_in_ms
@@ -1265,7 +1265,7 @@ pub mod build_metrics {
         #[prost(int64, tag = "5")]
         pub actions_execution_start_in_ms: i64,
     }
-    #[derive(Clone, Copy, PartialEq, ::prost::Message)]
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct CumulativeMetrics {
         /// One-indexed number of "analyses" the server has run, including the
         /// current one. Will be incremented for every build/test/cquery/etc. command
@@ -1278,7 +1278,7 @@ pub mod build_metrics {
         #[prost(int32, tag = "12")]
         pub num_builds: i32,
     }
-    #[derive(Clone, Copy, PartialEq, ::prost::Message)]
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct ArtifactMetrics {
         /// Measures all source files newly read this build. Does not include
         /// unchanged sources on incremental builds.
@@ -1305,7 +1305,7 @@ pub mod build_metrics {
     }
     /// Nested message and enum types in `ArtifactMetrics`.
     pub mod artifact_metrics {
-        #[derive(Clone, Copy, PartialEq, ::prost::Message)]
+        #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
         pub struct FilesMetric {
             #[prost(int64, tag = "1")]
             pub size_in_bytes: i64,
@@ -1314,7 +1314,7 @@ pub mod build_metrics {
         }
     }
     /// Data about the evaluation of Skyfunctions.
-    #[derive(Clone, PartialEq, ::prost::Message)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct EvaluationStat {
         /// Name of the Skyfunction.
         #[prost(string, tag = "1")]
@@ -1405,7 +1405,7 @@ pub mod build_metrics {
         /// For SkyKeys in 'done values' where the SkyValue is of type
         /// RuleConfiguredTargetValue, we pull those out separately and report the
         /// ruleClass and action count.
-        #[derive(Clone, PartialEq, ::prost::Message)]
+        #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
         pub struct RuleClassCount {
             /// Unique key for the rule class.
             #[prost(string, tag = "1")]
@@ -1421,7 +1421,7 @@ pub mod build_metrics {
             pub action_count: u64,
         }
         /// For SkyKeys whose function name is ASPECT break out that information
-        #[derive(Clone, PartialEq, ::prost::Message)]
+        #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
         pub struct AspectCount {
             /// Unique key for Aspect.
             #[prost(string, tag = "1")]
@@ -1486,7 +1486,7 @@ pub mod build_metrics {
     /// Nested message and enum types in `WorkerMetrics`.
     pub mod worker_metrics {
         /// Information collected from worker at some point.
-        #[derive(Clone, Copy, PartialEq, ::prost::Message)]
+        #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
         pub struct WorkerStats {
             /// Epoch unix time of collection of metrics.
             #[prost(int64, tag = "1")]
@@ -1570,7 +1570,7 @@ pub mod build_metrics {
         }
     }
     /// Information about host network.
-    #[derive(Clone, Copy, PartialEq, ::prost::Message)]
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct NetworkMetrics {
         #[prost(message, optional, tag = "1")]
         pub system_network_stats: ::core::option::Option<
@@ -1581,7 +1581,7 @@ pub mod build_metrics {
     pub mod network_metrics {
         /// Information for all the network traffic going on on the host machine
         /// during the invocation.
-        #[derive(Clone, Copy, PartialEq, ::prost::Message)]
+        #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
         pub struct SystemNetworkStats {
             /// Total bytes sent during the invocation.
             #[prost(uint64, tag = "1")]
@@ -1621,7 +1621,7 @@ pub mod build_metrics {
     }
     /// Nested message and enum types in `WorkerPoolMetrics`.
     pub mod worker_pool_metrics {
-        #[derive(Clone, PartialEq, ::prost::Message)]
+        #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
         pub struct WorkerPoolStats {
             /// Hash of worker pool these stats are for. Contains information about
             /// startup flags.
@@ -1669,7 +1669,7 @@ pub mod build_metrics {
     }
     /// Nested message and enum types in `DynamicExecutionMetrics`.
     pub mod dynamic_execution_metrics {
-        #[derive(Clone, PartialEq, ::prost::Message)]
+        #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
         pub struct RaceStatistics {
             /// Mnemonic of the action.
             #[prost(string, tag = "1")]
@@ -1708,7 +1708,7 @@ pub struct ConvenienceSymlinksIdentified {
 }
 /// The message that contains what type of action to perform on a given path and
 /// target of a symlink.
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ConvenienceSymlink {
     /// The path of the symlink to be created or deleted, absolute or relative to
     /// the workspace, creating any directories necessary. If a symlink already
@@ -1787,7 +1787,7 @@ pub struct ExecRequestConstructed {
     pub should_exec: bool,
 }
 /// An environment variable provided by a run command after a successful build.
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct EnvironmentVariable {
     #[prost(bytes = "bytes", tag = "1")]
     pub name: ::prost::bytes::Bytes,

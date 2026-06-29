@@ -42,7 +42,7 @@ pub struct ActionCacheStatistics {
 /// Nested message and enum types in `ActionCacheStatistics`.
 pub mod action_cache_statistics {
     /// Detailed information for a particular miss reason.
-    #[derive(Clone, Copy, PartialEq, ::prost::Message)]
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct MissDetail {
         #[prost(enumeration = "MissReason", tag = "1")]
         pub reason: i32,

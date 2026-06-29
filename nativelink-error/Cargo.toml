@@ -14,12 +14,13 @@ version = "1.5.2"
 nativelink-metric = { path = "../nativelink-metric" }
 nativelink-proto = { path = "../nativelink-proto" }
 
+base64 = { version = "0.22.1", default-features = false, features = ["std"] }
 mongodb = { version = "3", features = [
   "compat-3-0-0",
   "rustls-tls",
 ], default-features = false }
-prost = { version = "0.13.5", default-features = false }
-prost-types = { version = "0.13.5", default-features = false, features = [
+prost = { version = "0.14.4", default-features = false }
+prost-types = { version = "0.14.4", default-features = false, features = [
   "std",
 ] }
 redis = { version = "1.0.0", default-features = false }
@@ -33,7 +34,7 @@ tokio = { version = "1.52.2", features = [
   "rt-multi-thread",
   "signal",
 ], default-features = false }
-tonic = { version = "0.13.0", features = [
+tonic = { version = "0.14.0", features = [
   "tls-ring",
   "transport",
 ], default-features = false }

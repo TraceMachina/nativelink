@@ -48,8 +48,8 @@ parking_lot = { version = "0.12.3", features = [
 ], default-features = false }
 pin-project = { version = "1.1.10", default-features = false }
 pin-project-lite = { version = "0.2.16", default-features = false }
-prost = { version = "0.13.5", default-features = false }
-prost-types = { version = "0.13.5", default-features = false, features = [
+prost = { version = "0.14.4", default-features = false }
+prost-types = { version = "0.14.4", default-features = false, features = [
   "std",
 ] }
 rand = { version = "0.9.0", default-features = false, features = [
@@ -69,7 +69,7 @@ tokio-stream = { version = "0.1.17", features = [
   "fs",
 ], default-features = false }
 tokio-util = { version = "0.7.14", default-features = false }
-tonic = { version = "0.13.0", features = [
+tonic = { version = "0.14.0", features = [
   "router",
   "tls-native-roots",
   "tls-ring",
@@ -86,8 +86,8 @@ tracing-subscriber = { version = "0.3.19", features = [
   "json",
 ], default-features = false }
 tracing-test = { version = "0.2.5", default-features = false, features = [] }
-
-ginepro = { version = "0.9.3", default-features = false }
+# FIXME: Replace with version once https://github.com/TrueLayer/ginepro/pull/77 is fixed
+ginepro = { git = "https://github.com/mstyura/ginepro", rev = "d08cdeff6300edfb46204b3b9fbde3f3355db35f", default-features = false }
 url = { version = "2.5.7", default-features = false }
 uuid = { version = "1.16.0", default-features = false, features = [
   "serde",
@@ -120,6 +120,7 @@ serde_json = { version = "1.0.140", default-features = false }
 tokio = { version = "1.52.2", features = [
   "test-util",
 ], default-features = false }
+tonic-prost = { version = "0.14.6", default-features = false }
 tracing-test = { version = "0.2.5", default-features = false, features = [
   "no-env-filter",
 ] }

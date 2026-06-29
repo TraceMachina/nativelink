@@ -75,7 +75,7 @@ tokio = { version = "1.52.2", features = [
 tokio-rustls = { version = "0.26.2", default-features = false, features = [
   "ring",
 ] }
-tonic = { version = "0.13.0", features = [
+tonic = { version = "0.14.0", features = [
   "tls-ring",
   "transport",
 ], default-features = false }
@@ -94,7 +94,6 @@ serial_test = ["async"]
 tokio = ["fs", "io-util", "rt-multi-thread", "signal"]
 tokio-stream = ["fs"]
 tonic = ["tls", "transport"]
-tonic-build = ["prost"]
 uuid = ["serde", "v4"]
 
 [workspace.lints.rust]
