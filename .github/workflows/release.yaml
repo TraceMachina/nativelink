@@ -72,11 +72,6 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-26
             attr: nativelink-aarch64-darwin
-          # macos-26-intel is the x86_64 macOS runner; drop this entry if Intel
-          # macOS runners are retired and x86_64 macOS binaries aren't required.
-          - target: x86_64-apple-darwin
-            os: macos-26-intel
-            attr: nativelink-x86_64-darwin
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     env:
