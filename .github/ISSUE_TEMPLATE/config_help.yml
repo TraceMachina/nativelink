@@ -1,0 +1,108 @@
+name: Configuration / Deployment Help
+description: Ask for help with configuring, deploying, or troubleshooting NativeLink
+title: "[Config/Help]: "
+labels: ["type:question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        We're here to help! For faster responses, consider joining our
+        [Slack community](https://forms.gle/LtaWSixEC6bYi5xF7). For commercial
+        support, email us at contact@nativelink.com.
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: What version of NativeLink are you running?
+      placeholder: "e.g. v1.0.0, main@abc1234, or ghcr.io image tag"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: client
+    attributes:
+      label: Client
+      description: Which client are you using with NativeLink?
+      options:
+        - Bazel
+        - Buck2
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: os_arch
+    attributes:
+      label: OS / Architecture
+      description: What operating system and architecture?
+      placeholder: "e.g. Linux x86_64, macOS arm64"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment method
+      description: How are you deploying NativeLink?
+      options:
+        - Docker
+        - Nix
+        - Kubernetes
+        - Bare metal
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: storage
+    attributes:
+      label: Storage backend
+      description: Which storage backend are you using for the CAS?
+      options:
+        - S3
+        - GCS
+        - Azure Blob
+        - Local filesystem
+        - Redis
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: workers
+    attributes:
+      label: Number of workers
+      description: How many workers are in your deployment? (if applicable)
+      placeholder: "e.g. 10"
+
+  - type: input
+    id: cas_size
+    attributes:
+      label: Rough size of CAS
+      description: Approximately how large is your CAS store?
+      placeholder: "e.g. ~50GiB on local SSD"
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Configuration
+      description: Please paste a sanitized version of your NativeLink configuration.
+      render: json5
+      placeholder: "{\n  ...\n}"
+
+  - type: textarea
+    id: question
+    attributes:
+      label: What do you need help with?
+      description: Describe your question or issue in detail.
+      placeholder: "I'm trying to configure..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: tried
+    attributes:
+      label: What have you tried so far?
+      description: Steps you've already taken to resolve this.
+      placeholder: "I've tried..."
