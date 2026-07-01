@@ -1228,6 +1228,141 @@ pub async fn chunked_stream_reads_small_set_of_data() -> Result<(), Box<dyn core
 }
 
 #[nativelink_test]
+pub async fn zstd_read_returns_compressed_bytes_that_decompress_to_stored_blob()
+-> Result<(), Box<dyn core::error::Error>> {
+    let raw_data = Bytes::from("zstd ByteStream compressed read ".repeat(256));
+    let hash = sha256_hex(raw_data.as_ref());
+
+    let store_manager = make_store_manager().await?;
+    let bs_server = Arc::new(
+        make_bytestream_server_with_capabilities(
+            store_manager.as_ref(),
+            None,
+            zstd_capabilities_config(),
+        )
+        .expect("Failed to make server"),
+    );
+    let store = store_manager.get_store("main_cas").unwrap();
+
+    let digest = DigestInfo::try_new(&hash, raw_data.len())?;
+    store.update_oneshot(digest, raw_data.clone()).await?;
+
+    let read_request = ReadRequest {
+        resource_name: format!(
+            "{}/compressed-blobs/zstd/{}/{}",
+            INSTANCE_NAME,
+            hash,
+            raw_data.len()
+        ),
+        read_offset: 0,
+        read_limit: 0,
+    };
+    let mut read_stream = bs_server
+        .read(Request::new(read_request))
+        .await?
+        .into_inner();
+
+    let mut compressed_data = Vec::new();
+    while let Some(result_read_response) = read_stream.next().await {
+        compressed_data.extend_from_slice(&result_read_response?.data);
+    }
+
+    assert!(
+        !compressed_data.is_empty(),
+        "Expected compressed read response to contain data"
+    );
+    assert_ne!(
+        compressed_data.as_slice(),
+        raw_data.as_ref(),
+        "Expected compressible test data to differ from zstd wire bytes"
+    );
+
+    let decompressed_data = zstd::bulk::decompress(&compressed_data, raw_data.len())?;
+    assert_eq!(
+        decompressed_data.as_slice(),
+        raw_data.as_ref(),
+        "Expected decompressed read response to match stored raw blob"
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+pub async fn zstd_read_chunks_compressed_wire_bytes_by_configured_stream_size()
+-> Result<(), Box<dyn core::error::Error>> {
+    const MAX_BYTES_PER_STREAM: usize = 1;
+
+    let raw_data = Bytes::from("zstd ByteStream compressed chunked read ".repeat(256));
+    let hash = sha256_hex(raw_data.as_ref());
+
+    let store_manager = make_store_manager().await?;
+    let bs_server = Arc::new(
+        make_bytestream_server_with_capabilities(
+            store_manager.as_ref(),
+            Some(vec![WithInstanceName {
+                instance_name: INSTANCE_NAME.to_string(),
+                config: ByteStreamConfig {
+                    cas_store: "main_cas".to_string(),
+                    max_bytes_per_stream: MAX_BYTES_PER_STREAM,
+                    ..Default::default()
+                },
+            }]),
+            zstd_capabilities_config(),
+        )
+        .expect("Failed to make server"),
+    );
+    let store = store_manager.get_store("main_cas").unwrap();
+
+    let digest = DigestInfo::try_new(&hash, raw_data.len())?;
+    store.update_oneshot(digest, raw_data.clone()).await?;
+
+    let read_request = ReadRequest {
+        resource_name: format!(
+            "{}/compressed-blobs/zstd/{}/{}",
+            INSTANCE_NAME,
+            hash,
+            raw_data.len()
+        ),
+        read_offset: 0,
+        read_limit: 0,
+    };
+    let mut read_stream = bs_server
+        .read(Request::new(read_request))
+        .await?
+        .into_inner();
+
+    let mut compressed_data = Vec::new();
+    let mut chunk_lengths = Vec::new();
+    while let Some(result_read_response) = read_stream.next().await {
+        let data = result_read_response?.data;
+        chunk_lengths.push(data.len());
+        compressed_data.extend_from_slice(&data);
+    }
+
+    assert!(
+        chunk_lengths.len() > 1,
+        "Expected compressed read response to be split into multiple chunks"
+    );
+    assert!(
+        chunk_lengths
+            .iter()
+            .all(|chunk_len| *chunk_len <= MAX_BYTES_PER_STREAM),
+        "Expected compressed read chunks {:?} to respect max_bytes_per_stream {}",
+        chunk_lengths,
+        MAX_BYTES_PER_STREAM
+    );
+
+    let decompressed_data = zstd::bulk::decompress(&compressed_data, raw_data.len())?;
+    assert_eq!(
+        decompressed_data.as_slice(),
+        raw_data.as_ref(),
+        "Expected decompressed chunked read response to match stored raw blob"
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
 pub async fn chunked_stream_reads_10mb_of_data() -> Result<(), Box<dyn core::error::Error>> {
     const DATA_SIZE: usize = 10_000_000;
 
