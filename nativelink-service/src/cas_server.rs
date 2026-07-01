@@ -282,11 +282,16 @@ impl CasServer {
                                 if accept == compressor::Value::Zstd
                                     && supported_compressors.contains(&WireCompressor::Zstd)
                                 {
-                                    match crate::wire_compression::compress(
-                                        &output_data,
-                                        compressor::Value::Zstd,
-                                    ) {
-                                        Ok(compressed) => {
+                                    let data_for_compression = output_data.clone();
+                                    match spawn_blocking!("cas_compress_download", move || {
+                                        crate::wire_compression::compress_bytes(
+                                            data_for_compression,
+                                            compressor::Value::Zstd,
+                                        )
+                                    })
+                                    .await
+                                    {
+                                        Ok(Ok(compressed)) => {
                                             // Only use compressed data if it's actually smaller.
                                             // For incompressible data zstd can expand the payload.
                                             if compressed.len() < output_data.len() {
@@ -295,9 +300,14 @@ impl CasServer {
                                             }
                                             break;
                                         }
-                                        Err(e) => {
+                                        Ok(Err(e)) => {
                                             // Compression failed; fall back to Identity.
                                             warn!("Wire compression failed for digest {:?}, falling back to identity: {}", digest, e);
+                                            break;
+                                        }
+                                        Err(e) => {
+                                            // Compression task failed; fall back to Identity.
+                                            warn!("Wire compression task failed for digest {:?}, falling back to identity: {}", digest, e);
                                             break;
                                         }
                                     }

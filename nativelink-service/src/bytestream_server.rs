@@ -1240,7 +1240,18 @@ impl ByteStreamServer {
         instance: &InstanceInfo,
         digest: DigestInfo,
         wire_compressor: compressor::Value,
+        read_request: ReadRequest,
     ) -> Result<ReadStream, Error> {
+        let read_offset = u64::try_from(read_request.read_offset)
+            .err_tip(|| "Could not convert read_offset to u64")?;
+        let read_limit = u64::try_from(read_request.read_limit)
+            .err_tip(|| "Could not convert read_limit to u64")?;
+        let read_limit = if read_limit != 0 {
+            Some(read_limit)
+        } else {
+            None
+        };
+
         // Read the full uncompressed blob from the store.
         let raw_data = instance
             .store
@@ -1270,6 +1281,16 @@ impl ByteStreamServer {
             .await
             .map_err(|e| make_err!(Code::Internal, "Compression task failed: {}", e))??,
         };
+
+        let compressed_data_len = u64::try_from(compressed_data.len())
+            .err_tip(|| "Could not convert compressed data length to u64")?;
+        let start = read_offset.min(compressed_data_len);
+        let end = read_limit.map_or(compressed_data_len, |limit| {
+            read_offset.saturating_add(limit).min(compressed_data_len)
+        });
+        let start = usize::try_from(start).err_tip(|| "Could not convert read start to usize")?;
+        let end = usize::try_from(end).err_tip(|| "Could not convert read end to usize")?;
+        let compressed_data = compressed_data.slice(start..end);
 
         // Stream the compressed bytes back in chunks.
         let max_bytes_per_stream = instance.max_bytes_per_stream;
@@ -1420,7 +1441,7 @@ impl ByteStream for ByteStreamServer {
         } else {
             // Compressed path — read the full blob, compress it, then stream
             // the compressed bytes back in chunks.
-            self.inner_read_compressed(instance, digest, wire_compressor)
+            self.inner_read_compressed(instance, digest, wire_compressor, read_request)
                 .instrument(error_span!("bytestream_read_compressed"))
                 .with_context(
                     make_ctx_for_hash_func(digest_function)

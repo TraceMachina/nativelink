@@ -35,6 +35,7 @@ use nativelink_proto::google::bytestream::{
     QueryWriteStatusRequest, QueryWriteStatusResponse, ReadRequest, WriteRequest, WriteResponse,
 };
 use nativelink_service::bytestream_server::ByteStreamServer;
+use nativelink_service::wire_compression::ZSTD_COMPRESSION_LEVEL;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::channel_body_for_tests::ChannelBody;
@@ -153,6 +154,21 @@ fn sha256_hex(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(data);
     hex::encode(hasher.finalize())
+}
+
+async fn read_all_bytes(
+    bs_server: &ByteStreamServer,
+    read_request: ReadRequest,
+) -> Result<Vec<u8>, tonic::Status> {
+    let mut read_stream = bs_server
+        .read(Request::new(read_request))
+        .await?
+        .into_inner();
+    let mut data = Vec::new();
+    while let Some(result_read_response) = read_stream.next().await {
+        data.extend_from_slice(&result_read_response?.data);
+    }
+    Ok(data)
 }
 
 fn zstd_capabilities_config() -> CapabilitiesConfig {
@@ -1357,6 +1373,143 @@ pub async fn zstd_read_chunks_compressed_wire_bytes_by_configured_stream_size()
         decompressed_data.as_slice(),
         raw_data.as_ref(),
         "Expected decompressed chunked read response to match stored raw blob"
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+pub async fn zstd_read_offset_and_limit_apply_to_compressed_wire_bytes()
+-> Result<(), Box<dyn core::error::Error>> {
+    let raw_data = Bytes::from(
+        (0..4096)
+            .map(|i| ((i * 31 + i / 7) % 251) as u8)
+            .collect::<Vec<_>>(),
+    );
+    let hash = sha256_hex(raw_data.as_ref());
+
+    let store_manager = make_store_manager().await?;
+    let bs_server = Arc::new(
+        make_bytestream_server_with_capabilities(
+            store_manager.as_ref(),
+            None,
+            zstd_capabilities_config(),
+        )
+        .expect("Failed to make server"),
+    );
+    let store = store_manager.get_store("main_cas").unwrap();
+
+    let digest = DigestInfo::try_new(&hash, raw_data.len())?;
+    store.update_oneshot(digest, raw_data.clone()).await?;
+
+    let compressed_data = zstd::bulk::compress(raw_data.as_ref(), ZSTD_COMPRESSION_LEVEL)?;
+    let read_offset = 13usize;
+    let read_limit = 37usize;
+    assert!(
+        compressed_data.len() >= read_offset + read_limit,
+        "test payload must be large enough for the requested wire range"
+    );
+
+    let ranged_data = read_all_bytes(
+        bs_server.as_ref(),
+        ReadRequest {
+            resource_name: format!(
+                "{}/compressed-blobs/zstd/{}/{}",
+                INSTANCE_NAME,
+                hash,
+                raw_data.len()
+            ),
+            read_offset: read_offset as i64,
+            read_limit: read_limit as i64,
+        },
+    )
+    .await?;
+
+    assert_eq!(
+        ranged_data.as_slice(),
+        &compressed_data[read_offset..read_offset + read_limit],
+        "Expected read_offset/read_limit to slice compressed wire bytes"
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+pub async fn zstd_read_resume_ranges_reconstruct_compressed_payload()
+-> Result<(), Box<dyn core::error::Error>> {
+    const MAX_BYTES_PER_STREAM: usize = 7;
+
+    let raw_data = Bytes::from(
+        (0..8192)
+            .map(|i| ((i * 17 + i / 3) % 251) as u8)
+            .collect::<Vec<_>>(),
+    );
+    let hash = sha256_hex(raw_data.as_ref());
+
+    let store_manager = make_store_manager().await?;
+    let bs_server = Arc::new(
+        make_bytestream_server_with_capabilities(
+            store_manager.as_ref(),
+            Some(vec![WithInstanceName {
+                instance_name: INSTANCE_NAME.to_string(),
+                config: ByteStreamConfig {
+                    cas_store: "main_cas".to_string(),
+                    max_bytes_per_stream: MAX_BYTES_PER_STREAM,
+                    ..Default::default()
+                },
+            }]),
+            zstd_capabilities_config(),
+        )
+        .expect("Failed to make server"),
+    );
+    let store = store_manager.get_store("main_cas").unwrap();
+
+    let digest = DigestInfo::try_new(&hash, raw_data.len())?;
+    store.update_oneshot(digest, raw_data.clone()).await?;
+
+    let compressed_data = zstd::bulk::compress(raw_data.as_ref(), ZSTD_COMPRESSION_LEVEL)?;
+    let first_len = compressed_data.len() / 3;
+    let second_len = compressed_data.len() / 4;
+    assert!(
+        first_len > 0 && second_len > 0,
+        "test payload must produce multiple non-empty wire ranges"
+    );
+
+    let resource_name = format!(
+        "{}/compressed-blobs/zstd/{}/{}",
+        INSTANCE_NAME,
+        hash,
+        raw_data.len()
+    );
+    let ranges = [
+        (0usize, first_len),
+        (first_len, second_len),
+        (first_len + second_len, 0usize),
+    ];
+    let mut reconstructed_data = Vec::new();
+    for (read_offset, read_limit) in ranges {
+        let range_data = read_all_bytes(
+            bs_server.as_ref(),
+            ReadRequest {
+                resource_name: resource_name.clone(),
+                read_offset: read_offset as i64,
+                read_limit: read_limit as i64,
+            },
+        )
+        .await?;
+        reconstructed_data.extend_from_slice(&range_data);
+    }
+
+    assert_eq!(
+        reconstructed_data, compressed_data,
+        "Expected resumed ranged reads to reconstruct the compressed wire payload"
+    );
+
+    let decompressed_data = zstd::bulk::decompress(&reconstructed_data, raw_data.len())?;
+    assert_eq!(
+        decompressed_data.as_slice(),
+        raw_data.as_ref(),
+        "Expected reconstructed compressed payload to decompress to stored raw blob"
     );
 
     Ok(())
