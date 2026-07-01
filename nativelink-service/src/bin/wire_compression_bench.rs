@@ -26,9 +26,10 @@
 //!   - Semi-random: compiled binary with some structure (most common real case)
 //!   - Protobuf-like: small structured messages with field tags and varints
 
+use std::time::Instant;
+
 use nativelink_proto::build::bazel::remote::execution::v2::compressor;
 use nativelink_service::wire_compression::{self, ZSTD_COMPRESSION_LEVEL};
-use std::time::Instant;
 
 // --- Data generators ---
 

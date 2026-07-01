@@ -53,10 +53,9 @@ use nativelink_util::digest_hasher::{
 };
 use nativelink_util::proto_stream_utils::WriteRequestStreamWrapper;
 use nativelink_util::resource_info::ResourceInfo;
-use nativelink_util::spawn;
-use nativelink_util::spawn_blocking;
 use nativelink_util::store_trait::{Store, StoreLike, StoreOptimizations, UploadSizeInfo};
 use nativelink_util::task::JoinHandleDropGuard;
+use nativelink_util::{spawn, spawn_blocking};
 use opentelemetry::context::FutureExt;
 use parking_lot::Mutex;
 use tokio::time::sleep;
@@ -70,9 +69,9 @@ const DEFAULT_PERSIST_STREAM_ON_DISCONNECT_TIMEOUT: Duration = Duration::from_mi
 const DEFAULT_MAX_BYTES_PER_STREAM: usize = 64 * 1024;
 
 /// Default maximum size allowed for compressed uploads.
-/// This is a NativeLink operational memory/DoS budget, not an REAPI protocol
-/// invariant. Configured values apply to both declared uncompressed digest size
-/// and compressed wire bytes while this path buffers compressed wire data.
+/// This operational memory/DoS budget is not an REAPI protocol invariant.
+/// Configured values apply to both declared uncompressed digest size and
+/// compressed wire bytes while this path buffers compressed wire data.
 /// 4 GiB is generous — Bazel's default max-action-output is 256 MiB.
 const DEFAULT_MAX_COMPRESSED_UPLOAD_SIZE: usize = 4 * 1024 * 1024 * 1024;
 
