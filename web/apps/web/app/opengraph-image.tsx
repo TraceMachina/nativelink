@@ -130,7 +130,7 @@ export default async function OpenGraphImage() {
         >
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <div style={{ width: 8, height: 8, borderRadius: 999, background: "#58DCB2" }} />
-            <span>1B+ build requests / month</span>
+            <span>10B+ build requests / month</span>
           </div>
           <span style={{ color: "#3C3A4E" }}>·</span>
           <span>Rust · Source available · FSL-Apache</span>
