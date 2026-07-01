@@ -265,6 +265,95 @@ bazel build //... \
   --jobs=50  # High parallelism to distribute across workers
 ```
 
+## Performance Optimization: Directory Cache
+
+### What is the Directory Cache?
+
+The directory cache dramatically improves build performance by caching input directories and reusing them via hardlinks instead of copying files. This provides **~100x faster directory preparation** for subsequent builds.
+
+### Enabling Directory Cache
+
+Add the `directory_cache` configuration to your worker configuration:
+
+```json5
+{
+  workers: [
+    {
+      local: {
+        work_directory: "/root/.cache/nativelink/work",
+
+        // Add directory cache for ~100x faster builds
+        directory_cache: {
+          max_entries: 1000,        // Maximum cached directories
+          max_size_bytes: "10GB",   // Maximum cache size
+        },
+
+        // ... rest of worker config
+      }
+    }
+  ]
+}
+```
+
+### Configuration Options
+
+- **`max_entries`** (default: 1000): Maximum number of cached directories
+- **`max_size_bytes`** (default: "10GB"): Maximum total cache size (supports "10GB", "1TB", etc.)
+- **`cache_root`** (optional): Custom cache location (defaults to `{work_directory}/../directory_cache`)
+
+### Docker Compose Volume Configuration
+
+When using directory cache with Docker, ensure cache persistence:
+
+```yaml
+services:
+  worker:
+    volumes:
+      - worker-work:/root/.cache/nativelink/work
+      - worker-cache:/root/.cache/nativelink/directory_cache  # Persist cache
+
+volumes:
+  worker-work:
+  worker-cache:  # Dedicated volume for directory cache
+```
+
+### Performance Expectations
+
+- **First build**: No benefit (cache is empty)
+- **Subsequent builds**: ~100x faster directory preparation
+- **Best for**: Incremental builds, large dependency trees, CI/CD pipelines, monorepos
+
+### Important: Same Filesystem Requirement
+
+The cache directory **must be on the same filesystem** as the work directory for hardlinks to work. In Docker, this typically means:
+
+✅ **Correct**: Both on the same volume or bind mount
+```yaml
+volumes:
+  - /data/nativelink:/root/.cache/nativelink  # Cache and work are under same path
+```
+
+❌ **Incorrect**: Separate volumes
+```yaml
+volumes:
+  - /data/work:/root/.cache/nativelink/work
+  - /data/cache:/root/.cache/nativelink/directory_cache  # Different filesystem
+```
+
+### Monitoring Cache Performance
+
+Enable debug logging to monitor cache effectiveness:
+```sh
+# View cache hits/misses in logs
+docker-compose logs -f worker | grep "Directory cache"
+```
+
+Output will show:
+```
+DEBUG Directory cache HIT digest=abc123...
+DEBUG Directory cache MISS digest=def456...
+```
+
 ## Production Considerations
 
 For production deployments:
@@ -273,5 +362,6 @@ For production deployments:
 3. Use external storage (NFS, S3, etc.) for CAS
 4. Monitor worker metrics
 5. Set up log aggregation
+6. **Enable directory cache** for significant performance gains
 
 See [Kubernetes deployment](../kubernetes/) for production-grade configurations.
