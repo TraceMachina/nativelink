@@ -246,6 +246,20 @@ pub struct ByteStreamConfig {
     )]
     pub max_bytes_per_stream: usize,
 
+    /// NativeLink operational memory/DoS budget for one
+    /// `compressed-blobs/{compressor}/...` ByteStream write on this instance.
+    /// While compressed uploads still buffer compressed wire bytes, this applies
+    /// to both the declared uncompressed digest size and the compressed wire
+    /// bytes received.
+    ///
+    /// A value of 0 uses the service default, currently 4GiB.
+    #[serde(
+        default,
+        deserialize_with = "convert_data_size_with_shellexpand",
+        skip_serializing_if = "is_default"
+    )]
+    pub max_compressed_upload_size: usize,
+
     /// In the event a client disconnects while uploading a blob, we will hold
     /// the internal stream open for this many seconds before closing it.
     /// This allows clients that disconnect to reconnect and continue uploading

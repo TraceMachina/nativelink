@@ -19,17 +19,18 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
+use std::io::{Cursor, Read};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use futures::future::pending;
 use futures::stream::unfold;
 use futures::{Future, Stream, TryFutureExt, try_join};
 use nativelink_config::cas_server::{
     ByteStreamConfig, CapabilitiesConfig, InstanceName, WireCompressor, WithInstanceName,
 };
-use nativelink_error::{Code, Error, ResultExt, error_if, make_err, make_input_err};
+use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent, group, publish,
 };
@@ -48,7 +49,7 @@ use nativelink_util::buf_channel::{
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::{
-    DigestHasherFunc, default_digest_hasher_func, make_ctx_for_hash_func,
+    DigestHasher, DigestHasherFunc, default_digest_hasher_func, make_ctx_for_hash_func,
 };
 use nativelink_util::proto_stream_utils::WriteRequestStreamWrapper;
 use nativelink_util::resource_info::ResourceInfo;
@@ -68,12 +69,12 @@ const DEFAULT_PERSIST_STREAM_ON_DISCONNECT_TIMEOUT: Duration = Duration::from_mi
 /// If this value changes update the documentation in the config definition.
 const DEFAULT_MAX_BYTES_PER_STREAM: usize = 64 * 1024;
 
-/// Maximum uncompressed size allowed for compressed uploads.
-/// Compressed uploads must buffer both compressed and decompressed data,
-/// so this caps memory usage. Uploads exceeding this size should be sent
-/// uncompressed (Identity) via the regular streaming path.
+/// Default maximum size allowed for compressed uploads.
+/// This is a NativeLink operational memory/DoS budget, not an REAPI protocol
+/// invariant. Configured values apply to both declared uncompressed digest size
+/// and compressed wire bytes while this path buffers compressed wire data.
 /// 4 GiB is generous — Bazel's default max-action-output is 256 MiB.
-const MAX_COMPRESSED_UPLOAD_SIZE: usize = 4 * 1024 * 1024 * 1024;
+const DEFAULT_MAX_COMPRESSED_UPLOAD_SIZE: usize = 4 * 1024 * 1024 * 1024;
 
 /// Metrics for `ByteStream` server operations.
 /// Tracks upload/download activity, throughput, and latency.
@@ -256,6 +257,8 @@ pub struct InstanceInfo {
     store: Store,
     // Max number of bytes to send on each grpc stream chunk.
     max_bytes_per_stream: usize,
+    // Max compressed ByteStream upload size for this instance.
+    max_compressed_upload_size: usize,
     /// Active uploads keyed by UUID as u128 for better performance.
     /// Using u128 keys instead of String reduces heap allocations
     /// and improves `HashMap` lookup performance.
@@ -276,6 +279,10 @@ impl Debug for InstanceInfo {
         f.debug_struct("InstanceInfo")
             .field("store", &self.store)
             .field("max_bytes_per_stream", &self.max_bytes_per_stream)
+            .field(
+                "max_compressed_upload_size",
+                &self.max_compressed_upload_size,
+            )
             .field("active_uploads", &self.active_uploads)
             .field("idle_stream_timeout", &self.idle_stream_timeout)
             .field("metrics", &self.metrics)
@@ -445,6 +452,11 @@ impl ByteStreamServer {
         } else {
             config.max_bytes_per_stream
         };
+        let max_compressed_upload_size = if config.max_compressed_upload_size == 0 {
+            DEFAULT_MAX_COMPRESSED_UPLOAD_SIZE
+        } else {
+            config.max_compressed_upload_size
+        };
 
         let active_uploads: Arc<Mutex<HashMap<UuidKey, BytesWrittenAndIdleStream>>> =
             Arc::new(Mutex::new(HashMap::new()));
@@ -504,6 +516,7 @@ impl ByteStreamServer {
         Ok(InstanceInfo {
             store,
             max_bytes_per_stream,
+            max_compressed_upload_size,
             active_uploads,
             idle_stream_timeout,
             metrics,
@@ -960,11 +973,13 @@ impl ByteStreamServer {
     }
 
     /// Handle a compressed upload: buffer the full compressed stream from the
-    /// client, decompress it, validate the size, and store the raw bytes.
+    /// client, decode it into the store update stream, validate the size, and
+    /// verify the decoded digest.
     async fn inner_write_compressed(
         &self,
         instance: &InstanceInfo,
         digest: DigestInfo,
+        digest_function: DigestHasherFunc,
         wire_compressor: compressor::Value,
         stream: WriteRequestStreamWrapper<impl Stream<Item = Result<WriteRequest, Status>> + Unpin>,
     ) -> Result<Response<WriteResponse>, Error> {
@@ -985,14 +1000,12 @@ impl ByteStreamServer {
             .err_tip(|| "Digest size_bytes was not convertible to usize")?;
 
         // Reject compressed uploads that exceed our memory budget.
-        // Compressed uploads must buffer both compressed and decompressed
-        // data simultaneously, so we enforce a hard cap.
-        if expected_size > MAX_COMPRESSED_UPLOAD_SIZE {
+        if expected_size > instance.max_compressed_upload_size {
             return Err(make_input_err!(
-                "Compressed upload of {} bytes exceeds maximum of {} bytes. \
+                "Compressed upload uncompressed digest size {} bytes exceeds maximum of {} bytes. \
                  Use uncompressed (Identity) upload for large blobs.",
                 expected_size,
-                MAX_COMPRESSED_UPLOAD_SIZE
+                instance.max_compressed_upload_size
             ));
         }
 
@@ -1023,25 +1036,42 @@ impl ByteStreamServer {
 
         // Collect all compressed data from the client stream.
         // Cap the buffer to prevent memory exhaustion from malicious clients.
-        // Zstd compression ratio on valid data rarely exceeds 10:1, so
-        // 2x the expected uncompressed size is a generous upper bound.
-        // We use a minimum of 64 MiB to allow for small expected_size values
-        // with highly compressible data.
+        // Zstd output can be larger than the uncompressed digest for tiny or
+        // incompressible blobs, so do not compare wire bytes to digest size.
+        // This is only an operational memory cap while wire bytes are buffered.
         let max_compressed_size = expected_size
             .saturating_mul(2)
-            .clamp(64 * 1024 * 1024, MAX_COMPRESSED_UPLOAD_SIZE);
+            .max(64 * 1024 * 1024)
+            .min(instance.max_compressed_upload_size);
         let mut compressed_data = BytesMut::new();
         let mut stream = std::pin::pin!(stream);
         loop {
             match stream.next().await {
                 Some(Ok(write_request)) => {
+                    if write_request.write_offset < 0 {
+                        return Err(make_input_err!(
+                            "Invalid negative compressed write offset in write request: {}",
+                            write_request.write_offset
+                        ));
+                    }
+                    let write_offset = usize::try_from(write_request.write_offset)
+                        .err_tip(|| "Compressed write offset was not convertible to usize")?;
+                    let compressed_offset = compressed_data.len();
+                    if write_offset != compressed_offset {
+                        return Err(make_input_err!(
+                            "Received out of order compressed data. Got {}, expected {}",
+                            write_offset,
+                            compressed_offset
+                        ));
+                    }
                     compressed_data.extend_from_slice(&write_request.data);
                     // Update progress so QueryWriteStatus can report it.
                     bytes_received.store(compressed_data.len() as u64, Ordering::Release);
                     if compressed_data.len() > max_compressed_size {
                         return Err(make_err!(
                             Code::InvalidArgument,
-                            "Compressed data exceeds maximum allowed size ({} bytes)",
+                            "Compressed upload wire size {} bytes exceeds maximum of {} bytes",
+                            compressed_data.len(),
                             max_compressed_size
                         ));
                     }
@@ -1061,45 +1091,131 @@ impl ByteStreamServer {
             }
         }
 
-        // Decompress the data on a blocking thread pool. Zstd decompression is
-        // CPU-bound, so running it inline would stall the async executor. Using
-        // `spawn_blocking!` (which maps to `tokio::task::spawn_blocking`) keeps
-        // the work off async worker threads.
-        //
-        // Note: we still buffer the full compressed payload before
-        // decompressing (the REAPI compressed-blobs write path does not lend
-        // itself to a trivial streaming decode without a framing protocol), but
-        // we avoid the previous double-buffering where decompressed bytes were
-        // held in a separate allocation on top of the compressed one — `decompress`
-        // writes directly into a single output buffer sized to `expected_size`
-        // and the compressed buffer is dropped before the store write.
+        let committed_size = i64::try_from(compressed_data.len())
+            .err_tip(|| "Compressed upload size was not convertible to i64")?;
         let compressed_bytes = compressed_data.freeze();
-        let raw_data = spawn_blocking!("bytestream_decompress_upload", move || {
-            crate::wire_compression::decompress(&compressed_bytes, wire_compressor, expected_size)
-        })
-        .await
-        .map_err(|e| make_err!(Code::Internal, "Decompression task failed: {}", e))??;
-
-        // Defense-in-depth: validate size matches the digest. The decompress()
-        // function already checks this, but we verify again here since this is
-        // the last gate before persisting to the store.
-        error_if!(
-            raw_data.len() != expected_size,
-            "Decompressed size {} does not match expected size {}",
-            raw_data.len(),
-            expected_size
-        );
-
-        // Store the decompressed data.
-        instance
-            .store
-            .update_oneshot(digest, raw_data)
+        let (tx, rx) = make_buf_channel_pair();
+        let store = instance.store.clone();
+        let store_update_fut = async move {
+            store
+                .update(digest, rx, UploadSizeInfo::ExactSize(digest.size_bytes()))
+                .await
+                .map(|_| ())
+                .err_tip(|| "Failed to store decompressed data")
+        };
+        let decode_fut = async move {
+            spawn_blocking!("bytestream_decompress_upload", move || {
+                Self::stream_decode_compressed_upload(
+                    compressed_bytes,
+                    wire_compressor,
+                    digest,
+                    digest_function,
+                    tx,
+                )
+            })
             .await
-            .err_tip(|| "Failed to store decompressed data")?;
+            .map_err(|e| make_err!(Code::Internal, "Decompression task failed: {}", e))?
+        };
+        let (decode_result, store_update_result) = tokio::join!(decode_fut, store_update_fut);
+        decode_result?;
+        store_update_result?;
 
-        Ok(Response::new(WriteResponse {
-            committed_size: expected_size as i64,
-        }))
+        Ok(Response::new(WriteResponse { committed_size }))
+    }
+
+    fn stream_decode_compressed_upload(
+        compressed_bytes: Bytes,
+        wire_compressor: compressor::Value,
+        digest: DigestInfo,
+        digest_function: DigestHasherFunc,
+        mut tx: DropCloserWriteHalf,
+    ) -> Result<(), Error> {
+        const DECODE_CHUNK_SIZE: usize = 64 * 1024;
+
+        let expected_size = digest.size_bytes();
+        let mut hasher = digest_function.hasher();
+        let mut decoded_size = 0u64;
+        let mut buffer = vec![0u8; DECODE_CHUNK_SIZE];
+
+        match wire_compressor {
+            compressor::Value::Identity => {
+                decoded_size = u64::try_from(compressed_bytes.len())
+                    .err_tip(|| "Identity compressed upload size was not convertible to u64")?;
+                if decoded_size > expected_size {
+                    return Err(make_err!(
+                        Code::InvalidArgument,
+                        "Decoded compressed upload size {} bytes exceeds digest size {} bytes",
+                        decoded_size,
+                        expected_size
+                    ));
+                }
+                hasher.update(&compressed_bytes);
+                if !compressed_bytes.is_empty() {
+                    tx.blocking_send(compressed_bytes)?;
+                }
+            }
+            compressor::Value::Zstd => {
+                let mut decoder =
+                    zstd::stream::read::Decoder::new(Cursor::new(compressed_bytes.as_ref()))
+                        .map_err(|e| {
+                            make_err!(Code::InvalidArgument, "Zstd decompression failed: {}", e)
+                        })?;
+                loop {
+                    let read = decoder.read(&mut buffer).map_err(|e| {
+                        make_err!(Code::InvalidArgument, "Zstd decompression failed: {}", e)
+                    })?;
+                    if read == 0 {
+                        break;
+                    }
+                    let read_u64 = u64::try_from(read)
+                        .err_tip(|| "Decoded chunk size was not convertible to u64")?;
+                    decoded_size = decoded_size.checked_add(read_u64).ok_or_else(|| {
+                        make_err!(
+                            Code::InvalidArgument,
+                            "Decoded compressed upload size overflow"
+                        )
+                    })?;
+                    if decoded_size > expected_size {
+                        return Err(make_err!(
+                            Code::InvalidArgument,
+                            "Decoded compressed upload size {} bytes exceeds digest size {} bytes",
+                            decoded_size,
+                            expected_size
+                        ));
+                    }
+                    hasher.update(&buffer[..read]);
+                    tx.blocking_send(Bytes::copy_from_slice(&buffer[..read]))?;
+                }
+            }
+            _ => {
+                return Err(make_input_err!(
+                    "Unsupported wire compressor for decompression: {:?}",
+                    wire_compressor
+                ));
+            }
+        }
+
+        if decoded_size != expected_size {
+            return Err(make_err!(
+                Code::InvalidArgument,
+                "Decompressed size {} does not match expected size {}",
+                decoded_size,
+                expected_size
+            ));
+        }
+        let actual_digest = hasher.finalize_digest();
+        if actual_digest != digest {
+            return Err(make_err!(
+                Code::InvalidArgument,
+                "Decompressed digest {} does not match expected digest {}",
+                actual_digest,
+                digest
+            ));
+        }
+
+        tx.send_eof()
+            .err_tip(|| "Failed to send decompressed upload EOF")?;
+        Ok(())
     }
 
     /// Resolve the wire compressor from the `resource_info` and validate it
@@ -1410,7 +1526,7 @@ impl ByteStream for ByteStreamServer {
         // full compressed stream, decompresses it, and stores the raw bytes.
         if wire_compressor != compressor::Value::Identity {
             let result = self
-                .inner_write_compressed(instance, digest, wire_compressor, stream)
+                .inner_write_compressed(instance, digest, digest_function, wire_compressor, stream)
                 .instrument(error_span!("bytestream_write_compressed"))
                 .with_context(
                     make_ctx_for_hash_func(digest_function)

@@ -72,6 +72,30 @@ impl DropCloserWriteHalf {
         self.send_get_bytes_on_error(buf).map_err(|err| err.0)
     }
 
+    /// Sends data over the channel to the receiver from a blocking thread.
+    pub fn blocking_send(&mut self, buf: Bytes) -> Result<(), Error> {
+        let tx = self
+            .tx
+            .as_ref()
+            .ok_or_else(|| make_err!(Code::Internal, "Tried to send while stream is closed"))?;
+        let buf_len = u64::try_from(buf.len()).err_tip(|| "Could not convert usize to u64")?;
+        if buf_len == 0 {
+            return Err(make_input_err!(
+                "Cannot send EOF in blocking_send(). Instead use send_eof()"
+            ));
+        }
+        if let Err(err) = tx.blocking_send(buf) {
+            self.tx = None;
+            return Err(make_err!(
+                Code::Internal,
+                "Failed to write to data, receiver disconnected: {} bytes",
+                err.0.len()
+            ));
+        }
+        self.bytes_written += buf_len;
+        Ok(())
+    }
+
     /// Sends data over the channel to the receiver.
     #[inline]
     async fn send_get_bytes_on_error(&mut self, buf: Bytes) -> Result<(), (Error, Bytes)> {
