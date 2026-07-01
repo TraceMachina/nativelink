@@ -511,7 +511,10 @@ where
                         Ok(props) => {
                             if self.consider_expired_after_s > 0 {
                                 let last_modified = props.blob.properties.last_modified;
-                                let now = (self.now_fn)().unix_timestamp() as i64;
+                                let now = (self.now_fn)()
+                                    .unix_timestamp()
+                                    .try_into()
+                                    .unwrap_or(i64::MAX);
                                 if last_modified.unix_timestamp() + self.consider_expired_after_s
                                     <= now
                                 {

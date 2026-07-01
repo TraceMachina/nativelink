@@ -156,7 +156,7 @@ impl ByteStream for FakeStreamServer {
             Some(Ok(write_request)) => write_request,
         };
         info!(?write_request, "write request");
-        let committed_size = write_request.data.len() as i64;
+        let committed_size = write_request.data.len().try_into().unwrap_or(i64::MAX);
         self.write_requests.lock().await.push(write_request);
         Ok(Response::new(WriteResponse { committed_size }))
     }

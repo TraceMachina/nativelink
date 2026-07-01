@@ -216,7 +216,7 @@ impl GcsClient {
     /// Convert GCS object to our internal representation
     fn convert_to_gcs_object(&self, obj: Object) -> GcsObject {
         let update_time = obj.updated.map(|dt| Timestamp {
-            seconds: dt.unix_timestamp(),
+            seconds: dt.unix_timestamp() as u64,
             nanos: 0,
         });
 
