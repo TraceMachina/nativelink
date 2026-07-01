@@ -64,16 +64,14 @@ jobs:
             os: ubuntu-24.04
             attr: nativelink-x86_64-linux
           - target: aarch64-unknown-linux-musl
-            os: ubuntu-24.04
+            # Build natively on ARM64 so older tags build too: the aarch64
+            # cross-compile fix (#2454) isn't in releases like v1.5.2, where
+            # cross-compiling fails on gnu/stubs-32.h.
+            os: ubuntu-24.04-arm
             attr: nativelink-aarch64-linux
           - target: aarch64-apple-darwin
             os: macos-26
             attr: nativelink-aarch64-darwin
-          # macos-26-intel is the x86_64 macOS runner; drop this entry if Intel
-          # macOS runners are retired and x86_64 macOS binaries aren't required.
-          - target: x86_64-apple-darwin
-            os: macos-26-intel
-            attr: nativelink-x86_64-darwin
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     env:
