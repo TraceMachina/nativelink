@@ -1771,13 +1771,16 @@ async fn detect_duplicate_upload() -> Result<(), Error> {
     temp_file.write_all_buf(&mut data).await?;
     *entry.data_size_mut() = 10;
 
+    let arc_entry = Arc::new(entry);
     assert!(
-        check_duplicate_files(&store.get_evicting_map(), key, &Arc::new(entry)).await?,
+        check_duplicate_files(&store.get_evicting_map(), key, &arc_entry.clone()).await?,
         "Expected duplicate"
     );
     assert!(logs_contain(
         "Identical files, so don't need to edit, skipping emplace"
     ));
+    // Keep it alive until here to avoid early drop and delete, which breaks the test
+    drop(arc_entry);
     Ok(())
 }
 
