@@ -874,6 +874,7 @@ fn make_chunking_cas_server_with_avg(
                 experimental_chunking: Some(nativelink_config::cas_server::CasChunkingConfig {
                     index_store: Some("chunk_index".to_string()),
                     avg_chunk_size_bytes,
+                    max_chunk_count: 0,
                 }),
             },
         }],
@@ -1327,6 +1328,7 @@ async fn chunking_rejects_index_store_same_as_cas_store() -> Result<(), Box<dyn 
                 experimental_chunking: Some(nativelink_config::cas_server::CasChunkingConfig {
                     index_store: Some("main_cas".to_string()),
                     avg_chunk_size_bytes: 0,
+                    max_chunk_count: 0,
                 }),
             },
         }],
@@ -1383,6 +1385,7 @@ async fn chunking_on_grpc_store_forbids_index_store() -> Result<(), Box<dyn core
                 experimental_chunking: Some(nativelink_config::cas_server::CasChunkingConfig {
                     index_store,
                     avg_chunk_size_bytes: 0,
+                    max_chunk_count: 0,
                 }),
             },
         }]
@@ -1400,5 +1403,87 @@ async fn chunking_on_grpc_store_forbids_index_store() -> Result<(), Box<dyn core
     // Without an index_store the configuration is valid: SplitBlob and
     // SpliceBlob are forwarded to the backend.
     CasServer::new(&make_config(None), &store_manager)?;
+    Ok(())
+}
+
+#[nativelink_test]
+async fn max_chunk_count_limits_split_and_splice() -> Result<(), Box<dyn core::error::Error>> {
+    // avg 1024 (min allowed) with max_chunk_count 2: the 16 KiB test blob
+    // chunks to more than 2 pieces, so on-demand splitting must refuse.
+    const AVG_CHUNK_SIZE: u64 = 1024;
+    const BLOB_SIZE: usize = 16 * 1024;
+
+    let store_manager = make_chunking_store_manager().await?;
+    let cas_server = CasServer::new(
+        &[WithInstanceName {
+            instance_name: INSTANCE_NAME.to_string(),
+            config: nativelink_config::cas_server::CasStoreConfig {
+                cas_store: "main_cas".to_string(),
+                experimental_chunking: Some(nativelink_config::cas_server::CasChunkingConfig {
+                    index_store: Some("chunk_index".to_string()),
+                    avg_chunk_size_bytes: AVG_CHUNK_SIZE,
+                    max_chunk_count: 2,
+                }),
+            },
+        }],
+        &store_manager,
+    )?;
+    let store = store_manager.get_store("main_cas").unwrap();
+
+    let mut state = 0x9e37_79b9_u32;
+    let data: Vec<u8> = (0..BLOB_SIZE)
+        .map(|_| {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (state >> 24) as u8
+        })
+        .collect();
+    let blob_digest = Digest {
+        hash: HASH1.to_string(),
+        size_bytes: BLOB_SIZE as i64,
+    };
+    store
+        .update_oneshot(
+            DigestInfo::try_from(blob_digest.clone())?,
+            bytes::Bytes::from(data),
+        )
+        .await?;
+
+    let status = cas_server
+        .split_blob(Request::new(SplitBlobRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            blob_digest: Some(blob_digest.clone()),
+            digest_function: digest_function::Value::Sha256.into(),
+            chunking_function: chunking_function::Value::FastCdc2020.into(),
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), Code::NotFound);
+    assert!(
+        status.message().contains("max_chunk_count"),
+        "unexpected message: {}",
+        status.message()
+    );
+
+    // Splices above the cap are rejected outright.
+    let chunk_digest = Digest {
+        hash: HASH2.to_string(),
+        size_bytes: 1,
+    };
+    let status = cas_server
+        .splice_blob(Request::new(SpliceBlobRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            blob_digest: Some(blob_digest),
+            chunk_digests: vec![chunk_digest.clone(), chunk_digest.clone(), chunk_digest],
+            digest_function: digest_function::Value::Sha256.into(),
+            chunking_function: chunking_function::Value::FastCdc2020.into(),
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), Code::InvalidArgument);
+    assert!(
+        status.message().contains("expected at most 2"),
+        "unexpected message: {}",
+        status.message()
+    );
     Ok(())
 }

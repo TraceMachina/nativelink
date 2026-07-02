@@ -171,6 +171,20 @@ pub struct CasChunkingConfig {
     /// Default: 524288 (512 KiB)
     #[serde(default)]
     pub avg_chunk_size_bytes: u64,
+
+    /// Maximum number of chunks accepted in a `SpliceBlob` request or
+    /// produced by on-demand chunking in `SplitBlob`. Blobs that would
+    /// produce more chunks are served without chunking (`SplitBlob` returns
+    /// `NOT_FOUND` and clients fall back to a regular download). This bounds
+    /// the size of stored chunk layouts and of `SplitBlobResponse` messages
+    /// (roughly 80-140 bytes per chunk). At the default average chunk size
+    /// the default cap supports blobs up to ~25 GiB; note that values above
+    /// ~50000 may produce responses that exceed default gRPC message size
+    /// limits on clients.
+    ///
+    /// Default: 50000
+    #[serde(default)]
+    pub max_chunk_count: u64,
 }
 
 impl CasChunkingConfig {
@@ -181,6 +195,8 @@ impl CasChunkingConfig {
     /// `FastCdc2020Params`.
     pub const MIN_AVG_CHUNK_SIZE_BYTES: u64 = 1024;
     pub const MAX_AVG_CHUNK_SIZE_BYTES: u64 = 1024 * 1024;
+    /// Default for `max_chunk_count`.
+    pub const DEFAULT_MAX_CHUNK_COUNT: u64 = 50_000;
 
     /// Returns `avg_chunk_size_bytes` with the default applied.
     #[must_use]
@@ -189,6 +205,16 @@ impl CasChunkingConfig {
             Self::DEFAULT_AVG_CHUNK_SIZE_BYTES
         } else {
             self.avg_chunk_size_bytes
+        }
+    }
+
+    /// Returns `max_chunk_count` with the default applied.
+    #[must_use]
+    pub const fn resolved_max_chunk_count(&self) -> u64 {
+        if self.max_chunk_count == 0 {
+            Self::DEFAULT_MAX_CHUNK_COUNT
+        } else {
+            self.max_chunk_count
         }
     }
 

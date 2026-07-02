@@ -29,8 +29,9 @@ use pretty_assertions::assert_eq;
 use sha2::{Digest as _, Sha256};
 
 /// The canonical test input named in the vectors file header
-/// (SHA256 d9e749d9367fc908876749d6502eb212fee88c9a94892fb07da5ef3ba8bc39ed).
-const TEST_INPUT: &[u8] = include_bytes!("data/SekienAkashita.jpg");
+/// (SHA256 d9e749d9367fc908876749d6502eb212fee88c9a94892fb07da5ef3ba8bc39ed),
+/// shared with the existing `DedupStore` `FastCDC` test fixture.
+const TEST_INPUT: &[u8] = include_bytes!("../../nativelink-util/tests/data/SekienAkashita.jpg");
 const TEST_VECTORS: &str = include_str!("data/fastcdc2020_test_vectors.txt");
 
 /// Parameters stated in the vectors file header.

@@ -157,6 +157,16 @@ struct ChunkingInstance {
     index_store: Store,
     /// Average chunk size used for server-side `FastCDC` 2020 chunking.
     avg_chunk_size_bytes: u32,
+    /// Maximum number of chunks accepted in a `SpliceBlob` request or
+    /// produced by on-demand chunking.
+    max_chunk_count: usize,
+}
+
+impl ChunkingInstance {
+    /// Maximum serialized layout size consistent with `max_chunk_count`.
+    const fn max_layout_size(&self) -> u64 {
+        self.max_chunk_count as u64 * MAX_LAYOUT_BYTES_PER_CHUNK
+    }
 }
 
 #[derive(Debug)]
@@ -178,17 +188,13 @@ const BATCH_PER_BLOB_TIMEOUT: Duration = Duration::from_secs(30);
 /// this bounds the memory a single splice request can pin.
 const MAX_SPLICE_CHUNK_SIZE: u64 = 16 * 1024 * 1024;
 
-/// Maximum number of chunks accepted in a `SpliceBlob` request or produced
-/// by on-demand chunking in `SplitBlob`. Bounds the size of stored chunk
-/// layouts and `SplitBlobResponse` messages (roughly 80 bytes per chunk,
-/// ~4 MiB at the cap) independently of how small a client's chunks are.
-const MAX_CHUNK_COUNT: usize = 50_000;
-
-/// Maximum serialized chunk layout size read back from the index store.
-/// Layouts written by this server are bounded by `MAX_CHUNK_COUNT`, so a
-/// larger entry is corrupt. A truncated read is detected (and treated as no
-/// layout) by the size consistency check in `read_chunk_layout`.
-const MAX_CHUNK_LAYOUT_SIZE: u64 = 16 * 1024 * 1024;
+/// Generous upper bound for the serialized size of one chunk entry in a
+/// stored layout (hash string of up to 128 hex characters plus varints and
+/// field tags). Multiplied by the configured `max_chunk_count` this caps
+/// layout reads from the index store; a larger entry is corrupt. A truncated
+/// read is detected (and treated as no layout) by the size consistency check
+/// in `read_chunk_layout`.
+const MAX_LAYOUT_BYTES_PER_CHUNK: u64 = 160;
 
 /// Number of chunk reads/writes kept in flight while re-assembling or
 /// chunking a blob. Matches the `DedupStore` concurrency default.
@@ -249,11 +255,14 @@ impl CasServer {
                 })?;
                 let avg_chunk_size_bytes = u32::try_from(avg_chunk_size_bytes)
                     .err_tip(|| "avg_chunk_size_bytes did not fit in u32")?;
+                let max_chunk_count = usize::try_from(chunking_config.resolved_max_chunk_count())
+                    .err_tip(|| "max_chunk_count did not fit in usize")?;
                 chunking_instances.insert(
                     config.instance_name.clone(),
                     ChunkingInstance {
                         index_store,
                         avg_chunk_size_bytes,
+                        max_chunk_count,
                     },
                 );
             }
@@ -594,11 +603,12 @@ impl CasServer {
     /// with the blob size (which also rejects entries truncated by the read
     /// cap below).
     async fn read_chunk_layout(
-        index_store: &Store,
+        chunking_instance: &ChunkingInstance,
         blob_digest: DigestInfo,
     ) -> Option<SplitBlobResponse> {
-        let layout_bytes = index_store
-            .get_part_unchunked(blob_digest, 0, Some(MAX_CHUNK_LAYOUT_SIZE))
+        let layout_bytes = chunking_instance
+            .index_store
+            .get_part_unchunked(blob_digest, 0, Some(chunking_instance.max_layout_size()))
             .await
             .ok()?;
         let layout = SplitBlobResponse::decode(layout_bytes).ok()?;
@@ -648,7 +658,7 @@ impl CasServer {
         // (best effort) as suggested by the REAPI spec for SplitBlob.
         let (blob_exists, maybe_layout) = futures::join!(
             store.has(blob_digest),
-            Self::read_chunk_layout(&chunking_instance.index_store, blob_digest),
+            Self::read_chunk_layout(&chunking_instance, blob_digest),
         );
         if blob_exists.err_tip(|| "In split_blob")?.is_none() {
             self.chunking_metrics
@@ -773,11 +783,12 @@ impl CasServer {
         let chunk_digests = read_res
             .merge(chunk_res)
             .err_tip(|| "Failed to chunk blob in chunk_blob_on_demand")?;
-        if chunk_digests.len() > MAX_CHUNK_COUNT {
+        if chunk_digests.len() > chunking_instance.max_chunk_count {
             return Err(make_err!(
                 Code::NotFound,
-                "Blob {blob_digest} produced {} chunks, exceeding the supported maximum of {MAX_CHUNK_COUNT}; no split information available",
-                chunk_digests.len()
+                "Blob {blob_digest} produced {} chunks, exceeding the configured max_chunk_count of {}; no split information available",
+                chunk_digests.len(),
+                chunking_instance.max_chunk_count
             ));
         }
 
@@ -816,9 +827,10 @@ impl CasServer {
             "chunk_digests must not be empty in splice_blob"
         );
         error_if!(
-            request.chunk_digests.len() > MAX_CHUNK_COUNT,
-            "Request has {} chunk_digests, expected at most {MAX_CHUNK_COUNT} in splice_blob",
-            request.chunk_digests.len()
+            request.chunk_digests.len() > chunking_instance.max_chunk_count,
+            "Request has {} chunk_digests, expected at most {} in splice_blob",
+            request.chunk_digests.len(),
+            chunking_instance.max_chunk_count
         );
         let mut chunk_digests = Vec::with_capacity(request.chunk_digests.len());
         let mut total_size: u64 = 0;
