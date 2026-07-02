@@ -14,6 +14,8 @@
 
 use core::fmt::{Debug, Formatter};
 use core::pin::Pin;
+#[cfg(unix)]
+use core::sync::atomic::AtomicBool;
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
 use std::borrow::Cow;
@@ -254,7 +256,7 @@ pub struct FileEntryImpl {
     // We lock around this as it gets rewritten when we move between temp and content types
     encoded_file_path: RwLock<EncodedFilePath>,
     #[cfg(unix)]
-    has_exec_variant: std::sync::atomic::AtomicBool,
+    has_exec_variant: AtomicBool,
 }
 
 impl FileEntryImpl {
@@ -270,7 +272,7 @@ impl FileEntry for FileEntryImpl {
             block_size,
             encoded_file_path,
             #[cfg(unix)]
-            has_exec_variant: std::sync::atomic::AtomicBool::new(false),
+            has_exec_variant: AtomicBool::new(false),
         }
     }
 
@@ -362,14 +364,13 @@ impl FileEntry for FileEntryImpl {
 
     #[cfg(unix)]
     fn has_exec_variant(&self) -> bool {
-        self.has_exec_variant
-            .load(std::sync::atomic::Ordering::Acquire)
+        self.has_exec_variant.load(Ordering::Acquire)
     }
 
     #[cfg(unix)]
     fn set_has_exec_variant(&self, has_exec_variant: bool) {
         self.has_exec_variant
-            .store(has_exec_variant, std::sync::atomic::Ordering::Release);
+            .store(has_exec_variant, Ordering::Release);
     }
 }
 
@@ -402,10 +403,7 @@ impl LenEntry for FileEntryImpl {
     #[inline]
     fn len(&self) -> u64 {
         #[cfg(unix)]
-        if self
-            .has_exec_variant
-            .load(std::sync::atomic::Ordering::Acquire)
-        {
+        if self.has_exec_variant.load(Ordering::Acquire) {
             return self.size_on_disk() * 2;
         }
         self.size_on_disk()
@@ -432,10 +430,7 @@ impl LenEntry for FileEntryImpl {
             return;
         }
         #[cfg(unix)]
-        if self
-            .has_exec_variant
-            .load(std::sync::atomic::Ordering::Acquire)
-        {
+        if self.has_exec_variant.load(Ordering::Acquire) {
             if let StoreKey::Digest(digest) = &encoded_file_path.key {
                 let exec_path = format!(
                     "{}{EXECUTABLE_DIR_SUFFIX}/{DIGEST_FOLDER}/{digest}",
@@ -451,8 +446,7 @@ impl LenEntry for FileEntryImpl {
                     }
                 }
             }
-            self.has_exec_variant
-                .store(false, std::sync::atomic::Ordering::Release);
+            self.has_exec_variant.store(false, Ordering::Release);
         }
         let from_path = encoded_file_path.get_file_path();
         let new_key = make_temp_key(&encoded_file_path.key);
