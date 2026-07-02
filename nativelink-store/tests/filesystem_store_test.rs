@@ -160,7 +160,10 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> FileEntry for TestFileEntry<
 
     #[cfg(unix)]
     fn set_has_exec_variant(&self, has_exec_variant: bool) {
-        self.inner.as_ref().unwrap().set_has_exec_variant(has_exec_variant);
+        self.inner
+            .as_ref()
+            .unwrap()
+            .set_has_exec_variant(has_exec_variant);
     }
 }
 
@@ -1967,14 +1970,14 @@ async fn executable_variant_tracked_and_evicted_at_runtime() -> Result<(), Error
     // 1. Insert file 1
     let data1 = vec![0u8; 40];
     store.update_oneshot(digest1, data1.into()).await?;
-    assert_eq!(store.get_evicting_map().get_store_size().await, 40);
+    assert_eq!(store.get_evicting_map().get_snapshot().current_bytes, 40);
 
     // 2. Materialize executable variant 1
     let exec_path1 = store.get_executable_hardlink_source(&digest1).await?;
     assert!(fs::metadata(&exec_path1).await.is_ok());
 
     // 3. Tracked size should now be doubled to 80
-    assert_eq!(store.get_evicting_map().get_store_size().await, 80);
+    assert_eq!(store.get_evicting_map().get_snapshot().current_bytes, 80);
 
     // 4. Insert file 2
     let data2 = vec![0u8; 40];
@@ -1989,12 +1992,12 @@ async fn executable_variant_tracked_and_evicted_at_runtime() -> Result<(), Error
     assert!(fs::metadata(&exec_path1).await.is_err());
 
     // Verify store size is now 40 (only file 2 is left)
-    assert_eq!(store.get_evicting_map().get_store_size().await, 40);
+    assert_eq!(store.get_evicting_map().get_snapshot().current_bytes, 40);
 
     // 5. Materialize executable variant 2
     let exec_path2 = store.get_executable_hardlink_source(&digest2).await?;
     assert!(fs::metadata(&exec_path2).await.is_ok());
-    assert_eq!(store.get_evicting_map().get_store_size().await, 80);
+    assert_eq!(store.get_evicting_map().get_snapshot().current_bytes, 80);
 
     Ok(())
 }

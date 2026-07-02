@@ -759,7 +759,9 @@ where
             let mut state = self.state.lock();
             if state.lru.get_mut(key.borrow()).is_some() {
                 if size_delta < 0 {
-                    state.sum_store_size = state.sum_store_size.saturating_sub(size_delta.unsigned_abs());
+                    state.sum_store_size = state
+                        .sum_store_size
+                        .saturating_sub(size_delta.unsigned_abs());
                 } else {
                     state.sum_store_size = state.sum_store_size.saturating_add(size_delta as u64);
                 }

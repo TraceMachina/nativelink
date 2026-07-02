@@ -362,12 +362,14 @@ impl FileEntry for FileEntryImpl {
 
     #[cfg(unix)]
     fn has_exec_variant(&self) -> bool {
-        self.has_exec_variant.load(std::sync::atomic::Ordering::Acquire)
+        self.has_exec_variant
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 
     #[cfg(unix)]
     fn set_has_exec_variant(&self, has_exec_variant: bool) {
-        self.has_exec_variant.store(has_exec_variant, std::sync::atomic::Ordering::Release);
+        self.has_exec_variant
+            .store(has_exec_variant, std::sync::atomic::Ordering::Release);
     }
 }
 
@@ -400,7 +402,10 @@ impl LenEntry for FileEntryImpl {
     #[inline]
     fn len(&self) -> u64 {
         #[cfg(unix)]
-        if self.has_exec_variant.load(std::sync::atomic::Ordering::Acquire) {
+        if self
+            .has_exec_variant
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
             return self.size_on_disk() * 2;
         }
         self.size_on_disk()
@@ -427,7 +432,10 @@ impl LenEntry for FileEntryImpl {
             return;
         }
         #[cfg(unix)]
-        if self.has_exec_variant.load(std::sync::atomic::Ordering::Acquire) {
+        if self
+            .has_exec_variant
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
             if let StoreKey::Digest(digest) = &encoded_file_path.key {
                 let exec_path = format!(
                     "{}{EXECUTABLE_DIR_SUFFIX}/{DIGEST_FOLDER}/{digest}",
@@ -435,11 +443,16 @@ impl LenEntry for FileEntryImpl {
                 );
                 if let Err(err) = fs::remove_file(&exec_path).await {
                     if err.code != Code::NotFound {
-                        warn!(?exec_path, ?err, "Failed to remove executable variant during unref");
+                        warn!(
+                            ?exec_path,
+                            ?err,
+                            "Failed to remove executable variant during unref"
+                        );
                     }
                 }
             }
-            self.has_exec_variant.store(false, std::sync::atomic::Ordering::Release);
+            self.has_exec_variant
+                .store(false, std::sync::atomic::Ordering::Release);
         }
         let from_path = encoded_file_path.get_file_path();
         let new_key = make_temp_key(&encoded_file_path.key);
@@ -1016,7 +1029,9 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             return Ok(variant_path);
         }
 
-        let result = self.create_executable_variant(digest, &variant_path, &file_entry).await;
+        let result = self
+            .create_executable_variant(digest, &variant_path, &file_entry)
+            .await;
         // Drop the per-digest lock entry regardless of outcome so the map
         // cannot grow unbounded; a concurrent waiter already cloned the Arc.
         self.forget_executable_lock(digest);
