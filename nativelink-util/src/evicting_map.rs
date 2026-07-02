@@ -221,11 +221,11 @@ pub struct EvictingMap<
 // debugging helper used mostly to get a snapshot of what eviction threshold might be causing issues
 #[derive(Debug, Copy, Clone)]
 pub struct EvictionSnapshot {
-    max_bytes: u64,
-    current_bytes: u64,
-    max_items: u64,
-    current_items: usize,
-    max_seconds: i32,
+    pub max_bytes: u64,
+    pub current_bytes: u64,
+    pub max_items: u64,
+    pub current_items: usize,
+    pub max_seconds: i32,
 }
 
 impl Display for EvictionSnapshot {

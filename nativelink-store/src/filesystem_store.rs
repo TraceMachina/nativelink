@@ -436,14 +436,15 @@ impl LenEntry for FileEntryImpl {
                     "{}{EXECUTABLE_DIR_SUFFIX}/{DIGEST_FOLDER}/{digest}",
                     encoded_file_path.shared_context.content_path
                 );
-                if let Err(err) = fs::remove_file(&exec_path).await {
-                    if err.code != Code::NotFound {
+                match fs::remove_file(&exec_path).await {
+                    Err(err) if err.code != Code::NotFound => {
                         warn!(
                             ?exec_path,
                             ?err,
                             "Failed to remove executable variant during unref"
                         );
                     }
+                    _ => {}
                 }
             }
             self.has_exec_variant.store(false, Ordering::Release);
