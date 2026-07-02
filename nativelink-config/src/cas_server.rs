@@ -121,7 +121,7 @@ pub struct AcStoreConfig {
     pub read_only: bool,
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct CasStoreConfig {
@@ -129,6 +129,78 @@ pub struct CasStoreConfig {
     /// This store name referenced here may be reused multiple times.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub cas_store: StoreRefName,
+
+    /// Experimental: Enables the REAPI `SplitBlob`/`SpliceBlob` RPCs used by
+    /// content-defined chunking clients (e.g. Bazel's
+    /// `--experimental_remote_cache_chunking`). When set, the capabilities
+    /// service advertises blob split/splice support and `FastCDC` 2020
+    /// parameters for this instance.
+    ///
+    /// Default: not set (chunking RPCs are rejected and not advertised).
+    #[serde(default)]
+    pub experimental_chunking: Option<CasChunkingConfig>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct CasChunkingConfig {
+    /// The store name referenced in the `stores` map in the main config used
+    /// to persist blob-to-chunks layouts. Keys are the digests of the
+    /// original blobs and values are serialized chunk layouts (which do not
+    /// hash to those digests), so this store MUST NOT perform content digest
+    /// verification and MUST NOT be the same store as `cas_store` — writing
+    /// layouts into the CAS would overwrite blob content. Using the same
+    /// store name as `cas_store` is rejected at startup.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub index_store: StoreRefName,
+
+    /// The average chunk size in bytes advertised to clients through the
+    /// `FastCDC` 2020 capability parameters and used for server-side
+    /// chunking in `SplitBlob`. Clients derive the minimum and maximum
+    /// chunk sizes from this value (avg / 4 and avg * 4). The value must
+    /// be between 1 KiB and 1 MiB.
+    ///
+    /// Default: 524288 (512 KiB)
+    #[serde(default)]
+    pub avg_chunk_size_bytes: u64,
+}
+
+impl CasChunkingConfig {
+    /// Default for `avg_chunk_size_bytes`, the value recommended by the
+    /// REAPI spec for `FastCdc2020Params`.
+    pub const DEFAULT_AVG_CHUNK_SIZE_BYTES: u64 = 512 * 1024;
+    /// Bounds for `avg_chunk_size_bytes` mandated by the REAPI spec for
+    /// `FastCdc2020Params`.
+    pub const MIN_AVG_CHUNK_SIZE_BYTES: u64 = 1024;
+    pub const MAX_AVG_CHUNK_SIZE_BYTES: u64 = 1024 * 1024;
+
+    /// Returns `avg_chunk_size_bytes` with the default applied.
+    #[must_use]
+    pub const fn resolved_avg_chunk_size_bytes(&self) -> u64 {
+        if self.avg_chunk_size_bytes == 0 {
+            Self::DEFAULT_AVG_CHUNK_SIZE_BYTES
+        } else {
+            self.avg_chunk_size_bytes
+        }
+    }
+
+    /// Returns `avg_chunk_size_bytes` with the default applied, or an error
+    /// when the configured value is outside the REAPI-mandated bounds.
+    pub fn validated_avg_chunk_size_bytes(&self) -> Result<u64, Error> {
+        let avg_chunk_size_bytes = self.resolved_avg_chunk_size_bytes();
+        if !(Self::MIN_AVG_CHUNK_SIZE_BYTES..=Self::MAX_AVG_CHUNK_SIZE_BYTES)
+            .contains(&avg_chunk_size_bytes)
+        {
+            return Err(make_err!(
+                Code::InvalidArgument,
+                "'experimental_chunking.avg_chunk_size_bytes' is {avg_chunk_size_bytes}, must be between {} and {}",
+                Self::MIN_AVG_CHUNK_SIZE_BYTES,
+                Self::MAX_AVG_CHUNK_SIZE_BYTES
+            ));
+        }
+        Ok(avg_chunk_size_bytes)
+    }
 }
 
 #[derive(Deserialize, Serialize, Debug, Default)]

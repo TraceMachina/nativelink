@@ -15,7 +15,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use nativelink_config::cas_server::{CapabilitiesConfig, InstanceName, WithInstanceName};
+use nativelink_config::cas_server::{
+    CapabilitiesConfig, CasStoreConfig, InstanceName, WithInstanceName,
+};
 use nativelink_error::{Error, ResultExt};
 use nativelink_proto::build::bazel::remote::execution::v2::capabilities_server::{
     Capabilities, CapabilitiesServer as Server,
@@ -24,7 +26,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::digest_function::Valu
 use nativelink_proto::build::bazel::remote::execution::v2::priority_capabilities::PriorityRange;
 use nativelink_proto::build::bazel::remote::execution::v2::symlink_absolute_path_strategy::Value as SymlinkAbsolutePathStrategy;
 use nativelink_proto::build::bazel::remote::execution::v2::{
-    ActionCacheUpdateCapabilities, CacheCapabilities, ExecutionCapabilities,
+    ActionCacheUpdateCapabilities, CacheCapabilities, ExecutionCapabilities, FastCdc2020Params,
     GetCapabilitiesRequest, PriorityCapabilities, ServerCapabilities,
 };
 use nativelink_proto::build::bazel::semver::SemVer;
@@ -38,13 +40,36 @@ const MAX_BATCH_TOTAL_SIZE: i64 = 64 * 1024;
 #[derive(Debug, Default)]
 pub struct CapabilitiesServer {
     supported_node_properties_for_instance: HashMap<InstanceName, Vec<String>>,
+    chunking_params_for_instance: HashMap<InstanceName, FastCdc2020Params>,
 }
 
 impl CapabilitiesServer {
     pub async fn new(
         configs: &[WithInstanceName<CapabilitiesConfig>],
         scheduler_map: &HashMap<String, Arc<dyn KnownPlatformPropertyProvider>>,
+        cas_configs: &[WithInstanceName<CasStoreConfig>],
     ) -> Result<Self, Error> {
+        let mut chunking_params_for_instance = HashMap::new();
+        for cas_config in cas_configs {
+            if let Some(chunking_config) = &cas_config.experimental_chunking {
+                let avg_chunk_size_bytes = chunking_config
+                    .validated_avg_chunk_size_bytes()
+                    .err_tip(|| {
+                        format!(
+                            "In 'experimental_chunking' of instance '{}'",
+                            cas_config.instance_name
+                        )
+                    })?;
+                chunking_params_for_instance.insert(
+                    cas_config.instance_name.clone(),
+                    FastCdc2020Params {
+                        avg_chunk_size_bytes,
+                        seed: 0,
+                    },
+                );
+            }
+        }
+
         let mut supported_node_properties_for_instance = HashMap::new();
         for config in configs {
             let mut properties = Vec::new();
@@ -75,6 +100,7 @@ impl CapabilitiesServer {
         }
         Ok(Self {
             supported_node_properties_for_instance,
+            chunking_params_for_instance,
         })
     }
 
@@ -119,6 +145,7 @@ impl Capabilities for CapabilitiesServer {
                 ],
             });
 
+        let chunking_params = self.chunking_params_for_instance.get(&instance_name);
         let resp = ServerCapabilities {
             cache_capabilities: Some(CacheCapabilities {
                 digest_functions: vec![
@@ -133,6 +160,11 @@ impl Capabilities for CapabilitiesServer {
                 symlink_absolute_path_strategy: SymlinkAbsolutePathStrategy::Disallowed.into(),
                 supported_compressors: vec![],
                 supported_batch_update_compressors: vec![],
+                max_cas_blob_size_bytes: 0,
+                split_blob_support: chunking_params.is_some(),
+                splice_blob_support: chunking_params.is_some(),
+                fast_cdc_2020_params: chunking_params.copied(),
+                rep_max_cdc_params: None,
             }),
             execution_capabilities,
             deprecated_api_version: None,
