@@ -206,31 +206,6 @@ impl CasServer {
                 make_input_err!("'cas_store': '{}' does not exist", config.cas_store)
             })?;
             if let Some(chunking_config) = &config.experimental_chunking {
-                // Chunk layouts are stored under the digests of the blobs
-                // they describe but do not hash to them, so writing them
-                // into the CAS itself would overwrite blob content.
-                error_if!(
-                    chunking_config.index_store == config.cas_store,
-                    "'experimental_chunking.index_store' of instance '{}' must not be the same store as 'cas_store'",
-                    config.instance_name
-                );
-                // Chunking against a grpc proxy store would download and
-                // re-upload entire blobs through the proxy instead of
-                // forwarding the RPCs; reject it until native forwarding is
-                // implemented.
-                error_if!(
-                    store.downcast_ref::<GrpcStore>(None).is_some(),
-                    "'experimental_chunking' of instance '{}' is not supported when 'cas_store' is a grpc store",
-                    config.instance_name
-                );
-                let index_store = store_manager
-                    .get_store(&chunking_config.index_store)
-                    .ok_or_else(|| {
-                        make_input_err!(
-                            "'experimental_chunking.index_store': '{}' does not exist",
-                            chunking_config.index_store
-                        )
-                    })?;
                 let avg_chunk_size_bytes = chunking_config
                     .validated_avg_chunk_size_bytes()
                     .err_tip(|| {
@@ -239,6 +214,39 @@ impl CasServer {
                             config.instance_name
                         )
                     })?;
+                if store.downcast_ref::<GrpcStore>(None).is_some() {
+                    // SplitBlob/SpliceBlob for grpc-store-backed instances
+                    // are forwarded to the backend, which owns the chunk
+                    // layouts; a local index store is meaningless there.
+                    error_if!(
+                        chunking_config.index_store.is_some(),
+                        "'experimental_chunking.index_store' of instance '{}' must not be set when 'cas_store' is a grpc store: SplitBlob/SpliceBlob are forwarded to the backend",
+                        config.instance_name
+                    );
+                    // No ChunkingInstance: the forwarding shortcut in the
+                    // handlers takes over before local chunking is reached.
+                    stores.insert(config.instance_name.clone(), store);
+                    continue;
+                }
+                let index_store_name = chunking_config.index_store.as_ref().ok_or_else(|| {
+                    make_input_err!(
+                        "'experimental_chunking.index_store' of instance '{}' is required",
+                        config.instance_name
+                    )
+                })?;
+                // Chunk layouts are stored under the digests of the blobs
+                // they describe but do not hash to them, so writing them
+                // into the CAS itself would overwrite blob content.
+                error_if!(
+                    index_store_name == &config.cas_store,
+                    "'experimental_chunking.index_store' of instance '{}' must not be the same store as 'cas_store'",
+                    config.instance_name
+                );
+                let index_store = store_manager.get_store(index_store_name).ok_or_else(|| {
+                    make_input_err!(
+                        "'experimental_chunking.index_store': '{index_store_name}' does not exist"
+                    )
+                })?;
                 let avg_chunk_size_bytes = u32::try_from(avg_chunk_size_bytes)
                     .err_tip(|| "avg_chunk_size_bytes did not fit in u32")?;
                 chunking_instances.insert(
@@ -527,8 +535,10 @@ impl CasServer {
         .right_stream())
     }
 
-    /// Returns the CAS store and chunking state for an instance, or
-    /// `Unimplemented` when chunking is not enabled for it.
+    /// Returns the CAS store for an instance and its chunking state, or
+    /// `Unimplemented` when chunking is not enabled for it. Grpc-store-backed
+    /// instances never reach this: their handlers forward the RPC to the
+    /// backend first.
     fn chunking_instance(&self, instance_name: &str) -> Result<(Store, ChunkingInstance), Error> {
         let store = self
             .stores
@@ -546,6 +556,14 @@ impl CasServer {
             })?
             .clone();
         Ok((store, chunking_instance))
+    }
+
+    /// Returns the backend `GrpcStore` when the instance's CAS is a grpc
+    /// proxy store, in which case chunking RPCs are forwarded verbatim.
+    fn grpc_store_for_instance(&self, instance_name: &str) -> Option<&GrpcStore> {
+        self.stores
+            .get(instance_name)
+            .and_then(|store| store.downcast_ref::<GrpcStore>(None))
     }
 
     /// Returns the display names of the chunks missing from the CAS. The
@@ -610,6 +628,11 @@ impl CasServer {
         &self,
         request: SplitBlobRequest,
     ) -> Result<Response<SplitBlobResponse>, Error> {
+        // If we are a GrpcStore we forward the RPC to the backend, which
+        // owns chunking and the layout index for proxied instances.
+        if let Some(grpc_store) = self.grpc_store_for_instance(&request.instance_name) {
+            return grpc_store.split_blob(Request::new(request)).await;
+        }
         let (store, chunking_instance) = self.chunking_instance(&request.instance_name)?;
         self.chunking_metrics
             .split_requests_total
@@ -771,6 +794,11 @@ impl CasServer {
         &self,
         request: SpliceBlobRequest,
     ) -> Result<Response<SpliceBlobResponse>, Error> {
+        // If we are a GrpcStore we forward the RPC to the backend, which
+        // owns chunking and the layout index for proxied instances.
+        if let Some(grpc_store) = self.grpc_store_for_instance(&request.instance_name) {
+            return grpc_store.splice_blob(Request::new(request)).await;
+        }
         let (store, chunking_instance) = self.chunking_instance(&request.instance_name)?;
         let index_store = chunking_instance.index_store;
         self.chunking_metrics

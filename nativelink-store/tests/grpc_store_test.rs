@@ -9,8 +9,14 @@ use futures::{Stream, StreamExt};
 use nativelink_config::stores::{GrpcEndpoint, GrpcSpec, Retry, StoreType};
 use nativelink_error::{Error, ResultExt};
 use nativelink_macro::nativelink_test;
+use nativelink_proto::build::bazel::remote::execution::v2::content_addressable_storage_server::{
+    ContentAddressableStorage, ContentAddressableStorageServer,
+};
 use nativelink_proto::build::bazel::remote::execution::v2::{
-    FindMissingBlobsRequest, digest_function,
+    BatchReadBlobsRequest, BatchReadBlobsResponse, BatchUpdateBlobsRequest,
+    BatchUpdateBlobsResponse, Digest, FindMissingBlobsRequest, FindMissingBlobsResponse,
+    GetTreeRequest, GetTreeResponse, SpliceBlobRequest, SpliceBlobResponse, SplitBlobRequest,
+    SplitBlobResponse, chunking_function, digest_function,
 };
 use nativelink_proto::google::bytestream::byte_stream_server::{ByteStream, ByteStreamServer};
 use nativelink_proto::google::bytestream::{
@@ -320,5 +326,147 @@ async fn read_works_with_headers() -> Result<(), Error> {
     );
     drop(cx_guard);
 
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct FakeCasServer {
+    split_requests: Arc<Mutex<Vec<SplitBlobRequest>>>,
+    splice_requests: Arc<Mutex<Vec<SpliceBlobRequest>>>,
+}
+
+impl FakeCasServer {
+    fn new() -> Self {
+        Self {
+            split_requests: Arc::new(Mutex::new(vec![])),
+            splice_requests: Arc::new(Mutex::new(vec![])),
+        }
+    }
+}
+
+type GetTreeStream = Pin<Box<dyn Stream<Item = Result<GetTreeResponse, Status>> + Send + 'static>>;
+
+#[tonic::async_trait]
+impl ContentAddressableStorage for FakeCasServer {
+    type GetTreeStream = GetTreeStream;
+
+    #[allow(clippy::unimplemented)]
+    async fn find_missing_blobs(
+        &self,
+        _grpc_request: Request<FindMissingBlobsRequest>,
+    ) -> Result<Response<FindMissingBlobsResponse>, Status> {
+        unimplemented!();
+    }
+
+    #[allow(clippy::unimplemented)]
+    async fn batch_update_blobs(
+        &self,
+        _grpc_request: Request<BatchUpdateBlobsRequest>,
+    ) -> Result<Response<BatchUpdateBlobsResponse>, Status> {
+        unimplemented!();
+    }
+
+    #[allow(clippy::unimplemented)]
+    async fn batch_read_blobs(
+        &self,
+        _grpc_request: Request<BatchReadBlobsRequest>,
+    ) -> Result<Response<BatchReadBlobsResponse>, Status> {
+        unimplemented!();
+    }
+
+    #[allow(clippy::unimplemented)]
+    async fn get_tree(
+        &self,
+        _grpc_request: Request<GetTreeRequest>,
+    ) -> Result<Response<Self::GetTreeStream>, Status> {
+        unimplemented!();
+    }
+
+    async fn split_blob(
+        &self,
+        grpc_request: Request<SplitBlobRequest>,
+    ) -> Result<Response<SplitBlobResponse>, Status> {
+        let request = grpc_request.into_inner();
+        self.split_requests.lock().await.push(request.clone());
+        Ok(Response::new(SplitBlobResponse {
+            chunk_digests: request.blob_digest.into_iter().collect(),
+            chunking_function: request.chunking_function,
+        }))
+    }
+
+    async fn splice_blob(
+        &self,
+        grpc_request: Request<SpliceBlobRequest>,
+    ) -> Result<Response<SpliceBlobResponse>, Status> {
+        let request = grpc_request.into_inner();
+        self.splice_requests.lock().await.push(request.clone());
+        Ok(Response::new(SpliceBlobResponse {
+            blob_digest: request.blob_digest,
+        }))
+    }
+}
+
+async fn make_fake_cas_server() -> (FakeCasServer, u16) {
+    let fake_cas_server = FakeCasServer::new();
+    let server = ContentAddressableStorageServer::new(fake_cas_server.clone());
+    let listener = TcpIncoming::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    background_spawn!("server", async move {
+        Server::builder()
+            .add_service(server)
+            .serve_with_incoming(listener)
+            .await
+            .unwrap();
+    });
+
+    (fake_cas_server, port)
+}
+
+#[nativelink_test]
+async fn split_and_splice_blob_forward_to_backend() -> Result<(), Error> {
+    let (server, port) = make_fake_cas_server().await;
+    let mut spec = test_spec(format!("http://localhost:{port}"), false);
+    spec.instance_name = "backend_instance".to_string();
+    let store = GrpcStore::new(&spec).await?;
+
+    let digest = Digest {
+        hash: VALID_HASH.to_string(),
+        size_bytes: RAW_INPUT.len() as i64,
+    };
+
+    let split_response = store
+        .split_blob(Request::new(SplitBlobRequest {
+            instance_name: "local_instance".to_string(),
+            blob_digest: Some(digest.clone()),
+            digest_function: digest_function::Value::Sha256.into(),
+            chunking_function: chunking_function::Value::FastCdc2020.into(),
+        }))
+        .await?
+        .into_inner();
+    assert_eq!(split_response.chunk_digests, vec![digest.clone()]);
+    {
+        let split_requests = server.split_requests.lock().await;
+        assert_eq!(split_requests.len(), 1);
+        // The instance name must be rewritten to the backend's.
+        assert_eq!(split_requests[0].instance_name, "backend_instance");
+    }
+
+    let splice_response = store
+        .splice_blob(Request::new(SpliceBlobRequest {
+            instance_name: "local_instance".to_string(),
+            blob_digest: Some(digest.clone()),
+            chunk_digests: vec![digest.clone()],
+            digest_function: digest_function::Value::Sha256.into(),
+            chunking_function: chunking_function::Value::FastCdc2020.into(),
+        }))
+        .await?
+        .into_inner();
+    assert_eq!(splice_response.blob_digest, Some(digest));
+    {
+        let splice_requests = server.splice_requests.lock().await;
+        assert_eq!(splice_requests.len(), 1);
+        assert_eq!(splice_requests[0].instance_name, "backend_instance");
+    }
     Ok(())
 }

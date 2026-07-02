@@ -872,7 +872,7 @@ fn make_chunking_cas_server_with_avg(
             config: nativelink_config::cas_server::CasStoreConfig {
                 cas_store: "main_cas".to_string(),
                 experimental_chunking: Some(nativelink_config::cas_server::CasChunkingConfig {
-                    index_store: "chunk_index".to_string(),
+                    index_store: Some("chunk_index".to_string()),
                     avg_chunk_size_bytes,
                 }),
             },
@@ -1325,7 +1325,7 @@ async fn chunking_rejects_index_store_same_as_cas_store() -> Result<(), Box<dyn 
             config: nativelink_config::cas_server::CasStoreConfig {
                 cas_store: "main_cas".to_string(),
                 experimental_chunking: Some(nativelink_config::cas_server::CasChunkingConfig {
-                    index_store: "main_cas".to_string(),
+                    index_store: Some("main_cas".to_string()),
                     avg_chunk_size_bytes: 0,
                 }),
             },
@@ -1340,5 +1340,65 @@ async fn chunking_rejects_index_store_same_as_cas_store() -> Result<(), Box<dyn 
             .contains("must not be the same store as 'cas_store'"),
         "unexpected error: {error}"
     );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn chunking_on_grpc_store_forbids_index_store() -> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = Arc::new(StoreManager::new());
+    store_manager.add_store(
+        "grpc_cas",
+        store_factory(
+            &StoreSpec::Grpc(nativelink_config::stores::GrpcSpec {
+                instance_name: "backend".to_string(),
+                endpoints: vec![nativelink_config::stores::GrpcEndpoint {
+                    address: "http://localhost:1".to_string(),
+                    tls_config: None,
+                    concurrency_limit: None,
+                    connect_timeout_s: 0,
+                    tcp_keepalive_s: 0,
+                    http2_keepalive_interval_s: 0,
+                    http2_keepalive_timeout_s: 0,
+                }],
+                store_type: nativelink_config::stores::StoreType::Cas,
+                retry: nativelink_config::stores::Retry::default(),
+                max_concurrent_requests: 0,
+                connections_per_endpoint: 0,
+                rpc_timeout_s: 1,
+                use_legacy_resource_names: false,
+                headers: std::collections::HashMap::new(),
+                forward_headers: vec![],
+            }),
+            &store_manager,
+            None,
+        )
+        .await?,
+    );
+
+    let make_config = |index_store: Option<String>| {
+        vec![WithInstanceName {
+            instance_name: INSTANCE_NAME.to_string(),
+            config: nativelink_config::cas_server::CasStoreConfig {
+                cas_store: "grpc_cas".to_string(),
+                experimental_chunking: Some(nativelink_config::cas_server::CasChunkingConfig {
+                    index_store,
+                    avg_chunk_size_bytes: 0,
+                }),
+            },
+        }]
+    };
+
+    // A local index store is meaningless when the RPCs are forwarded.
+    let error = CasServer::new(&make_config(Some("grpc_cas".to_string())), &store_manager)
+        .err()
+        .expect("expected index_store on grpc store to be rejected");
+    assert!(
+        error.to_string().contains("must not be set"),
+        "unexpected error: {error}"
+    );
+
+    // Without an index_store the configuration is valid: SplitBlob and
+    // SpliceBlob are forwarded to the backend.
+    CasServer::new(&make_config(None), &store_manager)?;
     Ok(())
 }

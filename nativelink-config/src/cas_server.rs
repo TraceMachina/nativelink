@@ -134,7 +134,9 @@ pub struct CasStoreConfig {
     /// content-defined chunking clients (e.g. Bazel's
     /// `--experimental_remote_cache_chunking`). When set, the capabilities
     /// service advertises blob split/splice support and `FastCDC` 2020
-    /// parameters for this instance.
+    /// parameters for this instance. When `cas_store` is a grpc store the
+    /// RPCs are forwarded to the backend (which must support chunking with
+    /// matching parameters); otherwise they are served locally.
     ///
     /// Default: not set (chunking RPCs are rejected and not advertised).
     #[serde(default)]
@@ -152,8 +154,13 @@ pub struct CasChunkingConfig {
     /// verification and MUST NOT be the same store as `cas_store` — writing
     /// layouts into the CAS would overwrite blob content. Using the same
     /// store name as `cas_store` is rejected at startup.
-    #[serde(deserialize_with = "convert_string_with_shellexpand")]
-    pub index_store: StoreRefName,
+    ///
+    /// Required unless `cas_store` is a grpc store: for proxied instances
+    /// the `SplitBlob`/`SpliceBlob` RPCs are forwarded to the backend, which
+    /// owns the chunk layouts, and setting an `index_store` is rejected at
+    /// startup.
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub index_store: Option<StoreRefName>,
 
     /// The average chunk size in bytes advertised to clients through the
     /// `FastCDC` 2020 capability parameters and used for server-side

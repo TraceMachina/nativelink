@@ -346,13 +346,11 @@ async fn inner_main(
                     .err_tip(|| "Could not create ByteStream service")?,
             )
             .add_optional_service(
-                OptionFuture::from(services.capabilities.as_ref().map(|cfg| {
-                    CapabilitiesServer::new(
-                        cfg,
-                        &action_schedulers,
-                        &all_cas_configs,
-                    )
-                }))
+                OptionFuture::from(
+                    services.capabilities.as_ref().map(|cfg| {
+                        CapabilitiesServer::new(cfg, &action_schedulers, &all_cas_configs)
+                    }),
+                )
                 .await
                 .map_or(Ok::<Option<CapabilitiesServer>, Error>(None), |server| {
                     Ok(Some(server?))
