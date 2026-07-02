@@ -55,6 +55,7 @@ uuid = { version = "1.16.0", default-features = false, features = [
   "serde",
   "v4",
 ] }
+zstd = { version = "0.13.3", default-features = false }
 
 [dev-dependencies]
 nativelink-macro = { path = "../nativelink-macro" }

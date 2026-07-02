@@ -23,7 +23,9 @@ use hyper::body::Frame;
 use hyper_util::rt::TokioIo;
 use hyper_util::server::conn::auto;
 use hyper_util::service::TowerToHyperService;
-use nativelink_config::cas_server::{ByteStreamConfig, HttpListener, WithInstanceName};
+use nativelink_config::cas_server::{
+    ByteStreamConfig, CapabilitiesConfig, HttpListener, WireCompressor, WithInstanceName,
+};
 use nativelink_config::stores::{MemorySpec, StoreSpec};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
@@ -33,6 +35,7 @@ use nativelink_proto::google::bytestream::{
     QueryWriteStatusRequest, QueryWriteStatusResponse, ReadRequest, WriteRequest, WriteResponse,
 };
 use nativelink_service::bytestream_server::ByteStreamServer;
+use nativelink_service::wire_compression::ZSTD_COMPRESSION_LEVEL;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::channel_body_for_tests::ChannelBody;
@@ -41,6 +44,7 @@ use nativelink_util::store_trait::StoreLike;
 use nativelink_util::task::JoinHandleDropGuard;
 use nativelink_util::{background_spawn, spawn};
 use pretty_assertions::assert_eq;
+use sha2::{Digest as ShaDigest, Sha256};
 use tokio::io::DuplexStream;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::unbounded_channel;
@@ -74,6 +78,14 @@ fn make_bytestream_server(
     store_manager: &StoreManager,
     config: Option<Vec<WithInstanceName<ByteStreamConfig>>>,
 ) -> Result<ByteStreamServer, Error> {
+    make_bytestream_server_with_capabilities(store_manager, config, CapabilitiesConfig::default())
+}
+
+fn make_bytestream_server_with_capabilities(
+    store_manager: &StoreManager,
+    config: Option<Vec<WithInstanceName<ByteStreamConfig>>>,
+    capabilities_config: CapabilitiesConfig,
+) -> Result<ByteStreamServer, Error> {
     let config = config.unwrap_or_else(|| {
         vec![WithInstanceName {
             instance_name: "foo_instance_name".to_string(),
@@ -81,10 +93,18 @@ fn make_bytestream_server(
                 cas_store: "main_cas".to_string(),
                 persist_stream_on_disconnect_timeout_s: 0,
                 max_bytes_per_stream: 1024,
+                max_compressed_upload_size: 0,
             },
         }]
     });
-    ByteStreamServer::new(&config, store_manager)
+    ByteStreamServer::new(
+        &config,
+        store_manager,
+        &[WithInstanceName {
+            instance_name: "foo_instance_name".to_string(),
+            config: capabilities_config,
+        }],
+    )
 }
 
 fn make_stream(
@@ -117,6 +137,58 @@ fn make_resource_name(data_len: impl core::fmt::Display) -> String {
         HASH1,
         data_len,
     )
+}
+
+fn make_compressed_resource_name(
+    uuid: &str,
+    hash: &str,
+    data_len: impl core::fmt::Display,
+) -> String {
+    format!(
+        "{}/uploads/{}/compressed-blobs/zstd/{}/{}",
+        INSTANCE_NAME, uuid, hash, data_len
+    )
+}
+
+fn sha256_hex(data: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    hex::encode(hasher.finalize())
+}
+
+async fn read_all_bytes(
+    bs_server: &ByteStreamServer,
+    read_request: ReadRequest,
+) -> Result<Vec<u8>, tonic::Status> {
+    let mut read_stream = bs_server
+        .read(Request::new(read_request))
+        .await?
+        .into_inner();
+    let mut data = Vec::new();
+    while let Some(result_read_response) = read_stream.next().await {
+        data.extend_from_slice(&result_read_response?.data);
+    }
+    Ok(data)
+}
+
+fn zstd_capabilities_config() -> CapabilitiesConfig {
+    CapabilitiesConfig {
+        supported_wire_compressors: vec![WireCompressor::Zstd],
+        ..Default::default()
+    }
+}
+
+fn zstd_bytestream_config(
+    max_compressed_upload_size: usize,
+) -> Vec<WithInstanceName<ByteStreamConfig>> {
+    vec![WithInstanceName {
+        instance_name: INSTANCE_NAME.to_string(),
+        config: ByteStreamConfig {
+            cas_store: "main_cas".to_string(),
+            max_compressed_upload_size,
+            ..Default::default()
+        },
+    }]
 }
 
 async fn server_and_client_stub(
@@ -588,6 +660,404 @@ pub async fn ensure_write_is_not_done_until_write_request_is_set()
 }
 
 #[nativelink_test]
+pub async fn zstd_write_committed_size_matches_wire_bytes()
+-> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let bs_server = Arc::new(
+        make_bytestream_server_with_capabilities(
+            store_manager.as_ref(),
+            None,
+            zstd_capabilities_config(),
+        )
+        .expect("Failed to make server"),
+    );
+    let store = store_manager.get_store("main_cas").unwrap();
+
+    let raw_data = "zstd ByteStream committed_size regression ".repeat(256);
+    let compressed_data = zstd::bulk::compress(raw_data.as_bytes(), 3)?;
+    assert!(
+        compressed_data.len() < raw_data.len(),
+        "test data must compress to reproduce the committed_size mismatch"
+    );
+
+    let (tx, join_handle) = make_stream_and_writer_spawn(bs_server, None);
+    let hash = sha256_hex(raw_data.as_bytes());
+    let resource_name = make_compressed_resource_name(
+        "4dcec57e-1389-4ab5-b188-4a59f22ceb4b",
+        &hash,
+        raw_data.len(),
+    );
+    tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name,
+        write_offset: 0,
+        finish_write: true,
+        data: compressed_data.clone().into(),
+    })?))
+    .await?;
+
+    let server_result = join_handle
+        .await
+        .expect("Failed to join")
+        .expect("Failed write");
+
+    let digest = DigestInfo::try_new(&hash, raw_data.len())?;
+    assert_eq!(
+        store.get_part_unchunked(digest, 0, None).await?.as_ref(),
+        raw_data.as_bytes(),
+        "server should store the decompressed bytes"
+    );
+
+    let committed_size = server_result.into_inner().committed_size;
+    assert!(
+        committed_size == -1 || committed_size == compressed_data.len() as i64,
+        "compressed write committed_size must be -1 or the compressed byte count {}; got {} for uncompressed size {}",
+        compressed_data.len(),
+        committed_size,
+        raw_data.len()
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+pub async fn zstd_write_allows_wire_bytes_larger_than_digest_size()
+-> Result<(), Box<dyn core::error::Error>> {
+    let raw_data = b"x";
+    let compressed_data = zstd::bulk::compress(raw_data, 3)?;
+    assert!(
+        compressed_data.len() > raw_data.len(),
+        "test data must expand when compressed to cover compressed wire sizes larger than the digest"
+    );
+
+    let store_manager = make_store_manager().await?;
+    let bs_server = Arc::new(
+        make_bytestream_server_with_capabilities(
+            store_manager.as_ref(),
+            Some(zstd_bytestream_config(compressed_data.len() + 1)),
+            zstd_capabilities_config(),
+        )
+        .expect("Failed to make server"),
+    );
+    let store = store_manager.get_store("main_cas").unwrap();
+
+    let (tx, join_handle) = make_stream_and_writer_spawn(bs_server, None);
+    let hash = sha256_hex(raw_data);
+    let resource_name = make_compressed_resource_name(
+        "4dcec57e-1389-4ab5-b188-4a59f22ceb4c",
+        &hash,
+        raw_data.len(),
+    );
+    tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name,
+        write_offset: 0,
+        finish_write: true,
+        data: compressed_data.clone().into(),
+    })?))
+    .await?;
+
+    let server_result = join_handle
+        .await
+        .expect("Failed to join")
+        .expect("Failed write");
+
+    let digest = DigestInfo::try_new(&hash, raw_data.len())?;
+    assert_eq!(
+        store.get_part_unchunked(digest, 0, None).await?.as_ref(),
+        raw_data,
+        "server should store the decompressed bytes"
+    );
+
+    assert_eq!(
+        server_result.into_inner().committed_size,
+        compressed_data.len() as i64,
+        "compressed write should report the compressed wire byte count"
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+pub async fn zstd_write_rejects_uncompressed_digest_size_above_configured_limit()
+-> Result<(), Box<dyn core::error::Error>> {
+    let raw_data = vec![7u8; 128];
+    let compressed_data = zstd::bulk::compress(&raw_data, 3)?;
+
+    let store_manager = make_store_manager().await?;
+    let bs_server = Arc::new(
+        make_bytestream_server_with_capabilities(
+            store_manager.as_ref(),
+            Some(zstd_bytestream_config(64)),
+            zstd_capabilities_config(),
+        )
+        .expect("Failed to make server"),
+    );
+
+    let (tx, join_handle) = make_stream_and_writer_spawn(bs_server, None);
+    let hash = sha256_hex(&raw_data);
+    let resource_name = make_compressed_resource_name(
+        "4dcec57e-1389-4ab5-b188-4a59f22ceb4d",
+        &hash,
+        raw_data.len(),
+    );
+    tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name,
+        write_offset: 0,
+        finish_write: true,
+        data: compressed_data.into(),
+    })?))
+    .await?;
+
+    let status = join_handle
+        .await
+        .expect("Failed to join")
+        .expect_err("Expected compressed write to fail");
+    assert_eq!(status.code(), Code::InvalidArgument);
+    assert!(
+        status.message().contains("uncompressed digest size"),
+        "unexpected error: {}",
+        status.message()
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+pub async fn zstd_write_accepts_custom_limit_above_digest_size()
+-> Result<(), Box<dyn core::error::Error>> {
+    let raw_data = "custom zstd upload limit ".repeat(128);
+    let compressed_data = zstd::bulk::compress(raw_data.as_bytes(), 3)?;
+    let limit = raw_data.len().max(compressed_data.len()) + 16;
+
+    let store_manager = make_store_manager().await?;
+    let bs_server = Arc::new(
+        make_bytestream_server_with_capabilities(
+            store_manager.as_ref(),
+            Some(zstd_bytestream_config(limit)),
+            zstd_capabilities_config(),
+        )
+        .expect("Failed to make server"),
+    );
+    let store = store_manager.get_store("main_cas").unwrap();
+
+    let (tx, join_handle) = make_stream_and_writer_spawn(bs_server, None);
+    let hash = sha256_hex(raw_data.as_bytes());
+    let resource_name = make_compressed_resource_name(
+        "4dcec57e-1389-4ab5-b188-4a59f22ceb4e",
+        &hash,
+        raw_data.len(),
+    );
+    tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name,
+        write_offset: 0,
+        finish_write: true,
+        data: compressed_data.clone().into(),
+    })?))
+    .await?;
+
+    let server_result = join_handle
+        .await
+        .expect("Failed to join")
+        .expect("Failed write");
+
+    assert_eq!(
+        server_result.into_inner().committed_size,
+        compressed_data.len() as i64
+    );
+    let digest = DigestInfo::try_new(&hash, raw_data.len())?;
+    assert_eq!(
+        store.get_part_unchunked(digest, 0, None).await?.as_ref(),
+        raw_data.as_bytes()
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+pub async fn zstd_write_small_limit_rejects_oversized_wire_payload_without_panic()
+-> Result<(), Box<dyn core::error::Error>> {
+    let raw_data = b"x";
+    let compressed_data = zstd::bulk::compress(raw_data, 3)?;
+    assert!(compressed_data.len() > 2);
+
+    let store_manager = make_store_manager().await?;
+    let bs_server = Arc::new(
+        make_bytestream_server_with_capabilities(
+            store_manager.as_ref(),
+            Some(zstd_bytestream_config(2)),
+            zstd_capabilities_config(),
+        )
+        .expect("Failed to make server"),
+    );
+
+    let (tx, join_handle) = make_stream_and_writer_spawn(bs_server, None);
+    let hash = sha256_hex(raw_data);
+    let resource_name = make_compressed_resource_name(
+        "4dcec57e-1389-4ab5-b188-4a59f22ceb4f",
+        &hash,
+        raw_data.len(),
+    );
+    tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name,
+        write_offset: 0,
+        finish_write: true,
+        data: compressed_data.into(),
+    })?))
+    .await?;
+
+    let status = join_handle
+        .await
+        .expect("Failed to join")
+        .expect_err("Expected compressed write to fail");
+    assert_eq!(status.code(), Code::InvalidArgument);
+    assert!(
+        status.message().contains("wire size"),
+        "unexpected error: {}",
+        status.message()
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+pub async fn zstd_write_rejects_mismatched_compressed_write_offset_before_decompressing()
+-> Result<(), Box<dyn core::error::Error>> {
+    let raw_data = b"offset check";
+
+    let store_manager = make_store_manager().await?;
+    let bs_server = Arc::new(
+        make_bytestream_server_with_capabilities(
+            store_manager.as_ref(),
+            None,
+            zstd_capabilities_config(),
+        )
+        .expect("Failed to make server"),
+    );
+
+    let (tx, join_handle) = make_stream_and_writer_spawn(bs_server, None);
+    let hash = sha256_hex(raw_data);
+    let resource_name = make_compressed_resource_name(
+        "4dcec57e-1389-4ab5-b188-4a59f22ceb50",
+        &hash,
+        raw_data.len(),
+    );
+    tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name,
+        write_offset: 1,
+        finish_write: true,
+        data: Bytes::from_static(b"not zstd"),
+    })?))
+    .await?;
+
+    let status = join_handle
+        .await
+        .expect("Failed to join")
+        .expect_err("Expected compressed write to fail");
+    assert_eq!(status.code(), Code::InvalidArgument);
+    assert!(
+        status.message().contains("out of order compressed data"),
+        "unexpected error: {}",
+        status.message()
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+pub async fn zstd_write_query_status_reports_compressed_wire_bytes()
+-> Result<(), Box<dyn core::error::Error>> {
+    let raw_data = "compressed query progress ".repeat(128);
+    let compressed_data = zstd::bulk::compress(raw_data.as_bytes(), 3)?;
+    let first_chunk_len = compressed_data.len() / 2;
+    assert!(first_chunk_len > 0);
+
+    let store_manager = make_store_manager().await?;
+    let bs_server = Arc::new(
+        make_bytestream_server_with_capabilities(
+            store_manager.as_ref(),
+            None,
+            zstd_capabilities_config(),
+        )
+        .expect("Failed to make server"),
+    );
+
+    let (tx, join_handle) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    let hash = sha256_hex(raw_data.as_bytes());
+    let resource_name = make_compressed_resource_name(
+        "4dcec57e-1389-4ab5-b188-4a59f22ceb51",
+        &hash,
+        raw_data.len(),
+    );
+
+    tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name: resource_name.clone(),
+        write_offset: 0,
+        finish_write: false,
+        data: Bytes::copy_from_slice(&compressed_data[..first_chunk_len]),
+    })?))
+    .await?;
+
+    let mut status_response = None;
+    for _ in 0..100 {
+        yield_now().await;
+        let response = bs_server
+            .query_write_status(Request::new(QueryWriteStatusRequest {
+                resource_name: resource_name.clone(),
+            }))
+            .await?
+            .into_inner();
+        if response.committed_size == first_chunk_len as i64 {
+            status_response = Some(response);
+            break;
+        }
+    }
+    assert_eq!(
+        status_response.err_tip(|| "compressed write progress was not reported")?,
+        QueryWriteStatusResponse {
+            committed_size: first_chunk_len as i64,
+            complete: false,
+        }
+    );
+
+    tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name,
+        write_offset: first_chunk_len as i64,
+        finish_write: true,
+        data: Bytes::copy_from_slice(&compressed_data[first_chunk_len..]),
+    })?))
+    .await?;
+
+    let server_result = join_handle
+        .await
+        .expect("Failed to join")
+        .expect("Failed write");
+    assert_eq!(
+        server_result.into_inner().committed_size,
+        compressed_data.len() as i64
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+pub async fn zstd_write_zero_max_compressed_upload_size_resolves_to_default()
+-> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let bs_server = make_bytestream_server_with_capabilities(
+        store_manager.as_ref(),
+        Some(zstd_bytestream_config(0)),
+        zstd_capabilities_config(),
+    )
+    .expect("Failed to make server");
+
+    assert!(
+        format!("{bs_server:?}").contains("max_compressed_upload_size: 4294967296"),
+        "zero max_compressed_upload_size should resolve to the 4GiB service default"
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
 pub async fn out_of_order_data_fails() -> Result<(), Box<dyn core::error::Error>> {
     const WRITE_DATA: &str = "12456789abcdefghijk";
 
@@ -770,6 +1240,278 @@ pub async fn chunked_stream_reads_small_set_of_data() -> Result<(), Box<dyn core
             "Expected response to match what is in store"
         );
     }
+    Ok(())
+}
+
+#[nativelink_test]
+pub async fn zstd_read_returns_compressed_bytes_that_decompress_to_stored_blob()
+-> Result<(), Box<dyn core::error::Error>> {
+    let raw_data = Bytes::from("zstd ByteStream compressed read ".repeat(256));
+    let hash = sha256_hex(raw_data.as_ref());
+
+    let store_manager = make_store_manager().await?;
+    let bs_server = Arc::new(
+        make_bytestream_server_with_capabilities(
+            store_manager.as_ref(),
+            None,
+            zstd_capabilities_config(),
+        )
+        .expect("Failed to make server"),
+    );
+    let store = store_manager.get_store("main_cas").unwrap();
+
+    let digest = DigestInfo::try_new(&hash, raw_data.len())?;
+    store.update_oneshot(digest, raw_data.clone()).await?;
+
+    let read_request = ReadRequest {
+        resource_name: format!(
+            "{}/compressed-blobs/zstd/{}/{}",
+            INSTANCE_NAME,
+            hash,
+            raw_data.len()
+        ),
+        read_offset: 0,
+        read_limit: 0,
+    };
+    let mut read_stream = bs_server
+        .read(Request::new(read_request))
+        .await?
+        .into_inner();
+
+    let mut compressed_data = Vec::new();
+    while let Some(result_read_response) = read_stream.next().await {
+        compressed_data.extend_from_slice(&result_read_response?.data);
+    }
+
+    assert!(
+        !compressed_data.is_empty(),
+        "Expected compressed read response to contain data"
+    );
+    assert_ne!(
+        compressed_data.as_slice(),
+        raw_data.as_ref(),
+        "Expected compressible test data to differ from zstd wire bytes"
+    );
+
+    let decompressed_data = zstd::bulk::decompress(&compressed_data, raw_data.len())?;
+    assert_eq!(
+        decompressed_data.as_slice(),
+        raw_data.as_ref(),
+        "Expected decompressed read response to match stored raw blob"
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+pub async fn zstd_read_chunks_compressed_wire_bytes_by_configured_stream_size()
+-> Result<(), Box<dyn core::error::Error>> {
+    const MAX_BYTES_PER_STREAM: usize = 1;
+
+    let raw_data = Bytes::from("zstd ByteStream compressed chunked read ".repeat(256));
+    let hash = sha256_hex(raw_data.as_ref());
+
+    let store_manager = make_store_manager().await?;
+    let bs_server = Arc::new(
+        make_bytestream_server_with_capabilities(
+            store_manager.as_ref(),
+            Some(vec![WithInstanceName {
+                instance_name: INSTANCE_NAME.to_string(),
+                config: ByteStreamConfig {
+                    cas_store: "main_cas".to_string(),
+                    max_bytes_per_stream: MAX_BYTES_PER_STREAM,
+                    ..Default::default()
+                },
+            }]),
+            zstd_capabilities_config(),
+        )
+        .expect("Failed to make server"),
+    );
+    let store = store_manager.get_store("main_cas").unwrap();
+
+    let digest = DigestInfo::try_new(&hash, raw_data.len())?;
+    store.update_oneshot(digest, raw_data.clone()).await?;
+
+    let read_request = ReadRequest {
+        resource_name: format!(
+            "{}/compressed-blobs/zstd/{}/{}",
+            INSTANCE_NAME,
+            hash,
+            raw_data.len()
+        ),
+        read_offset: 0,
+        read_limit: 0,
+    };
+    let mut read_stream = bs_server
+        .read(Request::new(read_request))
+        .await?
+        .into_inner();
+
+    let mut compressed_data = Vec::new();
+    let mut chunk_lengths = Vec::new();
+    while let Some(result_read_response) = read_stream.next().await {
+        let data = result_read_response?.data;
+        chunk_lengths.push(data.len());
+        compressed_data.extend_from_slice(&data);
+    }
+
+    assert!(
+        chunk_lengths.len() > 1,
+        "Expected compressed read response to be split into multiple chunks"
+    );
+    assert!(
+        chunk_lengths
+            .iter()
+            .all(|chunk_len| *chunk_len <= MAX_BYTES_PER_STREAM),
+        "Expected compressed read chunks {:?} to respect max_bytes_per_stream {}",
+        chunk_lengths,
+        MAX_BYTES_PER_STREAM
+    );
+
+    let decompressed_data = zstd::bulk::decompress(&compressed_data, raw_data.len())?;
+    assert_eq!(
+        decompressed_data.as_slice(),
+        raw_data.as_ref(),
+        "Expected decompressed chunked read response to match stored raw blob"
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+pub async fn zstd_read_offset_and_limit_apply_to_compressed_wire_bytes()
+-> Result<(), Box<dyn core::error::Error>> {
+    let raw_data = Bytes::from(
+        (0..4096)
+            .map(|i| ((i * 31 + i / 7) % 251) as u8)
+            .collect::<Vec<_>>(),
+    );
+    let hash = sha256_hex(raw_data.as_ref());
+
+    let store_manager = make_store_manager().await?;
+    let bs_server = Arc::new(
+        make_bytestream_server_with_capabilities(
+            store_manager.as_ref(),
+            None,
+            zstd_capabilities_config(),
+        )
+        .expect("Failed to make server"),
+    );
+    let store = store_manager.get_store("main_cas").unwrap();
+
+    let digest = DigestInfo::try_new(&hash, raw_data.len())?;
+    store.update_oneshot(digest, raw_data.clone()).await?;
+
+    let compressed_data = zstd::bulk::compress(raw_data.as_ref(), ZSTD_COMPRESSION_LEVEL)?;
+    let read_offset = 13usize;
+    let read_limit = 37usize;
+    assert!(
+        compressed_data.len() >= read_offset + read_limit,
+        "test payload must be large enough for the requested wire range"
+    );
+
+    let ranged_data = read_all_bytes(
+        bs_server.as_ref(),
+        ReadRequest {
+            resource_name: format!(
+                "{}/compressed-blobs/zstd/{}/{}",
+                INSTANCE_NAME,
+                hash,
+                raw_data.len()
+            ),
+            read_offset: read_offset as i64,
+            read_limit: read_limit as i64,
+        },
+    )
+    .await?;
+
+    assert_eq!(
+        ranged_data.as_slice(),
+        &compressed_data[read_offset..read_offset + read_limit],
+        "Expected read_offset/read_limit to slice compressed wire bytes"
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+pub async fn zstd_read_resume_ranges_reconstruct_compressed_payload()
+-> Result<(), Box<dyn core::error::Error>> {
+    const MAX_BYTES_PER_STREAM: usize = 7;
+
+    let raw_data = Bytes::from(
+        (0..8192)
+            .map(|i| ((i * 17 + i / 3) % 251) as u8)
+            .collect::<Vec<_>>(),
+    );
+    let hash = sha256_hex(raw_data.as_ref());
+
+    let store_manager = make_store_manager().await?;
+    let bs_server = Arc::new(
+        make_bytestream_server_with_capabilities(
+            store_manager.as_ref(),
+            Some(vec![WithInstanceName {
+                instance_name: INSTANCE_NAME.to_string(),
+                config: ByteStreamConfig {
+                    cas_store: "main_cas".to_string(),
+                    max_bytes_per_stream: MAX_BYTES_PER_STREAM,
+                    ..Default::default()
+                },
+            }]),
+            zstd_capabilities_config(),
+        )
+        .expect("Failed to make server"),
+    );
+    let store = store_manager.get_store("main_cas").unwrap();
+
+    let digest = DigestInfo::try_new(&hash, raw_data.len())?;
+    store.update_oneshot(digest, raw_data.clone()).await?;
+
+    let compressed_data = zstd::bulk::compress(raw_data.as_ref(), ZSTD_COMPRESSION_LEVEL)?;
+    let first_len = compressed_data.len() / 3;
+    let second_len = compressed_data.len() / 4;
+    assert!(
+        first_len > 0 && second_len > 0,
+        "test payload must produce multiple non-empty wire ranges"
+    );
+
+    let resource_name = format!(
+        "{}/compressed-blobs/zstd/{}/{}",
+        INSTANCE_NAME,
+        hash,
+        raw_data.len()
+    );
+    let ranges = [
+        (0usize, first_len),
+        (first_len, second_len),
+        (first_len + second_len, 0usize),
+    ];
+    let mut reconstructed_data = Vec::new();
+    for (read_offset, read_limit) in ranges {
+        let range_data = read_all_bytes(
+            bs_server.as_ref(),
+            ReadRequest {
+                resource_name: resource_name.clone(),
+                read_offset: read_offset as i64,
+                read_limit: read_limit as i64,
+            },
+        )
+        .await?;
+        reconstructed_data.extend_from_slice(&range_data);
+    }
+
+    assert_eq!(
+        reconstructed_data, compressed_data,
+        "Expected resumed ranged reads to reconstruct the compressed wire payload"
+    );
+
+    let decompressed_data = zstd::bulk::decompress(&reconstructed_data, raw_data.len())?;
+    assert_eq!(
+        decompressed_data.as_slice(),
+        raw_data.as_ref(),
+        "Expected reconstructed compressed payload to decompress to stored raw blob"
+    );
+
     Ok(())
 }
 

@@ -1,5 +1,6 @@
 load(
     "@rules_rust//rust:defs.bzl",
+    "rust_binary",
     "rust_doc",
     "rust_doc_test",
     "rust_library",
@@ -21,6 +22,7 @@ rust_library(
         "src/lib.rs",
         "src/push_server.rs",
         "src/remote_asset_proto.rs",
+        "src/wire_compression.rs",
         "src/worker_api_server.rs",
     ],
     visibility = ["//visibility:public"],
@@ -50,6 +52,7 @@ rust_library(
         "@crates//:tower",
         "@crates//:tracing",
         "@crates//:uuid",
+        "@crates//:zstd",
     ],
 )
 
@@ -100,6 +103,7 @@ rust_test_suite(
         "@crates//:tower",
         "@crates//:tracing",
         "@crates//:tracing-test",
+        "@crates//:zstd",
     ],
 )
 
@@ -131,4 +135,15 @@ rust_doc_test(
     name = "doc_test",
     timeout = "short",
     crate = ":nativelink-service",
+)
+
+rust_binary(
+    name = "wire_compression_bench",
+    srcs = ["src/bin/wire_compression_bench.rs"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":nativelink-service",
+        "//nativelink-proto",
+        "@crates//:zstd",
+    ],
 )

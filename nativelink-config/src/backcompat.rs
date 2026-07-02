@@ -100,6 +100,7 @@ where
                     config: ByteStreamConfig {
                         cas_store: cas_store.clone(),
                         max_bytes_per_stream: old_config.max_bytes_per_stream,
+                        max_compressed_upload_size: 0,
                         persist_stream_on_disconnect_timeout_s: old_config
                             .persist_stream_on_disconnect_timeout_s,
                     },
@@ -219,6 +220,16 @@ mod tests {
         let new_format: FullBytestreamConfig = serde_json::from_value(new_format).unwrap();
 
         assert_eq!(old_format, new_format);
+        assert_eq!(
+            old_format
+                .bytestream
+                .as_ref()
+                .unwrap()
+                .first()
+                .unwrap()
+                .max_compressed_upload_size,
+            0
+        );
 
         logs_assert(|lines: &[&str]| {
             if lines.len() != 1 {
@@ -230,5 +241,59 @@ mod tests {
             assert!(line.ends_with("WARNING: Using deprecated map format for services. Please migrate to the new array format:"));
             Ok(())
         });
+    }
+
+    #[test]
+    fn test_bytestream_max_compressed_upload_size_new_config() {
+        let config = json!({
+            "bytestream": [
+                {
+                    "instance_name": "integer",
+                    "cas_store": "WORKER_FAST_SLOW_STORE",
+                    "max_compressed_upload_size": 268435456,
+                },
+                {
+                    "instance_name": "binary",
+                    "cas_store": "WORKER_FAST_SLOW_STORE",
+                    "max_compressed_upload_size": "256MiB",
+                },
+                {
+                    "instance_name": "decimal",
+                    "cas_store": "WORKER_FAST_SLOW_STORE",
+                    "max_compressed_upload_size": "512MB",
+                },
+            ],
+        });
+
+        let value: FullBytestreamConfig = serde_json::from_value(config).unwrap();
+        let bytestream = value.bytestream.unwrap();
+
+        assert_eq!(bytestream[0].max_compressed_upload_size, 268_435_456);
+        assert_eq!(bytestream[1].max_compressed_upload_size, 268_435_456);
+        assert_eq!(bytestream[2].max_compressed_upload_size, 512_000_000);
+    }
+
+    #[test]
+    fn test_bytestream_omitted_max_compressed_upload_size_deserializes_to_zero() {
+        let config = json!({
+            "bytestream": [
+                {
+                    "cas_store": "WORKER_FAST_SLOW_STORE",
+                },
+            ],
+        });
+
+        let value: FullBytestreamConfig = serde_json::from_value(config).unwrap();
+
+        assert_eq!(
+            value
+                .bytestream
+                .as_ref()
+                .unwrap()
+                .first()
+                .unwrap()
+                .max_compressed_upload_size,
+            0
+        );
     }
 }

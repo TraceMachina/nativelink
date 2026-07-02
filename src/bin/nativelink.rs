@@ -278,6 +278,9 @@ async fn inner_main(
             .transpose()
             .err_tip(|| "Could not create Execution service")?;
 
+        // Get the capabilities configs for per-instance wire compressor support.
+        let capabilities_configs = services.capabilities.as_deref().unwrap_or_default();
+
         let tonic_services = Routes::builder()
             .routes()
             .add_optional_service(
@@ -293,7 +296,7 @@ async fn inner_main(
                 services
                     .cas
                     .map_or(Ok(None), |cfg| {
-                        CasServer::new(&cfg, &store_manager)
+                        CasServer::new(&cfg, &store_manager, capabilities_configs)
                             .map(|v| Some(service_setup!(v.into_service(), http_config)))
                     })
                     .err_tip(|| "Could not create CAS service")?,
@@ -328,7 +331,7 @@ async fn inner_main(
                 services
                     .bytestream
                     .map_or(Ok(None), |cfg| {
-                        ByteStreamServer::new(&cfg, &store_manager)
+                        ByteStreamServer::new(&cfg, &store_manager, capabilities_configs)
                             .map(|v| Some(service_setup!(v.into_service(), http_config)))
                     })
                     .err_tip(|| "Could not create ByteStream service")?,
