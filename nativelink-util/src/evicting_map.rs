@@ -754,6 +754,33 @@ where
         }
     }
 
+    pub async fn adjust_size(&self, key: &Q, size_delta: i64) {
+        let (items_to_unref, removal_futures) = {
+            let mut state = self.state.lock();
+            if state.lru.get_mut(key.borrow()).is_some() {
+                if size_delta < 0 {
+                    state.sum_store_size = state.sum_store_size.saturating_sub(size_delta.unsigned_abs());
+                } else {
+                    state.sum_store_size = state.sum_store_size.saturating_add(size_delta as u64);
+                }
+            }
+            self.evict_items(&mut state)
+        };
+
+        let mut futures: FuturesUnordered<_> = removal_futures.into_iter().collect();
+        while futures.next().await.is_some() {}
+
+        // Unref items outside of lock
+        let futures: FuturesUnordered<_> = items_to_unref
+            .into_iter()
+            .map(|item| async move {
+                item.unref().await;
+                item
+            })
+            .collect();
+        drop(futures.collect::<Vec<_>>().await);
+    }
+
     pub fn add_remove_callback(&self, callback: C) {
         self.state.lock().add_remove_callback(callback);
     }

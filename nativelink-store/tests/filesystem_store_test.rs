@@ -152,6 +152,16 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> FileEntry for TestFileEntry<
             .get_file_path_locked(handler)
             .await
     }
+
+    #[cfg(unix)]
+    fn has_exec_variant(&self) -> bool {
+        self.inner.as_ref().unwrap().has_exec_variant()
+    }
+
+    #[cfg(unix)]
+    fn set_has_exec_variant(&self, has_exec_variant: bool) {
+        self.inner.as_ref().unwrap().set_has_exec_variant(has_exec_variant);
+    }
 }
 
 impl<Hooks: FileEntryHooks + 'static + Sync + Send> LenEntry for TestFileEntry<Hooks> {
@@ -1924,6 +1934,67 @@ async fn unref_does_not_orphan_content_file_when_temp_dir_missing() -> Result<()
         VALUE1.as_bytes(),
         "content file must remain intact after a failed unref rename"
     );
+
+    Ok(())
+}
+
+/// Executable-variant cache (.exec) is tracked by the eviction policy's max_bytes,
+/// is counted against sum_store_size, and is evicted when the store is cleaned.
+#[cfg(unix)]
+#[nativelink_test]
+async fn executable_variant_tracked_and_evicted_at_runtime() -> Result<(), Error> {
+    let content_path = make_temp_path("content_path");
+    let temp_path = make_temp_path("temp_path");
+
+    let store = Box::pin(
+        FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+            content_path: content_path.clone(),
+            temp_path: temp_path.clone(),
+            eviction_policy: Some(EvictionPolicy {
+                max_bytes: 100,
+                ..Default::default()
+            }),
+            block_size: 1,
+            ..Default::default()
+        })
+        .await?,
+    );
+
+    let digest1 = DigestInfo::try_new(VALID_HASH, 40)?;
+    let hash2 = "0000000000000000000000000000000000000000000000000000000000000002";
+    let digest2 = DigestInfo::try_new(hash2, 40)?;
+
+    // 1. Insert file 1
+    let data1 = vec![0u8; 40];
+    store.update_oneshot(digest1, data1.into()).await?;
+    assert_eq!(store.get_evicting_map().get_store_size().await, 40);
+
+    // 2. Materialize executable variant 1
+    let exec_path1 = store.get_executable_hardlink_source(&digest1).await?;
+    assert!(fs::metadata(&exec_path1).await.is_ok());
+
+    // 3. Tracked size should now be doubled to 80
+    assert_eq!(store.get_evicting_map().get_store_size().await, 80);
+
+    // 4. Insert file 2
+    let data2 = vec![0u8; 40];
+    store.update_oneshot(digest2, data2.into()).await?;
+
+    // Total size is now 80 (file 1 + exec 1) + 40 (file 2) = 120.
+    // Max bytes is 100, so it must evict file 1.
+    // Verify that digest1 is no longer in the store.
+    assert_eq!(store.has(digest1).await?, None);
+
+    // Verify that the executable variant of digest1 is deleted from disk.
+    assert!(fs::metadata(&exec_path1).await.is_err());
+
+    // Verify store size is now 40 (only file 2 is left)
+    assert_eq!(store.get_evicting_map().get_store_size().await, 40);
+
+    // 5. Materialize executable variant 2
+    let exec_path2 = store.get_executable_hardlink_source(&digest2).await?;
+    assert!(fs::metadata(&exec_path2).await.is_ok());
+    assert_eq!(store.get_evicting_map().get_store_size().await, 80);
 
     Ok(())
 }

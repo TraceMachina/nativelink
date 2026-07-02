@@ -240,6 +240,12 @@ pub trait FileEntry: LenEntry + Send + Sync + Debug + 'static {
         &self,
         handler: F,
     ) -> impl Future<Output = Result<T, Error>> + Send;
+
+    #[cfg(unix)]
+    fn has_exec_variant(&self) -> bool;
+
+    #[cfg(unix)]
+    fn set_has_exec_variant(&self, has_exec_variant: bool);
 }
 
 pub struct FileEntryImpl {
@@ -247,6 +253,8 @@ pub struct FileEntryImpl {
     block_size: u64,
     // We lock around this as it gets rewritten when we move between temp and content types
     encoded_file_path: RwLock<EncodedFilePath>,
+    #[cfg(unix)]
+    has_exec_variant: std::sync::atomic::AtomicBool,
 }
 
 impl FileEntryImpl {
@@ -261,6 +269,8 @@ impl FileEntry for FileEntryImpl {
             data_size,
             block_size,
             encoded_file_path,
+            #[cfg(unix)]
+            has_exec_variant: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -349,6 +359,16 @@ impl FileEntry for FileEntryImpl {
         let encoded_file_path = self.get_encoded_file_path().read().await;
         handler(encoded_file_path.get_file_path().to_os_string()).await
     }
+
+    #[cfg(unix)]
+    fn has_exec_variant(&self) -> bool {
+        self.has_exec_variant.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    #[cfg(unix)]
+    fn set_has_exec_variant(&self, has_exec_variant: bool) {
+        self.has_exec_variant.store(has_exec_variant, std::sync::atomic::Ordering::Release);
+    }
 }
 
 impl Debug for FileEntryImpl {
@@ -379,6 +399,10 @@ pub fn make_temp_key(key: &StoreKey) -> StoreKey<'static> {
 impl LenEntry for FileEntryImpl {
     #[inline]
     fn len(&self) -> u64 {
+        #[cfg(unix)]
+        if self.has_exec_variant.load(std::sync::atomic::Ordering::Acquire) {
+            return self.size_on_disk() * 2;
+        }
         self.size_on_disk()
     }
 
@@ -401,6 +425,21 @@ impl LenEntry for FileEntryImpl {
                 "File is already a temp file",
             );
             return;
+        }
+        #[cfg(unix)]
+        if self.has_exec_variant.load(std::sync::atomic::Ordering::Acquire) {
+            if let StoreKey::Digest(digest) = &encoded_file_path.key {
+                let exec_path = format!(
+                    "{}{EXECUTABLE_DIR_SUFFIX}/{DIGEST_FOLDER}/{digest}",
+                    encoded_file_path.shared_context.content_path
+                );
+                if let Err(err) = fs::remove_file(&exec_path).await {
+                    if err.code != Code::NotFound {
+                        warn!(?exec_path, ?err, "Failed to remove executable variant during unref");
+                    }
+                }
+            }
+            self.has_exec_variant.store(false, std::sync::atomic::Ordering::Release);
         }
         let from_path = encoded_file_path.get_file_path();
         let new_key = make_temp_key(&encoded_file_path.key);
@@ -931,11 +970,21 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         &self,
         digest: &DigestInfo,
     ) -> Result<OsString, Error> {
+        let file_entry = self
+            .get_file_entry_for_digest(digest)
+            .await
+            .err_tip(|| "Resolving CAS blob for executable variant")?;
         let variant_path = self.executable_variant_path(digest);
 
         // Fast path: the variant already exists, so the caller can hardlink it
         // with no writable fd anywhere in sight.
         if fs::metadata(&variant_path).await.is_ok() {
+            if !file_entry.has_exec_variant() {
+                file_entry.set_has_exec_variant(true);
+                self.evicting_map
+                    .adjust_size(&digest.into(), file_entry.size_on_disk() as i64)
+                    .await;
+            }
             return Ok(variant_path);
         }
 
@@ -958,10 +1007,16 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         // Re-check: another task may have constructed it while we waited.
         if fs::metadata(&variant_path).await.is_ok() {
             self.forget_executable_lock(digest);
+            if !file_entry.has_exec_variant() {
+                file_entry.set_has_exec_variant(true);
+                self.evicting_map
+                    .adjust_size(&digest.into(), file_entry.size_on_disk() as i64)
+                    .await;
+            }
             return Ok(variant_path);
         }
 
-        let result = self.create_executable_variant(digest, &variant_path).await;
+        let result = self.create_executable_variant(digest, &variant_path, &file_entry).await;
         // Drop the per-digest lock entry regardless of outcome so the map
         // cannot grow unbounded; a concurrent waiter already cloned the Arc.
         self.forget_executable_lock(digest);
@@ -996,13 +1051,8 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         &self,
         digest: &DigestInfo,
         variant_path: &OsStr,
+        file_entry: &Fe,
     ) -> Result<(), Error> {
-        // Resolve the on-disk CAS blob (0o444) to copy from. Must be present in
-        // this tier; callers populate the fast store first.
-        let file_entry = self
-            .get_file_entry_for_digest(digest)
-            .await
-            .err_tip(|| "Resolving CAS blob for executable variant")?;
         let src_path = file_entry
             .get_file_path_locked(|p| async move { Ok(p) })
             .await?;
@@ -1043,7 +1093,13 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             }
         )
         .await
-        .err_tip(|| "executable-variant spawn_blocking join failed")?
+        .err_tip(|| "executable-variant spawn_blocking join failed")??;
+
+        file_entry.set_has_exec_variant(true);
+        self.evicting_map
+            .adjust_size(&digest.into(), file_entry.size_on_disk() as i64)
+            .await;
+        Ok(())
     }
 
     pub async fn get_file_entry_for_digest(&self, digest: &DigestInfo) -> Result<Arc<Fe>, Error> {
