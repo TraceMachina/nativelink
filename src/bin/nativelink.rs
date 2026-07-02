@@ -115,7 +115,7 @@ fn bind_freebind(socket_addr: SocketAddr) -> Result<TcpListener, std::io::Error>
 #[clap(
     author = "Trace Machina, Inc. <nativelink@tracemachina.com>",
     version,
-    about,
+    about = "NativeLink is an efficient, high-performance build cache and remote execution system",
     long_about = None
 )]
 struct Args {

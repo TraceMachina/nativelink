@@ -610,7 +610,7 @@
             ''
             # TODO(palfrey): Generalize this.
             + pkgs.lib.optionalString (system == "x86_64-linux") ''
-              export CC_x86_64_unknown_linux_gnu=customClang
+              export CC_x86_64_unknown_linux_gnu=${pkgs.lre.clang}/bin/customClang
             '';
         };
       };

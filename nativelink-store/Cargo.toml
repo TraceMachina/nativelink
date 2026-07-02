@@ -44,7 +44,7 @@ bytes = { version = "1.10.1", default-features = false }
 const_format = { version = "0.2.34", default-features = false }
 futures = { version = "0.3.31", default-features = false, features = ["std"] }
 gcloud-auth = { version = "=1.2.0", default-features = false, features = [
-  "jwt-rust-crypto",
+  "jwt-aws-lc-rs",
 ] }
 gcloud-storage = { version = "1", default-features = false, features = [
   "auth",
@@ -124,10 +124,6 @@ wincode = { version = "0.5.4", default-features = false, features = [
 [dev-dependencies]
 nativelink-macro = { path = "../nativelink-macro" }
 
-aws-sdk-s3 = { version = "1.82.0", features = [
-  "http-1x",
-  "rt-tokio",
-], default-features = false }
 aws-smithy-http-client = { version = "1.1.13", default-features = false, features = [
   "test-util",
 ] }
