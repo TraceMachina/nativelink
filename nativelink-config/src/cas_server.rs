@@ -246,8 +246,8 @@ pub struct ByteStreamConfig {
     )]
     pub max_bytes_per_stream: usize,
 
-    /// NativeLink operational memory/DoS budget for one
-    /// `compressed-blobs/{compressor}/...` ByteStream write on this instance.
+    /// Operational memory/DoS budget for one
+    /// `compressed-blobs/{compressor}/...` `ByteStream` write on this instance.
     /// While compressed uploads still buffer compressed wire bytes, this applies
     /// to both the declared uncompressed digest size and the compressed wire
     /// bytes received.
