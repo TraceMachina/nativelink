@@ -1,0 +1,38 @@
+---
+title: "Case Study: LastMile AI"
+tags: ["news", "case-studies"]
+image: https://nativelink-cdn.s3.us-east-1.amazonaws.com/lastmileai-logo.webp
+slug: case-study-last-mile-ai
+pubDate: 2025-09-25
+readTime: 2 minutes
+---
+## **About LastMile AI**
+
+[LastMile AI](https://lastmileai.dev/) is an AI startup creating tools to enable developers to build AI agents. The team comes from backgrounds in top research and engineering organizations, building infrastructure and developer tools, and is backed by leading investors like Gradient Ventures, AME Cloud Ventures and Exceptional Capital.
+
+LastMile AI empowers developers to build and deploy their own AI agents using [**mcp-agent**](https://mcp-agent.com/), a framework built on Model Context Protocol. mcp-agent has become a go-to toolkit for developers looking to connect large language models to real-world tools and workflows, and reflects the philosophy of empowering developers with transparent, composable systems.
+
+As mcp-agent has grown, scaling the infrastructure needed to support different libraries and tech stacks across thousands of developers has become increasingly demanding.
+
+## **Key Outcomes with NativeLink**
+
+* Eliminated repetitive local rebuilds across our engineering team.
+* Enabled custom integrations with complex dependencies (like Temporal and Envoy) without build-time bottlenecks.
+* Accelerated development of AI agents by streamlining interoperability across languages, allowing the best technology to be implemented for each task.
+* Improved reliability of our platform while maintaining developer speed.
+
+## **The Challenge**
+
+LastMile AI relies heavily on a diverse range of technologies to power our platform, such as Temporal and Envoy, with a common denominator of protobuf and gRPC, to form the foundation of mcp-agent’s infrastructure, requiring interoperability across languages. In the world of AI, this challenge compounds:
+
+* **AI is uniquely polyglot.** While application code often lives in Python, the ecosystem depends critically on native libraries written in languages like Rust, C++, and CUDA.
+* **Complex build targets.** To support diverse deployment environments, it’s often necessary to break apart dependencies and reconstruct them with Bazel.
+* **Developer overhead.** Without a shared caching system, every engineer building their own AI agent would be forced to repeatedly recompile these large dependencies, slowing iteration, wasting time and frustrating developers. Shared remote caching lets the team treat foundational components as fixtures that benefit everyone instead of slowing down iteration.
+
+## **The Solution**
+
+NativeLink has eliminated much of the overhead needed in managing all the library dependencies. LastMile uses NativeLink as a remote build cache for Bazel:
+
+* **Eliminating repetitive local rebuilds.** Using NativeLink as a remote build cache for Bazel in our monorepo allows developers to reuse shared build outputs.
+* **Incorporating heavier dependencies.** By caching builds, the team can incorporate heavier dependencies (such as Envoy and Temporal) directly into the build process.
+*  **Reproducible builds.** Because developers don’t have to waste time or resources with local rebuilds, they can get back to building.
