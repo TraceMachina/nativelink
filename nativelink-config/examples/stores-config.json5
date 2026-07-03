@@ -85,6 +85,38 @@
     },
     {
       name: "6",
+      "experimental_cloud_object_store": {
+          "provider": "r2",
+          "account_id": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
+          "bucket": "nativelink-cas",
+          "key_prefix": "test-prefix/",
+          "retry": {
+            "max_retries": 6,
+            "delay": 0.3,
+            "jitter": 0.5
+          },
+          "multipart_max_concurrent_uploads": 10
+        }
+    },
+    {
+      name: "7",
+      "experimental_cloud_object_store": {
+          "provider": "oci",
+          "namespace": "your-object-storage-namespace",
+          "region": "us-phoenix-1",
+          "bucket": "nativelink-cas",
+          "access_key_id": "${OCI_ACCESS_KEY_ID}",
+          "secret_access_key": "${OCI_SECRET_ACCESS_KEY}",
+          "key_prefix": "test-prefix/",
+          "retry": {
+            "max_retries": 6,
+            "delay": 0.3,
+            "jitter": 0.5
+          }
+        }
+    },
+    {
+      name: "8",
       "ontap_s3_existence_cache": {
        "index_path": "/path/to/cache/index.json",
        "sync_interval_seconds": 300,
@@ -97,7 +129,7 @@
      }
     },
     {
-      name: "7",
+      name: "9",
       "verify": {
        "backend": {
          "memory": {
@@ -111,7 +143,7 @@
      }
     },
     {
-      name: "8",
+      name: "10",
       "completeness_checking": {
        "backend": {
          "filesystem": {
@@ -130,7 +162,7 @@
      }
     },
     {
-      name: "9",
+      name: "11",
       "compression": {
        "compression_algorithm": {
          "lz4": {}
@@ -147,7 +179,7 @@
      }
     },
     {
-      name: "10",
+      name: "12",
       "dedup": {
        "index_store": {
          "memory": {
@@ -186,7 +218,7 @@
      }
     },
     {
-      name: "11",
+      name: "13",
       "existence_cache": {
        "backend": {
          "memory": {
@@ -202,7 +234,7 @@
      }
     },
     {
-      name: "12",
+      name: "14",
       "fast_slow": {
        "fast": {
          "filesystem": {
@@ -225,7 +257,7 @@
      }
     },
     {
-      name: "13",
+      name: "15",
       "shard": {
        "stores": [
         {
@@ -241,7 +273,7 @@
      }
     },
     {
-      name: "14",
+      name: "16",
       "filesystem": {
        "content_path": "/tmp/nativelink/data-worker-test/content_path-cas",
        "temp_path": "/tmp/nativelink/data-worker-test/tmp_path-cas",
@@ -251,13 +283,13 @@
      }
     },
     {
-      name: "15",
+      name: "17",
       "ref_store": {
        "name": "FS_CONTENT_STORE"
      }
     },
     {
-      name: "16",
+      name: "18",
       "size_partitioning": {
        "size": "128mib",
        "lower_store": {
@@ -274,7 +306,7 @@
      }
     },
     {
-      name: "17",
+      name: "19",
       "grpc": {
        "instance_name": "main",
        "endpoints": [
@@ -295,7 +327,7 @@
      }
     },
     {
-      name: "18",
+      name: "20",
       "redis_store": {
        "addresses": [
          "redis://127.0.0.1:6379/",
@@ -304,11 +336,11 @@
      }
     },
     {
-      name: "19",
+      name: "21",
       "noop": {}
     },
     {
-      name: "20",
+      name: "22",
       "experimental_mongo": {
          "connection_string": "mongodb://localhost:27017",
          "database": "nativelink",

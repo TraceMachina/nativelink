@@ -181,6 +181,55 @@ pub enum StoreSpec {
     ///      "multipart_max_concurrent_uploads": 10
     ///    }
     ///    ```
+    ///
+    /// 5. **Cloudflare R2:**
+    ///    R2 store uses Cloudflare's R2 service as a backend. R2 speaks the
+    ///    S3 API, so this is a thin wrapper that derives the account-scoped
+    ///    endpoint (`https://{account_id}.r2.cloudflarestorage.com`) for you.
+    ///
+    ///    **Example JSON Config:**
+    ///    ```json
+    ///    "experimental_cloud_object_store": {
+    ///      "provider": "r2",
+    ///      "account_id": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
+    ///      "bucket": "nativelink-cas",
+    ///      "key_prefix": "test-prefix/",
+    ///      "retry": {
+    ///        "max_retries": 6,
+    ///        "delay": 0.3,
+    ///        "jitter": 0.5
+    ///      },
+    ///      "multipart_max_concurrent_uploads": 10
+    ///    }
+    ///    ```
+    ///
+    /// 6. **Oracle Cloud Infrastructure (OCI) Object Storage:**
+    ///    OCI store uses Oracle Cloud Infrastructure's S3-compatible Object
+    ///    Storage API. The path-style endpoint is derived from your Object
+    ///    Storage `namespace` and `region` as
+    ///    `https://{namespace}.compat.objectstorage.{region}.oci.customer-oci.com`.
+    ///    Authenticate with a Customer Secret Key (Access Key/Secret Key pair
+    ///    created under User Settings -> Customer secret keys in the OCI
+    ///    console); the secret cannot be retrieved after generation, so read
+    ///    it from an env var via shellexpand.
+    ///
+    ///    **Example JSON Config:**
+    ///    ```json
+    ///    "experimental_cloud_object_store": {
+    ///      "provider": "oci",
+    ///      "namespace": "your-object-storage-namespace",
+    ///      "region": "us-phoenix-1",
+    ///      "bucket": "nativelink-cas",
+    ///      "access_key_id": "${OCI_ACCESS_KEY_ID}",
+    ///      "secret_access_key": "${OCI_SECRET_ACCESS_KEY}",
+    ///      "key_prefix": "test-prefix/",
+    ///      "retry": {
+    ///        "max_retries": 6,
+    ///        "delay": 0.3,
+    ///        "jitter": 0.5
+    ///      }
+    ///    }
+    ///    ```
     ExperimentalCloudObjectStore(ExperimentalCloudObjectSpec),
 
     /// ONTAP S3 Existence Cache provides a caching layer on top of the ONTAP S3 store
