@@ -63,6 +63,7 @@ rust_test_suite(
         "tests/ac_server_test.rs",
         "tests/bep_server_test.rs",
         "tests/bytestream_server_test.rs",
+        "tests/capabilities_server_test.rs",
         "tests/cas_server_test.rs",
         "tests/execution_server_test.rs",
         "tests/fetch_server_test.rs",
@@ -135,15 +136,4 @@ rust_doc_test(
     name = "doc_test",
     timeout = "short",
     crate = ":nativelink-service",
-)
-
-rust_binary(
-    name = "wire_compression_bench",
-    srcs = ["src/bin/wire_compression_bench.rs"],
-    visibility = ["//visibility:public"],
-    deps = [
-        ":nativelink-service",
-        "//nativelink-proto",
-        "@crates//:zstd",
-    ],
 )

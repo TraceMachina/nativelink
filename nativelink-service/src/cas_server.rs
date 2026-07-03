@@ -20,10 +20,8 @@ use std::collections::{HashMap, VecDeque};
 use bytes::Bytes;
 use futures::stream::{FuturesUnordered, Stream};
 use futures::{StreamExt, TryStreamExt};
-use nativelink_config::cas_server::{
-    CapabilitiesConfig, CasStoreConfig, WireCompressor, WithInstanceName,
-};
-use nativelink_error::{Code, Error, ResultExt, error_if, make_err, make_input_err};
+use nativelink_config::cas_server::{CasStoreConfig, InstanceName, WithInstanceName};
+use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_proto::build::bazel::remote::execution::v2::content_addressable_storage_server::{
     ContentAddressableStorage, ContentAddressableStorageServer as Server,
 };
@@ -45,10 +43,12 @@ use opentelemetry::context::FutureExt;
 use tonic::{Request, Response, Status};
 use tracing::{Instrument, Level, debug, error_span, instrument, warn};
 
+use crate::wire_compression::RemoteCacheCompressionInstances;
+
 #[derive(Debug)]
 pub struct CasServer {
-    stores: HashMap<String, Store>,
-    supported_wire_compressors_for_instance: HashMap<String, Vec<WireCompressor>>,
+    stores: HashMap<InstanceName, Store>,
+    remote_cache_compression_instances: RemoteCacheCompressionInstances,
 }
 
 type GetTreeStream = Pin<Box<dyn Stream<Item = Result<GetTreeResponse, Status>> + Send + 'static>>;
@@ -60,7 +60,7 @@ impl CasServer {
     pub fn new(
         configs: &[WithInstanceName<CasStoreConfig>],
         store_manager: &StoreManager,
-        capabilities_configs: &[WithInstanceName<CapabilitiesConfig>],
+        remote_cache_compression_instances: &RemoteCacheCompressionInstances,
     ) -> Result<Self, Error> {
         let mut stores = HashMap::with_capacity(configs.len());
         for config in configs {
@@ -69,16 +69,9 @@ impl CasServer {
             })?;
             stores.insert(config.instance_name.clone(), store);
         }
-        let mut supported_wire_compressors_for_instance = HashMap::new();
-        for config in capabilities_configs {
-            supported_wire_compressors_for_instance.insert(
-                config.instance_name.clone(),
-                config.supported_wire_compressors.clone(),
-            );
-        }
         Ok(Self {
             stores,
-            supported_wire_compressors_for_instance,
+            remote_cache_compression_instances: remote_cache_compression_instances.clone(),
         })
     }
 
@@ -136,10 +129,9 @@ impl CasServer {
         }
 
         let store_ref = &store;
-        let supported_compressors: &[WireCompressor] = self
-            .supported_wire_compressors_for_instance
-            .get(instance_name)
-            .map_or(&[], Vec::as_slice);
+        let remote_cache_compression_enabled = self
+            .remote_cache_compression_instances
+            .enabled_for(instance_name);
         let update_futures: FuturesUnordered<_> = request
             .requests
             .into_iter()
@@ -149,48 +141,17 @@ impl CasServer {
                         .digest
                         .clone()
                         .err_tip(|| "Digest not found in request")?;
-                    let request_compressor = compressor::Value::try_from(request.compressor)
-                        .map_err(|_| {
-                            make_input_err!("Unknown compressor value: {}", request.compressor)
-                        })?;
-                    let request_data = request.data;
                     let digest_info = DigestInfo::try_from(digest.clone())?;
                     let size_bytes = usize::try_from(digest_info.size_bytes())
                         .err_tip(|| "Digest size_bytes was not convertible to usize")?;
 
-                    // If the client sent compressed data, decompress it before storing.
-                    let store_data = if request_compressor == compressor::Value::Identity {
-                        request_data
-                    } else {
-                        // Validate the compressor is supported.
-                        let config_compressor =
-                            crate::wire_compression::proto_to_wire_compressor(request_compressor)?;
-                        if !supported_compressors.contains(&config_compressor) {
-                            return Err(make_input_err!(
-                                "Compressor {:?} is not supported by this instance",
-                                config_compressor
-                            ));
-                        }
-                        let compressor_for_blocking = request_compressor;
-                        spawn_blocking!("cas_decompress_upload", move || {
-                            crate::wire_compression::decompress(
-                                &request_data,
-                                compressor_for_blocking,
-                                size_bytes,
-                            )
-                        })
-                        .await
-                        .map_err(|e| {
-                            make_err!(Code::Internal, "Decompression task failed: {}", e)
-                        })??
-                    };
-
-                    error_if!(
-                        size_bytes != store_data.len(),
-                        "Digest for upload had mismatching sizes, digest said {} data  said {}",
+                    let store_data = crate::wire_compression::decompress_batch_update(
+                        request.data,
+                        request.compressor,
                         size_bytes,
-                        store_data.len()
-                    );
+                        remote_cache_compression_enabled,
+                    )
+                    .await?;
                     // Apply a per-blob deadline so one slow upload does not
                     // make the whole batch hit the client's overall deadline.
                     let result = match tokio::time::timeout(
@@ -241,15 +202,18 @@ impl CasServer {
         }
 
         let store_ref = &store;
-        let supported_compressors: &[WireCompressor] = self
-            .supported_wire_compressors_for_instance
-            .get(instance_name)
-            .map_or(&[], Vec::as_slice);
+        let remote_cache_compression_enabled = self
+            .remote_cache_compression_instances
+            .enabled_for(instance_name);
+        let client_accepts_zstd = remote_cache_compression_enabled
+            && request.acceptable_compressors.iter().any(|compressor_i32| {
+                compressor::Value::try_from(*compressor_i32)
+                    .is_ok_and(|compressor| compressor == compressor::Value::Zstd)
+            });
         let read_futures: FuturesUnordered<_> = request
             .digests
             .into_iter()
-            .zip(core::iter::repeat(request.acceptable_compressors.clone()))
-            .map(|(digest, acceptable_compressors)| {
+            .map(|digest| {
                 async move {
                     let digest_copy = DigestInfo::try_from(digest.clone())?;
                     // TODO(palfrey) There is a security risk here of someone taking all the memory on the instance.
@@ -271,48 +235,24 @@ impl CasServer {
                     };
                     let (status, data, response_compressor) = match result {
                         Ok(raw_data) => {
-                            // Check if the client accepts a compression we support.
-                            let mut chosen_compressor = compressor::Value::Identity;
-                            let mut output_data = raw_data;
-
-                            for &accept_i32 in &acceptable_compressors {
-                                let Ok(accept) = compressor::Value::try_from(accept_i32) else {
-                                    continue; // Skip unknown compressor values from client.
-                                };
-                                if accept == compressor::Value::Zstd
-                                    && supported_compressors.contains(&WireCompressor::Zstd)
+                            let (output_data, chosen_compressor) = if client_accepts_zstd {
+                                let data_for_compression = raw_data.clone();
+                                match spawn_blocking!("cas_encode_compressed_download", move || {
+                                    crate::wire_compression::compress_for_batch_read(
+                                        data_for_compression,
+                                    )
+                                })
+                                .await
                                 {
-                                    let data_for_compression = output_data.clone();
-                                    match spawn_blocking!("cas_compress_download", move || {
-                                        crate::wire_compression::compress_bytes(
-                                            data_for_compression,
-                                            compressor::Value::Zstd,
-                                        )
-                                    })
-                                    .await
-                                    {
-                                        Ok(Ok(compressed)) => {
-                                            // Only use compressed data if it's actually smaller.
-                                            // For incompressible data zstd can expand the payload.
-                                            if compressed.len() < output_data.len() {
-                                                output_data = compressed;
-                                                chosen_compressor = compressor::Value::Zstd;
-                                            }
-                                            break;
-                                        }
-                                        Ok(Err(e)) => {
-                                            // Compression failed; fall back to Identity.
-                                            warn!("Wire compression failed for digest {:?}, falling back to identity: {}", digest, e);
-                                            break;
-                                        }
-                                        Err(e) => {
-                                            // Compression task failed; fall back to Identity.
-                                            warn!("Wire compression task failed for digest {:?}, falling back to identity: {}", digest, e);
-                                            break;
-                                        }
+                                    Ok(compressed_result) => compressed_result,
+                                    Err(e) => {
+                                        warn!("Wire compression task failed for digest {:?}, falling back to identity: {}", digest, e);
+                                        (raw_data, compressor::Value::Identity)
                                     }
                                 }
-                            }
+                            } else {
+                                (raw_data, compressor::Value::Identity)
+                            };
 
                             (GrpcStatus::default(), output_data, chosen_compressor)
                         }

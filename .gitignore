@@ -27,5 +27,4 @@ user.bazelrc
 buck-out/
 nativelink_config.schema.json
 .gstack/
-.rtk/
-CLAUDE.md
+.worktrees/

@@ -17,6 +17,7 @@ use core::time::Duration;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use futures::StreamExt;
 use nativelink_config::cas_server::WithInstanceName;
 use nativelink_config::stores::{MemorySpec, StoreSpec};
@@ -32,6 +33,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
 };
 use nativelink_proto::google::rpc::Status as GrpcStatus;
 use nativelink_service::cas_server::CasServer;
+use nativelink_service::wire_compression::RemoteCacheCompressionInstances;
 use nativelink_store::ac_utils::serialize_and_upload_message;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
@@ -75,10 +77,7 @@ fn make_cas_server(store_manager: &StoreManager) -> Result<CasServer, Error> {
             },
         }],
         store_manager,
-        &[WithInstanceName {
-            instance_name: "foo_instance_name".to_string(),
-            config: nativelink_config::cas_server::CapabilitiesConfig::default(),
-        }],
+        &RemoteCacheCompressionInstances::default(),
     )
 }
 
@@ -91,15 +90,9 @@ fn make_cas_server_with_zstd(store_manager: &StoreManager) -> Result<CasServer, 
             },
         }],
         store_manager,
-        &[WithInstanceName {
-            instance_name: "foo_instance_name".to_string(),
-            config: nativelink_config::cas_server::CapabilitiesConfig {
-                supported_wire_compressors: vec![
-                    nativelink_config::cas_server::WireCompressor::Zstd,
-                ],
-                ..Default::default()
-            },
-        }],
+        &RemoteCacheCompressionInstances::from_enabled_instance_names([
+            "foo_instance_name".to_string()
+        ]),
     )
 }
 
@@ -775,10 +768,7 @@ fn make_cas_server_with_stall_store(delay: Duration) -> Result<CasServer, Error>
             },
         }],
         &store_manager,
-        &[WithInstanceName {
-            instance_name: INSTANCE_NAME.to_string(),
-            config: nativelink_config::cas_server::CapabilitiesConfig::default(),
-        }],
+        &RemoteCacheCompressionInstances::default(),
     )
 }
 
@@ -887,7 +877,6 @@ async fn batch_update_blobs_zstd_compressed() -> Result<(), Box<dyn core::error:
                 digest: Some(digest.clone()),
                 data: compressed_data.into(),
                 compressor: compressor::Value::Zstd.into(),
-                ..Default::default()
             }],
             digest_function: digest_function::Value::Sha256.into(),
         }))
@@ -917,6 +906,46 @@ async fn batch_update_blobs_zstd_compressed() -> Result<(), Box<dyn core::error:
 }
 
 #[nativelink_test]
+async fn batch_update_blobs_zstd_rejected_when_remote_cache_compression_disabled()
+-> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let cas_server = make_cas_server(&store_manager)?;
+
+    let raw_data = b"zstd disabled batch update";
+    let compressed_data = zstd::bulk::compress(raw_data, 3)?;
+    let digest = Digest {
+        hash: HASH1.to_string(),
+        size_bytes: raw_data.len() as i64,
+    };
+
+    let Err(status) = cas_server
+        .batch_update_blobs(Request::new(BatchUpdateBlobsRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            requests: vec![batch_update_blobs_request::Request {
+                digest: Some(digest),
+                data: compressed_data.into(),
+                compressor: compressor::Value::Zstd.into(),
+            }],
+            digest_function: digest_function::Value::Sha256.into(),
+        }))
+        .await
+    else {
+        panic!("zstd BatchUpdateBlobs should fail when compression is disabled");
+    };
+
+    assert_eq!(status.code(), Code::InvalidArgument);
+    assert!(
+        status
+            .message()
+            .contains("Remote cache compression is not supported"),
+        "unexpected error: {}",
+        status.message()
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
 async fn batch_read_blobs_zstd_compressed() -> Result<(), Box<dyn core::error::Error>> {
     let store_manager = make_store_manager().await?;
     let cas_server = make_cas_server_with_zstd(&store_manager)?;
@@ -938,7 +967,6 @@ async fn batch_read_blobs_zstd_compressed() -> Result<(), Box<dyn core::error::E
                 digest: Some(digest.clone()),
                 data: raw_data.clone().into(),
                 compressor: compressor::Value::Identity.into(),
-                ..Default::default()
             }],
             digest_function: digest_function::Value::Sha256.into(),
         }))
@@ -962,5 +990,40 @@ async fn batch_read_blobs_zstd_compressed() -> Result<(), Box<dyn core::error::E
     // Decompress and verify the data matches.
     let decompressed = zstd::bulk::decompress(&entry.data, usize::try_from(raw_size)?)?;
     assert_eq!(decompressed.as_slice(), raw_data.as_slice());
+    Ok(())
+}
+
+#[nativelink_test]
+async fn batch_read_blobs_zstd_falls_back_to_identity_when_not_smaller()
+-> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let cas_server = make_cas_server_with_zstd(&store_manager)?;
+    let store = store_manager.get_store("main_cas").unwrap();
+
+    let raw_data = Bytes::from_static(b"x");
+    let digest_info = DigestInfo::try_new(HASH1, raw_data.len())?;
+    store.update_oneshot(digest_info, raw_data.clone()).await?;
+
+    let digest = Digest {
+        hash: HASH1.to_string(),
+        size_bytes: raw_data.len() as i64,
+    };
+    let response = cas_server
+        .batch_read_blobs(Request::new(BatchReadBlobsRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            digests: vec![digest.clone()],
+            acceptable_compressors: vec![9999, compressor::Value::Zstd.into()],
+            digest_function: digest_function::Value::Sha256.into(),
+        }))
+        .await?
+        .into_inner();
+
+    assert_eq!(response.responses.len(), 1);
+    let entry = &response.responses[0];
+    assert_eq!(entry.digest.as_ref(), Some(&digest));
+    assert_eq!(entry.status, Some(GrpcStatus::default()));
+    assert_eq!(entry.compressor, compressor::Value::Identity as i32);
+    assert_eq!(entry.data, raw_data);
+
     Ok(())
 }

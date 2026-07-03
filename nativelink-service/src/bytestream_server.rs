@@ -19,17 +19,14 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
-use std::io::{Cursor, Read};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use bytes::{Bytes, BytesMut};
+use bytes::BytesMut;
 use futures::future::pending;
 use futures::stream::unfold;
 use futures::{Future, Stream, TryFutureExt, try_join};
-use nativelink_config::cas_server::{
-    ByteStreamConfig, CapabilitiesConfig, InstanceName, WireCompressor, WithInstanceName,
-};
+use nativelink_config::cas_server::{ByteStreamConfig, InstanceName, WithInstanceName};
 use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent, group, publish,
@@ -49,7 +46,7 @@ use nativelink_util::buf_channel::{
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::{
-    DigestHasher, DigestHasherFunc, default_digest_hasher_func, make_ctx_for_hash_func,
+    DigestHasherFunc, default_digest_hasher_func, make_ctx_for_hash_func,
 };
 use nativelink_util::proto_stream_utils::WriteRequestStreamWrapper;
 use nativelink_util::resource_info::ResourceInfo;
@@ -62,18 +59,13 @@ use tokio::time::sleep;
 use tonic::{Request, Response, Status, Streaming};
 use tracing::{Instrument, Level, debug, error, error_span, info, instrument, trace, warn};
 
+use crate::wire_compression::RemoteCacheCompressionInstances;
+
 /// If this value changes update the documentation in the config definition.
 const DEFAULT_PERSIST_STREAM_ON_DISCONNECT_TIMEOUT: Duration = Duration::from_mins(1);
 
 /// If this value changes update the documentation in the config definition.
 const DEFAULT_MAX_BYTES_PER_STREAM: usize = 64 * 1024;
-
-/// Default maximum size allowed for compressed uploads.
-/// This operational memory/DoS budget is not an REAPI protocol invariant.
-/// Configured values apply to both declared uncompressed digest size and
-/// compressed wire bytes while this path buffers compressed wire data.
-/// 4 GiB is generous — Bazel's default max-action-output is 256 MiB.
-const DEFAULT_MAX_COMPRESSED_UPLOAD_SIZE: usize = 4 * 1024 * 1024 * 1024;
 
 /// Metrics for `ByteStream` server operations.
 /// Tracks upload/download activity, throughput, and latency.
@@ -256,8 +248,6 @@ pub struct InstanceInfo {
     store: Store,
     // Max number of bytes to send on each grpc stream chunk.
     max_bytes_per_stream: usize,
-    // Max compressed ByteStream upload size for this instance.
-    max_compressed_upload_size: usize,
     /// Active uploads keyed by UUID as u128 for better performance.
     /// Using u128 keys instead of String reduces heap allocations
     /// and improves `HashMap` lookup performance.
@@ -267,10 +257,8 @@ pub struct InstanceInfo {
     metrics: Arc<ByteStreamMetrics>,
     /// Handle to the global sweeper task. Kept alive for the lifetime of the instance.
     _sweeper_handle: Arc<JoinHandleDropGuard<()>>,
-    /// Wire compression algorithms supported for this instance.
-    /// When a client requests compressed-blobs with a supported compressor,
-    /// the server will compress/decompress data at the service boundary.
-    supported_wire_compressors: Vec<WireCompressor>,
+    /// Whether this instance supports Bazel remote cache compression.
+    remote_cache_compression_enabled: bool,
 }
 
 impl Debug for InstanceInfo {
@@ -278,18 +266,103 @@ impl Debug for InstanceInfo {
         f.debug_struct("InstanceInfo")
             .field("store", &self.store)
             .field("max_bytes_per_stream", &self.max_bytes_per_stream)
-            .field(
-                "max_compressed_upload_size",
-                &self.max_compressed_upload_size,
-            )
             .field("active_uploads", &self.active_uploads)
             .field("idle_stream_timeout", &self.idle_stream_timeout)
             .field("metrics", &self.metrics)
             .field(
-                "supported_wire_compressors",
-                &self.supported_wire_compressors,
+                "remote_cache_compression_enabled",
+                &self.remote_cache_compression_enabled,
             )
             .finish()
+    }
+}
+
+struct CompressedUploadGuard {
+    uuid_key: u128,
+    active_uploads: Arc<Mutex<HashMap<UuidKey, BytesWrittenAndIdleStream>>>,
+    metrics: Arc<ByteStreamMetrics>,
+}
+
+impl Drop for CompressedUploadGuard {
+    fn drop(&mut self) {
+        self.active_uploads.lock().remove(&self.uuid_key);
+        self.metrics.active_uploads.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+impl InstanceInfo {
+    fn track_compressed_upload(
+        &self,
+        uuid_key: UuidKey,
+    ) -> (Arc<AtomicU64>, CompressedUploadGuard) {
+        let bytes_received = Arc::new(AtomicU64::new(0));
+        self.active_uploads
+            .lock()
+            .insert(uuid_key, (bytes_received.clone(), None));
+        self.metrics.active_uploads.fetch_add(1, Ordering::Relaxed);
+
+        (
+            bytes_received,
+            CompressedUploadGuard {
+                uuid_key,
+                active_uploads: self.active_uploads.clone(),
+                metrics: self.metrics.clone(),
+            },
+        )
+    }
+}
+
+/// Pump compressed `ByteStream` upload chunks into the decoder.
+///
+/// Compressed uploads intentionally do not support the identity upload resume
+/// protocol; offsets are validated against compressed wire bytes.
+async fn process_compressed_client_stream(
+    mut stream: WriteRequestStreamWrapper<impl Stream<Item = Result<WriteRequest, Status>> + Unpin>,
+    mut tx: DropCloserWriteHalf,
+    bytes_received: &Arc<AtomicU64>,
+) -> Result<(), Error> {
+    loop {
+        match stream.next().await {
+            Some(Ok(write_request)) => {
+                if write_request.write_offset < 0 {
+                    return Err(make_input_err!(
+                        "Invalid negative compressed write offset in write request: {}",
+                        write_request.write_offset
+                    ));
+                }
+                let write_offset = u64::try_from(write_request.write_offset)
+                    .err_tip(|| "Compressed write offset was not convertible to u64")?;
+                let compressed_offset = tx.get_bytes_written();
+                if write_offset != compressed_offset {
+                    return Err(make_input_err!(
+                        "Received out of order compressed data. Got {}, expected {}",
+                        write_offset,
+                        compressed_offset
+                    ));
+                }
+
+                if !write_request.data.is_empty() {
+                    tx.send(write_request.data)
+                        .await
+                        .err_tip(|| "Failed to forward compressed upload data")?;
+                    bytes_received.store(tx.get_bytes_written(), Ordering::Release);
+                }
+                if write_request.finish_write {
+                    tx.send_eof()
+                        .err_tip(|| "Failed to send compressed upload EOF")?;
+                    return Ok(());
+                }
+            }
+            Some(Err(e)) => {
+                return Err(e);
+            }
+            None => {
+                return Err(make_err!(
+                    Code::InvalidArgument,
+                    "Compressed write stream ended without finish_write"
+                ));
+            }
+        }
     }
 }
 
@@ -400,19 +473,8 @@ impl ByteStreamServer {
     pub fn new(
         configs: &[WithInstanceName<ByteStreamConfig>],
         store_manager: &StoreManager,
-        capabilities_configs: &[WithInstanceName<CapabilitiesConfig>],
+        remote_cache_compression_instances: &RemoteCacheCompressionInstances,
     ) -> Result<Self, Error> {
-        // Build per-instance compressor map from capabilities configs.
-        let compressors_by_instance: HashMap<String, Vec<WireCompressor>> = capabilities_configs
-            .iter()
-            .map(|c| {
-                (
-                    c.instance_name.clone(),
-                    c.supported_wire_compressors.clone(),
-                )
-            })
-            .collect();
-
         let mut instance_infos: HashMap<String, InstanceInfo> = HashMap::new();
         for config in configs {
             let idle_stream_timeout = if config.persist_stream_on_disconnect_timeout_s == 0 {
@@ -420,17 +482,15 @@ impl ByteStreamServer {
             } else {
                 Duration::from_secs(config.persist_stream_on_disconnect_timeout_s as u64)
             };
-            let instance_compressors = compressors_by_instance
-                .get(&config.instance_name)
-                .cloned()
-                .unwrap_or_default();
+            let remote_cache_compression_enabled =
+                remote_cache_compression_instances.enabled_for(&config.instance_name);
             let _old_value = instance_infos.insert(
                 config.instance_name.clone(),
                 Self::new_with_timeout(
                     config,
                     store_manager,
                     idle_stream_timeout,
-                    instance_compressors,
+                    remote_cache_compression_enabled,
                 )?,
             );
         }
@@ -441,7 +501,7 @@ impl ByteStreamServer {
         config: &WithInstanceName<ByteStreamConfig>,
         store_manager: &StoreManager,
         idle_stream_timeout: Duration,
-        supported_wire_compressors: Vec<WireCompressor>,
+        remote_cache_compression_enabled: bool,
     ) -> Result<InstanceInfo, Error> {
         let store = store_manager
             .get_store(&config.cas_store)
@@ -450,11 +510,6 @@ impl ByteStreamServer {
             DEFAULT_MAX_BYTES_PER_STREAM
         } else {
             config.max_bytes_per_stream
-        };
-        let max_compressed_upload_size = if config.max_compressed_upload_size == 0 {
-            DEFAULT_MAX_COMPRESSED_UPLOAD_SIZE
-        } else {
-            config.max_compressed_upload_size
         };
 
         let active_uploads: Arc<Mutex<HashMap<UuidKey, BytesWrittenAndIdleStream>>> =
@@ -515,12 +570,11 @@ impl ByteStreamServer {
         Ok(InstanceInfo {
             store,
             max_bytes_per_stream,
-            max_compressed_upload_size,
             active_uploads,
             idle_stream_timeout,
             metrics,
             _sweeper_handle: Arc::new(sweeper_handle),
-            supported_wire_compressors,
+            remote_cache_compression_enabled,
         })
     }
 
@@ -577,7 +631,7 @@ impl ByteStreamServer {
                         unique_uuid = format!("{:032x}", unique_key)
                     );
                     // Release the Occupied entry's borrow so we can insert on the same guard.
-                    drop(entry);
+                    let _ = entry;
                     let bytes_received = Arc::new(AtomicU64::new(0));
                     active_uploads.insert(unique_key, (bytes_received.clone(), None));
                     (unique_key, bytes_received, true)
@@ -971,8 +1025,8 @@ impl ByteStreamServer {
         }))
     }
 
-    /// Handle a compressed upload: buffer the full compressed stream from the
-    /// client, decode it into the store update stream, validate the size, and
+    /// Handle a compressed upload: stream compressed wire bytes through the
+    /// decoder into the store update stream, validate the decoded size, and
     /// verify the decoded digest.
     async fn inner_write_compressed(
         &self,
@@ -982,34 +1036,8 @@ impl ByteStreamServer {
         wire_compressor: compressor::Value,
         stream: WriteRequestStreamWrapper<impl Stream<Item = Result<WriteRequest, Status>> + Unpin>,
     ) -> Result<Response<WriteResponse>, Error> {
-        // Ensure cleanup on any exit path (error or success).
-        struct UploadGuard {
-            uuid_key: u128,
-            active_uploads: Arc<Mutex<HashMap<UuidKey, BytesWrittenAndIdleStream>>>,
-            metrics: Arc<ByteStreamMetrics>,
-        }
-        impl Drop for UploadGuard {
-            fn drop(&mut self) {
-                self.active_uploads.lock().remove(&self.uuid_key);
-                self.metrics.active_uploads.fetch_sub(1, Ordering::Relaxed);
-            }
-        }
-
-        let expected_size = usize::try_from(digest.size_bytes())
-            .err_tip(|| "Digest size_bytes was not convertible to usize")?;
-
-        // Reject compressed uploads that exceed our memory budget.
-        if expected_size > instance.max_compressed_upload_size {
-            return Err(make_input_err!(
-                "Compressed upload uncompressed digest size {} bytes exceeds maximum of {} bytes. \
-                 Use uncompressed (Identity) upload for large blobs.",
-                expected_size,
-                instance.max_compressed_upload_size
-            ));
-        }
-
         // Register the upload in active_uploads so QueryWriteStatus can report
-        // progress while we buffer and decompress. This mirrors what
+        // compressed wire-byte progress while decoding. This mirrors what
         // create_or_join_upload_stream does for uncompressed uploads.
         let uuid_str = stream
             .resource_info
@@ -1017,219 +1045,70 @@ impl ByteStreamServer {
             .as_deref()
             .ok_or_else(|| make_input_err!("UUID must be set if writing compressed data"))?;
         let uuid_key = parse_uuid_to_key(uuid_str);
-        let bytes_received = Arc::new(AtomicU64::new(0));
-        instance
-            .active_uploads
-            .lock()
-            .insert(uuid_key, (bytes_received.clone(), None));
-        instance
-            .metrics
-            .active_uploads
-            .fetch_add(1, Ordering::Relaxed);
+        let (bytes_received, _guard) = instance.track_compressed_upload(uuid_key);
 
-        let _guard = UploadGuard {
-            uuid_key,
-            active_uploads: instance.active_uploads.clone(),
-            metrics: instance.metrics.clone(),
-        };
-
-        // Collect all compressed data from the client stream.
-        // Cap the buffer to prevent memory exhaustion from malicious clients.
-        // Zstd output can be larger than the uncompressed digest for tiny or
-        // incompressible blobs, so do not compare wire bytes to digest size.
-        // This is only an operational memory cap while wire bytes are buffered.
-        let max_compressed_size = expected_size
-            .saturating_mul(2)
-            .max(64 * 1024 * 1024)
-            .min(instance.max_compressed_upload_size);
-        let mut compressed_data = BytesMut::new();
-        let mut stream = std::pin::pin!(stream);
-        loop {
-            match stream.next().await {
-                Some(Ok(write_request)) => {
-                    if write_request.write_offset < 0 {
-                        return Err(make_input_err!(
-                            "Invalid negative compressed write offset in write request: {}",
-                            write_request.write_offset
-                        ));
-                    }
-                    let write_offset = usize::try_from(write_request.write_offset)
-                        .err_tip(|| "Compressed write offset was not convertible to usize")?;
-                    let compressed_offset = compressed_data.len();
-                    if write_offset != compressed_offset {
-                        return Err(make_input_err!(
-                            "Received out of order compressed data. Got {}, expected {}",
-                            write_offset,
-                            compressed_offset
-                        ));
-                    }
-                    compressed_data.extend_from_slice(&write_request.data);
-                    // Update progress so QueryWriteStatus can report it.
-                    bytes_received.store(compressed_data.len() as u64, Ordering::Release);
-                    if compressed_data.len() > max_compressed_size {
-                        return Err(make_err!(
-                            Code::InvalidArgument,
-                            "Compressed upload wire size {} bytes exceeds maximum of {} bytes",
-                            compressed_data.len(),
-                            max_compressed_size
-                        ));
-                    }
-                    if write_request.finish_write {
-                        break;
-                    }
-                }
-                Some(Err(e)) => {
-                    return Err(e);
-                }
-                None => {
-                    return Err(make_err!(
-                        Code::InvalidArgument,
-                        "Compressed write stream ended without finish_write"
-                    ));
-                }
-            }
-        }
-
-        let committed_size = i64::try_from(compressed_data.len())
-            .err_tip(|| "Compressed upload size was not convertible to i64")?;
-        let compressed_bytes = compressed_data.freeze();
-        let (tx, rx) = make_buf_channel_pair();
+        let (compressed_tx, compressed_rx) = make_buf_channel_pair();
+        let (decompressed_tx, decompressed_rx) = make_buf_channel_pair();
         let store = instance.store.clone();
         let store_update_fut = async move {
             store
-                .update(digest, rx, UploadSizeInfo::ExactSize(digest.size_bytes()))
+                .update(
+                    digest,
+                    decompressed_rx,
+                    UploadSizeInfo::ExactSize(digest.size_bytes()),
+                )
                 .await
                 .map(|_| ())
                 .err_tip(|| "Failed to store decompressed data")
         };
         let decode_fut = async move {
-            spawn_blocking!("bytestream_decompress_upload", move || {
-                Self::stream_decode_compressed_upload(
-                    compressed_bytes,
+            spawn_blocking!("bytestream_decode_compressed_upload", move || {
+                crate::wire_compression::stream_decode_compressed_upload(
+                    compressed_rx,
                     wire_compressor,
                     digest,
                     digest_function,
-                    tx,
+                    decompressed_tx,
                 )
             })
             .await
             .map_err(|e| make_err!(Code::Internal, "Decompression task failed: {}", e))?
         };
-        let (decode_result, store_update_result) = tokio::join!(decode_fut, store_update_fut);
-        decode_result?;
-        store_update_result?;
+        let client_stream_fut =
+            process_compressed_client_stream(stream, compressed_tx, &bytes_received);
+        let (client_stream_result, decode_result, store_update_result) =
+            tokio::join!(client_stream_fut, decode_fut, store_update_fut);
 
+        if let Err(err) = &client_stream_result
+            && err.code == Code::InvalidArgument
+        {
+            return Err(err.clone());
+        }
+        if let Err(err) = &decode_result
+            && err.code == Code::InvalidArgument
+        {
+            return Err(err.clone());
+        }
+        let mut upload_error = store_update_result.err();
+        if let Err(err) = decode_result {
+            upload_error = Some(match upload_error {
+                Some(existing) => existing.merge(err),
+                None => err,
+            });
+        }
+        if let Err(err) = client_stream_result {
+            upload_error = Some(match upload_error {
+                Some(existing) => existing.merge(err),
+                None => err,
+            });
+        }
+        if let Some(err) = upload_error {
+            return Err(err);
+        }
+
+        let committed_size = i64::try_from(bytes_received.load(Ordering::Acquire))
+            .err_tip(|| "Compressed upload size was not convertible to i64")?;
         Ok(Response::new(WriteResponse { committed_size }))
-    }
-
-    fn stream_decode_compressed_upload(
-        compressed_bytes: Bytes,
-        wire_compressor: compressor::Value,
-        digest: DigestInfo,
-        digest_function: DigestHasherFunc,
-        mut tx: DropCloserWriteHalf,
-    ) -> Result<(), Error> {
-        const DECODE_CHUNK_SIZE: usize = 64 * 1024;
-
-        let expected_size = digest.size_bytes();
-        let mut hasher = digest_function.hasher();
-        let mut decoded_size = 0u64;
-        let mut buffer = vec![0u8; DECODE_CHUNK_SIZE];
-
-        match wire_compressor {
-            compressor::Value::Identity => {
-                decoded_size = u64::try_from(compressed_bytes.len())
-                    .err_tip(|| "Identity compressed upload size was not convertible to u64")?;
-                if decoded_size > expected_size {
-                    return Err(make_err!(
-                        Code::InvalidArgument,
-                        "Decoded compressed upload size {} bytes exceeds digest size {} bytes",
-                        decoded_size,
-                        expected_size
-                    ));
-                }
-                hasher.update(&compressed_bytes);
-                if !compressed_bytes.is_empty() {
-                    tx.blocking_send(compressed_bytes)?;
-                }
-            }
-            compressor::Value::Zstd => {
-                let mut decoder =
-                    zstd::stream::read::Decoder::new(Cursor::new(compressed_bytes.as_ref()))
-                        .map_err(|e| {
-                            make_err!(Code::InvalidArgument, "Zstd decompression failed: {}", e)
-                        })?;
-                loop {
-                    let read = decoder.read(&mut buffer).map_err(|e| {
-                        make_err!(Code::InvalidArgument, "Zstd decompression failed: {}", e)
-                    })?;
-                    if read == 0 {
-                        break;
-                    }
-                    let read_u64 = u64::try_from(read)
-                        .err_tip(|| "Decoded chunk size was not convertible to u64")?;
-                    decoded_size = decoded_size.checked_add(read_u64).ok_or_else(|| {
-                        make_err!(
-                            Code::InvalidArgument,
-                            "Decoded compressed upload size overflow"
-                        )
-                    })?;
-                    if decoded_size > expected_size {
-                        return Err(make_err!(
-                            Code::InvalidArgument,
-                            "Decoded compressed upload size {} bytes exceeds digest size {} bytes",
-                            decoded_size,
-                            expected_size
-                        ));
-                    }
-                    hasher.update(&buffer[..read]);
-                    tx.blocking_send(Bytes::copy_from_slice(&buffer[..read]))?;
-                }
-            }
-            _ => {
-                return Err(make_input_err!(
-                    "Unsupported wire compressor for decompression: {:?}",
-                    wire_compressor
-                ));
-            }
-        }
-
-        if decoded_size != expected_size {
-            return Err(make_err!(
-                Code::InvalidArgument,
-                "Decompressed size {} does not match expected size {}",
-                decoded_size,
-                expected_size
-            ));
-        }
-        let actual_digest = hasher.finalize_digest();
-        if actual_digest != digest {
-            return Err(make_err!(
-                Code::InvalidArgument,
-                "Decompressed digest {} does not match expected digest {}",
-                actual_digest,
-                digest
-            ));
-        }
-
-        tx.send_eof()
-            .err_tip(|| "Failed to send decompressed upload EOF")?;
-        Ok(())
-    }
-
-    /// Resolve the wire compressor from the `resource_info` and validate it
-    /// against the instance's supported compressors.
-    ///
-    /// Delegates to [`crate::wire_compression::resolve_wire_compressor`] so the
-    /// URI-to-compressor parsing logic lives in one shared place.
-    fn resolve_wire_compressor(
-        resource_info: &ResourceInfo<'_>,
-        supported: &[WireCompressor],
-    ) -> Result<compressor::Value, Error> {
-        crate::wire_compression::resolve_wire_compressor(
-            resource_info.compressor.as_deref(),
-            supported,
-        )
     }
 
     /// Read a blob from the store, compress it with the given wire compressor,
@@ -1241,77 +1120,147 @@ impl ByteStreamServer {
         wire_compressor: compressor::Value,
         read_request: ReadRequest,
     ) -> Result<ReadStream, Error> {
+        struct ReaderState {
+            max_bytes_per_stream: usize,
+            rx: DropCloserReadHalf,
+            maybe_get_part_result: Option<Result<(), Error>>,
+            maybe_encode_result: Option<Result<(), Error>>,
+            get_part_fut: Pin<Box<dyn Future<Output = Result<(), Error>> + Send>>,
+            encode_fut: Pin<Box<dyn Future<Output = Result<(), Error>> + Send>>,
+        }
+
+        impl ReaderState {
+            async fn finish(mut self, mut error: Option<Error>) -> Option<Error> {
+                let encode_result = if let Some(result) = self.maybe_encode_result.take() {
+                    result
+                } else {
+                    self.encode_fut.await
+                };
+                if let Err(err) = encode_result {
+                    error = Some(match error {
+                        Some(existing) => err.merge(existing),
+                        None => err,
+                    });
+                }
+
+                let get_part_result = if let Some(result) = self.maybe_get_part_result.take() {
+                    result
+                } else {
+                    self.get_part_fut.await
+                };
+                if let Err(err) = get_part_result {
+                    error = Some(match error {
+                        Some(existing) => err.merge(existing),
+                        None => err,
+                    });
+                }
+
+                error
+            }
+        }
+
+        if read_request.read_limit != 0 {
+            return Err(make_input_err!(
+                "read_limit must be 0 when reading compressed blobs"
+            ));
+        }
+        if read_request.read_offset < 0 {
+            return Err(make_input_err!(
+                "read_offset must be non-negative when reading compressed blobs"
+            ));
+        }
         let read_offset = u64::try_from(read_request.read_offset)
             .err_tip(|| "Could not convert read_offset to u64")?;
-        let read_limit = u64::try_from(read_request.read_limit)
-            .err_tip(|| "Could not convert read_limit to u64")?;
-        let read_limit = if read_limit != 0 {
-            Some(read_limit)
-        } else {
-            None
-        };
 
-        // Read the full uncompressed blob from the store.
-        let raw_data = instance
-            .store
-            .get_part_unchunked(digest, 0, None)
-            .await
-            .err_tip(|| "Failed to read blob for wire compression")?;
+        let (raw_tx, raw_rx) = make_buf_channel_pair();
+        let (compressed_tx, compressed_rx) = make_buf_channel_pair();
 
-        // Compress the data on a blocking thread pool. Zstd compression is
-        // CPU-bound, so running it inline would stall the async executor. Using
-        // `spawn_blocking!` (which maps to `tokio::task::spawn_blocking`) keeps
-        // the work off async worker threads.
-        //
-        // Note: The REAPI spec requires the server to return data in the format
-        // indicated by the URI. When a client requests compressed-blobs/zstd/...,
-        // we must return zstd-compressed data even if compression expands the
-        // payload. The spec allows choosing any compression level, so for
-        // incompressible data we could use a faster level, but we currently
-        // use the default level for simplicity.
-        //
-        // Identity is short-circuited here to avoid the spawn_blocking overhead
-        // and to preserve the store-owned `Bytes` zero-copy (no clone).
-        let compressed_data = match wire_compressor {
-            compressor::Value::Identity => raw_data,
-            _ => spawn_blocking!("bytestream_compress_download", move || {
-                crate::wire_compression::compress_bytes(raw_data, wire_compressor)
+        let store = instance.store.clone();
+        let get_part_fut = Box::pin(async move {
+            store
+                .get_part(digest, raw_tx, read_offset, None)
+                .await
+                .err_tip(|| "Failed to read blob for wire compression")
+        });
+        let encode_fut = Box::pin(async move {
+            spawn_blocking!("bytestream_encode_compressed_download", move || {
+                crate::wire_compression::stream_encode_compressed_download(
+                    raw_rx,
+                    wire_compressor,
+                    compressed_tx,
+                )
             })
             .await
-            .map_err(|e| make_err!(Code::Internal, "Compression task failed: {}", e))??,
-        };
-
-        let compressed_data_len = u64::try_from(compressed_data.len())
-            .err_tip(|| "Could not convert compressed data length to u64")?;
-        let start = read_offset.min(compressed_data_len);
-        let end = read_limit.map_or(compressed_data_len, |limit| {
-            read_offset.saturating_add(limit).min(compressed_data_len)
+            .map_err(|e| make_err!(Code::Internal, "Compression task failed: {}", e))?
         });
-        let start = usize::try_from(start).err_tip(|| "Could not convert read start to usize")?;
-        let end = usize::try_from(end).err_tip(|| "Could not convert read end to usize")?;
-        let compressed_data = compressed_data.slice(start..end);
 
-        // Stream the compressed bytes back in chunks.
-        let max_bytes_per_stream = instance.max_bytes_per_stream;
-        let stream = unfold(
-            (compressed_data, 0usize, max_bytes_per_stream),
-            |(data, offset, max_bytes)| {
-                let result = if offset >= data.len() {
-                    None
-                } else {
-                    let end = (offset + max_bytes).min(data.len());
-                    let chunk = data.slice(offset..end);
-                    let new_offset = end;
-                    Some((
-                        Ok(ReadResponse { data: chunk }),
-                        (data, new_offset, max_bytes),
-                    ))
-                };
-                core::future::ready(result)
-            },
-        );
+        let state = Some(ReaderState {
+            max_bytes_per_stream: instance.max_bytes_per_stream,
+            rx: compressed_rx,
+            maybe_get_part_result: None,
+            maybe_encode_result: None,
+            get_part_fut,
+            encode_fut,
+        });
 
-        Ok(Box::pin(stream))
+        Ok(Box::pin(unfold(state, move |state| async {
+            enum ReadStep {
+                Response(ReadResponse),
+                Finish(Option<Error>),
+            }
+
+            let mut state = state?;
+            let step = {
+                let mut response = ReadResponse::default();
+                let consume_fut = state.rx.consume(Some(state.max_bytes_per_stream));
+                tokio::pin!(consume_fut);
+                loop {
+                    tokio::select! {
+                        read_result = &mut consume_fut => {
+                            match read_result {
+                                Ok(bytes) => {
+                                    if bytes.is_empty() {
+                                        break ReadStep::Finish(None);
+                                    }
+                                    if bytes.len() > state.max_bytes_per_stream {
+                                        let err = make_err!(Code::Internal, "Returned compressed size was larger than read size");
+                                        break ReadStep::Finish(Some(err));
+                                    }
+                                    response.data = bytes;
+                                    trace!(
+                                        response.data = format!("<redacted len({})>", response.data.len())
+                                    );
+                                    break ReadStep::Response(response);
+                                }
+                                Err(e) => {
+                                    break ReadStep::Finish(Some(e));
+                                }
+                            }
+                        }
+                        get_part_result = &mut state.get_part_fut, if state.maybe_get_part_result.is_none() => {
+                            state.maybe_get_part_result = Some(get_part_result);
+                        }
+                        encode_result = &mut state.encode_fut, if state.maybe_encode_result.is_none() => {
+                            state.maybe_encode_result = Some(encode_result);
+                        }
+                    }
+                }
+            };
+
+            match step {
+                ReadStep::Response(response) => Some((Ok(response), Some(state))),
+                ReadStep::Finish(error) => {
+                    state.finish(error).await.map(|mut err| {
+                        if err.code == Code::NotFound {
+                            // Trim common NotFound details to match the identity read path.
+                            err.messages.truncate(1);
+                        }
+                        error!(response = ?err);
+                        (Err(err.into()), None)
+                    })
+                }
+            }
+        })))
     }
 
     async fn inner_query_write_status(
@@ -1423,8 +1372,10 @@ impl ByteStream for ByteStreamServer {
         )?;
 
         // Determine if the client requested wire-compressed data via compressed-blobs URI.
-        let wire_compressor =
-            Self::resolve_wire_compressor(&resource_info, &instance.supported_wire_compressors)?;
+        let wire_compressor = crate::wire_compression::resolve_wire_compressor(
+            resource_info.compressor.as_deref(),
+            instance.remote_cache_compression_enabled,
+        )?;
 
         let resp = if wire_compressor == compressor::Value::Identity {
             // Uncompressed path — use the existing streaming read.
@@ -1438,8 +1389,7 @@ impl ByteStream for ByteStreamServer {
                 .err_tip(|| "In ByteStreamServer::read")
                 .map(|stream| -> Response<Self::ReadStream> { Response::new(Box::pin(stream)) })
         } else {
-            // Compressed path — read the full blob, compress it, then stream
-            // the compressed bytes back in chunks.
+            // Compressed path — stream the requested raw range through zstd.
             self.inner_read_compressed(instance, digest, wire_compressor, read_request)
                 .instrument(error_span!("bytestream_read_compressed"))
                 .with_context(
@@ -1537,13 +1487,13 @@ impl ByteStream for ByteStreamServer {
             )?;
 
         // Determine if the client is sending wire-compressed data via compressed-blobs URI.
-        let wire_compressor = Self::resolve_wire_compressor(
-            &stream.resource_info,
-            &instance.supported_wire_compressors,
+        let wire_compressor = crate::wire_compression::resolve_wire_compressor(
+            stream.resource_info.compressor.as_deref(),
+            instance.remote_cache_compression_enabled,
         )?;
 
-        // For compressed uploads, we take a dedicated path that buffers the
-        // full compressed stream, decompresses it, and stores the raw bytes.
+        // For compressed uploads, stream compressed wire bytes through the
+        // decoder and store the resulting raw bytes.
         if wire_compressor != compressor::Value::Identity {
             let result = self
                 .inner_write_compressed(instance, digest, digest_function, wire_compressor, stream)

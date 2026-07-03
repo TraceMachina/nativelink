@@ -279,6 +279,17 @@ impl DropCloserReadHalf {
         }
     }
 
+    /// Receive a chunk of data from a blocking thread.
+    pub fn blocking_recv(&mut self) -> Result<Bytes, Error> {
+        if let Some(result) = self.try_recv() {
+            result
+        } else {
+            // `None` here indicates EOF, which we represent as Zero data
+            let data = self.rx.blocking_recv().unwrap_or(ZERO_DATA);
+            self.recv_inner(data)
+        }
+    }
+
     fn maybe_populate_recent_data(&mut self, chunk: &Bytes) {
         if self.max_recent_data_size == 0 {
             return; // Fast path.

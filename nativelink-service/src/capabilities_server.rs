@@ -15,9 +15,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use nativelink_config::cas_server::{
-    CapabilitiesConfig, InstanceName, WireCompressor, WithInstanceName,
-};
+use nativelink_config::cas_server::{CapabilitiesConfig, InstanceName, WithInstanceName};
 use nativelink_error::{Error, ResultExt};
 use nativelink_proto::build::bazel::remote::execution::v2::capabilities_server::{
     Capabilities, CapabilitiesServer as Server,
@@ -27,7 +25,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::priority_capabilities
 use nativelink_proto::build::bazel::remote::execution::v2::symlink_absolute_path_strategy::Value as SymlinkAbsolutePathStrategy;
 use nativelink_proto::build::bazel::remote::execution::v2::{
     ActionCacheUpdateCapabilities, CacheCapabilities, ExecutionCapabilities,
-    GetCapabilitiesRequest, PriorityCapabilities, ServerCapabilities,
+    GetCapabilitiesRequest, PriorityCapabilities, ServerCapabilities, compressor,
 };
 use nativelink_proto::build::bazel::semver::SemVer;
 use nativelink_scheduler::known_platform_property_provider::KnownPlatformPropertyProvider;
@@ -35,24 +33,24 @@ use nativelink_util::digest_hasher::default_digest_hasher_func;
 use tonic::{Request, Response, Status};
 use tracing::{Level, instrument};
 
-use crate::wire_compression::wire_compressor_to_proto;
+use crate::wire_compression::RemoteCacheCompressionInstances;
 
 const MAX_BATCH_TOTAL_SIZE: i64 = 64 * 1024;
 
 #[derive(Debug, Default)]
 pub struct CapabilitiesServer {
     supported_node_properties_for_instance: HashMap<InstanceName, Vec<String>>,
-    supported_wire_compressors_for_instance: HashMap<InstanceName, Vec<WireCompressor>>,
+    remote_cache_compression_instances: RemoteCacheCompressionInstances,
 }
 
 impl CapabilitiesServer {
     pub async fn new(
         configs: &[WithInstanceName<CapabilitiesConfig>],
         scheduler_map: &HashMap<String, Arc<dyn KnownPlatformPropertyProvider>>,
+        remote_cache_compression_instances: &RemoteCacheCompressionInstances,
     ) -> Result<Self, Error> {
         let mut supported_node_properties_for_instance = HashMap::new();
         for config in configs {
-            let mut properties = Vec::new();
             if let Some(remote_execution_cfg) = &config.remote_execution {
                 let scheduler =
                     scheduler_map
@@ -63,7 +61,7 @@ impl CapabilitiesServer {
                                 remote_execution_cfg.scheduler
                             )
                         })?;
-                for platform_key in scheduler
+                let properties = scheduler
                     .get_known_properties(&config.instance_name)
                     .await
                     .err_tip(|| {
@@ -71,23 +69,14 @@ impl CapabilitiesServer {
                             "Failed to get platform properties for {}",
                             config.instance_name
                         )
-                    })?
-                {
-                    properties.push(platform_key.clone());
-                }
+                    })?;
+                supported_node_properties_for_instance
+                    .insert(config.instance_name.clone(), properties);
             }
-            supported_node_properties_for_instance.insert(config.instance_name.clone(), properties);
-        }
-        let mut supported_wire_compressors_for_instance = HashMap::new();
-        for config in configs {
-            supported_wire_compressors_for_instance.insert(
-                config.instance_name.clone(),
-                config.supported_wire_compressors.clone(),
-            );
         }
         Ok(Self {
             supported_node_properties_for_instance,
-            supported_wire_compressors_for_instance,
+            remote_cache_compression_instances: remote_cache_compression_instances.clone(),
         })
     }
 
@@ -132,17 +121,14 @@ impl Capabilities for CapabilitiesServer {
                 ],
             });
 
-        let supported_compressors: Vec<i32> = self
-            .supported_wire_compressors_for_instance
-            .get(&instance_name)
-            .map(|compressors| {
-                compressors
-                    .iter()
-                    .filter_map(|c| wire_compressor_to_proto(*c))
-                    .map(Into::into)
-                    .collect()
-            })
-            .unwrap_or_default();
+        let supported_compressors = if self
+            .remote_cache_compression_instances
+            .enabled_for(&instance_name)
+        {
+            vec![compressor::Value::Zstd.into()]
+        } else {
+            Vec::new()
+        };
 
         let resp = ServerCapabilities {
             cache_capabilities: Some(CacheCapabilities {

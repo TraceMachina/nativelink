@@ -140,22 +140,6 @@ pub struct CapabilitiesRemoteExecutionConfig {
     pub scheduler: SchedulerRefName,
 }
 
-/// Wire compression algorithm for REAPI compressed-blobs.
-/// This is the compression applied on the gRPC wire between client and server,
-/// as described in the REAPI compressed-blobs specification.
-/// This is distinct from at-rest compression (CompressionStore/LZ4).
-#[derive(Deserialize, Serialize, Debug, Default, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
-pub enum WireCompressor {
-    /// No wire compression (default, backwards compatible).
-    #[default]
-    Identity,
-    /// Zstandard compression. This is the only algorithm Bazel uses with
-    /// `--remote_cache_compression`.
-    Zstd,
-}
-
 #[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
@@ -165,20 +149,13 @@ pub struct CapabilitiesConfig {
     /// execution is not supported.
     pub remote_execution: Option<CapabilitiesRemoteExecutionConfig>,
 
-    /// Wire compression algorithms supported for REAPI compressed-blobs.
-    /// When set, the capabilities service will advertise these compressors
-    /// and the ByteStream/CAS services will handle compressed data.
-    ///
-    /// Note: This is wire-level compression per the REAPI spec, which is
-    /// orthogonal to at-rest compression (`CompressionStore` with LZ4).
-    /// Wire compression reduces bytes on the network; at-rest compression
-    /// reduces bytes in the storage backend.
+    /// Whether this instance supports Bazel remote cache compression.
+    /// When enabled, the capabilities service advertises zstd wire compression
+    /// and the ByteStream/CAS services accept REAPI compressed-blobs/zstd data.
     ///
     /// Bazel clients enable this with `--remote_cache_compression`.
-    ///
-    /// Default: empty (no wire compression, backwards compatible)
-    #[serde(default)]
-    pub supported_wire_compressors: Vec<WireCompressor>,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub remote_cache_compression: bool,
 }
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -245,20 +222,6 @@ pub struct ByteStreamConfig {
         skip_serializing_if = "is_default"
     )]
     pub max_bytes_per_stream: usize,
-
-    /// Operational memory/DoS budget for one
-    /// `compressed-blobs/{compressor}/...` `ByteStream` write on this instance.
-    /// While compressed uploads still buffer compressed wire bytes, this applies
-    /// to both the declared uncompressed digest size and the compressed wire
-    /// bytes received.
-    ///
-    /// A value of 0 uses the service default, currently 4GiB.
-    #[serde(
-        default,
-        deserialize_with = "convert_data_size_with_shellexpand",
-        skip_serializing_if = "is_default"
-    )]
-    pub max_compressed_upload_size: usize,
 
     /// In the event a client disconnects while uploading a blob, we will hold
     /// the internal stream open for this many seconds before closing it.
@@ -1099,5 +1062,25 @@ impl CasConfig {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capabilities_config_remote_cache_compression_deserializes_true() {
+        let config: CapabilitiesConfig =
+            serde_json5::from_str(r#"{"remote_cache_compression": true}"#).unwrap();
+
+        assert!(config.remote_cache_compression);
+    }
+
+    #[test]
+    fn capabilities_config_remote_cache_compression_defaults_false() {
+        let config: CapabilitiesConfig = serde_json5::from_str("{}").unwrap();
+
+        assert!(!config.remote_cache_compression);
     }
 }
