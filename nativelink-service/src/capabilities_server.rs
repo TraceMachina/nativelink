@@ -40,6 +40,11 @@ const MAX_BATCH_TOTAL_SIZE: i64 = 64 * 1024;
 #[derive(Debug, Default)]
 pub struct CapabilitiesServer {
     supported_node_properties_for_instance: HashMap<InstanceName, Vec<String>>,
+    // Kept separate from `supported_node_properties_for_instance`: that map is sent
+    // verbatim to clients as `ExecutionCapabilities.supported_node_properties` (REAPI
+    // file metadata like mtime/unix mode), while compression is advertised through
+    // `CacheCapabilities.supported_compressors`. Merging them would leak a fake node
+    // property onto the wire.
     remote_cache_compression_instances: RemoteCacheCompressionInstances,
 }
 
