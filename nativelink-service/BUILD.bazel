@@ -1,6 +1,5 @@
 load(
     "@rules_rust//rust:defs.bzl",
-    "rust_binary",
     "rust_doc",
     "rust_doc_test",
     "rust_library",
