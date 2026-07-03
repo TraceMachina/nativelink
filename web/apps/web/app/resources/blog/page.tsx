@@ -30,7 +30,7 @@ export default function BlogIndexPage() {
           {posts.map((post, i) => (
             <Reveal key={post.slug} delay={(i % 2) * 0.04}>
               <a
-                href={`/resources/blog/${post.slug}`}
+                href={`/resources/blog/${encodeURIComponent(post.slug)}`}
                 className="group flex h-full flex-col justify-between rounded-2xl border border-border bg-surface p-7 transition-all hover:border-brand/40 hover:shadow-[0_20px_50px_-25px_rgb(var(--nl-color-brand)/0.35)]"
               >
                 <div>
