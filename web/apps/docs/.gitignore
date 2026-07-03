@@ -7,4 +7,4 @@ next-env.d.ts
 
 # Generated from the repository-root CHANGELOG.md by scripts/gen-changelog.mjs
 # (runs as part of `dev` and `build`).
-content/docs/reference/changelog.mdx
+content/docs/reference/changelog.md
