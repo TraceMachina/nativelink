@@ -631,7 +631,7 @@ impl ByteStreamServer {
                         unique_uuid = format!("{:032x}", unique_key)
                     );
                     // Release the Occupied entry's borrow so we can insert on the same guard.
-                    drop(entry);
+                    let _ = entry;
                     let bytes_received = Arc::new(AtomicU64::new(0));
                     active_uploads.insert(unique_key, (bytes_received.clone(), None));
                     (unique_key, bytes_received, true)
