@@ -96,6 +96,10 @@ which is the container-based platform from the callout above.
 
 ## 5. Point `user.bazelrc` at a real cache and executor
 
+The template's own generator writes `user.bazelrc` with the literal
+word `TODO` as every value — this isn't a placeholder left in this
+page, it's what `nix flake init` puts on disk for you to edit:
+
 ```bash
 build --remote_cache=grpcs://TODO
 build --bes_backend=grpcs://TODO
@@ -103,10 +107,12 @@ build --remote_timeout=600
 build --remote_executor=grpcs://TODO
 ```
 
-Fill in [app.nativelink.com](https://app.nativelink.com) credentials
-or your own cluster's endpoint. Leaving the placeholders in place
-fails fast and specifically — this is the exact error building with
-`grpcs://TODO` still in place produces:
+Replace all three `TODO`s with either your
+[dev.nativelink.com](https://dev.nativelink.com) credentials or your
+own cluster's endpoint. If you build before editing this file, Bazel
+fails fast on the literal hostname `TODO` — here's the exact error
+that produces, captured from a real run, so you recognize it as "I
+forgot to edit `user.bazelrc`" rather than something else being wrong:
 
 ```text
 [8 / 10] Compiling src/hello-world.cpp; 0s remote, remote-cache
@@ -114,10 +120,11 @@ ERROR: BUILD.bazel:3:10: Compiling src/hello-world.cpp failed:
   Failed to query remote execution capabilities: UNAVAILABLE: Unable to resolve host TODO
 ```
 
-That failure is entirely DNS — the Nix toolchain, the Bazel platform
-wiring, and the `lre-cc` execution platform selection all worked
-correctly up to that point (`0s remote, remote-cache` means Bazel
-committed to executing it remotely).
+Everything before that DNS failure worked correctly — the Nix
+toolchain, the Bazel platform wiring, and the `lre-cc` execution
+platform selection (`0s remote, remote-cache` means Bazel committed to
+executing it remotely). Once real values replace `TODO`, this step
+just works.
 
 ## 6. Build
 
