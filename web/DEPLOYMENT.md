@@ -106,6 +106,14 @@ git-cliff maintains at release time — by
 page from the current changelog, and the web CI build on pull requests
 fails if a changelog edit stops compiling as MDX.
 
+The script reads `CHANGELOG.md` from disk when the repository root is
+available (local checkouts, GitHub CI, Vercel with **Include source files
+outside of the Root Directory** enabled). Vercel's default build container
+only mounts the workspace, so there the script instead fetches the file
+from GitHub raw pinned to `VERCEL_GIT_COMMIT_SHA` — the exact commit being
+deployed, so the bytes match a full checkout. If neither works the build
+fails with instructions rather than publishing a stale page.
+
 Because of this, don't configure an **Ignored Build Step** on the docs
 Vercel project that skips builds when `web/` is unchanged: a release merge
 touches only root files (`CHANGELOG.md`, version bumps), and skipping that
