@@ -289,3 +289,10 @@ gcc
 [Tt]eardown
 repo
 buildbox
+subgraph
+genrule
+hardcoded
+shellexpand
+pluggable
+[Cc]allout
+hostnames
