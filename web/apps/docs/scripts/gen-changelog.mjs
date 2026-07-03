@@ -10,12 +10,19 @@
 // pull requests fails if a changelog edit stops compiling as MDX.
 //
 // The transform is deliberately small:
-//   1. drop HTML comments (`<!-- vale off -->` etc.) — they are invalid MDX,
-//   2. drop the static git-cliff header (everything before the first `## `),
+//   1. drop the static git-cliff header (everything before the first `## `),
 //      replacing it with frontmatter and a short intro,
+//   2. drop whole-line HTML comment markers (`<!-- vale on -->` etc.) — HTML
+//      comments are invalid MDX,
 //   3. backslash-escape `<`, `{` and `}` outside inline code spans and fenced
 //      code blocks so MDX doesn't parse commit subjects like `Result<Stream>`
 //      or `clippy::{...}` as JSX.
+//
+// Step 3 is also what makes step 2 safe to keep simple: comments are only
+// ever dropped as whole lines, never spliced out of a line, so removal can't
+// concatenate text into a new `<!--`. Any comment-like fragment that isn't a
+// whole-line marker reaches escapeLine and comes out as inert `\<!--` text
+// rather than markup.
 //
 // Usage from web/:
 //   bun --filter @nativelink/docs gen:changelog
@@ -44,10 +51,14 @@ const escapeLine = (line) =>
     .map((segment, i) => (i % 2 === 1 ? segment : escapeProse(segment)))
     .join("");
 
-const raw = readFileSync(sourceFile, "utf8").replace(/<!--[\s\S]*?-->/g, "");
+/** Whole-line HTML comment, like the git-cliff footer markers. */
+const isCommentLine = (line) => /^<!--.*-->$/.test(line.trim());
+
+const raw = readFileSync(sourceFile, "utf8");
 
 // Keep everything from the first release heading on; the git-cliff header
-// (title + "All notable changes..." line) is replaced by the intro below.
+// (comment markers, title, "All notable changes..." line) is replaced by the
+// intro below.
 const firstHeading = raw.search(/^## /m);
 if (firstHeading === -1) {
   throw new Error(`no "## " release heading found in ${sourceFile}`);
@@ -56,16 +67,20 @@ if (firstHeading === -1) {
 let inFence = false;
 const body = raw
   .slice(firstHeading)
-  .trimEnd()
   .split("\n")
   .map((line) => {
     if (/^\s{0,3}(```|~~~)/.test(line)) {
       inFence = !inFence;
       return line;
     }
-    return inFence ? line : escapeLine(line);
+    if (inFence) {
+      return line;
+    }
+    return isCommentLine(line) ? null : escapeLine(line);
   })
-  .join("\n");
+  .filter((line) => line !== null)
+  .join("\n")
+  .trimEnd();
 
 const page = `---
 title: Changelog
