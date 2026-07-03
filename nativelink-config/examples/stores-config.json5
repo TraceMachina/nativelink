@@ -105,8 +105,8 @@
           "namespace": "your-object-storage-namespace",
           "region": "us-phoenix-1",
           "bucket": "nativelink-cas",
-          "access_key_id": "${OCI_ACCESS_KEY_ID}",
-          "secret_access_key": "${OCI_SECRET_ACCESS_KEY}",
+          "access_key_id": "oci_access_key_id",
+          "secret_access_key": "oci_secret_access_key",
           "key_prefix": "test-prefix/",
           "retry": {
             "max_retries": 6,
