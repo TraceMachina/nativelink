@@ -96,6 +96,22 @@ docs project's main-branch production. If you want a preview to proxy
 to the docs project's branch preview, you'd need a build-time hook to
 rewrite `DOCS_URL`; we haven't wired that yet.
 
+## Generated content
+
+The docs changelog page (`/reference/changelog`) is not checked in. It is
+generated from the repository-root `CHANGELOG.md` — the canonical changelog
+git-cliff maintains at release time — by
+`apps/docs/scripts/gen-changelog.mjs`, which runs at the start of the docs
+`dev` and `build` scripts. Every merge to main therefore republishes the
+page from the current changelog, and the web CI build on pull requests
+fails if a changelog edit stops compiling as MDX.
+
+Because of this, don't configure an **Ignored Build Step** on the docs
+Vercel project that skips builds when `web/` is unchanged: a release merge
+touches only root files (`CHANGELOG.md`, version bumps), and skipping that
+deploy would leave the published changelog stale until the next `web/`
+change.
+
 ## Operating
 
 - **Cache invalidation**: Vercel handles automatic edge invalidation on

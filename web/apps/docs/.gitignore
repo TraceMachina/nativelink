@@ -4,3 +4,7 @@ out/
 .source/
 next-env.d.ts
 *.tsbuildinfo
+
+# Generated from the repository-root CHANGELOG.md by scripts/gen-changelog.mjs
+# (runs as part of `dev` and `build`).
+content/docs/reference/changelog.mdx
