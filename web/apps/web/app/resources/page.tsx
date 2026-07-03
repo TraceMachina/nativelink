@@ -130,7 +130,10 @@ export default function ResourcesPage() {
                 From the team
               </h2>
             </div>
-            <a href="#" className="hidden font-mono text-sm text-brand md:inline-flex">
+            <a
+              href="/resources/blog"
+              className="hidden font-mono text-sm text-brand md:inline-flex"
+            >
               All posts →
             </a>
           </div>
