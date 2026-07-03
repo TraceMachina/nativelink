@@ -109,10 +109,26 @@ build --remote_executor=grpcs://TODO
 
 Replace all three `TODO`s with either your
 [dev.nativelink.com](https://dev.nativelink.com) credentials or your
-own cluster's endpoint. If you build before editing this file, Bazel
-fails fast on the literal hostname `TODO` — here's the exact error
-that produces, captured from a real run, so you recognize it as "I
-forgot to edit `user.bazelrc`" rather than something else being wrong:
+own cluster's endpoint. Concretely, filled in for a plain local
+cluster (no TLS, so `grpc://` instead of `grpcs://`, and no BES
+endpoint to point at) — this is the exact `user.bazelrc` used to
+produce the verified output in step 4 above:
+
+```bash
+build --remote_cache=grpc://127.0.0.1:50051
+build --remote_timeout=600
+build --remote_executor=grpc://127.0.0.1:50051
+```
+
+A [dev.nativelink.com](https://dev.nativelink.com) or self-hosted
+cluster looks the same shape, just with `grpcs://` and your cluster's
+real hostnames in place of `127.0.0.1:50051`, plus a `bes_backend`
+line if you want build results streamed there.
+
+If you build before editing `user.bazelrc` at all, Bazel fails fast on
+the literal hostname `TODO` — here's the exact error that produces,
+captured from a real run, so you recognize it as "I forgot to edit
+`user.bazelrc`" rather than something else being wrong:
 
 ```text
 [8 / 10] Compiling src/hello-world.cpp; 0s remote, remote-cache
