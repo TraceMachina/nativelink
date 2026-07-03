@@ -296,9 +296,34 @@ impl InstanceInfo {
         uuid_key: UuidKey,
     ) -> (Arc<AtomicU64>, CompressedUploadGuard) {
         let bytes_received = Arc::new(AtomicU64::new(0));
-        self.active_uploads
-            .lock()
-            .insert(uuid_key, (bytes_received.clone(), None));
+        let uuid_key = {
+            let mut active_uploads = self.active_uploads.lock();
+            match active_uploads.entry(uuid_key) {
+                Entry::Occupied(entry) => {
+                    // Another upload already owns this UUID; rekey instead of
+                    // clobbering its entry (which would break its QueryWriteStatus
+                    // visibility and double-decrement the metric on guard drop).
+                    // Mirrors create_or_join_upload_stream's collision handling.
+                    let original_key = *entry.key();
+                    let unique_key = ByteStreamServer::generate_unique_uuid_key(original_key);
+                    warn!(
+                        msg = "UUID collision detected on compressed upload, generating unique UUID to prevent conflict",
+                        original_uuid = format!("{original_key:032x}"),
+                        unique_uuid = format!("{unique_key:032x}")
+                    );
+                    self.metrics.uuid_collisions.fetch_add(1, Ordering::Relaxed);
+                    // Release the Occupied entry's borrow so we can insert on the same guard.
+                    let _ = entry;
+                    active_uploads.insert(unique_key, (bytes_received.clone(), None));
+                    unique_key
+                }
+                Entry::Vacant(entry) => {
+                    let key = *entry.key();
+                    entry.insert((bytes_received.clone(), None));
+                    key
+                }
+            }
+        };
         self.metrics.active_uploads.fetch_add(1, Ordering::Relaxed);
 
         (
