@@ -29,6 +29,7 @@ const announcements = [
     date: "April 18, 2026",
     readingTime: "32 min video",
     accent: "default",
+    href: "https://www.youtube.com/watch?v=uokjTev8myk",
   },
 ];
 
@@ -162,7 +163,9 @@ export default function ResourcesPage() {
             {announcements.map((p, i) => (
               <Reveal key={p.title} delay={i * 0.05}>
                 <a
-                  href="#"
+                  href={p.href}
+                  target="_blank"
+                  rel="noreferrer"
                   className={cn(
                     "group block rounded-2xl border p-6 transition-all hover:-translate-y-0.5",
                     p.accent === "brand"
