@@ -133,7 +133,7 @@ export default function ResourcesPage() {
         <Section width="default" className="pt-24 pb-4">
           <Reveal>
             <h2 className="text-balance text-3xl font-semibold leading-[1.1] tracking-[-0.025em] md:text-4xl">
-              Blog
+              From the team
             </h2>
           </Reveal>
         </Section>
@@ -149,7 +149,7 @@ export default function ResourcesPage() {
           className="border-t border-border/60 pt-16 pb-16"
         />
         <PostSection
-          title="More from the blog"
+          title="Blog"
           cards={[...others.map(postToCard), talkCard]}
           className="border-t border-border/60 pt-16 pb-28"
         />

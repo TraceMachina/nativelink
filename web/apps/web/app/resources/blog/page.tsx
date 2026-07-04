@@ -40,7 +40,7 @@ export default function BlogIndexPage() {
         className="border-t border-border/60 pt-16 pb-16"
       />
       <PostSection
-        title="More from the blog"
+        title="Blog"
         cards={others.map(postToCard)}
         className="border-t border-border/60 pt-16 pb-28"
       />
