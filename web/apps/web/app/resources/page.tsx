@@ -132,12 +132,9 @@ export default function ResourcesPage() {
       <section className="border-t border-border/60 bg-surface-elevated/40">
         <Section width="default" className="pt-24 pb-4">
           <Reveal>
-            <div>
-              <Eyebrow className="mb-4">Blog</Eyebrow>
-              <h2 className="text-balance text-3xl font-semibold leading-[1.1] tracking-[-0.025em] md:text-4xl">
-                From the team
-              </h2>
-            </div>
+            <h2 className="text-balance text-3xl font-semibold leading-[1.1] tracking-[-0.025em] md:text-4xl">
+              Blog
+            </h2>
           </Reveal>
         </Section>
 
