@@ -1,68 +1,8 @@
-import { Badge, Eyebrow, Reveal, Section } from "@nativelink/ui";
-import { type Post, formatPostDate, getAllPosts } from "../../../lib/posts";
+import { Eyebrow, Reveal, Section } from "@nativelink/ui";
+import { getAllPosts } from "../../../lib/posts";
+import { PostSection, postToCard } from "../post-sections";
 
 export const metadata = { title: "Blog" };
-
-function PostCard({ post, index }: { post: Post; index: number }) {
-  return (
-    <Reveal key={post.slug} delay={(index % 2) * 0.04}>
-      <a
-        href={`/resources/blog/${encodeURIComponent(post.slug)}`}
-        className="group flex h-full flex-col justify-between rounded-2xl border border-border bg-surface p-7 transition-all hover:border-brand/40 hover:shadow-[0_20px_50px_-25px_rgb(var(--nl-color-brand)/0.35)]"
-      >
-        <div>
-          <div className="mb-4 flex flex-wrap items-center gap-2">
-            {post.tags.map((tag) => (
-              <Badge key={tag} variant="outline">
-                {tag}
-              </Badge>
-            ))}
-            <span className="font-mono text-xs text-muted">
-              {formatPostDate(post.pubDate)}
-              {post.readTime ? ` · ${post.readTime}` : null}
-            </span>
-          </div>
-          <h2 className="text-xl font-semibold leading-tight tracking-tight text-foreground">
-            {post.title}
-          </h2>
-          <p className="mt-3 text-[15px] leading-relaxed text-muted-foreground">{post.excerpt}</p>
-        </div>
-        <div className="mt-6 inline-flex items-center gap-1.5 font-mono text-sm text-brand">
-          Read post{" "}
-          <span aria-hidden="true" className="transition-transform group-hover:translate-x-1">
-            →
-          </span>
-        </div>
-      </a>
-    </Reveal>
-  );
-}
-
-function PostSection({
-  title,
-  posts,
-  className,
-}: {
-  title: string;
-  posts: Post[];
-  className?: string;
-}) {
-  if (posts.length === 0) {
-    return null;
-  }
-  return (
-    <Section width="default" className={className}>
-      <Reveal>
-        <Eyebrow className="mb-8">{title}</Eyebrow>
-      </Reveal>
-      <div className="grid gap-5 md:grid-cols-2">
-        {posts.map((post, i) => (
-          <PostCard key={post.slug} post={post} index={i} />
-        ))}
-      </div>
-    </Section>
-  );
-}
 
 export default function BlogIndexPage() {
   const posts = getAllPosts();
@@ -93,15 +33,15 @@ export default function BlogIndexPage() {
         </Section>
       </section>
 
-      <PostSection title="Case studies" posts={caseStudies} className="pb-16" />
+      <PostSection title="Case studies" cards={caseStudies.map(postToCard)} className="pb-16" />
       <PostSection
         title="Announcements"
-        posts={announcements}
+        cards={announcements.map(postToCard)}
         className="border-t border-border/60 pt-16 pb-16"
       />
       <PostSection
         title="More from the blog"
-        posts={others}
+        cards={others.map(postToCard)}
         className="border-t border-border/60 pt-16 pb-28"
       />
     </>
