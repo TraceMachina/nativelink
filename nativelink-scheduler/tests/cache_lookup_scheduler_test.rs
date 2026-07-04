@@ -19,10 +19,14 @@ mod utils {
     pub(crate) mod scheduler_utils;
 }
 
+use core::pin::Pin;
+
+use async_trait::async_trait;
 use futures::join;
 use nativelink_config::stores::MemorySpec;
-use nativelink_error::Error;
+use nativelink_error::{Code, Error, make_err};
 use nativelink_macro::nativelink_test;
+use nativelink_metric::MetricsComponent;
 use nativelink_proto::build::bazel::remote::execution::v2::ActionResult as ProtoActionResult;
 use nativelink_scheduler::cache_lookup_scheduler::CacheLookupScheduler;
 use nativelink_scheduler::mock_scheduler::MockActionScheduler;
@@ -30,15 +34,81 @@ use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::action_messages::{
     ActionResult, ActionStage, ActionState, ActionUniqueQualifier, OperationId,
 };
+use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
+use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::operation_state_manager::{ClientStateManager, OperationFilter};
-use nativelink_util::store_trait::{Store, StoreLike};
+use nativelink_util::store_trait::{
+    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+};
 use pretty_assertions::assert_eq;
 use prost::Message;
 use tokio::sync::watch;
 use tokio::{self};
 use tokio_stream::StreamExt;
 use utils::scheduler_utils::{TokioWatchActionStateResult, make_base_action_info};
+
+/// An AC store whose reads always fail with a non-`NotFound` backend error.
+#[derive(Debug, MetricsComponent)]
+struct AlwaysErrStore {
+    #[metric(help = "Error code every operation fails with")]
+    code: u32,
+}
+
+#[async_trait]
+impl StoreDriver for AlwaysErrStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn has_with_results(
+        self: Pin<&Self>,
+        _keys: &[StoreKey<'_>],
+        _results: &mut [Option<u64>],
+    ) -> Result<(), Error> {
+        Err(make_err!(Code::Unavailable, "injected AC backend failure"))
+    }
+
+    async fn update(
+        self: Pin<&Self>,
+        _key: StoreKey<'_>,
+        _reader: DropCloserReadHalf,
+        _size_info: UploadSizeInfo,
+    ) -> Result<u64, Error> {
+        Err(make_err!(Code::Unavailable, "injected AC backend failure"))
+    }
+
+    async fn get_part(
+        self: Pin<&Self>,
+        _key: StoreKey<'_>,
+        _writer: &mut DropCloserWriteHalf,
+        _offset: u64,
+        _length: Option<u64>,
+    ) -> Result<(), Error> {
+        Err(make_err!(Code::Unavailable, "injected AC backend failure"))
+    }
+
+    fn inner_store(&self, _key: Option<StoreKey>) -> &dyn StoreDriver {
+        self
+    }
+
+    fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
+        self
+    }
+
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+        self
+    }
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        _callback: Arc<dyn RemoveItemCallback>,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+default_health_status_indicator!(AlwaysErrStore);
 
 struct TestContext {
     mock_scheduler: Arc<MockActionScheduler>,
@@ -126,6 +196,37 @@ async fn add_action_handles_skip_cache() -> Result<(), Error> {
                 forward_watch_channel_rx
             ))))
     );
+    Ok(())
+}
+
+/// A faulting AC backend (unavailable Redis, decode error) must degrade the
+/// cache lookup to execution, not fail the Execute request: a cache fault
+/// costs a redundant execution, never a failed build.
+#[nativelink_test]
+async fn ac_fault_falls_through_to_execution() -> Result<(), Error> {
+    let mock_scheduler = Arc::new(MockActionScheduler::new());
+    let ac_store = Store::new(Arc::new(AlwaysErrStore {
+        code: Code::Unavailable as u32,
+    }));
+    let cache_scheduler = CacheLookupScheduler::new(ac_store, mock_scheduler.clone())?;
+    let action_info = make_base_action_info(UNIX_EPOCH, DigestInfo::new([7; 32], 123));
+    let (_forward_watch_channel_tx, forward_watch_channel_rx) =
+        watch::channel(Arc::new(ActionState {
+            client_operation_id: OperationId::default(),
+            stage: ActionStage::Queued,
+            action_digest: action_info.unique_qualifier.digest(),
+            last_transition_timestamp: SystemTime::now(),
+        }));
+    let client_operation_id = OperationId::default();
+    let (add_result, _) = join!(
+        cache_scheduler.add_action(client_operation_id.clone(), action_info.clone()),
+        mock_scheduler.expect_add_action(Ok(Box::new(TokioWatchActionStateResult::new(
+            client_operation_id,
+            action_info,
+            forward_watch_channel_rx
+        ))))
+    );
+    add_result.expect("AC backend fault must fall through to execution, not fail the client");
     Ok(())
 }
 

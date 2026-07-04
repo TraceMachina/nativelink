@@ -44,7 +44,7 @@ use parking_lot::{Mutex, MutexGuard};
 use scopeguard::guard;
 use tokio::sync::oneshot;
 use tonic::{Request, Response};
-use tracing::error;
+use tracing::{error, warn};
 
 use crate::known_platform_property_provider::KnownPlatformPropertyProvider;
 
@@ -302,23 +302,13 @@ impl CacheLookupScheduler {
                     return;
                 }
                 Err(err) => {
-                    // NotFound errors just mean we need to execute our action.
+                    // A NotFound just means we need to execute the action. Any
+                    // other lookup failure (an unavailable AC backend, a decode
+                    // fault) degrades to execution too: a cache fault must never
+                    // fail the request, only cost a redundant execution. The
+                    // error itself still reaches operators via the log.
                     if err.code != Code::NotFound {
-                        let err = err.append("In CacheLookupScheduler::add_action");
-                        let maybe_pending_txs = {
-                            let mut inflight_cache_checks = inflight_cache_checks.lock();
-                            // We are ready to resolve the in-flight actions. We remove the
-                            // in-flight actions from the map.
-                            inflight_cache_checks.remove(unique_key)
-                        };
-                        let Some(pending_txs) = maybe_pending_txs else {
-                            return; // Nobody is waiting for this action anymore.
-                        };
-                        for (_client_operation_id, pending_tx) in pending_txs {
-                            // Ignore errors here, as the other end may have hung up.
-                            drop(pending_tx.send(Err(err.clone())));
-                        }
-                        return;
+                        warn!(?err, "Cache lookup failed; falling through to execution");
                     }
                 }
             }
