@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 #[cfg(feature = "dev-schema")]
@@ -20,7 +20,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
-use crate::schedulers::SchedulerSpec;
+use crate::schedulers::{ExperimentalSimpleSchedulerBackend, SchedulerSpec};
 use crate::serde_utils::{
     convert_boolean_with_shellexpand, convert_data_size_with_shellexpand,
     convert_duration_with_shellexpand, convert_numeric_with_shellexpand,
@@ -1555,6 +1555,347 @@ impl CasConfig {
         }
         Ok(())
     }
+
+    /// Offline structural validation of every store/scheduler name reference
+    /// in this config. This is a pure, read-only check intended for
+    /// `nativelink --check`: it constructs no stores, binds no sockets, opens
+    /// no connections, and creates no directories.
+    ///
+    /// Every store name referenced by a worker or by a server service, and
+    /// every scheduler name referenced by a service, must resolve to a store
+    /// declared in `stores` / a scheduler declared in `schedulers`. Store
+    /// references made *inside* a declared store's spec (the `ref_store`
+    /// wrappers such as `fast_slow`, `dedup`, `completeness_checking`, ...)
+    /// are also resolved, but only for the transitive closure of stores that
+    /// are actually wired to a worker or service. Store definitions that are
+    /// never referenced by any consumer (for example a pure store-catalog
+    /// sample config) are intentionally not walked, so their illustrative
+    /// placeholder references are never flagged.
+    ///
+    /// All problems are collected and reported together, each with a path
+    /// such as `servers[0].services.cas[main].cas_store references
+    /// undefined store 'CAS_STORE'`, rather than failing on the first one.
+    ///
+    /// Duplicate store names and duplicate scheduler names are also reported,
+    /// because [`crate::stores`] / the store manager resolve names last-wins
+    /// and would otherwise silently drop the earlier definition.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(Code::InvalidArgument)` if any referenced store/scheduler
+    /// name is undeclared, or if a store/scheduler name is declared more than
+    /// once.
+    pub fn validate_references(&self) -> Result<(), Error> {
+        let mut problems: Vec<String> = Vec::new();
+
+        // Declared registries. Collision on insert is a duplicate name.
+        let mut store_names: HashSet<&str> = HashSet::new();
+        for store in &self.stores {
+            if !store_names.insert(store.name.as_str()) {
+                problems.push(format!("duplicate store name '{}'", store.name));
+            }
+        }
+        let mut scheduler_names: HashSet<&str> = HashSet::new();
+        for scheduler in self.schedulers.iter().flatten() {
+            if !scheduler_names.insert(scheduler.name.as_str()) {
+                problems.push(format!("duplicate scheduler name '{}'", scheduler.name));
+            }
+        }
+
+        // Only validate a reference category when its registry is non-empty.
+        // A config that declares zero stores (or zero schedulers) is a
+        // fragment or legacy-format sample whose backing definitions live
+        // elsewhere; every reference would then trivially be "unresolved" and
+        // flagging them would be a false positive on an otherwise-valid
+        // sample. Real deployments always declare their stores, so genuine
+        // typos are still caught.
+        let mut checker = ReferenceChecker {
+            check_stores: !store_names.is_empty(),
+            check_schedulers: !scheduler_names.is_empty(),
+            store_names,
+            scheduler_names,
+            problems,
+            used_stores: Vec::new(),
+        };
+
+        for (worker_idx, worker) in self.workers.iter().flatten().enumerate() {
+            let WorkerConfig::Local(local) = worker;
+            checker.store(
+                &format!("workers[{worker_idx}].local.cas_fast_slow_store"),
+                &local.cas_fast_slow_store,
+            );
+            if let Some(ac_store) = &local.upload_action_result.ac_store {
+                checker.store(
+                    &format!("workers[{worker_idx}].local.upload_action_result.ac_store"),
+                    ac_store,
+                );
+            }
+            if let Some(historical) = &local.upload_action_result.historical_results_store {
+                checker.store(
+                    &format!(
+                        "workers[{worker_idx}].local.upload_action_result.historical_results_store"
+                    ),
+                    historical,
+                );
+            }
+        }
+
+        if let Some(origin_events) = &self.experimental_origin_events {
+            checker.store(
+                "experimental_origin_events.publisher.store",
+                &origin_events.publisher.store,
+            );
+        }
+
+        for (server_idx, server) in self.servers.iter().enumerate() {
+            let Some(services) = &server.services else {
+                continue;
+            };
+            let prefix = format!("servers[{server_idx}].services");
+            for entry in services.cas.iter().flatten() {
+                let name = &entry.instance_name;
+                checker.store(&format!("{prefix}.cas[{name}].cas_store"), &entry.cas_store);
+                if let Some(index_store) = entry
+                    .experimental_chunking
+                    .as_ref()
+                    .and_then(|chunking| chunking.index_store.as_ref())
+                {
+                    checker.store(
+                        &format!("{prefix}.cas[{name}].experimental_chunking.index_store"),
+                        index_store,
+                    );
+                }
+            }
+            for entry in services.ac.iter().flatten() {
+                let name = &entry.instance_name;
+                checker.store(&format!("{prefix}.ac[{name}].ac_store"), &entry.ac_store);
+            }
+            for entry in services.execution.iter().flatten() {
+                let name = &entry.instance_name;
+                checker.store(
+                    &format!("{prefix}.execution[{name}].cas_store"),
+                    &entry.cas_store,
+                );
+                checker.scheduler(
+                    &format!("{prefix}.execution[{name}].scheduler"),
+                    &entry.scheduler,
+                );
+            }
+            for entry in services.capabilities.iter().flatten() {
+                if let Some(remote_execution) = &entry.remote_execution {
+                    let name = &entry.instance_name;
+                    checker.scheduler(
+                        &format!("{prefix}.capabilities[{name}].remote_execution.scheduler"),
+                        &remote_execution.scheduler,
+                    );
+                }
+            }
+            for entry in services.bytestream.iter().flatten() {
+                let name = &entry.instance_name;
+                checker.store(
+                    &format!("{prefix}.bytestream[{name}].cas_store"),
+                    &entry.cas_store,
+                );
+            }
+            for entry in services.fetch.iter().flatten() {
+                let name = &entry.instance_name;
+                checker.store(
+                    &format!("{prefix}.fetch[{name}].fetch_store"),
+                    &entry.fetch_store,
+                );
+            }
+            for entry in services.push.iter().flatten() {
+                let name = &entry.instance_name;
+                checker.store(
+                    &format!("{prefix}.push[{name}].push_store"),
+                    &entry.push_store,
+                );
+            }
+            if let Some(worker_api) = &services.worker_api {
+                checker.scheduler(
+                    &format!("{prefix}.worker_api.scheduler"),
+                    &worker_api.scheduler,
+                );
+            }
+            if let Some(bep) = &services.experimental_bep {
+                checker.store(&format!("{prefix}.experimental_bep.store"), &bep.store);
+            }
+        }
+
+        // Scheduler specs themselves reference stores (and nest further
+        // schedulers); walk every declared scheduler so those references are
+        // resolved and their stores seed the `ref_store` reachability walk.
+        for scheduler in self.schedulers.iter().flatten() {
+            checker.scheduler_spec(&format!("schedulers[{}]", scheduler.name), &scheduler.spec);
+        }
+
+        // Resolve `ref_store` references reachable from the wired-up stores.
+        if checker.check_stores {
+            let store_specs: HashMap<&str, &StoreSpec> = self
+                .stores
+                .iter()
+                .map(|store| (store.name.as_str(), &store.spec))
+                .collect();
+            checker.walk_used_stores(&store_specs);
+        }
+
+        if checker.problems.is_empty() {
+            Ok(())
+        } else {
+            Err(make_err!(
+                Code::InvalidArgument,
+                "configuration reference validation failed:\n  - {}",
+                checker.problems.join("\n  - ")
+            ))
+        }
+    }
+}
+
+/// Recursively collects every `ref_store` name that appears anywhere inside a
+/// single [`StoreSpec`] tree (the wrapper stores nest other `StoreSpec`s). The
+/// match is exhaustive on purpose so a newly added wrapping store forces this
+/// to be revisited.
+fn collect_ref_store_names<'a>(spec: &'a StoreSpec, out: &mut Vec<&'a StoreRefName>) {
+    match spec {
+        StoreSpec::RefStore(ref_spec) => out.push(&ref_spec.name),
+        StoreSpec::CacheMetrics(inner) => collect_ref_store_names(&inner.backend, out),
+        StoreSpec::Verify(inner) => collect_ref_store_names(&inner.backend, out),
+        StoreSpec::CompletenessChecking(inner) => {
+            collect_ref_store_names(&inner.backend, out);
+            collect_ref_store_names(&inner.cas_store, out);
+        }
+        StoreSpec::Compression(inner) => collect_ref_store_names(&inner.backend, out),
+        StoreSpec::Dedup(inner) => {
+            collect_ref_store_names(&inner.index_store, out);
+            collect_ref_store_names(&inner.content_store, out);
+        }
+        StoreSpec::ExistenceCache(inner) => collect_ref_store_names(&inner.backend, out),
+        StoreSpec::FastSlow(inner) => {
+            collect_ref_store_names(&inner.fast, out);
+            collect_ref_store_names(&inner.slow, out);
+        }
+        StoreSpec::Shard(inner) => {
+            for shard in &inner.stores {
+                collect_ref_store_names(&shard.store, out);
+            }
+        }
+        StoreSpec::SizePartitioning(inner) => {
+            collect_ref_store_names(&inner.lower_store, out);
+            collect_ref_store_names(&inner.upper_store, out);
+        }
+        // Leaf stores and stores whose backends are concrete (non-`StoreSpec`)
+        // specs carry no nested `ref_store` names.
+        StoreSpec::Memory(_)
+        | StoreSpec::ExperimentalCloudObjectStore(_)
+        | StoreSpec::OntapS3ExistenceCache(_)
+        | StoreSpec::Filesystem(_)
+        | StoreSpec::Grpc(_)
+        | StoreSpec::RedisStore(_)
+        | StoreSpec::Noop(_)
+        | StoreSpec::ExperimentalMongo(_) => {}
+    }
+}
+
+/// Accumulates unresolved-reference problems while walking a [`CasConfig`].
+struct ReferenceChecker<'a> {
+    store_names: HashSet<&'a str>,
+    scheduler_names: HashSet<&'a str>,
+    check_stores: bool,
+    check_schedulers: bool,
+    problems: Vec<String>,
+    /// Declared store names reached from a worker/service, used to seed the
+    /// `ref_store` reachability walk.
+    used_stores: Vec<&'a str>,
+}
+
+impl<'a> ReferenceChecker<'a> {
+    /// Records that `name` (found at `path`) must resolve to a declared store.
+    fn store(&mut self, path: &str, name: &'a str) {
+        if !self.check_stores {
+            return;
+        }
+        if self.store_names.contains(name) {
+            self.used_stores.push(name);
+        } else {
+            self.problems
+                .push(format!("{path} references undefined store '{name}'"));
+        }
+    }
+
+    /// Records that `name` (found at `path`) must resolve to a declared
+    /// scheduler.
+    fn scheduler(&mut self, path: &str, name: &str) {
+        if !self.check_schedulers {
+            return;
+        }
+        if !self.scheduler_names.contains(name) {
+            self.problems
+                .push(format!("{path} references undefined scheduler '{name}'"));
+        }
+    }
+
+    /// Walks a [`SchedulerSpec`] tree, resolving every store reference it
+    /// carries and recursing into nested schedulers. The match is exhaustive
+    /// on purpose so a newly added scheduler variant forces this to be
+    /// revisited (same design as [`collect_ref_store_names`]).
+    fn scheduler_spec(&mut self, path: &str, spec: &'a SchedulerSpec) {
+        match spec {
+            SchedulerSpec::Simple(simple) => match &simple.experimental_backend {
+                Some(ExperimentalSimpleSchedulerBackend::Redis(redis)) => {
+                    self.store(
+                        &format!("{path}.simple.experimental_backend.redis.redis_store"),
+                        &redis.redis_store,
+                    );
+                }
+                Some(ExperimentalSimpleSchedulerBackend::Memory) | None => {}
+            },
+            SchedulerSpec::CacheLookup(inner) => {
+                self.store(&format!("{path}.cache_lookup.ac_store"), &inner.ac_store);
+                self.scheduler_spec(&format!("{path}.cache_lookup.scheduler"), &inner.scheduler);
+            }
+            SchedulerSpec::PropertyModifier(inner) => {
+                self.scheduler_spec(
+                    &format!("{path}.property_modifier.scheduler"),
+                    &inner.scheduler,
+                );
+            }
+            SchedulerSpec::HistoricalResource(inner) => {
+                self.scheduler_spec(
+                    &format!("{path}.historical_resource.scheduler"),
+                    &inner.scheduler,
+                );
+            }
+            // Carries no store references and no nested scheduler.
+            SchedulerSpec::Grpc(_) => {}
+        }
+    }
+
+    /// Walks the transitive closure of stores reachable from
+    /// [`Self::used_stores`], resolving each nested `ref_store` against the
+    /// declared store set. A visited set bounds the walk against `ref_store`
+    /// cycles.
+    fn walk_used_stores(&mut self, store_specs: &HashMap<&'a str, &'a StoreSpec>) {
+        let mut visited: HashSet<&'a str> = HashSet::new();
+        while let Some(name) = self.used_stores.pop() {
+            if !visited.insert(name) {
+                continue;
+            }
+            let Some(&spec) = store_specs.get(name) else {
+                continue;
+            };
+            let mut refs: Vec<&'a StoreRefName> = Vec::new();
+            collect_ref_store_names(spec, &mut refs);
+            for ref_name in refs {
+                if self.store_names.contains(ref_name.as_str()) {
+                    self.used_stores.push(ref_name.as_str());
+                } else {
+                    self.problems.push(format!(
+                        "store '{name}' references undefined store '{ref_name}'"
+                    ));
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1837,5 +2178,355 @@ mod tests {
         assert!(logs_contain("store=\"nested-upstreams\""));
         assert!(logs_contain("instance_name=\"opt-out\""));
         assert!(logs_contain(CasConfig::ZSTD_COMPRESSION_DOCS_URL));
+    }
+
+    // ----------------------------------------------------------------------
+    // `validate_references` (offline `nativelink --check`) tests.
+    // ----------------------------------------------------------------------
+
+    fn parse_cas_config(json5: &str) -> CasConfig {
+        serde_json5::from_str(json5).expect("valid CasConfig json5")
+    }
+
+    /// A fully-resolved config that exercises worker, service and nested
+    /// `ref_store` reference sites. `WRAPPED` wraps a `ref_store` to `CAS`,
+    /// so the reachability walk must resolve it.
+    const VALID_CONFIG: &str = r#"{
+        stores: [
+            { name: "CAS", memory: {} },
+            { name: "AC", memory: {} },
+            { name: "WRAPPED", fast_slow: {
+                fast: { ref_store: { name: "CAS" } },
+                slow: { noop: {} },
+            } },
+        ],
+        schedulers: [{ name: "SCHED", simple: {} }],
+        workers: [{
+            local: {
+                worker_api_endpoint: { uri: "grpc://127.0.0.1:50061" },
+                cas_fast_slow_store: "WRAPPED",
+                upload_action_result: { ac_store: "AC" },
+                work_directory: "/tmp/work",
+                platform_properties: {},
+            },
+        }],
+        servers: [{
+            listener: { http: { socket_address: "0.0.0.0:50051" } },
+            services: {
+                cas: [{ instance_name: "main", cas_store: "CAS" }],
+                ac: [{ instance_name: "main", ac_store: "AC" }],
+                execution: [{ instance_name: "main", cas_store: "CAS", scheduler: "SCHED" }],
+                capabilities: [{ instance_name: "main", remote_execution: { scheduler: "SCHED" } }],
+                bytestream: [{ instance_name: "main", cas_store: "CAS" }],
+                worker_api: { scheduler: "SCHED" },
+            },
+        }],
+    }"#;
+
+    #[test]
+    fn validate_references_accepts_resolved_config() {
+        parse_cas_config(VALID_CONFIG)
+            .validate_references()
+            .expect("every reference resolves");
+    }
+
+    #[test]
+    fn validate_references_flags_undefined_service_store() {
+        let cfg = parse_cas_config(
+            r#"{
+                stores: [{ name: "CAS", memory: {} }],
+                servers: [{
+                    listener: { http: { socket_address: "0.0.0.0:50051" } },
+                    services: { cas: [{ instance_name: "main", cas_store: "CAS_TYPO" }] },
+                }],
+            }"#,
+        );
+        let err = cfg.validate_references().unwrap_err();
+        assert_eq!(err.code, Code::InvalidArgument);
+        let message = err.messages.join("\n");
+        assert!(
+            message.contains("CAS_TYPO"),
+            "error must name the bad store ref: {message}"
+        );
+        assert!(
+            message.contains("servers[0].services.cas[main].cas_store"),
+            "error must name the reference site: {message}"
+        );
+    }
+
+    #[test]
+    fn validate_references_flags_undefined_scheduler() {
+        let cfg = parse_cas_config(
+            r#"{
+                stores: [{ name: "CAS", memory: {} }],
+                schedulers: [{ name: "SCHED", simple: {} }],
+                servers: [{
+                    listener: { http: { socket_address: "0.0.0.0:50051" } },
+                    services: {
+                        execution: [{
+                            instance_name: "main",
+                            cas_store: "CAS",
+                            scheduler: "SCHED_TYPO",
+                        }],
+                    },
+                }],
+            }"#,
+        );
+        let err = cfg.validate_references().unwrap_err();
+        assert_eq!(err.code, Code::InvalidArgument);
+        let message = err.messages.join("\n");
+        assert!(
+            message.contains("SCHED_TYPO"),
+            "error must name the bad scheduler ref: {message}"
+        );
+        assert!(
+            message.contains("scheduler"),
+            "error must name the reference site: {message}"
+        );
+    }
+
+    #[test]
+    fn validate_references_flags_undefined_worker_store() {
+        let cfg = parse_cas_config(
+            r#"{
+                stores: [{ name: "CAS", memory: {} }],
+                workers: [{
+                    local: {
+                        worker_api_endpoint: { uri: "grpc://127.0.0.1:50061" },
+                        cas_fast_slow_store: "WORKER_TYPO",
+                        work_directory: "/tmp/work",
+                        platform_properties: {},
+                    },
+                }],
+                servers: [],
+            }"#,
+        );
+        let err = cfg.validate_references().unwrap_err();
+        let message = err.messages.join("\n");
+        assert!(
+            message.contains("WORKER_TYPO")
+                && message.contains("workers[0].local.cas_fast_slow_store"),
+            "error must name the bad worker store ref and site: {message}"
+        );
+    }
+
+    #[test]
+    fn validate_references_flags_nested_ref_store_typo() {
+        // `WRAPPED` is wired to a service, so its nested `ref_store` typo must
+        // be resolved and flagged via the reachability walk.
+        let cfg = parse_cas_config(
+            r#"{
+                stores: [
+                    { name: "CAS", memory: {} },
+                    { name: "WRAPPED", fast_slow: {
+                        fast: { ref_store: { name: "CAS_TYPO" } },
+                        slow: { noop: {} },
+                    } },
+                ],
+                servers: [{
+                    listener: { http: { socket_address: "0.0.0.0:50051" } },
+                    services: { cas: [{ instance_name: "main", cas_store: "WRAPPED" }] },
+                }],
+            }"#,
+        );
+        let err = cfg.validate_references().unwrap_err();
+        let message = err.messages.join("\n");
+        assert!(
+            message.contains("CAS_TYPO") && message.contains("store 'WRAPPED'"),
+            "error must name the nested bad ref and its owning store: {message}"
+        );
+    }
+
+    #[test]
+    fn validate_references_flags_undefined_scheduler_redis_store() {
+        let cfg = parse_cas_config(
+            r#"{
+                stores: [{ name: "CAS", memory: {} }],
+                schedulers: [{
+                    name: "SCHED",
+                    simple: {
+                        experimental_backend: {
+                            redis: { redis_store: "REDIS_TYPO" },
+                        },
+                    },
+                }],
+                servers: [],
+            }"#,
+        );
+        let err = cfg.validate_references().unwrap_err();
+        let message = err.messages.join("\n");
+        assert!(
+            message.contains("REDIS_TYPO")
+                && message
+                    .contains("schedulers[SCHED].simple.experimental_backend.redis.redis_store"),
+            "error must name the bad redis store ref and its site: {message}"
+        );
+    }
+
+    #[test]
+    fn validate_references_flags_undefined_cache_lookup_ac_store() {
+        // The nested scheduler inside `cache_lookup` must be recursed into,
+        // and its `ac_store` reference resolved.
+        let cfg = parse_cas_config(
+            r#"{
+                stores: [{ name: "CAS", memory: {} }],
+                schedulers: [{
+                    name: "SCHED",
+                    property_modifier: {
+                        modifications: [],
+                        scheduler: {
+                            cache_lookup: {
+                                ac_store: "AC_TYPO",
+                                scheduler: { simple: {} },
+                            },
+                        },
+                    },
+                }],
+                servers: [],
+            }"#,
+        );
+        let err = cfg.validate_references().unwrap_err();
+        let message = err.messages.join("\n");
+        assert!(
+            message.contains("AC_TYPO")
+                && message.contains(
+                    "schedulers[SCHED].property_modifier.scheduler.cache_lookup.ac_store"
+                ),
+            "error must name the nested bad ac_store ref and its site: {message}"
+        );
+    }
+
+    #[test]
+    fn validate_references_flags_undefined_chunking_index_store() {
+        let cfg = parse_cas_config(
+            r#"{
+                stores: [{ name: "CAS", memory: {} }],
+                servers: [{
+                    listener: { http: { socket_address: "0.0.0.0:50051" } },
+                    services: {
+                        cas: [{
+                            instance_name: "main",
+                            cas_store: "CAS",
+                            experimental_chunking: { index_store: "INDEX_TYPO" },
+                        }],
+                    },
+                }],
+            }"#,
+        );
+        let err = cfg.validate_references().unwrap_err();
+        let message = err.messages.join("\n");
+        assert!(
+            message.contains("INDEX_TYPO")
+                && message
+                    .contains("servers[0].services.cas[main].experimental_chunking.index_store"),
+            "error must name the bad index store ref and its site: {message}"
+        );
+    }
+
+    #[test]
+    fn validate_references_flags_duplicate_store_name() {
+        let cfg = parse_cas_config(
+            r#"{
+                stores: [
+                    { name: "CAS", memory: {} },
+                    { name: "CAS", memory: {} },
+                ],
+                servers: [],
+            }"#,
+        );
+        let err = cfg.validate_references().unwrap_err();
+        let message = err.messages.join("\n");
+        assert!(
+            message.contains("duplicate store name 'CAS'"),
+            "error must report the duplicate store: {message}"
+        );
+    }
+
+    #[test]
+    fn validate_references_flags_duplicate_scheduler_name() {
+        let cfg = parse_cas_config(
+            r#"{
+                stores: [{ name: "CAS", memory: {} }],
+                schedulers: [
+                    { name: "SCHED", simple: {} },
+                    { name: "SCHED", simple: {} },
+                ],
+                servers: [],
+            }"#,
+        );
+        let err = cfg.validate_references().unwrap_err();
+        let message = err.messages.join("\n");
+        assert!(
+            message.contains("duplicate scheduler name 'SCHED'"),
+            "error must report the duplicate scheduler: {message}"
+        );
+    }
+
+    #[test]
+    fn validate_references_collects_all_problems() {
+        let cfg = parse_cas_config(
+            r#"{
+                stores: [{ name: "CAS", memory: {} }],
+                schedulers: [{ name: "SCHED", simple: {} }],
+                servers: [{
+                    listener: { http: { socket_address: "0.0.0.0:50051" } },
+                    services: {
+                        cas: [{ instance_name: "main", cas_store: "BAD_CAS" }],
+                        ac: [{ instance_name: "main", ac_store: "BAD_AC" }],
+                    },
+                }],
+            }"#,
+        );
+        let err = cfg.validate_references().unwrap_err();
+        let message = err.messages.join("\n");
+        // Reporting is not fail-fast: both bad references appear together.
+        assert!(
+            message.contains("BAD_CAS") && message.contains("BAD_AC"),
+            "error must collect every unresolved reference: {message}"
+        );
+    }
+
+    #[test]
+    fn validate_references_skips_empty_store_registry() {
+        // A fragment/legacy sample with no declared stores must not be
+        // flagged: every reference would trivially be unresolved, which would
+        // be a false positive on an otherwise-valid sample.
+        let cfg = parse_cas_config(
+            r#"{
+                stores: [],
+                servers: [{
+                    listener: { http: { socket_address: "0.0.0.0:50051" } },
+                    services: {
+                        cas: [{ instance_name: "", cas_store: "CAS_MAIN_STORE" }],
+                        execution: [{
+                            instance_name: "",
+                            cas_store: "WORKER_STORE",
+                            scheduler: "MAIN_SCHEDULER",
+                        }],
+                    },
+                }],
+            }"#,
+        );
+        cfg.validate_references()
+            .expect("empty registries defer to boot, not a false positive");
+    }
+
+    #[test]
+    fn validate_references_ignores_unreferenced_store_internal_refs() {
+        // A pure store-catalog config (no servers, no workers) may carry
+        // illustrative placeholder `ref_store` names; because nothing wires
+        // those stores to a consumer, their internal refs are not walked and
+        // must not be flagged.
+        let cfg = parse_cas_config(
+            r#"{
+                stores: [
+                    { name: "REAL", memory: {} },
+                    { name: "SHOWCASE", ref_store: { name: "PLACEHOLDER_NOT_DECLARED" } },
+                ],
+                servers: [],
+            }"#,
+        );
+        cfg.validate_references()
+            .expect("unreferenced catalog stores are not walked");
     }
 }

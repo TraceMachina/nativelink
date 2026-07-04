@@ -24,8 +24,11 @@ fn test_example_parsing() {
         if !config_file.contains(".json5") {
             continue;
         }
-        CasConfig::try_from_json5_file(&config_file)
+        let config = CasConfig::try_from_json5_file(&config_file)
             .unwrap_or_else(|e| panic!("Error while reading {config_file}: {e}"));
+        config
+            .validate_references()
+            .unwrap_or_else(|e| panic!("Unresolved reference in {config_file}: {e}"));
         found_at_least_one_entry = true;
     }
 

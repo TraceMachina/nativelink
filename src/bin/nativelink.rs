@@ -124,6 +124,10 @@ struct Args {
     /// Config file to use.
     #[clap(value_parser)]
     config_file: String,
+
+    /// Validate the configuration and exit without starting any services.
+    #[clap(long)]
+    check: bool,
 }
 
 trait RoutesExt {
@@ -854,13 +858,56 @@ async fn inner_main(
     Ok(())
 }
 
-fn get_config() -> Result<CasConfig, Error> {
+fn get_config() -> Result<(Args, CasConfig), Error> {
     let args = Args::parse();
-    CasConfig::try_from_json5_file(&args.config_file)
+    let cfg = CasConfig::try_from_json5_file(&args.config_file)
+        .err_tip(|| format!("While loading config file {}", args.config_file))?;
+    Ok((args, cfg))
 }
 
 fn main() -> Result<(), Box<dyn core::error::Error>> {
     install_default_rustls_crypto_provider();
+
+    // Parse args and load the config *before* building any runtime so that
+    // `--check` can run a fully offline validation and exit without starting
+    // a serving runtime, binding a socket, connecting to a backend, or
+    // creating any store directories.
+    let (args, mut cfg) = get_config()?;
+
+    if args.check {
+        return match cfg.validate_references() {
+            Ok(()) => {
+                let num_schedulers = cfg.schedulers.as_ref().map_or(0, Vec::len);
+                #[allow(
+                    clippy::print_stdout,
+                    reason = "`--check` reports its success summary on stdout for CI"
+                )]
+                {
+                    println!(
+                        "OK: {} — {} stores, {} schedulers, {} servers, all references resolve",
+                        args.config_file,
+                        cfg.stores.len(),
+                        num_schedulers,
+                        cfg.servers.len(),
+                    );
+                }
+                Ok(())
+            }
+            Err(err) => {
+                #[allow(
+                    clippy::print_stderr,
+                    reason = "`--check` reports validation failures on stderr for CI"
+                )]
+                {
+                    eprintln!("FAIL: {} — configuration is invalid", args.config_file);
+                    for message in &err.messages {
+                        eprintln!("{message}");
+                    }
+                }
+                std::process::exit(1);
+            }
+        };
+    }
 
     // Set QoS to USER_INITIATED on the main thread *before* the tokio
     // runtime is built so the spawned worker threads inherit P-core
@@ -882,8 +929,6 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
     // Do this first so all the other logging works
     #[expect(clippy::disallowed_methods, reason = "tracing init on main runtime")]
     runtime.block_on(async { tokio::spawn(async { init_tracing().await }).await? })?;
-
-    let mut cfg = get_config()?;
 
     let global_cfg = if let Some(global_cfg) = &mut cfg.global {
         if global_cfg.max_open_files == 0 {
