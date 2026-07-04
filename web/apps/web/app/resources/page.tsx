@@ -1,5 +1,6 @@
 import {
   Badge,
+  Button,
   Eyebrow,
   Reveal,
   Section,
@@ -131,12 +132,9 @@ export default function ResourcesPage() {
                 From the team
               </h2>
             </div>
-            <a
-              href="/resources/blog"
-              className="hidden font-mono text-sm text-brand md:inline-flex"
-            >
-              All posts →
-            </a>
+            <Button asChild variant="outline" size="sm">
+              <a href="/resources/blog">All posts →</a>
+            </Button>
           </div>
         </Reveal>
 
