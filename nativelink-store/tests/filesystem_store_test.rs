@@ -1663,6 +1663,56 @@ async fn executable_hardlink_source_created_once_and_readonly() -> Result<(), Er
     Ok(())
 }
 
+/// Regression test for #2474: the `.exec` variant directory was never
+/// registered in `evicting_map`, so it was invisible to `max_bytes` and only
+/// ever cleared by the startup `remove_dir_all` — growing without bound at
+/// runtime. Evicting a digest from the primary CAS must also delete its
+/// `.exec` sibling, bounding total `.exec` disk use to the primary store's
+/// own eviction policy instead of letting it grow forever.
+#[cfg(target_family = "unix")]
+#[nativelink_test]
+async fn evicting_digest_deletes_its_executable_variant() -> Result<(), Error> {
+    let content_path = make_temp_path("content_path");
+    let temp_path = make_temp_path("temp_path");
+    let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
+    let digest2 = DigestInfo::try_new(HASH2, VALUE2.len())?;
+
+    let store = Box::pin(
+        FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+            content_path: content_path.clone(),
+            temp_path: temp_path.clone(),
+            eviction_policy: Some(EvictionPolicy {
+                max_count: 1,
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .await?,
+    );
+    store.update_oneshot(digest1, VALUE1.into()).await?;
+
+    let variant_path = OsString::from(format!("{content_path}.exec/{DIGEST_FOLDER}/{digest1}"));
+    store.get_executable_hardlink_source(&digest1).await?;
+    fs::metadata(&variant_path)
+        .await
+        .err_tip(|| "Executable variant should exist right after creation")?;
+
+    // max_count: 1 means inserting a second digest evicts the first from the
+    // primary evicting_map, which must also delete digest1's `.exec` sibling.
+    store.update_oneshot(digest2, VALUE2.into()).await?;
+
+    let err = fs::metadata(&variant_path)
+        .await
+        .expect_err("Executable variant must be deleted when its digest is evicted");
+    assert_eq!(
+        err.code,
+        Code::NotFound,
+        "Expected the executable variant to be gone, got: {err:?}"
+    );
+
+    Ok(())
+}
+
 /// This test simulates a full disk without needing one. It writes past the `RLIMIT_FSIZE`
 /// cap, thus failing with `EFBIG`, which tokio defers exactly like `ENOSPC`. The
 /// [`SIGXFSZ`](`libc::SIGXFSZ`) signal must be ignored or the kernel will kill the process
