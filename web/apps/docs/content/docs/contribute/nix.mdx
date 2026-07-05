@@ -22,6 +22,18 @@ curl --proto '=https' --tlsv1.2 -sSf \
 
 It enables flakes by default.
 
+<Callout type="warn" title="macOS / Linux Nix Setup Gotchas">
+  - **Environment Paths**: If your shell doesn't recognize `nix` commands immediately after installation, you need to restart your terminal or run:
+    ```bash
+    . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+    ```
+  - **Experimental Features**: If you used the standard Nix installer and get `experimental Nix feature 'nix-command' is disabled`, enable them by adding the following to your `~/.config/nix/nix.conf` file:
+    ```text
+    experimental-features = nix-command flakes
+    ```
+  - **Disk Space**: Unpacking toolchains, compiler binaries, and caching build artifacts requires considerable storage. Ensure you have at least **15–20 GB of free space** on your drive before running `nix develop`.
+</Callout>
+
 ## Enter the dev shell
 
 ```bash
