@@ -15,7 +15,7 @@ const pillars = [
   {
     eyebrow: "Remote cache",
     title: "Cache once. Reuse forever.",
-    body: "Content-addressable storage deduplicates every artifact your team produces. If a teammate, your CI, or an agent has already built it, you get it back in milliseconds. Drops into Bazel, Buck2, Reclient, Pants, Goma — and CMake via recc.",
+    body: "Content-addressable storage deduplicates every artifact your team produces. If a teammate, your CI, or an agent has already built it, you get it back in milliseconds. Drops into Bazel, Buck2, Siso, Pants, Goma — and CMake via recc.",
     metric: "1B+",
     metricLabel: "requests / month",
     icon: (
@@ -62,7 +62,7 @@ const integrationGroups = [
   { label: "Languages", items: ["C++", "Rust", "Python", "Go", "Java", "Kotlin", "Swift"] },
   {
     label: "Build systems",
-    items: ["Bazel", "Buck2", "Reclient", "Soong", "Pants", "Goma", "CMake (recc)"],
+    items: ["Bazel", "Buck2", "Siso", "Soong", "Pants", "Goma", "CMake (recc)"],
   },
   { label: "Cloud", items: ["AWS", "GCP", "Azure", "Bare metal"] },
   { label: "CI", items: ["GitHub Actions", "GitLab", "Buildkite", "Jenkins"] },
@@ -105,7 +105,7 @@ const faqItems: FAQItem[] = [
   },
   {
     q: "Does it work with my existing tools?",
-    a: "Yes. Anything that speaks the Remote Execution API — Bazel, Buck2, Reclient, Goma, Pants, or CMake via recc — works without modification.",
+    a: "Yes. Anything that speaks the Remote Execution API — Bazel, Buck2, Siso, Goma, Pants, or CMake via recc — works without modification.",
   },
   {
     q: "How do I keep my Bazel setup hermetic?",
