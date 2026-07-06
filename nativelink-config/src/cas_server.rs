@@ -130,15 +130,19 @@ pub struct CasStoreConfig {
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub cas_store: StoreRefName,
 
-    /// Experimental: Enables the REAPI `SplitBlob`/`SpliceBlob` RPCs used by
-    /// content-defined chunking clients (e.g. Bazel's
+    /// Optional and experimental: enables the REAPI `SplitBlob`/`SpliceBlob`
+    /// RPCs used by content-defined chunking clients (e.g. Bazel's
     /// `--experimental_remote_cache_chunking`). When set, the capabilities
     /// service advertises blob split/splice support and `FastCDC` 2020
     /// parameters for this instance. When `cas_store` is a grpc store the
     /// RPCs are forwarded to the backend (which must support chunking with
     /// matching parameters); otherwise they are served locally.
     ///
-    /// Default: not set (chunking RPCs are rejected and not advertised).
+    /// See `nativelink-config/examples/chunking_cas.json5` for a complete
+    /// configuration example.
+    ///
+    /// Default: not set — chunking RPCs are rejected, nothing is advertised,
+    /// and behavior is identical to when this option did not exist.
     #[serde(default)]
     pub experimental_chunking: Option<CasChunkingConfig>,
 }
