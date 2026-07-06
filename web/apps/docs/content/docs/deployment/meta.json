@@ -2,6 +2,7 @@
   "pages": [
     "on-prem-overview",
     "kubernetes",
+    "oci-object-storage",
     "chromium",
     "metrics",
     "persistent-workers"
