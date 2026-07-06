@@ -40,10 +40,6 @@ All notable changes to this project will be documented in this file.
 - Make bash shell scripts actually fall over ([#2428](https://github.com/TraceMachina/nativelink/issues/2428)) - ([d537003](https://github.com/TraceMachina/nativelink/commit/d537003b2eb7ccae69bd126fbec4ea4a9e73aa03))
 - worker_utils test coverage to 100% ([#2427](https://github.com/TraceMachina/nativelink/issues/2427)) - ([729c88d](https://github.com/TraceMachina/nativelink/commit/729c88dcf65dd40da4736ddf328fb6a2dbbecd63))
 
-### ⚙️ Miscellaneous
-
-- wtf did this come from ([#2434](https://github.com/TraceMachina/nativelink/issues/2434)) - ([6abc5d8](https://github.com/TraceMachina/nativelink/commit/6abc5d87e3127ec8eaf7b8a802c47e2aa3a4f7e2))
-
 ## [1.5.0](https://github.com/TraceMachina/nativelink/compare/v1.4.0..v1.5.0) - 2026-06-12
 
 ### ⛰️  Features

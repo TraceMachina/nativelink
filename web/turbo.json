@@ -1,6 +1,23 @@
 {
   "$schema": "https://turbo.build/schema.json",
   "tasks": {
+    "@nativelink/docs#build": {
+      "dependsOn": [
+        "^build"
+      ],
+      "env": [
+        "VERCEL_GIT_COMMIT_SHA"
+      ],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/../CHANGELOG.md"
+      ],
+      "outputs": [
+        ".next/**",
+        "!.next/cache/**",
+        "dist/**"
+      ]
+    },
     "build": {
       "dependsOn": [
         "^build"

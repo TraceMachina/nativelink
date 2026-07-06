@@ -20,7 +20,10 @@ use aws_config::default_provider::credentials::DefaultCredentialsChain;
 use aws_config::provider_config::ProviderConfig;
 use aws_config::{AppName, BehaviorVersion};
 use aws_sdk_s3::Client;
-use aws_sdk_s3::config::{Credentials, Region};
+use aws_sdk_s3::config::{
+    Credentials, Region, RequestChecksumCalculation, ResponseChecksumValidation,
+};
+use aws_smithy_runtime_api::client::http::HttpClient as SmithyHttpClient;
 use nativelink_config::stores::{ExperimentalAwsSpec, ExperimentalOciSpec};
 use nativelink_error::Error;
 use nativelink_util::instant_wrapper::InstantWrapper;
@@ -52,10 +55,27 @@ impl OciStore {
         I: InstantWrapper,
         NowFn: Fn() -> I + Send + Sync + Unpin + 'static,
     {
+        Self::new_with_http_client(spec, TlsClient::new(&spec.common.clone()), now_fn).await
+    }
+
+    /// Builds the store with a caller-supplied HTTP client. Production uses
+    /// [`Self::new`] (which injects a [`TlsClient`]); tests inject a mock (e.g.
+    /// `StaticReplayClient`) to exercise the OCI-specific wire behavior —
+    /// path-style URLs and the absence of `aws-chunked` — without a live bucket.
+    #[allow(clippy::new_ret_no_self)]
+    pub async fn new_with_http_client<I, NowFn, C>(
+        spec: &ExperimentalOciSpec,
+        http_client: C,
+        now_fn: NowFn,
+    ) -> Result<Arc<S3Store<NowFn>>, Error>
+    where
+        I: InstantWrapper,
+        NowFn: Fn() -> I + Send + Sync + Unpin + 'static,
+        C: SmithyHttpClient + Clone + 'static,
+    {
         let aws_spec = Self::build_aws_spec(spec);
         let jitter_fn = spec.common.retry.make_jitter_fn();
 
-        let http_client = TlsClient::new(&spec.common.clone());
         let endpoint = Self::derive_endpoint(spec);
         let region = Region::new(Cow::Owned(spec.region.clone()));
 
@@ -72,6 +92,10 @@ impl OciStore {
             // OCI's compatibility endpoint embeds the bucket in the path, not as
             // a subdomain, so virtual-hosted addressing must be disabled.
             .force_path_style(true)
+            // OCI does not support the AWS SDK's default flexible-checksum
+            // behavior.
+            .request_checksum_calculation(RequestChecksumCalculation::WhenRequired)
+            .response_checksum_validation(ResponseChecksumValidation::WhenRequired)
             .http_client(http_client.clone());
 
         config_builder = if let Some(key_id) = &spec.access_key_id

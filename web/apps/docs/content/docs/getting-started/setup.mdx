@@ -9,7 +9,7 @@ system to the running cluster.
 
 <Callout type="info" title="Prerequisites">
   You need a build tool that speaks the Remote Execution API — Bazel,
-  Buck2, Reclient, Pants, Goma, or CMake via recc. For the Docker path,
+  Buck2, Siso, Pants, Goma, or CMake via recc. For the Docker path,
   Docker 24+. For the Nix path, a recent Nix install with flakes enabled.
 </Callout>
 
@@ -50,7 +50,9 @@ macOS (Apple Silicon and Intel) and any Linux with Nix. Also the only path
 that supports Apple Silicon natively at the moment.
 
 <Callout type="warn">
-  Executables built for macOS link dynamically against libraries from the
+  - **Prerequisites**: Make sure your Nix installation has experimental features enabled (add `experimental-features = nix-command flakes` to your `~/.config/nix/nix.conf`).
+  - **Disk Space**: The installation and build process requires downloading and compiling toolchains and compilers. Ensure you have at least **15–20 GB of free space** on your drive.
+  - **Portability**: Executables built for macOS link dynamically against libraries from the
   Nix store. They will not run on systems without those libraries
   available. Stick to the Docker path if you need to copy the binary to
   another machine.
@@ -91,7 +93,7 @@ the connection succeeding does.
 
 ## Point your build system at it
 
-<Tabs items={["Bazel", "Buck2", "Reclient", "Pants"]}>
+<Tabs items={["Bazel", "Buck2", "Siso", "Pants"]}>
 
   <Tab value="Bazel">
 
@@ -136,20 +138,17 @@ buck2 build //... --remote-cache
 
   </Tab>
 
-  <Tab value="Reclient">
+  <Tab value="Siso">
 
-Set the environment variables Reclient reads:
+Set the endpoint variables Siso reads:
 
 ```bash
-export RBE_service=localhost:50051
-export RBE_instance=main
+export SISO_REAPI_ADDRESS=localhost:50051
+export SISO_REAPI_INSTANCE=main
 export RBE_service_no_security=true   # only for local TLS-free dev
-
-reproxy &
-rewrapper -- <your-compile-command>
 ```
 
-The Chromium build is the canonical Reclient consumer; see
+The Chromium build is the canonical Siso consumer; see
 [Deployment → Chromium](/deployment/chromium) for a full example.
 
   </Tab>

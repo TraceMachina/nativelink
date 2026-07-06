@@ -1,0 +1,204 @@
+---
+title: Local cache and executor
+description: Run a full NativeLink cache and executor on your own machine and prove Bazel's remote caching and remote execution work — no Nix, no shared cluster.
+---
+
+Before pointing a build at a shared cluster — or before setting up
+[Local Remote Execution](/rbe/local-remote-execution) — prove the
+client side works against something you fully control: a NativeLink
+cache and executor running on your own machine, using whatever
+toolchain is already on your `PATH`. Nothing here talks to any
+external or shared service, and nothing here requires Nix.
+
+<Callout type="info" title="This is not LRE">
+  [Local Remote Execution](/rbe/local-remote-execution) is a specific
+  NativeLink feature: Nix-pinned toolchains that make local and remote
+  actions hash-identical. This page is narrower and has no toolchain
+  opinion at all — it's the fastest way to confirm a Bazel client can
+  talk to a real NativeLink `Execute` and CAS implementation before
+  you add Nix into the mix.
+</Callout>
+
+## What you get
+
+One `nativelink` process, one port for the client, a private port for
+the worker:
+
+<Mermaid>
+{`flowchart LR
+    subgraph client[Your machine]
+        B[Bazel]
+        subgraph nl["nativelink process"]
+            direction LR
+            L["0.0.0.0:50051\\ncas · ac · bytestream\\nexecution · capabilities"]
+            W["0.0.0.0:50061\\nworker_api (private)"]
+            WK[local worker]
+        end
+    end
+    B -->|remote_cache\\n+ remote_executor| L
+    L --- W
+    W --- WK`}
+</Mermaid>
+
+Bazel's `--remote_cache` and `--remote_executor` both point at
+`127.0.0.1:50051`. `50061` only exists so the worker can register with
+the scheduler — Bazel never talks to it.
+
+## 1. Build `nativelink`
+
+```bash
+bazel build //:nativelink
+# or: cargo build --bin nativelink
+```
+
+## 2. Grab the config
+
+[`nativelink-config/examples/local_rbe_self_test.json5`](https://github.com/TraceMachina/nativelink/blob/main/nativelink-config/examples/local_rbe_self_test.json5)
+is a complete, tested cluster — CAS, AC, a `simple` scheduler, and one
+`local` worker, entirely on `localhost`:
+
+```json5
+{
+  stores: [
+    { name: "CAS_MAIN_STORE", filesystem: { /* ... */ } },
+    { name: "AC_MAIN_STORE", filesystem: { /* ... */ } },
+    {
+      // The worker's fast tier and the client-facing CAS share one store,
+      // so anything the worker produces is immediately visible to Bazel.
+      name: "WORKER_FAST_SLOW_STORE",
+      fast_slow: {
+        fast: { filesystem: { /* ... */ } },
+        slow: { ref_store: { name: "CAS_MAIN_STORE" } },
+      },
+    },
+  ],
+  schedulers: [{
+    name: "MAIN_SCHEDULER",
+    simple: { supported_platform_properties: { cpu_count: "minimum" /* ... */ } },
+  }],
+  workers: [{
+    local: {
+      worker_api_endpoint: { uri: "grpc://127.0.0.1:50061" },
+      cas_fast_slow_store: "WORKER_FAST_SLOW_STORE",
+      upload_action_result: { ac_store: "AC_MAIN_STORE" },
+      platform_properties: { cpu_count: { values: ["1"] } /* ... */ },
+    },
+  }],
+  servers: [
+    {
+      // Cache AND execution on one client-facing port.
+      name: "local",
+      listener: { http: { socket_address: "0.0.0.0:50051" } },
+      services: {
+        cas: [{ cas_store: "CAS_MAIN_STORE" }],
+        ac: [{ ac_store: "AC_MAIN_STORE" }],
+        bytestream: [{ cas_store: "CAS_MAIN_STORE" }],
+        execution: [{ cas_store: "CAS_MAIN_STORE", scheduler: "MAIN_SCHEDULER" }],
+        capabilities: [{ remote_execution: { scheduler: "MAIN_SCHEDULER" } }],
+      },
+    },
+    {
+      // Private — only the worker connects here.
+      name: "worker_api",
+      listener: { http: { socket_address: "0.0.0.0:50061" } },
+      services: { worker_api: { scheduler: "MAIN_SCHEDULER" }, health: {} },
+    },
+  ],
+}
+```
+
+<Callout type="warn" title="instance_name must match what your client sends">
+  Every service above omits `instance_name`, so it defaults to `""` —
+  the same default Bazel uses when you don't pass
+  `--remote_instance_name`. If you add an `instance_name` on the server
+  side, pass the matching `--remote_instance_name` flag, or every
+  request will fail with `'instance_name' not configured for ''`.
+</Callout>
+
+## 3. Start it
+
+```bash
+nativelink ./nativelink-config/examples/local_rbe_self_test.json5
+```
+
+```text
+INFO nativelink: Ready, listening on 0.0.0.0:50051
+INFO nativelink: Ready, listening on 0.0.0.0:50061
+INFO nativelink_worker::local_worker: Worker registered with scheduler, worker_id: 1f175824-...
+```
+
+## 4. Point Bazel at it
+
+```bash
+bazel test \
+  --remote_cache=grpc://127.0.0.1:50051 \
+  --remote_executor=grpc://127.0.0.1:50051 \
+  --remote_default_exec_properties=cpu_count=1 \
+  //your:target
+```
+
+<Callout type="warn" title="Set both flags, even to the same address">
+  It's tempting to assume `--remote_executor` alone is enough — the
+  executor has to read/write CAS anyway. It isn't: without an explicit
+  `--remote_cache`, Bazel calls `Execute` with an action digest it
+  never uploaded, and the server correctly rejects it —
+  `FAILED_PRECONDITION: Action ... is missing from CAS`. Set both
+  flags. Pointing both at the same local address is exactly the point:
+  one machine, one cache, no separate remote service.
+</Callout>
+
+This repo tests itself exactly this way — see `build:self_test` and
+`build:self_execute` in
+[`.bazelrc`](https://github.com/TraceMachina/nativelink/blob/main/.bazelrc),
+combined as `bazel test --config=self_test --config=self_execute`.
+Copy that pattern into your own `.bazelrc` once the raw flags work.
+
+## 5. Verify
+
+First run — nothing cached yet, both actions run remote:
+
+```text
+[4 / 5] 1 / 1 tests; Testing //:dummy_test; 0s remote, remote-cache
+INFO: 5 processes: 3 internal, 3 remote.
+//:dummy_test                                                    PASSED in 0.4s
+```
+
+`bazel clean`, run again — the genrule is a cache hit; the test
+re-executes remotely because `--nocache_test_results` was set:
+
+```text
+[7 / 8] Testing //:dummy_test; 0s remote
+INFO: 8 processes: 2 remote cache hit, 6 internal, 1 remote.
+//:dummy_test                                                    PASSED in 0.5s
+```
+
+Both runs were captured against the exact config above, on macOS
+(arm64) — no Linux, no containers, no Nix.
+
+## Troubleshooting
+
+<Callout type="warn" title="Action stays queued forever">
+  The scheduler's `supported_platform_properties` must be satisfiable
+  by at least one worker's `platform_properties`, or matching actions
+  sit in the queue indefinitely with no error. Start with just
+  `cpu_count: "minimum"` on the scheduler and `cpu_count: { values: ["1"] }`
+  (or higher) on the worker — that alone unblocks most local setups.
+</Callout>
+
+<Callout type="warn" title="use_namespaces is Linux-only">
+  The worker's `use_namespaces` / `use_mount_namespace` options
+  sandbox actions with Linux namespaces and default to `false`. Leave
+  them unset on macOS — setting either to `true` on an unsupported
+  platform makes the worker exit immediately.
+</Callout>
+
+## What's next
+
+- [Local Remote Execution](/rbe/local-remote-execution) — add
+  Nix-pinned, hermetic toolchains on top of this same idea.
+- [Classic RBE examples](/rbe/examples) — the same three patterns
+  (cache-only, full RE, hybrid) once you're pointed at a shared cluster.
+- [Nix templates](/rbe/nix-templates) — the `bazel` flake template,
+  for wiring a whole new project instead of the existing NativeLink repo.
+- [Configuration → Introduction](/configuration/intro) — what every
+  field in the config above actually does.

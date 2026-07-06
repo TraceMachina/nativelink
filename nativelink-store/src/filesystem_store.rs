@@ -786,6 +786,50 @@ where
     Ok(false)
 }
 
+/// Deletes a digest's `.exec` variant (see
+/// [`FilesystemStore::get_executable_hardlink_source`]) when that digest is
+/// evicted or replaced in the primary CAS `evicting_map`. Without this, the
+/// `.exec` directory is invisible to `max_bytes` and is only ever cleared by
+/// the startup `remove_dir_all`, so it grows without bound at runtime (#2474).
+/// Tying its lifetime to the primary entry instead bounds total disk use to
+/// roughly `2 * max_bytes` in the worst case (every blob also executable).
+#[cfg(unix)]
+#[derive(Debug)]
+struct ExecutableVariantRemover {
+    content_path: String,
+}
+
+#[cfg(unix)]
+impl RemoveItemCallback for ExecutableVariantRemover {
+    fn callback<'a>(
+        &'a self,
+        store_key: StoreKey<'a>,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            let StoreKey::Digest(digest) = store_key else {
+                return;
+            };
+            let variant_path = format!(
+                "{}{EXECUTABLE_DIR_SUFFIX}/{DIGEST_FOLDER}/{digest}",
+                self.content_path
+            );
+            match fs::remove_file(&variant_path).await {
+                Ok(()) => debug!(
+                    ?variant_path,
+                    "Deleted executable variant for evicted digest"
+                ),
+                // Common case: no variant was ever materialized for this digest.
+                Err(err) if err.code == Code::NotFound => {}
+                Err(err) => warn!(
+                    ?variant_path,
+                    ?err,
+                    "Failed to delete executable variant for evicted digest"
+                ),
+            }
+        })
+    }
+}
+
 #[derive(Debug, MetricsComponent)]
 pub struct FilesystemStore<Fe: FileEntry = FileEntryImpl> {
     #[metric]
@@ -850,6 +894,11 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             fs::create_dir_all(format!("{executable_dir}/{DIGEST_FOLDER}"))
                 .await
                 .err_tip(|| format!("Failed to create executable dir {executable_dir}"))?;
+            evicting_map.add_remove_callback(RemoveItemCallbackHolder::new(Arc::new(
+                ExecutableVariantRemover {
+                    content_path: spec.content_path.clone(),
+                },
+            )));
         }
 
         let shared_context = Arc::new(SharedContext {
@@ -962,6 +1011,24 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         }
 
         let result = self.create_executable_variant(digest, &variant_path).await;
+
+        // The digest may have been evicted mid-copy: its eviction callback ran
+        // before the rename published the variant, so nothing owns the file
+        // anymore. This orphans the variant from eviction accounting, but the
+        // race is rare enough (needs an eviction to land in the narrow window
+        // between rename and this check, on a digest's first-ever variant
+        // materialization) that it's a self-limiting leak, not a systemic one
+        // — cheaper to log and let this action succeed with the still-valid
+        // file than to fail an otherwise-successful action over it.
+        if result.is_ok() && self.evicting_map.get(&digest.into()).await.is_none() {
+            warn!(
+                %digest,
+                ?variant_path,
+                "Digest evicted while materializing its executable variant; \
+                 variant is now untracked by eviction accounting"
+            );
+        }
+
         // Drop the per-digest lock entry regardless of outcome so the map
         // cannot grow unbounded; a concurrent waiter already cloned the Arc.
         self.forget_executable_lock(digest);

@@ -53,7 +53,7 @@ NativeLink is trusted in production environments to reduce costs and developer i
    - Utilizes remote resources to offload computational burden from local machines
    - Ensures consistency with a uniform, controlled build environment
 
-NativeLink seamlessly integrates with build tools that use the Remote Execution protocol, such as [Bazel](https://bazel.build), [Buck2](https://buck2.build), [Goma](https://chromium.googlesource.com/infra/goma/client/), and [Reclient](https://github.com/bazelbuild/reclient). CMake projects work too via [`recc`](https://buildgrid.gitlab.io/recc). See [Build CMake projects with NativeLink](https://nativelink.com/docs/rbe/cmake-recc). It supports Unix-based operating systems and Windows, ensuring broad compatibility across different development environments.
+NativeLink seamlessly integrates with build tools that use the Remote Execution protocol, such as [Bazel](https://bazel.build), [Buck2](https://buck2.build), [Goma](https://chromium.googlesource.com/infra/goma/client/), and [Siso](https://chromium.googlesource.com/build/+/refs/heads/main/siso/README.md). CMake projects work too via [`recc`](https://buildgrid.gitlab.io/recc). See [Build CMake projects with NativeLink](https://nativelink.com/docs/rbe/cmake-recc). It supports Unix-based operating systems and Windows, ensuring broad compatibility across different development environments.
 
 ## 🚀 Quickstart
 
@@ -111,6 +111,18 @@ it via the [next-gen nix installer](https://github.com/NixOS/experimental-nix-in
 > [!CAUTION]
 > Executables built for MacOS are dynamically linked against libraries from Nix
 > and won't work on systems that don't have these libraries present.
+
+> [!TIP]
+> **Common setup gotchas for Nix on macOS / Linux:**
+> * **Active shell environment**: If the installer finishes but your shell doesn't recognize `nix` commands, you need to either restart your terminal session or source the daemon profile manually:
+>   ```bash
+>   . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+>   ```
+> * **Enabling experimental features**: If you used the standard Nix installer and get an error saying `experimental Nix feature 'nix-command' is disabled`, enable them by creating or editing `~/.config/nix/nix.conf`:
+>   ```text
+>   experimental-features = nix-command flakes
+>   ```
+> * **Disk Space**: Unpacking and building compilers and dependencies requires significant storage. Make sure you have at least **15–20 GB of free space** on your system volume before running setup commands.
 
 **Linux, MacOS, WSL2**
 

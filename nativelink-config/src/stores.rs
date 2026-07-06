@@ -181,6 +181,55 @@ pub enum StoreSpec {
     ///      "multipart_max_concurrent_uploads": 10
     ///    }
     ///    ```
+    ///
+    /// 5. **Cloudflare R2:**
+    ///    R2 store uses Cloudflare's R2 service as a backend. R2 speaks the
+    ///    S3 API, so this is a thin wrapper that derives the account-scoped
+    ///    endpoint (`https://{account_id}.r2.cloudflarestorage.com`) for you.
+    ///
+    ///    **Example JSON Config:**
+    ///    ```json
+    ///    "experimental_cloud_object_store": {
+    ///      "provider": "r2",
+    ///      "account_id": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
+    ///      "bucket": "nativelink-cas",
+    ///      "key_prefix": "test-prefix/",
+    ///      "retry": {
+    ///        "max_retries": 6,
+    ///        "delay": 0.3,
+    ///        "jitter": 0.5
+    ///      },
+    ///      "multipart_max_concurrent_uploads": 10
+    ///    }
+    ///    ```
+    ///
+    /// 6. **Oracle Cloud Infrastructure (OCI) Object Storage:**
+    ///    OCI store uses Oracle Cloud Infrastructure's S3-compatible Object
+    ///    Storage API. The path-style endpoint is derived from your Object
+    ///    Storage `namespace` and `region` as
+    ///    `https://{namespace}.compat.objectstorage.{region}.oci.customer-oci.com`.
+    ///    Authenticate with a Customer Secret Key (Access Key/Secret Key pair
+    ///    created under User Settings -> Customer secret keys in the OCI
+    ///    console); the secret cannot be retrieved after generation, so read
+    ///    it from an env var via shellexpand.
+    ///
+    ///    **Example JSON Config:**
+    ///    ```json
+    ///    "experimental_cloud_object_store": {
+    ///      "provider": "oci",
+    ///      "namespace": "your-object-storage-namespace",
+    ///      "region": "us-phoenix-1",
+    ///      "bucket": "nativelink-cas",
+    ///      "access_key_id": "oci_access_key_id",
+    ///      "secret_access_key": "oci_secret_access_key",
+    ///      "key_prefix": "test-prefix/",
+    ///      "retry": {
+    ///        "max_retries": 6,
+    ///        "delay": 0.3,
+    ///        "jitter": 0.5
+    ///      }
+    ///    }
+    ///    ```
     ExperimentalCloudObjectStore(ExperimentalCloudObjectSpec),
 
     /// ONTAP S3 Existence Cache provides a caching layer on top of the ONTAP S3 store
@@ -1142,7 +1191,9 @@ pub struct ExperimentalGcsSpec {
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ExperimentalAzureSpec {
-    /// The Azure Storage account name.
+    /// The Azure Storage account name. Used to build the default container URL
+    /// `https://{account_name}.blob.core.windows.net/{container}` when `sas_url`
+    /// is not provided.
     #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
     pub account_name: String,
 
@@ -1150,19 +1201,24 @@ pub struct ExperimentalAzureSpec {
     #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
     pub container: String,
 
+    /// Optional blob endpoint host override (for example an Azurite emulator host
+    /// such as `http://127.0.0.1:10000/devstoreaccount1`). When set, this replaces
+    /// the default `https://{account_name}.blob.core.windows.net` endpoint. The
+    /// container is always appended to form the final container URL. Ignored when
+    /// `sas_url` is set.
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub endpoint: Option<String>,
+
+    /// Optional pre-formed SAS URL pointing at the container. When set, the store
+    /// uses it directly as the container URL with no credential (the SAS token is
+    /// expected to already be present in the URL), and `account_name`, `container`,
+    /// and `endpoint` are ignored for URL construction.
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub sas_url: Option<String>,
+
     /// Common retry and upload configuration.
     #[serde(flatten)]
     pub common: CommonObjectSpec,
-
-    /// Connection timeout in milliseconds.
-    /// Default: 3000
-    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
-    pub connection_timeout_s: u64,
-
-    /// Read timeout in milliseconds.
-    /// Default: 3000
-    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
-    pub read_timeout_s: u64,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
