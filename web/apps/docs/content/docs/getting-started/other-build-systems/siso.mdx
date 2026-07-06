@@ -3,30 +3,23 @@ title: Siso
 description: Point Siso at NativeLink for Chromium-style remote caching and execution.
 ---
 
-Siso speaks the Remote Execution API through a local daemon,
-`reproxy`, and command wrapper, `rewrapper`. NativeLink can be the
-backend for Siso clients such as Chromium and other GN/Ninja builds.
+[Siso](https://chromium.googlesource.com/build/+/refs/heads/main/siso/README.md)
+is Chromium's Ninja replacement. It runs build actions on RBE natively,
+and NativeLink can be the RE API backend for Chromium and other
+Siso-driven builds.
 
 For a production Chromium walkthrough, see
 [Deployment → Chromium](/deployment/chromium).
 
-## Local cache-only setup
+## Local endpoint setup
 
 Start NativeLink on `localhost:50051` with instance name `main`, then
 export the environment variables Siso reads:
 
 ```bash
-export RBE_service=localhost:50051
-export RBE_instance=main
+export SISO_REAPI_ADDRESS=localhost:50051
+export SISO_REAPI_INSTANCE=main
 export RBE_service_no_security=true
-```
-
-For cache-only compiler wrapping, run `reproxy` and invoke a command with
-`rewrapper`:
-
-```bash
-reproxy &
-rewrapper -- clang++ -c hello.cc -o hello.o
 ```
 
 For CMake projects, [`recc`](/getting-started/other-build-systems/cmake-recc)
@@ -43,14 +36,13 @@ gn gen out/Default --args='
   use_remoteexec=true
   use_goma=false
   use_siso=true
-  siso_cfg_dir="../../buildtools/siso_cfgs/chromium-browser-clang"
 '
 ```
 
-Start the daemon before building:
+Build normally with `autoninja`; it detects `use_siso=true` and invokes
+`siso ninja`:
 
 ```bash
-buildtools/siso/bootstrap --re_proxy=buildtools/siso/reproxy
 autoninja -C out/Default chrome
 ```
 
@@ -60,8 +52,8 @@ For a secured NativeLink endpoint, set the Siso TLS variables instead
 of `RBE_service_no_security=true`:
 
 ```bash
-export RBE_service=cas.nativelink.internal:50051
-export RBE_instance=main
+export SISO_REAPI_ADDRESS=cas.nativelink.internal:50051
+export SISO_REAPI_INSTANCE=main
 export RBE_service_no_security=false
 export RBE_tls_client_auth_cert=/etc/nativelink/tls/client.crt
 export RBE_tls_client_auth_key=/etc/nativelink/tls/client.key
@@ -69,12 +61,6 @@ export RBE_tls_ca_cert=/etc/nativelink/tls/ca.crt
 ```
 
 ## Confirm it is working
-
-Use Siso stats after a build:
-
-```bash
-siso stats
-```
 
 On a warm cache, cache hits should climb and network errors should stay at
 zero. If actions fall back to local execution, compare the platform

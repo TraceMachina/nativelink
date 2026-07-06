@@ -59,10 +59,10 @@ else
 fi
 
 echo "Generating ninja projects"
-gn gen --args="use_remoteexec=true use_siso=true siso_cfg_dir=\"../../buildtools/siso_cfgs/linux\"" out/Default
+gn gen --args="use_remoteexec=true use_siso=true" out/Default
 
 # Fetch cache and schedular IP address for passing to ninja
 NATIVELINK=$(kubectl get gtw nativelink-gateway -o=jsonpath='{.status.addresses[0].value}')
 
 echo "Starting autoninja build"
-RBE_service=${NATIVELINK}:80 RBE_cas_service=${NATIVELINK}:80 RBE_instance='' RBE_siso_timeout=60m RBE_exec_timeout=4m RBE_alsologtostderr=true RBE_service_no_security=true RBE_service_no_auth=true RBE_local_resource_fraction=0.00001 RBE_automatic_auth=false RBE_gcert_refresh_timeout=20 RBE_compression_threshold=-1 RBE_metrics_namespace='' RBE_platform='' RBE_experimental_credentials_helper='' RBE_experimental_credentials_helper_args='' RBE_log_http_calls=true RBE_use_rpc_credentials=false RBE_exec_strategy=remote_local_fallback autoninja -v -j 50 -C out/Default cc_unittests
+SISO_REAPI_ADDRESS=${NATIVELINK}:80 SISO_REAPI_CAS_ADDRESS=${NATIVELINK}:80 SISO_REAPI_INSTANCE='' RBE_service_no_security=true autoninja -v -j 50 -C out/Default cc_unittests

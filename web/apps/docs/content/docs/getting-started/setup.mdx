@@ -140,15 +140,12 @@ buck2 build //... --remote-cache
 
   <Tab value="Siso">
 
-Set the environment variables Siso reads:
+Set the endpoint variables Siso reads:
 
 ```bash
-export RBE_service=localhost:50051
-export RBE_instance=main
+export SISO_REAPI_ADDRESS=localhost:50051
+export SISO_REAPI_INSTANCE=main
 export RBE_service_no_security=true   # only for local TLS-free dev
-
-reproxy &
-rewrapper -- <your-compile-command>
 ```
 
 The Chromium build is the canonical Siso consumer; see
