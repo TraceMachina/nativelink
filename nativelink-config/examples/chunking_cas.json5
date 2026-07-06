@@ -59,17 +59,20 @@
           {
             instance_name: "main",
             cas_store: "CAS_MAIN_STORE",
+
             // Optional: omit this block to disable chunking entirely.
             experimental_chunking: {
               // Required, unless `cas_store` is a grpc store — in that
               // case the chunking RPCs are forwarded to the backend and
               // `index_store` must be omitted.
               index_store: "CHUNK_INDEX_STORE",
+
               // Optional: the average chunk size in bytes advertised to
               // clients and used for server-side chunking. Must be between
               // 1 KiB and 1 MiB.
               // Default: 524288 (512 KiB).
               avg_chunk_size_bytes: 524288,
+
               // Optional: blobs that would produce more chunks than this
               // are served without chunking.
               // Default: 50000.
@@ -83,6 +86,7 @@
             ac_store: "AC_MAIN_STORE",
           },
         ],
+
         // The capabilities service advertises chunking support; Bazel only
         // issues SplitBlob/SpliceBlob when it is advertised.
         capabilities: [
