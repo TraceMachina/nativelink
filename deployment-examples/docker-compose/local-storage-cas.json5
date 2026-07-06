@@ -24,6 +24,20 @@
       },
     },
     {
+      // Holds blob-to-chunks layouts for the SplitBlob/SpliceBlob RPCs used
+      // by Bazel's --experimental_remote_cache_chunking. Must not verify
+      // digests and must not be the same store as the CAS.
+      name: "CHUNK_INDEX_STORE",
+      filesystem: {
+        content_path: "~/.cache/nativelink/content_path-chunk-index",
+        temp_path: "~/.cache/nativelink/tmp_path-chunk-index",
+        eviction_policy: {
+          // 100mb.
+          max_bytes: 100000000,
+        },
+      },
+    },
+    {
       name: "AC_MAIN_STORE",
       filesystem: {
         content_path: "~/.cache/nativelink/content_path-ac",
@@ -46,6 +60,13 @@
         cas: [
           {
             cas_store: "CAS_MAIN_STORE",
+
+            // Optional: enables content-defined chunking
+            // (SplitBlob/SpliceBlob) for Bazel clients running with
+            // --experimental_remote_cache_chunking.
+            experimental_chunking: {
+              index_store: "CHUNK_INDEX_STORE",
+            },
           },
         ],
         ac: [
