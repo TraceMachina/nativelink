@@ -112,6 +112,18 @@ it via the [next-gen nix installer](https://github.com/NixOS/experimental-nix-in
 > Executables built for MacOS are dynamically linked against libraries from Nix
 > and won't work on systems that don't have these libraries present.
 
+> [!TIP]
+> **Common setup gotchas for Nix on macOS / Linux:**
+> * **Active shell environment**: If the installer finishes but your shell doesn't recognize `nix` commands, you need to either restart your terminal session or source the daemon profile manually:
+>   ```bash
+>   . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+>   ```
+> * **Enabling experimental features**: If you used the standard Nix installer and get an error saying `experimental Nix feature 'nix-command' is disabled`, enable them by creating or editing `~/.config/nix/nix.conf`:
+>   ```text
+>   experimental-features = nix-command flakes
+>   ```
+> * **Disk Space**: Unpacking and building compilers and dependencies requires significant storage. Make sure you have at least **15–20 GB of free space** on your system volume before running setup commands.
+
 **Linux, MacOS, WSL2**
 
 ```bash

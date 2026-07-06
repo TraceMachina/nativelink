@@ -50,7 +50,9 @@ macOS (Apple Silicon and Intel) and any Linux with Nix. Also the only path
 that supports Apple Silicon natively at the moment.
 
 <Callout type="warn">
-  Executables built for macOS link dynamically against libraries from the
+  - **Prerequisites**: Make sure your Nix installation has experimental features enabled (add `experimental-features = nix-command flakes` to your `~/.config/nix/nix.conf`).
+  - **Disk Space**: The installation and build process requires downloading and compiling toolchains and compilers. Ensure you have at least **15–20 GB of free space** on your drive.
+  - **Portability**: Executables built for macOS link dynamically against libraries from the
   Nix store. They will not run on systems without those libraries
   available. Stick to the Docker path if you need to copy the binary to
   another machine.
