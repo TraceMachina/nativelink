@@ -1,10 +1,9 @@
 ---
 title: Chromium
-description: Building Chromium with NativeLink as the Reclient backend — a worked example for the largest public consumer.
+description: Building Chromium with NativeLink as the Siso backend — a worked example for the largest public consumer.
 ---
 
-Chromium's build system shells out to
-[Reclient](https://github.com/bazelbuild/reclient), which speaks the
+Chromium's build system shells out to Siso, which speaks the
 Remote Execution API. Pointing it at a NativeLink cluster is a
 configuration change — no patches to the Chromium tree.
 
@@ -16,13 +15,13 @@ any Chromium-based browser.
 
 - A NativeLink cluster reachable from your build machines. Cache-only
   is fine to start; remote execution drops build times further.
-- Reclient installed and on `$PATH`. Chromium's `gclient sync` will
+- Siso installed and on `$PATH`. Chromium's `gclient sync` will
   install it under `buildtools/`.
 - The Chromium source checkout (`fetch chromium`).
 
-## Configure Reclient
+## Configure Siso
 
-Reclient reads its server settings from environment variables. Add
+Siso reads its server settings from environment variables. Add
 to your build shell:
 
 ```bash
@@ -51,21 +50,21 @@ In your Chromium checkout:
 gn gen out/Default --args='
   use_remoteexec=true
   use_goma=false
-  use_siso=false
-  reclient_cfg_dir="../../buildtools/reclient_cfgs/chromium-browser-clang"
+  use_siso=true
+  siso_cfg_dir="../../buildtools/siso_cfgs/chromium-browser-clang"
 '
 ```
 
 The `use_remoteexec=true` flag is the one that matters — it tells the
-build to wrap every compile invocation with Reclient.
+build to wrap every compile invocation with Siso.
 
 ## Start the reproxy daemon
 
-Reclient uses a long-lived daemon (`reproxy`) that batches requests
+Siso uses a long-lived daemon (`reproxy`) that batches requests
 to the RE-API server. Start it before invoking the build:
 
 ```bash
-buildtools/reclient/bootstrap --re_proxy=buildtools/reclient/reproxy
+buildtools/siso/bootstrap --re_proxy=buildtools/siso/reproxy
 ```
 
 The daemon stays up; `bootstrap --shutdown` shuts it down when
@@ -83,10 +82,10 @@ of the time.
 
 ## What good looks like
 
-The Reclient stats endpoint reports cache statistics per build:
+The Siso stats endpoint reports cache statistics per build:
 
 ```bash
-buildtools/reclient/reclient stats
+buildtools/siso/siso stats
 ```
 
 Healthy numbers on warm builds:
@@ -113,12 +112,12 @@ directory in the source tree has the worker config Samsung uses.
 ## Troubleshooting
 
 - **All actions falling back to local.** Likely a platform-property
-  mismatch. Compare what Chromium is requesting (in the reclient
+  mismatch. Compare what Chromium is requesting (in the siso
   log) against what your workers advertise.
 - **Cache writes succeed, reads always miss.** Almost always a
   toolchain version mismatch between the action that wrote the
   cache and the one trying to read.
-- **Reproxy hangs on shutdown.** Known issue — `reclient_cleanup`
+- **Reproxy hangs on shutdown.** Known issue — `siso_cleanup`
   fixes it.
 
 ## What's next

@@ -9,7 +9,7 @@ system to the running cluster.
 
 <Callout type="info" title="Prerequisites">
   You need a build tool that speaks the Remote Execution API — Bazel,
-  Buck2, Reclient, Pants, Goma, or CMake via recc. For the Docker path,
+  Buck2, Siso, Pants, Goma, or CMake via recc. For the Docker path,
   Docker 24+. For the Nix path, a recent Nix install with flakes enabled.
 </Callout>
 
@@ -93,7 +93,7 @@ the connection succeeding does.
 
 ## Point your build system at it
 
-<Tabs items={["Bazel", "Buck2", "Reclient", "Pants"]}>
+<Tabs items={["Bazel", "Buck2", "Siso", "Pants"]}>
 
   <Tab value="Bazel">
 
@@ -138,9 +138,9 @@ buck2 build //... --remote-cache
 
   </Tab>
 
-  <Tab value="Reclient">
+  <Tab value="Siso">
 
-Set the environment variables Reclient reads:
+Set the environment variables Siso reads:
 
 ```bash
 export RBE_service=localhost:50051
@@ -151,7 +151,7 @@ reproxy &
 rewrapper -- <your-compile-command>
 ```
 
-The Chromium build is the canonical Reclient consumer; see
+The Chromium build is the canonical Siso consumer; see
 [Deployment → Chromium](/deployment/chromium) for a full example.
 
   </Tab>

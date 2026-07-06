@@ -1,11 +1,11 @@
 ---
-title: Reclient
-description: Point Reclient at NativeLink for Chromium-style remote caching and execution.
+title: Siso
+description: Point Siso at NativeLink for Chromium-style remote caching and execution.
 ---
 
-Reclient speaks the Remote Execution API through a local daemon,
+Siso speaks the Remote Execution API through a local daemon,
 `reproxy`, and command wrapper, `rewrapper`. NativeLink can be the
-backend for Reclient clients such as Chromium and other GN/Ninja builds.
+backend for Siso clients such as Chromium and other GN/Ninja builds.
 
 For a production Chromium walkthrough, see
 [Deployment → Chromium](/deployment/chromium).
@@ -13,7 +13,7 @@ For a production Chromium walkthrough, see
 ## Local cache-only setup
 
 Start NativeLink on `localhost:50051` with instance name `main`, then
-export the environment variables Reclient reads:
+export the environment variables Siso reads:
 
 ```bash
 export RBE_service=localhost:50051
@@ -35,28 +35,28 @@ CMake compiler-launcher workflows directly.
 
 ## Chromium-style setup
 
-Chromium checks in Reclient configs. Point them at NativeLink by enabling
+Chromium checks in Siso configs. Point them at NativeLink by enabling
 remote execution in GN:
 
 ```bash
 gn gen out/Default --args='
   use_remoteexec=true
   use_goma=false
-  use_siso=false
-  reclient_cfg_dir="../../buildtools/reclient_cfgs/chromium-browser-clang"
+  use_siso=true
+  siso_cfg_dir="../../buildtools/siso_cfgs/chromium-browser-clang"
 '
 ```
 
 Start the daemon before building:
 
 ```bash
-buildtools/reclient/bootstrap --re_proxy=buildtools/reclient/reproxy
+buildtools/siso/bootstrap --re_proxy=buildtools/siso/reproxy
 autoninja -C out/Default chrome
 ```
 
 ## Production TLS settings
 
-For a secured NativeLink endpoint, set the Reclient TLS variables instead
+For a secured NativeLink endpoint, set the Siso TLS variables instead
 of `RBE_service_no_security=true`:
 
 ```bash
@@ -70,13 +70,13 @@ export RBE_tls_ca_cert=/etc/nativelink/tls/ca.crt
 
 ## Confirm it is working
 
-Use Reclient stats after a build:
+Use Siso stats after a build:
 
 ```bash
-reclient stats
+siso stats
 ```
 
 On a warm cache, cache hits should climb and network errors should stay at
 zero. If actions fall back to local execution, compare the platform
-properties Reclient requests with the properties your NativeLink workers
+properties Siso requests with the properties your NativeLink workers
 advertise.
