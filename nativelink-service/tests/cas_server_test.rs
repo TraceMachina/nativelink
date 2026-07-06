@@ -1487,3 +1487,61 @@ async fn max_chunk_count_limits_split_and_splice() -> Result<(), Box<dyn core::e
     );
     Ok(())
 }
+
+// Bazel 9.1.1 with --digest_function=blake3 leaves digest_function unset in
+// SplitBlob/SpliceBlob requests, which is length-ambiguous (SHA256 and
+// BLAKE3 are both 32 bytes). The server must infer the function instead of
+// assuming the default.
+#[nativelink_test]
+async fn chunking_infers_blake3_when_digest_function_unset()
+-> Result<(), Box<dyn core::error::Error>> {
+    const VALUE: &str = "blake3 blob content";
+
+    let store_manager = make_chunking_store_manager().await?;
+    let cas_server = make_chunking_cas_server(&store_manager)?;
+    let store = store_manager.get_store("main_cas").unwrap();
+
+    let mut hasher = DigestHasherFunc::Blake3.hasher();
+    hasher.update(VALUE.as_bytes());
+    let blob_digest: Digest = hasher.finalize_digest().into();
+
+    // Splice: the single chunk is the blob itself, uploaded under its
+    // BLAKE3 digest, with digest_function left unset.
+    store
+        .update_oneshot(DigestInfo::try_from(blob_digest.clone())?, VALUE.into())
+        .await?;
+    let splice_response = cas_server
+        .splice_blob(Request::new(SpliceBlobRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            blob_digest: Some(blob_digest.clone()),
+            chunk_digests: vec![blob_digest.clone()],
+            digest_function: 0,
+            chunking_function: chunking_function::Value::FastCdc2020.into(),
+        }))
+        .await?
+        .into_inner();
+    assert_eq!(splice_response.blob_digest.as_ref(), Some(&blob_digest));
+
+    // On-demand split of a fresh blob uploaded whole: the returned chunk
+    // digests must be BLAKE3 (here a single chunk equal to the blob).
+    let mut hasher = DigestHasherFunc::Blake3.hasher();
+    hasher.update(b"other blake3 content");
+    let other_digest: Digest = hasher.finalize_digest().into();
+    store
+        .update_oneshot(
+            DigestInfo::try_from(other_digest.clone())?,
+            bytes::Bytes::from_static(b"other blake3 content"),
+        )
+        .await?;
+    let split_response = cas_server
+        .split_blob(Request::new(SplitBlobRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            blob_digest: Some(other_digest.clone()),
+            digest_function: 0,
+            chunking_function: chunking_function::Value::FastCdc2020.into(),
+        }))
+        .await?
+        .into_inner();
+    assert_eq!(split_response.chunk_digests, vec![other_digest]);
+    Ok(())
+}

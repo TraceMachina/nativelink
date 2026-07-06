@@ -35,7 +35,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
     BatchUpdateBlobsResponse, Digest, Directory, FindMissingBlobsRequest, FindMissingBlobsResponse,
     GetTreeRequest, GetTreeResponse, SpliceBlobRequest, SpliceBlobResponse, SplitBlobRequest,
     SplitBlobResponse, batch_read_blobs_response, batch_update_blobs_response, chunking_function,
-    compressor,
+    compressor, digest_function,
 };
 use nativelink_proto::google::rpc::Status as GrpcStatus;
 use nativelink_store::ac_utils::get_and_decode_digest;
@@ -43,9 +43,7 @@ use nativelink_store::grpc_store::GrpcStore;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
-use nativelink_util::digest_hasher::{
-    DigestHasher, digest_hasher_func_from_context, make_ctx_for_hash_func,
-};
+use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc, make_ctx_for_hash_func};
 use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
 use opentelemetry::context::FutureExt;
 use prost::Message;
@@ -575,6 +573,68 @@ impl CasServer {
             .and_then(|store| store.downcast_ref::<GrpcStore>(None))
     }
 
+    /// Returns the digest function explicitly requested by the client, or
+    /// `None` when the field was left unset. REAPI's length-based inference
+    /// cannot be used as a fallback here: SHA256 and BLAKE3 digests are both
+    /// 32 bytes, and `NativeLink` announces support for both. Notably Bazel
+    /// (9.1.1) leaves this field unset even when running with
+    /// `--digest_function=blake3`.
+    fn explicit_hasher_func(digest_function_value: i32) -> Option<DigestHasherFunc> {
+        digest_function::Value::try_from(digest_function_value)
+            .ok()
+            .and_then(|value| DigestHasherFunc::try_from(value).ok())
+    }
+
+    /// Determines the digest function of a blob already present in the CAS
+    /// by hashing its content with each supported function and returning the
+    /// one that reproduces `blob_digest`.
+    async fn infer_blob_hasher_func(
+        store: &Store,
+        blob_digest: DigestInfo,
+    ) -> Result<DigestHasherFunc, Error> {
+        const CANDIDATES: [DigestHasherFunc; 2] =
+            [DigestHasherFunc::Sha256, DigestHasherFunc::Blake3];
+        let (tx, rx) = make_buf_channel_pair();
+        let read_store = store.clone();
+        let read_fut = async move {
+            let mut tx = tx;
+            read_store
+                .get_part(blob_digest, &mut tx, 0, None)
+                .await
+                .err_tip(|| "Failed to read blob in infer_blob_hasher_func")
+        };
+        let hash_fut = async move {
+            let mut rx = rx;
+            let mut hashers = CANDIDATES.map(|func| func.hasher());
+            loop {
+                let data = rx
+                    .recv()
+                    .await
+                    .err_tip(|| "In infer_blob_hasher_func::recv")?;
+                if data.is_empty() {
+                    break; // EOF.
+                }
+                for hasher in &mut hashers {
+                    hasher.update(&data);
+                }
+            }
+            Ok::<_, Error>(hashers.map(|mut hasher| hasher.finalize_digest()))
+        };
+        let (read_res, hash_res) = futures::join!(read_fut, hash_fut);
+        let computed_digests = read_res.merge(hash_res)?;
+        CANDIDATES
+            .iter()
+            .zip(computed_digests)
+            .find(|(_, computed)| *computed == blob_digest)
+            .map(|(func, _)| *func)
+            .ok_or_else(|| {
+                make_err!(
+                    Code::NotFound,
+                    "Blob {blob_digest} does not match any supported digest function; no split information available"
+                )
+            })
+    }
+
     /// Returns the display names of the chunks missing from the CAS. The
     /// existence check also touches present chunks, which extends their
     /// lifetimes on a best-effort basis (stores that answer existence from a
@@ -694,7 +754,12 @@ impl CasServer {
         // path taken for blobs that were uploaded whole (e.g. outputs
         // produced by remote execution workers).
         let split_response = self
-            .chunk_blob_on_demand(&store, &chunking_instance, blob_digest)
+            .chunk_blob_on_demand(
+                &store,
+                &chunking_instance,
+                blob_digest,
+                request.digest_function,
+            )
             .await?;
         self.chunking_metrics
             .split_chunked_on_demand
@@ -714,10 +779,17 @@ impl CasServer {
         store: &Store,
         chunking_instance: &ChunkingInstance,
         blob_digest: DigestInfo,
+        digest_function_value: i32,
     ) -> Result<SplitBlobResponse, Error> {
         let avg_size = chunking_instance.avg_chunk_size_bytes;
         let (min_size, max_size) = (avg_size / 4, avg_size * 4);
-        let hasher_func = digest_hasher_func_from_context();
+        // Chunk digests MUST use the blob's digest function. When the client
+        // leaves the field unset it has to be inferred from the blob content
+        // (an extra read pass) since the hash length alone is ambiguous.
+        let hasher_func = match Self::explicit_hasher_func(digest_function_value) {
+            Some(hasher_func) => hasher_func,
+            None => Self::infer_blob_hasher_func(store, blob_digest).await?,
+        };
 
         let (tx, rx) = make_buf_channel_pair();
         let read_store = store.clone();
@@ -889,7 +961,15 @@ impl CasServer {
         // in chunk order. The digest is verified before the final EOF is
         // sent, so a digest mismatch aborts the upload before the store
         // commits it.
-        let hasher_func = digest_hasher_func_from_context();
+        // When the client sets the digest function, verify with exactly that
+        // function. When it is unset the hash length is ambiguous (SHA256
+        // and BLAKE3 are both 32 bytes), so hash with both candidates and
+        // accept whichever reproduces the expected digest.
+        let candidate_hasher_funcs: Vec<DigestHasherFunc> =
+            match Self::explicit_hasher_func(request.digest_function) {
+                Some(hasher_func) => vec![hasher_func],
+                None => vec![DigestHasherFunc::Sha256, DigestHasherFunc::Blake3],
+            };
         let verification_failed = AtomicBool::new(false);
         let verification_failed_ref = &verification_failed;
         let (tx, rx) = make_buf_channel_pair();
@@ -899,7 +979,10 @@ impl CasServer {
         // of leaving it waiting for more data.
         let send_fut = async move {
             let mut tx = tx;
-            let mut hasher = hasher_func.hasher();
+            let mut hashers: Vec<_> = candidate_hasher_funcs
+                .iter()
+                .map(DigestHasherFunc::hasher)
+                .collect();
             let mut fetch_stream = futures::stream::iter(chunk_digests.into_iter().map(
                 move |chunk_digest| {
                     let store = send_store.clone();
@@ -925,18 +1008,31 @@ impl CasServer {
             .buffered(CHUNK_CONCURRENCY);
             while let Some(data) = fetch_stream.next().await {
                 let data = data?;
-                hasher.update(&data);
+                for hasher in &mut hashers {
+                    hasher.update(&data);
+                }
                 tx.send(data)
                     .await
                     .err_tip(|| "Failed to send chunk data in splice_blob")?;
             }
             drop(fetch_stream);
-            let computed_digest = hasher.finalize_digest();
-            if computed_digest != blob_digest {
+            let computed_digests: Vec<DigestInfo> = hashers
+                .iter_mut()
+                .map(DigestHasher::finalize_digest)
+                .collect();
+            if !computed_digests
+                .iter()
+                .any(|computed| *computed == blob_digest)
+            {
                 verification_failed_ref.store(true, Ordering::Relaxed);
                 return Err(make_err!(
                     Code::InvalidArgument,
-                    "Digest of spliced blob ({computed_digest}) does not match the expected digest ({blob_digest}) in splice_blob"
+                    "Digest of spliced blob ({}) does not match the expected digest ({blob_digest}) in splice_blob",
+                    computed_digests
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(" / ")
                 ));
             }
             tx.send_eof()
