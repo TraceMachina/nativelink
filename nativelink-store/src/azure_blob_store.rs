@@ -169,7 +169,7 @@ where
             .with_root_certificates(roots)
             .with_no_client_auth();
 
-        let client = reqwest13::Client::builder()
+        let client = reqwest::Client::builder()
             .use_preconfigured_tls(tls_config)
             .build()
             .map_err(|e| make_err!(Code::Unavailable, "Failed to build Azure HTTP client: {e}"))?;
