@@ -53,6 +53,11 @@ jobs:
           multi-arch: ${{ matrix.multi-arch }}
           components: ${{ matrix.components }}
           tag: ${{github.ref_name}}
+          # This workflow only runs on tag pushes, so github.ref is
+          # refs/tags/* (never refs/heads/main). Without force-push the upload
+          # steps in test-and-upload-image are skipped and the tag never gets
+          # attached to the pushed images.
+          force-push: true
           GHCR_USERNAME: ${{ vars.GHCR_PUBLISH_USER }}
           GHCR_PASSWORD: ${{ secrets.GHCR_PUBLISH_TOKEN }}
 
