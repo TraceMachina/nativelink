@@ -1,8 +1,8 @@
+use core::pin::Pin;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 use std::borrow::Cow;
 use std::env;
-use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 
 use bytes::Bytes;
