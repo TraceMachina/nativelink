@@ -186,8 +186,8 @@ export default function TermsPage() {
                 <a href="mailto:legal@nativelink.com" className="text-brand underline-offset-4 hover:underline">
                   legal@nativelink.com
                 </a>{" "}
-                or write to Trace Machina, Attn: Legal, 548 Market St, San
-                Francisco, CA 94104.
+                or write to Trace Machina, Inc., Attn: Legal, PO Box 60676, 265
+                Cambridge Ave, Palo Alto, CA 94306.
               </p>
             </Reveal>
           </article>
