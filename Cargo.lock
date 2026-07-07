@@ -1619,6 +1619,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "fastcdc"
+version = "3.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf51ceb43e96afbfe4dd5c6f6082af5dfd60e220820b8123792d61963f2ce6bc"
+dependencies = [
+ "async-stream",
+ "tokio",
+ "tokio-stream",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3124,6 +3135,7 @@ dependencies = [
  "async-trait",
  "axum",
  "bytes",
+ "fastcdc",
  "futures",
  "hex",
  "http-body-util",
@@ -3149,6 +3161,7 @@ dependencies = [
  "sha2",
  "tokio",
  "tokio-stream",
+ "tokio-util",
  "tonic",
  "tonic-prost",
  "tower",

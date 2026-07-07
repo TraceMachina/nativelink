@@ -30,8 +30,8 @@ use hyper_util::server::conn::auto;
 use hyper_util::service::TowerToHyperService;
 use mimalloc::MiMalloc;
 use nativelink_config::cas_server::{
-    CasConfig, GlobalConfig, HttpCompressionAlgorithm, ListenerConfig, SchedulerConfig,
-    ServerConfig, StoreConfig, WorkerConfig,
+    CasConfig, CasStoreConfig, GlobalConfig, HttpCompressionAlgorithm, ListenerConfig,
+    SchedulerConfig, ServerConfig, StoreConfig, WithInstanceName, WorkerConfig,
 };
 use nativelink_config::stores::ConfigDigestHashFunction;
 use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
@@ -263,6 +263,17 @@ async fn inner_main(
 
     let server_cfgs: Vec<ServerConfig> = cfg.servers.into_iter().collect();
 
+    // The capabilities service advertises chunking support for CAS instances
+    // that may be served from a different server block (e.g. behind an L7
+    // router), so collect the CAS configs across all blocks.
+    let all_cas_configs: Vec<WithInstanceName<CasStoreConfig>> = server_cfgs
+        .iter()
+        .filter_map(|server_cfg| server_cfg.services.as_ref())
+        .filter_map(|services| services.cas.as_deref())
+        .flatten()
+        .cloned()
+        .collect();
+
     for server_cfg in server_cfgs {
         let services = server_cfg
             .services
@@ -292,8 +303,9 @@ async fn inner_main(
             .add_optional_service(
                 services
                     .cas
+                    .as_deref()
                     .map_or(Ok(None), |cfg| {
-                        CasServer::new(&cfg, &store_manager)
+                        CasServer::new(cfg, &store_manager)
                             .map(|v| Some(service_setup!(v.into_service(), http_config)))
                     })
                     .err_tip(|| "Could not create CAS service")?,
@@ -335,10 +347,9 @@ async fn inner_main(
             )
             .add_optional_service(
                 OptionFuture::from(
-                    services
-                        .capabilities
-                        .as_ref()
-                        .map(|cfg| CapabilitiesServer::new(cfg, &action_schedulers)),
+                    services.capabilities.as_ref().map(|cfg| {
+                        CapabilitiesServer::new(cfg, &action_schedulers, &all_cas_configs)
+                    }),
                 )
                 .await
                 .map_or(Ok::<Option<CapabilitiesServer>, Error>(None), |server| {
