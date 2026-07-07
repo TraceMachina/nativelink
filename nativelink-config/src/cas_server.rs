@@ -24,7 +24,10 @@ use crate::serde_utils::{
     convert_data_size_with_shellexpand, convert_duration_with_shellexpand,
     convert_numeric_with_shellexpand, convert_optional_numeric_with_shellexpand,
     convert_optional_string_with_shellexpand, convert_string_with_shellexpand,
-    convert_vec_string_with_shellexpand,
+convert_boolean_with_shellexpand, convert_data_size_with_shellexpand,
+convert_duration_with_shellexpand, convert_numeric_with_shellexpand,
+convert_optional_numeric_with_shellexpand, convert_optional_string_with_shellexpand,
+convert_string_with_shellexpand, convert_vec_string_with_shellexpand,
 };
 use crate::stores::{ClientTlsConfig, ConfigDigestHashFunction, StoreRefName, StoreSpec};
 
