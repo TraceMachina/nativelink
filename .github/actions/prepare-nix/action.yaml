@@ -26,8 +26,10 @@ runs:
       with:
         timeout_minutes: 30
         max_attempts: 3
+        retry_wait_seconds: 30 # if we're failing, we want to wait a reasonable amount of time
         command: |
           set -euo pipefail
+          date
           cd /tmp
           nix build nixpkgs#attic-client
           # Note NATIVELINK_ATTIC_TOKEN is blank for PR builds as they don't have secret access
