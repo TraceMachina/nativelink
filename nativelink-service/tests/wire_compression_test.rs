@@ -74,6 +74,44 @@ async fn decompress_zstd_size_mismatch() -> Result<(), Error> {
 }
 
 #[nativelink_test]
+async fn decompress_zstd_small_payload_large_claimed_size_is_rejected() -> Result<(), Error> {
+    // A tiny payload that claims a huge uncompressed size must be rejected
+    // without pre-allocating the claimed size: `expected_size` is the client's
+    // digest size and must never be trusted as an allocation hint. The decoder
+    // bounds output at expected_size and the length check rejects the lie.
+    let data = Bytes::from_static(b"hello world");
+    let compressed = compress(data, compressor::Value::Zstd)?;
+    let huge_claimed_size = 8 * 1024 * 1024 * 1024; // 8 GiB
+    let result = decompress(&compressed, compressor::Value::Zstd, huge_claimed_size);
+    assert_eq!(
+        result
+            .expect_err("small payload claiming a huge size must be rejected")
+            .code,
+        Code::InvalidArgument
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn decompress_zstd_bomb_exceeding_claimed_size_is_rejected() -> Result<(), Error> {
+    // A payload that decompresses to MORE than its claimed size (a bomb whose
+    // digest also lies low) must be rejected. `take(expected_size + 1)` lets
+    // the decoder produce one byte past the cap so the size check trips instead
+    // of silently truncating.
+    let real = Bytes::from("A".repeat(4096));
+    let compressed = compress(real, compressor::Value::Zstd)?;
+    let understated_size = 10;
+    let result = decompress(&compressed, compressor::Value::Zstd, understated_size);
+    assert_eq!(
+        result
+            .expect_err("output exceeding claimed size must be rejected")
+            .code,
+        Code::InvalidArgument
+    );
+    Ok(())
+}
+
+#[nativelink_test]
 async fn decompress_identity_size_mismatch() -> Result<(), Error> {
     let result = decompress(b"hello world", compressor::Value::Identity, 999);
     assert_eq!(

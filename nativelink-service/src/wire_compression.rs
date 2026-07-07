@@ -36,6 +36,16 @@ use tracing::warn;
 /// We use an explicit level for clarity.
 pub const ZSTD_COMPRESSION_LEVEL: i32 = 3;
 
+/// Upper bound on the buffer `decompress` reserves up front for a zstd blob.
+/// `expected_size` comes from the client's claimed digest, so it must never be
+/// used as an allocation hint directly: a small payload claiming a huge size
+/// would otherwise force a large pre-emptive allocation before the real
+/// decompressed length is ever known. We reserve `min(expected_size, this)`
+/// so common payloads never reallocate while a hostile claim allocates at most
+/// this. Sized comfortably above any honest `BatchUpdateBlobs` payload (the
+/// only caller of this bulk path; large blobs stream through ByteStream).
+const ZSTD_DECOMPRESS_PREALLOC_CAP: usize = 1024 * 1024;
+
 /// Which instances accept and advertise REAPI compressed-blobs (zstd).
 ///
 /// Derived from `CapabilitiesConfig.remote_cache_compression` so that
@@ -165,9 +175,10 @@ pub fn compress(data: Bytes, compressor_value: compressor::Value) -> Result<Byte
 /// Decompress data using the specified wire compressor.
 ///
 /// `data` is the compressed bytes received from the wire.
-/// `expected_size` is the uncompressed size (from the digest), used to
-/// pre-allocate the output buffer and cap decompression to prevent memory
-/// exhaustion from malicious data.
+/// `expected_size` is the uncompressed size (from the client's digest). It is
+/// the hard cap on the decompressed output, but never a direct allocation
+/// hint: the buffer grows with the real decoded bytes so a small payload
+/// claiming a huge size cannot force a large up-front allocation.
 /// Returns the decompressed bytes suitable for storing.
 pub fn decompress(
     data: &[u8],
@@ -187,13 +198,27 @@ pub fn decompress(
             Ok(Bytes::copy_from_slice(data))
         }
         compressor::Value::Zstd => {
-            // Use bulk::decompress with expected_size as the capacity cap.
-            // This prevents memory exhaustion from malicious payloads that
-            // decompress to gigabytes — the output buffer is capped at
-            // expected_size bytes.
-            let decoded = zstd::bulk::decompress(data, expected_size).map_err(|e| {
-                make_err!(Code::InvalidArgument, "Zstd decompression failed: {}", e)
-            })?;
+            // Decode incrementally so `expected_size` (which is attacker
+            // controlled — it is the client's claimed digest size) can bound
+            // the output without being trusted as an allocation size. We
+            // reserve only `min(expected_size, ZSTD_DECOMPRESS_PREALLOC_CAP)`,
+            // then `take(expected_size + 1)` hard-caps the decoder so a
+            // decompression bomb is rejected as soon as it overshoots. This
+            // mirrors the real-byte-count validation the identity arm and the
+            // streaming upload path already perform.
+            let mut decoder = zstd::stream::read::Decoder::new(data)
+                .map_err(|e| make_err!(Code::InvalidArgument, "Zstd decompression failed: {e}"))?;
+            let mut decoded = Vec::new();
+            decoded.reserve(expected_size.min(ZSTD_DECOMPRESS_PREALLOC_CAP));
+            // `+ 1` lets an oversized stream produce one byte past the cap so
+            // the size check below rejects it rather than silently truncating.
+            let cap = u64::try_from(expected_size)
+                .err_tip(|| "expected_size did not fit in u64")?
+                .saturating_add(1);
+            decoder
+                .take(cap)
+                .read_to_end(&mut decoded)
+                .map_err(|e| make_err!(Code::InvalidArgument, "Zstd decompression failed: {e}"))?;
             if decoded.len() != expected_size {
                 return Err(make_err!(
                     Code::InvalidArgument,
