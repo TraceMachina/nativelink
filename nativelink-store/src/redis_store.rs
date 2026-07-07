@@ -1321,13 +1321,15 @@ where
                     if events_cfg.is_empty() {
                         error!("notify-keyspace-events not enabled for Redis, will fail to get remove callbacks");
                     } else if !events_cfg.contains('K') {
-                        error!(notify_keyspace_events=events_cfg, "notify-keyspace-events does not contain `K` so won't get keyspace events we need for eviction events");
-                    } else if !events_cfg.contains('e') && !events_cfg.contains('A') {
-                        error!(notify_keyspace_events=events_cfg, "notify-keyspace-events does not contain either 'e' or 'A' so we won't get eviction events");
-                    } else {
-                        info!(notify_keyspace_events=events_cfg, "Subscribing to eviction events");
-                        self.connection_manager.psubscribe("__key*__:*").await?;
+                        error!(notify_keyspace_events=events_cfg, "notify-keyspace-events does not contain 'K' so won't get keyspace events we need for eviction events");
+                    } else if !events_cfg.contains('A') {
+                        error!(notify_keyspace_events=events_cfg, "notify-keyspace-events does not contain 'A' so we won't get eviction events");
                     }
+                    // FIXME: Redis events spec appears unreliable, so we subscribe anyways
+                    // It should just need Ke as per https://redis.io/docs/latest/develop/pubsub/keyspace-notifications/
+                    // but I'm yet to get reliable eviction events out of that
+                    info!(notify_keyspace_events=events_cfg, "Attempting to subscribe to eviction events");
+                    self.connection_manager.psubscribe("__key*__:*").await?;
                     Ok::<(), Error>(())
                  })
                 .await {
