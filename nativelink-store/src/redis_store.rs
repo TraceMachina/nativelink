@@ -399,6 +399,8 @@ where
 
     /// Have we done a subscribe for messages for `remove_callback` subscribes?
     has_remove_callback_subscribe: OnceCell<()>,
+
+    remove_callbacks: Arc<Mutex<Vec<RemoveCallback>>>,
 }
 
 impl<C, M> Debug for RedisStore<C, M>
@@ -468,7 +470,11 @@ where
         connection_manager: M,
     ) -> Result<Self, Error> {
         info!("Redis index fingerprint: {FINGERPRINT_CREATE_INDEX_HEX}");
-        let subscription_manager = Arc::new(RedisSubscriptionManager::new(subscriber_channel));
+        let remove_callbacks = Arc::new(Mutex::new(Vec::new()));
+        let subscription_manager = Arc::new(RedisSubscriptionManager::new(
+            subscriber_channel,
+            remove_callbacks.clone(),
+        ));
         if let Some(channel) = &pub_sub_channel {
             connection_manager.psubscribe(channel).await?;
         }
@@ -487,6 +493,7 @@ where
             max_count_per_cursor,
             health_check_timeout,
             has_remove_callback_subscribe: OnceCell::const_new(),
+            remove_callbacks,
         })
     }
 
@@ -1299,6 +1306,7 @@ where
 
     fn register_remove_callback(self: Arc<Self>, callback: RemoveCallback) -> Result<(), Error> {
         debug!(?callback, "New callback");
+        self.remove_callbacks.lock().push(callback);
         let local_self = self.clone();
         background_spawn!("remove_callback_subscribe", async move {
             if let Err(err) = local_self.clone().has_remove_callback_subscribe
@@ -1673,7 +1681,10 @@ pub struct RedisSubscriptionManager {
 }
 
 impl RedisSubscriptionManager {
-    pub fn new(subscriber_channel: UnboundedReceiver<PushInfo>) -> Self {
+    pub fn new(
+        subscriber_channel: UnboundedReceiver<PushInfo>,
+        remove_callbacks: Arc<Mutex<Vec<RemoveCallback>>>,
+    ) -> Self {
         let subscribed_keys = Arc::new(RwLock::new(StringPatriciaMap::new()));
         let subscribed_keys_weak = Arc::downgrade(&subscribed_keys);
         let (tx_for_test, mut rx_for_test) = unbounded_channel();
@@ -1736,7 +1747,19 @@ impl RedisSubscriptionManager {
                                                 error!(?push_info, "No key in eviction event");
                                                 continue;
                                             };
-                                            trace!(?push_info, "Eviction event");
+                                            trace!(?eviction_key, "Eviction key");
+                                            let internal_key = if let Some((_prefix, suffix)) = eviction_key.split_once(":") {suffix} else {
+                                                error!(?eviction_key, "Eviction key doesn't contain a colon");
+                                                continue;
+                                            };
+
+                                            let store_key = StoreKey::new_str(internal_key).into_owned();
+                                            let locked_remove_callbacks = remove_callbacks.lock();
+                                            let mut callbacks: FuturesUnordered<_> =
+                                                locked_remove_callbacks.iter()
+                                                .map(|callback| callback.callback(store_key.borrow()))
+                                                .collect();
+                                            while callbacks.next().await.is_some() {}
                                             continue
                                         }
                                         value
