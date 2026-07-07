@@ -7,6 +7,7 @@ import {
   TeslaLogo,
   ThirdWaveLogo,
 } from "@/components/customer-logos";
+import { McpDemo } from "@/components/mcp-demo";
 import { Badge, Button, Eyebrow, HeroVisual, Marquee, Reveal, Section } from "@nativelink/ui";
 
 export const metadata = {
@@ -73,7 +74,7 @@ const stats = [
     body: "Demonstrated on LLVM, one of the world's largest C++ codebases.",
   },
   {
-    value: "1B+",
+    value: "10B+",
     label: "build requests per month",
     body: "served in production.",
   },
@@ -108,7 +109,7 @@ const securityFeature = {
 const benefits = [
   {
     title: "Written in Rust. Built for scale.",
-    body: "Memory-safe, race-free, and no garbage collector to stall your hot path. Over a billion build requests a month, in production.",
+    body: "Memory-safe, race-free, and no garbage collector to stall your hot path. Over ten billion build requests a month, in production.",
   },
   {
     title: "Ten minutes to your first cache hit.",
@@ -223,6 +224,28 @@ export default function HomePage() {
           </Marquee>
         </div>
       </section>
+
+      <Section width="default" className="border-b border-border/60 py-28">
+        <Reveal>
+          <div className="mx-auto mb-12 max-w-[760px] text-center">
+            <Eyebrow className="mb-4">Built for AI-assisted development</Eyebrow>
+            <h2 className="text-balance text-4xl font-semibold leading-[1.05] tracking-[-0.03em] md:text-[56px]">
+              Wire NativeLink into your AI coding agent.
+            </h2>
+            <p className="mx-auto mt-6 max-w-[640px] text-base leading-relaxed text-muted-foreground md:text-lg">
+              The NativeLink MCP server gives Claude Code, Cursor, and Codex five real tools, so
+              your agent can configure remote caching, pull docs, and tune builds without leaving
+              the editor.
+            </p>
+          </div>
+        </Reveal>
+
+        <Reveal delay={0.08}>
+          <div className="mx-auto max-w-[820px]">
+            <McpDemo />
+          </div>
+        </Reveal>
+      </Section>
 
       <Section width="default" className="border-b border-border/60 py-20">
         <Reveal>

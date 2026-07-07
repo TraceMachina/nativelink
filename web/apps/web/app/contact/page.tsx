@@ -1,5 +1,4 @@
 import { Eyebrow, Reveal, Section } from "@nativelink/ui";
-import { ContactForm } from "./contact-form";
 
 export const metadata = {
   title: "Contact",
@@ -56,9 +55,9 @@ const socialLinks = [
     fill: true,
   },
   {
-    label: "Office",
-    handle: "548 Market St, San Francisco, CA 94104",
-    href: "https://maps.google.com/?q=548+Market+St+San+Francisco",
+    label: "Mail",
+    handle: "PO Box 60676, 265 Cambridge Ave, Palo Alto, CA 94306",
+    href: "https://maps.google.com/?q=265+Cambridge+Ave+Palo+Alto+CA+94306",
     icon: (
       <>
         <path d="M12 22s8-7.5 8-13a8 8 0 1 0-16 0c0 5.5 8 13 8 13Z" />
@@ -127,23 +126,9 @@ export default function ContactPage() {
 
       {/* FORM + SOCIAL */}
       <Section width="default" className="border-t border-border/60 py-20">
-        <div className="grid gap-12 lg:grid-cols-[1.4fr_1fr] lg:gap-16">
+        <div className="mx-auto max-w-[680px]">
           <Reveal>
-            <Eyebrow className="mb-4">Or write to us</Eyebrow>
-            <h2 className="text-balance text-3xl font-semibold leading-[1.1] tracking-[-0.025em] md:text-4xl">
-              Tell us what you're building.
-            </h2>
-            <p className="mt-4 text-base leading-relaxed text-muted-foreground md:text-lg">
-              We'll route your note to the right engineer and reply with concrete
-              next steps, not a templated brochure.
-            </p>
-            <div className="mt-8 rounded-2xl border border-border bg-surface p-6 md:p-8">
-              <ContactForm />
-            </div>
-          </Reveal>
-
-          <Reveal delay={0.1}>
-            <div className="space-y-4 lg:sticky lg:top-24">
+            <div className="space-y-4">
               <Eyebrow className="mb-2">Other ways</Eyebrow>
               <h3 className="text-2xl font-semibold tracking-tight">
                 Find us elsewhere.
