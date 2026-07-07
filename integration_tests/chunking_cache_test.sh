@@ -24,7 +24,11 @@ if [[ $UNDER_TEST_RUNNER -ne 1 ]]; then
 fi
 set -x
 
-CHUNKING_FLAGS=(--config self_test --experimental_remote_cache_chunking)
+# Bazel uploads cache entries in the background by default
+# (--remote_cache_async, on since Bazel 8), so a build can return before the
+# chunked upload and SpliceBlob complete. Force synchronous uploads so the
+# chunk-index assertions below cannot race the upload.
+CHUNKING_FLAGS=(--config self_test --experimental_remote_cache_chunking --remote_cache_async=false)
 EXPECTED_SHA=$(seq 1 1000000 | sha256sum | awk '{print $1}')
 # The test runner's working directory is not the workspace root, so resolve
 # the output location through bazel itself.
