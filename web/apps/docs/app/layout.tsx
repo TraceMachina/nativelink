@@ -24,6 +24,9 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       suppressHydrationWarning
       className={`${GeistSans.variable} ${GeistMono.variable}`}
     >
+      <head>
+        <link rel="llms-txt" href="/llms.txt" />
+      </head>
       <body className="flex min-h-screen flex-col bg-background text-foreground antialiased">
         {/* RootProvider configures the theme via next-themes. Setting BOTH
          * "class" and "data-theme" attributes is intentional:

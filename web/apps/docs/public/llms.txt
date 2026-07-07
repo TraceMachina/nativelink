@@ -1,0 +1,276 @@
+# NativeLink
+
+> High-performance, low-latency build cache and remote execution (RBE) platform — open source, written in Rust. NativeLink is an efficient implementation of the Remote Execution API (REAPI), trusted in production to handle billions of build requests per month (e.g. by Samsung), accelerating software compilation and testing while reducing infrastructure cost.
+
+NativeLink does two things. It **caches** the results of build and test steps so unchanged work is never redone, and it **remotely executes** work across a fleet of machines so builds parallelize instead of running on one laptop. Both rely on build actions being deterministic: the same inputs always produce the same outputs, so a result can be safely reused regardless of which machine produced it.
+
+- Current release: **1.6.0** (2026-07-06)
+- License: Functional Source License 1.1, Apache 2.0 future (`FSL-1.1-Apache-2.0`) — source-available and free for permitted self-hosted use; NativeLink Cloud and Enterprise are paid offerings.
+- Homepage: https://nativelink.com · Docs: https://docs.nativelink.com · Source: https://github.com/TraceMachina/nativelink
+
+## Supported build systems
+
+NativeLink speaks the standard Remote Execution API, so it works with any REAPI client:
+
+- **Bazel** — first-class; the default target for tutorials and Local Remote Execution.
+- **Buck2** — remote cache and remote execution.
+- **Siso** — Chromium-style remote caching and execution (Chromium is the largest public consumer).
+- **Pants** — remote caching.
+- **BuildStream** — artifact storage and remote execution.
+- **Goma** — REAPI-compatible caching/execution.
+- **CMake** — via [`recc`](https://buildgrid.gitlab.io/recc) as the bridge.
+
+Runs on Unix-like systems and Windows.
+
+## Key concepts
+
+- **CAS (Content-Addressable Storage):** blobs are stored under their cryptographic hash (SHA-256) rather than a filename, so identical bytes collapse to a single entry (automatic de-duplication).
+- **Action:** one unit of build work — a command line, input digests, platform requirements, and expected outputs. Hashing an action yields a stable identifier.
+- **ActionResult:** what an action produces — output digests, exit code, stdout/stderr, timing.
+- **Action Cache (AC):** a keyed store mapping `hash(Action) → ActionResult`. A hit skips the work entirely.
+- **Digest:** a content hash plus a size; used everywhere in place of file paths.
+- **Scheduler:** the dispatcher — receives `Execute` calls, matches actions to workers by platform properties, tracks in-flight work.
+- **Worker:** the runner — fetches inputs from CAS, runs the command in a sandbox, uploads outputs to CAS.
+- **Platform properties:** key/value tags on actions ("needs Linux, x86_64, a GPU") and on workers; the scheduler matches them.
+- **Instance name:** a namespace within one cluster; action hashes from different instance names never collide, so one cluster can serve multiple isolated environments.
+- **Hermetic build:** outputs depend only on declared inputs, so the same inputs give the same outputs on any machine.
+- **LRE (Local Remote Execution):** NativeLink on `localhost` with a Nix-pinned toolchain, making local builds bit-identical to remote ones.
+- **Sandbox:** the isolated environment a worker runs an action in (`bwrap`/`landlock` on Linux, `sandbox-exec` on macOS), which makes hermeticity enforceable.
+
+## Crate architecture
+
+The workspace is divided into modular Rust crates:
+
+- **`nativelink-store`** — all caching/storage layers and their composition (memory, filesystem, S3, GCS, Azure Blob, Redis, MongoDB, R2, ONTAP S3, OCI, plus decorator stores).
+- **`nativelink-scheduler`** — matches actions to worker processes and tracks execution state.
+- **`nativelink-worker`** — local/remote sandboxed execution, running-actions management, and telemetry.
+- **`nativelink-service`** — the gRPC REAPI services (Execution, ActionCache, ContentAddressableStorage, Capabilities, ByteStream, Worker API, Health, BEP/Push).
+- **`nativelink-config`** — parses the JSON5 application configuration.
+- **`nativelink-proto`** — auto-generated Rust client/server interfaces from the protobuf definitions.
+- **`nativelink-util`** — shared plumbing (hashing, retries, metrics, the `Store` trait, filesystem helpers).
+
+## How it's configured
+
+A single JSON5 config wires together four kinds of building block:
+
+- **stores** — where data lives.
+- **schedulers** — how actions are matched to workers (e.g. the `simple` scheduler matching on CPU, memory, OS, arch, GPU).
+- **workers** — the executors that run actions and advertise their platform properties.
+- **servers** — network endpoints exposing gRPC services. A common pattern splits a public frontend API from a private worker/admin backend on separate ports.
+
+Storage is **composable** — real backends can be wrapped by decorator stores to build exactly the pipeline a deployment needs:
+
+- **Real storage engines (JSON5 configuration keys):**
+  - `filesystem` — local directory.
+  - `memory` — in-memory cache.
+  - `redis_store` — Redis backend.
+  - `experimental_cloud_object_store` — cloud object storage, configured using the `provider` property: `"aws"` (S3), `"gcs"` (Google Cloud Storage), `"azure"` (Azure Blob), `"r2"` (Cloudflare R2), `"ontap"` (NetApp ONTAP S3), or `"oci"` (Oracle Cloud / OCI Object Storage).
+  - `experimental_mongo` — MongoDB storage.
+  - `grpc` — forwards cache requests to a remote gRPC cache.
+  - `noop` — discards write data; returns `NotFound` on reads (useful for partitioning).
+- **Decorator/Wrapper stores (JSON5 configuration keys):**
+  - `fast_slow` — buffers queries from a slow/remote store using a fast/local store.
+  - `compression` — compresses data inbound and outbound (e.g. using LZ4).
+  - `dedup` — slices data via rolling hashes for chunked deduplication.
+  - `verify` — validates hash and size of incoming blobs before storing them.
+  - `existence_cache` — caches the results of object existence checks.
+  - `completeness_checking` — checks that all output files/directories of an Action Cache (AC) hit exist in the CAS before returning it.
+  - `shard` — distributes data across a list of weighted backend stores using digest hashing.
+  - `size_partitioning` — routes data to different stores depending on digest size limits.
+  - `ref_store` — references another store by name (for nesting and resource sharing).
+
+## Quickstart
+
+Prebuilt Docker image (fastest; x86_64):
+
+```bash
+curl -O https://raw.githubusercontent.com/TraceMachina/nativelink/v1.6.0/nativelink-config/examples/basic_cas.json5
+docker run -v $(pwd)/basic_cas.json5:/config -p 50051:50051 \
+    ghcr.io/tracemachina/nativelink:v1.6.0 config
+```
+
+From source with Nix (supports macOS/WSL2; needs `nix-command`+`flakes` enabled and ~15–20 GB free disk):
+
+```bash
+curl -O https://raw.githubusercontent.com/TraceMachina/nativelink/main/nativelink-config/examples/basic_cas.json5
+nix run github:TraceMachina/nativelink ./basic_cas.json5
+```
+
+Developing on the repo:
+
+```bash
+nix develop                 # hermetic dev shell (identical to CI)
+cargo build                 # or: bazel build //:nativelink
+bazel test //...            # run the test suite
+```
+
+## Sample JSON5 configuration (`basic_cas.json5`)
+
+Two stores (an Action Cache and a fast/slow CAS), one scheduler, one local worker, and a public + private server split. Note that `cas`/`ac`/`execution` services take an array of per-`instance_name` entries.
+
+```json5
+{
+  stores: [
+    {
+      name: "AC_MAIN_STORE",
+      filesystem: {
+        content_path: "/tmp/nativelink/data/content_path-ac",
+        temp_path: "/tmp/nativelink/data/tmp_path-ac",
+        eviction_policy: { max_bytes: 1000000000 },   // 1GB
+      },
+    },
+    {
+      name: "WORKER_FAST_SLOW_STORE",
+      fast_slow: {
+        // "fast" must be a filesystem store; the worker hardlinks from it.
+        fast: {
+          filesystem: {
+            content_path: "/tmp/nativelink/data/content_path-cas",
+            temp_path: "/tmp/nativelink/data/tmp_path-cas",
+            eviction_policy: { max_bytes: 10000000000 },   // 10GB
+          },
+        },
+        slow: { noop: {} },   // no shared backing store in this single-node example
+      },
+    },
+  ],
+  schedulers: [
+    {
+      name: "MAIN_SCHEDULER",
+      simple: { supported_platform_properties: { cpu_arch: "exact" } },
+    },
+  ],
+  workers: [
+    {
+      local: {
+        worker_api_endpoint: { uri: "grpc://127.0.0.1:50061" },
+        cas_fast_slow_store: "WORKER_FAST_SLOW_STORE",
+        upload_action_result: { ac_store: "AC_MAIN_STORE" },
+        work_directory: "/tmp/nativelink/work",
+        platform_properties: { cpu_arch: { values: ["x86_64"] } },
+      },
+    },
+  ],
+  servers: [
+    {
+      name: "public",
+      listener: { http: { socket_address: "0.0.0.0:50051" } },
+      services: {
+        cas: [{ instance_name: "main", cas_store: "WORKER_FAST_SLOW_STORE" }],
+        ac: [{ instance_name: "main", ac_store: "AC_MAIN_STORE" }],
+        execution: [
+          { instance_name: "main", cas_store: "WORKER_FAST_SLOW_STORE", scheduler: "MAIN_SCHEDULER" },
+        ],
+        bytestream: [{ instance_name: "main", cas_store: "WORKER_FAST_SLOW_STORE" }],
+        capabilities: [{ instance_name: "main", remote_execution: { scheduler: "MAIN_SCHEDULER" } }],
+      },
+    },
+    {
+      name: "private_workers",
+      listener: { http: { socket_address: "0.0.0.0:50061" } },
+      services: {
+        worker_api: { scheduler: "MAIN_SCHEDULER" },
+        admin: {},
+        health: {},
+      },
+    },
+  ],
+  global: { max_open_files: 24576 },
+}
+```
+
+More examples live in [`nativelink-config/examples/`](https://github.com/TraceMachina/nativelink/tree/main/nativelink-config/examples): `filesystem_cas`, `s3_backend_with_local_fast_cas`, `redis`, `gcs_backend`, `azure_blob_backend`, `oci_backend`, `ontap_backend`, `r2_backend`, `mongo`, `chunking_cas`, `local_rbe_self_test`, and more.
+
+## Documentation
+
+### Get started
+- [Introduction](https://docs.nativelink.com): What NativeLink is and how the docs are organized (Diátaxis).
+- [Setup](https://docs.nativelink.com/getting-started/setup): Install NativeLink and point your build system at it in under 10 minutes.
+- [NativeLink on-prem](https://docs.nativelink.com/getting-started/on-prem): Self-host on hardware you control, with the operational checklist a team rollout needs.
+- [Other build systems](https://docs.nativelink.com/getting-started/other-build-systems): Use NativeLink without Bazel — Buck2, Siso, Pants, BuildStream, and CMake with recc.
+- [Buck2](https://docs.nativelink.com/getting-started/other-build-systems/buck2): Configure Buck2 for remote cache and execution.
+- [Siso](https://docs.nativelink.com/getting-started/other-build-systems/siso): Point Siso at NativeLink for Chromium-style remote caching and execution.
+- [Pants](https://docs.nativelink.com/getting-started/other-build-systems/pants): Enable Pants remote caching with NativeLink.
+- [BuildStream](https://docs.nativelink.com/getting-started/other-build-systems/buildstream): Configure BuildStream for artifact storage and remote execution.
+- [CMake with recc](https://docs.nativelink.com/getting-started/other-build-systems/cmake-recc): Accelerate CMake builds using recc as the bridge to NativeLink.
+
+### Testing remote execution (RBE)
+- [Local cache and executor](https://docs.nativelink.com/rbe/local-testing): Run a full cache and executor locally and prove Bazel remote caching and execution work — no Nix, no shared cluster.
+- [Local Remote Execution](https://docs.nativelink.com/rbe/local-remote-execution): The Nix-pinned toolchain workflow behind LRE, walked through end to end.
+- [Classic RBE examples](https://docs.nativelink.com/rbe/examples): Three realistic remote-execution patterns to run against a cluster.
+- [Nix templates](https://docs.nativelink.com/rbe/nix-templates): The Nix flake template that sets up LRE with Bazel in one `flake init`.
+
+### Configuration
+- [Configuration introduction](https://docs.nativelink.com/configuration/intro): How the JSON5 configuration is structured — stores, servers, schedulers, workers.
+- [Basic configurations](https://docs.nativelink.com/configuration/basic): Minimal configs for development and small teams.
+- [Production configurations](https://docs.nativelink.com/configuration/production): The cluster shape that survives a real team — sharded CAS, autoscaling workers, mTLS, observability.
+- [Content-defined chunking](https://docs.nativelink.com/configuration/chunking): Cut remote cache transfer bytes 80–90% for incrementally changing artifacts via the REAPI SplitBlob/SpliceBlob extension and Bazel's `--experimental_remote_cache_chunking`.
+
+### Deployment
+- [On-prem overview](https://docs.nativelink.com/deployment/on-prem-overview): Architecture patterns for self-hosted NativeLink.
+- [Kubernetes](https://docs.nativelink.com/deployment/kubernetes): Each workload, where state lives, and how to autoscale workers.
+- [Oracle Cloud (OCI) Object Storage](https://docs.nativelink.com/deployment/oci-object-storage): Back CAS and AC with OCI Object Storage via its S3 Compatibility API.
+- [Chromium](https://docs.nativelink.com/deployment/chromium): Building Chromium with NativeLink as the Siso backend.
+- [Metrics & observability](https://docs.nativelink.com/deployment/metrics): Collect OTLP metrics, scrape with Prometheus, dashboard in Grafana.
+- [Persistent workers](https://docs.nativelink.com/deployment/persistent-workers): Keep worker processes warm between actions to cut compile startup time.
+
+### Understanding NativeLink
+- [Architecture](https://docs.nativelink.com/explanations/architecture): How the scheduler, CAS, action cache, and worker fleet fit together — and why each piece exists.
+- [Local Remote Execution](https://docs.nativelink.com/explanations/lre): Hermetic, content-addressed builds on your machine — no Docker, no containers.
+- [History](https://docs.nativelink.com/explanations/history): Where NativeLink came from, what it replaces, and why it was built in Rust.
+
+### FAQ
+- [Is NativeLink free?](https://docs.nativelink.com/faq/cost): Source-available and free for permitted self-hosted use; Cloud and Enterprise are paid.
+- [What is remote caching?](https://docs.nativelink.com/faq/caching): Reuse build outputs across machines so you pay for compilation once.
+- [What is remote execution?](https://docs.nativelink.com/faq/remote-execution): Build steps run on a worker fleet, not your laptop.
+- [What is LRE?](https://docs.nativelink.com/faq/lre): Local Remote Execution — the hermeticity of RBE without the network.
+- [What are toolchains?](https://docs.nativelink.com/faq/toolchains): How NativeLink represents compilers, linkers, and their runtime.
+- [How do I make my Bazel setup hermetic?](https://docs.nativelink.com/faq/hermeticity): Eliminate "works on my machine" by declaring every input.
+- [What is Nix?](https://docs.nativelink.com/faq/nix): The purely functional package manager behind NativeLink's hermeticity guarantees.
+- [Why Rust?](https://docs.nativelink.com/faq/rust): Memory safety without garbage collection — the right shape for a fast service that must never lie.
+
+### Reference
+- [Configuration reference](https://docs.nativelink.com/reference/nativelink-config): Every knob in the JSON5 configuration — types, defaults, and links to source, autogenerated from the Rust config crate.
+- [Store overview](https://docs.nativelink.com/reference/nativelink-config/store-overview): The mental model behind every store — what holds data, what wraps another store, and how they compose.
+- [Glossary](https://docs.nativelink.com/reference/glossary): The vocabulary needed to read the rest of the docs.
+- [Changelog](https://docs.nativelink.com/reference/changelog): Notable changes per release, latest first.
+
+### For contributors
+- [Contribution guidelines](https://docs.nativelink.com/contribute/guidelines): What we accept, how reviews work, and what good PRs look like.
+- [Working on documentation](https://docs.nativelink.com/contribute/docs): Edit, preview, and ship changes to the docs.
+- [Develop with Bazel](https://docs.nativelink.com/contribute/bazel): Build, test, and run NativeLink with Bazel — the dev loop CI uses.
+- [Developing with Cargo](https://docs.nativelink.com/contribute/cargo): Pure Cargo workflow for contributors who'd rather not run Bazel.
+- [Develop with Nix](https://docs.nativelink.com/contribute/nix): The official dev shell — hermetic by construction, identical to CI.
+
+## Recent changelog highlights
+
+Full changelog: https://docs.nativelink.com/reference/changelog · https://github.com/TraceMachina/nativelink/blob/main/CHANGELOG.md
+
+### v1.6.0 (2026-07-06)
+- **Oracle store:** new Oracle Cloud (OCI Object Storage) backend, with tests and docs.
+- **Releases:** signed artifacts with SLSA provenance; native arm64 Linux release binaries; multi-arch `worker-init` images.
+- **Azure Blob:** migrated to the Azure v1.0 crates.
+- **Config:** time-based config values renamed with explicit unit postfixes; `ref_store` now resolves on boot instead of first query.
+- **Docs:** macOS Nix setup troubleshooting; improved "other build systems" docs.
+
+### v1.5.x (2026-06)
+- **Redis resilience:** stores now ride out Redis Sentinel master failovers across the write paths and `has`/`get_part`/`list` read paths.
+- **Observability:** load-balanced channel for OpenTelemetry exporters; scheduler publishes resource-usage origin events; worker samples action peak memory by process group.
+- **⚠️ Breaking (v1.5.0):** an instance's `cas_store` and `ac_store` may no longer point at the same store — such configs now fail at startup with `InvalidArgument`. Give the Action Cache its own store before upgrading.
+- **Large blobs:** opt-in bypass of leader/follower dedup for huge blobs; fast/slow tiering falls through to the slow store on stale fast-tier entries.
+
+### v1.4.0 (2026-06-06) and the 1.x line (first stable 1.0.0, 2026-03-23)
+- Storage-engine correctness and eviction fixes, deferred-write error surfacing, and worker action-memory telemetry.
+
+### Post-1.6.0 (main)
+- REAPI content-defined chunking (SplitBlob/SpliceBlob) support to lower cache-transfer bytes.
+- Upgrades to Bazel 9.1.1 / 8.7.0.
+
+## Optional
+
+- [GitHub repository](https://github.com/TraceMachina/nativelink): Source code, issues, and releases.
+- [Container images](https://github.com/TraceMachina/nativelink/pkgs/container/nativelink): Prebuilt Docker images (`ghcr.io/tracemachina/nativelink`).
+- [Config examples](https://github.com/TraceMachina/nativelink/tree/main/nativelink-config/examples): Ready-to-run JSON5 configs for every backend.
+- [Homepage](https://nativelink.com): Product overview, NativeLink Cloud, and Enterprise.
+- [Remote Execution API (REAPI)](https://github.com/bazelbuild/remote-apis): The gRPC protocol NativeLink implements.
+- [recc](https://buildgrid.gitlab.io/recc): The bridge used to accelerate CMake builds with NativeLink.
