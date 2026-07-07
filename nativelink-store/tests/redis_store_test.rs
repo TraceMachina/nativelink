@@ -1863,7 +1863,8 @@ fn test_search_by_index_skips_int_from_cursor_read() -> Result<(), Error> {
 #[nativelink_test]
 async fn no_items_from_none_subscription_channel() -> Result<(), Error> {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let subscription_manager = RedisSubscriptionManager::new(rx);
+    let subscription_manager =
+        RedisSubscriptionManager::new(rx, Arc::new(async_lock::Mutex::new(vec![])));
 
     // To give the stream enough time to get polled
     sleep(Duration::from_secs(1)).await;
@@ -1882,7 +1883,8 @@ async fn no_items_from_none_subscription_channel() -> Result<(), Error> {
 #[nativelink_test]
 async fn send_messages_to_subscription_channel() -> Result<(), Error> {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let subscription_manager = RedisSubscriptionManager::new(rx);
+    let subscription_manager =
+        RedisSubscriptionManager::new(rx, Arc::new(async_lock::Mutex::new(vec![])));
 
     tx.send(PushInfo {
         kind: redis::PushKind::PSubscribe,
@@ -2041,7 +2043,7 @@ impl SchedulerStoreKeyProvider for TestSubKey {
 #[nativelink_test]
 async fn redis_subscription_single_drop_is_silent() -> Result<(), Error> {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let manager = RedisSubscriptionManager::new(rx);
+    let manager = RedisSubscriptionManager::new(rx, Arc::new(async_lock::Mutex::new(vec![])));
 
     let sub = manager.subscribe(TestSubKey("solo-key".to_string()))?;
     drop(sub);
@@ -2060,7 +2062,7 @@ async fn redis_subscription_single_drop_is_silent() -> Result<(), Error> {
 #[nativelink_test]
 async fn redis_subscription_drop_one_of_two_keeps_publisher() -> Result<(), Error> {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let manager = RedisSubscriptionManager::new(rx);
+    let manager = RedisSubscriptionManager::new(rx, Arc::new(async_lock::Mutex::new(vec![])));
 
     let key = "shared-key";
     let sub_a = manager.subscribe(TestSubKey(key.to_string()))?;
@@ -2088,7 +2090,7 @@ async fn redis_subscription_drop_one_of_two_keeps_publisher() -> Result<(), Erro
 async fn redis_subscription_concurrent_drops_no_absence_warn() -> Result<(), Error> {
     const ITERATIONS: usize = 200;
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let manager = RedisSubscriptionManager::new(rx);
+    let manager = RedisSubscriptionManager::new(rx, Arc::new(async_lock::Mutex::new(vec![])));
 
     for i in 0..ITERATIONS {
         let key = format!("race-key-{i}");
@@ -2122,7 +2124,7 @@ async fn redis_subscription_concurrent_drops_no_absence_warn() -> Result<(), Err
 #[nativelink_test]
 async fn redis_subscription_resubscribe_after_drop_creates_fresh_publisher() -> Result<(), Error> {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let manager = RedisSubscriptionManager::new(rx);
+    let manager = RedisSubscriptionManager::new(rx, Arc::new(async_lock::Mutex::new(vec![])));
 
     let key = "cycle-key";
     let sub_a = manager.subscribe(TestSubKey(key.to_string()))?;

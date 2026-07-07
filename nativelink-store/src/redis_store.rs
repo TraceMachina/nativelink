@@ -400,7 +400,7 @@ where
     /// Have we done a subscribe for messages for `remove_callback` subscribes?
     has_remove_callback_subscribe: OnceCell<()>,
 
-    remove_callbacks: Arc<Mutex<Vec<RemoveCallback>>>,
+    remove_callbacks: Arc<async_lock::Mutex<Vec<RemoveCallback>>>,
 }
 
 impl<C, M> Debug for RedisStore<C, M>
@@ -470,7 +470,7 @@ where
         connection_manager: M,
     ) -> Result<Self, Error> {
         info!("Redis index fingerprint: {FINGERPRINT_CREATE_INDEX_HEX}");
-        let remove_callbacks = Arc::new(Mutex::new(Vec::new()));
+        let remove_callbacks = Arc::new(async_lock::Mutex::new(Vec::new()));
         let subscription_manager = Arc::new(RedisSubscriptionManager::new(
             subscriber_channel,
             remove_callbacks.clone(),
@@ -1306,9 +1306,9 @@ where
 
     fn register_remove_callback(self: Arc<Self>, callback: RemoveCallback) -> Result<(), Error> {
         debug!(?callback, "New callback");
-        self.remove_callbacks.lock().push(callback);
         let local_self = self.clone();
         background_spawn!("remove_callback_subscribe", async move {
+            self.remove_callbacks.lock().await.push(callback);
             if let Err(err) = local_self.clone().has_remove_callback_subscribe
                 .get_or_try_init(|| async move {
                     let mut client = local_self.get_client().await?;
@@ -1685,7 +1685,7 @@ pub struct RedisSubscriptionManager {
 impl RedisSubscriptionManager {
     pub fn new(
         subscriber_channel: UnboundedReceiver<PushInfo>,
-        remove_callbacks: Arc<Mutex<Vec<RemoveCallback>>>,
+        remove_callbacks: Arc<async_lock::Mutex<Vec<RemoveCallback>>>,
     ) -> Self {
         let subscribed_keys = Arc::new(RwLock::new(StringPatriciaMap::new()));
         let subscribed_keys_weak = Arc::downgrade(&subscribed_keys);
@@ -1750,13 +1750,13 @@ impl RedisSubscriptionManager {
                                                 continue;
                                             };
                                             trace!(?eviction_key, "Eviction key");
-                                            let internal_key = if let Some((_prefix, suffix)) = eviction_key.split_once(":") {suffix} else {
+                                            let Some((_prefix, internal_key)) = eviction_key.split_once(':') else {
                                                 error!(?eviction_key, "Eviction key doesn't contain a colon");
                                                 continue;
                                             };
 
                                             let store_key = StoreKey::new_str(internal_key).into_owned();
-                                            let locked_remove_callbacks = remove_callbacks.lock();
+                                            let locked_remove_callbacks = remove_callbacks.lock().await;
                                             let mut callbacks: FuturesUnordered<_> =
                                                 locked_remove_callbacks.iter()
                                                 .map(|callback| callback.callback(store_key.borrow()))
