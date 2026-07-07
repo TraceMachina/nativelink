@@ -26,11 +26,14 @@ set -x
 
 CHUNKING_FLAGS=(--config self_test --experimental_remote_cache_chunking)
 EXPECTED_SHA=$(seq 1 1000000 | sha256sum | awk '{print $1}')
+# The test runner's working directory is not the workspace root, so resolve
+# the output location through bazel itself.
+ARTIFACT="$(bazel --output_base="$BAZEL_CACHE_DIR" info "${CHUNKING_FLAGS[@]}" bazel-bin)/chunking_test_artifact.txt"
 
 # First build executes the action locally and uploads the ~6.9MB output as
 # chunks (SpliceBlob).
 bazel --output_base="$BAZEL_CACHE_DIR" build "${CHUNKING_FLAGS[@]}" //:chunking_test_artifact
-FIRST_SHA=$(sha256sum bazel-bin/chunking_test_artifact.txt | awk '{print $1}')
+FIRST_SHA=$(sha256sum "$ARTIFACT" | awk '{print $1}')
 if [[ $FIRST_SHA != "$EXPECTED_SHA" ]]; then
     echo "Expected locally built artifact to have sha $EXPECTED_SHA, got $FIRST_SHA."
     exit 1
@@ -56,7 +59,7 @@ if [[ ! $OUTPUT =~ 'remote cache hit' ]]; then
     echo "$OUTPUT"
     exit 1
 fi
-SECOND_SHA=$(sha256sum bazel-bin/chunking_test_artifact.txt | awk '{print $1}')
+SECOND_SHA=$(sha256sum "$ARTIFACT" | awk '{print $1}')
 if [[ $SECOND_SHA != "$EXPECTED_SHA" ]]; then
     echo "Artifact fetched through the chunked download path is corrupt:"
     echo "expected sha $EXPECTED_SHA, got $SECOND_SHA."
