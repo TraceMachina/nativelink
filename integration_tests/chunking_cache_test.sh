@@ -50,6 +50,9 @@ if [[ -z $(find "$CHUNK_INDEX_DIR" -type f 2> /dev/null) ]]; then
     echo "Expected a chunk layout in $CHUNK_INDEX_DIR after a chunked upload."
     echo "SpliceBlob was likely not used; check that the server advertises"
     echo "chunking support and that bazel supports the chunking flag."
+    echo "Diagnostics: contents of the mounted cache dir and root's default:"
+    sudo find "${NATIVELINK_DIR:-$HOME/.cache/nativelink}" -maxdepth 1 2> /dev/null || true
+    sudo find /root/.cache/nativelink -maxdepth 1 2> /dev/null || true
     exit 1
 fi
 
