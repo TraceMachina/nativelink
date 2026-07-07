@@ -45,8 +45,8 @@ stores: [
     // Blob-to-chunks layouts: roughly 80-140 bytes per chunk.
     name: "CHUNK_INDEX_STORE",
     filesystem: {
-      content_path: "~/.cache/nativelink/content_path-chunk-index",
-      temp_path: "~/.cache/nativelink/tmp_path-chunk-index",
+      content_path: "/tmp/nativelink/data/content_path-chunk-index",
+      temp_path: "/tmp/nativelink/data/tmp_path-chunk-index",
       eviction_policy: { max_bytes: 100000000 },
     },
   },
