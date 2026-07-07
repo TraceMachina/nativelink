@@ -201,7 +201,7 @@ NativeLink doesn't allow direct commits or human-created side branches in the
    ```
 
 5. Go to https://github.com/TraceMachina/nativelink/pulls where you should see a
-   button that you can click to create to create a new pull request from your
+   button that you can click to create a new pull request from your
    fork to the main repository.
 
 6. Once you opened the pull request, click on the purple `Reviewable` button in
