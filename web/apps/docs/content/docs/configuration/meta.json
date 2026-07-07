@@ -3,7 +3,7 @@
     "intro",
     "basic",
     "production",
-    "directory-cache"
+    "directory-cache",
     "chunking"
   ],
   "title": "Configuring NativeLink"
