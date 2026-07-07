@@ -46,7 +46,7 @@ use nativelink_util::proto_stream_utils::{
 };
 use nativelink_util::resource_info::ResourceInfo;
 use nativelink_util::retry::{Retrier, RetryResult};
-use nativelink_util::store_trait::{RemoveItemCallback, StoreDriver, StoreKey, UploadSizeInfo};
+use nativelink_util::store_trait::{RemoveCallback, StoreDriver, StoreKey, UploadSizeInfo};
 use nativelink_util::telemetry::ClientHeaders;
 use nativelink_util::{default_health_status_indicator, tls_utils};
 use opentelemetry::context::Context;
@@ -1003,10 +1003,7 @@ impl StoreDriver for GrpcStore {
         self
     }
 
-    fn register_remove_callback(
-        self: Arc<Self>,
-        _callback: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, _callback: RemoveCallback) -> Result<(), Error> {
         Err(Error::new(
             Code::Internal,
             "gRPC stores are incompatible with removal callbacks".to_string(),

@@ -43,8 +43,10 @@ use nativelink_util::fs::FileSlot;
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 #[cfg(unix)]
 use nativelink_util::spawn_blocking;
+#[cfg(unix)]
+use nativelink_util::store_trait::RemoveItemCallback;
 use nativelink_util::store_trait::{
-    RemoveItemCallback, StoreDriver, StoreKey, StoreKeyBorrow, StoreOptimizations, UploadSizeInfo,
+    RemoveCallback, StoreDriver, StoreKey, StoreKeyBorrow, StoreOptimizations, UploadSizeInfo,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt, Take};
 use tokio::sync::Semaphore;
@@ -52,7 +54,7 @@ use tokio::time::timeout;
 use tokio_stream::wrappers::ReadDirStream;
 use tracing::{debug, error, info, trace, warn};
 
-use crate::callback_utils::RemoveItemCallbackHolder;
+use crate::callback_utils::RemoveCallbackHolder;
 use crate::cas_utils::is_zero_digest;
 
 // Default size to allocate memory of the buffer when reading files.
@@ -476,7 +478,7 @@ pub fn key_from_file(file_name: &str, file_type: FileType) -> Result<StoreKey<'_
 const SIMULTANEOUS_METADATA_READS: usize = 200;
 
 type FsEvictingMap<'a, Fe> =
-    EvictingMap<StoreKeyBorrow, StoreKey<'a>, Arc<Fe>, SystemTime, RemoveItemCallbackHolder>;
+    EvictingMap<StoreKeyBorrow, StoreKey<'a>, Arc<Fe>, SystemTime, RemoveCallbackHolder>;
 
 async fn add_files_to_cache<Fe: FileEntry>(
     evicting_map: &FsEvictingMap<'_, Fe>,
@@ -894,7 +896,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             fs::create_dir_all(format!("{executable_dir}/{DIGEST_FOLDER}"))
                 .await
                 .err_tip(|| format!("Failed to create executable dir {executable_dir}"))?;
-            evicting_map.add_remove_callback(RemoveItemCallbackHolder::new(Arc::new(
+            evicting_map.add_remove_callback(RemoveCallbackHolder::new(Arc::new(
                 ExecutableVariantRemover {
                     content_path: spec.content_path.clone(),
                 },
@@ -1573,12 +1575,9 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         registry.register_indicator(self);
     }
 
-    fn register_remove_callback(
-        self: Arc<Self>,
-        callback: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, callback: RemoveCallback) -> Result<(), Error> {
         self.evicting_map
-            .add_remove_callback(RemoveItemCallbackHolder::new(callback));
+            .add_remove_callback(RemoveCallbackHolder::new(callback));
         Ok(())
     }
 }
