@@ -1413,7 +1413,7 @@ async fn split_blob_chunks_large_blob_on_demand_and_reuses_layout()
     store
         .update_oneshot(
             DigestInfo::try_from(blob_digest.clone())?,
-            bytes::Bytes::from(data.clone()),
+            Bytes::from(data.clone()),
         )
         .await?;
 
@@ -1648,7 +1648,7 @@ async fn max_chunk_count_limits_split_and_splice() -> Result<(), Box<dyn core::e
     store
         .update_oneshot(
             DigestInfo::try_from(blob_digest.clone())?,
-            bytes::Bytes::from(data),
+            Bytes::from(data),
         )
         .await?;
 
@@ -1734,7 +1734,7 @@ async fn chunking_infers_blake3_when_digest_function_unset()
     store
         .update_oneshot(
             DigestInfo::try_from(other_digest.clone())?,
-            bytes::Bytes::from_static(b"other blake3 content"),
+            Bytes::from_static(b"other blake3 content"),
         )
         .await?;
     let split_response = cas_server
