@@ -54,6 +54,16 @@
       listener: {
         http: {
           socket_address: "0.0.0.0:50051",
+
+          // FIXME: These are only tested here so far
+          advanced_http: {
+            http2_keep_alive_interval: 60,
+            experimental_http2_keep_alive_timeout: 20,
+            experimental_http2_max_concurrent_streams: 2000,
+            experimental_http2_max_pending_accept_reset_streams: 2000,
+            experimental_http2_initial_connection_window_size: 16777216,
+            experimental_http2_initial_stream_window_size: 8388608,
+          },
         },
       },
       services: {
