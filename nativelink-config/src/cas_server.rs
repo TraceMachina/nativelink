@@ -154,7 +154,7 @@ pub struct CapabilitiesConfig {
     /// and the ByteStream/CAS services accept REAPI compressed-blobs/zstd data.
     ///
     /// Bazel clients enable this with `--remote_cache_compression`.
-    #[serde(default, skip_serializing_if = "is_default")]
+    #[serde(default, skip_serializing_if = "is_default", deserialize_with = "convert_boolean_with_shellexpand")]
     pub remote_cache_compression: bool,
 }
 
