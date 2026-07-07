@@ -254,6 +254,10 @@ async fn drop_on_eof_completes_store_futures() -> Result<(), Error> {
 
     #[async_trait]
     impl StoreDriver for DropCheckStore {
+        async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+            Ok(())
+        }
+
         async fn has_with_results(
             self: Pin<&Self>,
             digests: &[StoreKey<'_>],
@@ -589,6 +593,10 @@ fn make_stores_with_lazy_slow() -> (Store, Store, Store) {
 
     #[async_trait]
     impl StoreDriver for LazyStore {
+        async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+            Ok(())
+        }
+
         async fn has_with_results(
             self: Pin<&Self>,
             digests: &[StoreKey<'_>],
@@ -728,6 +736,10 @@ struct InstrumentedSlowStore {
 
 #[async_trait]
 impl StoreDriver for InstrumentedSlowStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],
@@ -983,6 +995,10 @@ async fn has_sees_in_flight_slow_writes() -> Result<(), Error> {
 
     #[async_trait]
     impl StoreDriver for GatedSlowStore {
+        async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+            Ok(())
+        }
+
         async fn has_with_results(
             self: Pin<&Self>,
             _keys: &[StoreKey<'_>],
@@ -1142,6 +1158,10 @@ async fn has_does_not_consult_fast_store_when_slow_store_hits() -> Result<(), Er
 
     #[async_trait]
     impl StoreDriver for CountingFastStore {
+        async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+            Ok(())
+        }
+
         async fn has_with_results(
             self: Pin<&Self>,
             keys: &[StoreKey<'_>],
@@ -1248,6 +1268,10 @@ struct GatedSlowStore2 {
 
 #[async_trait]
 impl StoreDriver for GatedSlowStore2 {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         _keys: &[StoreKey<'_>],
@@ -1405,6 +1429,10 @@ struct MapBackedSlow {
 }
 #[async_trait]
 impl StoreDriver for MapBackedSlow {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],
@@ -1583,6 +1611,10 @@ struct CountingSlowStore {
 
 #[async_trait]
 impl StoreDriver for CountingSlowStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],
@@ -1816,5 +1848,170 @@ async fn bypass_threshold_is_inclusive_at_exact_size() -> Result<(), Error> {
         READERS,
         "size == threshold should bypass dedup but observed dedup",
     );
+    Ok(())
+}
+
+/// Fast store with a stale map entry: `has()` says present, `get_part`
+/// returns `NotFound` (after `bytes_before_error` bytes, if non-zero).
+#[derive(MetricsComponent)]
+struct StaleFastStore {
+    inner: Arc<MemoryStore>,
+    reported_size: u64,
+    bytes_before_error: u64,
+    get_part_calls: Arc<AtomicU64>,
+}
+
+#[async_trait]
+impl StoreDriver for StaleFastStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn has_with_results(
+        self: Pin<&Self>,
+        _digests: &[StoreKey<'_>],
+        results: &mut [Option<u64>],
+    ) -> Result<(), Error> {
+        // Stale entry: report present regardless of backing data.
+        for result in results.iter_mut() {
+            *result = Some(self.reported_size);
+        }
+        Ok(())
+    }
+
+    async fn update(
+        self: Pin<&Self>,
+        digest: StoreKey<'_>,
+        reader: DropCloserReadHalf,
+        size_info: UploadSizeInfo,
+    ) -> Result<u64, Error> {
+        // Accept the fall-through repopulate.
+        Pin::new(self.inner.as_ref())
+            .update(digest, reader, size_info)
+            .await
+    }
+
+    async fn get_part(
+        self: Pin<&Self>,
+        _key: StoreKey<'_>,
+        writer: &mut DropCloserWriteHalf,
+        _offset: u64,
+        _length: Option<u64>,
+    ) -> Result<(), Error> {
+        self.get_part_calls.fetch_add(1, Ordering::AcqRel);
+        if self.bytes_before_error > 0 {
+            let partial_len = usize::try_from(self.bytes_before_error)
+                .err_tip(|| "bytes_before_error exceeds usize")?;
+            writer.send(Bytes::from(vec![0u8; partial_len])).await?;
+        }
+        Err(make_err!(
+            Code::NotFound,
+            "stale eviction-map entry: file missing on disk"
+        ))
+    }
+
+    fn inner_store(&self, _digest: Option<StoreKey>) -> &'_ dyn StoreDriver {
+        self
+    }
+
+    fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
+        self
+    }
+
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+        self
+    }
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        _callback: Arc<dyn RemoveItemCallback>,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+default_health_status_indicator!(StaleFastStore);
+
+fn make_stores_with_stale_fast(
+    reported_size: u64,
+    bytes_before_error: u64,
+) -> (Store, Store, Arc<AtomicU64>) {
+    let get_part_calls = Arc::new(AtomicU64::new(0));
+    let fast_store = Store::new(Arc::new(StaleFastStore {
+        inner: MemoryStore::new(&MemorySpec::default()),
+        reported_size,
+        bytes_before_error,
+        get_part_calls: get_part_calls.clone(),
+    }));
+    let slow_store = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let fast_slow_store = Store::new(FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
+        },
+        fast_store,
+        slow_store.clone(),
+    ));
+    (fast_slow_store, slow_store, get_part_calls)
+}
+
+/// A stale fast-store map entry must fall through to the slow store.
+#[nativelink_test]
+async fn get_part_falls_through_to_slow_on_stale_fast_map_entry() -> Result<(), Error> {
+    let original_data = make_random_data(MEGABYTE_SZ);
+    let digest = DigestInfo::try_new(VALID_HASH, original_data.len()).unwrap();
+    let (fast_slow_store, slow_store, fast_get_part_calls) =
+        make_stores_with_stale_fast(original_data.len() as u64, 0);
+
+    // Only the slow store holds the data.
+    slow_store
+        .update_oneshot(digest, original_data.clone().into())
+        .await?;
+
+    let served = fast_slow_store
+        .get_part_unchunked(digest, 0, None)
+        .await
+        .err_tip(|| "fast_slow get_part should fall through to slow store")?;
+
+    // Fast store always errors, so bytes can only come from the slow store.
+    assert_eq!(served, original_data, "served data must match slow store");
+    assert_eq!(
+        fast_get_part_calls.load(Ordering::Acquire),
+        1,
+        "fast store get_part must be attempted exactly once before falling through"
+    );
+
+    Ok(())
+}
+
+/// `NotFound` after partial bytes must propagate, not retry (would corrupt).
+#[nativelink_test]
+async fn get_part_propagates_not_found_after_partial_fast_read() -> Result<(), Error> {
+    let original_data = make_random_data(MEGABYTE_SZ);
+    let digest = DigestInfo::try_new(VALID_HASH, original_data.len()).unwrap();
+    let (fast_slow_store, slow_store, fast_get_part_calls) =
+        make_stores_with_stale_fast(original_data.len() as u64, 16);
+
+    slow_store
+        .update_oneshot(digest, original_data.clone().into())
+        .await?;
+
+    let result = fast_slow_store.get_part_unchunked(digest, 0, None).await;
+
+    let err = result.expect_err("partial fast read then NotFound must not fall through");
+    assert_eq!(
+        err.code,
+        Code::NotFound,
+        "original NotFound must propagate, got: {err:?}"
+    );
+    assert_eq!(
+        fast_get_part_calls.load(Ordering::Acquire),
+        1,
+        "fast store get_part must be attempted exactly once"
+    );
+
     Ok(())
 }

@@ -100,7 +100,7 @@ export function ArchitectureDiagram() {
             fontSize="10"
             fill="rgb(var(--nl-color-muted))"
           >
-            Reclient · Pants
+            Siso · Pants
           </text>
         </g>
 

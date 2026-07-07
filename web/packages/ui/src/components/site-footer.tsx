@@ -26,7 +26,6 @@ const defaultColumns: FooterColumn[] = [
       { label: "Pricing", href: "/pricing" },
       { label: "Docs", href: "/docs" },
       { label: "Enterprise", href: "https://enterprise.nativelink.com" },
-      { label: "Status", href: "/status" },
     ],
   },
   {
@@ -167,16 +166,6 @@ export function SiteFooter({
             ))}
           </div>
 
-          <a
-            href="/status"
-            className="flex items-center gap-1.5 font-mono text-xs text-muted transition-colors hover:text-foreground"
-          >
-            <span className="relative flex h-2 w-2">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-60" />
-              <span className="relative inline-flex h-2 w-2 rounded-full bg-success" />
-            </span>
-            All systems operational
-          </a>
         </div>
       </div>
     </footer>

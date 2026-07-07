@@ -19,22 +19,18 @@ use std::borrow::Cow;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use azure_core::auth::Secret;
-use azure_core::prelude::Range;
-use azure_core::{Body, HttpClient, StatusCode, TransportOptions};
-use azure_storage::StorageCredentials;
-use azure_storage_blobs::prelude::*;
-use bytes::Bytes;
+use azure_core::credentials::TokenCredential;
+use azure_core::error::ErrorKind;
+use azure_core::http::{RequestContent, RetryOptions, StatusCode, Transport, Url};
+use azure_identity::WorkloadIdentityCredential;
+use azure_storage_blob::clients::{BlobContainerClient, BlobContainerClientOptions};
+use azure_storage_blob::models::{
+    BlobClientDownloadOptions, BlobClientGetPropertiesResultHeaders, BlockLookupList, HttpRange,
+    StorageErrorCode,
+};
 use futures::future::FusedFuture;
 use futures::stream::{FuturesUnordered, unfold};
 use futures::{FutureExt, StreamExt, TryStreamExt};
-use http::Method;
-use http_body_util::Full;
-use hyper::Uri;
-use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
-use hyper_util::client::legacy::Client as LegacyClient;
-use hyper_util::client::legacy::connect::HttpConnector as LegacyHttpConnector;
-use hyper_util::rt::TokioExecutor;
 use nativelink_config::stores::ExperimentalAzureSpec;
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
@@ -53,6 +49,7 @@ use tokio::time::sleep;
 use tracing::{Level, event};
 
 use crate::cas_utils::is_zero_digest;
+use crate::common_s3_utils::install_default_rustls_crypto_provider;
 
 // Check the below doc for the limits specific to Azure.
 // https://learn.microsoft.com/en-us/azure/storage/blobs/scalability-targets#scale-targets-for-blob-storage
@@ -72,345 +69,12 @@ const DEFAULT_MAX_RETRY_BUFFER_PER_REQUEST: usize = 5 * 1024 * 1024; // 5 MiB
 // Default maximum number of concurrent uploads
 const DEFAULT_MAX_CONCURRENT_UPLOADS: usize = 10;
 
-// Maximum number of idle connections per host
-const MAX_IDLE_PER_HOST: usize = 32;
+// Default public Azure Blob Storage endpoint suffix.
+const DEFAULT_BLOB_ENDPOINT_SUFFIX: &str = "blob.core.windows.net";
 
-// Default connection timeout in milliseconds
-const DEFAULT_CONNECTION_TIMEOUT_MS: u64 = 3000;
-
-// Environment variable name for Azure account key
-const ACCOUNT_KEY_ENV_VAR: &str = "AZURE_STORAGE_KEY";
-
-pub(crate) enum BufferedBodyState {
-    Buffered(Bytes),
-    Empty,
-}
-
-pub(crate) struct RequestComponents {
-    method: Method,
-    uri: Uri,
-    version: http::Version,
-    headers: http::HeaderMap,
-    body_data: BufferedBodyState,
-}
-
-mod body_processing {
-    use azure_core::Error;
-
-    use super::{Body, BufferedBodyState};
-
-    #[inline]
-    pub(crate) async fn buffer_body(body: Body) -> Result<BufferedBodyState, Error> {
-        match body {
-            Body::Bytes(bytes) if bytes.is_empty() => Ok(BufferedBodyState::Empty),
-            Body::Bytes(bytes) => Ok(BufferedBodyState::Buffered(bytes)),
-            Body::SeekableStream(_) => Err(Error::new(
-                azure_core::error::ErrorKind::Other,
-                "Unsupported body type: SeekableStream",
-            )),
-        }
-    }
-}
-
-struct RequestBuilder<'a> {
-    components: &'a RequestComponents,
-}
-
-impl<'a> RequestBuilder<'a> {
-    #[inline]
-    const fn new(components: &'a RequestComponents) -> Self {
-        Self { components }
-    }
-
-    #[inline]
-    fn build(&self) -> Result<hyper::Request<Full<Bytes>>, http::Error> {
-        let mut req_builder = hyper::Request::builder()
-            .method(self.components.method.clone())
-            .uri(self.components.uri.clone())
-            .version(self.components.version);
-
-        let headers_map = req_builder.headers_mut().unwrap();
-        for (name, value) in &self.components.headers {
-            headers_map.insert(name, value.clone());
-        }
-
-        match &self.components.body_data {
-            BufferedBodyState::Buffered(bytes) => req_builder.body(Full::new(bytes.clone())),
-            BufferedBodyState::Empty => req_builder.body(Full::new(Bytes::new())),
-        }
-    }
-}
-
-mod conversions {
-    use std::collections::HashMap;
-
-    use azure_core::{Error, Request, Response, StatusCode, headers as azure_headers};
-    use http_body_util::BodyExt;
-    use hyper::body::Incoming;
-
-    use super::{BufferedBodyState, Method, RequestComponents, Uri, body_processing};
-
-    pub(crate) trait RequestExt {
-        async fn into_components(self) -> Result<RequestComponents, Error>;
-    }
-
-    impl RequestExt for Request {
-        async fn into_components(self) -> Result<RequestComponents, Error> {
-            let method = Method::from_bytes(self.method().as_ref().as_bytes()).map_err(|e| {
-                Error::new(
-                    azure_core::error::ErrorKind::Other,
-                    format!("Failed to convert method: {e}"),
-                )
-            })?;
-
-            let uri = Uri::try_from(self.url().as_str()).map_err(|e| {
-                Error::new(
-                    azure_core::error::ErrorKind::Other,
-                    format!("Failed to parse URI: {e}"),
-                )
-            })?;
-
-            let version = http::Version::HTTP_11; // Default to HTTP/1.1
-
-            let mut headers = http::HeaderMap::new();
-            for (name, value) in self.headers().iter() {
-                let header_name =
-                    http::HeaderName::from_bytes(name.as_str().as_bytes()).map_err(|e| {
-                        Error::new(
-                            azure_core::error::ErrorKind::Other,
-                            format!("Failed to convert header name: {e}"),
-                        )
-                    })?;
-                let header_value = http::HeaderValue::from_str(value.as_str()).map_err(|e| {
-                    Error::new(
-                        azure_core::error::ErrorKind::Other,
-                        format!("Failed to convert header value: {e}"),
-                    )
-                })?;
-                headers.insert(header_name, header_value);
-            }
-
-            let body = self.body().clone();
-
-            let needs_buffering = matches!(method, Method::POST | Method::PUT);
-
-            let body_data = if needs_buffering {
-                body_processing::buffer_body(body).await?
-            } else {
-                BufferedBodyState::Empty
-            };
-
-            Ok(RequestComponents {
-                method,
-                uri,
-                version,
-                headers,
-                body_data,
-            })
-        }
-    }
-
-    pub(crate) trait ResponseExt {
-        async fn into_azure_response(self) -> Result<Response, Error>;
-    }
-
-    impl ResponseExt for hyper::Response<Incoming> {
-        async fn into_azure_response(self) -> Result<Response, Error> {
-            let (parts, body) = self.into_parts();
-
-            // Convert headers
-            let headers: HashMap<_, _> = parts
-                .headers
-                .iter()
-                .filter_map(|(k, v)| {
-                    Some((
-                        azure_headers::HeaderName::from(k.as_str().to_owned()),
-                        azure_headers::HeaderValue::from(v.to_str().ok()?.to_owned()),
-                    ))
-                })
-                .collect();
-
-            let data = body
-                .collect()
-                .await
-                .map_err(|e| {
-                    Error::new(
-                        azure_core::error::ErrorKind::Other,
-                        format!("Failed to collect body: {e}"),
-                    )
-                })?
-                .to_bytes();
-
-            Ok(Response::new(
-                StatusCode::try_from(parts.status.as_u16()).expect("Invalid status code"),
-                azure_headers::Headers::from(headers),
-                Box::pin(futures::stream::once(futures::future::ready(Ok(data)))),
-            ))
-        }
-    }
-}
-
-mod execution {
-    use azure_core::Response;
-    use bytes::Bytes;
-    use http_body_util::Full;
-
-    use super::conversions::ResponseExt;
-    use super::{
-        Code, HttpsConnector, LegacyClient, LegacyHttpConnector, RequestBuilder, RequestComponents,
-        RetryResult, fs, make_err,
-    };
-
-    pub(crate) async fn execute_request(
-        client: LegacyClient<HttpsConnector<LegacyHttpConnector>, Full<Bytes>>,
-        components: &RequestComponents,
-    ) -> RetryResult<Response> {
-        let _permit = match fs::get_permit().await {
-            Ok(permit) => permit,
-            Err(e) => {
-                return RetryResult::Retry(make_err!(
-                    Code::Unavailable,
-                    "Failed to acquire permit: {e}"
-                ));
-            }
-        };
-
-        let request = match RequestBuilder::new(components).build() {
-            Ok(req) => req,
-            Err(e) => {
-                return RetryResult::Err(make_err!(
-                    Code::Internal,
-                    "Failed to create request: {e}",
-                ));
-            }
-        };
-
-        match client.request(request).await {
-            Ok(resp) => match resp.into_azure_response().await {
-                Ok(response) => RetryResult::Ok(response),
-                Err(e) => RetryResult::Retry(make_err!(
-                    Code::Unavailable,
-                    "Failed to convert response: {e}"
-                )),
-            },
-            Err(e) => RetryResult::Retry(make_err!(
-                Code::Unavailable,
-                "Failed request in AzureBlobStore: {e}"
-            )),
-        }
-    }
-
-    #[inline]
-    pub(crate) fn create_retry_stream(
-        client: LegacyClient<HttpsConnector<LegacyHttpConnector>, Full<Bytes>>,
-        components: RequestComponents,
-    ) -> impl futures::Stream<Item = RetryResult<Response>> {
-        futures::stream::unfold(components, move |components| {
-            let client_clone = client.clone();
-            async move {
-                let result = execute_request(client_clone, &components).await;
-                Some((result, components))
-            }
-        })
-    }
-}
-
-#[derive(Clone)]
-pub struct AzureClient {
-    client: LegacyClient<HttpsConnector<LegacyHttpConnector>, Full<Bytes>>,
-    config: Arc<ExperimentalAzureSpec>,
-    retrier: Retrier,
-}
-
-impl AzureClient {
-    pub fn new(
-        config: ExperimentalAzureSpec,
-        jitter_fn: Arc<dyn Fn(Duration) -> Duration + Send + Sync>,
-    ) -> Result<Self, Error> {
-        let connector = Self::build_connector(&config);
-        let connection_timeout = if config.connection_timeout_s > 0 {
-            Duration::from_millis(config.connection_timeout_s)
-        } else {
-            Duration::from_millis(DEFAULT_CONNECTION_TIMEOUT_MS)
-        };
-        let client = Self::build_client(connector, connection_timeout);
-
-        Ok(Self {
-            client,
-            retrier: Retrier::new(
-                Arc::new(|duration| Box::pin(sleep(duration))),
-                jitter_fn,
-                config.common.retry.clone(),
-            ),
-            config: Arc::new(config),
-        })
-    }
-
-    fn build_connector(config: &ExperimentalAzureSpec) -> HttpsConnector<LegacyHttpConnector> {
-        let builder = HttpsConnectorBuilder::new().with_webpki_roots();
-
-        let builder_with_schemes = if config.common.insecure_allow_http {
-            builder.https_or_http()
-        } else {
-            builder.https_only()
-        };
-
-        if config.common.disable_http2 {
-            builder_with_schemes.enable_http1().build()
-        } else {
-            builder_with_schemes.enable_http1().enable_http2().build()
-        }
-    }
-
-    fn build_client(
-        connector: HttpsConnector<LegacyHttpConnector>,
-        connection_timeout: Duration,
-    ) -> LegacyClient<HttpsConnector<LegacyHttpConnector>, Full<Bytes>> {
-        LegacyClient::builder(TokioExecutor::new())
-            .pool_idle_timeout(connection_timeout)
-            .pool_max_idle_per_host(MAX_IDLE_PER_HOST)
-            .build(connector)
-    }
-}
-
-impl core::fmt::Debug for AzureClient {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("AzureClient")
-            .field("config", &self.config)
-            .finish()
-    }
-}
-
-#[async_trait::async_trait]
-impl HttpClient for AzureClient {
-    async fn execute_request(
-        &self,
-        request: &azure_core::Request,
-    ) -> azure_core::Result<azure_core::Response> {
-        use conversions::RequestExt;
-
-        let components = request.clone().into_components().await?;
-
-        match self
-            .retrier
-            .retry(execution::create_retry_stream(
-                self.client.clone(),
-                components,
-            ))
-            .await
-        {
-            Ok(response) => Ok(response),
-            Err(e) => Err(azure_core::Error::new(
-                azure_core::error::ErrorKind::Other,
-                format!("Connection failed after retries: {e}"),
-            )),
-        }
-    }
-}
-
-#[derive(MetricsComponent, Debug)]
+#[derive(MetricsComponent)]
 pub struct AzureBlobStore<NowFn> {
-    client: Arc<ContainerClient>,
+    client: Arc<BlobContainerClient>,
     now_fn: NowFn,
     #[metric(help = "The container name for the Azure store")]
     container: String,
@@ -425,6 +89,16 @@ pub struct AzureBlobStore<NowFn> {
     max_concurrent_uploads: usize,
 }
 
+impl<NowFn> core::fmt::Debug for AzureBlobStore<NowFn> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("AzureBlobStore")
+            .field("container", &self.container)
+            .field("blob_prefix", &self.blob_prefix)
+            .field("consider_expired_after_s", &self.consider_expired_after_s)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<I, NowFn> AzureBlobStore<NowFn>
 where
     I: InstantWrapper,
@@ -432,35 +106,80 @@ where
 {
     pub async fn new(spec: &ExperimentalAzureSpec, now_fn: NowFn) -> Result<Arc<Self>, Error> {
         let jitter_fn = spec.common.retry.make_jitter_fn();
+        let client = Self::build_container_client(spec)?;
+        Self::new_with_client_and_jitter(spec, client, jitter_fn, now_fn)
+    }
 
-        let http_client = Arc::new(
-            AzureClient::new(spec.clone(), jitter_fn.clone())
-                .map_err(|e| make_err!(Code::Unavailable, "Failed to create Azure client: {e}"))?,
-        );
+    /// Builds the container URL and selects the auth strategy:
+    ///   * `sas_url` set    -> use it verbatim as the container URL with no credential.
+    ///   * otherwise        -> `https://{account}.{endpoint}/{container}` authenticated with
+    ///     Entra ID via Workload Identity (keyless).
+    fn build_container_client(spec: &ExperimentalAzureSpec) -> Result<BlobContainerClient, Error> {
+        let mut options = BlobContainerClientOptions::default();
+        options.client_options.retry = RetryOptions::none();
+        // Hand the SDK an HTTP client with an explicit rustls (ring) config.
+        options.client_options.transport = Some(Self::build_http_transport()?);
 
-        let transport_options = TransportOptions::new(http_client);
+        let (container_url, credential): (Url, Option<Arc<dyn TokenCredential>>) =
+            if let Some(sas_url) = spec.sas_url.as_ref() {
+                let url = Url::parse(sas_url)
+                    .map_err(|e| make_err!(Code::InvalidArgument, "Invalid Azure sas_url: {e}"))?;
+                (url, None)
+            } else {
+                let endpoint = spec.endpoint.clone().unwrap_or_else(|| {
+                    format!(
+                        "https://{}.{DEFAULT_BLOB_ENDPOINT_SUFFIX}",
+                        spec.account_name
+                    )
+                });
+                let mut url = Url::parse(&endpoint)
+                    .map_err(|e| make_err!(Code::InvalidArgument, "Invalid Azure endpoint: {e}"))?;
+                url.path_segments_mut()
+                    .map_err(|()| {
+                        make_err!(
+                            Code::InvalidArgument,
+                            "Azure endpoint is not a valid base URL: {endpoint}"
+                        )
+                    })?
+                    .pop_if_empty()
+                    .push(&spec.container);
+                let credential: Arc<dyn TokenCredential> = WorkloadIdentityCredential::new(None)
+                    .map_err(|e| {
+                        make_err!(
+                            Code::FailedPrecondition,
+                            "Failed to create Azure Workload Identity credential: {e}"
+                        )
+                    })?;
+                (url, Some(credential))
+            };
 
-        let account_key = std::env::var(ACCOUNT_KEY_ENV_VAR).map_err(|e| {
-            make_err!(
-                Code::FailedPrecondition,
-                "Failed to read {ACCOUNT_KEY_ENV_VAR} environment variable: {e}"
-            )
-        })?;
+        BlobContainerClient::new(container_url, credential, Some(options))
+            .map_err(|e| make_err!(Code::Unavailable, "Failed to create Azure client: {e}"))
+    }
 
-        let storage_credentials =
-            StorageCredentials::access_key(spec.account_name.clone(), Secret::new(account_key));
+    /// Builds an HTTP transport for the Azure SDK backed by a reqwest client with
+    /// an explicit rustls config using `NativeLink`'s ring crypto provider, so the
+    /// SDK never falls back to guessing a provider (which breaks HTTPS here).
+    fn build_http_transport() -> Result<Transport, Error> {
+        install_default_rustls_crypto_provider();
 
-        // Create a container client with the specified credentials and transport
-        let container_client = BlobServiceClient::builder(&spec.account_name, storage_credentials)
-            .transport(transport_options)
-            .container_client(&spec.container);
+        let mut roots = rustls::RootCertStore::empty();
+        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        let tls_config = rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
 
-        Self::new_with_client_and_jitter(spec, container_client, jitter_fn, now_fn)
+        let client = reqwest::Client::builder()
+            .use_preconfigured_tls(tls_config)
+            .build()
+            .map_err(|e| make_err!(Code::Unavailable, "Failed to build Azure HTTP client: {e}"))?;
+
+        Ok(Transport::new(Arc::new(client)))
     }
 
     pub fn new_with_client_and_jitter(
         spec: &ExperimentalAzureSpec,
-        client: ContainerClient,
+        client: BlobContainerClient,
         jitter_fn: Arc<dyn Fn(Duration) -> Duration + Send + Sync>,
         now_fn: NowFn,
     ) -> Result<Arc<Self>, Error> {
@@ -501,13 +220,28 @@ where
         self.retrier
             .retry(unfold((), move |state| {
                 let blob_path = blob_path.clone();
+                let client = Arc::clone(&self.client);
                 async move {
-                    let result = self.client.blob_client(&blob_path).get_properties().await;
+                    let _permit = match fs::get_permit().await {
+                        Ok(permit) => permit,
+                        Err(e) => {
+                            return Some((
+                                RetryResult::Retry(make_err!(
+                                    Code::Unavailable,
+                                    "Failed to acquire permit: {e}"
+                                )),
+                                state,
+                            ));
+                        }
+                    };
+
+                    let result = client.blob_client(&blob_path).get_properties(None).await;
 
                     match result {
                         Ok(props) => {
-                            if self.consider_expired_after_s > 0 {
-                                let last_modified = props.blob.properties.last_modified;
+                            if self.consider_expired_after_s > 0
+                                && let Some(last_modified) = props.last_modified().ok().flatten()
+                            {
                                 let now = (self.now_fn)().unix_timestamp() as i64;
                                 if last_modified.unix_timestamp() + self.consider_expired_after_s
                                     <= now
@@ -515,30 +249,33 @@ where
                                     return Some((RetryResult::Ok(None), state));
                                 }
                             }
-                            let blob_size = props.blob.properties.content_length;
+                            let blob_size = props.content_length().ok().flatten().unwrap_or(0);
                             Some((RetryResult::Ok(Some(blob_size)), state))
                         }
                         Err(err) => {
-                            if err
-                                .as_http_error()
-                                .is_some_and(|e| e.status() == StatusCode::NotFound)
-                            {
+                            if err.http_status() == Some(StatusCode::NotFound) {
+                                // Distinguish a missing container (a config error) from a
+                                // missing blob (a normal cache miss).
+                                if let ErrorKind::HttpResponse {
+                                    error_code: Some(error_code),
+                                    ..
+                                } = err.kind()
+                                    && error_code == StorageErrorCode::ContainerNotFound.as_ref()
+                                {
+                                    return Some((
+                                        RetryResult::Err(make_err!(
+                                            Code::InvalidArgument,
+                                            "Container not found: {err}"
+                                        )),
+                                        state,
+                                    ));
+                                }
                                 Some((RetryResult::Ok(None), state))
-                            } else if err.to_string().contains("ContainerNotFound") {
-                                Some((
-                                    RetryResult::Err(make_err!(
-                                        Code::InvalidArgument,
-                                        "Container not found: {}",
-                                        err
-                                    )),
-                                    state,
-                                ))
                             } else {
                                 Some((
                                     RetryResult::Retry(make_err!(
                                         Code::Unavailable,
-                                        "Failed to get blob properties: {:?}",
-                                        err
+                                        "Failed to get blob properties: {err:?}"
                                     )),
                                     state,
                                 ))
@@ -557,6 +294,10 @@ where
     I: InstantWrapper,
     NowFn: Fn() -> I + Send + Sync + Unpin + 'static,
 {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],
@@ -597,7 +338,7 @@ where
             UploadSizeInfo::ExactSize(sz) | UploadSizeInfo::MaxSize(sz) => sz,
         };
 
-        // For small files, we'll use single block upload
+        // For small files of a known size we buffer to `Bytes` and upload in a single request.
         if max_size < DEFAULT_BLOCK_SIZE && matches!(upload_size, UploadSizeInfo::ExactSize(_)) {
             let UploadSizeInfo::ExactSize(sz) = upload_size else {
                 unreachable!("upload_size must be UploadSizeInfo::ExactSize here");
@@ -608,67 +349,89 @@ where
                     .err_tip(|| "Could not convert max_retry_buffer_per_request to u64")?,
             );
 
-            return self.retrier
+            return self
+                .retrier
                 .retry(unfold(reader, move |mut reader| {
                     let client = Arc::clone(&self.client);
-                    let blob_client = client.blob_client(&blob_path);
+                    let blob_path = blob_path.clone();
                     async move {
+                        let _permit = match fs::get_permit().await {
+                            Ok(permit) => permit,
+                            Err(e) => {
+                                return Some((
+                                    RetryResult::Retry(make_err!(
+                                        Code::Unavailable,
+                                        "Failed to acquire permit: {e}"
+                                    )),
+                                    reader,
+                                ));
+                            }
+                        };
+
                         let (mut tx, mut rx) = make_buf_channel_pair();
 
                         let result = {
                             let reader_ref = &mut reader;
                             let (upload_res, bind_res) = tokio::join!(
-                            async {
-                                let mut buffer = Vec::with_capacity(usize::try_from(sz).expect("size must be non-negative and fit in usize"));
-                                while let Ok(Some(chunk)) = rx.try_next().await {
-                                    buffer.extend_from_slice(&chunk);
-                                }
+                                async {
+                                    let mut buffer = Vec::with_capacity(
+                                        usize::try_from(sz).expect(
+                                            "size must be non-negative and fit in usize",
+                                        ),
+                                    );
+                                    while let Ok(Some(chunk)) = rx.try_next().await {
+                                        buffer.extend_from_slice(&chunk);
+                                    }
 
-                                blob_client
-                                    .put_block_blob(Body::from(buffer))
-                                    .content_type("application/octet-stream")
-                                    .into_future()
-                                    .await
-                                    .map(|_| ())
-                                    .map_err(|e| make_err!(Code::Aborted, "{:?}", e))
-                            },
-                            async {
-                                tx.bind_buffered(reader_ref).await
-                            }
-                        );
+                                    client
+                                        .blob_client(&blob_path)
+                                        .block_blob_client()
+                                        .upload(RequestContent::from(buffer), None)
+                                        .await
+                                        .map(|_| ())
+                                        .map_err(|e| make_err!(Code::Aborted, "{e:?}"))
+                                },
+                                async { tx.bind_buffered(reader_ref).await }
+                            );
 
                             match (upload_res, bind_res) {
-                                (Ok(size), Ok(())) => Ok(size),
+                                (Ok(()), Ok(())) => Ok(()),
                                 (Err(e), _) | (_, Err(e)) => Err(e),
                             }
                             .err_tip(|| "Failed to upload blob in single chunk")
                         };
 
                         match result {
-                            Ok(()) => Some((RetryResult::Ok(reader.get_bytes_received()), reader)),
+                            Ok(()) => {
+                                Some((RetryResult::Ok(reader.get_bytes_received()), reader))
+                            }
                             Err(mut err) => {
                                 err.code = Code::Aborted;
                                 let bytes_received = reader.get_bytes_received();
 
                                 if let Err(try_reset_err) = reader.try_reset_stream() {
                                     event!(
-                                    Level::ERROR,
-                                    ?bytes_received,
-                                    err = ?try_reset_err,
-                                    "Unable to reset stream after failed upload in AzureStore::update"
-                                );
-                                    Some((RetryResult::Err(err
-                                        .merge(try_reset_err)
-                                        .append(format!("Failed to retry upload with {bytes_received} bytes received in AzureStore::update"))),
-                                          reader))
+                                        Level::ERROR,
+                                        ?bytes_received,
+                                        err = ?try_reset_err,
+                                        "Unable to reset stream after failed upload in AzureStore::update"
+                                    );
+                                    Some((
+                                        RetryResult::Err(err.merge(try_reset_err).append(format!(
+                                            "Failed to retry upload with {bytes_received} bytes received in AzureStore::update"
+                                        ))),
+                                        reader,
+                                    ))
                                 } else {
-                                    let err = err.append(format!("Retry on upload happened with {bytes_received} bytes received in AzureStore::update"));
+                                    let err = err.append(format!(
+                                        "Retry on upload happened with {bytes_received} bytes received in AzureStore::update"
+                                    ));
                                     event!(
-                                    Level::INFO,
-                                    ?err,
-                                    ?bytes_received,
-                                    "Retryable Azure error"
-                                );
+                                        Level::INFO,
+                                        ?err,
+                                        ?bytes_received,
+                                        "Retryable Azure error"
+                                    );
                                     Some((RetryResult::Retry(err), reader))
                                 }
                             }
@@ -678,12 +441,12 @@ where
                 .await;
         }
 
-        // For larger files, we'll use block upload strategy
+        // For larger files we stream the content as staged blocks and commit a block list.
         let block_size =
             cmp::min(max_size / (MAX_BLOCKS as u64 - 1), MAX_BLOCK_SIZE).max(DEFAULT_BLOCK_SIZE);
 
         let (tx, mut rx) = mpsc::channel(self.max_concurrent_uploads);
-        let mut block_ids = Vec::with_capacity(MAX_BLOCKS);
+        let mut block_ids: Vec<Vec<u8>> = Vec::with_capacity(MAX_BLOCKS);
         let retrier = self.retrier.clone();
 
         let read_stream_fut = {
@@ -706,32 +469,48 @@ where
 
                     total_uploaded += write_buf.len() as u64;
 
-                    let block_id = format!("{block_id:032}");
+                    // Fixed-width, zero-padded ids keep the committed block list ordered
+                    // after a lexicographic sort.
+                    let block_id = format!("{block_id:032}").into_bytes();
                     let blob_path = blob_path.clone();
 
                     tx.send(async move {
                         self.retrier
                             .retry(unfold(
-                                (write_buf, block_id.clone()),
+                                (write_buf, block_id),
                                 move |(write_buf, block_id)| {
                                     let client = Arc::clone(&self.client);
-                                    let blob_client = client.blob_client(&blob_path);
+                                    let blob_path = blob_path.clone();
                                     async move {
-                                        let retry_result = blob_client
-                                            .put_block(
-                                                block_id.clone(),
-                                                Body::from(write_buf.clone()),
+                                        let _permit = match fs::get_permit().await {
+                                            Ok(permit) => permit,
+                                            Err(e) => {
+                                                return Some((
+                                                    RetryResult::Retry(make_err!(
+                                                        Code::Unavailable,
+                                                        "Failed to acquire permit: {e}"
+                                                    )),
+                                                    (write_buf, block_id),
+                                                ));
+                                            }
+                                        };
+                                        let content_length = write_buf.len() as u64;
+                                        let retry_result = client
+                                            .blob_client(&blob_path)
+                                            .block_blob_client()
+                                            .stage_block(
+                                                &block_id,
+                                                content_length,
+                                                RequestContent::from(write_buf.to_vec()),
+                                                None,
                                             )
-                                            .into_future()
                                             .await
                                             .map_or_else(
                                                 |e| {
                                                     RetryResult::Retry(make_err!(
-                                            Code::Aborted,
-                                            "Failed to upload block {} in Azure store: {:?}",
-                                            block_id,
-                                            e
-                                        ))
+                                                        Code::Aborted,
+                                                        "Failed to upload block in Azure store: {e:?}"
+                                                    ))
                                                 },
                                                 |_| RetryResult::Ok(block_id.clone()),
                                             );
@@ -770,40 +549,61 @@ where
             }
         }
 
-        // Sorting block IDs to ensure consistent ordering
+        // Sorting block IDs to ensure consistent ordering of the committed blob.
         block_ids.sort_unstable();
 
-        // Commit the block list
-        let block_list = BlockList {
-            blocks: block_ids
-                .into_iter()
-                .map(|id| BlobBlockType::Latest(BlockId::from(id)))
-                .collect(),
+        let block_list = BlockLookupList {
+            latest: Some(block_ids),
+            ..Default::default()
         };
 
         retrier
             .retry(unfold(block_list, move |block_list| {
                 let client = Arc::clone(&self.client);
-                let blob_client = client.blob_client(&blob_path);
+                let blob_path = blob_path.clone();
 
                 async move {
-                    Some((
-                        blob_client
-                            .put_block_list(block_list.clone())
-                            .content_type("application/octet-stream")
-                            .into_future()
-                            .await
-                            .map_or_else(
-                                |e| {
-                                    RetryResult::Retry(
-                                        Error::from_std_err(Code::Aborted, &e)
-                                            .append("Failed to commit block list in Azure store:"),
-                                    )
-                                },
-                                |_| RetryResult::Ok(total_uploaded),
-                            ),
-                        block_list,
-                    ))
+                    let _permit = match fs::get_permit().await {
+                        Ok(permit) => permit,
+                        Err(e) => {
+                            return Some((
+                                RetryResult::Retry(make_err!(
+                                    Code::Unavailable,
+                                    "Failed to acquire permit: {e}"
+                                )),
+                                block_list,
+                            ));
+                        }
+                    };
+
+                    let blocks = match RequestContent::try_from(block_list.clone()) {
+                        Ok(blocks) => blocks,
+                        Err(e) => {
+                            return Some((
+                                RetryResult::Err(make_err!(
+                                    Code::Internal,
+                                    "Failed to serialize block list in Azure store: {e:?}"
+                                )),
+                                block_list,
+                            ));
+                        }
+                    };
+
+                    let retry_result = client
+                        .blob_client(&blob_path)
+                        .block_blob_client()
+                        .commit_block_list(blocks, None)
+                        .await
+                        .map_or_else(
+                            |e| {
+                                RetryResult::Retry(
+                                    Error::from_std_err(Code::Aborted, &e)
+                                        .append("Failed to commit block list in Azure store:"),
+                                )
+                            },
+                            |_| RetryResult::Ok(total_uploaded),
+                        );
+                    Some((retry_result, block_list))
                 }
             }))
             .await
@@ -825,66 +625,65 @@ where
 
         let blob_path = self.make_blob_path(&key);
 
-        let client = Arc::clone(&self.client);
-        let blob_client = client.blob_client(&blob_path);
         let range = match length {
-            Some(len) => Range::new(offset, offset + len - 1),
-            None => Range::from(offset..),
+            Some(len) => Some(HttpRange::new(offset, len)),
+            None if offset == 0 => None,
+            None => Some(HttpRange::from_offset(offset)),
         };
 
         self.retrier
             .retry(unfold(writer, move |writer| {
-                let range_clone = range.clone();
-                let blob_client = blob_client.clone();
+                let range = range.clone();
+                let client = Arc::clone(&self.client);
+                let blob_path = blob_path.clone();
                 async move {
-                    let result = async {
-                        let mut stream = blob_client.get().range(range_clone.clone()).into_stream();
+                    let _permit = match fs::get_permit().await {
+                        Ok(permit) => permit,
+                        Err(e) => {
+                            return Some((
+                                RetryResult::Retry(make_err!(
+                                    Code::Unavailable,
+                                    "Failed to acquire permit: {e}"
+                                )),
+                                writer,
+                            ));
+                        }
+                    };
 
-                        while let Some(chunk_result) = stream.next().await {
-                            match chunk_result {
-                                Ok(response) => {
-                                    let data = response.data.collect().await.map_err(|e| {
-                                        make_err!(
-                                            Code::Aborted,
-                                            "Failed to collect response data: {:?}",
-                                            e
-                                        )
-                                    })?;
-                                    if data.is_empty() {
-                                        continue;
-                                    }
-                                    writer.send(data).await.map_err(|e| {
-                                        make_err!(
-                                            Code::Aborted,
-                                            "Failed to send data to writer: {:?}",
-                                            e
-                                        )
-                                    })?;
+                    let result: Result<(), Error> = async {
+                        let options = BlobClientDownloadOptions {
+                            range,
+                            ..Default::default()
+                        };
+                        let response = client
+                            .blob_client(&blob_path)
+                            .download(Some(options))
+                            .await
+                            .map_err(|e| {
+                                if e.http_status() == Some(StatusCode::NotFound) {
+                                    make_err!(Code::NotFound, "Blob not found in Azure: {e:?}")
+                                } else {
+                                    make_err!(
+                                        Code::Aborted,
+                                        "Failed to start download from Azure: {e:?}"
+                                    )
                                 }
-                                Err(e) => {
-                                    return match e {
-                                        e if e.as_http_error().is_some_and(|e| {
-                                            e.status() == StatusCode::NotFound
-                                        }) =>
-                                        {
-                                            Err(make_err!(
-                                                Code::NotFound,
-                                                "Blob not found in Azure: {:?}",
-                                                e
-                                            ))
-                                        }
-                                        _ => Err(make_err!(
-                                            Code::Aborted,
-                                            "Error reading from Azure stream: {:?}",
-                                            e
-                                        )),
-                                    };
-                                }
+                            })?;
+
+                        let mut body = response.body;
+                        while let Some(chunk) = body.try_next().await.map_err(|e| {
+                            make_err!(Code::Aborted, "Error reading from Azure stream: {e:?}")
+                        })? {
+                            if chunk.is_empty() {
+                                continue;
                             }
+                            writer.send(chunk).await.map_err(|e| {
+                                make_err!(Code::Aborted, "Failed to send data to writer: {e:?}")
+                            })?;
                         }
 
                         writer.send_eof().map_err(|e| {
-                            make_err!(Code::Aborted, "Failed to send EOF to writer: {:?}", e)
+                            make_err!(Code::Aborted, "Failed to send EOF to writer: {e:?}")
                         })?;
                         Ok(())
                     }

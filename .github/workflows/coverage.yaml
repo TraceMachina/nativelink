@@ -41,10 +41,10 @@ jobs:
 
       - name: Generate coverage
         run: |
-          nix build --fallback -L .#nativelinkCoverageForHost
+          nix build -L .#nativelinkCoverageForHost
+          cat result/text/index.txt
 
       - name: Upload coverage artifact
-        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         uses: >- # v3.0.1
           actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa
         with:

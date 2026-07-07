@@ -2,6 +2,7 @@
 [workspace]
 exclude = [
   "nativelink-config/generate-stores-config",
+  "nativelink-test/fuzz",
   "tools/generate-bazel-rc",
 ]
 resolver = "2"
@@ -10,7 +11,7 @@ resolver = "2"
 edition = "2024"
 name = "nativelink"
 rust-version = "1.93.1"
-version = "1.4.0"
+version = "1.6.0"
 
 [profile.release]
 lto = true
@@ -74,7 +75,7 @@ tokio = { version = "1.52.2", features = [
 tokio-rustls = { version = "0.26.2", default-features = false, features = [
   "ring",
 ] }
-tonic = { version = "0.13.0", features = [
+tonic = { version = "0.14.0", features = [
   "tls-ring",
   "transport",
 ], default-features = false }
@@ -93,7 +94,6 @@ serial_test = ["async"]
 tokio = ["fs", "io-util", "rt-multi-thread", "signal"]
 tokio-stream = ["fs"]
 tonic = ["tls", "transport"]
-tonic-build = ["prost"]
 uuid = ["serde", "v4"]
 
 [workspace.lints.rust]

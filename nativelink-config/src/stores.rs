@@ -181,6 +181,55 @@ pub enum StoreSpec {
     ///      "multipart_max_concurrent_uploads": 10
     ///    }
     ///    ```
+    ///
+    /// 5. **Cloudflare R2:**
+    ///    R2 store uses Cloudflare's R2 service as a backend. R2 speaks the
+    ///    S3 API, so this is a thin wrapper that derives the account-scoped
+    ///    endpoint (`https://{account_id}.r2.cloudflarestorage.com`) for you.
+    ///
+    ///    **Example JSON Config:**
+    ///    ```json
+    ///    "experimental_cloud_object_store": {
+    ///      "provider": "r2",
+    ///      "account_id": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
+    ///      "bucket": "nativelink-cas",
+    ///      "key_prefix": "test-prefix/",
+    ///      "retry": {
+    ///        "max_retries": 6,
+    ///        "delay": 0.3,
+    ///        "jitter": 0.5
+    ///      },
+    ///      "multipart_max_concurrent_uploads": 10
+    ///    }
+    ///    ```
+    ///
+    /// 6. **Oracle Cloud Infrastructure (OCI) Object Storage:**
+    ///    OCI store uses Oracle Cloud Infrastructure's S3-compatible Object
+    ///    Storage API. The path-style endpoint is derived from your Object
+    ///    Storage `namespace` and `region` as
+    ///    `https://{namespace}.compat.objectstorage.{region}.oci.customer-oci.com`.
+    ///    Authenticate with a Customer Secret Key (Access Key/Secret Key pair
+    ///    created under User Settings -> Customer secret keys in the OCI
+    ///    console); the secret cannot be retrieved after generation, so read
+    ///    it from an env var via shellexpand.
+    ///
+    ///    **Example JSON Config:**
+    ///    ```json
+    ///    "experimental_cloud_object_store": {
+    ///      "provider": "oci",
+    ///      "namespace": "your-object-storage-namespace",
+    ///      "region": "us-phoenix-1",
+    ///      "bucket": "nativelink-cas",
+    ///      "access_key_id": "oci_access_key_id",
+    ///      "secret_access_key": "oci_secret_access_key",
+    ///      "key_prefix": "test-prefix/",
+    ///      "retry": {
+    ///        "max_retries": 6,
+    ///        "delay": 0.3,
+    ///        "jitter": 0.5
+    ///      }
+    ///    }
+    ///    ```
     ExperimentalCloudObjectStore(ExperimentalCloudObjectSpec),
 
     /// ONTAP S3 Existence Cache provides a caching layer on top of the ONTAP S3 store
@@ -686,7 +735,7 @@ pub struct FilesystemSpec {
     /// The block size of the filesystem for the running machine
     /// value is used to determine an entry's actual size on disk consumed
     /// For a 4KB block size filesystem, a 1B file actually consumes 4KB
-    /// Default: 4096
+    /// Default: 4kb
     #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub block_size: u64,
 
@@ -696,7 +745,7 @@ pub struct FilesystemSpec {
     /// Limiting concurrency prevents disk saturation from blocking the async
     /// runtime.
     /// A value of 0 means unlimited (no concurrency limit).
-    /// Default: 0
+    /// Default: unlimited
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_concurrent_writes: usize,
 }
@@ -739,6 +788,53 @@ pub struct ExperimentalR2Spec {
     pub access_key_id: Option<String>,
 
     /// Explicit R2 secret key.
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub secret_access_key: Option<String>,
+
+    /// Retry and upload settings.
+    #[serde(flatten)]
+    pub common: CommonObjectSpec,
+}
+
+// Oracle Cloud Infrastructure (OCI) Object Storage Spec.
+//
+// Uses the OCI Object Storage Amazon S3 Compatibility API. The store talks to
+// the path-style compatibility endpoint, which embeds the Object Storage
+// namespace in the host and the bucket in the request path:
+// `https://{namespace}.compat.objectstorage.{region}.oci.customer-oci.com/{bucket}/{object}`.
+// Authentication uses a Customer Secret Key (an Access Key/Secret Key pair
+// generated under User Settings in the OCI console) signed with AWS SigV4.
+#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct ExperimentalOciSpec {
+    /// OCI Object Storage namespace. This is the immutable, system-generated
+    /// top-level container assigned to the tenancy (the same name in every
+    /// region). It is the host prefix of the derived path-style endpoint:
+    /// `https://{namespace}.compat.objectstorage.{region}.oci.customer-oci.com`.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub namespace: String,
+
+    /// OCI region identifier, for example `us-phoenix-1` or `us-ashburn-1`.
+    /// Used both to build the endpoint host and as the AWS `SigV4` signing
+    /// region. If your tooling cannot set an OCI region identifier, OCI also
+    /// accepts `us-east-1` to target the tenancy home region.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub region: String,
+
+    /// Bucket name to use as the backend. Bucket names must be unique within
+    /// the Object Storage namespace.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub bucket: String,
+
+    /// Customer Secret Key access key. When omitted (along with
+    /// `secret_access_key`), the default AWS credential chain is used instead.
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub access_key_id: Option<String>,
+
+    /// Customer Secret Key secret. OCI does not allow retrieving a secret key
+    /// after generation, so store it securely (for example via `${ENV_VAR}`
+    /// shell expansion).
     #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
     pub secret_access_key: Option<String>,
 
@@ -808,6 +904,7 @@ pub struct FastSlowSpec {
     /// threshold — 256 MiB is a reasonable starting point for backends where
     /// large-blob dedup is a net loss (followers tend to time out anyway),
     /// but the right value is workload-dependent.
+    /// Default: disabled (0)
     #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub bypass_dedup_threshold_bytes: u64,
 }
@@ -839,7 +936,7 @@ pub struct DedupSpec {
     /// because it will actually not check this number of bytes when
     /// deciding where to partition the data.
     ///
-    /// Default: 65536 (64k)
+    /// Default: 64k
     #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub min_size: u32,
 
@@ -853,13 +950,13 @@ pub struct DedupSpec {
     /// value will be about `normal_size * 1.3` due to implementation
     /// details.
     ///
-    /// Default: 262144 (256k)
+    /// Default: 256k
     #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub normal_size: u32,
 
     /// Maximum size a chunk is allowed to be.
     ///
-    /// Default: 524288 (512k)
+    /// Default: 512k
     #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub max_size: u32,
 
@@ -951,7 +1048,7 @@ pub struct Lz4Config {
     /// so if there was a bad actor, they could upload an extremely large
     /// `block_size`'ed entry and we'd allocate a large amount of memory
     /// when retrieving the data. To prevent this from happening, we
-    /// allow you to specify the maximum that we'll attempt deserialize.
+    /// allow you to specify the maximum that we'll attempt to deserialize.
     ///
     /// Default: value in `block_size`.
     #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
@@ -1028,6 +1125,7 @@ pub enum ExperimentalCloudObjectSpec {
     Azure(ExperimentalAzureSpec),
     Ontap(ExperimentalOntapS3Spec),
     R2(ExperimentalR2Spec),
+    Oci(ExperimentalOciSpec),
 }
 
 impl Default for ExperimentalCloudObjectSpec {
@@ -1093,7 +1191,9 @@ pub struct ExperimentalGcsSpec {
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ExperimentalAzureSpec {
-    /// The Azure Storage account name.
+    /// The Azure Storage account name. Used to build the default container URL
+    /// `https://{account_name}.blob.core.windows.net/{container}` when `sas_url`
+    /// is not provided.
     #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
     pub account_name: String,
 
@@ -1101,19 +1201,24 @@ pub struct ExperimentalAzureSpec {
     #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
     pub container: String,
 
+    /// Optional blob endpoint host override (for example an Azurite emulator host
+    /// such as `http://127.0.0.1:10000/devstoreaccount1`). When set, this replaces
+    /// the default `https://{account_name}.blob.core.windows.net` endpoint. The
+    /// container is always appended to form the final container URL. Ignored when
+    /// `sas_url` is set.
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub endpoint: Option<String>,
+
+    /// Optional pre-formed SAS URL pointing at the container. When set, the store
+    /// uses it directly as the container URL with no credential (the SAS token is
+    /// expected to already be present in the URL), and `account_name`, `container`,
+    /// and `endpoint` are ignored for URL construction.
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub sas_url: Option<String>,
+
     /// Common retry and upload configuration.
     #[serde(flatten)]
     pub common: CommonObjectSpec,
-
-    /// Connection timeout in milliseconds.
-    /// Default: 3000
-    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
-    pub connection_timeout_s: u64,
-
-    /// Read timeout in milliseconds.
-    /// Default: 3000
-    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
-    pub read_timeout_s: u64,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
@@ -1478,16 +1583,6 @@ pub struct RedisSpec {
     pub scan_count: usize,
 
     /// Retry configuration to use when a network request fails.
-    /// See the `Retry` struct for more information.
-    ///
-    /// ```txt
-    /// Default: Retry {
-    ///   max_retries: 0, /* unlimited */
-    ///   delay: 0.1, /* 100ms */
-    ///   jitter: 0.5, /* 50% */
-    ///   retry_on_errors: None, /* not used in redis store */
-    /// }
-    /// ```
     #[serde(default)]
     pub retry: Retry,
 
@@ -1508,8 +1603,13 @@ pub struct RedisSpec {
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum RedisMode {
+    /// Use Redis Cluster.
     Cluster,
+
+    /// Use Redis Sentinel.
     Sentinel,
+
+    /// Use a standalone Redis server.
     #[default]
     Standard,
 }

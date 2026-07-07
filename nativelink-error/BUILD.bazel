@@ -16,6 +16,7 @@ rust_library(
     deps = [
         "//nativelink-metric",
         "//nativelink-proto",
+        "@crates//:base64",
         "@crates//:mongodb",
         "@crates//:prost",
         "@crates//:prost-types",

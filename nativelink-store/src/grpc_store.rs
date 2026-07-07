@@ -29,7 +29,8 @@ use nativelink_proto::build::bazel::remote::execution::v2::content_addressable_s
 use nativelink_proto::build::bazel::remote::execution::v2::{
     ActionResult, BatchReadBlobsRequest, BatchReadBlobsResponse, BatchUpdateBlobsRequest,
     BatchUpdateBlobsResponse, FindMissingBlobsRequest, FindMissingBlobsResponse,
-    GetActionResultRequest, GetTreeRequest, GetTreeResponse, UpdateActionResultRequest,
+    GetActionResultRequest, GetTreeRequest, GetTreeResponse, SpliceBlobRequest, SpliceBlobResponse,
+    SplitBlobRequest, SplitBlobResponse, UpdateActionResultRequest,
 };
 use nativelink_proto::google::bytestream::byte_stream_client::ByteStreamClient;
 use nativelink_proto::google::bytestream::{
@@ -331,6 +332,64 @@ impl GrpcStore {
                 ))
                 .await
                 .err_tip(|| "in GrpcStore::get_tree")
+        })
+        .await
+    }
+
+    pub async fn split_blob(
+        &self,
+        grpc_request: Request<SplitBlobRequest>,
+    ) -> Result<Response<SplitBlobResponse>, Error> {
+        error_if!(
+            matches!(self.store_type, nativelink_config::stores::StoreType::Ac),
+            "CAS operation on AC store"
+        );
+
+        let mut request = grpc_request.into_inner();
+        request.instance_name.clone_from(&self.instance_name);
+        self.perform_request(request, |request| async move {
+            let channel = self
+                .connection_manager
+                .connection(format!("split_blob: {:?}", request.blob_digest))
+                .await
+                .err_tip(|| "in split_blob")?;
+            ContentAddressableStorageClient::new(channel)
+                .split_blob(enrich_request(
+                    Request::new(request),
+                    &self.headers,
+                    &self.forward_headers,
+                ))
+                .await
+                .err_tip(|| "in GrpcStore::split_blob")
+        })
+        .await
+    }
+
+    pub async fn splice_blob(
+        &self,
+        grpc_request: Request<SpliceBlobRequest>,
+    ) -> Result<Response<SpliceBlobResponse>, Error> {
+        error_if!(
+            matches!(self.store_type, nativelink_config::stores::StoreType::Ac),
+            "CAS operation on AC store"
+        );
+
+        let mut request = grpc_request.into_inner();
+        request.instance_name.clone_from(&self.instance_name);
+        self.perform_request(request, |request| async move {
+            let channel = self
+                .connection_manager
+                .connection(format!("splice_blob: {:?}", request.blob_digest))
+                .await
+                .err_tip(|| "in splice_blob")?;
+            ContentAddressableStorageClient::new(channel)
+                .splice_blob(enrich_request(
+                    Request::new(request),
+                    &self.headers,
+                    &self.forward_headers,
+                ))
+                .await
+                .err_tip(|| "in GrpcStore::splice_blob")
         })
         .await
     }
@@ -703,6 +762,10 @@ impl GrpcStore {
 
 #[async_trait]
 impl StoreDriver for GrpcStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
     // NOTE: This function can only be safely used on CAS stores. AC stores may return a size that
     // is incorrect.
     async fn has_with_results(

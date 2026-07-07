@@ -437,12 +437,36 @@ most automatically generated changelogs provide.
    git push upstream v0.x.y
    ```
 
-8. The images for the release are now being created. Go to the [Tags](https://github.com/TraceMachina/nativelink/tags)
-   tab in GitHub and double-check that the tag has a green `Verified` marker
-   next to it. If it does, select `Create a release from tag` and create release
-   notes. You can use previous release notes as template by clicking on the
-   "Edit" button on a previous release and copy-pasting the contents into the
-   new release notes.
+8. Regenerate the latest config reference docs now that the upstream tag exists.
+   Passing the new tag updates `web/apps/docs/lib/config-versions.ts`, which
+   determines the latest version shown in the docs UI, rewrites
+   `web/apps/docs/content/docs/reference/nativelink-config/index.mdx` from that
+   tag, and creates a versioned page for the previous latest release. You do not
+   need to regenerate every historical version.
+
+   ```bash
+   git fetch --tags upstream
+   cd web
+   bun --filter @nativelink/docs gen:config-reference v0.x.y
+   cd ..
+   ```
+
+   Confirm that `web/apps/docs/lib/config-versions.ts` marks `v0.x.y` as the
+   latest release and that
+   `web/apps/docs/content/docs/reference/nativelink-config/index.mdx` says it was
+   sourced from `nativelink-config @ v0.x.y`. Then run the docs lint and commit
+   the generated docs update:
+
+   ```bash
+   nix develop -c vale web/apps/docs/content/docs/reference/nativelink-config/*.mdx
+   ```
+
+9. The images for the release are now being created. Go to the
+   [Tags](https://github.com/TraceMachina/nativelink/tags) tab in GitHub and
+   double-check that the tag has a green `Verified` marker next to it. If it
+   does, select `Create a release from tag` and create release notes. You can
+   use previous release notes as template by clicking on the "Edit" button on a
+   previous release and copy-pasting the contents into the new release notes.
 
    Make sure to include migration instructions for all breaking changes.
 
@@ -450,7 +474,40 @@ most automatically generated changelogs provide.
    changes`. This is a fairly free-form section that doesn't have any explicit
    requirements other than being a best-effort summary of notable changes.
 
-9. Once all notes are in line, click `Publish Release`.
+10. Once all notes are in line, click `Publish Release`.
+
+11. Publishing the release triggers the
+    [`Signed release artifacts`](.github/workflows/release.yaml) workflow. It
+    builds the `nativelink` binary for every supported target, signs each asset
+    with keyless Sigstore cosign, generates an SBOM, and produces SLSA Build
+    Level 3 provenance, attaching all of it to the GitHub Release. These signed
+    assets are what the OpenSSF Scorecard `Signed-Releases` check inspects — the
+    cosign signatures on the GHCR container images are not visible to that check.
+
+    Wait for the workflow to finish, then confirm the release page lists, for
+    each target, a `*.tar.gz` plus its `*.sig`/`*.pem`, an `*.spdx.json` SBOM,
+    and a `*.intoto.jsonl` provenance file. You can verify any asset locally:
+
+    ```bash
+    # Verify the SLSA provenance covers the artifact.
+    slsa-verifier verify-artifact nativelink-0.x.y-x86_64-unknown-linux-musl.tar.gz \
+      --provenance-path nativelink-0.x.y.intoto.jsonl \
+      --source-uri github.com/TraceMachina/nativelink \
+      --source-tag v0.x.y
+
+    # Verify the cosign signature.
+    cosign verify-blob nativelink-0.x.y-x86_64-unknown-linux-musl.tar.gz \
+      --signature nativelink-0.x.y-x86_64-unknown-linux-musl.tar.gz.sig \
+      --certificate nativelink-0.x.y-x86_64-unknown-linux-musl.tar.gz.pem \
+      --certificate-identity-regexp '^https://github.com/TraceMachina/nativelink/' \
+      --certificate-oidc-issuer https://token.actions.githubusercontent.com
+    ```
+
+    If a release ever ships without signed assets (for example a release created
+    before this workflow existed), re-run the workflow manually against the tag:
+    `Actions → Signed release artifacts → Run workflow`, entering the tag (e.g.
+    `v0.x.y`). It will rebuild, re-sign, and attach the assets to that existing
+    release.
 
 ## Conduct
 

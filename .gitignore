@@ -1,5 +1,6 @@
 bazel-*
 target/
+nativelink-test/fuzz/target/
 .vscode/
 .idea/
 .zed

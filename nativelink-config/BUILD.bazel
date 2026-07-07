@@ -1,5 +1,6 @@
 load(
     "@rules_rust//rust:defs.bzl",
+    "rust_binary",
     "rust_doc",
     "rust_doc_test",
     "rust_library",
@@ -7,30 +8,74 @@ load(
     "rust_test_suite",
 )
 
+# Source list shared by the default library and its `dev-schema` variant.
+_CONFIG_SRCS = [
+    "src/backcompat.rs",
+    "src/cas_server.rs",
+    "src/lib.rs",
+    "src/schedulers.rs",
+    "src/serde_utils.rs",
+    "src/stores.rs",
+]
+
+_CONFIG_DEPS = [
+    "//nativelink-error",
+    "@crates//:byte-unit",
+    "@crates//:humantime",
+    "@crates//:rand",
+    "@crates//:serde",
+    "@crates//:serde_json",
+    "@crates//:serde_json5",
+    "@crates//:shellexpand",
+    "@crates//:tracing",
+]
+
 rust_library(
     name = "nativelink-config",
-    srcs = [
-        "src/backcompat.rs",
-        "src/cas_server.rs",
-        "src/lib.rs",
-        "src/schedulers.rs",
-        "src/serde_utils.rs",
-        "src/stores.rs",
-    ],
+    srcs = _CONFIG_SRCS,
     compile_data = [
         "README.md",
     ],
     visibility = ["//visibility:public"],
+    deps = _CONFIG_DEPS,
+)
+
+# Schema-generation variant: the same crate compiled with the `dev-schema`
+# feature so `schemars::JsonSchema` is derived on the config types. It is kept
+# separate from the default `:nativelink-config` library (and tagged "manual")
+# so ordinary builds never pull in schemars.
+rust_library(
+    name = "nativelink-config-dev-schema",
+    srcs = _CONFIG_SRCS,
+    compile_data = [
+        "README.md",
+    ],
+    crate_features = ["dev-schema"],
+    crate_name = "nativelink_config",
+    tags = ["manual"],
+    visibility = ["//visibility:private"],
+    deps = _CONFIG_DEPS + ["@crates//:schemars"],
+)
+
+# Emits `nativelink_config.schema.json` (the schemars JSON Schema) for the
+# config-reference docs generator. This is the Bazel entry point that replaces
+# the legacy `nativelink-config:docs_json` target:
+#
+#   bazel run //nativelink-config:build-schema
+#
+# The docs generator (web/apps/docs/scripts/gen-config-reference.mjs) consumes
+# the same artifact; it shells out to cargo per git tag so it can build the
+# schema for historical versions without a Bazel checkout of each tag.
+rust_binary(
+    name = "build-schema",
+    srcs = ["src/bin/build_schema.rs"],
+    crate_features = ["dev-schema"],
+    tags = ["manual"],
+    visibility = ["//visibility:public"],
     deps = [
-        "//nativelink-error",
-        "@crates//:byte-unit",
-        "@crates//:humantime",
-        "@crates//:rand",
-        "@crates//:serde",
+        ":nativelink-config-dev-schema",
+        "@crates//:schemars",
         "@crates//:serde_json",
-        "@crates//:serde_json5",
-        "@crates//:shellexpand",
-        "@crates//:tracing",
     ],
 )
 
@@ -73,19 +118,6 @@ rust_doc(
     name = "docs",
     crate = ":nativelink-config",
     visibility = ["//visibility:public"],
-)
-
-rust_doc(
-    name = "docs_json",
-    crate = ":nativelink-config",
-    rustdoc_flags = [
-        "--output-format=json",
-        "-Zunstable-options",
-    ],
-    target_compatible_with = select({
-        "@local-remote-execution//rust:nightly": [],
-        "//conditions:default": ["@platforms//:incompatible"],
-    }),
 )
 
 rust_doc_test(

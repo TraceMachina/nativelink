@@ -27,7 +27,7 @@ pub struct InvocationPolicy {
     pub strategy_policy: ::core::option::Option<super::strategy_policy::StrategyPolicy>,
 }
 /// A policy for controlling the value of a flag.
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct FlagPolicy {
     /// The name of the flag to enforce this policy on.
     ///
@@ -55,7 +55,7 @@ pub struct FlagPolicy {
 }
 /// Nested message and enum types in `FlagPolicy`.
 pub mod flag_policy {
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Operation {
         #[prost(message, tag = "3")]
         SetValue(super::SetValue),
@@ -67,7 +67,7 @@ pub mod flag_policy {
         AllowValues(super::AllowValues),
     }
 }
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SetValue {
     /// Use this value for the specified flag, overriding any default or user-set
     /// value (unless behavior = APPEND for repeatable flags).
@@ -179,9 +179,9 @@ pub mod set_value {
 /// policy wins, later policies on this same flag will still remove the
 /// expanded UseDefault, so there is a way around, but it's really best not to
 /// use this on expansion flags at all.
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UseDefault {}
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct DisallowValues {
     /// It is an error for the user to use any of these values (that is, the Bazel
     /// command will fail), unless new_value or use_default is set.
@@ -201,7 +201,7 @@ pub struct DisallowValues {
 }
 /// Nested message and enum types in `DisallowValues`.
 pub mod disallow_values {
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum ReplacementValue {
         /// If set and if the value of the flag is disallowed (including the default
         /// value of the flag if the user doesn't specify a value), use this value as
@@ -221,7 +221,7 @@ pub mod disallow_values {
         UseDefault(super::UseDefault),
     }
 }
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct AllowValues {
     /// It is an error for the user to use any value not in this list, unless
     /// new_value or use_default is set.
@@ -232,7 +232,7 @@ pub struct AllowValues {
 }
 /// Nested message and enum types in `AllowValues`.
 pub mod allow_values {
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum ReplacementValue {
         /// If set and if the value of the flag is disallowed (including the default
         /// value of the flag if the user doesn't specify a value), use this value as

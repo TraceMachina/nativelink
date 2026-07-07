@@ -16,6 +16,7 @@ use std::sync::OnceLock;
 
 use base64::Engine;
 use base64::prelude::BASE64_STANDARD_NO_PAD;
+use nativelink_error::Error;
 use nativelink_proto::build::bazel::remote::execution::v2::RequestMetadata;
 use nativelink_proto::com::github::trace_machina::nativelink::events::{
     Event, event, request_event, response_event, stream_event,
@@ -34,11 +35,11 @@ pub fn request_metadata_to_baggage(metadata: &RequestMetadata) -> String {
     BASE64_STANDARD_NO_PAD.encode(metadata.encode_to_vec())
 }
 
-pub fn request_metadata_from_baggage(value: &str) -> Result<RequestMetadata, prost::DecodeError> {
+pub fn request_metadata_from_baggage(value: &str) -> Result<RequestMetadata, Error> {
     let decoded = BASE64_STANDARD_NO_PAD
         .decode(value.as_bytes())
-        .map_err(|err| prost::DecodeError::new(err.to_string()))?;
-    RequestMetadata::decode(&*decoded)
+        .map_err(Error::from)?;
+    RequestMetadata::decode(&*decoded).map_err(Error::from)
 }
 
 /// Returns a unique ID for the given event.
@@ -144,7 +145,7 @@ where
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OriginMetadata {
     pub identity: String,
     #[serde(

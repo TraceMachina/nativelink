@@ -19,6 +19,7 @@ use std::hash::DefaultHasher;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use futures::future::try_join_all;
 use futures::stream::{FuturesUnordered, TryStreamExt};
 use nativelink_config::stores::ShardSpec;
 use nativelink_error::{Error, ResultExt, error_if};
@@ -146,6 +147,15 @@ impl ShardStore {
 
 #[async_trait]
 impl StoreDriver for ShardStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        let mut futures = vec![];
+        for store_and_weight in &self.weights_and_stores {
+            futures.push(store_and_weight.store.clone().into_inner().post_init());
+        }
+        try_join_all(futures).await?;
+        Ok(())
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],

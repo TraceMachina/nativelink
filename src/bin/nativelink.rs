@@ -30,8 +30,8 @@ use hyper_util::server::conn::auto;
 use hyper_util::service::TowerToHyperService;
 use mimalloc::MiMalloc;
 use nativelink_config::cas_server::{
-    CasConfig, GlobalConfig, HttpCompressionAlgorithm, ListenerConfig, SchedulerConfig,
-    ServerConfig, StoreConfig, WorkerConfig,
+    CasConfig, CasStoreConfig, GlobalConfig, HttpCompressionAlgorithm, ListenerConfig,
+    SchedulerConfig, ServerConfig, StoreConfig, WithInstanceName, WorkerConfig,
 };
 use nativelink_config::stores::ConfigDigestHashFunction;
 use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
@@ -94,6 +94,10 @@ const DEFAULT_MAX_QUEUE_EVENTS: usize = 0x0001_0000;
 /// Broadcast Channel Capacity
 /// Note: The actual capacity may be greater than the provided capacity.
 const BROADCAST_CAPACITY: usize = 1;
+
+fn install_default_rustls_crypto_provider() {
+    drop(tokio_rustls::rustls::crypto::ring::default_provider().install_default());
+}
 
 /// Bind a [`TcpListener`] with `IP_FREEBIND` set.
 fn bind_freebind(socket_addr: SocketAddr) -> Result<TcpListener, std::io::Error> {
@@ -213,6 +217,7 @@ async fn inner_main(
                 .err_tip(|| format!("Failed to create store '{name}'"))?;
             store_manager.add_store(&name, store);
         }
+        store_manager.run_post_init().await?;
     }
 
     let mut root_futures: Vec<BoxFuture<Result<(), Error>>> = Vec::new();
@@ -258,6 +263,17 @@ async fn inner_main(
 
     let server_cfgs: Vec<ServerConfig> = cfg.servers.into_iter().collect();
 
+    // The capabilities service advertises chunking support for CAS instances
+    // that may be served from a different server block (e.g. behind an L7
+    // router), so collect the CAS configs across all blocks.
+    let all_cas_configs: Vec<WithInstanceName<CasStoreConfig>> = server_cfgs
+        .iter()
+        .filter_map(|server_cfg| server_cfg.services.as_ref())
+        .filter_map(|services| services.cas.as_deref())
+        .flatten()
+        .cloned()
+        .collect();
+
     for server_cfg in server_cfgs {
         let services = server_cfg
             .services
@@ -287,8 +303,9 @@ async fn inner_main(
             .add_optional_service(
                 services
                     .cas
+                    .as_deref()
                     .map_or(Ok(None), |cfg| {
-                        CasServer::new(&cfg, &store_manager)
+                        CasServer::new(cfg, &store_manager)
                             .map(|v| Some(service_setup!(v.into_service(), http_config)))
                     })
                     .err_tip(|| "Could not create CAS service")?,
@@ -330,10 +347,9 @@ async fn inner_main(
             )
             .add_optional_service(
                 OptionFuture::from(
-                    services
-                        .capabilities
-                        .as_ref()
-                        .map(|cfg| CapabilitiesServer::new(cfg, &action_schedulers)),
+                    services.capabilities.as_ref().map(|cfg| {
+                        CapabilitiesServer::new(cfg, &action_schedulers, &all_cas_configs)
+                    }),
                 )
                 .await
                 .map_or(Ok::<Option<CapabilitiesServer>, Error>(None), |server| {
@@ -571,7 +587,7 @@ async fn inner_main(
         if let Some(value) = http_config.experimental_http2_max_concurrent_streams {
             http.http2().max_concurrent_streams(value);
         }
-        if let Some(value) = http_config.experimental_http2_keep_alive_timeout {
+        if let Some(value) = http_config.experimental_http2_keep_alive_timeout_s {
             http.http2()
                 .keep_alive_timeout(Duration::from_secs(u64::from(value)));
         }
@@ -749,6 +765,8 @@ fn get_config() -> Result<CasConfig, Error> {
 }
 
 fn main() -> Result<(), Box<dyn core::error::Error>> {
+    install_default_rustls_crypto_provider();
+
     // Set QoS to USER_INITIATED on the main thread *before* the tokio
     // runtime is built so the spawned worker threads inherit P-core
     // scheduling preference via pthread QoS inheritance on Apple
@@ -768,7 +786,7 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
     // The OTLP exporters need to run in a Tokio context
     // Do this first so all the other logging works
     #[expect(clippy::disallowed_methods, reason = "tracing init on main runtime")]
-    runtime.block_on(async { tokio::spawn(async { init_tracing() }).await? })?;
+    runtime.block_on(async { tokio::spawn(async { init_tracing().await }).await? })?;
 
     let mut cfg = get_config()?;
 
@@ -824,13 +842,13 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
             .expect("Failed to listen to SIGTERM")
             .recv()
             .await;
-        warn!("Process terminated via SIGTERM",);
+        warn!("Process terminated via SIGTERM");
         drop(shutdown_tx_clone.send(shutdown_guard.clone()));
         scheduler_shutdown_rx
             .await
             .expect("Failed to receive scheduler shutdown");
         let () = shutdown_guard.wait_for(Priority::P0).await;
-        warn!("Successfully shut down nativelink.",);
+        warn!("Successfully shut down nativelink.");
         std::process::exit(143);
     });
 

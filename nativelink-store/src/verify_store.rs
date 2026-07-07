@@ -23,13 +23,12 @@ use nativelink_util::buf_channel::{
     DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
 };
 use nativelink_util::common::PackedHash;
-use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc, default_digest_hasher_func};
+use nativelink_util::digest_hasher::{DigestHasher, digest_hasher_func_from_context};
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::metrics_utils::CounterWithTime;
 use nativelink_util::store_trait::{
     RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };
-use opentelemetry::context::Context;
 
 #[derive(Debug, MetricsComponent)]
 pub struct VerifyStore {
@@ -146,6 +145,11 @@ impl VerifyStore {
 
 #[async_trait]
 impl StoreDriver for VerifyStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        self.inner_store.clone().into_inner().post_init().await?;
+        Ok(())
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         digests: &[StoreKey<'_>],
@@ -179,12 +183,7 @@ impl StoreDriver for VerifyStore {
         }
 
         let mut hasher = if self.verify_hash {
-            Some(
-                Context::current()
-                    .get::<DigestHasherFunc>()
-                    .map_or_else(default_digest_hasher_func, |v| *v)
-                    .hasher(),
-            )
+            Some(digest_hasher_func_from_context().hasher())
         } else {
             None
         };

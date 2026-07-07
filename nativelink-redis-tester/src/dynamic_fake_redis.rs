@@ -22,6 +22,7 @@ use redis::Value;
 use redis_protocol::resp2::decode::decode;
 use redis_protocol::resp2::types::{OwnedFrame, Resp2Frame};
 use tokio::net::TcpListener;
+use tokio::sync::oneshot::{self, Sender};
 use tracing::{debug, info, trace};
 
 use crate::fake_redis::{arg_as_string, fake_redis_internal};
@@ -70,7 +71,7 @@ impl<S: SubscriptionManagerNotify + Send + 'static + Sync> FakeRedisBackend<S> {
             .replace(subscription_manager);
     }
 
-    async fn dynamic_fake_redis(self, listener: TcpListener) {
+    async fn dynamic_fake_redis(self, listener: TcpListener, listener_ready_tx: Sender<()>) {
         let inner = move |buf: &[u8]| -> String {
             let mut output = String::new();
             let mut buf_index = 0;
@@ -399,7 +400,7 @@ impl<S: SubscriptionManagerNotify + Send + 'static + Sync> FakeRedisBackend<S> {
             }
             output
         };
-        fake_redis_internal(listener, vec![inner]).await;
+        fake_redis_internal(listener, listener_ready_tx, vec![inner]).await;
     }
 
     pub async fn run(self) -> u16 {
@@ -407,9 +408,15 @@ impl<S: SubscriptionManagerNotify + Send + 'static + Sync> FakeRedisBackend<S> {
         let port = listener.local_addr().unwrap().port();
         info!("Using port {port}");
 
+        let (listener_ready_tx, listener_ready_rx) = oneshot::channel::<()>();
+
         background_spawn!("listener", async move {
-            self.dynamic_fake_redis(listener).await;
+            self.dynamic_fake_redis(listener, listener_ready_tx).await;
         });
+
+        listener_ready_rx
+            .await
+            .expect("Expected successful listener boot");
 
         port
     }

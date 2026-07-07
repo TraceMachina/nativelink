@@ -94,7 +94,7 @@
     {
       name: "MAIN_SCHEDULER",
 
-      // TODO(palfrey): use the right scheduler because reclient doesn't use the cached results?
+      // TODO(palfrey): use the right scheduler because siso doesn't use the cached results?
       // TODO(palfrey): max_bytes_per_stream
       simple: {
         supported_platform_properties: {

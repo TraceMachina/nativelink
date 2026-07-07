@@ -38,6 +38,7 @@ pub type InstanceName = String;
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct WithInstanceName<T> {
+    /// Used when the config references `instance_name` in the protocol.
     #[serde(default)]
     pub instance_name: InstanceName,
     #[serde(flatten)]
@@ -120,7 +121,7 @@ pub struct AcStoreConfig {
     pub read_only: bool,
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct CasStoreConfig {
@@ -128,6 +129,115 @@ pub struct CasStoreConfig {
     /// This store name referenced here may be reused multiple times.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub cas_store: StoreRefName,
+
+    /// Optional and experimental: enables the REAPI `SplitBlob`/`SpliceBlob`
+    /// RPCs used by content-defined chunking clients (e.g. Bazel's
+    /// `--experimental_remote_cache_chunking`). When set, the capabilities
+    /// service advertises blob split/splice support and `FastCDC` 2020
+    /// parameters for this instance. When `cas_store` is a grpc store the
+    /// RPCs are forwarded to the backend (which must support chunking with
+    /// matching parameters); otherwise they are served locally.
+    ///
+    /// See `nativelink-config/examples/chunking_cas.json5` for a complete
+    /// configuration example.
+    ///
+    /// Default: not set — chunking RPCs are rejected, nothing is advertised,
+    /// and behavior is identical to when this option did not exist.
+    #[serde(default)]
+    pub experimental_chunking: Option<CasChunkingConfig>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct CasChunkingConfig {
+    /// The store name referenced in the `stores` map in the main config used
+    /// to persist blob-to-chunks layouts. Keys are the digests of the
+    /// original blobs and values are serialized chunk layouts (which do not
+    /// hash to those digests), so this store MUST NOT perform content digest
+    /// verification and MUST NOT be the same store as `cas_store` — writing
+    /// layouts into the CAS would overwrite blob content. Using the same
+    /// store name as `cas_store` is rejected at startup.
+    ///
+    /// Required unless `cas_store` is a grpc store: for proxied instances
+    /// the `SplitBlob`/`SpliceBlob` RPCs are forwarded to the backend, which
+    /// owns the chunk layouts, and setting an `index_store` is rejected at
+    /// startup.
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub index_store: Option<StoreRefName>,
+
+    /// The average chunk size in bytes advertised to clients through the
+    /// `FastCDC` 2020 capability parameters and used for server-side
+    /// chunking in `SplitBlob`. Clients derive the minimum and maximum
+    /// chunk sizes from this value (avg / 4 and avg * 4). The value must
+    /// be between 1 KiB and 1 MiB.
+    ///
+    /// Default: 524288 (512 KiB)
+    #[serde(default)]
+    pub avg_chunk_size_bytes: u64,
+
+    /// Maximum number of chunks accepted in a `SpliceBlob` request or
+    /// produced by on-demand chunking in `SplitBlob`. Blobs that would
+    /// produce more chunks are served without chunking (`SplitBlob` returns
+    /// `NOT_FOUND` and clients fall back to a regular download). This bounds
+    /// the size of stored chunk layouts and of `SplitBlobResponse` messages
+    /// (roughly 80-140 bytes per chunk). At the default average chunk size
+    /// the default cap supports blobs up to ~25 GiB; note that values above
+    /// ~50000 may produce responses that exceed default gRPC message size
+    /// limits on clients.
+    ///
+    /// Default: 50000
+    #[serde(default)]
+    pub max_chunk_count: u64,
+}
+
+impl CasChunkingConfig {
+    /// Default for `avg_chunk_size_bytes`, the value recommended by the
+    /// REAPI spec for `FastCdc2020Params`.
+    pub const DEFAULT_AVG_CHUNK_SIZE_BYTES: u64 = 512 * 1024;
+    /// Bounds for `avg_chunk_size_bytes` mandated by the REAPI spec for
+    /// `FastCdc2020Params`.
+    pub const MIN_AVG_CHUNK_SIZE_BYTES: u64 = 1024;
+    pub const MAX_AVG_CHUNK_SIZE_BYTES: u64 = 1024 * 1024;
+    /// Default for `max_chunk_count`.
+    pub const DEFAULT_MAX_CHUNK_COUNT: u64 = 50_000;
+
+    /// Returns `avg_chunk_size_bytes` with the default applied.
+    #[must_use]
+    pub const fn resolved_avg_chunk_size_bytes(&self) -> u64 {
+        if self.avg_chunk_size_bytes == 0 {
+            Self::DEFAULT_AVG_CHUNK_SIZE_BYTES
+        } else {
+            self.avg_chunk_size_bytes
+        }
+    }
+
+    /// Returns `max_chunk_count` with the default applied.
+    #[must_use]
+    pub const fn resolved_max_chunk_count(&self) -> u64 {
+        if self.max_chunk_count == 0 {
+            Self::DEFAULT_MAX_CHUNK_COUNT
+        } else {
+            self.max_chunk_count
+        }
+    }
+
+    /// Returns `avg_chunk_size_bytes` with the default applied, or an error
+    /// when the configured value is outside the REAPI-mandated bounds.
+    pub fn validated_avg_chunk_size_bytes(&self) -> Result<u64, Error> {
+        let avg_chunk_size_bytes = self.resolved_avg_chunk_size_bytes();
+        if !(Self::MIN_AVG_CHUNK_SIZE_BYTES..=Self::MAX_AVG_CHUNK_SIZE_BYTES)
+            .contains(&avg_chunk_size_bytes)
+        {
+            return Err(make_err!(
+                Code::InvalidArgument,
+                "'experimental_chunking.avg_chunk_size_bytes' is {avg_chunk_size_bytes}, must be between {} and {}",
+                Self::MIN_AVG_CHUNK_SIZE_BYTES,
+                Self::MAX_AVG_CHUNK_SIZE_BYTES
+            ));
+        }
+        Ok(avg_chunk_size_bytes)
+    }
 }
 
 #[derive(Deserialize, Serialize, Debug, Default)]
@@ -219,13 +329,14 @@ pub struct ByteStreamConfig {
     /// This allows clients that disconnect to reconnect and continue uploading
     /// the same blob.
     ///
-    /// Default: 10 (seconds)
+    /// Default: 10 seconds
     #[serde(
         default,
         deserialize_with = "convert_duration_with_shellexpand",
-        skip_serializing_if = "is_default"
+        skip_serializing_if = "is_default",
+        alias = "persist_stream_on_disconnect_timeout"
     )]
-    pub persist_stream_on_disconnect_timeout: usize,
+    pub persist_stream_on_disconnect_timeout_s: usize,
 }
 
 // Older bytestream config. All fields are as per the newer docs, but this requires
@@ -250,9 +361,10 @@ pub struct OldByteStreamConfig {
     #[serde(
         default,
         deserialize_with = "convert_duration_with_shellexpand",
-        skip_serializing_if = "is_default"
+        skip_serializing_if = "is_default",
+        alias = "persist_stream_on_disconnect_timeout"
     )]
-    pub persist_stream_on_disconnect_timeout: usize,
+    pub persist_stream_on_disconnect_timeout_s: usize,
 }
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -289,7 +401,7 @@ pub struct HealthConfig {
     #[serde(default)]
     pub path: String,
 
-    // Timeout on health checks. Defaults to 5s.
+    /// Timeout on health checks. Default: 5s.
     #[serde(default)]
     pub timeout_seconds: u64,
 }
@@ -496,12 +608,12 @@ pub struct HttpServerConfig {
     )]
     pub experimental_http2_max_concurrent_streams: Option<u32>,
 
-    /// Note: This is in seconds.
     #[serde(
         default,
-        deserialize_with = "convert_optional_numeric_with_shellexpand"
+        deserialize_with = "convert_optional_numeric_with_shellexpand",
+        alias = "experimental_http2_keep_alive_timeout"
     )]
-    pub experimental_http2_keep_alive_timeout: Option<u32>,
+    pub experimental_http2_keep_alive_timeout_s: Option<u32>,
 
     #[serde(
         default,
@@ -597,7 +709,7 @@ pub enum WorkerProperty {
     Values(Vec<String>),
 
     /// A dynamic configuration. The string will be executed as a command
-    /// (not sell) and will be split by "\n" (new line character).
+    /// (not shell) and will be split by "\n" (new line character).
     QueryCmd(String),
 }
 
@@ -611,7 +723,7 @@ pub struct EndpointConfig {
     pub uri: String,
 
     /// Timeout in seconds that a request should take.
-    /// Default: 5 (seconds)
+    /// Default: 5 seconds
     pub timeout: Option<f32>,
 
     /// The TLS configuration to use to connect to the endpoint.
@@ -701,7 +813,7 @@ pub struct UploadActionResultConfig {
     /// if set to `SuccessOnly` then only results with an exit code of 0 will be
     /// uploaded, if set to Everything all completed results will be uploaded.
     ///
-    /// Default: `UploadCacheResultsStrategy::SuccessOnly`
+    /// Default: `SuccessOnly`
     #[serde(default)]
     pub upload_ac_results_strategy: UploadCacheResultsStrategy,
 
@@ -715,7 +827,7 @@ pub struct UploadActionResultConfig {
     /// to the CAS key-value lookup format and are always a `HistoricalExecuteResponse`
     /// serialized message.
     ///
-    /// Default: `UploadCacheResultsStrategy::FailuresOnly`
+    /// Default: `FailuresOnly`
     #[serde(default)]
     pub upload_historical_results_strategy: Option<UploadCacheResultsStrategy>,
 
@@ -765,17 +877,39 @@ pub struct LocalWorkerConfig {
     /// The maximum time an action is allowed to run. If a task requests for a timeout
     /// longer than this time limit, the task will be rejected. Value in seconds.
     ///
-    /// Default: 1200 (seconds / 20 mins)
-    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
-    pub max_action_timeout: usize,
+    /// Default: 20 minutes
+    #[serde(
+        default,
+        deserialize_with = "convert_duration_with_shellexpand",
+        alias = "max_action_timeout"
+    )]
+    pub max_action_timeout_s: usize,
 
     /// Maximum time allowed for uploading action results to CAS after execution
     /// completes. If upload takes longer than this, the action fails with
     /// `DeadlineExceeded` and may be retried by the scheduler. Value in seconds.
     ///
-    /// Default: 600 (seconds / 10 mins)
+    /// Default: 10 minutes
+    #[serde(
+        default,
+        deserialize_with = "convert_duration_with_shellexpand",
+        alias = "max_upload_timeout"
+    )]
+    pub max_upload_timeout_s: usize,
+
+    /// Maximum time to wait for action directory cleanup before timing out.
+    /// Value in seconds.
+    ///
+    /// Default: 30 seconds
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
-    pub max_upload_timeout: usize,
+    pub max_cleanup_wait_s: usize,
+
+    /// Maximum backoff duration for exponential backoff when waiting for cleanup.
+    /// Value in milliseconds.
+    ///
+    /// Default: 500 milliseconds
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub max_cleanup_backoff_ms: usize,
 
     /// Maximum number of inflight tasks this worker can cope with.
     ///

@@ -73,6 +73,8 @@ const DEFAULT_ENDPOINT_TIMEOUT_S: f32 = 5.;
 /// If this value gets modified the documentation in `cas_server.rs` must also be updated.
 const DEFAULT_MAX_ACTION_TIMEOUT: Duration = Duration::from_mins(20);
 const DEFAULT_MAX_UPLOAD_TIMEOUT: Duration = Duration::from_mins(10);
+const DEFAULT_MAX_CLEANUP_WAIT: Duration = Duration::from_secs(30);
+const DEFAULT_MAX_CLEANUP_BACKOFF: Duration = Duration::from_millis(500);
 
 struct FinishedActionResult {
     action_result: ActionResult,
@@ -583,15 +585,25 @@ pub async fn new_local_worker(
     } else {
         Some(config.entrypoint.clone())
     };
-    let max_action_timeout = if config.max_action_timeout == 0 {
+    let max_action_timeout = if config.max_action_timeout_s == 0 {
         DEFAULT_MAX_ACTION_TIMEOUT
     } else {
-        Duration::from_secs(config.max_action_timeout as u64)
+        Duration::from_secs(config.max_action_timeout_s as u64)
     };
-    let max_upload_timeout = if config.max_upload_timeout == 0 {
+    let max_upload_timeout = if config.max_upload_timeout_s == 0 {
         DEFAULT_MAX_UPLOAD_TIMEOUT
     } else {
-        Duration::from_secs(config.max_upload_timeout as u64)
+        Duration::from_secs(config.max_upload_timeout_s as u64)
+    };
+    let max_cleanup_wait = if config.max_cleanup_wait_s == 0 {
+        DEFAULT_MAX_CLEANUP_WAIT
+    } else {
+        Duration::from_secs(config.max_cleanup_wait_s as u64)
+    };
+    let max_cleanup_backoff = if config.max_cleanup_backoff_ms == 0 {
+        DEFAULT_MAX_CLEANUP_BACKOFF
+    } else {
+        Duration::from_millis(config.max_cleanup_backoff_ms as u64)
     };
 
     // Initialize directory cache if configured
@@ -690,6 +702,8 @@ pub async fn new_local_worker(
             upload_action_result_config: &config.upload_action_result,
             max_action_timeout,
             max_upload_timeout,
+            max_cleanup_wait,
+            max_cleanup_backoff,
             timeout_handled_externally: config.timeout_handled_externally,
             directory_cache,
             #[cfg(target_os = "linux")]

@@ -51,7 +51,7 @@ use tokio::sync::{Barrier, Semaphore};
 use tokio::time::sleep;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReadDirStream;
-use tracing::{Instrument, debug};
+use tracing::{Instrument, debug, info};
 
 const VALID_HASH: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
 
@@ -1663,6 +1663,56 @@ async fn executable_hardlink_source_created_once_and_readonly() -> Result<(), Er
     Ok(())
 }
 
+/// Regression test for #2474: the `.exec` variant directory was never
+/// registered in `evicting_map`, so it was invisible to `max_bytes` and only
+/// ever cleared by the startup `remove_dir_all` — growing without bound at
+/// runtime. Evicting a digest from the primary CAS must also delete its
+/// `.exec` sibling, bounding total `.exec` disk use to the primary store's
+/// own eviction policy instead of letting it grow forever.
+#[cfg(target_family = "unix")]
+#[nativelink_test]
+async fn evicting_digest_deletes_its_executable_variant() -> Result<(), Error> {
+    let content_path = make_temp_path("content_path");
+    let temp_path = make_temp_path("temp_path");
+    let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
+    let digest2 = DigestInfo::try_new(HASH2, VALUE2.len())?;
+
+    let store = Box::pin(
+        FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+            content_path: content_path.clone(),
+            temp_path: temp_path.clone(),
+            eviction_policy: Some(EvictionPolicy {
+                max_count: 1,
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .await?,
+    );
+    store.update_oneshot(digest1, VALUE1.into()).await?;
+
+    let variant_path = OsString::from(format!("{content_path}.exec/{DIGEST_FOLDER}/{digest1}"));
+    store.get_executable_hardlink_source(&digest1).await?;
+    fs::metadata(&variant_path)
+        .await
+        .err_tip(|| "Executable variant should exist right after creation")?;
+
+    // max_count: 1 means inserting a second digest evicts the first from the
+    // primary evicting_map, which must also delete digest1's `.exec` sibling.
+    store.update_oneshot(digest2, VALUE2.into()).await?;
+
+    let err = fs::metadata(&variant_path)
+        .await
+        .expect_err("Executable variant must be deleted when its digest is evicted");
+    assert_eq!(
+        err.code,
+        Code::NotFound,
+        "Expected the executable variant to be gone, got: {err:?}"
+    );
+
+    Ok(())
+}
+
 /// This test simulates a full disk without needing one. It writes past the `RLIMIT_FSIZE`
 /// cap, thus failing with `EFBIG`, which tokio defers exactly like `ENOSPC`. The
 /// [`SIGXFSZ`](`libc::SIGXFSZ`) signal must be ignored or the kernel will kill the process
@@ -1765,18 +1815,22 @@ async fn detect_duplicate_upload() -> Result<(), Error> {
 
     let key = &StoreKey::Digest(digest);
     let temp_key = make_temp_key(key);
-    let (mut entry, mut temp_file, _temp_full_path) = store.make_temp_file(temp_key).await?;
+    let (mut entry, mut temp_file, temp_full_path) = store.make_temp_file(temp_key).await?;
+    info!(?temp_full_path, "Temp full path");
     let mut data = Bytes::from_static(VALUE1.as_bytes());
     temp_file.write_all_buf(&mut data).await?;
     *entry.data_size_mut() = 10;
 
+    let arc_entry = Arc::new(entry);
     assert!(
-        check_duplicate_files(&store.get_evicting_map(), key, &Arc::new(entry)).await?,
+        check_duplicate_files(&store.get_evicting_map(), key, &arc_entry.clone()).await?,
         "Expected duplicate"
     );
     assert!(logs_contain(
         "Identical files, so don't need to edit, skipping emplace"
     ));
+    // Keep it alive until here to avoid early drop and delete, which breaks the test
+    drop(arc_entry);
     Ok(())
 }
 
@@ -1796,5 +1850,133 @@ async fn detect_same_key_different_contents() -> Result<(), Error> {
         "Expected non-duplicate"
     );
     assert!(logs_contain("Files are different, so non-duplicate"));
+    Ok(())
+}
+
+/// Map/disk divergence (map says present, file is gone) must surface as a
+/// recoverable warn and remove the stale entry — not a fatal error.
+#[nativelink_test]
+async fn get_part_on_map_disk_divergence_warns_and_removes_entry() -> Result<(), Error> {
+    let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
+    let content_path = make_temp_path("content_path");
+    let store = Box::pin(
+        FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+            content_path: content_path.clone(),
+            temp_path: make_temp_path("temp_path"),
+            eviction_policy: None,
+            ..Default::default()
+        })
+        .await?,
+    );
+    store.update_oneshot(digest, VALUE1.into()).await?;
+
+    // Delete the backing file out from under the still-present map entry.
+    let content_file = OsString::from(format!("{content_path}/{DIGEST_FOLDER}/{digest}"));
+    fs::remove_file(&content_file).await?;
+
+    let err = store
+        .get_part_unchunked(digest, 0, None)
+        .await
+        .expect_err("divergent read must fail");
+    assert_eq!(
+        err.code,
+        Code::NotFound,
+        "divergent read must surface NotFound"
+    );
+
+    assert!(
+        logs_contain("Filesystem store map/disk divergence"),
+        "divergence must be logged as a recoverable warn"
+    );
+    assert!(
+        !logs_contain("process probably need restarted"),
+        "stale fatal-sounding message must be gone"
+    );
+    assert_eq!(
+        store.has(digest).await?,
+        None,
+        "stale entry must be removed from the map"
+    );
+
+    Ok(())
+}
+
+/// unref must be idempotent when the file is already gone: the entry is
+/// marked Temp so a second unref early-returns instead of racing the
+/// vanished path again.
+#[nativelink_test]
+async fn unref_is_idempotent_when_file_already_gone() -> Result<(), Error> {
+    let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
+    let content_path = make_temp_path("content_path");
+    let store = Box::pin(
+        FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+            content_path: content_path.clone(),
+            temp_path: make_temp_path("temp_path"),
+            eviction_policy: None,
+            ..Default::default()
+        })
+        .await?,
+    );
+    store.update_oneshot(digest, VALUE1.into()).await?;
+    let file_entry = store.get_file_entry_for_digest(&digest).await?;
+
+    let content_file = OsString::from(format!("{content_path}/{DIGEST_FOLDER}/{digest}"));
+    fs::remove_file(&content_file).await?;
+
+    // First unref: rename hits ENOENT (benign) and flips the entry to Temp.
+    file_entry.unref().await;
+    // Second unref: must hit the Temp early-return, proving the flip stuck.
+    file_entry.unref().await;
+
+    assert!(
+        logs_contain("File is already a temp file"),
+        "second unref should early-return as a Temp file (idempotent)"
+    );
+
+    Ok(())
+}
+
+/// rename ENOENT is ambiguous: a missing temp directory must not be mistaken
+/// for a vanished source. With the source still present, unref must warn and
+/// leave the content file intact rather than flip to Temp and orphan it.
+#[nativelink_test]
+async fn unref_does_not_orphan_content_file_when_temp_dir_missing() -> Result<(), Error> {
+    let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
+    let content_path = make_temp_path("content_path");
+    let temp_path = make_temp_path("temp_path");
+    let store = Box::pin(
+        FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+            content_path: content_path.clone(),
+            temp_path: temp_path.clone(),
+            eviction_policy: None,
+            ..Default::default()
+        })
+        .await?,
+    );
+    store.update_oneshot(digest, VALUE1.into()).await?;
+    let file_entry = store.get_file_entry_for_digest(&digest).await?;
+
+    // Remove the temp dir so rename's destination parent is gone (ENOENT)
+    // while the source content file is perfectly intact.
+    fs::remove_dir_all(format!("{temp_path}/{DIGEST_FOLDER}")).await?;
+
+    file_entry.unref().await;
+
+    assert!(
+        logs_contain("Failed to rename file"),
+        "missing temp dir (source present) must warn, not be treated as benign"
+    );
+    assert!(
+        !logs_contain("treating as benign"),
+        "an intact content file must not take the benign vanished-source path"
+    );
+    // The content file must still exist — not orphaned by a wrong Temp flip.
+    let content_file = OsString::from(format!("{content_path}/{DIGEST_FOLDER}/{digest}"));
+    assert_eq!(
+        read_file_contents(&content_file).await?,
+        VALUE1.as_bytes(),
+        "content file must remain intact after a failed unref rename"
+    );
+
     Ok(())
 }

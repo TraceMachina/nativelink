@@ -96,6 +96,23 @@ echo "" # New line.
 export NATIVELINK_DIR="$CACHE_DIR/nativelink"
 mkdir -p "$NATIVELINK_DIR"
 
+wait_for_tcp() {
+    local host="$1"
+    local port="$2"
+    local deadline=$((SECONDS + 30))
+
+    until (true > "/dev/tcp/$host/$port") 2> /dev/null; do
+        if ((SECONDS >= deadline)); then
+            echo "TCP endpoint $host:$port did not become ready within 30 seconds."
+            sudo docker compose logs
+            exit 1
+        fi
+        sleep 1
+    done
+
+    echo "TCP endpoint $host:$port is ready."
+}
+
 for pattern in "${TEST_PATTERNS[@]}"; do
     find "$SELF_DIR/integration_tests/" -name "$pattern" -type f -print0 | while IFS= read -r -d $'\0' fullpath; do
         # Cleanup.
@@ -110,7 +127,10 @@ for pattern in "${TEST_PATTERNS[@]}"; do
         bazel --output_base="$BAZEL_CACHE_DIR" clean
         FILENAME=$(basename "$fullpath")
         echo "Running test $FILENAME"
-        sudo env RUST_LOG=info docker compose up -d
+        # sudo resets the environment, so NATIVELINK_DIR must be passed
+        # through explicitly or docker compose falls back to mounting
+        # root's ~/.cache/nativelink instead of the per-run cache dir.
+        sudo env RUST_LOG=info NATIVELINK_DIR="$NATIVELINK_DIR" docker compose up -d
         if perl -e 'alarm shift; exec @ARGV' 30 bash -c 'until sudo docker compose logs | grep -q "Ready, listening on"; do sleep 1; done'; then
             echo "String 'Ready, listening on' found in the logs."
         else
@@ -118,6 +138,9 @@ for pattern in "${TEST_PATTERNS[@]}"; do
             sudo docker compose logs
             exit 1
         fi
+        wait_for_tcp 127.0.0.1 50051
+        wait_for_tcp 127.0.0.1 50052
+        wait_for_tcp 127.0.0.1 50071
         set +e
         bash -euo pipefail "$fullpath"
         EXIT_CODE="$?"
