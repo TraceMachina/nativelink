@@ -29,9 +29,7 @@ use nativelink_util::default_health_status_indicator;
 use nativelink_util::health_utils::HealthStatusIndicator;
 use nativelink_util::origin_event::get_id_for_event;
 use nativelink_util::origin_event_publisher::OriginEventPublisher;
-use nativelink_util::store_trait::{
-    RemoveItemCallback, Store, StoreDriver, StoreKey, UploadSizeInfo,
-};
+use nativelink_util::store_trait::{RemoveCallback, Store, StoreDriver, StoreKey, UploadSizeInfo};
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::sleep;
 use tonic::async_trait;
@@ -100,10 +98,7 @@ impl StoreDriver for FlakyStore {
         self
     }
 
-    fn register_remove_callback(
-        self: Arc<Self>,
-        _callback: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, _callback: RemoveCallback) -> Result<(), Error> {
         todo!();
     }
 }
