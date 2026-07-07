@@ -1,5 +1,7 @@
 {
   "pages": [
+    "local-testing",
+    "local-remote-execution",
     "examples",
     "nix-templates"
   ],

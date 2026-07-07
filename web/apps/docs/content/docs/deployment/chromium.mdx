@@ -1,11 +1,11 @@
 ---
 title: Chromium
-description: Building Chromium with NativeLink as the Reclient backend — a worked example for the largest public consumer.
+description: Building Chromium with NativeLink as the Siso backend — a worked example for the largest public consumer.
 ---
 
 Chromium's build system shells out to
-[Reclient](https://github.com/bazelbuild/reclient), which speaks the
-Remote Execution API. Pointing it at a NativeLink cluster is a
+[Siso](https://chromium.googlesource.com/build/+/refs/heads/main/siso/README.md),
+which speaks the Remote Execution API. Pointing it at a NativeLink cluster is a
 configuration change — no patches to the Chromium tree.
 
 The Samsung Internet team runs this configuration in production for
@@ -16,19 +16,17 @@ any Chromium-based browser.
 
 - A NativeLink cluster reachable from your build machines. Cache-only
   is fine to start; remote execution drops build times further.
-- Reclient installed and on `$PATH`. Chromium's `gclient sync` will
-  install it under `buildtools/`.
+- A Chromium checkout with `depot_tools` on `$PATH`.
 - The Chromium source checkout (`fetch chromium`).
 
-## Configure Reclient
+## Configure Siso
 
-Reclient reads its server settings from environment variables. Add
+Siso reads its server settings from environment variables. Add
 to your build shell:
 
 ```bash
-export RBE_service=cas.nativelink.internal:50051
-export RBE_instance=chromium
-export RBE_use_application_default_credentials=false
+export SISO_REAPI_ADDRESS=cas.nativelink.internal:50051
+export SISO_REAPI_INSTANCE=chromium
 export RBE_service_no_security=false   # mTLS in production
 export RBE_tls_client_auth_cert=/etc/nativelink/tls/client.crt
 export RBE_tls_client_auth_key=/etc/nativelink/tls/client.key
@@ -38,8 +36,8 @@ export RBE_tls_ca_cert=/etc/nativelink/tls/ca.crt
 For local development against a non-TLS NativeLink:
 
 ```bash
-export RBE_service=localhost:50051
-export RBE_instance=chromium
+export SISO_REAPI_ADDRESS=localhost:50051
+export SISO_REAPI_INSTANCE=chromium
 export RBE_service_no_security=true
 ```
 
@@ -51,25 +49,12 @@ In your Chromium checkout:
 gn gen out/Default --args='
   use_remoteexec=true
   use_goma=false
-  use_siso=false
-  reclient_cfg_dir="../../buildtools/reclient_cfgs/chromium-browser-clang"
+  use_siso=true
 '
 ```
 
-The `use_remoteexec=true` flag is the one that matters — it tells the
-build to wrap every compile invocation with Reclient.
-
-## Start the reproxy daemon
-
-Reclient uses a long-lived daemon (`reproxy`) that batches requests
-to the RE-API server. Start it before invoking the build:
-
-```bash
-buildtools/reclient/bootstrap --re_proxy=buildtools/reclient/reproxy
-```
-
-The daemon stays up; `bootstrap --shutdown` shuts it down when
-you're done.
+`autoninja` reads `args.gn`; with `use_siso=true`, it invokes
+`siso ninja` for the build.
 
 ## Build
 
@@ -83,16 +68,8 @@ of the time.
 
 ## What good looks like
 
-The Reclient stats endpoint reports cache statistics per build:
-
-```bash
-buildtools/reclient/reclient stats
-```
-
-Healthy numbers on warm builds:
-
 - **Cache hit rate**: 85-95% on incremental builds; 60-80% on full
-  builds.
+  builds, visible from NativeLink cache metrics.
 - **Local fallback rate**: under 1%. Higher means workers are
   rejecting actions (platform mismatch, capacity).
 - **Network errors**: zero. Anything else is a problem.
@@ -107,19 +84,20 @@ config should advertise:
 - `cpu_count: 8` (minimum; 16+ recommended for link steps)
 
 The
-[`deployment-examples/chromium/`](https://github.com/TraceMachina/nativelink/tree/main/deployment-examples/chromium)
+[`deploy/chromium-example/`](https://github.com/TraceMachina/nativelink/tree/main/deploy/chromium-example)
 directory in the source tree has the worker config Samsung uses.
 
 ## Troubleshooting
 
 - **All actions falling back to local.** Likely a platform-property
-  mismatch. Compare what Chromium is requesting (in the reclient
+  mismatch. Compare what Chromium is requesting (in the siso
   log) against what your workers advertise.
+- **Siso is not being selected.** If the output directory was already
+  generated for Ninja, run `gn clean out/Default`, regenerate with
+  `use_siso=true`, and build again.
 - **Cache writes succeed, reads always miss.** Almost always a
   toolchain version mismatch between the action that wrote the
   cache and the one trying to read.
-- **Reproxy hangs on shutdown.** Known issue — `reclient_cleanup`
-  fixes it.
 
 ## What's next
 

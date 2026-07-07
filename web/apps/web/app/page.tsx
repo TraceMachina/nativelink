@@ -16,11 +16,10 @@ export const metadata = {
 const integrations = [
   "Bazel",
   "Buck2",
-  "Reclient",
+  "Siso",
   "Buildstream",
   "recc",
   "GN",
-  "Siso",
   "Pants",
   "Goma",
   "CMake",
@@ -86,7 +85,7 @@ const stats = [
   {
     value: "0",
     label: "build-system rewrites",
-    body: "required for Bazel, Buck2, Reclient, Goma, or CMake via recc or BuildStream.",
+    body: "required for Bazel, Buck2, Siso, Goma, or CMake via recc or BuildStream.",
   },
 ];
 
@@ -113,11 +112,11 @@ const benefits = [
   },
   {
     title: "Ten minutes to your first cache hit.",
-    body: "One Docker command. Drops into your existing Bazel, Buck2, Reclient, or CMake setup with zero rewrites.",
+    body: "One Docker command. Drops into your existing Bazel, Buck2, Siso, or CMake setup with zero rewrites.",
   },
   {
     title: "Works with what you've got.",
-    body: "C++, Rust, Python, Go, and more. Bazel, Buck2, Reclient, CMake. AWS, GCP, Azure, or your own hardware. No lock-in.",
+    body: "C++, Rust, Python, Go, and more. Bazel, Buck2, Siso, CMake. AWS, GCP, Azure, or your own hardware. No lock-in.",
   },
 ];
 
@@ -144,7 +143,7 @@ const industries = [
   },
   {
     title: "Browsers & Web Platforms",
-    body: "Chromium and its descendants are some of the largest C++ codebases on the open web. NativeLink speaks reclient natively.",
+    body: "Chromium and its descendants are some of the largest C++ codebases on the open web. NativeLink speaks Siso natively.",
   },
 ];
 

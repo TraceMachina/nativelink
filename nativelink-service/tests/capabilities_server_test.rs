@@ -73,6 +73,7 @@ async fn compression_only_instance_advertises_zstd_cache_capabilities()
         &configs,
         &HashMap::new(),
         &remote_cache_compression_instances,
+        &[],
     )
     .await?;
 
@@ -102,6 +103,7 @@ async fn compression_only_instance_does_not_advertise_execution_capabilities()
         &configs,
         &HashMap::new(),
         &remote_cache_compression_instances,
+        &[],
     )
     .await?;
 
@@ -130,6 +132,7 @@ async fn remote_execution_instance_advertises_execution_capabilities_and_node_pr
         &configs,
         &scheduler_map,
         &remote_cache_compression_instances,
+        &[],
     );
     let expected_scheduler_call_fut =
         mock_scheduler.expect_get_known_properties(Ok(expected_properties.clone()));

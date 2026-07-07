@@ -13,7 +13,7 @@ const tiers = [
       "Self-hosted",
       "Community support on Slack",
       "Distributed scheduler & remote caching",
-      "All build systems (Bazel, Buck2, Reclient, Pants)",
+      "All build systems (Bazel, Buck2, Siso, Pants)",
       "All major cloud providers",
     ],
     cta: { label: "Get started", href: "/docs" },

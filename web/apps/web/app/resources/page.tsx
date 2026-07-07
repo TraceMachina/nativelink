@@ -1,13 +1,6 @@
-import {
-  Badge,
-  Eyebrow,
-  Reveal,
-  Section,
-  YouTubeEmbed,
-  cn,
-} from "@nativelink/ui";
-
-// (Badge is used in featured + announcement cards below.)
+import { Badge, Eyebrow, Reveal, Section } from "@nativelink/ui";
+import { getAllPosts } from "../../lib/posts";
+import { type PostCardData, PostSection, postToCard } from "./post-sections";
 
 export const metadata = { title: "Resources" };
 
@@ -21,18 +14,30 @@ const featuredPost = {
   href: "https://reidkleckner.dev/posts/llvm-recc-nativelink/",
 };
 
-const announcements = [
-  {
-    tag: "Talk",
-    title: "Hermetic toolchain creation with LRE & Nix",
-    excerpt: "Aaron Mondal walks through Local Remote Execution — running fully hermetic Bazel builds on your own laptop, no Docker required.",
-    date: "April 18, 2026",
-    readingTime: "32 min video",
-    accent: "default",
-  },
-];
+// The BazelCon talk lives among the post cards rather than as an
+// embedded video so the page stays light and the blog content leads.
+const talkCard: PostCardData = {
+  key: "talk-hermetic-toolchains",
+  href: "https://www.youtube.com/watch?v=uokjTev8myk",
+  external: true,
+  tags: ["talk"],
+  meta: "BazelCon 2024 · 32 min video",
+  title: "Hermetic toolchain creation with LRE & Nix",
+  excerpt:
+    "Aaron Mondal walks through Local Remote Execution — running fully hermetic Bazel builds on your own laptop, no Docker required.",
+  cta: "Watch talk",
+};
 
 export default function ResourcesPage() {
+  const posts = getAllPosts();
+  const caseStudies = posts.filter((p) => p.tags.includes("case-studies"));
+  const announcements = posts.filter(
+    (p) => p.tags.includes("announcements") && !p.tags.includes("case-studies"),
+  );
+  const others = posts.filter(
+    (p) => !p.tags.includes("case-studies") && !p.tags.includes("announcements"),
+  );
+
   return (
     <>
       {/* HERO */}
@@ -50,8 +55,8 @@ export default function ResourcesPage() {
                 .
               </h1>
               <p className="mx-auto mt-6 max-w-[640px] text-[17px] leading-relaxed text-muted-foreground md:text-lg">
-                Case studies, conference talks, and write-ups from the team building
-                NativeLink — plus highlights from the broader community.
+                Case studies, conference talks, and write-ups from the team building NativeLink —
+                plus highlights from the broader community.
               </p>
             </div>
           </Reveal>
@@ -85,7 +90,10 @@ export default function ResourcesPage() {
                 </div>
                 <div className="mt-8 inline-flex items-center gap-1.5 font-mono text-sm text-brand">
                   Read the write-up{" "}
-                  <span aria-hidden="true" className="transition-transform group-hover:translate-x-1">
+                  <span
+                    aria-hidden="true"
+                    className="transition-transform group-hover:translate-x-1"
+                  >
                     →
                   </span>
                 </div>
@@ -120,74 +128,32 @@ export default function ResourcesPage() {
         </Reveal>
       </Section>
 
-      {/* ANNOUNCEMENTS + VIDEO */}
-      <Section width="default" className="border-t border-border/60 bg-surface-elevated/40 py-24">
-        <Reveal>
-          <div className="mb-12 flex items-end justify-between">
-            <div>
-              <Eyebrow className="mb-4">Announcements</Eyebrow>
-              <h2 className="text-balance text-3xl font-semibold leading-[1.1] tracking-[-0.025em] md:text-4xl">
-                From the team
-              </h2>
-            </div>
-            <a href="#" className="hidden font-mono text-sm text-brand md:inline-flex">
-              All posts →
-            </a>
-          </div>
-        </Reveal>
-
-        <div className="grid gap-8 lg:grid-cols-[1.2fr_1fr]">
+      {/* FROM THE TEAM — full blog listing */}
+      <section className="border-t border-border/60 bg-surface-elevated/40">
+        <Section width="default" className="pt-24 pb-4">
           <Reveal>
-            <div className="overflow-hidden rounded-2xl">
-              <YouTubeEmbed
-                id="uokjTev8myk"
-                title="Hermetic Toolchain Creation with Local Remote Execution (LRE) & Nix"
-              />
-            </div>
-            <p className="mt-4 text-base leading-relaxed text-foreground">
-              <span className="font-mono text-xs uppercase tracking-widest text-muted">
-                Featured talk ·{" "}
-              </span>
-              Hermetic Toolchain Creation with Local Remote Execution & Nix
-            </p>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Aaron Mondal, Trace Machina — 32 min
-            </p>
+            <h2 className="text-balance text-3xl font-semibold leading-[1.1] tracking-[-0.025em] md:text-4xl">
+              From the team
+            </h2>
           </Reveal>
+        </Section>
 
-          <div className="flex flex-col gap-3">
-            {announcements.map((p, i) => (
-              <Reveal key={p.title} delay={i * 0.05}>
-                <a
-                  href="#"
-                  className={cn(
-                    "group block rounded-2xl border p-6 transition-all hover:-translate-y-0.5",
-                    p.accent === "brand"
-                      ? "border-brand/40 bg-brand-soft/30 hover:border-brand"
-                      : "border-border bg-surface hover:border-border-strong",
-                  )}
-                >
-                  <div className="mb-3 flex items-center gap-2">
-                    <Badge variant={p.accent === "brand" ? "brand" : "default"}>
-                      {p.tag}
-                    </Badge>
-                    <span className="font-mono text-xs text-muted">
-                      {p.date} · {p.readingTime}
-                    </span>
-                  </div>
-                  <h3 className="text-lg font-semibold leading-tight tracking-tight text-foreground">
-                    {p.title}
-                  </h3>
-                  <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-                    {p.excerpt}
-                  </p>
-                </a>
-              </Reveal>
-            ))}
-          </div>
-        </div>
-      </Section>
-
+        <PostSection
+          title="Case studies"
+          cards={caseStudies.map(postToCard)}
+          className="pt-12 pb-16"
+        />
+        <PostSection
+          title="Announcements"
+          cards={announcements.map(postToCard)}
+          className="border-t border-border/60 pt-16 pb-16"
+        />
+        <PostSection
+          title="Blog"
+          cards={[...others.map(postToCard), talkCard]}
+          className="border-t border-border/60 pt-16 pb-28"
+        />
+      </section>
     </>
   );
 }

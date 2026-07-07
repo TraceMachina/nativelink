@@ -21,13 +21,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::schedulers::SchedulerSpec;
 use crate::serde_utils::{
-    convert_data_size_with_shellexpand, convert_duration_with_shellexpand,
-    convert_numeric_with_shellexpand, convert_optional_numeric_with_shellexpand,
-    convert_optional_string_with_shellexpand, convert_string_with_shellexpand,
-convert_boolean_with_shellexpand, convert_data_size_with_shellexpand,
-convert_duration_with_shellexpand, convert_numeric_with_shellexpand,
-convert_optional_numeric_with_shellexpand, convert_optional_string_with_shellexpand,
-convert_string_with_shellexpand, convert_vec_string_with_shellexpand,
+    convert_boolean_with_shellexpand, convert_data_size_with_shellexpand,
+    convert_duration_with_shellexpand, convert_numeric_with_shellexpand,
+    convert_optional_numeric_with_shellexpand, convert_optional_string_with_shellexpand,
+    convert_string_with_shellexpand, convert_vec_string_with_shellexpand,
 };
 use crate::stores::{ClientTlsConfig, ConfigDigestHashFunction, StoreRefName, StoreSpec};
 
@@ -124,7 +121,7 @@ pub struct AcStoreConfig {
     pub read_only: bool,
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct CasStoreConfig {
@@ -132,6 +129,115 @@ pub struct CasStoreConfig {
     /// This store name referenced here may be reused multiple times.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub cas_store: StoreRefName,
+
+    /// Optional and experimental: enables the REAPI `SplitBlob`/`SpliceBlob`
+    /// RPCs used by content-defined chunking clients (e.g. Bazel's
+    /// `--experimental_remote_cache_chunking`). When set, the capabilities
+    /// service advertises blob split/splice support and `FastCDC` 2020
+    /// parameters for this instance. When `cas_store` is a grpc store the
+    /// RPCs are forwarded to the backend (which must support chunking with
+    /// matching parameters); otherwise they are served locally.
+    ///
+    /// See `nativelink-config/examples/chunking_cas.json5` for a complete
+    /// configuration example.
+    ///
+    /// Default: not set — chunking RPCs are rejected, nothing is advertised,
+    /// and behavior is identical to when this option did not exist.
+    #[serde(default)]
+    pub experimental_chunking: Option<CasChunkingConfig>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct CasChunkingConfig {
+    /// The store name referenced in the `stores` map in the main config used
+    /// to persist blob-to-chunks layouts. Keys are the digests of the
+    /// original blobs and values are serialized chunk layouts (which do not
+    /// hash to those digests), so this store MUST NOT perform content digest
+    /// verification and MUST NOT be the same store as `cas_store` — writing
+    /// layouts into the CAS would overwrite blob content. Using the same
+    /// store name as `cas_store` is rejected at startup.
+    ///
+    /// Required unless `cas_store` is a grpc store: for proxied instances
+    /// the `SplitBlob`/`SpliceBlob` RPCs are forwarded to the backend, which
+    /// owns the chunk layouts, and setting an `index_store` is rejected at
+    /// startup.
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub index_store: Option<StoreRefName>,
+
+    /// The average chunk size in bytes advertised to clients through the
+    /// `FastCDC` 2020 capability parameters and used for server-side
+    /// chunking in `SplitBlob`. Clients derive the minimum and maximum
+    /// chunk sizes from this value (avg / 4 and avg * 4). The value must
+    /// be between 1 KiB and 1 MiB.
+    ///
+    /// Default: 524288 (512 KiB)
+    #[serde(default)]
+    pub avg_chunk_size_bytes: u64,
+
+    /// Maximum number of chunks accepted in a `SpliceBlob` request or
+    /// produced by on-demand chunking in `SplitBlob`. Blobs that would
+    /// produce more chunks are served without chunking (`SplitBlob` returns
+    /// `NOT_FOUND` and clients fall back to a regular download). This bounds
+    /// the size of stored chunk layouts and of `SplitBlobResponse` messages
+    /// (roughly 80-140 bytes per chunk). At the default average chunk size
+    /// the default cap supports blobs up to ~25 GiB; note that values above
+    /// ~50000 may produce responses that exceed default gRPC message size
+    /// limits on clients.
+    ///
+    /// Default: 50000
+    #[serde(default)]
+    pub max_chunk_count: u64,
+}
+
+impl CasChunkingConfig {
+    /// Default for `avg_chunk_size_bytes`, the value recommended by the
+    /// REAPI spec for `FastCdc2020Params`.
+    pub const DEFAULT_AVG_CHUNK_SIZE_BYTES: u64 = 512 * 1024;
+    /// Bounds for `avg_chunk_size_bytes` mandated by the REAPI spec for
+    /// `FastCdc2020Params`.
+    pub const MIN_AVG_CHUNK_SIZE_BYTES: u64 = 1024;
+    pub const MAX_AVG_CHUNK_SIZE_BYTES: u64 = 1024 * 1024;
+    /// Default for `max_chunk_count`.
+    pub const DEFAULT_MAX_CHUNK_COUNT: u64 = 50_000;
+
+    /// Returns `avg_chunk_size_bytes` with the default applied.
+    #[must_use]
+    pub const fn resolved_avg_chunk_size_bytes(&self) -> u64 {
+        if self.avg_chunk_size_bytes == 0 {
+            Self::DEFAULT_AVG_CHUNK_SIZE_BYTES
+        } else {
+            self.avg_chunk_size_bytes
+        }
+    }
+
+    /// Returns `max_chunk_count` with the default applied.
+    #[must_use]
+    pub const fn resolved_max_chunk_count(&self) -> u64 {
+        if self.max_chunk_count == 0 {
+            Self::DEFAULT_MAX_CHUNK_COUNT
+        } else {
+            self.max_chunk_count
+        }
+    }
+
+    /// Returns `avg_chunk_size_bytes` with the default applied, or an error
+    /// when the configured value is outside the REAPI-mandated bounds.
+    pub fn validated_avg_chunk_size_bytes(&self) -> Result<u64, Error> {
+        let avg_chunk_size_bytes = self.resolved_avg_chunk_size_bytes();
+        if !(Self::MIN_AVG_CHUNK_SIZE_BYTES..=Self::MAX_AVG_CHUNK_SIZE_BYTES)
+            .contains(&avg_chunk_size_bytes)
+        {
+            return Err(make_err!(
+                Code::InvalidArgument,
+                "'experimental_chunking.avg_chunk_size_bytes' is {avg_chunk_size_bytes}, must be between {} and {}",
+                Self::MIN_AVG_CHUNK_SIZE_BYTES,
+                Self::MAX_AVG_CHUNK_SIZE_BYTES
+            ));
+        }
+        Ok(avg_chunk_size_bytes)
+    }
 }
 
 #[derive(Deserialize, Serialize, Debug, Default)]

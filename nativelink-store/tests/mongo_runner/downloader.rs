@@ -122,6 +122,12 @@ where
     use std::fs::File;
     use std::io::Write;
 
+    // reqwest is built with `rustls-no-provider`, so it panics when building a
+    // client unless a rustls crypto provider is installed as the process default.
+    // The server binary installs one at startup; this download runs before any
+    // store does, so install it here too. Idempotent: ignores the already-set case.
+    drop(rustls::crypto::ring::default_provider().install_default());
+
     let response = reqwest::get(url).await?;
     let total = response.content_length();
 

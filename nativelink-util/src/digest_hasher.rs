@@ -53,6 +53,14 @@ pub fn default_digest_hasher_func() -> DigestHasherFunc {
     *DEFAULT_DIGEST_HASHER_FUNC.get_or_init(|| DigestHasherFunc::Sha256)
 }
 
+/// Get the hasher requested by the client from the active context (set via
+/// [`make_ctx_for_hash_func`]), falling back to the default hasher.
+pub fn digest_hasher_func_from_context() -> DigestHasherFunc {
+    Context::current()
+        .get::<DigestHasherFunc>()
+        .map_or_else(default_digest_hasher_func, |v| *v)
+}
+
 /// Sets the default hasher to use if no hasher was requested by the client.
 pub fn set_default_digest_hasher_func(hasher: DigestHasherFunc) -> Result<(), Error> {
     DEFAULT_DIGEST_HASHER_FUNC

@@ -137,6 +137,7 @@ commit_parsers = [
   { message = "Merge branch", skip = true },
   { message = "Prepare.+release", skip = true },
   { message = "Release", skip = true },
+  { message = "wtf", skip = true },
 
   # Catch-all in miscellaneous
   { message = ".*", group = "<!-- 6 -->⚙️ Miscellaneous" },

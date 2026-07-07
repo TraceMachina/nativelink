@@ -15,6 +15,11 @@ const nextConfig = {
         destination: "/configuration/production",
         permanent: true,
       },
+      {
+        source: "/getting-started/other-build-systems/reclient",
+        destination: "/getting-started/other-build-systems/siso",
+        permanent: true,
+      },
     ];
   },
 };

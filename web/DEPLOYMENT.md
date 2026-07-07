@@ -96,6 +96,32 @@ docs project's main-branch production. If you want a preview to proxy
 to the docs project's branch preview, you'd need a build-time hook to
 rewrite `DOCS_URL`; we haven't wired that yet.
 
+## Generated content
+
+The docs changelog page (`/reference/changelog`) is not checked in. It is
+generated from the repository-root `CHANGELOG.md` — the canonical changelog
+git-cliff maintains at release time — by
+`apps/docs/scripts/gen-changelog.mjs`, which runs at the start of the docs
+`dev` and `build` scripts. Every merge to main therefore republishes the
+page from the current changelog, and the web CI build on pull requests
+fails if a changelog edit stops compiling. The page is emitted as plain
+markdown (`changelog.md`, not `.mdx`) so JSX- and import-like text in
+commit subjects is inert rather than syntax.
+
+The script reads `CHANGELOG.md` from disk when the repository root is
+available (local checkouts, GitHub CI, Vercel with **Include source files
+outside of the Root Directory** enabled). Vercel's default build container
+only mounts the workspace, so there the script instead fetches the file
+from GitHub raw pinned to `VERCEL_GIT_COMMIT_SHA` — the exact commit being
+deployed, so the bytes match a full checkout. If neither works the build
+fails with instructions rather than publishing a stale page.
+
+Because of this, don't configure an **Ignored Build Step** on the docs
+Vercel project that skips builds when `web/` is unchanged: a release merge
+touches only root files (`CHANGELOG.md`, version bumps), and skipping that
+deploy would leave the published changelog stale until the next `web/`
+change.
+
 ## Operating
 
 - **Cache invalidation**: Vercel handles automatic edge invalidation on
