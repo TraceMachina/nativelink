@@ -12,23 +12,34 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::pin::Pin;
+use core::sync::atomic::{AtomicU64, Ordering};
+use core::time::Duration;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use bytes::Bytes;
 use nativelink_config::stores::{
     FastSlowSpec, FilesystemSpec, MemorySpec, StoreDirection, StoreSpec,
 };
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
+use nativelink_metric::{
+    MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
+};
 use nativelink_proto::build::bazel::remote::execution::v2::{
     Directory as ProtoDirectory, DirectoryNode, FileNode, SymlinkNode,
 };
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::FilesystemStore;
 use nativelink_store::memory_store::MemoryStore;
+use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::{DigestInfo, make_temp_path};
-use nativelink_util::store_trait::{Store, StoreLike};
+use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
+use nativelink_util::store_trait::{
+    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+};
 use nativelink_worker::directory_cache::{DirectoryCache, DirectoryCacheConfig};
 use prost::Message;
 use tonic::Code;
@@ -267,5 +278,196 @@ async fn evict_with_directory_entry() -> Result<(), Error> {
     assert!(logs_contain(
         "Evicting cached directory digest=DigestInfo(\"0101010101010101010101010101010101010101010101010101010101010101-5\") size=5"
     ));
+    Ok(())
+}
+
+/// `MemoryStore` wrapper that records the maximum number of concurrent
+/// `get_part` calls it has observed. Each call holds its slot briefly so
+/// that overlapping fetches are reliably observed as overlapping.
+#[derive(Debug)]
+struct ConcurrencyTrackingStore {
+    inner: Store,
+    in_flight: AtomicU64,
+    max_in_flight: AtomicU64,
+}
+
+impl ConcurrencyTrackingStore {
+    fn new(inner: Arc<MemoryStore>) -> Arc<Self> {
+        Arc::new(Self {
+            inner: Store::new(inner),
+            in_flight: AtomicU64::new(0),
+            max_in_flight: AtomicU64::new(0),
+        })
+    }
+}
+
+impl MetricsComponent for ConcurrencyTrackingStore {
+    fn publish(
+        &self,
+        _kind: MetricKind,
+        _field_metadata: MetricFieldData,
+    ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
+        Ok(MetricPublishKnownKindData::Component)
+    }
+}
+
+#[async_trait]
+impl StoreDriver for ConcurrencyTrackingStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn has_with_results(
+        self: Pin<&Self>,
+        keys: &[StoreKey<'_>],
+        results: &mut [Option<u64>],
+    ) -> Result<(), Error> {
+        self.inner
+            .as_store_driver_pin()
+            .has_with_results(keys, results)
+            .await
+    }
+
+    async fn update(
+        self: Pin<&Self>,
+        key: StoreKey<'_>,
+        reader: DropCloserReadHalf,
+        size_info: UploadSizeInfo,
+    ) -> Result<u64, Error> {
+        self.inner
+            .as_store_driver_pin()
+            .update(key, reader, size_info)
+            .await
+    }
+
+    async fn get_part(
+        self: Pin<&Self>,
+        key: StoreKey<'_>,
+        writer: &mut DropCloserWriteHalf,
+        offset: u64,
+        length: Option<u64>,
+    ) -> Result<(), Error> {
+        let now_in_flight = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+        self.max_in_flight
+            .fetch_max(now_in_flight, Ordering::SeqCst);
+        // Hold the slot long enough for concurrent fetches to overlap.
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        let result = self
+            .inner
+            .as_store_driver_pin()
+            .get_part(key, writer, offset, length)
+            .await;
+        self.in_flight.fetch_sub(1, Ordering::SeqCst);
+        result
+    }
+
+    fn inner_store(&self, _key: Option<StoreKey>) -> &dyn StoreDriver {
+        self
+    }
+
+    fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
+        self
+    }
+
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+        self
+    }
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        _callback: Arc<dyn RemoveItemCallback>,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+default_health_status_indicator!(ConcurrencyTrackingStore);
+
+/// Cold-cache construction must fetch a directory's blobs concurrently, not
+/// one at a time: every fast-tier miss pays a full slow-store round trip, so
+/// sequential fetches serialize N round trips (regression test for the
+/// `for … await` loops `construct_directory` used to have).
+#[nativelink_test]
+async fn cold_construct_fetches_concurrently() -> Result<(), Error> {
+    const NUM_FILES: u32 = 32;
+
+    let memory_store = MemoryStore::new(&MemorySpec::default());
+    let mut file_nodes = Vec::new();
+    for i in 0..NUM_FILES {
+        let content = format!("content-{i}").into_bytes();
+        let mut hash = [0u8; 32];
+        hash[0] = 1;
+        hash[1..5].copy_from_slice(&i.to_le_bytes());
+        let digest = DigestInfo::new(hash, content.len() as u64);
+        memory_store
+            .update_oneshot(digest, Bytes::from(content))
+            .await?;
+        file_nodes.push(FileNode {
+            name: format!("file_{i}"),
+            digest: Some(digest.into()),
+            is_executable: false,
+            node_properties: None,
+        });
+    }
+    let root = ProtoDirectory {
+        files: file_nodes,
+        directories: vec![],
+        symlinks: vec![],
+        node_properties: None,
+    }
+    .encode_to_vec();
+    let root_digest = DigestInfo::new([7u8; 32], root.len() as u64);
+    memory_store
+        .update_oneshot(root_digest, Bytes::from(root))
+        .await?;
+
+    let tracking_store = ConcurrencyTrackingStore::new(memory_store);
+    let tracking_store_for_asserts = tracking_store.clone();
+
+    let fast_spec = FilesystemSpec {
+        content_path: make_temp_path("cas_content"),
+        temp_path: make_temp_path("cas_temp"),
+        eviction_policy: None,
+        ..Default::default()
+    };
+    let fast_store: Arc<FilesystemStore> = FilesystemStore::new(&fast_spec).await.unwrap();
+    let cas_store = FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Filesystem(fast_spec),
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
+        },
+        Store::new(fast_store),
+        Store::new(tracking_store),
+    );
+
+    let cache = DirectoryCache::new(
+        DirectoryCacheConfig {
+            cache_root: make_temp_path("directory_cache").into(),
+            ..Default::default()
+        },
+        cas_store,
+    )
+    .await?;
+
+    let working_directory = PathBuf::from(make_temp_path("working_directory"));
+    let hit = cache
+        .get_or_create(
+            root_digest,
+            working_directory.join(Uuid::new_v4().to_string()).as_path(),
+        )
+        .await?;
+    assert!(!hit, "first call must be a cache miss");
+
+    let max_in_flight = tracking_store_for_asserts
+        .max_in_flight
+        .load(Ordering::SeqCst);
+    assert!(
+        max_in_flight > 1,
+        "expected concurrent slow-store fetches during cold construction, \
+         but max in-flight was {max_in_flight}"
+    );
     Ok(())
 }
