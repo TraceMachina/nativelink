@@ -1819,11 +1819,12 @@ async fn detect_duplicate_upload() -> Result<(), Error> {
     info!(?temp_full_path, "Temp full path");
     let mut data = Bytes::from_static(VALUE1.as_bytes());
     temp_file.write_all_buf(&mut data).await?;
+    temp_file.flush().await?;
     *entry.data_size_mut() = 10;
 
     let arc_entry = Arc::new(entry);
     assert!(
-        check_duplicate_files(&store.get_evicting_map(), key, &arc_entry.clone()).await?,
+        check_duplicate_files(&store.get_evicting_map(), key, &arc_entry).await?,
         "Expected duplicate"
     );
     assert!(logs_contain(
@@ -1843,6 +1844,7 @@ async fn detect_same_key_different_contents() -> Result<(), Error> {
     let (mut entry, mut temp_file, _temp_full_path) = store.make_temp_file(temp_key).await?;
     let mut data = Bytes::from_static(VALUE2.as_bytes());
     temp_file.write_all_buf(&mut data).await?;
+    temp_file.flush().await?;
     *entry.data_size_mut() = 10;
 
     assert!(
