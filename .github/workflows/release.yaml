@@ -64,10 +64,7 @@ jobs:
             os: ubuntu-24.04
             attr: nativelink-x86_64-linux
           - target: aarch64-unknown-linux-musl
-            # Build natively on ARM64 so older tags build too: the aarch64
-            # cross-compile fix (#2454) isn't in releases like v1.5.2, where
-            # cross-compiling fails on gnu/stubs-32.h.
-            os: ubuntu-24.04-arm
+            os: ubuntu-24.04
             attr: nativelink-aarch64-linux
           - target: aarch64-apple-darwin
             os: macos-26
