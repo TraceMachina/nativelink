@@ -46,6 +46,7 @@ use nativelink_service::execution_server::ExecutionServer;
 use nativelink_service::fetch_server::FetchServer;
 use nativelink_service::health_server::HealthServer;
 use nativelink_service::push_server::PushServer;
+use nativelink_service::wire_compression::RemoteCacheCompressionInstances;
 use nativelink_service::worker_api_server::WorkerApiServer;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
@@ -290,6 +291,10 @@ async fn inner_main(
             .transpose()
             .err_tip(|| "Could not create Execution service")?;
 
+        let capabilities_configs = services.capabilities.as_deref().unwrap_or_default();
+        let remote_cache_compression_instances =
+            RemoteCacheCompressionInstances::from_capabilities_configs(capabilities_configs);
+
         let tonic_services = Routes::builder()
             .routes()
             .add_optional_service(
@@ -306,7 +311,7 @@ async fn inner_main(
                     .cas
                     .as_deref()
                     .map_or(Ok(None), |cfg| {
-                        CasServer::new(cfg, &store_manager)
+                        CasServer::new(cfg, &store_manager, &remote_cache_compression_instances)
                             .map(|v| Some(service_setup!(v.into_service(), http_config)))
                     })
                     .err_tip(|| "Could not create CAS service")?,
@@ -341,17 +346,24 @@ async fn inner_main(
                 services
                     .bytestream
                     .map_or(Ok(None), |cfg| {
-                        ByteStreamServer::new(&cfg, &store_manager)
-                            .map(|v| Some(service_setup!(v.into_service(), http_config)))
+                        ByteStreamServer::new(
+                            &cfg,
+                            &store_manager,
+                            &remote_cache_compression_instances,
+                        )
+                        .map(|v| Some(service_setup!(v.into_service(), http_config)))
                     })
                     .err_tip(|| "Could not create ByteStream service")?,
             )
             .add_optional_service(
-                OptionFuture::from(
-                    services.capabilities.as_ref().map(|cfg| {
-                        CapabilitiesServer::new(cfg, &action_schedulers, &all_cas_configs)
-                    }),
-                )
+                OptionFuture::from(services.capabilities.as_ref().map(|cfg| {
+                    CapabilitiesServer::new(
+                        cfg,
+                        &action_schedulers,
+                        &remote_cache_compression_instances,
+                        &all_cas_configs,
+                    )
+                }))
                 .await
                 .map_or(Ok::<Option<CapabilitiesServer>, Error>(None), |server| {
                     Ok(Some(server?))

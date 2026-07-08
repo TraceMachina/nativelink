@@ -18,6 +18,7 @@ use core::time::Duration;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use futures::StreamExt;
 use nativelink_config::cas_server::WithInstanceName;
 use nativelink_config::stores::{MemorySpec, StoreSpec};
@@ -34,6 +35,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
 };
 use nativelink_proto::google::rpc::Status as GrpcStatus;
 use nativelink_service::cas_server::CasServer;
+use nativelink_service::wire_compression::RemoteCacheCompressionInstances;
 use nativelink_store::ac_utils::serialize_and_upload_message;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
@@ -79,6 +81,23 @@ fn make_cas_server(store_manager: &StoreManager) -> Result<CasServer, Error> {
             },
         }],
         store_manager,
+        &RemoteCacheCompressionInstances::default(),
+    )
+}
+
+fn make_cas_server_with_zstd(store_manager: &StoreManager) -> Result<CasServer, Error> {
+    CasServer::new(
+        &[WithInstanceName {
+            instance_name: "foo_instance_name".to_string(),
+            config: nativelink_config::cas_server::CasStoreConfig {
+                cas_store: "main_cas".to_string(),
+                experimental_chunking: None,
+            },
+        }],
+        store_manager,
+        &RemoteCacheCompressionInstances::from_enabled_instance_names([
+            "foo_instance_name".to_string()
+        ]),
     )
 }
 
@@ -755,6 +774,7 @@ fn make_cas_server_with_stall_store(delay: Duration) -> Result<CasServer, Error>
             },
         }],
         &store_manager,
+        &RemoteCacheCompressionInstances::default(),
     )
 }
 
@@ -841,6 +861,179 @@ async fn batch_read_blobs_per_blob_timeout_returns_deadline_exceeded()
     Ok(())
 }
 
+#[nativelink_test]
+async fn batch_update_blobs_zstd_compressed() -> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let cas_server = make_cas_server_with_zstd(&store_manager)?;
+
+    // Use repetitive data so zstd compresses well.
+    let raw_data: Vec<u8> = "hello world ".repeat(100).into_bytes();
+
+    // Compute the sha256 digest.
+    let mut hasher = DigestHasherFunc::Sha256.hasher();
+    DigestHasher::update(&mut hasher, &raw_data);
+    let digest_info = hasher.finalize_digest();
+    let digest = Digest::from(&digest_info);
+    let compressed_data = zstd::bulk::compress(&raw_data, 3)?;
+
+    let raw_response = cas_server
+        .batch_update_blobs(Request::new(BatchUpdateBlobsRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            requests: vec![batch_update_blobs_request::Request {
+                digest: Some(digest.clone()),
+                data: compressed_data.into(),
+                compressor: compressor::Value::Zstd.into(),
+            }],
+            digest_function: digest_function::Value::Sha256.into(),
+        }))
+        .await;
+
+    let response = raw_response.unwrap().into_inner();
+    assert_eq!(response.responses.len(), 1);
+    let entry = &response.responses[0];
+    assert_eq!(entry.status.as_ref().map(|s| s.code), Some(Code::Ok as i32));
+
+    // Verify we can read the data back uncompressed (store holds raw data).
+    let raw_response = cas_server
+        .batch_read_blobs(Request::new(BatchReadBlobsRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            digests: vec![digest.clone()],
+            acceptable_compressors: vec![compressor::Value::Identity.into()],
+            digest_function: digest_function::Value::Sha256.into(),
+        }))
+        .await;
+
+    let response = raw_response.unwrap().into_inner();
+    assert_eq!(response.responses.len(), 1);
+    let entry = &response.responses[0];
+    assert_eq!(entry.data.as_ref(), &raw_data);
+    assert_eq!(entry.compressor, compressor::Value::Identity as i32);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn batch_update_blobs_zstd_rejected_when_remote_cache_compression_disabled()
+-> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let cas_server = make_cas_server(&store_manager)?;
+
+    let raw_data = b"zstd disabled batch update";
+    let compressed_data = zstd::bulk::compress(raw_data, 3)?;
+    let digest = Digest {
+        hash: HASH1.to_string(),
+        size_bytes: raw_data.len() as i64,
+    };
+
+    let Err(status) = cas_server
+        .batch_update_blobs(Request::new(BatchUpdateBlobsRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            requests: vec![batch_update_blobs_request::Request {
+                digest: Some(digest),
+                data: compressed_data.into(),
+                compressor: compressor::Value::Zstd.into(),
+            }],
+            digest_function: digest_function::Value::Sha256.into(),
+        }))
+        .await
+    else {
+        panic!("zstd BatchUpdateBlobs should fail when compression is disabled");
+    };
+
+    assert_eq!(status.code(), Code::InvalidArgument);
+    assert!(
+        status
+            .message()
+            .contains("Remote cache compression is not supported"),
+        "unexpected error: {}",
+        status.message()
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn batch_read_blobs_zstd_compressed() -> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let cas_server = make_cas_server_with_zstd(&store_manager)?;
+
+    // Upload uncompressed data first.
+    let raw_data: Vec<u8> = "hello world ".repeat(100).into_bytes();
+    let raw_size = raw_data.len() as i64;
+
+    // Compute the sha256 digest.
+    let mut hasher = DigestHasherFunc::Sha256.hasher();
+    DigestHasher::update(&mut hasher, &raw_data);
+    let digest_info = hasher.finalize_digest();
+    let digest = Digest::from(&digest_info);
+
+    cas_server
+        .batch_update_blobs(Request::new(BatchUpdateBlobsRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            requests: vec![batch_update_blobs_request::Request {
+                digest: Some(digest.clone()),
+                data: raw_data.clone().into(),
+                compressor: compressor::Value::Identity.into(),
+            }],
+            digest_function: digest_function::Value::Sha256.into(),
+        }))
+        .await?;
+
+    // Request compressed data.
+    let raw_response = cas_server
+        .batch_read_blobs(Request::new(BatchReadBlobsRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            digests: vec![digest.clone()],
+            acceptable_compressors: vec![compressor::Value::Zstd.into()],
+            digest_function: digest_function::Value::Sha256.into(),
+        }))
+        .await;
+
+    let response = raw_response.unwrap().into_inner();
+    assert_eq!(response.responses.len(), 1);
+    let entry = &response.responses[0];
+    assert_eq!(entry.compressor, compressor::Value::Zstd as i32);
+
+    // Decompress and verify the data matches.
+    let decompressed = zstd::bulk::decompress(&entry.data, usize::try_from(raw_size)?)?;
+    assert_eq!(decompressed.as_slice(), raw_data.as_slice());
+    Ok(())
+}
+
+#[nativelink_test]
+async fn batch_read_blobs_zstd_falls_back_to_identity_when_not_smaller()
+-> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let cas_server = make_cas_server_with_zstd(&store_manager)?;
+    let store = store_manager.get_store("main_cas").unwrap();
+
+    let raw_data = Bytes::from_static(b"x");
+    let digest_info = DigestInfo::try_new(HASH1, raw_data.len())?;
+    store.update_oneshot(digest_info, raw_data.clone()).await?;
+
+    let digest = Digest {
+        hash: HASH1.to_string(),
+        size_bytes: raw_data.len() as i64,
+    };
+    let response = cas_server
+        .batch_read_blobs(Request::new(BatchReadBlobsRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            digests: vec![digest.clone()],
+            acceptable_compressors: vec![9999, compressor::Value::Zstd.into()],
+            digest_function: digest_function::Value::Sha256.into(),
+        }))
+        .await?
+        .into_inner();
+
+    assert_eq!(response.responses.len(), 1);
+    let entry = &response.responses[0];
+    assert_eq!(entry.digest.as_ref(), Some(&digest));
+    assert_eq!(entry.status, Some(GrpcStatus::default()));
+    assert_eq!(entry.compressor, compressor::Value::Identity as i32);
+    assert_eq!(entry.data, raw_data);
+
+    Ok(())
+}
+
 const CHUNK1_VALUE: &str = "hello ";
 const CHUNK2_VALUE: &str = "world";
 
@@ -879,6 +1072,7 @@ fn make_chunking_cas_server_with_avg(
             },
         }],
         store_manager,
+        &RemoteCacheCompressionInstances::default(),
     )
 }
 
@@ -1219,7 +1413,7 @@ async fn split_blob_chunks_large_blob_on_demand_and_reuses_layout()
     store
         .update_oneshot(
             DigestInfo::try_from(blob_digest.clone())?,
-            bytes::Bytes::from(data.clone()),
+            Bytes::from(data.clone()),
         )
         .await?;
 
@@ -1333,6 +1527,7 @@ async fn chunking_rejects_index_store_same_as_cas_store() -> Result<(), Box<dyn 
             },
         }],
         &store_manager,
+        &RemoteCacheCompressionInstances::default(),
     )
     .err()
     .expect("expected same-store index_store to be rejected");
@@ -1392,9 +1587,13 @@ async fn chunking_on_grpc_store_forbids_index_store() -> Result<(), Box<dyn core
     };
 
     // A local index store is meaningless when the RPCs are forwarded.
-    let error = CasServer::new(&make_config(Some("grpc_cas".to_string())), &store_manager)
-        .err()
-        .expect("expected index_store on grpc store to be rejected");
+    let error = CasServer::new(
+        &make_config(Some("grpc_cas".to_string())),
+        &store_manager,
+        &RemoteCacheCompressionInstances::default(),
+    )
+    .err()
+    .expect("expected index_store on grpc store to be rejected");
     assert!(
         error.to_string().contains("must not be set"),
         "unexpected error: {error}"
@@ -1402,7 +1601,11 @@ async fn chunking_on_grpc_store_forbids_index_store() -> Result<(), Box<dyn core
 
     // Without an index_store the configuration is valid: SplitBlob and
     // SpliceBlob are forwarded to the backend.
-    CasServer::new(&make_config(None), &store_manager)?;
+    CasServer::new(
+        &make_config(None),
+        &store_manager,
+        &RemoteCacheCompressionInstances::default(),
+    )?;
     Ok(())
 }
 
@@ -1427,6 +1630,7 @@ async fn max_chunk_count_limits_split_and_splice() -> Result<(), Box<dyn core::e
             },
         }],
         &store_manager,
+        &RemoteCacheCompressionInstances::default(),
     )?;
     let store = store_manager.get_store("main_cas").unwrap();
 
@@ -1444,7 +1648,7 @@ async fn max_chunk_count_limits_split_and_splice() -> Result<(), Box<dyn core::e
     store
         .update_oneshot(
             DigestInfo::try_from(blob_digest.clone())?,
-            bytes::Bytes::from(data),
+            Bytes::from(data),
         )
         .await?;
 
@@ -1530,7 +1734,7 @@ async fn chunking_infers_blake3_when_digest_function_unset()
     store
         .update_oneshot(
             DigestInfo::try_from(other_digest.clone())?,
-            bytes::Bytes::from_static(b"other blake3 content"),
+            Bytes::from_static(b"other blake3 content"),
         )
         .await?;
     let split_response = cas_server
