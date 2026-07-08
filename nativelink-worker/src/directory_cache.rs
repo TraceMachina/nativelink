@@ -20,6 +20,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
 
+use futures::StreamExt;
+use futures::future::BoxFuture;
+use futures::stream::TryStreamExt;
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_proto::build::bazel::remote::execution::v2::{
     Directory as ProtoDirectory, DirectoryNode, FileNode, SymlinkNode,
@@ -33,7 +36,26 @@ use nativelink_util::common::DigestInfo;
 use nativelink_util::fs_util::{CloneMethod, hardlink_directory_tree, set_dir_writable_recursive};
 use nativelink_util::store_trait::{StoreKey, StoreLike};
 use tokio::fs;
-use tokio::sync::{Mutex, RwLock};
+
+/// Maximum number of concurrently-polled node materializations (file
+/// fetches, subdirectory recursions, symlink creations) per directory
+/// level. Matches `DOWNLOAD_TO_DIRECTORY_CONCURRENCY` in
+/// `running_actions_manager.rs`: enough parallelism to overlap slow-store
+/// round trips, bounded so hardlink/copy syscalls do not fight the
+/// filesystem's metadata locks (see the gate comment in
+/// `download_to_directory`).
+const CONSTRUCT_DIRECTORY_CONCURRENCY: usize = 64;
+
+/// Maximum number of concurrent slow-store fetches across ALL directory
+/// constructions of this cache. Permits are held only across leaf I/O
+/// (directory-proto fetches, blob fetches/populates) and never across
+/// subdirectory recursion, so recursion depth cannot deadlock the
+/// semaphore. This is the bound that protects the remote store: the
+/// per-level budget above compounds multiplicatively across tree levels
+/// and concurrent actions (measured >1800 in-flight fetches for 6
+/// concurrent ~500-file trees without this cap).
+const CONSTRUCT_DIRECTORY_MAX_FETCHES: usize = 64;
+use tokio::sync::{Mutex, RwLock, Semaphore};
 use tracing::{debug, trace, warn};
 
 /// Configuration for the directory cache
@@ -95,6 +117,9 @@ pub struct DirectoryCache {
     /// (zero-copy) instead of fetched into RAM and rewritten. When absent
     /// (e.g. an unusual store layout) the cache falls back to fetch+write.
     filesystem_store: Option<Arc<FilesystemStore>>,
+    /// Global slow-fetch budget shared by all constructions of this cache;
+    /// see `CONSTRUCT_DIRECTORY_MAX_FETCHES`.
+    fetch_permits: Semaphore,
     /// Count of materializations that used APFS `clonefile(2)` (macOS only;
     /// always zero on other platforms).
     clonefile_hits: AtomicU64,
@@ -140,9 +165,19 @@ impl DirectoryCache {
             construction_locks: Arc::new(Mutex::new(HashMap::new())),
             cas_store,
             filesystem_store,
+            fetch_permits: Semaphore::new(CONSTRUCT_DIRECTORY_MAX_FETCHES),
             clonefile_hits: AtomicU64::new(0),
             hardlink_hits: AtomicU64::new(0),
         })
+    }
+
+    /// Acquires a permit from the cache-wide slow-fetch budget. Held only
+    /// across leaf I/O awaits, never across subdirectory recursion.
+    async fn acquire_fetch_permit(&self) -> Result<tokio::sync::SemaphorePermit<'_>, Error> {
+        self.fetch_permits
+            .acquire()
+            .await
+            .map_err(|e| make_err!(Code::Internal, "Fetch semaphore closed: {e:?}"))
     }
 
     /// Records which kernel mechanism materialized a tree, for observability.
@@ -357,11 +392,13 @@ impl DirectoryCache {
         Box::pin(async move {
             debug!(?digest, ?dest_path, "Constructing directory");
 
-            // Fetch the Directory proto
-            let directory: ProtoDirectory =
+            // Fetch the Directory proto (permit held only for the fetch).
+            let directory: ProtoDirectory = {
+                let _permit = self.acquire_fetch_permit().await?;
                 get_and_decode_digest(self.cas_store.as_ref(), digest.into())
                     .await
-                    .err_tip(|| format!("Failed to fetch directory digest: {digest:?}"))?;
+                    .err_tip(|| format!("Failed to fetch directory digest: {digest:?}"))?
+            };
 
             // Create the destination directory. It must be writable while it
             // is being populated; 0o755 is its final mode too, so set it now
@@ -369,25 +406,41 @@ impl DirectoryCache {
             self.create_dir_writable(dest_path).await?;
 
             let mut total_size: u64 = 0;
-
-            // Process files
             for file in &directory.files {
-                self.create_file(dest_path, file).await?;
                 if let Some(file_digest) = &file.digest {
                     // size_bytes is non-negative; clamp defensively.
                     total_size += u64::try_from(file_digest.size_bytes).unwrap_or(0);
                 }
             }
 
-            // Process subdirectories recursively
+            // Materialize all nodes of this directory level concurrently,
+            // sharing one concurrency budget — the same shape as
+            // `download_to_directory`. Every file that is not in the fast
+            // tier pays a full slow-store round trip, so awaiting nodes
+            // sequentially serializes N round trips and dominates cold-cache
+            // construction time for large trees. Futures yield the subtree
+            // size they materialized (0 for files, whose sizes are already
+            // summed from their digests above, and for symlinks).
+            let mut node_futures: Vec<BoxFuture<'_, Result<u64, Error>>> = Vec::with_capacity(
+                directory.files.len() + directory.directories.len() + directory.symlinks.len(),
+            );
+            for file in &directory.files {
+                node_futures.push(Box::pin(async move {
+                    self.create_file(dest_path, file).await.map(|()| 0)
+                }));
+            }
             for dir_node in &directory.directories {
-                total_size += self.create_subdirectory(dest_path, dir_node).await?;
+                node_futures.push(Box::pin(self.create_subdirectory(dest_path, dir_node)));
             }
-
-            // Process symlinks
             for symlink in &directory.symlinks {
-                self.create_symlink(dest_path, symlink).await?;
+                node_futures.push(Box::pin(async move {
+                    self.create_symlink(dest_path, symlink).await.map(|()| 0)
+                }));
             }
+            total_size += futures::stream::iter(node_futures)
+                .buffer_unordered(CONSTRUCT_DIRECTORY_CONCURRENCY)
+                .try_fold(0u64, |acc, size| async move { Ok(acc + size) })
+                .await?;
 
             Ok(total_size)
         })
@@ -496,11 +549,15 @@ impl DirectoryCache {
         file_path: &Path,
     ) -> Result<(), Error> {
         // Ensure the blob is in the fast (filesystem) tier so it has an
-        // on-disk file we can hardlink.
-        self.cas_store
-            .populate_fast_store(StoreKey::Digest(*digest))
-            .await
-            .err_tip(|| format!("Failed to populate fast store for {digest}"))?;
+        // on-disk file we can hardlink. This may fetch from the slow store,
+        // so it holds a fetch permit.
+        {
+            let _permit = self.acquire_fetch_permit().await?;
+            self.cas_store
+                .populate_fast_store(StoreKey::Digest(*digest))
+                .await
+                .err_tip(|| format!("Failed to populate fast store for {digest}"))?;
+        }
 
         let file_entry = filesystem_store
             .get_file_entry_for_digest(digest)
@@ -530,11 +587,13 @@ impl DirectoryCache {
         file_path: &Path,
         executable: bool,
     ) -> Result<(), Error> {
-        let data = self
-            .cas_store
-            .get_part_unchunked(StoreKey::Digest(*digest), 0, None)
-            .await
-            .err_tip(|| format!("Failed to fetch file: {}", file_path.display()))?;
+        let data = {
+            let _permit = self.acquire_fetch_permit().await?;
+            self.cas_store
+                .get_part_unchunked(StoreKey::Digest(*digest), 0, None)
+                .await
+                .err_tip(|| format!("Failed to fetch file: {}", file_path.display()))?
+        };
 
         fs::write(file_path, data.as_ref())
             .await

@@ -3316,6 +3316,7 @@ name = "nativelink-worker"
 version = "1.6.0"
 dependencies = [
  "async-lock",
+ "async-trait",
  "bytes",
  "dunce",
  "filetime",
