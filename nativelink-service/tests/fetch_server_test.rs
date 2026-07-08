@@ -41,7 +41,7 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
             None,
         )
         .await?,
-    );
+    )?;
     Ok(store_manager)
 }
 

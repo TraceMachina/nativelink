@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 
-use nativelink_error::Error;
+use nativelink_error::{Code, Error, make_err};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_util::store_trait::Store;
 use parking_lot::RwLock;
@@ -32,9 +32,16 @@ impl StoreManager {
         }
     }
 
-    pub fn add_store(&self, name: &str, store: Store) {
+    pub fn add_store(&self, name: &str, store: Store) -> Result<(), Error> {
         let mut stores = self.stores.write();
+        if stores.contains_key(name) {
+            return Err(make_err!(
+                Code::AlreadyExists,
+                "Store name '{name}' already exists in the store manager"
+            ));
+        }
         stores.insert(name.to_string(), store);
+        Ok(())
     }
 
     pub fn get_store(&self, name: &str) -> Option<Store> {
@@ -58,3 +65,25 @@ impl StoreManager {
 }
 
 impl RootMetricsComponent for StoreManager {}
+
+#[cfg(test)]
+mod tests {
+    use nativelink_config::stores::MemorySpec;
+    use nativelink_error::Code;
+    use nativelink_util::store_trait::Store;
+
+    use super::StoreManager;
+    use crate::memory_store::MemoryStore;
+
+    #[test]
+    fn add_store_rejects_duplicate_name() {
+        let store_manager = StoreManager::new();
+        store_manager
+            .add_store("dup", Store::new(MemoryStore::new(&MemorySpec::default())))
+            .expect("first add_store should succeed");
+        let err = store_manager
+            .add_store("dup", Store::new(MemoryStore::new(&MemorySpec::default())))
+            .expect_err("duplicate store name must be rejected");
+        assert_eq!(err.code, Code::AlreadyExists);
+    }
+}
