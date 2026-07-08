@@ -65,8 +65,9 @@ pub enum CloneMethod {
 ///   defensive guarantee for callers that did not pre-mark the source.
 /// - Linux: Per-file `fs::hard_link` (directory hardlinks are not supported on
 ///   ext4/btrfs without root). Directories at the destination are created
-///   fresh by this walk, so they are writable regardless of the source's
-///   directory modes; files are hardlinked and keep the source inode's mode.
+///   fresh by this walk and chmod'd to a stable, umask-independent 0o755, so
+///   they are writable regardless of the source's directory modes and of the
+///   process umask; files are hardlinked and keep the source inode's mode.
 ///   Always returns `CloneMethod::Hardlink`.
 /// - Windows: Per-file `fs::hard_link` (requires NTFS). Always returns
 ///   `CloneMethod::Hardlink`.
@@ -143,10 +144,32 @@ pub async fn hardlink_directory_tree(src_dir: &Path, dst_dir: &Path) -> Result<C
             dst_dir.display()
         )
     })?;
+    chmod_dir_0o755(dst_dir).await?;
 
     // Recursively hardlink the directory tree
     hardlink_directory_tree_recursive(src_dir, dst_dir).await?;
     Ok(CloneMethod::Hardlink)
+}
+
+/// Sets `dir` to mode 0o755 on unix; no-op elsewhere. The per-file hardlink
+/// walk creates destination directories fresh with `create_dir`, whose mode
+/// is `0o777 & !umask` — under a restrictive umask (027/077) combined with
+/// run-as-different-uid sandboxing that yields intermittent `EACCES` on the
+/// materialized tree. An explicit chmod keeps the documented "directories
+/// are 0o755" invariant umask-independent. (The macOS `clonefile` path is
+/// unaffected: it copies the source's modes verbatim, and cache-entry
+/// sources are built at 0o755.)
+async fn chmod_dir_0o755(dir: &Path) -> Result<(), Error> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755))
+            .await
+            .err_tip(|| format!("Failed to set directory mode: {}", dir.display()))?;
+    }
+    #[cfg(not(unix))]
+    let _ = dir;
+    Ok(())
 }
 
 /// Recursively clones a directory tree using APFS `clonefile(2)`. On success
@@ -276,6 +299,7 @@ fn hardlink_directory_tree_recursive<'a>(
                 fs::create_dir(&dst_path)
                     .await
                     .err_tip(|| format!("Failed to create directory: {}", dst_path.display()))?;
+                chmod_dir_0o755(&dst_path).await?;
 
                 hardlink_directory_tree_recursive(&entry_path, &dst_path).await?;
             } else if metadata.is_file() {

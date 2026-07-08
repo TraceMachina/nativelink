@@ -2653,7 +2653,10 @@ impl RunningActionsManagerImpl {
             running_actions: Mutex::new(HashMap::new()),
             action_done_tx,
             callbacks,
-            metrics: Arc::new(Metrics::default()),
+            metrics: Arc::new(Metrics {
+                directory_cache: args.directory_cache.as_ref().map(Arc::downgrade),
+                ..Default::default()
+            }),
             cleaning_up_operations: Mutex::new(HashSet::new()),
             max_cleanup_wait: args.max_cleanup_wait,
             max_cleanup_backoff: args.max_cleanup_backoff,
@@ -3048,4 +3051,8 @@ pub struct Metrics {
     upload_stderr: AsyncCounterWrapper,
     #[metric(help = "Total number of task timeouts.")]
     task_timeouts: CounterWithTime,
+    #[metric(
+        help = "Stats about the input-directory cache (hits, misses, subtree reuse, evictions, size)."
+    )]
+    directory_cache: Option<Weak<crate::directory_cache::DirectoryCache>>,
 }
