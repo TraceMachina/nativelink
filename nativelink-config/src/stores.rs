@@ -1439,6 +1439,90 @@ pub struct GrpcSpec {
     /// context (`traceparent` / `tracestate`) into every outgoing request.
     #[serde(default)]
     pub forward_headers: Vec<String>,
+
+    /// Optional and experimental: coalesce small-blob reads into
+    /// `BatchReadBlobs` RPCs instead of issuing one `ByteStream` `Read`
+    /// stream per blob. Each `ByteStream` read carries a fixed per-RPC cost,
+    /// so batching many small reads into a single `BatchReadBlobs` request
+    /// can dramatically reduce read latency for small blobs.
+    ///
+    /// Only full reads (offset 0, whole blob) of blobs at or below
+    /// `max_blob_size_bytes` are batched; everything else continues to use
+    /// the `ByteStream` `Read` path.
+    ///
+    /// Incompatible with `forward_headers`: batched reads share one upstream
+    /// RPC across many client requests, so per-client forwarded headers
+    /// (e.g. credentials) cannot be attached. Configuring both is rejected
+    /// at startup.
+    ///
+    /// Default: unset (disabled). When unset there is zero behavior change.
+    #[serde(default)]
+    pub experimental_read_batching: Option<GrpcReadBatchingConfig>,
+}
+
+/// Configuration for experimental small-blob read coalescing in a gRPC
+/// store. See [`GrpcSpec::experimental_read_batching`].
+#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct GrpcReadBatchingConfig {
+    /// Only blobs at or below this size (in bytes) are eligible for
+    /// batching. Larger blobs always use the `ByteStream` `Read` path.
+    ///
+    /// Default: 131072 (128 KiB).
+    #[serde(
+        default = "default_read_batching_max_blob_size_bytes",
+        deserialize_with = "convert_data_size_with_shellexpand"
+    )]
+    pub max_blob_size_bytes: u64,
+
+    /// Maximum total payload bytes packed into a single `BatchReadBlobs`
+    /// request. This should leave headroom under the 4 MiB default gRPC
+    /// message limit for protobuf framing overhead.
+    ///
+    /// Default: 3145728 (3 MiB).
+    #[serde(
+        default = "default_read_batching_max_batch_bytes",
+        deserialize_with = "convert_data_size_with_shellexpand"
+    )]
+    pub max_batch_bytes: u64,
+
+    /// Maximum number of concurrent `BatchReadBlobs` RPCs dispatched by the
+    /// coalescer. Must be greater than zero.
+    ///
+    /// Default: 4.
+    #[serde(
+        default = "default_read_batching_dispatch_slots",
+        deserialize_with = "convert_numeric_with_shellexpand"
+    )]
+    pub dispatch_slots: usize,
+
+    /// Bound on the number of payload bytes waiting in the coalescer queue.
+    /// When exceeded, new read requests bypass batching and fall back to the
+    /// regular `ByteStream` `Read` path instead of blocking.
+    ///
+    /// Default: 33554432 (32 MiB).
+    #[serde(
+        default = "default_read_batching_max_queued_bytes",
+        deserialize_with = "convert_data_size_with_shellexpand"
+    )]
+    pub max_queued_bytes: u64,
+}
+
+const fn default_read_batching_max_blob_size_bytes() -> u64 {
+    128 * 1024 // 128 KiB.
+}
+
+const fn default_read_batching_max_batch_bytes() -> u64 {
+    3 * 1024 * 1024 // 3 MiB.
+}
+
+const fn default_read_batching_dispatch_slots() -> usize {
+    4
+}
+
+const fn default_read_batching_max_queued_bytes() -> u64 {
+    32 * 1024 * 1024 // 32 MiB.
 }
 
 /// The possible error codes that might occur on an upstream request.
