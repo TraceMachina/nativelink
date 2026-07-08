@@ -43,7 +43,7 @@ pub const ZSTD_COMPRESSION_LEVEL: i32 = 3;
 /// decompressed length is ever known. We reserve `min(expected_size, this)`
 /// so common payloads never reallocate while a hostile claim allocates at most
 /// this. Sized comfortably above any honest `BatchUpdateBlobs` payload (the
-/// only caller of this bulk path; large blobs stream through ByteStream).
+/// only caller of this bulk path; large blobs stream through `ByteStream`).
 const ZSTD_DECOMPRESS_PREALLOC_CAP: usize = 1024 * 1024;
 
 /// Which instances accept and advertise REAPI compressed-blobs (zstd).
@@ -206,10 +206,9 @@ pub fn decompress(
             // decompression bomb is rejected as soon as it overshoots. This
             // mirrors the real-byte-count validation the identity arm and the
             // streaming upload path already perform.
-            let mut decoder = zstd::stream::read::Decoder::new(data)
+            let decoder = zstd::stream::read::Decoder::new(data)
                 .map_err(|e| make_err!(Code::InvalidArgument, "Zstd decompression failed: {e}"))?;
-            let mut decoded = Vec::new();
-            decoded.reserve(expected_size.min(ZSTD_DECOMPRESS_PREALLOC_CAP));
+            let mut output = Vec::with_capacity(expected_size.min(ZSTD_DECOMPRESS_PREALLOC_CAP));
             // `+ 1` lets an oversized stream produce one byte past the cap so
             // the size check below rejects it rather than silently truncating.
             let cap = u64::try_from(expected_size)
@@ -217,17 +216,17 @@ pub fn decompress(
                 .saturating_add(1);
             decoder
                 .take(cap)
-                .read_to_end(&mut decoded)
+                .read_to_end(&mut output)
                 .map_err(|e| make_err!(Code::InvalidArgument, "Zstd decompression failed: {e}"))?;
-            if decoded.len() != expected_size {
+            if output.len() != expected_size {
                 return Err(make_err!(
                     Code::InvalidArgument,
                     "Decompressed size {} does not match expected size {}",
-                    decoded.len(),
+                    output.len(),
                     expected_size
                 ));
             }
-            Ok(Bytes::from(decoded))
+            Ok(Bytes::from(output))
         }
         _ => Err(make_input_err!(
             "Unsupported wire compressor for decompression: {:?}",
