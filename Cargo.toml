@@ -144,9 +144,9 @@ variant-size-differences = "warn"
 [workspace.lints.clippy]
 
 # Global configuration
-all = { level = "warn", priority = -1 }
-nursery = { level = "warn", priority = -1 }
-pedantic = { level = "warn", priority = -1 }
+all = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
 
 # Restriction Denies with default priority
 alloc-instead-of-core = "deny"
@@ -186,7 +186,6 @@ useless-format = "deny"
 
 # Restriction Warnings with default priority
 dbg-macro = "warn"
-decimal-literal-representation = "warn"
 get-unwrap = "allow"                    # TODO(jhpratt) Flip
 missing-docs-in-private-items = "allow" # TODO(jhpratt) Flip
 unimplemented = "warn"

@@ -116,7 +116,7 @@ impl StoreDriver for JitteredDelayStore {
         // Deterministic per-key jitter.
         let jitter = match &key {
             StoreKey::Digest(d) => u64::from(d.packed_hash()[2]) % JITTER_MS,
-            _ => 0,
+            StoreKey::Str(_) => 0,
         };
         tokio::time::sleep(Duration::from_millis(BASE_RTT_MS + jitter)).await;
         let result = self

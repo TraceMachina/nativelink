@@ -78,10 +78,10 @@ pub(crate) fn get_download_url(version: &str) -> Result<MongoUrl, Error> {
     // Refined logic
     let url = match (&os, &arch) {
         (Os::Linux, Arch::X86_64) => {
-            format!("{base_url}/linux/mongodb-linux-x86_64-ubuntu2204-{version}.tgz",)
+            format!("{base_url}/linux/mongodb-linux-x86_64-ubuntu2204-{version}.tgz")
         }
         (Os::Linux, Arch::Aarch64) => {
-            format!("{base_url}/linux/mongodb-linux-aarch64-ubuntu2204-{version}.tgz",)
+            format!("{base_url}/linux/mongodb-linux-aarch64-ubuntu2204-{version}.tgz")
         }
         (Os::MacOs, Arch::X86_64) => {
             format!("{base_url}/osx/mongodb-macos-x86_64-{version}.tgz")
