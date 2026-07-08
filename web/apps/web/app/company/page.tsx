@@ -152,7 +152,7 @@ export default function CompanyPage() {
                   <CardTitle>{c.title}</CardTitle>
                 </CardHeader>
                 <CardBody>{c.body}</CardBody>
-                <CardFooter className="mt-auto">
+                <CardFooter className="mt-auto pt-8">
                   <Button asChild variant={c.variant} size="md" className="w-full">
                     <a
                       href={c.cta.href}

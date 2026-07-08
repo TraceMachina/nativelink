@@ -27,7 +27,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::priority_capabilities
 use nativelink_proto::build::bazel::remote::execution::v2::symlink_absolute_path_strategy::Value as SymlinkAbsolutePathStrategy;
 use nativelink_proto::build::bazel::remote::execution::v2::{
     ActionCacheUpdateCapabilities, CacheCapabilities, ExecutionCapabilities, FastCdc2020Params,
-    GetCapabilitiesRequest, PriorityCapabilities, ServerCapabilities,
+    GetCapabilitiesRequest, PriorityCapabilities, ServerCapabilities, compressor,
 };
 use nativelink_proto::build::bazel::semver::SemVer;
 use nativelink_scheduler::known_platform_property_provider::KnownPlatformPropertyProvider;
@@ -35,11 +35,19 @@ use nativelink_util::digest_hasher::default_digest_hasher_func;
 use tonic::{Request, Response, Status};
 use tracing::{Level, instrument};
 
+use crate::wire_compression::RemoteCacheCompressionInstances;
+
 const MAX_BATCH_TOTAL_SIZE: i64 = 64 * 1024;
 
 #[derive(Debug, Default)]
 pub struct CapabilitiesServer {
     supported_node_properties_for_instance: HashMap<InstanceName, Vec<String>>,
+    // Kept separate from `supported_node_properties_for_instance`: that map is sent
+    // verbatim to clients as `ExecutionCapabilities.supported_node_properties` (REAPI
+    // file metadata like mtime/unix mode), while compression is advertised through
+    // `CacheCapabilities.supported_compressors`. Merging them would leak a fake node
+    // property onto the wire.
+    remote_cache_compression_instances: RemoteCacheCompressionInstances,
     chunking_params_for_instance: HashMap<InstanceName, FastCdc2020Params>,
 }
 
@@ -47,6 +55,7 @@ impl CapabilitiesServer {
     pub async fn new(
         configs: &[WithInstanceName<CapabilitiesConfig>],
         scheduler_map: &HashMap<String, Arc<dyn KnownPlatformPropertyProvider>>,
+        remote_cache_compression_instances: &RemoteCacheCompressionInstances,
         cas_configs: &[WithInstanceName<CasStoreConfig>],
     ) -> Result<Self, Error> {
         let mut chunking_params_for_instance = HashMap::new();
@@ -72,7 +81,6 @@ impl CapabilitiesServer {
 
         let mut supported_node_properties_for_instance = HashMap::new();
         for config in configs {
-            let mut properties = Vec::new();
             if let Some(remote_execution_cfg) = &config.remote_execution {
                 let scheduler =
                     scheduler_map
@@ -83,7 +91,7 @@ impl CapabilitiesServer {
                                 remote_execution_cfg.scheduler
                             )
                         })?;
-                for platform_key in scheduler
+                let properties = scheduler
                     .get_known_properties(&config.instance_name)
                     .await
                     .err_tip(|| {
@@ -91,15 +99,14 @@ impl CapabilitiesServer {
                             "Failed to get platform properties for {}",
                             config.instance_name
                         )
-                    })?
-                {
-                    properties.push(platform_key.clone());
-                }
+                    })?;
+                supported_node_properties_for_instance
+                    .insert(config.instance_name.clone(), properties);
             }
-            supported_node_properties_for_instance.insert(config.instance_name.clone(), properties);
         }
         Ok(Self {
             supported_node_properties_for_instance,
+            remote_cache_compression_instances: remote_cache_compression_instances.clone(),
             chunking_params_for_instance,
         })
     }
@@ -145,6 +152,15 @@ impl Capabilities for CapabilitiesServer {
                 ],
             });
 
+        let supported_compressors = if self
+            .remote_cache_compression_instances
+            .enabled_for(&instance_name)
+        {
+            vec![compressor::Value::Zstd.into()]
+        } else {
+            Vec::new()
+        };
+
         let chunking_params = self.chunking_params_for_instance.get(&instance_name);
         let resp = ServerCapabilities {
             cache_capabilities: Some(CacheCapabilities {
@@ -158,8 +174,8 @@ impl Capabilities for CapabilitiesServer {
                 cache_priority_capabilities: None,
                 max_batch_total_size_bytes: MAX_BATCH_TOTAL_SIZE,
                 symlink_absolute_path_strategy: SymlinkAbsolutePathStrategy::Disallowed.into(),
-                supported_compressors: vec![],
-                supported_batch_update_compressors: vec![],
+                supported_compressors: supported_compressors.clone(),
+                supported_batch_update_compressors: supported_compressors,
                 max_cas_blob_size_bytes: 0,
                 split_blob_support: chunking_params.is_some(),
                 splice_blob_support: chunking_params.is_some(),

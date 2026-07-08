@@ -2,8 +2,11 @@
   "name": "@nativelink/web",
   "type": "module",
   "dependencies": {
+    "@mdx-js/loader": "^3.1.0",
+    "@mdx-js/react": "^3.1.0",
     "@nativelink/tokens": "workspace:*",
     "@nativelink/ui": "workspace:*",
+    "@next/mdx": "^16",
     "geist": "^1.5.1",
     "marked": "^18.0.0",
     "motion": "^12.0.0",
@@ -14,6 +17,7 @@
   "devDependencies": {
     "@nativelink/config": "workspace:*",
     "@tailwindcss/postcss": "^4.0.0",
+    "@types/mdx": "^2.0.13",
     "@types/node": "^26.0.0",
     "@types/react": "^19.0.7",
     "@types/react-dom": "^19.0.3",
