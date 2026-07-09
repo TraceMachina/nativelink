@@ -16,6 +16,7 @@ use mongodb::bson::{Bson, doc};
 use nativelink_error::{Error, ResultExt, make_err};
 use process::MongoProcess;
 use tempfile::tempdir;
+use tokio::fs::read_to_string;
 use tokio::sync::Mutex;
 use tonic::Code;
 use tracing::{debug, info};
@@ -206,7 +207,10 @@ impl MongoEmbedded {
                 }
                 // Dropping `candidate` kills the failed process.
                 Err(err) => {
-                    debug!(attempt, ?err, "mongod did not become ready");
+                    let logs = read_to_string(&candidate.log_path)
+                        .await
+                        .unwrap_or_else(|e| format!("Error reading {}: {e}", candidate.log_path));
+                    debug!(attempt, ?err, logs, "mongod did not become ready");
                     last_error = err;
                 }
             }

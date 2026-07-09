@@ -15,6 +15,7 @@ pub(crate) struct MongoProcess {
     pub connection_string: String,
     /// The TCP port this mongod was asked to bind (0 for unix sockets).
     pub port: u16,
+    pub log_path: String,
 }
 
 impl MongoProcess {
@@ -103,9 +104,10 @@ impl MongoProcess {
 
         let log_path = db_path
             .join(format!("mongo-{}.log", Uuid::new_v4().as_simple()))
-            .into_os_string();
+            .to_string_lossy()
+            .to_string();
         info!(?log_path, "Logging mongo");
-        command.arg("--quiet").arg("--logpath").arg(log_path);
+        command.arg("--quiet").arg("--logpath").arg(&log_path);
 
         let child = command
             .spawn()
@@ -115,6 +117,7 @@ impl MongoProcess {
             child,
             connection_string,
             port,
+            log_path,
         })
     }
 
