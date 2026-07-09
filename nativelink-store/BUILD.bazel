@@ -116,7 +116,10 @@ rust_library(
 
 rust_test_suite(
     name = "integration",
-    timeout = "short",
+    # "moderate" (300s) rather than "short" (60s): the mongo store test spawns
+    # a real mongod per test and downloads the MongoDB archive on a cold cache
+    # (always cold under Bazel's sandboxed $HOME), which straddled the 60s cap.
+    timeout = "moderate",
     srcs = [
         "tests/ac_utils_test.rs",
         "tests/azure_blob_store_test.rs",
