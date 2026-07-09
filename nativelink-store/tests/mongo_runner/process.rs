@@ -90,12 +90,15 @@ impl MongoProcess {
             .arg("--wiredTigerCacheSizeGB")
             .arg("0.25");
 
-        #[allow(clippy::case_sensitive_file_extension_comparisons)]
-        let is_unix_socket = bind_ip.contains('/') || bind_ip.ends_with(".sock");
-        if !is_unix_socket {
-            // Skip the default /tmp/mongodb-<port>.sock; TCP is all we use and
-            // sandboxed CI may not allow writing to /tmp.
-            command.arg("--nounixsocket");
+        #[cfg(not(windows))]
+        {
+            #[allow(clippy::case_sensitive_file_extension_comparisons)]
+            let is_unix_socket = bind_ip.contains('/') || bind_ip.ends_with(".sock");
+            if !is_unix_socket {
+                // Skip the default /tmp/mongodb-<port>.sock; TCP is all we use and
+                // sandboxed CI may not allow writing to /tmp.
+                command.arg("--nounixsocket");
+            }
         }
 
         if auth {
