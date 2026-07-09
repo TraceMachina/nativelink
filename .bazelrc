@@ -96,7 +96,6 @@ build --@rules_rust//:extra_rustc_flag=-Wmissing_debug_implementations
 build --@rules_rust//:extra_rustc_flag=-Wnoop_method_call
 build --@rules_rust//:extra_rustc_flag=-Dopaque_hidden_inferred_bound
 build --@rules_rust//:extra_rustc_flag=-Doverlapping_range_endpoints
-build --@rules_rust//:extra_rustc_flag=-Wsingle_use_lifetimes
 build --@rules_rust//:extra_rustc_flag=-Dsuspicious_double_ref_op
 build --@rules_rust//:extra_rustc_flag=-Wtrivial_casts
 build --@rules_rust//:extra_rustc_flag=-Wtrivial_numeric_casts
