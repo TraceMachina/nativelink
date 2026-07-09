@@ -25,11 +25,12 @@
   },
   "private": true,
   "scripts": {
-    "build": "node scripts/gen-changelog.mjs && next build",
+    "build": "node scripts/gen-changelog.mjs && node scripts/gen-llms-txt.mjs && next build",
     "clean": "rm -rf .next .turbo .source",
-    "dev": "node scripts/gen-changelog.mjs && next dev --port 3001",
+    "dev": "node scripts/gen-changelog.mjs && node scripts/gen-llms-txt.mjs && next dev --port 3001",
     "gen:changelog": "node scripts/gen-changelog.mjs",
     "gen:config-reference": "node scripts/gen-config-reference.mjs",
+    "gen:llms-txt": "node scripts/gen-llms-txt.mjs",
     "lint": "biome check .",
     "start": "next start --port 3001",
     "typecheck": "tsc --noEmit"
