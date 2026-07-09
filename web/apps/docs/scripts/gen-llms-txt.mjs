@@ -131,15 +131,20 @@ function storesFromSchema(schema) {
   if (!storeSpec || !Array.isArray(storeSpec.oneOf)) {
     throw new Error("StoreSpec union not found in schema");
   }
-  return storeSpec.oneOf
-    .map((branch) => {
-      const key = branch.required?.[0] ?? Object.keys(branch.properties ?? {})[0] ?? null;
-      if (!key) return null;
-      // Keys ordered to match the pretty-format-json pre-commit hook (which
-      // sorts object keys) so a `--schema` regen doesn't get reformatted.
-      return { description: firstParagraph(branch.description), key };
-    })
-    .filter(Boolean);
+  return (
+    storeSpec.oneOf
+      .map((branch) => {
+        const key = branch.required?.[0] ?? Object.keys(branch.properties ?? {})[0] ?? null;
+        if (!key) return null;
+        // Keys ordered to match the pretty-format-json pre-commit hook (which
+        // sorts object keys) so a `--schema` regen doesn't get reformatted.
+        return { description: firstParagraph(branch.description), key };
+      })
+      .filter(Boolean)
+      // Sort by key for a stable, alphabetical order instead of the arbitrary
+      // StoreSpec enum declaration order.
+      .sort((a, b) => a.key.localeCompare(b.key))
+  );
 }
 
 function buildSchemaWithCargo() {

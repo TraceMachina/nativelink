@@ -195,4 +195,23 @@ in {
     files = "nativelink-config/src/stores.rs|nativelink-config/examples/stores-config.json5";
     pass_filenames = false;
   };
+
+  # Regenerate the StoreSpec snapshot that public/llms.txt is built from, so it
+  # can't drift when the StoreSpec enum changes. Runs gen-llms-txt.mjs --schema,
+  # which builds the config crate's JSON Schema via `cargo run --bin
+  # build-schema`; cargo and node are put on PATH so the hook is self-contained.
+  generate-store-specs = {
+    description = "Regenerate store-specs.json from the StoreSpec enum";
+    enable = true;
+    entry = let
+      script = pkgs.writeShellScriptBin "generate-store-specs" ''
+        set -eu
+        export PATH="${nightly-rust.default}/bin:$PATH"
+        ${pkgs.nodejs_22}/bin/node web/apps/docs/scripts/gen-llms-txt.mjs --schema
+      '';
+    in "${script}/bin/generate-store-specs";
+    name = "generate-store-specs";
+    files = "nativelink-config/src/stores.rs|web/apps/docs/lib/store-specs.json";
+    pass_filenames = false;
+  };
 }
