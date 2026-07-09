@@ -131,6 +131,9 @@ wincode = { version = "0.5.4", default-features = false, features = [
   "derive",
 ] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = { version = "0.2.177", default-features = false }
+
 [dev-dependencies]
 nativelink-macro = { path = "../nativelink-macro" }
 

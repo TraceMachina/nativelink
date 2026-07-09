@@ -376,6 +376,227 @@ pub fn make_temp_key(key: &StoreKey) -> StoreKey<'static> {
     StoreKey::Digest(make_temp_digest(key.borrow().into_digest()))
 }
 
+/// Group-commit flush coalescer (macOS only).
+///
+/// On macOS, `File::sync_all` issues `fcntl(F_FULLFSYNC)` — a full
+/// device-cache flush — once per call. The flush is serialized at the
+/// device, costs multiple milliseconds, and dominates uploads of many
+/// small blobs (a 4,400-tiny-file action input tree spends ~12s of its
+/// ~14.5s materialization in these flushes). Linux does not have this
+/// problem because concurrent `fsync` calls coalesce inside the
+/// filesystem journal's group commit.
+///
+/// This applies the same group-commit idea in userspace, exploiting an
+/// asymmetry in `F_FULLFSYNC`: writing a file's pages to the storage
+/// device is per-file work (plain `fsync(2)`, cheap), while the expensive
+/// device-cache drain is device-wide by nature. Each writer first pushes
+/// its own data to the device with `fsync(2)`, then joins the current
+/// commit round; a single long-lived flusher task per DEVICE issues one
+/// `F_FULLFSYNC` (on a dedicated sentinel file) per round, covering every
+/// previously-`fsync`ed blob at once. Rounds self-batch exactly like a
+/// journal: while one flush is running, later writers accumulate into
+/// the next round.
+///
+/// The coalescer (and its flusher task) is per store instance. Sharing
+/// one coalescer across all stores on a device would amortize further —
+/// the flush is device-wide — but a process-global flusher task cannot
+/// safely outlive the tokio runtime that spawned it (multiple runtimes
+/// coexist in one process, e.g. one per test); doing this correctly
+/// needs a runtime-agnostic flusher (a dedicated OS thread) and is left
+/// as a follow-up.
+///
+/// Durability is identical to per-file `F_FULLFSYNC`: a writer only
+/// proceeds (and only renames its blob into the content directory) after
+/// a device-cache flush that started after its own `fsync(2)` completed.
+#[cfg(target_os = "macos")]
+#[derive(Debug)]
+struct FlushCoalescer {
+    /// The round currently accepting waiters. Swapped out by the flusher
+    /// right before it flushes, so writers whose `fsync(2)` finished
+    /// after the flush began land in the next round.
+    current_round: parking_lot::Mutex<Arc<FlushRound>>,
+    /// Wakes the flusher task. Writers notify after subscribing to their
+    /// round, so a wakeup can never be observed before its waiter.
+    wake: Arc<tokio::sync::Notify>,
+    /// Dedicated file the `F_FULLFSYNC` is issued on. A SIBLING of the
+    /// store's content path (like the `.exec` variant directory), so
+    /// neither the startup scan nor `move_old_cache`'s legacy root sweep
+    /// ever sees it.
+    sentinel: Arc<std::fs::File>,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug)]
+struct FlushRound {
+    /// Broadcasts the flush outcome to every writer in the round.
+    result_tx: tokio::sync::watch::Sender<Option<Result<(), Error>>>,
+}
+
+#[cfg(target_os = "macos")]
+impl FlushRound {
+    fn new() -> Arc<Self> {
+        let (result_tx, _) = tokio::sync::watch::channel(None);
+        Arc::new(Self { result_tx })
+    }
+}
+
+/// Guarantees a [`FlushRound`]'s waiters always receive a result: if the
+/// flusher task is cancelled at an await point (runtime shutdown), waiters
+/// must get an error rather than pend forever — their own `Arc<FlushRound>`
+/// keeps the channel alive, so a dropped-sender wakeup can never happen.
+#[cfg(target_os = "macos")]
+struct SendOnDrop(Option<Arc<FlushRound>>);
+
+#[cfg(target_os = "macos")]
+impl SendOnDrop {
+    fn finish(mut self, result: Result<(), Error>) {
+        if let Some(round) = self.0.take() {
+            // Ignore send errors: every waiter may have been cancelled.
+            drop(round.result_tx.send(Some(result)));
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for SendOnDrop {
+    fn drop(&mut self) {
+        if let Some(round) = self.0.take() {
+            drop(round.result_tx.send(Some(Err(make_err!(
+                Code::Internal,
+                "Flush coalescer round task cancelled before completing"
+            )))));
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for FlushCoalescer {
+    fn drop(&mut self) {
+        // Wake the flusher so it observes the dead Weak and exits instead
+        // of parking forever.
+        self.wake.notify_one();
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl FlushCoalescer {
+    /// Creates the coalescer for a store and spawns its flusher task on
+    /// the current runtime (the same runtime the store's uploads run on).
+    async fn for_content_path(content_path: &str) -> Result<Arc<Self>, Error> {
+        // Sibling of `content_path` (never inside it): the startup scan
+        // and `move_old_cache` sweep everything under the content root.
+        let sentinel_path = format!("{content_path}.flush_sentinel");
+        let sentinel = spawn_blocking!("filesystem_store_flush_sentinel_open", move || {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&sentinel_path)
+                .map_err(|e| {
+                    make_err!(
+                        Code::Internal,
+                        "Failed to create flush sentinel {sentinel_path}: {e:?}"
+                    )
+                })
+        })
+        .await
+        .err_tip(|| "Failed to join flush sentinel open task")??;
+
+        let coalescer = Arc::new(Self {
+            current_round: parking_lot::Mutex::new(FlushRound::new()),
+            wake: Arc::new(tokio::sync::Notify::new()),
+            sentinel: Arc::new(sentinel),
+        });
+
+        let weak = Arc::downgrade(&coalescer);
+        let wake = coalescer.wake.clone();
+        background_spawn!("filesystem_store_flush_coalescer", async move {
+            loop {
+                wake.notified().await;
+                let Some(coalescer) = weak.upgrade() else {
+                    return;
+                };
+                coalescer.flush_one_round().await;
+                // Drop the strong ref before parking so the store can be
+                // torn down while the flusher is idle.
+            }
+        });
+        Ok(coalescer)
+    }
+
+    /// Waits until a device-cache flush that started after this call has
+    /// completed. Callers must have already `fsync(2)`ed their own file.
+    async fn commit(&self) -> Result<(), Error> {
+        let round = self.current_round.lock().clone();
+        let mut result_rx = round.result_tx.subscribe();
+        // Notify strictly after subscribing: the flusher skips rounds
+        // with no receivers, so this ordering makes lost wakeups
+        // impossible (a permit is stored even while the flusher is busy).
+        self.wake.notify_one();
+        let result_ref = result_rx
+            .wait_for(Option::is_some)
+            .await
+            .map_err(|_| make_err!(Code::Internal, "Flush coalescer round dropped"))?;
+        result_ref
+            .clone()
+            .unwrap_or_else(|| Err(make_err!(Code::Internal, "Flush round result missing")))
+    }
+
+    async fn flush_one_round(&self) {
+        let round = self.current_round.lock().clone();
+        if round.result_tx.receiver_count() == 0 {
+            // Spurious wakeup (e.g. a permit left over from a round that
+            // a previous iteration already served).
+            return;
+        }
+        let send_guard = SendOnDrop(Some(round.clone()));
+
+        // Brief accumulation window, only when this round actually has
+        // multiple waiters: lets a burst pack more writers into the round
+        // before it closes, trading ~3ms of publish latency (about the
+        // cost of one device flush) for fewer device flushes. A solo
+        // writer on an idle store skips it and pays only its own flush.
+        if round.result_tx.receiver_count() > 1 {
+            tokio::time::sleep(Duration::from_millis(3)).await;
+        }
+        // Close the round: writers arriving from here on cannot assume
+        // this flush covers them, so they must get a fresh round.
+        {
+            let mut current = self.current_round.lock();
+            if Arc::ptr_eq(&*current, &round) {
+                *current = FlushRound::new();
+            }
+        }
+        let sentinel = self.sentinel.clone();
+        let flush_result = spawn_blocking!("filesystem_store_full_flush", move || {
+            use std::os::fd::AsRawFd;
+            use std::os::unix::fs::FileExt;
+            // Keep the sentinel dirty so the flush is never a no-op.
+            // Best-effort: a failed write (e.g. ENOSPC on a full CoW
+            // volume) must not fail the whole round — the fcntl below is
+            // what provides the device-cache drain.
+            if let Err(err) = sentinel.write_at(b"f", 0) {
+                warn!(?err, "Flush sentinel write failed; issuing flush anyway");
+            }
+            loop {
+                if unsafe { libc::fcntl(sentinel.as_raw_fd(), libc::F_FULLFSYNC) } != -1 {
+                    return Ok(());
+                }
+                let err = std::io::Error::last_os_error();
+                // std's sync_all retries EINTR (cvt_r); match it.
+                if err.kind() != std::io::ErrorKind::Interrupted {
+                    return Err(Error::from(err).append("F_FULLFSYNC failed in flush coalescer"));
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|e| {
+            Err(Error::from_std_err(Code::Internal, &e).append("Flush coalescer task failed"))
+        });
+        send_guard.finish(flush_result);
+    }
+}
+
 impl LenEntry for FileEntryImpl {
     #[inline]
     fn len(&self) -> u64 {
@@ -844,6 +1065,13 @@ pub struct FilesystemStore<Fe: FileEntry = FileEntryImpl> {
     rename_fn: fn(&OsStr, &OsStr) -> Result<(), std::io::Error>,
     /// Limits concurrent write operations to prevent disk I/O saturation.
     write_semaphore: Option<Semaphore>,
+    /// See [`FlushCoalescer`]: amortizes the per-blob `F_FULLFSYNC` cost
+    /// across concurrent uploads without weakening durability. `None` when
+    /// the sentinel could not be created (e.g. read-only content volume);
+    /// uploads then fall back to per-file `sync_all`, matching the old
+    /// behavior (and such stores fail at write time anyway).
+    #[cfg(target_os = "macos")]
+    flush_coalescer: Option<Arc<FlushCoalescer>>,
     /// Per-digest single-flight locks guarding creation of the executable
     /// variant in `{content_path}.exec`, so each variant's writable fd is
     /// opened exactly once. The outer lock is sync and only ever held to
@@ -932,6 +1160,20 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         } else {
             None
         };
+        // Never make construction fail over the durability optimization:
+        // a read-only content volume must still serve reads, exactly as
+        // it did before the coalescer existed.
+        #[cfg(target_os = "macos")]
+        let flush_coalescer = FlushCoalescer::for_content_path(&shared_context.content_path)
+            .await
+            .inspect_err(|err| {
+                warn!(
+                    ?err,
+                    "Failed to create flush coalescer; falling back to per-file sync_all"
+                );
+            })
+            .ok();
+
         Ok(Arc::new_cyclic(|weak_self| Self {
             shared_context,
             evicting_map,
@@ -940,6 +1182,8 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             weak_self: weak_self.clone(),
             rename_fn,
             write_semaphore,
+            #[cfg(target_os = "macos")]
+            flush_coalescer,
             #[cfg(unix)]
             executable_locks: std::sync::Mutex::new(HashMap::new()),
         }))
@@ -1097,12 +1341,11 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
                             "executable-variant chmod 0o555 failed: {e:?}"
                         )
                     })?;
-                // Reopen read-only purely to fsync the bytes durable before publish.
-                let f = std::fs::File::open(&temp_owned)
-                    .map_err(|e| make_err!(Code::Internal, "executable-variant reopen: {e:?}"))?;
-                f.sync_all()
-                    .map_err(|e| make_err!(Code::Internal, "executable-variant fsync: {e:?}"))?;
-                drop(f);
+                // No flush: the `.exec` directory is cleared on every
+                // startup (see `new_with_timeout_and_rename_fn`), so a
+                // variant is never trusted across a crash — durability
+                // would buy nothing, and on macOS `sync_all` is a
+                // multi-ms full device-cache flush per executable.
                 rename_fn(temp_owned.as_os_str(), variant_owned.as_os_str()).map_err(|e| {
                     make_err!(Code::Internal, "executable-variant rename failed: {e:?}")
                 })?;
@@ -1173,11 +1416,9 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             .flush()
             .await
             .err_tip(|| "Failed to flush in filesystem store")?;
-        temp_file
-            .as_ref()
-            .sync_all()
+        self.flush_durably(&temp_file)
             .await
-            .err_tip(|| "Failed to sync_data in filesystem store")?;
+            .err_tip(|| "Failed to sync in filesystem store")?;
 
         drop(permit);
 
@@ -1298,6 +1539,61 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         })
         .await
         .err_tip(|| "Failed to create spawn in filesystem store update_file")?
+    }
+
+    /// Makes `file`'s contents durable with `sync_all` semantics.
+    ///
+    /// On macOS the naive equivalent (`fcntl(F_FULLFSYNC)` per file) is a
+    /// full device-cache flush that serializes at the device and dominates
+    /// many-small-blob uploads, so the flush is split into the cheap
+    /// per-file part (`fsync(2)`: push this file's pages to the device)
+    /// and a device-wide cache drain shared with every concurrent upload
+    /// via [`FlushCoalescer`]. Other platforms get their journal's group
+    /// commit for free and keep plain `sync_all`.
+    async fn flush_durably(&self, file: &FileSlot) -> Result<(), Error> {
+        #[cfg(target_os = "macos")]
+        {
+            use std::os::fd::AsRawFd;
+            let Some(flush_coalescer) = &self.flush_coalescer else {
+                return file.as_ref().sync_all().await.map_err(Into::into);
+            };
+            // Dup the handle so the blocking task owns its own fd: if
+            // this future is cancelled mid-await, the temp file's fd can
+            // close and be reused, and an already-started blocking task
+            // must never fsync an unrelated descriptor.
+            let file_dup = file
+                .as_ref()
+                .try_clone()
+                .await
+                .err_tip(|| "Failed to dup fd for fsync in filesystem store")?
+                .into_std()
+                .await;
+            // Deliberately NOT via `fs::call_with_permit`: the caller's
+            // `FileSlot` already holds an open-file permit, so requiring a
+            // second one here deadlocks when the semaphore is drained (the
+            // exact scenario the #2051 regression test pins at one
+            // permit). Concurrency is still bounded: every in-flight fsync
+            // belongs to an upload holding a `FileSlot` permit.
+            spawn_blocking!("filesystem_store_fsync", move || {
+                loop {
+                    if unsafe { libc::fsync(file_dup.as_raw_fd()) } == 0 {
+                        return Ok(());
+                    }
+                    let err = std::io::Error::last_os_error();
+                    // std's sync_all retries EINTR (cvt_r); match it.
+                    if err.kind() != std::io::ErrorKind::Interrupted {
+                        return Err(Error::from(err).append("fsync failed in filesystem store"));
+                    }
+                }
+            })
+            .await
+            .err_tip(|| "Failed to join fsync task in filesystem store")??;
+            flush_coalescer.commit().await
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            file.as_ref().sync_all().await.map_err(Into::into)
+        }
     }
 
     pub fn get_eviction_snapshot(&self) -> EvictionSnapshot {
@@ -1438,11 +1734,9 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
             .flush()
             .await
             .err_tip(|| "Failed to flush in filesystem store update_oneshot")?;
-        temp_file
-            .as_ref()
-            .sync_all()
+        self.flush_durably(&temp_file)
             .await
-            .err_tip(|| "Failed to sync_data in filesystem store update_oneshot")?;
+            .err_tip(|| "Failed to sync in filesystem store update_oneshot")?;
 
         drop(_permit);
 
