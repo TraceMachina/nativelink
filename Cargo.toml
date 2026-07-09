@@ -11,7 +11,7 @@ resolver = "2"
 edition = "2024"
 name = "nativelink"
 rust-version = "1.93.1"
-version = "1.6.0"
+version = "1.6.1"
 
 [profile.release]
 lto = true
@@ -131,7 +131,6 @@ missing-abi = "warn"
 missing-copy-implementations = "warn"
 missing-debug-implementations = "warn"
 noop-method-call = "warn"
-single-use-lifetimes = "warn"
 trivial-casts = "warn"
 trivial-numeric-casts = "warn"
 unreachable-pub = "warn"
