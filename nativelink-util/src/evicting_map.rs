@@ -402,7 +402,7 @@ where
             debug!(?key, "Evicting");
             let (data, futures) = state.remove(key.borrow(), &eviction_item, false);
             items_to_unref.push(data);
-            removal_futures.extend(futures.into_iter());
+            removal_futures.extend(futures);
 
             peek_entry = if let Some((_, entry)) = state.lru.peek_lru() {
                 entry
@@ -465,7 +465,7 @@ where
                                     state.remove(key.borrow(), &eviction_item, false);
                                 // Store data for later unref - we can't drop state here as we're still iterating
                                 data_to_unref.push(data);
-                                removal_futures.extend(futures.into_iter());
+                                removal_futures.extend(futures);
                             }
                         } else {
                             if !peek {
@@ -649,7 +649,7 @@ where
             };
 
             if let Some((old_item, futures)) = state.put(&key, eviction_item) {
-                removal_futures.extend(futures.into_iter());
+                removal_futures.extend(futures);
                 debug!(?key, "Evicting old item");
                 replaced_items.push(old_item);
             }
@@ -678,7 +678,7 @@ where
             // Then try to remove the requested item
             let removed = if let Some(entry) = state.lru.pop(key.borrow()) {
                 let (removed_item, more_removal_futures) = state.remove(key, &entry, false);
-                removal_futures.extend(more_removal_futures.into_iter());
+                removal_futures.extend(more_removal_futures);
                 Some(removed_item)
             } else {
                 None
@@ -723,7 +723,7 @@ where
                 // Then try to remove the requested item
                 let removed_item = if let Some(entry) = state.lru.pop(key.borrow()) {
                     let (item, more_removal_futures) = state.remove(key, &entry, false);
-                    removal_futures.extend(more_removal_futures.into_iter());
+                    removal_futures.extend(more_removal_futures);
                     Some(item)
                 } else {
                     None
