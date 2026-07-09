@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::{Child, Command, ExitStatus};
 
 use nativelink_error::{Error, ResultExt, make_err};
 use tonic::Code;
@@ -13,6 +13,8 @@ use super::downloader::Os;
 pub(crate) struct MongoProcess {
     child: Child,
     pub connection_string: String,
+    /// The TCP port this mongod was asked to bind (0 for unix sockets).
+    pub port: u16,
 }
 
 impl MongoProcess {
@@ -80,7 +82,20 @@ impl MongoProcess {
             .arg("--dbpath")
             .arg(db_path)
             .arg("--bind_ip")
-            .arg(bind_ip);
+            .arg(bind_ip)
+            // Tests run many mongod instances concurrently; without a cap each
+            // instance sizes its WiredTiger cache off total system memory
+            // (~50% of RAM - 1GB), starving parallel tests.
+            .arg("--wiredTigerCacheSizeGB")
+            .arg("0.25");
+
+        #[allow(clippy::case_sensitive_file_extension_comparisons)]
+        let is_unix_socket = bind_ip.contains('/') || bind_ip.ends_with(".sock");
+        if !is_unix_socket {
+            // Skip the default /tmp/mongodb-<port>.sock; TCP is all we use and
+            // sandboxed CI may not allow writing to /tmp.
+            command.arg("--nounixsocket");
+        }
 
         if auth {
             command.arg("--auth");
@@ -99,13 +114,41 @@ impl MongoProcess {
         Ok(Self {
             child,
             connection_string,
+            port,
         })
+    }
+
+    pub(crate) fn id(&self) -> u32 {
+        self.child.id()
+    }
+
+    /// Returns `Some(status)` if the child has exited.
+    pub(crate) fn try_wait(&mut self) -> Result<Option<ExitStatus>, Error> {
+        Ok(self.child.try_wait()?)
     }
 
     pub(crate) fn kill(&mut self) -> Result<(), Error> {
         self.child.kill()?;
         self.child.wait()?;
         Ok(())
+    }
+}
+
+impl Drop for MongoProcess {
+    fn drop(&mut self) {
+        // Kill the child on every exit path (a mongod left behind keeps its
+        // port and memory for the rest of the test binary's life, or longer).
+        // Never panic here: Drop also runs while unwinding from a failed test
+        // assertion, and a double panic aborts the whole test binary.
+        if let Ok(Some(_)) = self.child.try_wait() {
+            return; // Already exited and reaped.
+        }
+        if let Err(e) = self.child.kill() {
+            eprintln!("Failed to kill mongod: {e}");
+        }
+        if let Err(e) = self.child.wait() {
+            eprintln!("Failed to reap mongod: {e}");
+        }
     }
 }
 
