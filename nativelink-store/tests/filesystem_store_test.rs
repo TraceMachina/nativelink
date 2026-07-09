@@ -1493,7 +1493,7 @@ async fn add_too_early_files() -> Result<(), Error> {
     fs_set_times::set_atime(
         &demo_file_path,
         SystemTime::now()
-            .checked_add(Duration::from_secs(60))
+            .checked_add(Duration::from_mins(1))
             .unwrap()
             .into(),
     )?;

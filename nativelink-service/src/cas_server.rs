@@ -1063,10 +1063,7 @@ impl CasServer {
                 .iter_mut()
                 .map(DigestHasher::finalize_digest)
                 .collect();
-            if !computed_digests
-                .iter()
-                .any(|computed| *computed == blob_digest)
-            {
+            if !computed_digests.contains(&blob_digest) {
                 verification_failed_ref.store(true, Ordering::Relaxed);
                 return Err(make_err!(
                     Code::InvalidArgument,

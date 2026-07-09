@@ -2427,8 +2427,8 @@ async fn action_timeout_is_enforced_backend_side_test() -> Result<(), Error> {
     let task_change_notify = Arc::new(Notify::new());
     let state_mgr = SimpleSchedulerStateManager::new(
         /* max_job_retries */ 1,
-        /* no_event_action_timeout */ Duration::from_secs(60),
-        /* client_action_timeout */ Duration::from_secs(60),
+        /* no_event_action_timeout */ Duration::from_mins(1),
+        /* client_action_timeout */ Duration::from_mins(1),
         /* max_executing_timeout */ Duration::ZERO,
         memory_awaited_action_db_factory(
             0,
