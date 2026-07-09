@@ -12,7 +12,7 @@
     "@nativelink/config": "workspace:*",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
-    "typescript": "^6.0.0"
+    "typescript": "^7.0.0"
   },
   "exports": {
     ".": "./src/index.ts",

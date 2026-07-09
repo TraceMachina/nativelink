@@ -4,7 +4,7 @@
   "devDependencies": {
     "@biomejs/biome": "1.9.4",
     "turbo": "^2.3.0",
-    "typescript": "^6.0.0"
+    "typescript": "^7.0.0"
   },
   "engines": {
     "node": ">=20"
