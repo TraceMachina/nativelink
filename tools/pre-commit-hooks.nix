@@ -206,7 +206,7 @@ in {
     entry = let
       script = pkgs.writeShellScriptBin "generate-store-specs" ''
         set -eu
-        export PATH="${nightly-rust.default}/bin:$PATH"
+        export PATH="${pkgs.bazel_9}/bin:$PATH"
         ${pkgs.nodejs_22}/bin/node web/apps/docs/scripts/gen-llms-txt.mjs --schema
       '';
     in "${script}/bin/generate-store-specs";

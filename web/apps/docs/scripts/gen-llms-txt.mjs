@@ -152,21 +152,14 @@ function buildSchemaWithCargo() {
     throw new Error("gen-llms-txt: --schema requires a local checkout (no repo root found).");
   }
   const sourceDir = join(repoRoot, "nativelink-config");
+  const schemaPath = join(sourceDir, SCHEMA_FILE);
   execFileSync(
-    "cargo",
-    [
-      "run",
-      "--quiet",
-      "--bin",
-      "build-schema",
-      "--features",
-      "dev-schema",
-      "--package",
-      "nativelink-config",
+    "bazel", [
+      "run", "//nativelink-config:build-schema", schemaPath
     ],
     { cwd: sourceDir, stdio: ["ignore", "inherit", "inherit"] },
   );
-  const schemaPath = join(sourceDir, SCHEMA_FILE);
+
   const schema = JSON.parse(readFileSync(schemaPath, "utf8"));
   execFileSync("rm", ["-f", schemaPath]); // don't leave it in the tree
   return schema;

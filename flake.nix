@@ -257,6 +257,11 @@
 
         createWorker = pkgs.nativelink-tools.lib.createWorker self;
 
+        bazel = pkgs.writeShellScriptBin "bazel" ''
+          unset TMPDIR TMP
+          exec ${pkgs.bazelisk}/bin/bazelisk "$@"
+        '';
+
         buck2-toolchain = let
           buck2-nightly-rust-version = "2026-03-24";
           buck2-nightly-rust = pkgs.rust-bin.nightly.${buck2-nightly-rust-version};
@@ -511,12 +516,7 @@
           "${gnused}/bin"
         ];
         devShells.default = pkgs.mkShell {
-          packages = let
-            bazel = pkgs.writeShellScriptBin "bazel" ''
-              unset TMPDIR TMP
-              exec ${pkgs.bazelisk}/bin/bazelisk "$@"
-            '';
-          in
+          packages =
             [
               # Development tooling
               pkgs.git
