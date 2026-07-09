@@ -41,27 +41,76 @@ const SCHEMA_FILE = "nativelink_config.schema.json";
 
 const wantSchema = process.argv.includes("--schema");
 
-// Repo root resolution: walk up until we find cliff.toml next to CHANGELOG.md,
-// pinning the match to the nativelink repository root (mirrors gen-changelog).
-function findRepoRoot() {
+// CHANGELOG.md and nativelink-config/examples live at the repository root,
+// ABOVE the web/ workspace. Local checkouts have them on disk, so we walk up to
+// find the root (mirrors gen-changelog). Vercel only mounts the web/ workspace
+// into the build container, so there the root is absent and we fetch each file
+// from GitHub raw pinned to the exact deployed commit — same bytes, no drift.
+function findLocalRepoRoot() {
   for (let dir = here; ; ) {
     if (existsSync(join(dir, "cliff.toml")) && existsSync(join(dir, "CHANGELOG.md"))) {
       return dir;
     }
     const parent = resolve(dir, "..");
-    if (parent === dir) {
-      throw new Error("Could not locate repository root (cliff.toml + CHANGELOG.md).");
-    }
+    if (parent === dir) return null;
     dir = parent;
   }
 }
 
-const repoRoot = findRepoRoot();
-const examplesDir = join(repoRoot, "nativelink-config/examples");
+const repoRoot = findLocalRepoRoot();
+
+function deployedCommitRef() {
+  const owner = process.env.VERCEL_GIT_REPO_OWNER;
+  const repo = process.env.VERCEL_GIT_REPO_SLUG;
+  const sha = process.env.VERCEL_GIT_COMMIT_SHA;
+  return owner && repo && sha ? { owner, repo, sha } : null;
+}
+
+function repoRootUnavailable(what) {
+  return new Error(
+    [
+      `gen-llms-txt: ${what} not found above ${here}, and the VERCEL_GIT_*`,
+      "variables needed to fetch it for the deployed commit are unset.",
+      "Run from a nativelink checkout, or ensure the deploy exposes VERCEL_GIT_*.",
+    ].join(" "),
+  );
+}
+
+/** Read a repo-root-relative text file: local checkout first, else GitHub raw. */
+async function readRepoText(relPath) {
+  if (repoRoot) return readFileSync(join(repoRoot, relPath), "utf8");
+  const ref = deployedCommitRef();
+  if (!ref) throw repoRootUnavailable(relPath);
+  const url = `https://raw.githubusercontent.com/${ref.owner}/${ref.repo}/${ref.sha}/${relPath}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`gen-llms-txt: fetching ${url} failed: HTTP ${res.status}`);
+  console.log(`gen-llms-txt: read ${relPath} from ${url}`);
+  return res.text();
+}
+
+/** List *.json5 example names: local readdir first, else GitHub contents API. */
+async function listExampleNames() {
+  const rel = "nativelink-config/examples";
+  let names;
+  if (repoRoot) {
+    names = readdirSync(join(repoRoot, rel));
+  } else {
+    const ref = deployedCommitRef();
+    if (!ref) throw repoRootUnavailable(rel);
+    const url = `https://api.github.com/repos/${ref.owner}/${ref.repo}/contents/${rel}?ref=${ref.sha}`;
+    const res = await fetch(url, { headers: { "User-Agent": "gen-llms-txt" } });
+    if (!res.ok) throw new Error(`gen-llms-txt: listing ${url} failed: HTTP ${res.status}`);
+    names = (await res.json()).map((entry) => entry.name);
+  }
+  return names
+    .filter((f) => f.endsWith(".json5"))
+    .map((f) => f.replace(/\.json5$/, ""))
+    .sort();
+}
 
 // (A) Version + date from the top CHANGELOG.md release heading.
-function latestRelease() {
-  const changelog = readFileSync(join(repoRoot, "CHANGELOG.md"), "utf8");
+async function latestRelease() {
+  const changelog = await readRepoText("CHANGELOG.md");
   const m = /^##\s*\[(\d+\.\d+\.\d+(?:-[\w.]+)?)\].*?-\s*(\d{4}-\d{2}-\d{2})/m.exec(changelog);
   if (!m) throw new Error("Could not parse latest release from CHANGELOG.md");
   return { version: m[1], date: m[2] };
@@ -94,6 +143,9 @@ function storesFromSchema(schema) {
 }
 
 function buildSchemaWithCargo() {
+  if (!repoRoot) {
+    throw new Error("gen-llms-txt: --schema requires a local checkout (no repo root found).");
+  }
   const sourceDir = join(repoRoot, "nativelink-config");
   execFileSync(
     "cargo",
@@ -136,16 +188,9 @@ function resolveStores() {
   return JSON.parse(readFileSync(storeSnapshot, "utf8")).stores;
 }
 
-// (D) Sample config + (E) example list from nativelink-config/examples.
-function sampleConfig() {
-  return readFileSync(join(examplesDir, "basic_cas.json5"), "utf8").trimEnd();
-}
-
-function exampleNames() {
-  return readdirSync(examplesDir)
-    .filter((f) => f.endsWith(".json5"))
-    .map((f) => f.replace(/\.json5$/, ""))
-    .sort();
+// (D) Sample config from nativelink-config/examples/basic_cas.json5.
+async function sampleConfig() {
+  return (await readRepoText("nativelink-config/examples/basic_cas.json5")).trimEnd();
 }
 
 // (F) Documentation table of contents from the docs content tree.
@@ -288,11 +333,12 @@ Runs on Unix-like systems and Windows.
 - **\`nativelink-proto\`** — protobuf-generated interfaces.
 - **\`nativelink-util\`** — shared plumbing (hashing, retries, metrics, the \`Store\` trait).`;
 
-function render() {
-  const { version, date } = latestRelease();
+async function render() {
+  const { version, date } = await latestRelease();
   const stores = resolveStores();
   const sections = documentationSections();
-  const examples = exampleNames();
+  const examples = await listExampleNames();
+  const sample = await sampleConfig();
 
   const out = [HEADER, ""];
 
@@ -343,7 +389,7 @@ function render() {
     "Inlined verbatim from `nativelink-config/examples/basic_cas.json5` (syntax-checked by tests):",
     "",
     "```json5",
-    sampleConfig(),
+    sample,
     "```",
     "",
     `More runnable examples live in [\`nativelink-config/examples/\`](${GITHUB_TREE}): ${examples
@@ -376,5 +422,5 @@ function render() {
 }
 
 mkdirSync(dirname(outFile), { recursive: true });
-writeFileSync(outFile, render());
+writeFileSync(outFile, await render());
 console.log(`gen-llms-txt: wrote ${outFile}`);
