@@ -296,6 +296,8 @@ shellexpand
 pluggable
 [Cc]allout
 hostnames
+prefetch
+protos
 Serde
 camelCase
 SDK

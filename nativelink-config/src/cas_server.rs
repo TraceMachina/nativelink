@@ -1090,6 +1090,18 @@ pub struct DirectoryCacheConfig {
     /// Default: 64
     #[serde(default = "default_directory_cache_max_concurrent_fetches")]
     pub max_concurrent_fetches: usize,
+    /// On a directory-cache miss, prefetch every `Directory` proto of the
+    /// tree with a single `GetTree` stream instead of fetching protos level
+    /// by level (which costs one round trip per tree DEPTH). Only takes
+    /// effect when the slow tier is a `grpc` store; any prefetch failure
+    /// falls back to the per-level path. Worthwhile when worker-to-CAS
+    /// latency is non-trivial and trees are deep; measured 5-34x on the
+    /// proto phase at 5-25ms RTT. Note the serving CAS pays the tree walk
+    /// against its own backend, so its directory protos should be served
+    /// from a fast tier.
+    /// Default: false
+    #[serde(default)]
+    pub experimental_get_tree_prefetch: bool,
 }
 
 const fn default_directory_cache_max_entries() -> usize {
