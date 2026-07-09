@@ -67,6 +67,7 @@ libc = { version = "0.2.183", default-features = false }
 [dev-dependencies]
 nativelink-macro = { path = "../nativelink-macro" }
 
+async-trait = { version = "0.1.88", default-features = false }
 hyper = { version = "1.6.0", default-features = false }
 pathdiff = { version = "0.2.3", default-features = false }
 pretty_assertions = { version = "1.4.1", features = [

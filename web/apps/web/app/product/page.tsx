@@ -16,7 +16,7 @@ const pillars = [
     eyebrow: "Remote cache",
     title: "Cache once. Reuse forever.",
     body: "Content-addressable storage deduplicates every artifact your team produces. If a teammate, your CI, or an agent has already built it, you get it back in milliseconds. Drops into Bazel, Buck2, Siso, Pants, Goma — and CMake via recc.",
-    metric: "1B+",
+    metric: "10B+",
     metricLabel: "requests / month",
     icon: (
       <path d="M3 5C3 3 6 3 12 3C18 3 21 3 21 5V19C21 21 18 21 12 21C6 21 3 21 3 19V5Z M3 5C3 7 6 7 12 7C18 7 21 7 21 5 M3 12C3 14 6 14 12 14C18 14 21 14 21 12" strokeLinejoin="round" />
@@ -45,7 +45,7 @@ const pillars = [
   {
     eyebrow: "Built on Rust",
     title: "Performance that doesn't stall.",
-    body: "No garbage collector. No race conditions at scale. No mystery latency spikes. Memory safety without the runtime tax — which is why NativeLink can serve a billion requests a month on infrastructure that would buckle other systems.",
+    body: "No garbage collector. No race conditions at scale. No mystery latency spikes. Memory safety without the runtime tax — which is why NativeLink can serve ten billion requests a month on infrastructure that would buckle other systems.",
     metric: "0",
     metricLabel: "GC pauses",
     icon: (
@@ -97,7 +97,7 @@ const faqItems: FAQItem[] = [
   },
   {
     q: "Why Rust?",
-    a: "Memory safety without garbage collection. No mystery pauses, no race conditions at scale, no runtime tax — which is how a single NativeLink cluster serves over a billion requests a month.",
+    a: "Memory safety without garbage collection. No mystery pauses, no race conditions at scale, no runtime tax — which is how a single NativeLink cluster serves over ten billion requests a month.",
   },
   {
     q: "How does remote execution work?",

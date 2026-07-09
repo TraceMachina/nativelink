@@ -21,10 +21,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::schedulers::SchedulerSpec;
 use crate::serde_utils::{
-    convert_data_size_with_shellexpand, convert_duration_with_shellexpand,
-    convert_numeric_with_shellexpand, convert_optional_numeric_with_shellexpand,
-    convert_optional_string_with_shellexpand, convert_string_with_shellexpand,
-    convert_vec_string_with_shellexpand,
+    convert_boolean_with_shellexpand, convert_data_size_with_shellexpand,
+    convert_duration_with_shellexpand, convert_numeric_with_shellexpand,
+    convert_optional_numeric_with_shellexpand, convert_optional_string_with_shellexpand,
+    convert_string_with_shellexpand, convert_vec_string_with_shellexpand,
 };
 use crate::stores::{ClientTlsConfig, ConfigDigestHashFunction, StoreRefName, StoreSpec};
 
@@ -257,6 +257,18 @@ pub struct CapabilitiesConfig {
     /// If not set the capabilities service will inform the client that remote
     /// execution is not supported.
     pub remote_execution: Option<CapabilitiesRemoteExecutionConfig>,
+
+    /// Whether this instance supports Bazel remote cache compression.
+    /// When enabled, the capabilities service advertises zstd wire compression
+    /// and the ByteStream/CAS services accept REAPI compressed-blobs/zstd data.
+    ///
+    /// Bazel clients enable this with `--remote_cache_compression`.
+    #[serde(
+        default,
+        skip_serializing_if = "is_default",
+        deserialize_with = "convert_boolean_with_shellexpand"
+    )]
+    pub remote_cache_compression: bool,
 }
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -1163,5 +1175,25 @@ impl CasConfig {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capabilities_config_remote_cache_compression_deserializes_true() {
+        let config: CapabilitiesConfig =
+            serde_json5::from_str(r#"{"remote_cache_compression": true}"#).unwrap();
+
+        assert!(config.remote_cache_compression);
+    }
+
+    #[test]
+    fn capabilities_config_remote_cache_compression_defaults_false() {
+        let config: CapabilitiesConfig = serde_json5::from_str("{}").unwrap();
+
+        assert!(!config.remote_cache_compression);
     }
 }
