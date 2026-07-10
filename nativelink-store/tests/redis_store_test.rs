@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use core::ops::RangeBounds;
+use core::pin::Pin;
 use core::time::Duration;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -36,10 +37,10 @@ use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::HealthStatus;
 use nativelink_util::store_trait::{
-    FalseValue, SchedulerCurrentVersionProvider, SchedulerIndexProvider, SchedulerStore,
-    SchedulerStoreDataProvider, SchedulerStoreDecodeTo, SchedulerStoreKeyProvider,
-    SchedulerSubscription, SchedulerSubscriptionManager, StoreKey, StoreLike, TrueValue,
-    UploadSizeInfo,
+    FalseValue, RemoveItemCallback, SchedulerCurrentVersionProvider, SchedulerIndexProvider,
+    SchedulerStore, SchedulerStoreDataProvider, SchedulerStoreDecodeTo, SchedulerStoreKeyProvider,
+    SchedulerSubscription, SchedulerSubscriptionManager, StoreDriver, StoreKey, StoreLike,
+    TrueValue, UploadSizeInfo,
 };
 use pretty_assertions::assert_eq;
 use redis::{PushInfo, RedisError, Value, make_extension_error};
@@ -1924,6 +1925,10 @@ async fn send_messages_to_subscription_channel() -> Result<(), Error> {
     // Because otherwise it gets dropped immediately, and we need it to live to do things
     drop(subscription_manager);
 
+    assert!(logs_contain(
+        "PSubscribe, ignore push_info=PushInfo { kind: PSubscribe, data: [bulk-string('\"scheduler_key_change\"'), int(1)] }"
+    ));
+
     Ok(())
 }
 
@@ -2148,5 +2153,146 @@ async fn redis_subscription_resubscribe_after_drop_creates_fresh_publisher() -> 
     ));
     drop(sub_c);
     drop(manager);
+    Ok(())
+}
+
+#[derive(Debug)]
+struct LoggingRemoveCallback {}
+
+impl RemoveItemCallback for LoggingRemoveCallback {
+    fn callback<'a>(
+        &'a self,
+        store_key: StoreKey<'a>,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        info!(?store_key, "Callback for removed item");
+        Box::pin(async {})
+    }
+}
+
+async fn callback_for_eviction_core<F>(
+    logs_contain: F,
+    notify_keyspace_events: &[u8],
+) -> Result<(), Error>
+where
+    F: Fn(&str) -> bool,
+{
+    let redis_span = info_span!("redis");
+
+    let mut responses = add_lua_version_script(fake_redis_stream());
+    add_to_response(
+        &mut responses,
+        redis::cmd("CONFIG")
+            .arg("GET")
+            .arg("notify-keyspace-events"),
+        vec![Value::Map(vec![(
+            Value::BulkString(b"notify-keyspace-events".into()),
+            Value::BulkString(notify_keyspace_events.into()),
+        )])],
+    );
+    add_to_response(
+        &mut responses,
+        redis::cmd("PSUBSCRIBE").arg("__key*__:*"),
+        vec![Value::Nil],
+    );
+    let redis_port = make_fake_redis_with_responses(responses)
+        .instrument(redis_span)
+        .await;
+    let spec = RedisSpec {
+        addresses: vec![format!("redis://127.0.0.1:{redis_port}/")],
+        mode: RedisMode::Standard,
+        ..Default::default()
+    };
+    let mut raw_store =
+        Arc::into_inner(RedisStore::new_standard(spec).await.expect("Working spec")).unwrap();
+    raw_store.replace_temp_name_generator(mock_uuid_generator);
+    let store = Arc::new(raw_store);
+    store.register_remove_callback(Arc::new(LoggingRemoveCallback {}))?;
+
+    timeout(Duration::from_secs(3), async move {
+        loop {
+            if logs_contain("new psubscribe complete pattern=\"__key*__:*\" new_subscription=true")
+            {
+                break;
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await?;
+    Ok(())
+}
+
+#[nativelink_test]
+async fn callback_for_eviction_not_enabled() -> Result<(), Error> {
+    callback_for_eviction_core(logs_contain, b"").await?;
+    assert!(logs_contain(
+        "notify-keyspace-events not enabled for Redis, will fail to get remove callbacks"
+    ));
+    Ok(())
+}
+
+#[nativelink_test]
+async fn callback_for_eviction_no_keyspace() -> Result<(), Error> {
+    callback_for_eviction_core(logs_contain, b"E").await?;
+    assert!(logs_contain(
+        "notify-keyspace-events does not contain 'K' so won't get keyspace events we need for eviction events notify_keyspace_events=\"E\""
+    ));
+    Ok(())
+}
+
+#[nativelink_test]
+async fn callback_for_eviction_no_all() -> Result<(), Error> {
+    callback_for_eviction_core(logs_contain, b"K").await?;
+    assert!(logs_contain(
+        "notify-keyspace-events does not contain 'A' so we won't get eviction events notify_keyspace_events=\"K\""
+    ));
+    Ok(())
+}
+
+#[nativelink_test]
+async fn callback_for_eviction_good() -> Result<(), Error> {
+    callback_for_eviction_core(logs_contain, b"KA").await?;
+    assert!(!logs_contain("ERROR"));
+    Ok(())
+}
+
+#[nativelink_test]
+async fn send_eviction_to_subscription_channel() -> Result<(), Error> {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let subscription_manager = RedisSubscriptionManager::new(
+        rx,
+        Arc::new(async_lock::Mutex::new(vec![Arc::new(
+            LoggingRemoveCallback {},
+        )])),
+    );
+
+    tx.send(PushInfo {
+        kind: redis::PushKind::PMessage,
+        data: vec![
+            Value::BulkString("demo_pattern".into()),
+            Value::BulkString("keyprefix:test-eviction".into()),
+            Value::BulkString("evicted".into()),
+        ],
+    })
+    .unwrap();
+
+    timeout(Duration::from_secs(5), async {
+        loop {
+            assert!(!logs_contain("ERROR"));
+            if logs_contain("Callback for removed item store_key=Str(\"test-eviction\")") {
+                break;
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    // Because otherwise it gets dropped immediately, and we need it to live to do things
+    drop(subscription_manager);
+
+    assert!(logs_contain(
+        "Eviction key eviction_key=\"keyprefix:test-eviction\""
+    ));
+
     Ok(())
 }
