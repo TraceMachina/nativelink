@@ -44,6 +44,7 @@ function escapeTableCell(text) {
 
 const displayNames = new Map([
   ["NamedConfig", "NamedStoreConfig"],
+  ["StoreSpec", "NamedStoreConfig"],
   ["NamedConfig2", "NamedSchedulerConfig"],
   ["GrpcSpec2", "SchedulerGrpcSpec"],
   ["WithInstanceName", "CasServiceConfig"],
@@ -325,6 +326,11 @@ function renderObject(name, def, known) {
 }
 
 function renderTaggedEnum(name, def, known) {
+  // Drop StoreSpec in favour of NamedStoreConfig
+  if (name == "StoreSpec") {
+    return ""
+  }
+
   const out = [`## ${displayName(name)}`, ""];
   if (def.description) out.push(sanitizeMarkdown(def.description), "");
   // Some types (e.g. NamedConfig) carry common fields alongside a flattened
