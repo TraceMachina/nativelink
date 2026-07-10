@@ -21,6 +21,7 @@ rust_library(
         "src/lib.rs",
         "src/push_server.rs",
         "src/remote_asset_proto.rs",
+        "src/wire_compression.rs",
         "src/worker_api_server.rs",
     ],
     visibility = ["//visibility:public"],
@@ -34,6 +35,7 @@ rust_library(
         "//nativelink-util",
         "@crates//:axum",
         "@crates//:bytes",
+        "@crates//:fastcdc",
         "@crates//:futures",
         "@crates//:http-body-util",
         "@crates//:hyper-1.7.0",
@@ -46,10 +48,12 @@ rust_library(
         "@crates//:serde_json5",
         "@crates//:sha2",
         "@crates//:tokio",
+        "@crates//:tokio-util",
         "@crates//:tonic",
         "@crates//:tower",
         "@crates//:tracing",
         "@crates//:uuid",
+        "@crates//:zstd",
     ],
 )
 
@@ -60,12 +64,18 @@ rust_test_suite(
         "tests/ac_server_test.rs",
         "tests/bep_server_test.rs",
         "tests/bytestream_server_test.rs",
+        "tests/capabilities_server_test.rs",
         "tests/cas_server_test.rs",
         "tests/execution_server_test.rs",
+        "tests/fastcdc_conformance_test.rs",
         "tests/fetch_server_test.rs",
         "tests/health_server_test.rs",
         "tests/push_server_test.rs",
+        "tests/wire_compression_test.rs",
         "tests/worker_api_server_test.rs",
+    ],
+    compile_data = glob(["tests/data/**"]) + [
+        "//nativelink-util:tests/data/SekienAkashita.jpg",
     ],
     proc_macro_deps = [
         "//nativelink-macro",
@@ -83,6 +93,7 @@ rust_test_suite(
         "@crates//:async-lock",
         "@crates//:axum",
         "@crates//:bytes",
+        "@crates//:fastcdc",
         "@crates//:futures",
         "@crates//:hex",
         "@crates//:http-body-util",
@@ -100,6 +111,7 @@ rust_test_suite(
         "@crates//:tower",
         "@crates//:tracing",
         "@crates//:tracing-test",
+        "@crates//:zstd",
     ],
 )
 

@@ -7,15 +7,17 @@ pub(crate) mod process;
 use core::time::Duration;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::{Condvar, LazyLock, Mutex};
+use std::sync::LazyLock;
 
 pub(crate) use downloader::DownloadProgress;
 use downloader::{download_file_with_callback, get_download_url, get_os};
 use extractor::extract;
-use mongodb::bson::doc;
+use mongodb::bson::{Bson, doc};
 use nativelink_error::{Error, ResultExt, make_err};
 use process::MongoProcess;
 use tempfile::tempdir;
+use tokio::fs::read_to_string;
+use tokio::sync::Mutex;
 use tonic::Code;
 use tracing::{debug, info};
 
@@ -36,14 +38,27 @@ pub(crate) struct MongoEmbedded {
     pub download_path: PathBuf,
     pub extract_path: PathBuf,
     pub db_path: PathBuf,
+    /// Port to bind. 0 means pick a free ephemeral port at start time (and
+    /// pick a fresh one if a bind race is lost). The port that was actually
+    /// bound is reflected in the returned process's `connection_string`.
     pub port: u16,
     pub bind_ip: String,
     pub username: Option<String>,
     pub password: Option<String>,
 }
 
-static CURRENTLY_DOWNLOADING: LazyLock<(Mutex<bool>, Condvar)> =
-    LazyLock::new(|| (Mutex::new(false), Condvar::new()));
+/// Serializes download+extract across concurrently running tests in this
+/// process. The `extracted.marker` file is the completion predicate: re-check
+/// it after acquiring the lock, because another test may have completed the
+/// download while we waited. If a download fails the lock is simply released,
+/// so the next waiter retries instead of hanging forever.
+static DOWNLOAD_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+/// An ephemeral port is released back to the OS before mongod binds it, so
+/// another process can grab it in between. When that happens our mongod exits
+/// (or a foreign server answers on the port); `wait_until_ready` detects both,
+/// and we retry with a fresh port.
+const MAX_SPAWN_ATTEMPTS: u32 = 5;
 
 impl MongoEmbedded {
     pub(crate) fn new(version: &str) -> Self {
@@ -60,7 +75,7 @@ impl MongoEmbedded {
             download_path: cache_dir.join("downloads"),
             extract_path: cache_dir.join("extracted"),
             db_path,
-            port: 27017,
+            port: 0,
             bind_ip: "127.0.0.1".to_string(),
             username: None,
             password: None,
@@ -116,19 +131,10 @@ impl MongoEmbedded {
         if extract_marker.exists() {
             info!(?extract_marker, "Already have Mongo downloaded");
         } else {
-            let existing_downloader = {
-                let mut lock = CURRENTLY_DOWNLOADING.0.lock().unwrap();
-                if *lock {
-                    info!("Waiting for downloader");
-                    let _guard = CURRENTLY_DOWNLOADING.1.wait(lock)?;
-                    true
-                } else {
-                    info!("First here so, downloading Mongo");
-                    *lock = true;
-                    false
-                }
-            };
-            if !existing_downloader {
+            let _download_guard = DOWNLOAD_LOCK.lock().await;
+            // Re-check under the lock: another test may have just finished
+            // downloading while we waited for the lock.
+            if !extract_marker.exists() {
                 if !self.download_path.exists() {
                     fs::create_dir_all(&self.download_path)
                         .err_tip(|| format!("Making {}", self.download_path.display()))?;
@@ -154,91 +160,68 @@ impl MongoEmbedded {
                         extract_target.display()
                     )
                 })?;
-                info!("Downloaded, notifying");
                 fs::write(extract_marker, "")?;
-                let lock = CURRENTLY_DOWNLOADING.0.lock().unwrap();
-                CURRENTLY_DOWNLOADING.1.notify_all();
-                drop(lock);
+                info!("Downloaded and extracted Mongo");
             }
         }
 
         let os = get_os()?;
-
-        // Calculate initial connection string for readiness check
-        #[allow(clippy::case_sensitive_file_extension_comparisons)]
-        let uri = if self.bind_ip.contains('/') || self.bind_ip.ends_with(".sock") {
-            // Assume unix socket
-            // Minimal URL encoding for path, replacing / with %2F.
-            // This is required for the rust mongodb driver to recognize it as a socket.
-            // Note: When using sockets with mongodb crate, we often need to ensure the host is just the encoded path.
-            let encoded = self.bind_ip.replace('/', "%2F");
-            format!("mongodb://{encoded}/?directConnection=true")
-        } else {
-            format!(
-                "mongodb://{}:{}/?directConnection=true",
-                self.bind_ip, self.port
-            )
-        };
-
-        // Start process with auth flag if credentials are requested
         let auth_enabled = self.username.is_some() && self.password.is_some();
-        let mut process = MongoProcess::start(
-            &extract_target,
-            self.port,
-            &self.db_path,
-            &os,
-            &self.bind_ip,
-            auth_enabled,
-            uri.clone(),
-        )
-        .err_tip(|| format!("Starting mongo from {}", extract_target.display()))?;
 
-        // Need to wait for it to be ready
-        // We can try to connect
-        let mut client_options = mongodb::options::ClientOptions::parse(&uri).await?;
-        client_options.connect_timeout = Some(Duration::from_secs(2));
-        client_options.server_selection_timeout = Some(Duration::from_secs(2));
+        #[allow(clippy::case_sensitive_file_extension_comparisons)]
+        let is_unix_socket = self.bind_ip.contains('/') || self.bind_ip.ends_with(".sock");
 
-        // Simple loop to wait for readiness
-        let mut connected = false;
-        let start = std::time::Instant::now();
-        debug!("Waiting for MongoDB to start at {uri}");
-        while start.elapsed() < Duration::from_secs(30) {
-            let client = mongodb::Client::with_options(client_options.clone())?;
-            match client.list_database_names().await {
-                Ok(_) => {
-                    connected = true;
-                    debug!("Connected to MongoDB at {uri}");
+        let mut process = None;
+        let mut last_error = make_err!(Code::Internal, "mongod was never spawned");
+        for attempt in 0..MAX_SPAWN_ATTEMPTS {
+            let port = if is_unix_socket || self.port != 0 {
+                self.port
+            } else {
+                get_ephemeral_port()?
+            };
+            let uri = if is_unix_socket {
+                // Minimal URL encoding for path, replacing / with %2F.
+                // This is required for the rust mongodb driver to recognize it as a socket.
+                // Note: When using sockets with mongodb crate, we often need to ensure the host is just the encoded path.
+                let encoded = self.bind_ip.replace('/', "%2F");
+                format!("mongodb://{encoded}/?directConnection=true")
+            } else {
+                format!("mongodb://{}:{port}/?directConnection=true", self.bind_ip)
+            };
+
+            let mut candidate = MongoProcess::start(
+                &extract_target,
+                port,
+                &self.db_path,
+                &os,
+                &self.bind_ip,
+                auth_enabled,
+                uri,
+            )
+            .err_tip(|| format!("Starting mongo from {}", extract_target.display()))?;
+
+            match wait_until_ready(&mut candidate, auth_enabled).await {
+                Ok(()) => {
+                    process = Some(candidate);
                     break;
                 }
-                Err(e) => {
-                    debug!("Connection attempt failed: {:?}", e);
-                    // If unauthorized error, it means we are connected but need auth, which is fine for readiness check
-                    // "Unauthorized" usually is error code 13
-                    if let mongodb::error::ErrorKind::Command(ref cmd_err) = *e.kind
-                        && (cmd_err.code == 51 || cmd_err.code == 13 || cmd_err.code == 18)
-                    {
-                        // 51: UserAlreadyExists?, 13: Unauthorized, 18: AuthFailed
-                        connected = true;
-                        break;
-                    }
+                // Dropping `candidate` kills the failed process.
+                Err(err) => {
+                    let logs = read_to_string(&candidate.log_path)
+                        .await
+                        .unwrap_or_else(|e| format!("Error reading {}: {e}", candidate.log_path));
+                    debug!(attempt, ?err, logs, "mongod did not become ready");
+                    last_error = err;
                 }
             }
-
-            tokio::time::sleep(Duration::from_millis(500)).await;
         }
-
-        if !connected {
-            debug!("Timed out waiting for start.");
-            process.kill()?;
-            return Err(make_err!(
-                Code::DeadlineExceeded,
-                "Timed out waiting for MongoDB to start"
-            ));
-        }
+        let Some(mut process) = process else {
+            return Err(last_error);
+        };
 
         if let (Some(username), Some(password)) = (&self.username, &self.password) {
             callback(InitStatus::SettingUpUser);
+            let client_options = ready_client_options(&process.connection_string).await?;
             let client = mongodb::Client::with_options(client_options.clone())?;
 
             // Try to create user. This only works if localhost exception is active (no users)
@@ -258,10 +241,9 @@ impl MongoEmbedded {
                     // Created user successfully
                 }
                 Err(_e) => {
-                    // if needs_verify {
                     callback(InitStatus::VerifyingCredentials);
                     // Try to authenticate
-                    let mut auth_opts = client_options.clone();
+                    let mut auth_opts = client_options;
                     auth_opts.credential = Some(
                         mongodb::options::Credential::builder()
                             .username(username.clone())
@@ -271,13 +253,13 @@ impl MongoEmbedded {
                     );
 
                     let auth_client = mongodb::Client::with_options(auth_opts)?;
-                    // Verify by running a command that requires auth
+                    // Verify by running a command that requires auth. Returning
+                    // an error drops `process`, which kills the mongod.
                     if let Err(auth_err) = auth_client
                         .database("admin")
                         .run_command(doc! { "ping": 1 })
                         .await
                     {
-                        process.kill()?;
                         return Err(make_err!(
                             Code::PermissionDenied,
                             "Authentication failed or invalid credentials provided: {}",
@@ -288,16 +270,14 @@ impl MongoEmbedded {
             }
 
             // Update connection string to include credentials
-
-            #[allow(clippy::case_sensitive_file_extension_comparisons)]
-            let final_uri = if self.bind_ip.contains('/') || self.bind_ip.ends_with(".sock") {
+            let final_uri = if is_unix_socket {
                 let encoded = self.bind_ip.replace('/', "%2F");
                 // For sockets, credentials go in the beginning
                 format!("mongodb://{username}:{password}@{encoded}")
             } else {
                 format!(
                     "mongodb://{username}:{password}@{}:{}/",
-                    self.bind_ip, self.port
+                    self.bind_ip, process.port
                 )
             };
             process.connection_string = final_uri;
@@ -306,4 +286,99 @@ impl MongoEmbedded {
         callback(InitStatus::DBInitialized);
         Ok(process)
     }
+}
+
+/// Ask the OS for a currently-free TCP port.
+fn get_ephemeral_port() -> Result<u16, Error> {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
+        .err_tip(|| "Binding an ephemeral port for mongod")?;
+    Ok(listener
+        .local_addr()
+        .err_tip(|| "Getting ephemeral port for mongod")?
+        .port())
+}
+
+/// Client options with short per-attempt timeouts so the readiness poll reacts
+/// quickly; the overall deadline is enforced by `wait_until_ready`'s loop.
+async fn ready_client_options(uri: &str) -> Result<mongodb::options::ClientOptions, Error> {
+    let mut client_options = mongodb::options::ClientOptions::parse(uri).await?;
+    client_options.connect_timeout = Some(Duration::from_millis(500));
+    client_options.server_selection_timeout = Some(Duration::from_millis(500));
+    Ok(client_options)
+}
+
+/// Waits until the just-spawned mongod answers on its connection string. Fails
+/// fast if the process exits (e.g. it lost a bind race for its port) and
+/// verifies the server answering is actually the process we spawned rather
+/// than a foreign server that won the port.
+async fn wait_until_ready(process: &mut MongoProcess, auth_enabled: bool) -> Result<(), Error> {
+    let uri = process.connection_string.clone();
+    let client_options = ready_client_options(&uri).await?;
+
+    let start = std::time::Instant::now();
+    debug!("Waiting for MongoDB to start at {uri}");
+    while start.elapsed() < Duration::from_secs(30) {
+        // A successful connection after our child died would be to whatever
+        // foreign process owns the port now, so check liveness first.
+        if let Some(status) = process.try_wait()? {
+            return Err(make_err!(
+                Code::Internal,
+                "mongod exited during startup with {status}"
+            ));
+        }
+
+        let client = mongodb::Client::with_options(client_options.clone())?;
+        match client.list_database_names().await {
+            Ok(_) => {
+                // With auth enabled we can't run serverStatus before
+                // credentials exist, so skip the identity check there.
+                if auth_enabled || is_our_mongod(&client, process).await? {
+                    debug!("Connected to MongoDB at {uri}");
+                    return Ok(());
+                }
+                return Err(make_err!(
+                    Code::Internal,
+                    "A different process is serving mongod's port"
+                ));
+            }
+            Err(e) => {
+                debug!("Connection attempt failed: {:?}", e);
+                // If unauthorized error, it means we are connected but need auth, which is fine for readiness check
+                // "Unauthorized" usually is error code 13
+                if let mongodb::error::ErrorKind::Command(ref cmd_err) = *e.kind
+                    && (cmd_err.code == 51 || cmd_err.code == 13 || cmd_err.code == 18)
+                {
+                    // 51: UserAlreadyExists?, 13: Unauthorized, 18: AuthFailed
+                    return Ok(());
+                }
+            }
+        }
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    Err(make_err!(
+        Code::DeadlineExceeded,
+        "Timed out waiting for MongoDB to start"
+    ))
+}
+
+/// Compares `serverStatus.pid` against the pid of the child we spawned.
+async fn is_our_mongod(client: &mongodb::Client, process: &MongoProcess) -> Result<bool, Error> {
+    let status = client
+        .database("admin")
+        .run_command(doc! { "serverStatus": 1 })
+        .await
+        .map_err(|e| make_err!(Code::Internal, "serverStatus failed: {e}"))?;
+    let server_pid = match status.get("pid") {
+        Some(Bson::Int64(pid)) => *pid,
+        Some(Bson::Int32(pid)) => i64::from(*pid),
+        other => {
+            return Err(make_err!(
+                Code::Internal,
+                "serverStatus returned unparsable pid: {other:?}"
+            ));
+        }
+    };
+    Ok(server_pid == i64::from(process.id()))
 }

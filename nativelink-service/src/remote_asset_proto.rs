@@ -6,7 +6,7 @@ use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
 use prost::Message;
 use prost_types::Timestamp;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteAssetQuery {
     pub uri: String,
     pub qualifiers: Vec<Qualifier>,
@@ -28,7 +28,7 @@ impl RemoteAssetQuery {
     }
 }
 
-#[derive(Clone, PartialEq, prost::Message)]
+#[derive(Clone, PartialEq, Eq, prost::Message)]
 pub struct RemoteAssetArtifact {
     #[prost(string, tag = "1")]
     pub uri: String,

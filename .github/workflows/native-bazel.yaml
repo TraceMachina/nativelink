@@ -28,11 +28,9 @@ jobs:
           # Keep the existing required check names on the project-pinned Bazel.
           - os: ubuntu-24.04
             bazel_version: 9.1.1
-            lockfile_mode: error
             check_name: ubuntu-24.04
           - os: macos-26
             bazel_version: 9.1.1
-            lockfile_mode: error
             check_name: macos-26
           # Deterministic Bazel compatibility lane. Randomizing Bazel versions
           # makes failures harder to reproduce. Bazel 8 cannot read the
@@ -40,7 +38,6 @@ jobs:
           # without enforcing the committed MODULE.bazel.lock.
           - os: ubuntu-24.04
             bazel_version: 8.7.0
-            lockfile_mode: "off"
             check_name: ubuntu-24.04 / Bazel 8.7.0
     name: ${{ matrix.check_name }}
     runs-on: ${{ matrix.os }}
@@ -69,13 +66,21 @@ jobs:
       - name: Run Bazel tests
         run: |
           if [ "$RUNNER_OS" == "Linux" ] || [ "$RUNNER_OS" == "macOS" ]; then
-            bazel test //... \
-              --lockfile_mode=${{ matrix.lockfile_mode }} \
-              --extra_toolchains=@rust_toolchains//:all \
-              --verbose_failures
+            if [ "${{ matrix.bazel_version }}" == "8.7.0" ]; then
+              # Bazel 8 cannot parse the Bazel 9 MODULE.bazel.lock format.
+              bazel test //... \
+                --lockfile_mode=off \
+                --extra_toolchains=@rust_toolchains//:all \
+                --verbose_failures
+            else
+              bazel test //... \
+                --lockfile_mode=error \
+                --extra_toolchains=@rust_toolchains//:all \
+                --verbose_failures
+            fi
           elif [ "$RUNNER_OS" == "Windows" ]; then
             bazel \
-              --lockfile_mode=${{ matrix.lockfile_mode }} \
+              --lockfile_mode=error \
               --output_user_root=${{ steps.bazel-cache.outputs.mountpoint }} \
               test \
               --config=windows \

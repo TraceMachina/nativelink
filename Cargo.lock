@@ -1258,9 +1258,9 @@ dependencies = [
 
 [[package]]
 name = "crossbeam-epoch"
-version = "0.9.18"
+version = "0.9.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b82ac4a3c2ca9c3460964f020e1402edd5753411d7737aa39c3714ad1b5420e"
+checksum = "2d6914041f254d6e9176c01941b21115dcfb7089e55135a35411081bd106ef3f"
 dependencies = [
  "crossbeam-utils",
 ]
@@ -1616,6 +1616,17 @@ checksum = "8be9f3dfaaffdae2972880079a491a1a8bb7cbed0b8dd7a347f668b4150a3b93"
 dependencies = [
  "event-listener",
  "pin-project-lite",
+]
+
+[[package]]
+name = "fastcdc"
+version = "3.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf51ceb43e96afbfe4dd5c6f6082af5dfd60e220820b8123792d61963f2ce6bc"
+dependencies = [
+ "async-stream",
+ "tokio",
+ "tokio-stream",
 ]
 
 [[package]]
@@ -2953,7 +2964,7 @@ checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 
 [[package]]
 name = "nativelink"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "async-lock",
  "axum",
@@ -2984,7 +2995,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-config"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "byte-unit",
  "humantime",
@@ -3003,7 +3014,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-error"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "base64 0.22.1",
  "mongodb",
@@ -3027,7 +3038,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-macro"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3036,7 +3047,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-metric"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "async-lock",
  "nativelink-metric-macro-derive",
@@ -3047,7 +3058,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-metric-macro-derive"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3056,7 +3067,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-proto"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "derive_more 2.1.0",
  "prost",
@@ -3068,7 +3079,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-redis-tester"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "either",
  "nativelink-util",
@@ -3081,7 +3092,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-scheduler"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -3118,12 +3129,13 @@ dependencies = [
 
 [[package]]
 name = "nativelink-service"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "async-lock",
  "async-trait",
  "axum",
  "bytes",
+ "fastcdc",
  "futures",
  "hex",
  "http-body-util",
@@ -3149,17 +3161,19 @@ dependencies = [
  "sha2",
  "tokio",
  "tokio-stream",
+ "tokio-util",
  "tonic",
  "tonic-prost",
  "tower",
  "tracing",
  "tracing-test",
  "uuid",
+ "zstd",
 ]
 
 [[package]]
 name = "nativelink-store"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -3237,7 +3251,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-util"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3299,9 +3313,10 @@ dependencies = [
 
 [[package]]
 name = "nativelink-worker"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "async-lock",
+ "async-trait",
  "bytes",
  "dunce",
  "filetime",
@@ -4431,15 +4446,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "scc"
-version = "2.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46e6f046b7fef48e2660c57ed794263155d713de679057f2d0c169bfc6e756cc"
-dependencies = [
- "sdd",
-]
-
-[[package]]
 name = "schannel"
 version = "0.1.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4490,12 +4496,6 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
-
-[[package]]
-name = "sdd"
-version = "3.0.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "490dcfcbfef26be6800d11870ff2df8774fa6e86d047e3e8c8a76b25655e41ca"
 
 [[package]]
 name = "sec1"
@@ -4676,22 +4676,22 @@ dependencies = [
 
 [[package]]
 name = "serial_test"
-version = "3.2.0"
+version = "3.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b258109f244e1d6891bf1053a55d63a5cd4f8f4c30cf9a1280989f80e7a1fa9"
+checksum = "699f4197115b8a7e7ff19c9a315a4bd6fffec26cc4626ef45ecaea389e081c6d"
 dependencies = [
- "futures",
+ "futures-executor",
+ "futures-util",
  "once_cell",
  "parking_lot",
- "scc",
  "serial_test_derive",
 ]
 
 [[package]]
 name = "serial_test_derive"
-version = "3.2.0"
+version = "3.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d69265a08751de7844521fd15003ae0a888e035773ba05695c5c759a6f89eef"
+checksum = "94e153fc76e1c6a068703d6d29c508a0b15c061c4b7e43da59cc097bc342673c"
 dependencies = [
  "proc-macro2",
  "quote",

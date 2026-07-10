@@ -201,7 +201,7 @@ NativeLink doesn't allow direct commits or human-created side branches in the
    ```
 
 5. Go to https://github.com/TraceMachina/nativelink/pulls where you should see a
-   button that you can click to create to create a new pull request from your
+   button that you can click to create a new pull request from your
    fork to the main repository.
 
 6. Once you opened the pull request, click on the purple `Reviewable` button in
@@ -438,6 +438,13 @@ most automatically generated changelogs provide.
    ```
 
 8. Regenerate the latest config reference docs now that the upstream tag exists.
+   Pushing the tag upstream triggers the
+   [`Regenerate config reference`](.github/workflows/config-reference.yaml)
+   workflow, which regenerates the docs and opens a PR against `main` with
+   auto-merge enabled. Check that the PR appeared and merged; if the workflow
+   failed, either re-run it from `Actions → Regenerate config reference → Run
+   workflow` (entering the tag) or fall back to the manual procedure below.
+
    Passing the new tag updates `web/apps/docs/lib/config-versions.ts`, which
    determines the latest version shown in the docs UI, rewrites
    `web/apps/docs/content/docs/reference/nativelink-config/index.mdx` from that

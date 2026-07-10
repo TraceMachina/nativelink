@@ -383,7 +383,7 @@ const CLIENT_ID_TO_OPERATION_ID_KEY_PREFIX: &str = "cid_";
 /// TTL bounding the cid_* mapping's lifetime so it cannot outlive its
 /// aa_* key and accumulate as a permanent orphan (24h safely exceeds
 /// any real action lifetime).
-const CLIENT_ID_MAPPING_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+const CLIENT_ID_MAPPING_TTL: Duration = Duration::from_hours(24);
 /// Phase 2: Separate key prefix for client keepalives (non-versioned).
 const CLIENT_KEEPALIVE_KEY_PREFIX: &str = "ck_";
 

@@ -60,7 +60,7 @@ export function FAQ({ items, defaultOpenIndex, className }: FAQProps) {
               )}
             >
               <div className="min-h-0">
-                <div className="max-w-[68ch] px-6 text-[15px] leading-relaxed text-muted-foreground">
+                <div className="max-w-[68ch] px-6 pt-3 text-[15px] leading-relaxed text-muted-foreground">
                   {item.a}
                 </div>
               </div>

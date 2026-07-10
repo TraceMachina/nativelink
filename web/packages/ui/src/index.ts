@@ -18,8 +18,4 @@ export { ThemeToggle } from "./components/theme-toggle";
 export { Counter } from "./components/counter";
 export { Marquee } from "./components/marquee";
 export { HeroVisual } from "./components/hero-visual";
-export {
-  NewsletterForm,
-  type NewsletterState,
-} from "./components/newsletter-form";
 export { cn } from "./lib/cn";
