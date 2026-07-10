@@ -100,6 +100,9 @@ jobs:
         uses: >- # v6.0.2
           actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
+      - name: Free disk space
+        uses: ./.github/actions/free-disk
+
       - uses: hoverkraft-tech/compose-action@11beaa1c2dae4e8ed7b1665aa074723b6cecb0e4 # v3.0.0
         with:
           compose-file: src/bin/docker-compose.store-tester.yaml
