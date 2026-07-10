@@ -13,3 +13,4 @@ content/docs/reference/changelog.md
 # The store list is read from the committed lib/store-specs.json snapshot, so
 # this needs no cargo; refresh the snapshot with `gen:llms-txt -- --schema`.
 public/llms.txt
+schema.json

@@ -18,10 +18,7 @@
 //
 // Usage from web/:
 //   bun --filter @nativelink/docs gen:llms-txt              # uses cached store list
-//   bun --filter @nativelink/docs gen:llms-txt -- --schema  # rebuild stores via cargo
-//
-// The --schema path requires a Rust toolchain (cargo). Every other input is
-// pure filesystem, so the default path runs anywhere (including Vercel).
+//   bun --filter @nativelink/docs gen:llms-txt -- --schema  # rebuild stores
 
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
@@ -37,7 +34,6 @@ const outFile = join(docsAppDir, "public/llms.txt");
 const DOCS_BASE = "https://docs.nativelink.com";
 const GITHUB_TREE =
   "https://github.com/TraceMachina/nativelink/tree/main/nativelink-config/examples";
-const SCHEMA_FILE = "nativelink_config.schema.json";
 
 const wantSchema = process.argv.includes("--schema");
 
@@ -151,17 +147,8 @@ function buildSchemaWithCargo() {
   if (!repoRoot) {
     throw new Error("gen-llms-txt: --schema requires a local checkout (no repo root found).");
   }
-  const sourceDir = join(repoRoot, "nativelink-config");
-  const schemaPath = join(sourceDir, SCHEMA_FILE);
-  execFileSync(
-    "bazel", [
-      "run", "//nativelink-config:build-schema", schemaPath
-    ],
-    { cwd: sourceDir, stdio: ["ignore", "inherit", "inherit"] },
-  );
-
+  const schemaPath = join(repoRoot, "web", "apps", "docs", "lib", "schema.json");
   const schema = JSON.parse(readFileSync(schemaPath, "utf8"));
-  execFileSync("rm", ["-f", schemaPath]); // don't leave it in the tree
   return schema;
 }
 

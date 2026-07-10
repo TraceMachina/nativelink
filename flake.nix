@@ -169,6 +169,13 @@
 
         # Additional target for external dependencies to simplify caching.
         cargoArtifactsFor = p: (craneLibFor p).buildDepsOnly (commonArgsFor p);
+        # dev profile, mainly for buildschema build speeds
+        cargoDevArtifactsFor = p:
+          (craneLibFor p).buildDepsOnly ((commonArgsFor p)
+            // {
+              pname = "nativelink-dev";
+              CARGO_PROFILE = "dev";
+            });
         nightlyCargoArtifactsFor = p: (nightlyCraneLibFor p).buildDepsOnly (commonArgsFor p);
 
         nativelinkFor = p:
@@ -193,6 +200,19 @@
         # darwin targets which are only buildable via native compilation.
         nativelink-aarch64-linux = nativelinkFor pkgs.pkgsCross.aarch64-multiplatform-musl;
         nativelink-x86_64-linux = nativelinkFor pkgs.pkgsCross.musl64;
+
+        nativelinkBuildSchemaFor = p:
+          (craneLibFor p).buildPackage ((commonArgsFor p)
+            // {
+              cargoBuildExtraArgs = "--bin build-schema --features dev-schema --package nativelink-config";
+              cargoArtifacts = cargoDevArtifactsFor p;
+              pname = "nativelink-build-schema";
+              cargoTestExtraArgs = "--no-run";
+              # Because we need speed of build here over speed of execution
+              CARGO_PROFILE = "dev";
+            });
+
+        nativelinkBuildSchema = nativelinkBuildSchemaFor nativeTargetPkgs;
 
         nativelink-is-executable-test = pkgs.callPackage ./tools/nativelink-is-executable-test.nix {inherit nativelink;};
 
@@ -472,7 +492,7 @@
           );
         pre-commit.settings = {
           hooks = import ./tools/pre-commit-hooks.nix {
-            inherit pkgs;
+            inherit pkgs nativelinkBuildSchema;
             inherit (packages) generate-bazel-rc generate-stores-config;
             nightly-rust = pkgs.rust-bin.nightly.${pkgs.lre.nightly-rust.meta.version};
           };

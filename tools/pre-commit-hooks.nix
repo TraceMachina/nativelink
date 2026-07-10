@@ -3,6 +3,7 @@
   nightly-rust,
   generate-bazel-rc,
   generate-stores-config,
+  nativelinkBuildSchema,
   ...
 }: let
   excludes = ["nativelink-proto/genproto"];
@@ -196,21 +197,19 @@ in {
   };
 
   # Regenerate the StoreSpec snapshot that public/llms.txt is built from, so it
-  # can't drift when the StoreSpec enum changes. Runs gen-llms-txt.mjs --schema,
-  # which builds the config crate's JSON Schema via `cargo run --bin
-  # build-schema`; cargo and node are put on PATH so the hook is self-contained.
+  # can't drift when the StoreSpec enum changes. Runs gen-llms-txt.mjs --schema
   generate-store-specs = {
     description = "Regenerate store-specs.json from the StoreSpec enum";
     enable = true;
     entry = let
       script = pkgs.writeShellScriptBin "generate-store-specs" ''
         set -eu
-        export PATH="${pkgs.bazel_9}/bin:$PATH"
+        ${nativelinkBuildSchema}/bin/build-schema web/apps/docs/lib/schema.json
         ${pkgs.nodejs_22}/bin/node web/apps/docs/scripts/gen-llms-txt.mjs --schema
       '';
     in "${script}/bin/generate-store-specs";
     name = "generate-store-specs";
-    files = "nativelink-config/src/stores.rs|web/apps/docs/lib/store-specs.json";
+    files = "nativelink-config/src/stores.rs|web/apps/docs/lib/schema.json|web/apps/docs/lib/store-specs.json";
     pass_filenames = false;
   };
 }
