@@ -438,6 +438,13 @@ most automatically generated changelogs provide.
    ```
 
 8. Regenerate the latest config reference docs now that the upstream tag exists.
+   Pushing the tag upstream triggers the
+   [`Regenerate config reference`](.github/workflows/config-reference.yaml)
+   workflow, which regenerates the docs and opens a PR against `main` with
+   auto-merge enabled. Check that the PR appeared and merged; if the workflow
+   failed, either re-run it from `Actions → Regenerate config reference → Run
+   workflow` (entering the tag) or fall back to the manual procedure below.
+
    Passing the new tag updates `web/apps/docs/lib/config-versions.ts`, which
    determines the latest version shown in the docs UI, rewrites
    `web/apps/docs/content/docs/reference/nativelink-config/index.mdx` from that

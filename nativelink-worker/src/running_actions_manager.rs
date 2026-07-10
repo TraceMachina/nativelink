@@ -2974,10 +2974,7 @@ impl RunningActionsManager for RunningActionsManagerImpl {
             .wrap_no_capture_result(async move {
                 let kill_operations: Vec<Arc<RunningActionImpl>> = {
                     let running_actions = self.running_actions.lock();
-                    running_actions
-                        .iter()
-                        .filter_map(|(_operation_id, action)| action.upgrade())
-                        .collect()
+                    running_actions.values().filter_map(Weak::upgrade).collect()
                 };
                 let mut kill_futures: FuturesUnordered<_> = kill_operations
                     .into_iter()

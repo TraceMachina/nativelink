@@ -1004,7 +1004,7 @@ async fn test_sentinel_connect_and_update_data_unversioned_readonly() {
         version: 0,
     };
     store
-        .update_data(data, Some(Duration::from_secs(60)))
+        .update_data(data, Some(Duration::from_mins(1)))
         .await
         .expect("working update");
 }
@@ -1964,7 +1964,7 @@ async fn core_test_update_data_unversioned_with_expiry(expire_response: i64) {
         version: 0,
     };
     store
-        .update_data(data, Some(Duration::from_secs(60)))
+        .update_data(data, Some(Duration::from_mins(1)))
         .await
         .expect("working update");
 }
@@ -2019,7 +2019,7 @@ async fn test_update_data_versioned_with_expiry() {
         version: 0,
     };
     store
-        .update_data(data, Some(Duration::from_secs(60)))
+        .update_data(data, Some(Duration::from_mins(1)))
         .await
         .expect("working update");
 }

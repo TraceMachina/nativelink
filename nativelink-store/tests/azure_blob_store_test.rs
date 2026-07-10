@@ -316,7 +316,7 @@ async fn test_has_with_expired_result() -> Result<(), Error> {
 
     // 1 day in: not expired.
     {
-        MockClock::advance(Duration::from_secs(24 * 60 * 60));
+        MockClock::advance(Duration::from_hours(24));
         let mut results = vec![None];
         store
             .has_with_results(&[digest.into()], &mut results)
@@ -330,7 +330,7 @@ async fn test_has_with_expired_result() -> Result<(), Error> {
 
     // 4 days in: expired (older than the 2-day threshold).
     {
-        MockClock::advance(Duration::from_secs(3 * 24 * 60 * 60));
+        MockClock::advance(Duration::from_hours(3 * 24));
         let mut results = vec![None];
         store
             .has_with_results(&[digest.into()], &mut results)
