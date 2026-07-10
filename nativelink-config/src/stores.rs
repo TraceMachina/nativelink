@@ -593,6 +593,12 @@ pub enum StoreSpec {
     /// Ideal for accepting small object sizes as most redis store
     /// services have a max file upload of between 256Mb-512Mb.
     ///
+    /// If you are using Redis together with any stores above it
+    /// e.g. existence cache, you will need to configure `notify-keyspace-events`
+    /// to `KA` as per <https://redis.io/docs/latest/develop/pubsub/keyspace-notifications/#configuration>
+    /// in order for us to get eviction events. Failing to do so will get you
+    /// log messages complaining about it, as well as errors like <https://github.com/TraceMachina/nativelink/issues/2436>
+    ///
     /// **Example JSON Config:**
     /// ```json
     /// "redis_store": {
