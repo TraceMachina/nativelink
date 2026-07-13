@@ -59,3 +59,33 @@ async fn freebind_allows_binding_unassigned_address() -> Result<(), Box<dyn core
 
     Ok(())
 }
+
+// Regression test: `fs::read_dir` must complete with a single blocking-pool
+// thread. The pre-fix implementation `block_on`ed `tokio::fs::read_dir`
+// (itself a `spawn_blocking`) from inside a blocking-pool thread, so each
+// call needed two pool threads at once; enough concurrent callers parked
+// every thread on inner tasks that could never run, freezing all `fs::` ops
+// process-wide. On a one-thread pool the old code deadlocks and the timeout
+// below fires.
+#[test]
+fn read_dir_needs_only_one_blocking_thread() -> Result<(), Box<dyn core::error::Error>> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test needs a runtime with a one-thread blocking pool"
+    )]
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .max_blocking_threads(1)
+        .enable_all()
+        .build()?;
+    rt.block_on(async {
+        let read_dir = tokio::time::timeout(
+            core::time::Duration::from_secs(5),
+            nativelink_util::fs::read_dir(env::temp_dir()),
+        )
+        .await
+        .expect("read_dir deadlocked: it required a second blocking-pool thread")?;
+        drop(read_dir);
+        Ok(())
+    })
+}
