@@ -67,7 +67,7 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
             None,
         )
         .await?,
-    );
+    )?;
     Ok(store_manager)
 }
 
@@ -764,7 +764,7 @@ default_health_status_indicator!(StallStore);
 
 fn make_cas_server_with_stall_store(delay: Duration) -> Result<CasServer, Error> {
     let store_manager = Arc::new(StoreManager::new());
-    store_manager.add_store("main_cas", Store::new(Arc::new(StallStore { delay })));
+    store_manager.add_store("main_cas", Store::new(Arc::new(StallStore { delay })))?;
     CasServer::new(
         &[WithInstanceName {
             instance_name: INSTANCE_NAME.to_string(),
@@ -785,7 +785,7 @@ async fn batch_update_blobs_per_blob_timeout_returns_deadline_exceeded()
 
     // Stall longer than `BATCH_PER_BLOB_TIMEOUT` (30 s) so the
     // per-blob timeout fires before the store ever resolves.
-    let cas_server = make_cas_server_with_stall_store(Duration::from_secs(120))?;
+    let cas_server = make_cas_server_with_stall_store(Duration::from_mins(2))?;
 
     let digest = Digest {
         hash: HASH1.to_string(),
@@ -824,7 +824,7 @@ async fn batch_update_blobs_per_blob_timeout_returns_deadline_exceeded()
 #[nativelink_test(start_paused = true)]
 async fn batch_read_blobs_per_blob_timeout_returns_deadline_exceeded()
 -> Result<(), Box<dyn core::error::Error>> {
-    let cas_server = make_cas_server_with_stall_store(Duration::from_secs(120))?;
+    let cas_server = make_cas_server_with_stall_store(Duration::from_mins(2))?;
 
     let digest = Digest {
         hash: HASH1.to_string(),
@@ -1047,7 +1047,7 @@ async fn make_chunking_store_manager() -> Result<Arc<StoreManager>, Error> {
             None,
         )
         .await?,
-    );
+    )?;
     Ok(store_manager)
 }
 
@@ -1529,8 +1529,7 @@ async fn chunking_rejects_index_store_same_as_cas_store() -> Result<(), Box<dyn 
         &store_manager,
         &RemoteCacheCompressionInstances::default(),
     )
-    .err()
-    .expect("expected same-store index_store to be rejected");
+    .expect_err("expected same-store index_store to be rejected");
     assert!(
         error
             .to_string()
@@ -1571,7 +1570,7 @@ async fn chunking_on_grpc_store_forbids_index_store() -> Result<(), Box<dyn core
             None,
         )
         .await?,
-    );
+    )?;
 
     let make_config = |index_store: Option<String>| {
         vec![WithInstanceName {
@@ -1593,8 +1592,7 @@ async fn chunking_on_grpc_store_forbids_index_store() -> Result<(), Box<dyn core
         &store_manager,
         &RemoteCacheCompressionInstances::default(),
     )
-    .err()
-    .expect("expected index_store on grpc store to be rejected");
+    .expect_err("expected index_store on grpc store to be rejected");
     assert!(
         error.to_string().contains("must not be set"),
         "unexpected error: {error}"

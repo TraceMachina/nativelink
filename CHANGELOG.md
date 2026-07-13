@@ -3,6 +3,39 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.6.1](https://github.com/TraceMachina/nativelink/compare/v1.6.0..v1.6.1) - 2026-07-08
+
+### ⛰️  Features
+
+- Materialize directory-cache nodes concurrently on cold misses ([#2526](https://github.com/TraceMachina/nativelink/issues/2526)) - ([065be46](https://github.com/TraceMachina/nativelink/commit/065be46241cac3509489cadf07a1d33d173e5be5))
+- Marcussorealheis extend zstd ([#2527](https://github.com/TraceMachina/nativelink/issues/2527)) - ([e4b6ca6](https://github.com/TraceMachina/nativelink/commit/e4b6ca6e23ed1e2f460c31cc6f6641fde7016842))
+- Adds timer to hyper ([#2523](https://github.com/TraceMachina/nativelink/issues/2523)) - ([63f3454](https://github.com/TraceMachina/nativelink/commit/63f345431b75b7d16800af1e7676161f4e902b4c))
+- Add REAPI content-defined chunking (SplitBlob/SpliceBlob) support ([#2497](https://github.com/TraceMachina/nativelink/issues/2497)) - ([9d86aaf](https://github.com/TraceMachina/nativelink/commit/9d86aaf97a75c64b8a9c664ab0be0242f2c5a71b))
+
+### 🐛 Bug Fixes
+
+- Flush in detect_duplicate_upload ([#2528](https://github.com/TraceMachina/nativelink/issues/2528)) - ([338abe3](https://github.com/TraceMachina/nativelink/commit/338abe33d1c5b7f15b1a1d9f3dd9dee078cc782b))
+
+### 📚 Documentation
+
+- Fix duplicate phrase in CONTRIBUTING.md ([#2522](https://github.com/TraceMachina/nativelink/issues/2522)) - ([7eaf209](https://github.com/TraceMachina/nativelink/commit/7eaf2090942ee50158dd02fd592bc93958b1ad06))
+
+### 🧪 Testing & CI
+
+- Increase the attic retry time ([#2524](https://github.com/TraceMachina/nativelink/issues/2524)) - ([21dadec](https://github.com/TraceMachina/nativelink/commit/21dadec3357f13ce8e6e9c1a64da6facc5eed7dd))
+- Disable Bazel lockfile in 8.7 compatibility lane ([#2517](https://github.com/TraceMachina/nativelink/issues/2517)) - ([8162a93](https://github.com/TraceMachina/nativelink/commit/8162a935284d770626351c37d531f50b27fb223c))
+
+### ⚙️ Miscellaneous
+
+- *(release)* cross-compile the aarch64 Linux binary on x86 ([#2529](https://github.com/TraceMachina/nativelink/issues/2529)) - ([32e4952](https://github.com/TraceMachina/nativelink/commit/32e4952e82dcdc97cf3b9c1a324ca23c646efcf5))
+- add MCP AI widget, MDX support, and design updates ([#2488](https://github.com/TraceMachina/nativelink/issues/2488)) - ([7909e32](https://github.com/TraceMachina/nativelink/commit/7909e32c4a9bd3ea3f402c397572dd14d5dafbff))
+- Attach the tag to images pushed on a tag build ([#2515](https://github.com/TraceMachina/nativelink/issues/2515)) - ([05c5fac](https://github.com/TraceMachina/nativelink/commit/05c5fac5efdf843b8962bae79a8457c51eb62bd7))
+
+### ⬆️ Bumps & Version Updates
+
+- Upgrade crossbeam-epoch and serial_test ([#2519](https://github.com/TraceMachina/nativelink/issues/2519)) - ([0ac1434](https://github.com/TraceMachina/nativelink/commit/0ac1434f1965bc53d0b28d1cbbfe15f2c4b81acc))
+- Upgrade to Bazel 9.1.1 and 8.7.0 ([#2514](https://github.com/TraceMachina/nativelink/issues/2514)) - ([1f94866](https://github.com/TraceMachina/nativelink/commit/1f9486699a2699d017fa6452619ab79e432702f5))
+
 ## [1.6.0](https://github.com/TraceMachina/nativelink/compare/v1.5.2..v1.6.0) - 2026-07-06
 
 ### ⛰️  Features
