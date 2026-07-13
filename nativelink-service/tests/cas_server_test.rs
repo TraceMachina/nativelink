@@ -67,7 +67,7 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
             None,
         )
         .await?,
-    );
+    )?;
     Ok(store_manager)
 }
 
@@ -761,7 +761,7 @@ default_health_status_indicator!(StallStore);
 
 fn make_cas_server_with_stall_store(delay: Duration) -> Result<CasServer, Error> {
     let store_manager = Arc::new(StoreManager::new());
-    store_manager.add_store("main_cas", Store::new(Arc::new(StallStore { delay })));
+    store_manager.add_store("main_cas", Store::new(Arc::new(StallStore { delay })))?;
     CasServer::new(
         &[WithInstanceName {
             instance_name: INSTANCE_NAME.to_string(),
@@ -1044,7 +1044,7 @@ async fn make_chunking_store_manager() -> Result<Arc<StoreManager>, Error> {
             None,
         )
         .await?,
-    );
+    )?;
     Ok(store_manager)
 }
 
@@ -1566,7 +1566,7 @@ async fn chunking_on_grpc_store_forbids_index_store() -> Result<(), Box<dyn core
             None,
         )
         .await?,
-    );
+    )?;
 
     let make_config = |index_store: Option<String>| {
         vec![WithInstanceName {

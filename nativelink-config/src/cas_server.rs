@@ -1049,10 +1049,55 @@ pub struct DirectoryCacheConfig {
     /// Default: `{work_directory}/../directory_cache`
     #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
     pub cache_root: String,
+
+    /// Optional and experimental: additionally cache every subdirectory by
+    /// its own `Directory` digest, not just the root directory. REAPI Merkle
+    /// nodes are content-addressed, so a subtree that is byte-identical
+    /// between two different roots has the same digest and can be
+    /// materialized with a single hardlink pass instead of being rebuilt
+    /// from the CAS. This makes the common "one input file changed out of
+    /// thousands" case reuse every unchanged subtree.
+    ///
+    /// Note: subtree caching multiplies the entry COUNT in the cache (every
+    /// distinct subdirectory becomes its own entry, subject to the normal
+    /// eviction budgets), so operators enabling this should raise
+    /// `max_entries` accordingly (for example 10x). To avoid multiplying the
+    /// SIZE accounting too, an entry's recorded size covers only bytes not
+    /// owned by a descendant entry, so the cache's size total approximates
+    /// unique materialized bytes rather than counting each file once per
+    /// ancestor level.
+    ///
+    /// Trade-off: cold constructions pay roughly one extra hardlink pass per
+    /// tree level (measured ~10% cold overhead at depth 3, within run
+    /// variance) in exchange for the churn-path reuse above.
+    ///
+    /// Default: false (only root directories are cached; existing behavior)
+    #[serde(default)]
+    pub experimental_subtree_caching: bool,
+
+    /// Maximum number of concurrent slow-store fetches across ALL directory
+    /// constructions of this cache. This bound protects backing stores from
+    /// RPC storms: per-level construction concurrency compounds
+    /// multiplicatively across tree levels and concurrent actions.
+    ///
+    /// Interaction with read coalescing: this semaphore fragments coalesced
+    /// batches to at most this many items and serializes fetch waves for
+    /// trees with many tiny files. Deployments using
+    /// `experimental_read_batching` on the underlying grpc store can raise
+    /// this substantially (for example 512), since batching collapses the
+    /// RPC count. Must be greater than 0.
+    ///
+    /// Default: 64
+    #[serde(default = "default_directory_cache_max_concurrent_fetches")]
+    pub max_concurrent_fetches: usize,
 }
 
 const fn default_directory_cache_max_entries() -> usize {
     1000
+}
+
+const fn default_directory_cache_max_concurrent_fetches() -> usize {
+    64
 }
 
 const fn default_directory_cache_max_size_bytes() -> u64 {
