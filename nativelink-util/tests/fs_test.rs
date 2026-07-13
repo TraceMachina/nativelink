@@ -68,11 +68,11 @@ async fn freebind_allows_binding_unassigned_address() -> Result<(), Box<dyn core
 // process-wide. On a one-thread pool the old code deadlocks and the timeout
 // below fires.
 #[test]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "test needs a runtime with a one-thread blocking pool; no util wrapper exposes max_blocking_threads"
+)]
 fn read_dir_needs_only_one_blocking_thread() -> Result<(), Box<dyn core::error::Error>> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "test needs a runtime with a one-thread blocking pool"
-    )]
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .max_blocking_threads(1)
