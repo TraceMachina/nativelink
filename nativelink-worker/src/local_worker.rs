@@ -627,6 +627,8 @@ pub async fn new_local_worker(
             max_entries: cache_config.max_entries,
             max_size_bytes: cache_config.max_size_bytes,
             cache_root,
+            experimental_subtree_caching: cache_config.experimental_subtree_caching,
+            max_concurrent_fetches: cache_config.max_concurrent_fetches,
         };
 
         match DirectoryCache::new(worker_cache_config, fast_slow_store.clone()).await {
