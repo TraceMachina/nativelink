@@ -5298,4 +5298,132 @@ done
         assert_eq!(action_result.output_folders[0].path, "out");
         Ok(())
     }
+
+    /// Regression test: dropping an uncleaned action must register its
+    /// working-directory cleanup *before* returning, not when the spawned
+    /// background task first runs. Otherwise a retry of the same operation
+    /// slips past wait_for_cleanup_if_needed, recreates the directory, and
+    /// the late background cleanup deletes the retry's files mid-run.
+    #[nativelink_test]
+    async fn dropped_action_registers_cleanup_before_yielding_test()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const WORKER_ID: &str = "foo_worker_id";
+
+        fn test_monotonic_clock() -> SystemTime {
+            static CLOCK: AtomicU64 = AtomicU64::new(0);
+            monotonic_clock(&CLOCK)
+        }
+
+        let (_, _, cas_store, ac_store) = setup_stores().await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
+            RunningActionsManagerArgs {
+                root_action_directory: root_action_directory.clone(),
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            },
+            Callbacks {
+                now_fn: test_monotonic_clock,
+                sleep_fn: |_duration| Box::pin(future::pending()),
+            },
+        )?);
+
+        let command = Command {
+            arguments: vec!["true".to_string()],
+            ..Default::default()
+        };
+        let command_digest = serialize_and_upload_message(
+            &command,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let input_root_digest = serialize_and_upload_message(
+            &Directory::default(),
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let action = Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(input_root_digest.into()),
+            ..Default::default()
+        };
+        let action_digest = serialize_and_upload_message(
+            &action,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+
+        let operation_id = OperationId::default();
+        let start_execute = StartExecute {
+            execute_request: Some(ExecuteRequest {
+                action_digest: Some(action_digest.into()),
+                ..Default::default()
+            }),
+            operation_id: operation_id.to_string(),
+            queued_timestamp: None,
+            platform: action.platform.clone(),
+            worker_id: WORKER_ID.to_string(),
+        };
+
+        // First attempt: create and prepare, then get aborted (dropped
+        // without cleanup), as happens when the worker disconnects or the
+        // operation is cancelled.
+        let running_action = running_actions_manager
+            .create_and_add_action(WORKER_ID.to_string(), start_execute.clone())
+            .await?
+            .prepare_action()
+            .await?;
+        let work_directory = running_action.get_work_directory().clone();
+        assert!(fs::metadata(&work_directory).await.is_ok());
+        assert!(!running_actions_manager.is_cleaning_up(&operation_id));
+
+        drop(running_action);
+
+        // The cleanup must be registered synchronously by the drop: a retry
+        // of the same operation checks this registration, and anything later
+        // (e.g. when the background task first runs) lets the retry recreate
+        // the directory only to have this cleanup delete it mid-run.
+        assert!(
+            running_actions_manager.is_cleaning_up(&operation_id),
+            "drop must register the working-directory cleanup before yielding"
+        );
+
+        // Retry of the same operation: must wait out the cleanup and end up
+        // with an intact working directory.
+        let retry_action = running_actions_manager
+            .create_and_add_action(WORKER_ID.to_string(), start_execute)
+            .await?
+            .prepare_action()
+            .await?;
+        for _ in 0..20 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            fs::metadata(retry_action.get_work_directory())
+                .await
+                .is_ok(),
+            "retry working directory was deleted by the previous attempt's cleanup"
+        );
+        retry_action.cleanup().await?;
+        Ok(())
+    }
 }

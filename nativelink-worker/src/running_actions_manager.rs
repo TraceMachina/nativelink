@@ -2864,6 +2864,12 @@ impl RunningActionsManagerImpl {
                 operation_id,
             })
     }
+
+    /// Whether a cleanup of `operation_id`'s working directory is currently
+    /// registered. Exposed for tests.
+    pub fn is_cleaning_up(&self, operation_id: &OperationId) -> bool {
+        self.cleaning_up_operations.lock().contains(operation_id)
+    }
 }
 
 impl RunningActionsManager for RunningActionsManagerImpl {
