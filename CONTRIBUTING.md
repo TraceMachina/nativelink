@@ -399,7 +399,7 @@ most automatically generated changelogs provide.
    - `Cargo.toml`
    - `nativelink-*/Cargo.toml`
 
-2. Run `git cliff --tag=0.x.y > CHANGELOG.md` to update the changelog. You might
+2. Run `git cliff --tag=v0.x.y > CHANGELOG.md` to update the changelog. You might
    need to make manual adjustments to `cliff.toml` if `git-cliff` doesn't put a
    commit in the right subsection.
 
@@ -437,15 +437,17 @@ most automatically generated changelogs provide.
    git push upstream v0.x.y
    ```
 
-8. Regenerate the latest config reference docs now that the upstream tag exists.
+8. Regenerate the release docs now that the upstream tag exists.
    Pushing the tag upstream triggers the
-   [`Regenerate config reference`](.github/workflows/config-reference.yaml)
-   workflow, which regenerates the docs and opens a PR against `main` with
-   auto-merge enabled. Check that the PR appeared and merged; if the workflow
-   failed, either re-run it from `Actions → Regenerate config reference → Run
-   workflow` (entering the tag) or fall back to the manual procedure below.
+   [`Regenerate release docs`](.github/workflows/config-reference.yaml)
+   workflow, which regenerates `CHANGELOG.md` plus the config reference docs and
+   opens a PR against `main` with auto-merge enabled. Check that the PR appeared
+   and merged; if the workflow failed, either re-run it from `Actions →
+   Regenerate release docs → Run workflow` (entering the tag) or fall back to the
+   manual procedure below.
 
-   Passing the new tag updates `web/apps/docs/lib/config-versions.ts`, which
+   Passing the new tag updates `CHANGELOG.md` from the exact commit range ending
+   at the tag. It also updates `web/apps/docs/lib/config-versions.ts`, which
    determines the latest version shown in the docs UI, rewrites
    `web/apps/docs/content/docs/reference/nativelink-config/index.mdx` from that
    tag, and creates a versioned page for the previous latest release. You do not
@@ -453,6 +455,8 @@ most automatically generated changelogs provide.
 
    ```bash
    git fetch --tags upstream
+   ROOT_COMMIT=$(git rev-list --max-parents=0 v0.x.y | tail -1)
+   git cliff --tag v0.x.y --output CHANGELOG.md "${ROOT_COMMIT}..v0.x.y"
    cd web
    bun --filter @nativelink/docs gen:config-reference v0.x.y
    cd ..
@@ -465,7 +469,7 @@ most automatically generated changelogs provide.
    the generated docs update:
 
    ```bash
-   nix develop -c vale web/apps/docs/content/docs/reference/nativelink-config/*.mdx
+   nix develop -c vale CHANGELOG.md web/apps/docs/content/docs/reference/nativelink-config/*.mdx
    ```
 
 9. The images for the release are now being created. Go to the
