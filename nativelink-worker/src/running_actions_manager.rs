@@ -951,12 +951,25 @@ async fn do_cleanup(
     action_directory: &str,
 ) -> Result<(), Error> {
     // Mark this operation as being cleaned up
-    let Some(_cleaning_guard) = running_actions_manager.perform_cleanup(operation_id.clone())
-    else {
+    let Some(cleaning_guard) = running_actions_manager.perform_cleanup(operation_id.clone()) else {
         // Cleanup is already happening elsewhere.
         return Ok(());
     };
+    do_cleanup_with_guard(
+        cleaning_guard,
+        running_actions_manager,
+        operation_id,
+        action_directory,
+    )
+    .await
+}
 
+async fn do_cleanup_with_guard(
+    _cleaning_guard: CleanupGuard,
+    running_actions_manager: &Arc<RunningActionsManagerImpl>,
+    operation_id: &OperationId,
+    action_directory: &str,
+) -> Result<(), Error> {
     debug!("Worker cleaning up");
     // Note: We need to be careful to keep trying to cleanup even if one of the steps fails.
     let remove_dir_result = fs::remove_dir_all(action_directory)
@@ -2101,9 +2114,24 @@ impl Drop for RunningActionImpl {
         );
         let running_actions_manager = self.running_actions_manager.clone();
         let action_directory = self.action_directory.clone();
+        // Register the cleanup synchronously, before the background task gets
+        // its first poll. A retry of this operation on this worker consults
+        // the registration in wait_for_cleanup_if_needed; registering it
+        // lazily leaves a window where the retry recreates the directory and
+        // this cleanup then deletes the retry's live files.
+        let Some(cleaning_guard) = running_actions_manager.perform_cleanup(operation_id.clone())
+        else {
+            // Cleanup is already happening elsewhere.
+            return;
+        };
         background_spawn!("running_action_impl_drop", async move {
-            let Err(err) =
-                do_cleanup(&running_actions_manager, &operation_id, &action_directory).await
+            let Err(err) = do_cleanup_with_guard(
+                cleaning_guard,
+                &running_actions_manager,
+                &operation_id,
+                &action_directory,
+            )
+            .await
             else {
                 return;
             };
