@@ -35,6 +35,7 @@ use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_redis_tester::SubscriptionManagerNotify;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
+use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use nativelink_util::store_trait::{
     BoolValue, RemoveCallback, SchedulerCurrentVersionProvider, SchedulerIndexProvider,
@@ -53,6 +54,8 @@ use redis::{
     AsyncCommands, AsyncIter, Client, IntoConnectionInfo, PushInfo, ScanOptions, Script, Value,
     pipe,
 };
+use serde::Deserialize;
+use serde::de::IntoDeserializer;
 use tokio::select;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::{OnceCell, OwnedSemaphorePermit, Semaphore};
@@ -450,6 +453,35 @@ impl<C: ConnectionLike> Drop for ClientWithPermit<C> {
     }
 }
 
+/// Decode a `StoreKey` coming from Redis
+pub fn decode_key<'a>(
+    key_prefix: &String,
+    encoded_key: Cow<'a, str>,
+) -> Result<StoreKey<'a>, Error> {
+    let key_no_prefix = if key_prefix.is_empty() {
+        encoded_key
+    } else {
+        match encoded_key.strip_prefix(key_prefix) {
+            Some(r) => Cow::from(r.to_string()),
+            None => {
+                return Err(make_err!(
+                    Code::InvalidArgument,
+                    "Redis key ({}) is missing prefix ({})",
+                    encoded_key,
+                    key_prefix
+                ));
+            }
+        }
+    };
+    let maybe_digest_info: Result<_, serde::de::value::Error> =
+        DigestInfo::deserialize(key_no_prefix.clone().into_deserializer());
+    if let Ok(digest_info) = maybe_digest_info {
+        Ok(StoreKey::Digest(digest_info))
+    } else {
+        Ok(StoreKey::Str(key_no_prefix))
+    }
+}
+
 impl<C, M> RedisStore<C, M>
 where
     C: ConnectionLike + Clone + Sync,
@@ -475,6 +507,7 @@ where
         let subscription_manager = Arc::new(RedisSubscriptionManager::new(
             subscriber_channel,
             remove_callbacks.clone(),
+            key_prefix.clone(),
         ));
         if let Some(channel) = &pub_sub_channel {
             connection_manager.psubscribe(channel).await?;
@@ -511,8 +544,8 @@ where
         })
     }
 
-    /// Encode a [`StoreKey`] so it can be sent to Redis.
-    fn encode_key<'a>(&self, key: &'a StoreKey<'a>) -> Cow<'a, str> {
+    /// Encode a `StoreKey` so it can be sent to Redis.
+    pub fn encode_key<'a>(&self, key: &'a StoreKey<'a>) -> Cow<'a, str> {
         let key_body = key.as_str();
         if self.key_prefix.is_empty() {
             key_body
@@ -925,19 +958,21 @@ where
                             errors.push(format!("Non-utf8 key {raw_key:?}"));
                             continue;
                         };
-                        if let Some(key) = str_key.strip_prefix(&self.key_prefix) {
-                            let key = StoreKey::new_str(key);
-                            if range.contains(&key) {
-                                iterations += 1;
-                                if !handler(&key) {
-                                    error!("Issue in handler");
-                                    errors.push("Issue in handler".to_string());
+                        match decode_key(&self.key_prefix, Cow::from(str_key)) {
+                            Ok(key) => {
+                                if range.contains(&key) {
+                                    iterations += 1;
+                                    if !handler(&key) {
+                                        error!("Issue in handler");
+                                        errors.push("Issue in handler".to_string());
+                                    }
+                                } else {
+                                    trace!(%key, ?range, "Key not in range");
                                 }
-                            } else {
-                                trace!(%key, ?range, "Key not in range");
                             }
-                        } else {
-                            errors.push("Key doesn't match prefix".to_string());
+                            Err(e) => {
+                                errors.push(e.to_string());
+                            }
                         }
                     }
                     Err(err)
@@ -1687,6 +1722,7 @@ impl RedisSubscriptionManager {
     pub fn new(
         subscriber_channel: UnboundedReceiver<PushInfo>,
         remove_callbacks: Arc<async_lock::Mutex<Vec<RemoveCallback>>>,
+        key_prefix: String,
     ) -> Self {
         let subscribed_keys = Arc::new(RwLock::new(StringPatriciaMap::new()));
         let subscribed_keys_weak = Arc::downgrade(&subscribed_keys);
@@ -1756,7 +1792,13 @@ impl RedisSubscriptionManager {
                                                 continue;
                                             };
 
-                                            let store_key = StoreKey::new_str(internal_key).into_owned();
+                                            let store_key = match decode_key(&key_prefix, Cow::from(internal_key)) {
+                                                Ok(k) => k.into_owned(),
+                                                Err(err) => {
+                                                    error!(%err, internal_key, "Bad redis key");
+                                                    continue;
+                                                }
+                                            };
                                             let locked_remove_callbacks = remove_callbacks.lock().await;
                                             let mut callbacks: FuturesUnordered<_> =
                                                 locked_remove_callbacks.iter()

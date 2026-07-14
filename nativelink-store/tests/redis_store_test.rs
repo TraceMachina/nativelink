@@ -31,7 +31,7 @@ use nativelink_redis_tester::{
 use nativelink_store::cas_utils::ZERO_BYTE_DIGESTS;
 use nativelink_store::redis_store::{
     ClusterRedisManager, DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE, DEFAULT_MAX_COUNT_PER_CURSOR,
-    LUA_VERSION_SET_SCRIPT, RedisStore, RedisSubscriptionManager,
+    LUA_VERSION_SET_SCRIPT, RedisStore, RedisSubscriptionManager, decode_key,
 };
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
@@ -1865,7 +1865,7 @@ fn test_search_by_index_skips_int_from_cursor_read() -> Result<(), Error> {
 async fn no_items_from_none_subscription_channel() -> Result<(), Error> {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let subscription_manager =
-        RedisSubscriptionManager::new(rx, Arc::new(async_lock::Mutex::new(vec![])));
+        RedisSubscriptionManager::new(rx, Arc::new(async_lock::Mutex::new(vec![])), String::new());
 
     // To give the stream enough time to get polled
     sleep(Duration::from_secs(1)).await;
@@ -1885,7 +1885,7 @@ async fn no_items_from_none_subscription_channel() -> Result<(), Error> {
 async fn send_messages_to_subscription_channel() -> Result<(), Error> {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let subscription_manager =
-        RedisSubscriptionManager::new(rx, Arc::new(async_lock::Mutex::new(vec![])));
+        RedisSubscriptionManager::new(rx, Arc::new(async_lock::Mutex::new(vec![])), String::new());
 
     tx.send(PushInfo {
         kind: redis::PushKind::PSubscribe,
@@ -2048,7 +2048,8 @@ impl SchedulerStoreKeyProvider for TestSubKey {
 #[nativelink_test]
 async fn redis_subscription_single_drop_is_silent() -> Result<(), Error> {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let manager = RedisSubscriptionManager::new(rx, Arc::new(async_lock::Mutex::new(vec![])));
+    let manager =
+        RedisSubscriptionManager::new(rx, Arc::new(async_lock::Mutex::new(vec![])), String::new());
 
     let sub = manager.subscribe(TestSubKey("solo-key".to_string()))?;
     drop(sub);
@@ -2067,7 +2068,8 @@ async fn redis_subscription_single_drop_is_silent() -> Result<(), Error> {
 #[nativelink_test]
 async fn redis_subscription_drop_one_of_two_keeps_publisher() -> Result<(), Error> {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let manager = RedisSubscriptionManager::new(rx, Arc::new(async_lock::Mutex::new(vec![])));
+    let manager =
+        RedisSubscriptionManager::new(rx, Arc::new(async_lock::Mutex::new(vec![])), String::new());
 
     let key = "shared-key";
     let sub_a = manager.subscribe(TestSubKey(key.to_string()))?;
@@ -2095,7 +2097,8 @@ async fn redis_subscription_drop_one_of_two_keeps_publisher() -> Result<(), Erro
 async fn redis_subscription_concurrent_drops_no_absence_warn() -> Result<(), Error> {
     const ITERATIONS: usize = 200;
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let manager = RedisSubscriptionManager::new(rx, Arc::new(async_lock::Mutex::new(vec![])));
+    let manager =
+        RedisSubscriptionManager::new(rx, Arc::new(async_lock::Mutex::new(vec![])), String::new());
 
     for i in 0..ITERATIONS {
         let key = format!("race-key-{i}");
@@ -2129,7 +2132,8 @@ async fn redis_subscription_concurrent_drops_no_absence_warn() -> Result<(), Err
 #[nativelink_test]
 async fn redis_subscription_resubscribe_after_drop_creates_fresh_publisher() -> Result<(), Error> {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let manager = RedisSubscriptionManager::new(rx, Arc::new(async_lock::Mutex::new(vec![])));
+    let manager =
+        RedisSubscriptionManager::new(rx, Arc::new(async_lock::Mutex::new(vec![])), String::new());
 
     let key = "cycle-key";
     let sub_a = manager.subscribe(TestSubKey(key.to_string()))?;
@@ -2263,6 +2267,7 @@ async fn send_eviction_to_subscription_channel() -> Result<(), Error> {
         Arc::new(async_lock::Mutex::new(vec![Arc::new(
             LoggingRemoveCallback {},
         )])),
+        String::new(),
     );
 
     tx.send(PushInfo {
@@ -2295,4 +2300,27 @@ async fn send_eviction_to_subscription_channel() -> Result<(), Error> {
     ));
 
     Ok(())
+}
+
+async fn store_key_coding_round_trip_core(key_prefix: String) -> Result<(), Error> {
+    let store = make_mock_store_with_prefix(vec![], key_prefix.clone()).await;
+
+    for key in [
+        StoreKey::new_str("foo"),
+        StoreKey::Digest(DigestInfo::zero_digest()),
+        StoreKey::Digest(DigestInfo::new([99u8; 32], 512)),
+    ] {
+        assert_eq!(key, decode_key(&key_prefix, store.encode_key(&key))?);
+    }
+    Ok(())
+}
+
+#[nativelink_test]
+async fn store_key_coding_round_trip() -> Result<(), Error> {
+    store_key_coding_round_trip_core(String::new()).await
+}
+
+#[nativelink_test]
+async fn store_key_coding_round_trip_with_prefix() -> Result<(), Error> {
+    store_key_coding_round_trip_core(String::from("demo")).await
 }
