@@ -165,6 +165,7 @@
             # FIXME(palfrey): Attempted workaround from https://github.com/llvm/llvm-project/issues/32849#issuecomment-2353071071 but doesn't work
             # CFLAGS = "-femit-all-decls";
             ${linkerEnvVar} = linkerPath;
+            AWS_LC_SYS_SYSTEM_DIR = "${aws-lc-system-dir}";
           });
 
         # Additional target for external dependencies to simplify caching.
@@ -197,6 +198,10 @@
         nativelink-is-executable-test = pkgs.callPackage ./tools/nativelink-is-executable-test.nix {inherit nativelink;};
 
         generate-toolchains = pkgs.callPackage ./tools/generate-toolchains.nix {};
+        aws-lc-system-dir = pkgs.callPackage ./tools/aws-lc-system-dir.nix {
+          inherit (pkgs) aws-lc;
+          aws-lc-dev = pkgs.aws-lc.dev;
+        };
 
         build-chromium-tests =
           pkgs.writeShellScriptBin
@@ -596,6 +601,9 @@
               # If on Darwin, generate darwin.bazelrc, which configures darwin
               # libs and frameworks.
               ${config.darwin.installationScript}
+
+              # Export aws-lc system dir
+              export AWS_LC_SYS_SYSTEM_DIR=${aws-lc-system-dir}
 
               # The Bazel and Cargo builds in nix require a Clang toolchain.
               # TODO(palfrey): The Bazel build currently uses the
