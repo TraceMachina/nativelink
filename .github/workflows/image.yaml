@@ -51,6 +51,13 @@ jobs:
         uses: >- # v6.0.2
           actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
+      # Skopeo login otherwise complains with
+      # "get credentials: loading registries configuration \"/etc/containers/registries.conf\": registries.conf must be in v2 format but is in v1"
+      - name: Upgrade registries config to v2
+        run: |
+          cat /etc/containers/registries.conf
+          echo "unqualified-search-registries = [\"docker.io\", \"quay.io\"]" | sudo tee /etc/containers/registries.conf
+
       - name: Prepare Worker
         uses: ./.github/actions/prepare-nix
         with:
