@@ -41,9 +41,12 @@ use nativelink_proto::google::rpc::Status as GrpcStatus;
 use nativelink_store::ac_utils::get_and_decode_digest;
 use nativelink_store::grpc_store::GrpcStore;
 use nativelink_store::store_manager::StoreManager;
+use nativelink_store::zstd_store::ZstdStore;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
-use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc, make_ctx_for_hash_func};
+use nativelink_util::digest_hasher::{
+    DigestHasher, DigestHasherFunc, digest_hasher_func_from_context, make_ctx_for_hash_func,
+};
 use nativelink_util::spawn_blocking;
 use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
 use opentelemetry::context::FutureExt;
@@ -341,6 +344,22 @@ impl CasServer {
         let remote_cache_compression_enabled = self
             .remote_cache_compression_instances
             .enabled_for(instance_name);
+        // The digest hasher is set on the ambient context by the
+        // `batch_update_blobs` wrapper (via `make_ctx_for_hash_func`); resolve
+        // it once for the whole request so the zstd fast path can validate the
+        // staged blob against the client's declared digest function.
+        let digest_function = digest_hasher_func_from_context();
+        // Detect a directly-configured `ZstdStore` at the instance boundary so
+        // a client-supplied zstd blob can be passed through byte-for-byte
+        // (validate + stage + commit) instead of decompressed then recompressed.
+        // Resolved once and cloned into each per-blob future.
+        let maybe_zstd_store = store
+            .clone()
+            .into_inner()
+            .as_any_arc()
+            .downcast::<ZstdStore>()
+            .ok();
+        let maybe_zstd_store = &maybe_zstd_store;
         let update_futures: FuturesUnordered<_> = request
             .requests
             .into_iter()
@@ -354,28 +373,56 @@ impl CasServer {
                     let size_bytes = usize::try_from(digest_info.size_bytes())
                         .err_tip(|| "Digest size_bytes was not convertible to usize")?;
 
-                    let store_data = crate::wire_compression::decompress_batch_update(
-                        request.data,
-                        request.compressor,
-                        size_bytes,
-                        remote_cache_compression_enabled,
-                    )
-                    .await?;
+                    let request_compressor = compressor::Value::try_from(request.compressor).ok();
                     // Apply a per-blob deadline so one slow upload does not
                     // make the whole batch hit the client's overall deadline.
-                    let result = match tokio::time::timeout(
-                        BATCH_PER_BLOB_TIMEOUT,
-                        store_ref.update_oneshot(digest_info, store_data),
-                    )
-                    .await
+                    let result = if let (Some(zstd_store), Some(compressor::Value::Zstd)) =
+                        (maybe_zstd_store.clone(), request_compressor)
                     {
-                        Ok(r) => r.err_tip(|| "Error writing to store"),
-                        Err(_elapsed) => Err(make_err!(
-                            Code::DeadlineExceeded,
-                            "BatchUpdateBlobs per-blob timeout ({} s) elapsed for digest {}",
-                            BATCH_PER_BLOB_TIMEOUT.as_secs(),
-                            digest_info,
-                        )),
+                        // Fast path: hand the compressed bytes straight to the
+                        // ZstdStore, which validates them against the digest and
+                        // stores them verbatim. A malformed stream surfaces here
+                        // as this blob's `InvalidArgument`, isolated from siblings.
+                        match tokio::time::timeout(
+                            BATCH_PER_BLOB_TIMEOUT,
+                            zstd_store.update_zstd_oneshot(
+                                digest_info,
+                                digest_function,
+                                request.data,
+                            ),
+                        )
+                        .await
+                        {
+                            Ok(r) => r.map(|_| ()).err_tip(|| "Error writing to store"),
+                            Err(_elapsed) => Err(make_err!(
+                                Code::DeadlineExceeded,
+                                "BatchUpdateBlobs per-blob timeout ({} s) elapsed for digest {}",
+                                BATCH_PER_BLOB_TIMEOUT.as_secs(),
+                                digest_info,
+                            )),
+                        }
+                    } else {
+                        let store_data = crate::wire_compression::decompress_batch_update(
+                            request.data,
+                            request.compressor,
+                            size_bytes,
+                            remote_cache_compression_enabled,
+                        )
+                        .await?;
+                        match tokio::time::timeout(
+                            BATCH_PER_BLOB_TIMEOUT,
+                            store_ref.update_oneshot(digest_info, store_data),
+                        )
+                        .await
+                        {
+                            Ok(r) => r.err_tip(|| "Error writing to store"),
+                            Err(_elapsed) => Err(make_err!(
+                                Code::DeadlineExceeded,
+                                "BatchUpdateBlobs per-blob timeout ({} s) elapsed for digest {}",
+                                BATCH_PER_BLOB_TIMEOUT.as_secs(),
+                                digest_info,
+                            )),
+                        }
                     };
                     Ok::<_, Error>(batch_update_blobs_response::Response {
                         digest: Some(digest),
@@ -419,6 +466,18 @@ impl CasServer {
                 compressor::Value::try_from(*compressor_i32)
                     .is_ok_and(|compressor| compressor == compressor::Value::Zstd)
             });
+        // Detect a directly-configured `ZstdStore` at the instance boundary so
+        // stored zstd bytes can be returned byte-for-byte (when the client
+        // accepts zstd and compression actually helped) with no
+        // decompress-then-recompress round trip. Resolved once and cloned into
+        // each per-blob future.
+        let maybe_zstd_store = store
+            .clone()
+            .into_inner()
+            .as_any_arc()
+            .downcast::<ZstdStore>()
+            .ok();
+        let maybe_zstd_store = &maybe_zstd_store;
         let read_futures: FuturesUnordered<_> = request
             .digests
             .into_iter()
@@ -428,51 +487,90 @@ impl CasServer {
                     // TODO(palfrey) There is a security risk here of someone taking all the memory on the instance.
                     // Apply a per-blob deadline so one slow read does not
                     // make the whole batch hit the client's overall deadline.
-                    let result = match tokio::time::timeout(
-                        BATCH_PER_BLOB_TIMEOUT,
-                        store_ref.get_part_unchunked(digest_copy, 0, None),
-                    )
-                    .await
+                    let (status, data, response_compressor) = if let Some(zstd_store) =
+                        maybe_zstd_store.clone()
                     {
-                        Ok(r) => r.err_tip(|| "Error reading from store"),
-                        Err(_elapsed) => Err(make_err!(
-                            Code::DeadlineExceeded,
-                            "BatchReadBlobs per-blob timeout ({} s) elapsed for digest {}",
-                            BATCH_PER_BLOB_TIMEOUT.as_secs(),
-                            digest_copy,
-                        )),
-                    };
-                    let (status, data, response_compressor) = match result {
-                        Ok(raw_data) => {
-                            let (output_data, chosen_compressor) = if client_accepts_zstd {
-                                let data_for_compression = raw_data.clone();
-                                match spawn_blocking!("cas_encode_compressed_download", move || {
-                                    crate::wire_compression::compress_for_batch_read(
-                                        data_for_compression,
-                                    )
-                                })
-                                .await
-                                {
-                                    Ok(compressed_result) => compressed_result,
-                                    Err(e) => {
-                                        warn!("Wire compression task failed for digest {:?}, falling back to identity: {}", digest, e);
-                                        (raw_data, compressor::Value::Identity)
-                                    }
-                                }
-                            } else {
-                                (raw_data, compressor::Value::Identity)
-                            };
-
-                            (GrpcStatus::default(), output_data, chosen_compressor)
-                        }
-                        Err(mut e) => {
-                            if e.code == Code::NotFound {
-                                // Trim the error code. Not Found is quite common and we don't want to send a large
-                                // error (debug) message for something that is common. We resize to just the last
-                                // message as it will be the most relevant.
-                                e.messages.resize_with(1, String::new);
+                        // Fast path: the ZstdStore chooses between its stored
+                        // zstd bytes (when the client accepts zstd and they are
+                        // smaller than the raw size) and the decoded raw bytes,
+                        // avoiding a decompress-then-recompress round trip.
+                        let result = match tokio::time::timeout(
+                            BATCH_PER_BLOB_TIMEOUT,
+                            zstd_store.get_for_batch(digest_copy, client_accepts_zstd),
+                        )
+                        .await
+                        {
+                            Ok(r) => r.err_tip(|| "Error reading from store"),
+                            Err(_elapsed) => Err(make_err!(
+                                Code::DeadlineExceeded,
+                                "BatchReadBlobs per-blob timeout ({} s) elapsed for digest {}",
+                                BATCH_PER_BLOB_TIMEOUT.as_secs(),
+                                digest_copy,
+                            )),
+                        };
+                        match result {
+                            Ok((data, is_zstd)) => {
+                                let compressor = if is_zstd {
+                                    compressor::Value::Zstd
+                                } else {
+                                    compressor::Value::Identity
+                                };
+                                (GrpcStatus::default(), data, compressor)
                             }
-                            (e.into(), Bytes::new(), compressor::Value::Identity)
+                            Err(mut e) => {
+                                if e.code == Code::NotFound {
+                                    e.messages.resize_with(1, String::new);
+                                }
+                                (e.into(), Bytes::new(), compressor::Value::Identity)
+                            }
+                        }
+                    } else {
+                        let result = match tokio::time::timeout(
+                            BATCH_PER_BLOB_TIMEOUT,
+                            store_ref.get_part_unchunked(digest_copy, 0, None),
+                        )
+                        .await
+                        {
+                            Ok(r) => r.err_tip(|| "Error reading from store"),
+                            Err(_elapsed) => Err(make_err!(
+                                Code::DeadlineExceeded,
+                                "BatchReadBlobs per-blob timeout ({} s) elapsed for digest {}",
+                                BATCH_PER_BLOB_TIMEOUT.as_secs(),
+                                digest_copy,
+                            )),
+                        };
+                        match result {
+                            Ok(raw_data) => {
+                                let (output_data, chosen_compressor) = if client_accepts_zstd {
+                                    let data_for_compression = raw_data.clone();
+                                    match spawn_blocking!("cas_encode_compressed_download", move || {
+                                        crate::wire_compression::compress_for_batch_read(
+                                            data_for_compression,
+                                        )
+                                    })
+                                    .await
+                                    {
+                                        Ok(compressed_result) => compressed_result,
+                                        Err(e) => {
+                                            warn!("Wire compression task failed for digest {:?}, falling back to identity: {}", digest, e);
+                                            (raw_data, compressor::Value::Identity)
+                                        }
+                                    }
+                                } else {
+                                    (raw_data, compressor::Value::Identity)
+                                };
+
+                                (GrpcStatus::default(), output_data, chosen_compressor)
+                            }
+                            Err(mut e) => {
+                                if e.code == Code::NotFound {
+                                    // Trim the error code. Not Found is quite common and we don't want to send a large
+                                    // error (debug) message for something that is common. We resize to just the last
+                                    // message as it will be the most relevant.
+                                    e.messages.resize_with(1, String::new);
+                                }
+                                (e.into(), Bytes::new(), compressor::Value::Identity)
+                            }
                         }
                     };
                     Ok::<_, Error>(batch_read_blobs_response::Response {
