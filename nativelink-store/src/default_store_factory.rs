@@ -47,6 +47,7 @@ use crate::shard_store::ShardStore;
 use crate::size_partitioning_store::SizePartitioningStore;
 use crate::store_manager::StoreManager;
 use crate::verify_store::VerifyStore;
+use crate::zstd_store::ZstdStore;
 
 type FutureMaybeStore<'a> = Box<dyn Future<Output = Result<Store, Error>> + Send + 'a>;
 
@@ -95,6 +96,10 @@ pub fn store_factory<'a>(
             ),
             StoreSpec::Compression(spec) => CompressionStore::new(
                 &spec.clone(),
+                store_factory(&spec.backend, store_manager, None).await?,
+            )?,
+            StoreSpec::ZstdStore(spec) => ZstdStore::new(
+                spec,
                 store_factory(&spec.backend, store_manager, None).await?,
             )?,
             StoreSpec::Dedup(spec) => DedupStore::new(

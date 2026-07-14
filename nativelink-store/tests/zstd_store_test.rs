@@ -24,7 +24,9 @@ use nativelink_error::{Error, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_metric::MetricsComponent;
 use nativelink_store::cas_utils::ZERO_BYTE_DIGESTS;
+use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::memory_store::MemoryStore;
+use nativelink_store::store_manager::StoreManager;
 use nativelink_store::zstd_store::ZstdStore;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
@@ -208,6 +210,18 @@ async fn has_reports_uncompressed_digest_size() -> Result<(), Error> {
         reported,
         Some(data.len() as u64),
         "has must report the uncompressed digest size, not the physical zstd size"
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn factory_builds_zstd_store() -> Result<(), Error> {
+    let store_spec = StoreSpec::ZstdStore(Box::new(spec()));
+    let store_manager = Arc::new(StoreManager::new());
+    let store = store_factory(&store_spec, &store_manager, None).await?;
+    assert!(
+        store.downcast_ref_immediate::<ZstdStore>().is_some(),
+        "Expected store_factory to build a ZstdStore for StoreSpec::ZstdStore"
     );
     Ok(())
 }
