@@ -370,14 +370,18 @@ impl CasServer {
                         .clone()
                         .err_tip(|| "Digest not found in request")?;
                     let digest_info = DigestInfo::try_from(digest.clone())?;
-                    let size_bytes = usize::try_from(digest_info.size_bytes())
-                        .err_tip(|| "Digest size_bytes was not convertible to usize")?;
 
                     let request_compressor = compressor::Value::try_from(request.compressor).ok();
                     // Apply a per-blob deadline so one slow upload does not
                     // make the whole batch hit the client's overall deadline.
-                    let result = if let (Some(zstd_store), Some(compressor::Value::Zstd)) =
-                        (maybe_zstd_store.clone(), request_compressor)
+                    // The fast path is only taken when remote cache
+                    // compression is enabled for this instance; otherwise a
+                    // zstd-compressed blob falls through to
+                    // `decompress_batch_update` below, which rejects it the
+                    // same way it would for a non-`ZstdStore` instance.
+                    let result = if remote_cache_compression_enabled
+                        && let (Some(zstd_store), Some(compressor::Value::Zstd)) =
+                            (maybe_zstd_store.clone(), request_compressor)
                     {
                         // Fast path: hand the compressed bytes straight to the
                         // ZstdStore, which validates them against the digest and
@@ -402,6 +406,8 @@ impl CasServer {
                             )),
                         }
                     } else {
+                        let size_bytes = usize::try_from(digest_info.size_bytes())
+                            .err_tip(|| "Digest size_bytes was not convertible to usize")?;
                         let store_data = crate::wire_compression::decompress_batch_update(
                             request.data,
                             request.compressor,

@@ -1321,6 +1321,114 @@ async fn batch_update_zstd_instance_identity_entry_roundtrips()
     Ok(())
 }
 
+/// Builds a `CasServer` whose instance CAS store is directly a `ZstdStore`
+/// (over memory) but with remote cache compression DISABLED for the
+/// instance (unlike `make_zstd_instance_cas_server`). Used to verify the
+/// `ZstdStore` fast path in `BatchUpdateBlobs` does not bypass the
+/// `remote_cache_compression_enabled` gate that the non-`ZstdStore` path
+/// already enforces.
+fn make_zstd_instance_cas_server_compression_disabled() -> Result<(CasServer, Arc<ZstdStore>), Error>
+{
+    let temp_path = make_temp_path("cas_server_zstd_instance_disabled");
+    std::fs::create_dir_all(&temp_path).expect("create temp dir");
+    let inner = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let zstd_store = ZstdStore::new(&zstd_instance_spec(temp_path), inner)?;
+    let store_manager = Arc::new(StoreManager::new());
+    store_manager.add_store("main_cas", Store::new(zstd_store.clone()))?;
+    let cas_server = make_cas_server(&store_manager)?;
+    Ok((cas_server, zstd_store))
+}
+
+#[nativelink_test]
+async fn batch_update_zstd_instance_rejected_when_remote_cache_compression_disabled()
+-> Result<(), Box<dyn core::error::Error>> {
+    // A ZstdStore-backed instance with remote_cache_compression DISABLED must
+    // still reject a client-supplied zstd-compressed entry, exactly like the
+    // non-ZstdStore path does: the fast path must not bypass the
+    // `remote_cache_compression_enabled` gate.
+    let (cas_server, _zstd_store) = make_zstd_instance_cas_server_compression_disabled()?;
+
+    let raw_data = b"zstd disabled batch update to zstd-backed instance";
+    let compressed_data = zstd::bulk::compress(raw_data, 3)?;
+    let digest = Digest {
+        hash: HASH1.to_string(),
+        size_bytes: raw_data.len() as i64,
+    };
+
+    let Err(status) = cas_server
+        .batch_update_blobs(Request::new(BatchUpdateBlobsRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            requests: vec![batch_update_blobs_request::Request {
+                digest: Some(digest),
+                data: compressed_data.into(),
+                compressor: compressor::Value::Zstd.into(),
+            }],
+            digest_function: digest_function::Value::Sha256.into(),
+        }))
+        .await
+    else {
+        panic!(
+            "zstd BatchUpdateBlobs to a ZstdStore-backed instance should fail when remote cache compression is disabled"
+        );
+    };
+
+    assert_eq!(status.code(), Code::InvalidArgument);
+    assert!(
+        status
+            .message()
+            .contains("Remote cache compression is not supported"),
+        "unexpected error: {}",
+        status.message()
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn batch_update_zstd_instance_identity_stores_when_remote_cache_compression_disabled()
+-> Result<(), Box<dyn core::error::Error>> {
+    // Identity entries must be unaffected by the gate: they still store and
+    // round-trip through the same ZstdStore-backed, compression-disabled
+    // instance.
+    let (cas_server, _zstd_store) = make_zstd_instance_cas_server_compression_disabled()?;
+
+    let raw: Vec<u8> = "identity entry to disabled zstd instance "
+        .repeat(20)
+        .into_bytes();
+    let (_di, digest) = sha256_digest(&raw);
+
+    let response = cas_server
+        .batch_update_blobs(Request::new(BatchUpdateBlobsRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            requests: vec![batch_update_blobs_request::Request {
+                digest: Some(digest.clone()),
+                data: raw.clone().into(),
+                compressor: compressor::Value::Identity.into(),
+            }],
+            digest_function: digest_function::Value::Sha256.into(),
+        }))
+        .await?
+        .into_inner();
+    assert_eq!(response.responses.len(), 1);
+    assert_eq!(
+        response.responses[0].status.as_ref().map(|s| s.code),
+        Some(0)
+    );
+
+    let read = cas_server
+        .batch_read_blobs(Request::new(BatchReadBlobsRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            digests: vec![digest.clone()],
+            acceptable_compressors: vec![compressor::Value::Identity.into()],
+            digest_function: digest_function::Value::Sha256.into(),
+        }))
+        .await?
+        .into_inner();
+    assert_eq!(read.responses.len(), 1);
+    assert_eq!(read.responses[0].data.as_ref(), raw.as_slice());
+    Ok(())
+}
+
 const CHUNK1_VALUE: &str = "hello ";
 const CHUNK2_VALUE: &str = "world";
 
