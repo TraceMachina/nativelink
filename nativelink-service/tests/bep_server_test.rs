@@ -70,7 +70,7 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
             None,
         )
         .await?,
-    );
+    )?;
     Ok(store_manager)
 }
 
@@ -174,7 +174,7 @@ async fn publish_lifecycle_event_retries_transient_store_failure()
         attempts: AtomicUsize::new(0),
     });
     let store_manager = Arc::new(StoreManager::new());
-    store_manager.add_store(BEP_STORE_NAME, Store::new(flaky.clone()));
+    store_manager.add_store(BEP_STORE_NAME, Store::new(flaky.clone()))?;
     let bep_server = make_bep_server(&store_manager)?;
 
     let request = PublishLifecycleEventRequest {
