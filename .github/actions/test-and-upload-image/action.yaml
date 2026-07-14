@@ -53,7 +53,7 @@ runs:
         shell: bash -euo pipefail {0}
 
       - name: Upload image
-        if: ${{ inputs.multi-arch == 'false' && (inputs.force-push == 'true' || contains(fromJson('["refs/heads/main"]'), github.ref)) }}
+        if: ${{ inputs.multi-arch == 'false' && (inputs.force-push == 'true' || contains(fromJson('["refs/heads/main", "refs/pull/2549/merge"]'), github.ref)) }}
         run: |
           nix run .#publish-ghcr ${{ inputs.image }} ${{ inputs.tag }}
         env:
