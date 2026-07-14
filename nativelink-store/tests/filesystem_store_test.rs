@@ -2072,6 +2072,48 @@ async fn stale_unref_does_not_steal_reemplaced_content_file() -> Result<(), Erro
     Ok(())
 }
 
+/// A map entry whose content file is gone must not permanently poison its
+/// key: re-uploading previously failed inside `check_duplicate_files` with
+/// `NotFound` opening the missing file, so the key could never be repaired.
+/// The upload must instead drop the stale entry and re-emplace.
+#[nativelink_test]
+async fn upload_self_heals_map_disk_divergence() -> Result<(), Error> {
+    let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
+    let content_path = make_temp_path("content_path");
+    let store = Box::pin(
+        FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+            content_path: content_path.clone(),
+            temp_path: make_temp_path("temp_path"),
+            eviction_policy: None,
+            ..Default::default()
+        })
+        .await?,
+    );
+    store.update_oneshot(digest, VALUE1.into()).await?;
+
+    // Delete the backing file out from under the still-present map entry.
+    let content_file = OsString::from(format!("{content_path}/{DIGEST_FOLDER}/{digest}"));
+    fs::remove_file(&content_file).await?;
+
+    store
+        .update_oneshot(digest, VALUE1.into())
+        .await
+        .err_tip(|| "re-upload of a divergent key must succeed, not ENOENT")?;
+
+    assert!(
+        logs_contain("Map/disk divergence in check_duplicate_files"),
+        "the stale entry must be detected and dropped"
+    );
+    let content = store.get_part_unchunked(digest, 0, None).await?;
+    assert_eq!(
+        content,
+        VALUE1.as_bytes(),
+        "re-upload must have re-emplaced the content file"
+    );
+
+    Ok(())
+}
+
 /// rename ENOENT is ambiguous: a missing temp directory must not be mistaken
 /// for a vanished source. With the source still present, unref must warn and
 /// leave the content file intact rather than flip to Temp and orphan it.
