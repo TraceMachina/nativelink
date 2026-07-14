@@ -1,0 +1,540 @@
+---
+title: Production configuration
+description: The shape a real NativeLink cluster runs in — three processes, a split port surface, and what to turn on before other people depend on it.
+---
+
+{/* archetype: how-to — see /web/apps/docs/templates/how-to.mdx */}
+
+**Who this is for:** you have NativeLink working and now other people are going
+to depend on it. **What you'll have at the end:** a three-process deployment
+whose ports, state, and failure behaviour you can explain to someone else.
+**Time:** an afternoon, plus however long your change process takes.
+
+A production configuration is not the quickstart configuration with bigger
+numbers. It differs in one structural way: **the CAS, the scheduler, and the
+workers become three separate processes.** Everything else on this page — the
+port split, the store composition, the hardening checklist — follows from that
+one decision.
+
+Every config on this page is lifted from
+[`deployment-examples/docker-compose/`](https://github.com/TraceMachina/nativelink/tree/main/deployment-examples/docker-compose),
+which CI builds and runs end to end on every pull request: `run_integration_tests.sh`
+brings the three processes up with `docker compose` and then drives real Bazel
+builds through them. If a snippet here drifts from what NativeLink accepts, that
+job goes red.
+
+## The shape
+
+<Mermaid>
+{`flowchart LR
+    B["Bazel / Buck2 / recc"] -->|CAS + AC + ByteStream :50051| CAS
+    B -->|Execution + Capabilities :50052| SCH
+    CAS[["CAS process<br/>CAS + AC + ByteStream"]]
+    SCH[["Scheduler process<br/>queue + matching"]]
+    W[["Worker process<br/>runs the actions"]]
+    SCH -->|reads/writes blobs over gRPC| CAS
+    W -->|worker_api :50061| SCH
+    W -->|blobs over gRPC :50051| CAS
+    CAS --> D[("filesystem or object store")]`}
+</Mermaid>
+
+Three facts about that picture are the whole design:
+
+**The scheduler owns no storage.** It reaches the CAS through `grpc` stores, the
+same way a client would. That is why you can restart it without losing blobs, and
+why it needs no volume.
+
+**The worker also owns no durable storage.** Its local disk is a read cache in
+front of the CAS, not a source of truth. A worker can be deleted mid-action; the
+scheduler retries the action elsewhere.
+
+**Only the CAS process is stateful.** It is the one thing you back up, size for
+growth, and think carefully about before restarting.
+
+## Process 1 — the CAS and Action Cache
+
+This is the process that holds bytes. Two stores, one for content and one for
+action results, each with its own eviction budget:
+
+```json5
+{
+  stores: [
+    {
+      name: "CAS_MAIN_STORE",
+      compression: {
+        compression_algorithm: { lz4: {} },
+        backend: {
+          filesystem: {
+            content_path: "/var/lib/nativelink/content_path-cas",
+            temp_path: "/var/lib/nativelink/tmp_path-cas",
+            eviction_policy: {
+              // 10gb. This is a cache: size it to your working set,
+              // not to your total build output.
+              max_bytes: 10000000000,
+            },
+          },
+        },
+      },
+    },
+    {
+      name: "AC_MAIN_STORE",
+      filesystem: {
+        content_path: "/var/lib/nativelink/content_path-ac",
+        temp_path: "/var/lib/nativelink/tmp_path-ac",
+        eviction_policy: {
+          // 500mb. The AC is tiny next to the CAS — it stores
+          // result metadata, not outputs.
+          max_bytes: 500000000,
+        },
+      },
+    },
+  ],
+  servers: [
+    {
+      listener: { http: { socket_address: "0.0.0.0:50051" } },
+      services: {
+        cas: [{ cas_store: "CAS_MAIN_STORE" }],
+        ac: [{ ac_store: "AC_MAIN_STORE" }],
+        capabilities: [],
+        bytestream: { cas_stores: { "": "CAS_MAIN_STORE" } },
+      },
+    },
+  ],
+}
+```
+
+`stores` is an **array of named stores**, not an object map — every store carries
+its own `name`, and other parts of the config refer to it by that name.
+`filesystem` requires both `content_path` and `temp_path`; the config parser uses
+`deny_unknown_fields`, so a typo or an invented key is a startup failure rather
+than a silently ignored line.
+
+<SourceLink file="nativelink-config/src/cas_server.rs" symbol="CasConfig" />
+
+The empty string key in `bytestream.cas_stores` and the empty `capabilities`
+array are both keyed on *instance name*. An empty instance name is the default;
+if you set a non-empty one, every client has to pass it too (`--remote_instance_name=`
+for Bazel).
+
+### Moving off local disk
+
+`filesystem` is the right terminal store for a single CAS node with a real disk.
+For a CAS you intend to replicate, put an object store underneath instead and keep
+the local disk as the fast tier:
+
+```json5
+{
+  name: "CAS_MAIN_STORE",
+  fast_slow: {
+    fast: {
+      filesystem: {
+        content_path: "/var/lib/nativelink/content_path-cas",
+        temp_path: "/var/lib/nativelink/tmp_path-cas",
+        eviction_policy: { max_bytes: 100000000000 },
+      },
+    },
+    slow: {
+      experimental_cloud_object_store: {
+        provider: "aws",
+        region: "us-east-1",
+        bucket: "nativelink-prod-cas",
+        key_prefix: "cas/",
+        retry: { max_retries: 6, delay: 0.3, jitter: 0.5 },
+      },
+    },
+  },
+}
+```
+
+The store key is `experimental_cloud_object_store` with a `provider` discriminator
+— `aws`, `gcs`, `azure`, `ontap`, `r2`, or `oci`. There is no `s3_store` key.
+
+<Callout type="warn" title="fast_slow does not guarantee the slow tier has everything">
+  `fast_slow` never verifies that a blob present in `fast` also exists in `slow`.
+  If the fast tier is wiped, anything that only ever landed there is gone. Size
+  the fast tier as a cache of the working set and treat the slow tier as the
+  thing you can lose data from.
+</Callout>
+
+The full backend list and the tradeoffs between them are in
+[Storage backends](/how-to/stores/oci-object-storage) and
+[Store overview](/reference/nativelink-config/store-overview).
+
+## Process 2 — the scheduler
+
+The scheduler holds the queue and matches actions to workers. It reaches the CAS
+over gRPC rather than owning a store:
+
+```json5
+{
+  stores: [
+    {
+      name: "GRPC_CAS_STORE",
+      grpc: {
+        instance_name: "",
+        endpoints: [{ address: "grpc://cas.internal:50051" }],
+        store_type: "cas",
+      },
+    },
+    {
+      name: "GRPC_AC_STORE",
+      grpc: {
+        instance_name: "",
+        endpoints: [{ address: "grpc://cas.internal:50051" }],
+        store_type: "ac",
+      },
+    },
+  ],
+  schedulers: [
+    {
+      name: "MAIN_SCHEDULER",
+      simple: {
+        supported_platform_properties: {
+          cpu_count: "minimum",
+          OSFamily: "priority",
+          "container-image": "priority",
+          ISA: "exact",
+        },
+      },
+    },
+  ],
+  servers: [
+    {
+      // Client-facing. Anyone who can reach this can queue work.
+      listener: { http: { socket_address: "0.0.0.0:50052" } },
+      services: {
+        ac: [{ ac_store: "GRPC_AC_STORE" }],
+        execution: [{ cas_store: "GRPC_CAS_STORE", scheduler: "MAIN_SCHEDULER" }],
+        capabilities: [{ remote_execution: { scheduler: "MAIN_SCHEDULER" } }],
+      },
+    },
+    {
+      // Worker-facing. Never expose this outside the cluster.
+      listener: { http: { socket_address: "0.0.0.0:50061" } },
+      services: {
+        worker_api: { scheduler: "MAIN_SCHEDULER" },
+        health: {},
+      },
+    },
+  ],
+}
+```
+
+`schedulers`, like `stores`, is an **array of named entries**.
+
+`supported_platform_properties` is the matching contract between this scheduler
+and its workers. Each value is a match rule — `exact`, `minimum`, `priority`, or
+`ignore` — and a property a worker advertises but the scheduler does not list is
+a property the scheduler cannot route on. Getting this out of sync with the
+workers is the single most common reason actions sit in the queue forever; see
+[platform properties](/remote-execution/persistent-workers) for how the two
+halves line up.
+
+<Callout type="warn" title="The queue is in memory">
+  A `simple` scheduler keeps its queue in process memory. Restarting it loses the
+  in-flight queue — clients retry, but work in progress is repeated. There is no
+  mechanism that reconstructs the queue from the Action Cache. If you need the
+  queue to survive a restart, the scheduler has an experimental Redis backend
+  (`experimental_backend: { redis: { redis_store: "..." } }`); it is a real code
+  path with no reference deployment in this repository, so treat it as something
+  to validate yourself rather than something to copy.
+</Callout>
+
+## Process 3 — the workers
+
+Workers are the fleet you scale. Note `servers: []` — a worker serves nothing and
+needs no inbound port at all. It dials out to the scheduler and the CAS.
+
+```json5
+{
+  stores: [
+    {
+      name: "GRPC_CAS_STORE",
+      grpc: {
+        instance_name: "",
+        endpoints: [{ address: "grpc://cas.internal:50051" }],
+        store_type: "cas",
+      },
+    },
+    {
+      name: "GRPC_AC_STORE",
+      grpc: {
+        instance_name: "",
+        endpoints: [{ address: "grpc://cas.internal:50051" }],
+        store_type: "ac",
+      },
+    },
+    {
+      name: "WORKER_FAST_SLOW_STORE",
+      fast_slow: {
+        fast: {
+          filesystem: {
+            content_path: "/var/lib/nativelink/worker/content_path-cas",
+            temp_path: "/var/lib/nativelink/worker/tmp_path-cas",
+            eviction_policy: { max_bytes: 10000000000 },
+          },
+        },
+        // "get" means the local disk serves reads but is not written
+        // through on upload — inputs get cached, outputs go straight out.
+        fast_direction: "get",
+        slow: { ref_store: { name: "GRPC_CAS_STORE" } },
+      },
+    },
+  ],
+  workers: [
+    {
+      local: {
+        worker_api_endpoint: { uri: "grpc://scheduler.internal:50061" },
+        cas_fast_slow_store: "WORKER_FAST_SLOW_STORE",
+        upload_action_result: { ac_store: "GRPC_AC_STORE" },
+        work_directory: "/var/lib/nativelink/worker/work",
+        platform_properties: {
+          cpu_count: { query_cmd: "nproc" },
+          OSFamily: { values: [""] },
+          "container-image": { values: [""] },
+          ISA: { values: ["x86-64"] },
+        },
+        use_namespaces: true,
+        use_mount_namespace: true,
+      },
+    },
+  ],
+  servers: [],
+}
+```
+
+`worker_api_endpoint`, `cas_fast_slow_store`, `work_directory`, and
+`platform_properties` are all required. `upload_action_result` takes `ac_store`
+directly — it is not nested twice.
+
+<SourceLink file="nativelink-config/src/cas_server.rs" symbol="LocalWorkerConfig" />
+
+`work_directory` is where actions are staged and executed. It sees every input
+file and every output file of every action, so put it on the fastest local disk
+the machine has, and size it for the largest action tree you run rather than the
+average one.
+
+## Which ports are public
+
+| Port | Process | Serves | Who should reach it |
+| --- | --- | --- | --- |
+| `50051` | CAS | `cas`, `ac`, `bytestream`, `capabilities` | Build clients and, internally, schedulers and workers |
+| `50052` | Scheduler | `execution`, `capabilities`, `ac` | Build clients |
+| `50061` | Scheduler | `worker_api`, `health` | **Workers only** |
+
+<Callout type="warn" title="The worker API is a remote code execution endpoint">
+  `worker_api` is how a process claims to be a worker and receives commands to
+  run. It is on its own listener specifically so that it can be on its own
+  network policy. Anything that can reach `:50061` can register as a worker,
+  receive your actions, and return whatever outputs it likes — which then land in
+  your Action Cache and get served to everyone. Keep it inside the cluster.
+</Callout>
+
+`health` is served alongside `worker_api` in the reference config. It is the only
+readiness signal the binary exposes; there is no metrics port to probe.
+
+## What's durable and what's disposable
+
+| Thing | Lose it and… | So |
+| --- | --- | --- |
+| CAS content store | Builds recompile from source until it warms back up | Back it up or accept the warm-up; this is the one stateful component |
+| Action Cache | Same, but cheaper — results re-derive from the CAS | Size it small; it is result metadata, not outputs |
+| Scheduler queue | In-flight actions are re-run by clients | Restart freely, off-peak |
+| Worker local disk | Worker re-fetches inputs from the CAS | Delete workers at will; this is the property that makes autoscaling safe |
+| `work_directory` | Nothing — it is scratch space | Never put it on network storage |
+
+The rule this table encodes: **exactly one component is stateful.** If you find
+yourself needing to protect a scheduler's disk or a worker's disk, something has
+drifted from this shape.
+
+## Before you go live
+
+<Steps>
+
+### Raise the file-descriptor limit
+
+Every open blob is a file descriptor. Under load, a CAS with the default limit
+runs out.
+
+```json5
+global: {
+  // The reference Kubernetes worker sets 524288. The binary's own
+  // default is 24576 when this is 0 or unset.
+  max_open_files: 524288,
+},
+```
+
+`global` accepts exactly three keys: `max_open_files`,
+`default_digest_hash_function`, and `default_digest_size_health_check`. It has no
+`metrics` or `tracing` section — telemetry is configured by environment variable,
+below.
+
+<SourceLink file="nativelink-config/src/cas_server.rs" symbol="GlobalConfig" />
+
+### Turn on namespaces on Linux workers
+
+Bazel in particular can leave zombie processes behind on a worker. Two opt-in
+flags contain that:
+
+```json5
+workers: [{
+  local: {
+    use_namespaces: true,
+    use_mount_namespace: true,
+    // ...the rest of the worker config
+  },
+}],
+```
+
+`use_namespaces` puts each action in its own process namespace;
+`use_mount_namespace` additionally isolates the worker root in a new mount
+namespace, and only works when `use_namespaces` is on. Both are off by default for
+backwards compatibility and both are recommended in production. The container
+running the worker needs the privileges to create namespaces — the reference
+Compose stack marks the executor service `privileged: true` for exactly this.
+
+### Put TLS on the client-facing listeners
+
+```json5
+servers: [{
+  listener: {
+    http: {
+      socket_address: "0.0.0.0:50071",
+      tls: {
+        cert_file: "/etc/nativelink/tls/server.crt",
+        key_file: "/etc/nativelink/tls/server.key",
+        // Optional: require client certificates (mTLS).
+        client_ca_file: "/etc/nativelink/tls/clients-ca.crt",
+        client_crl_file: "/etc/nativelink/tls/clients.crl",
+      },
+    },
+  },
+  services: { /* ... */ },
+}],
+```
+
+Setting `client_ca_file` makes the listener require a client certificate signed by
+that CA, and `client_crl_file` lets you revoke one. That is the whole
+authorization model on the listener: **any client with a valid, unrevoked
+certificate gets full access to that listener's services.** There is no per-identity
+allow-list and no mapping from certificate subject to permissions. If you need
+finer-grained access than "trusted or not," put a proxy in front.
+
+The certificates checked into `deployment-examples/` are self-signed and named
+`do-not-use-in-prod` for a reason. Generate your own.
+
+### Point telemetry somewhere
+
+There is no metrics section in the config file and no Prometheus scrape endpoint
+in the binary. Telemetry is OTLP over gRPC, configured by environment:
+
+```bash
+# Where to send traces, metrics, and logs. Must include an explicit
+# host AND port — the client panics on a URL without both.
+export NL_OTEL_ENDPOINT="http://otel-collector.internal:4317"
+
+# Log format: "compact", "json", or anything else for pretty.
+export NL_LOG=json
+
+# Standard tracing filter.
+export RUST_LOG=info
+```
+
+Prometheus sees NativeLink through an OpenTelemetry Collector that exports to it,
+or through Prometheus' own OTLP receiver. [Observability](/operate/observability)
+has the collector config and the Grafana dashboard.
+
+### Opt in to cache metrics, if you want them
+
+Execution metrics are emitted unconditionally. **Cache metrics are not** — a store
+only reports hits, misses, and evictions if you wrap it:
+
+```json5
+{
+  name: "CAS_MAIN_STORE",
+  cache_metrics: {
+    cache_type: "cas",
+    backend: {
+      // ...the store you would otherwise have written here
+    },
+  },
+}
+```
+
+Without the wrapper there are no `nativelink_cache_*` series at all, and any
+dashboard panel or alert built on them stays empty forever. The wrapper is opt-in
+because it costs hot-path timing on every operation.
+
+</Steps>
+
+<VerifyBlock>
+
+Each process starts and stays up: `nativelink /etc/nativelink/cas.json5` exits
+non-zero immediately on a config error rather than starting degraded, so a
+process that is still running has a config the parser fully accepted.
+
+A build against `grpc://cas.internal:50051` gets cache hits on a second run, and
+a build against `grpc://scheduler.internal:50052` reports remote execution rather
+than falling back to local.
+
+`:50061` is refused from outside the cluster.
+
+</VerifyBlock>
+
+## What to watch
+
+Four signals cover most of what goes wrong. All four are recording rules in
+[`deployment-examples/metrics/prometheus-recording-rules.yml`](https://github.com/TraceMachina/nativelink/tree/main/deployment-examples/metrics):
+
+- `nativelink:queue_depth` — actions waiting, by priority. Rising and staying
+  risen means you need workers; spiking and draining is normal.
+- `nativelink:worker_utilization` — the fraction of workers actually executing.
+  Low utilization with a deep queue means a matching problem, not a capacity
+  problem.
+- `nativelink:execution_queue_time_p95` — how long an action waits before a
+  worker picks it up. This is the number your users experience as "the build farm
+  is slow."
+- `nativelink:cache_hit_rate` — requires the `cache_metrics` wrapper above.
+
+[Observability](/operate/observability) covers the pipeline that produces these.
+
+## What to tune
+
+Once the shape is right, [Tuning](/operate/tuning) is the table of levers: the
+signal you observe, the knob that moves it, and what it costs you.
+
+## FAQ
+
+<Accordions type="multiple">
+  <Accordion title="What happens to in-flight actions when a scheduler restarts?" id="what-happens-to-in-flight-actions-when-a-scheduler-restarts">
+    They are lost from the scheduler's point of view. A `simple` scheduler holds
+    its queue in process memory and nothing reconstructs it on startup. Clients
+    re-submit, so no build fails, but work in progress is repeated. Restart
+    schedulers when the queue is shallow.
+  </Accordion>
+  <Accordion title="How do I route GPU or other special-hardware actions?" id="how-do-i-route-gpu-or-other-special-hardware-actions">
+    Advertise the property on the workers that have the hardware
+    (`gpu: { values: ["nvidia-a100"] }`) and declare it as `"exact"` in the
+    scheduler's `supported_platform_properties`. An action requesting that value
+    is then only ever dispatched to a matching worker. Both halves are required:
+    a property the scheduler does not list is a property it cannot route on.
+  </Accordion>
+  <Accordion title="Does fast_slow guarantee everything reaches the slow tier?" id="does-fast-slow-guarantee-everything-reaches-the-slow-tier">
+    No — it never verifies that an object in `fast` also exists in `slow`. For
+    artifacts that must survive a fast-tier wipe — remote execution outputs
+    especially — make sure the write path covers both tiers deliberately. More
+    store gotchas:
+    [Store overview](/reference/nativelink-config/store-overview#faq).
+  </Accordion>
+  <Accordion title="Can I run this as one process instead of three?" id="can-i-run-this-as-one-process-instead-of-three">
+    Yes, and for a single-machine deployment you should — put the stores,
+    schedulers, workers, and servers in one file and run one binary. The split
+    exists so the three roles can be scaled and firewalled independently. If you
+    have one machine, you have neither problem.
+  </Accordion>
+</Accordions>
+
+<NextStep href="/operate/tuning" title="Tuning">
+  The lever table: which knob moves which signal, in which direction, and what it
+  costs.
+</NextStep>

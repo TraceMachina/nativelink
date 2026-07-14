@@ -1,5 +1,5 @@
 ---
-title: Other build systems
+title: Connect your build tool
 description: Use NativeLink without Bazel — Buck2, Siso, Pants, BuildStream, and CMake with recc.
 ---
 
@@ -9,16 +9,16 @@ your build files.
 
 ## Options
 
-- [Buck2](/getting-started/other-build-systems/buck2) — use Buck2's
+- [Buck2](/getting-started/connect-your-build/buck2) — use Buck2's
   built-in remote execution client with NativeLink as CAS, Action Cache,
   and executor.
-- [Siso](/getting-started/other-build-systems/siso) — configure
+- [Siso](/getting-started/connect-your-build/siso) — configure
   Chromium's Ninja replacement to use NativeLink through the RE API.
-- [Pants](/getting-started/other-build-systems/pants) — enable remote
+- [Pants](/getting-started/connect-your-build/pants) — enable remote
   cache reads and writes from `pants.toml`.
-- [BuildStream](/getting-started/other-build-systems/buildstream) — point
+- [BuildStream](/getting-started/connect-your-build/buildstream) — point
   BuildStream artifact storage and remote execution at NativeLink.
-- [CMake with recc](/getting-started/other-build-systems/cmake-recc) —
+- [CMake with recc](/getting-started/connect-your-build/cmake-recc) —
   wrap CMake compile actions with `recc` and share compile outputs
   through NativeLink.
 
@@ -32,7 +32,7 @@ The BuildStream page follows the checked-in integration test, which uses
 the default empty instance on the same local port.
 
 For a local Docker server, start with
-[Getting Started → Setup](/getting-started/setup). For the Buck2 integration
+[Getting Started → Quickstart](/getting-started/quickstart). For the Buck2 integration
 test shape, see
 [`integration_tests/buck2/buck2_cas.json5`](https://github.com/TraceMachina/nativelink/tree/main/integration_tests/buck2/buck2_cas.json5).
 
@@ -53,9 +53,9 @@ test shape, see
   </Accordion>
   <Accordion title="Which client is the fastest way to try NativeLink?" id="which-client-is-the-fastest-way-to-try-nativelink">
     If you're on CMake,
-    [recc in cache-only mode](/getting-started/other-build-systems/cmake-recc)
+    [recc in cache-only mode](/getting-started/connect-your-build/cmake-recc)
     needs no worker fleet and no build-file changes. For Bazel, two
-    `.bazelrc` lines against the [Setup](/getting-started/setup) server
+    `.bazelrc` lines against the [Quickstart](/getting-started/quickstart) server
     do it.
   </Accordion>
 </Accordions>

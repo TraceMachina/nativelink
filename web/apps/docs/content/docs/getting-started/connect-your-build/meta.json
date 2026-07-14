@@ -1,10 +1,12 @@
 {
   "pages": [
+    "index",
     "buck2",
     "siso",
+    "chromium",
     "pants",
     "buildstream",
     "cmake-recc"
   ],
-  "title": "Other build systems"
+  "title": "Connect your build"
 }

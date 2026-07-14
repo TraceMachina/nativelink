@@ -1,0 +1,11 @@
+{
+  "pages": [
+    "index",
+    "production-config",
+    "tuning",
+    "deploy-kubernetes",
+    "deploy-bare-metal",
+    "observability"
+  ],
+  "title": "Operate"
+}

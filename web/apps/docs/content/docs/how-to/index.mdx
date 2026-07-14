@@ -1,0 +1,61 @@
+---
+title: Task recipes
+description: Rung four — pick the task you're doing, not the artifact you're reading about.
+---
+
+{/* archetype: how-to (chooser) — see /web/apps/docs/templates/how-to.mdx */}
+
+**Who this is for:** anyone with a running NativeLink who now needs it to do
+one specific thing differently. **What you'll have at the end:** the one page
+that does your task, rather than a tour. **Time:** as long as the task takes.
+
+<Rung n={4} of={4} />
+
+## How this section works
+
+Every page here is a task, phrased as the thing you are trying to do. None of
+them is a tour of a subsystem — that's what
+[Understand it](/explanations/architecture) is for — and none of them is an exhaustive
+field list, which is what [Reference](/reference/glossary) is for. A recipe gives you
+the complete working artifact first, then explains only the parts of it you
+have to decide about, then tells you how to tell it worked.
+
+Pages assume rung ③: you have a config file and you know which part of it
+you're editing. If you don't yet, [Configure it](/configuration/intro) is one rung
+down and worth the detour.
+
+## Pick your task
+
+**I need my cache stored somewhere else.** Filesystem, S3 and compatibles,
+GCS, Azure, Redis, Mongo, OCI object storage — and how to compose them into
+a fast tier over a durable one. [Storage backends](/how-to/stores/oci-object-storage)
+is where these live; it currently holds
+[OCI object storage](/how-to/stores/oci-object-storage), with the rest arriving
+as they're written. Until then, the store definitions in
+[Configuring NativeLink](/configuration/intro) are the reference.
+
+**I need to shrink what I store or send.** See
+[Compression](/configuration/compression) and
+[Chunking and deduplication](/configuration/chunking).
+
+**I need more than one worker.** Multi-worker topologies, and how work gets
+distributed across them.
+
+**I need this to be secure on the network.** TLS on the public listeners,
+authentication, and keeping the worker API off the public interface.
+
+**I need to move to a newer version.** The upgrade path, what changes between
+releases, and what to do about an existing cache when you take it.
+
+**I'm coming from another REAPI cache.** What transfers, what doesn't, and
+how to run both while you cut over.
+
+<NextStep href="/configuration/intro" kind="aside" title="Configure it">
+  If none of these is your task and you're here to learn the config file
+  itself, rung ③ is the page you want.
+</NextStep>
+
+<NextStep href="/operate" title="Operate in production">
+  Recipes get the shape right. The Operate section is what you read once the
+  thing is real and other people depend on it.
+</NextStep>

@@ -1,0 +1,7 @@
+{
+  "pages": [
+    "index",
+    "persistent-workers"
+  ],
+  "title": "Remote execution"
+}

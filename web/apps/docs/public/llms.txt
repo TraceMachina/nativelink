@@ -1,0 +1,90 @@
+# NativeLink
+
+> A high-performance remote build cache and remote execution platform for build
+> systems that speak the Remote Execution API — Bazel, Buck2, Siso, Pants, Goma,
+> and CMake via recc. Open source, written in Rust.
+
+These docs are ordered as a ladder, not a catalogue. Each rung assumes the one
+below it is standing, and each page states the rung it sits on. An agent reading
+this file in order learns the same CAS → RBE sequence a human learns from the
+sidebar.
+
+Rung 1 (start with caching) → rung 2 (add remote execution) → rung 3 (configure
+it) → rung 4 (task recipes). Operate, Understand and Contribute come after the
+ladder; Reference is a lookup surface you can enter at any point.
+
+This file is currently hand-maintained and will be generated from the navigation
+and page frontmatter, so it cannot drift. The full corpus with page bodies is at
+/llms-full.txt.
+
+## Why NativeLink
+
+- [Why NativeLink](https://docs.nativelink.com/use-cases): the problem, and a 30-second self-check for whether it's yours.
+
+## Rung 1 — Start with caching
+
+- [Start with caching](https://docs.nativelink.com/getting-started): the rung map — where you are and what's next.
+- [Quickstart](https://docs.nativelink.com/getting-started/quickstart): install NativeLink and run your first cached build.
+- [Connect your build tool](https://docs.nativelink.com/getting-started/connect-your-build): Bazel, Buck2, Siso, Pants, BuildStream, CMake via recc.
+- [Chromium](https://docs.nativelink.com/getting-started/connect-your-build/chromium): building Chromium against NativeLink through Siso.
+- [Shared cache](https://docs.nativelink.com/getting-started/shared-cache): move the cache off localhost so the team shares hits.
+
+## Rung 2 — Add remote execution
+
+- [Add remote execution](https://docs.nativelink.com/remote-execution): what execution adds on top of a working cache.
+- [Local testing](https://docs.nativelink.com/rbe/local-testing): a scheduler and a worker on one machine.
+- [Local Remote Execution](https://docs.nativelink.com/rbe/local-remote-execution): the toolchain mechanism that makes actions hermetic.
+- [Examples](https://docs.nativelink.com/rbe/examples): runnable starting points.
+- [Nix templates](https://docs.nativelink.com/rbe/nix-templates): Nix-based project templates.
+- [Persistent workers](https://docs.nativelink.com/remote-execution/persistent-workers): pooled long-lived worker processes.
+
+## Rung 3 — Configure it
+
+- [Configuration](https://docs.nativelink.com/configuration/intro): the config model.
+- [Basic configuration](https://docs.nativelink.com/configuration/basic): stores, servers, and services.
+- [Compression](https://docs.nativelink.com/configuration/compression): shrink what you store and send.
+- [Chunking](https://docs.nativelink.com/configuration/chunking): content-defined chunking and deduplication.
+
+## Rung 4 — Task recipes
+
+- [Task recipes](https://docs.nativelink.com/how-to): the task chooser.
+- [OCI object storage](https://docs.nativelink.com/how-to/stores/oci-object-storage): an object-storage CAS backend.
+
+## Operate in production
+
+- [Operate](https://docs.nativelink.com/operate): what to watch, what to tune, what to do at 3am.
+- [Production configuration](https://docs.nativelink.com/operate/production-config): the three-process production shape.
+- [Tuning](https://docs.nativelink.com/operate/tuning): the lever table — signal, knob, direction, cost.
+- [Deploy on Kubernetes](https://docs.nativelink.com/operate/deploy-kubernetes): the reference Kubernetes deployment.
+- [Deploy on bare metal](https://docs.nativelink.com/operate/deploy-bare-metal): running on your own hardware.
+- [Observability](https://docs.nativelink.com/operate/observability): the OTLP to Prometheus to Grafana pipeline.
+
+## Understand it
+
+- [Architecture](https://docs.nativelink.com/explanations/architecture): the four roles and how a request moves through them.
+- [Local Remote Execution](https://docs.nativelink.com/explanations/lre): why hermeticity is the hard part.
+- [History](https://docs.nativelink.com/explanations/history): where the project came from.
+
+## Contribute
+
+- [Guidelines](https://docs.nativelink.com/contribute/guidelines): contribution process and expectations.
+- [Docs](https://docs.nativelink.com/contribute/docs): how to write docs to this spec.
+- [Bazel](https://docs.nativelink.com/contribute/bazel): building and testing with Bazel.
+- [Cargo](https://docs.nativelink.com/contribute/cargo): building and testing with Cargo.
+- [Nix](https://docs.nativelink.com/contribute/nix): the Nix development environment.
+
+## Reference
+
+- [Configuration reference](https://docs.nativelink.com/reference/nativelink-config): generated from the config crate, per version.
+- [Glossary](https://docs.nativelink.com/reference/glossary): every term these docs use.
+- [Changelog](https://docs.nativelink.com/reference/changelog): generated release history.
+
+## For agents
+
+- [For agents](https://docs.nativelink.com/agents): entry points and the guarantees these docs make to machine readers.
+- [AGENTS.md](https://github.com/TraceMachina/nativelink/blob/main/AGENTS.md): the repository map, for agents working on the code.
+
+## Optional
+
+- [NativeLink on GitHub](https://github.com/TraceMachina/nativelink): source, issues, releases.
+- [Remote Execution API](https://github.com/bazelbuild/remote-apis): the protocol NativeLink implements.

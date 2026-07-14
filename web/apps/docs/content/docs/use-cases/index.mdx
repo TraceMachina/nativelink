@@ -1,0 +1,63 @@
+---
+title: Why NativeLink
+description: The problem NativeLink solves, and a 30-second self-check for whether it solves yours.
+---
+
+{/* archetype: explanation — see /web/apps/docs/templates/explanation.mdx */}
+
+**Who this is for:** anyone deciding whether to put a remote cache and
+execution layer in front of their build. **What you'll have at the end:** a
+clear yes or no, and if yes, the rung to start on. **Time:** about five
+minutes.
+
+## The problem
+
+Every build system computes the same thing twice. Once on your laptop, once
+in CI. Once for you, once for the colleague who pulled the same commit. Once
+before lunch, once after you reverted the change that broke it. The work is
+deterministic, the inputs are identical, and the machine does it again
+anyway.
+
+A build cache keyed on the content of the inputs stops that. Remote execution
+goes one step further: the work that genuinely has to run doesn't have to run
+*here* — it runs on hardware chosen to fit it, in parallel, on a farm you
+don't have to sit next to.
+
+NativeLink is both halves, written in Rust, speaking the
+[Remote Execution API](https://github.com/bazelbuild/remote-apis) that Bazel,
+Buck2, Siso, Pants, Goma and CMake-via-recc already speak. It has served over
+a billion build requests a month in production.
+
+## The 30-second self-check
+
+You will get something out of NativeLink if any of these are true:
+
+- Your build takes long enough that people context-switch while waiting.
+- CI rebuilds artifacts that a developer already built minutes earlier.
+- Your team shares a codebase, so you share cache hits by construction.
+- Some of your actions want hardware that your laptop is not — many cores,
+  much memory, a GPU, a specific OS.
+- You run coding agents against the repo, and their edit-build-test loop is
+  bounded by build time rather than by model latency.
+
+You will get less out of it if your build is already seconds long, if every
+action is genuinely unique, or if your build system doesn't speak REAPI and
+you aren't willing to change that.
+
+## Where to go next
+
+The three pages under this section are the long-form versions of the last
+three bullets. They're worth reading if one of them is *your* case; skip them
+if you're already convinced.
+
+<NextStep href="/getting-started" title="Start with caching">
+  The fastest way to find out is to run one. Rung ① gets a cache serving hits
+  to your build, and it's the foundation everything else in these docs
+  stands on.
+</NextStep>
+
+<NextStep href="/explanations/architecture" kind="aside" title="How it actually works">
+  Prefer to understand the machine before you run it? The architecture page
+  covers the four roles — CAS, action cache, scheduler, worker — and how a
+  request moves through them.
+</NextStep>

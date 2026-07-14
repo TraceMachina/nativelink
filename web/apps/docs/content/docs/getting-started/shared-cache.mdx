@@ -1,11 +1,11 @@
 ---
-title: NativeLink on-prem
+title: Shared cache
 description: Self-host NativeLink on hardware you control, with the operational checklist a team rollout actually needs.
 ---
 
 The source-available release of NativeLink is designed to run on your
 own infrastructure. This page covers what changes between the
-[10-minute setup](/getting-started/setup) and a deployment that
+[10-minute quickstart](/getting-started/quickstart) and a deployment that
 serves your team without 3 AM pages.
 
 ## When to self-host
@@ -58,7 +58,7 @@ each independently.
   </li>
   <li>
     **Pick the deployment substrate.** Most teams land on one of:
-    - **Kubernetes** — see [Deployment → Kubernetes](/deployment/kubernetes)
+    - **Kubernetes** — see [Deploy on Kubernetes](/operate/deploy-kubernetes)
       for a working chart.
     - **Bare VMs** — `systemd` units, one binary per role, with a load
       balancer in front.
@@ -76,13 +76,13 @@ each independently.
   </li>
   <li>
     **Set up TLS.** mTLS between every hop. The
-    [Configuration → Production](/configuration/production) guide
+    [Production configuration](/operate/production-config) page
     has the certificate layout.
   </li>
   <li>
     **Wire up metrics.** NativeLink emits Prometheus metrics out of the
     box. Point Grafana at it. See
-    [Deployment → Metrics](/deployment/metrics).
+    [Observability](/operate/observability).
   </li>
 </Steps>
 
@@ -147,9 +147,9 @@ everything until it warms back up.
 
 ## What's next
 
-- [Configuration → Production](/configuration/production) — the
+- [Production configuration](/operate/production-config) — the
   JSON5 shape for a real cluster.
-- [Deployment → Kubernetes](/deployment/kubernetes) — a working
+- [Deploy on Kubernetes](/operate/deploy-kubernetes) — a working
   Helm chart.
-- [Deployment → Metrics](/deployment/metrics) — Prometheus and
+- [Observability](/operate/observability) — Prometheus and
   Grafana, ready to go.

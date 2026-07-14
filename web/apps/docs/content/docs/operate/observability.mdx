@@ -1,5 +1,5 @@
 ---
-title: Metrics & observability
+title: Observability
 description: Collect NativeLink OTLP metrics, scrape them with Prometheus, and dashboard them in Grafana.
 ---
 
@@ -298,7 +298,7 @@ storage:
   </Accordion>
   <Accordion title="Which metric should drive worker autoscaling?" id="which-metric-should-drive-worker-autoscaling">
     `nativelink_scheduler_queue_depth` — the signal the
-    [Kubernetes HPA example](/deployment/kubernetes) targets. CPU-based
+    [the Kubernetes HPA example](/operate/deploy-kubernetes) targets. CPU-based
     scaling reacts too slowly because workers are mostly I/O-bound.
   </Accordion>
 </Accordions>

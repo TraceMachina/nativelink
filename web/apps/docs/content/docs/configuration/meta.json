@@ -2,7 +2,6 @@
   "pages": [
     "intro",
     "basic",
-    "production",
     "chunking",
     "compression"
   ],

@@ -9,7 +9,7 @@ and NativeLink can be the RE API backend for Chromium and other
 Siso-driven builds.
 
 For a production Chromium walkthrough, see
-[Deployment → Chromium](/deployment/chromium).
+[Chromium](/getting-started/connect-your-build/chromium).
 
 ## Local endpoint setup
 
@@ -22,7 +22,7 @@ export SISO_REAPI_INSTANCE=main
 export RBE_service_no_security=true
 ```
 
-For CMake projects, [`recc`](/getting-started/other-build-systems/cmake-recc)
+For CMake projects, [`recc`](/getting-started/connect-your-build/cmake-recc)
 is often the smaller setup. It uses the same Remote Execution API but fits
 CMake compiler-launcher workflows directly.
 
@@ -78,6 +78,6 @@ advertise.
     Siso replaces Ninja and speaks full remote execution — it's the path
     for Chromium-style builds. recc is a compiler launcher for ordinary
     CMake projects that want caching with minimal setup — see
-    [CMake with recc](/getting-started/other-build-systems/cmake-recc).
+    [CMake with recc](/getting-started/connect-your-build/cmake-recc).
   </Accordion>
 </Accordions>

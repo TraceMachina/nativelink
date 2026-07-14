@@ -1,0 +1,93 @@
+---
+title: The thing they will have built
+description: One sentence, written as the outcome, not as the topic.
+verified: v1.6.3
+---
+
+{/* archetype: tutorial — learning-oriented, a guaranteed happy path.
+    Options and alternatives do not belong here; they belong in a how-to.
+    If you find yourself writing "you could also", stop and move it. */}
+
+{/* ── Layer 1: orientation ───────────────────────────────────────────── */}
+
+**Who this is for:** the specific reader, in their own terms. **What you'll
+have at the end:** the concrete artifact or capability, not the topic
+covered. **Time:** an honest estimate.
+
+<Rung n={2} of={4} />
+
+## What you'll build
+
+One sentence describing the end state, then a diagram of it. Show the shape
+before explaining the parts — a reader who can see where the pieces go
+follows the steps far better than one assembling a mental model from
+instructions.
+
+<Mermaid chart={`
+graph LR
+  A[your build] --> B[NativeLink]
+`} />
+
+{/* ── Layer 2: the working detail ────────────────────────────────────── */}
+
+## Before you start
+
+Pinned versions, not "a recent version". A tutorial that worked once should
+work again, and a reader who fails at step 6 needs to be able to rule this
+out.
+
+- NativeLink <MinVersion v="1.6.0" />
+- Whatever else, with its version
+
+## Steps
+
+<Steps>
+
+<li>
+
+### One imperative sentence
+
+The command, alone, copy-pasteable:
+
+```bash
+nativelink ./config.json5
+```
+
+Then what they should see. Every step shows its expected output — this is
+what turns a failure into "step 3 was wrong" instead of "it doesn't work".
+
+```
+[INFO] serving on 0.0.0.0:50051
+```
+
+</li>
+
+<li>
+
+### The next one
+
+Same shape. One command, one expected output. If a step needs three
+paragraphs of justification, the justification belongs in an explanation page
+that this step links.
+
+</li>
+
+</Steps>
+
+<VerifyBlock>
+  The concrete, checkable claim — a number that changed, a line in a log, a
+  file that now exists. Not "it should work now". A reader must be able to
+  tell success from silence.
+</VerifyBlock>
+
+{/* ── Layer 3: handoff ───────────────────────────────────────────────── */}
+
+## What's next
+
+<NextStep href="/the-next-rung" title="The next rung">
+  What it gets them, in the same voice as the rest of the page.
+</NextStep>
+
+<NextStep href="/somewhere-sideways" kind="aside" title="A sideways move">
+  For the reader whose next question isn't the next rung.
+</NextStep>

@@ -1,0 +1,64 @@
+---
+title: For agents
+description: How to point a coding agent at NativeLink, and what these docs guarantee to machine readers.
+---
+
+{/* archetype: explanation — see /web/apps/docs/templates/explanation.mdx */}
+
+**Who this is for:** anyone pointing Claude Code, Cursor, Copilot or a
+homegrown agent at NativeLink — either at the codebase or at these docs.
+**What you'll have at the end:** the three entry points, and the guarantees
+that make them worth trusting. **Time:** five minutes.
+
+## The three entry points
+
+**[`AGENTS.md`](https://github.com/TraceMachina/nativelink/blob/main/AGENTS.md)
+at the repo root** is for an agent working *on the code*. It maps every
+`nativelink-*` crate to what it owns, says where config, store, scheduler and
+worker logic actually live, gives the build and test commands, and lists the
+"changing X means editing Y" pairs that are easy to get wrong.
+
+**`/llms.txt`** is for an agent working *with the docs*. It follows the
+[llms.txt convention](https://llmstxt.org/): a link-first index of every
+canonical page with a one-line description. It's generated from the
+navigation and page frontmatter, so it can't drift out of sync with the
+sidebar, and it encodes the rung ordering — an agent reading it learns the
+CAS → RBE sequence rather than a flat list of URLs.
+
+**`/llms-full.txt`** is the same corpus with bodies included, concatenated in
+journey order with stable `# path` delimiters, for agents that would rather
+fetch once than crawl. The generated reference pages are linked rather than
+inlined; they're large, they change on a different cadence, and they're
+better fetched on demand.
+
+## What these docs guarantee to a machine reader
+
+**One canonical page per concept.** If two pages would explain the same
+thing, one of them links the other. An agent that finds an answer has found
+*the* answer.
+
+**Stable anchors.** Every heading and every FAQ entry has an explicit anchor,
+so a citation to a specific claim keeps resolving.
+
+**Redirects on every moved URL.** This site's structure changed
+substantially; agents hold cached URLs longer than humans hold bookmarks, so
+old paths redirect rather than 404.
+
+**Doc-to-source permalinks.** Behavioural claims carry a link to the code
+that implements them, pinned to a release tag rather than to `main` — a
+permalink that drifts is worse than no link, because the reader can't tell.
+
+**Generated reference.** The config, store and metrics references are
+generated from the source of truth in the repo. An agent reading the docs and
+an agent reading the code get the same answer by construction.
+
+**Machine-detectable structure.** Verification blocks carry
+`data-verify-block`, rung statements carry `data-rung` and `data-rung-of`,
+version badges carry `data-min-version`, and source links carry
+`data-source-link` and `data-source-ref`. Ordering and provability are
+readable without parsing prose.
+
+<NextStep href="/getting-started" title="Start with caching">
+  If you're here to actually run NativeLink rather than to point something
+  else at it, rung ① is the start of the ladder.
+</NextStep>

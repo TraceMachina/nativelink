@@ -1,16 +1,26 @@
 {
   "pages": [
     "index",
-    "---Get started---",
+    "---1 · Why NativeLink---",
+    "use-cases",
+    "---2 · Start with caching---",
     "getting-started",
+    "---3 · Add remote execution---",
+    "remote-execution",
     "rbe",
+    "---4 · Configure it---",
     "configuration",
-    "deployment",
-    "---Learn---",
+    "how-to",
+    "---5 · Operate in production---",
+    "operate",
+    "---6 · Understand it---",
     "explanations",
-    "---Develop---",
+    "---7 · Contribute---",
     "contribute",
-    "reference"
+    "---Reference---",
+    "reference",
+    "---For agents---",
+    "agents"
   ],
   "title": "Docs"
 }

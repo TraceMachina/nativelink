@@ -14,7 +14,7 @@ section landings are accurate, page bodies are coming.
 
 <Callout type="info" title="Working with agents">
   If you're integrating NativeLink with an AI coding agent (Claude Code,
-  Cursor, Copilot Workspace, Devin), start with [Getting Started → Setup](/getting-started/setup)
+  Cursor, Copilot Workspace, Devin), start with [Getting Started → Quickstart](/getting-started/quickstart)
   and then read [why hermeticity matters](/explanations/lre#faq).
 </Callout>
 
@@ -26,11 +26,11 @@ serves its job well.
 
 ### I want to get something running
 
-- [Setup](/getting-started/setup) — install and run a local cluster in
+- [Quickstart](/getting-started/quickstart) — install and run a local cluster in
   under 10 minutes.
-- [NativeLink on-prem](/getting-started/on-prem) — a single-server
+- [Shared cache](/getting-started/shared-cache) — a single-server
   deployment that survives a team-wide rollout.
-- [Other build systems](/getting-started/other-build-systems) — using NativeLink
+- [Connect your build tool](/getting-started/connect-your-build) — using NativeLink
   without Bazel (Buck2, Siso, Pants, CMake).
 
 ### I want to configure or operate it
@@ -39,10 +39,15 @@ serves its job well.
   in one page.
 - [Basic configurations](/configuration/basic) — common shapes for
   single-node and small-cluster setups.
-- [Production configurations](/configuration/production) — multi-region
-  CAS, autoscaling workers, observability.
-- [Deployment examples](/deployment/on-prem-overview) — Kubernetes,
-  Chromium, metrics pipelines, persistent workers.
+- [Production configuration](/operate/production-config) — the
+  three-process split a real cluster runs in.
+- [Operate in production](/operate) — what to watch, what to tune, and
+  what to do at 3am.
+- [Deploy on Kubernetes](/operate/deploy-kubernetes) and
+  [deploy on bare metal](/operate/deploy-bare-metal) — the two deployment
+  shapes, and where state lives in each.
+- [Observability](/operate/observability) — the OTLP to Prometheus to
+  Grafana pipeline.
 
 ### I want to understand how it works
 
@@ -80,19 +85,19 @@ get most about that topic. The ones we get most overall:
     workers) are under the Business Source License, and a paid
     [Enterprise](https://nativelink.com/pricing) tier exists if
     you'd rather not run it yourself. The licensing details are in
-    [NativeLink on-prem](/getting-started/on-prem#faq).
+    [Shared cache](/getting-started/shared-cache#faq).
   </Accordion>
   <Accordion title="Which build tools work with NativeLink?" id="which-build-tools-work-with-nativelink">
     Any client that speaks the Remote Execution API: Bazel, Buck2, Siso,
     Pants, BuildStream, Goma, and plain CMake via
-    [recc](/getting-started/other-build-systems/cmake-recc) — with no
+    [recc](/getting-started/connect-your-build/cmake-recc) — with no
     build-file rewrites. See
-    [Other build systems](/getting-started/other-build-systems).
+    [Connect your build tool](/getting-started/connect-your-build).
   </Accordion>
   <Accordion title="What platforms does the server run on?" id="what-platforms-does-the-server-run-on">
     Linux and Windows on x86_64 and ARM64 via the multi-arch Docker image
     (`ghcr.io/tracemachina/nativelink`, v1.6.0+), and macOS (Apple
     Silicon and Intel) via the Docker image or a from-source Nix build.
-    See [Setup](/getting-started/setup).
+    See [Quickstart](/getting-started/quickstart).
   </Accordion>
 </Accordions>

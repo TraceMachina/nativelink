@@ -1,0 +1,71 @@
+---
+title: Do the specific thing
+description: Phrased as the task the reader already knows they have.
+verified: v1.6.3
+---
+
+{/* archetype: how-to — task-oriented. The reader arrived with the task
+    already in mind; do not explain the subsystem to them. Complete working
+    artifact first, then only the parts that carry a decision. */}
+
+{/* ── Layer 1: orientation + the complete artifact ───────────────────── */}
+
+**Who this is for:** the reader with this exact task. **What you'll have at
+the end:** the task, done. **Time:** honest estimate.
+
+<Rung n={4} of={4} />
+
+## The configuration
+
+The whole thing, working, copy-pasteable. Not a fragment with an ellipsis in
+it — a reader who has to reconstruct the surrounding braces will get it
+wrong, and the whole point of a how-to is that they don't have to think.
+
+```json5
+{
+  stores: [
+    {
+      name: "CAS_MAIN",
+      // the complete, runnable thing
+    },
+  ],
+}
+```
+
+{/* ── Layer 2: the parts that matter ─────────────────────────────────── */}
+
+## What to change
+
+Only the fields carrying a decision, each one saying what the decision *is*
+and what happens either way. For everything else, link the generated
+reference rather than restating it — that's what keeps this page correct when
+the field list changes.
+
+| Field | What it decides | Reference |
+|---|---|---|
+| `some_field` | the tradeoff, in a clause | [reference](/reference/nativelink-config) |
+
+The implementation is in <SourceLink file="nativelink-store/src/some_store.rs" symbol="SomeStore" />
+if you want to see exactly what the field does.
+
+<VerifyBlock>
+  How the reader knows it worked — a metric that moved, a log line, a
+  response they can curl for.
+</VerifyBlock>
+
+{/* ── Layer 3: when it doesn't work ──────────────────────────────────── */}
+
+## Troubleshooting
+
+Real failure modes only, in symptom-first order. The reader is here because
+something failed; they're scanning for their symptom, not reading prose.
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| what they observe | what's actually wrong | what to do |
+
+## What's next
+
+<NextStep href="/somewhere" title="The next thing">
+  Where this task usually leads.
+</NextStep>

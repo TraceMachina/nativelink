@@ -1,10 +1,10 @@
 ---
-title: On-prem overview
+title: Deploy on bare metal
 description: Architecture patterns for self-hosted NativeLink — what to deploy, where, and how it fits together.
 ---
 
 The
-[on-prem getting-started guide](/getting-started/on-prem)
+[shared cache guide](/getting-started/shared-cache)
 covers *why* you'd self-host. This page covers the
 **reference architectures** — the deployment shapes that have
 survived contact with real workloads.
@@ -66,7 +66,7 @@ Redis.
 with strict data residency).
 
 **Config shape:**
-[Production configurations](/configuration/production).
+[Production configuration](/operate/production-config).
 
 ### Shape C — Multi-region, regulated
 
@@ -97,7 +97,7 @@ contracts; truly global teams.
 
 | Substrate          | Notes                                                    |
 | ------------------ | -------------------------------------------------------- |
-| Kubernetes         | The richest deployment story. See [Kubernetes](/deployment/kubernetes). |
+| Kubernetes         | The richest deployment story. See [Deploy on Kubernetes](/operate/deploy-kubernetes). |
 | Bare VMs + systemd | Lowest operational complexity if you already do this.    |
 | Docker Compose     | Reasonable for ≤ 5 devs.                                 |
 | Bare metal         | Best price/perf at scale.                                |
@@ -130,22 +130,22 @@ CAS storage is the dominant cost. Plan accordingly.
   <Accordion title="How should workers scale?" id="how-should-workers-scale">
     On scheduler queue depth, not CPU — workers spend most of their time
     blocked on I/O, so CPU-based scaling reacts too late. The
-    [Kubernetes guide](/deployment/kubernetes) has a working HPA
+    [Deploy on Kubernetes](/operate/deploy-kubernetes) has a working HPA
     targeting `nativelink_scheduler_queue_depth`.
   </Accordion>
   <Accordion title="What about backups?" id="what-about-backups">
     Filesystem CAS: `rsync` or ZFS/Btrfs snapshots. S3-compatible:
     versioning, lifecycle policies, and cross-region replication for DR.
     Redis: ephemeral by design — loss is a cache miss. The procedure is
-    in [NativeLink on-prem](/getting-started/on-prem).
+    in [Shared cache](/getting-started/shared-cache).
   </Accordion>
 </Accordions>
 
 ## What's next
 
-- [Kubernetes](/deployment/kubernetes) — working Helm chart.
-- [Persistent workers](/deployment/persistent-workers) — warm
+- [Deploy on Kubernetes](/operate/deploy-kubernetes) — working Helm chart.
+- [Persistent workers](/remote-execution/persistent-workers) — warm
   JVM / Bazel-style worker pools.
-- [Metrics](/deployment/metrics) — Prometheus and Grafana.
-- [Chromium](/deployment/chromium) — full reference of the
+- [Observability](/operate/observability) — Prometheus and Grafana.
+- [Chromium](/getting-started/connect-your-build/chromium) — full reference of the
   largest open-source consumer.

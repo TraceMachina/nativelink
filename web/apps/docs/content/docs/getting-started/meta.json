@@ -1,8 +1,9 @@
 {
   "pages": [
-    "setup",
-    "on-prem",
-    "other-build-systems"
+    "index",
+    "quickstart",
+    "connect-your-build",
+    "shared-cache"
   ],
-  "title": "Getting Started"
+  "title": "Start with caching"
 }

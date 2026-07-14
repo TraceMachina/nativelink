@@ -1,5 +1,5 @@
 ---
-title: Kubernetes
+title: Deploy on Kubernetes
 description: Deploy NativeLink on Kubernetes — what each workload looks like, where state lives, how to autoscale workers.
 ---
 
@@ -78,9 +78,9 @@ spec:
 
 Each replica owns its slice of CAS storage on its own EBS / PD
 volume. The
-[production config](/configuration/production#cas-sharded-s3-redis)
-shows how to compose those slices into a single addressable CAS via
-the `shard` store backend.
+[production config](/operate/production-config#moving-off-local-disk)
+shows how to compose those slices into one addressable CAS, and
+[Tuning](/operate/tuning) covers when to reach for the `shard` store.
 
 ## Worker Deployment + HPA
 
@@ -194,6 +194,6 @@ there.
 
 ## What's next
 
-- [Metrics](/deployment/metrics) — wire it into your Grafana.
-- [Persistent workers](/deployment/persistent-workers) — pool
+- [Observability](/operate/observability) — wire it into your Grafana.
+- [Persistent workers](/remote-execution/persistent-workers) — pool
   long-lived worker processes for hot toolchains.

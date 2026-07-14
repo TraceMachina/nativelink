@@ -1,0 +1,66 @@
+---
+title: Start with caching
+description: Rung one of the ladder — a cache running, connected to your build, proven to be hitting.
+---
+
+{/* archetype: explanation (waypoint) — see /web/apps/docs/templates/explanation.mdx */}
+
+**Who this is for:** anyone who has decided to try NativeLink and wants the
+shortest path to a real result. **What you'll have at the end of this
+section:** a cache your build system is talking to, hits you can point at,
+and — if you want it — the same cache shared with your team. **Time:** ten
+minutes for the first win, an afternoon for the shared one.
+
+<Rung n={1} of={4} requires="nothing but a build system that speaks the Remote Execution API" />
+
+## Why caching first
+
+NativeLink does two things: it caches build outputs, and it executes build
+actions remotely. It is tempting to reach for the second one immediately,
+because it's the more impressive half. Do the first one first anyway.
+
+Caching is the half with the short feedback loop. You start it, you point
+your build at it, you build twice, and the second build is faster — the whole
+loop is minutes and nothing about it can fail mysteriously. Remote execution
+adds a scheduler, workers, a platform-matching contract, and a toolchain
+hermeticity requirement, and every one of those is easier to debug when the
+storage layer underneath is already known-good.
+
+So this section is rung ① of a four-rung ladder, and each rung assumes the
+one below it is standing:
+
+| Rung | Section | You end with |
+|---|---|---|
+| ① | **Start with caching** (you are here) | a cache serving hits to your build |
+| ② | [Add remote execution](/remote-execution) | workers running the actions that miss the cache |
+| ③ | [Configure it](/configuration/intro) | a config file you wrote and understand |
+| ④ | [Task recipes](/how-to) | the backend, transport, and upgrade path you want |
+
+## Start here, or skip ahead
+
+**Start here** if NativeLink isn't running yet. Take
+[Quickstart](/getting-started/quickstart) in order; it's a guaranteed happy path and
+every step tells you what output to expect.
+
+**Skip ahead** if you already have a cache running and hitting. Rung ② picks
+you up at [Add remote execution](/remote-execution) and assumes exactly this
+section's outcome and nothing more.
+
+**Skip sideways** if your build tool isn't Bazel. The
+[connect your build tool](/getting-started/connect-your-build) pages cover
+Buck2, Siso, Pants, BuildStream and CMake via recc — same cache, different
+flags.
+
+## The order to read them in
+
+1. **[Quickstart](/getting-started/quickstart)** — install NativeLink and get a cache
+   answering on localhost.
+2. **[Connect your build tool](/getting-started/connect-your-build)** —
+   point the build at it and run a build twice.
+3. **[Shared cache](/getting-started/shared-cache)** — move it off localhost so
+   the rest of the team gets your hits.
+
+<NextStep href="/getting-started/quickstart" title="Setup">
+  Install NativeLink and run your first cached build. Ten minutes, one
+  terminal, no cluster required.
+</NextStep>

@@ -1,0 +1,85 @@
+---
+title: Add remote execution
+description: Rung two of the ladder — workers that run the actions your cache misses.
+---
+
+{/* archetype: explanation (waypoint) — see /web/apps/docs/templates/explanation.mdx */}
+
+**Who this is for:** anyone with a working cache who wants the misses to stop
+running locally. **What you'll have at the end of this section:** a scheduler,
+at least one worker, and a build whose cache misses execute on the farm
+instead of on your machine. **Time:** an hour for the first remote action,
+longer if your toolchain isn't hermetic yet.
+
+<Rung n={2} of={4} />
+
+## What this rung adds
+
+A cache answers the question "has this exact action already been run?" When
+the answer is no, something still has to run it — and with caching alone,
+that something is your laptop. Remote execution changes the answer to that
+second question.
+
+Three things are new in the deployment: a **scheduler** that decides which
+worker gets which action, at least one **worker** that actually runs it, and
+the **execution service** on the server. One thing is new in your build
+invocation: you tell the build tool where the executor is, and you declare
+what kind of machine your actions need. One thing is deliberately *not* new:
+your CAS and action cache are exactly the ones rung ① left you with. That's
+why the ladder is in this order.
+
+## What to expect the first time
+
+The first remote action almost never works on the first try, and it's nearly
+always one of two walls:
+
+**Platform properties.** The properties a worker advertises must be a
+superset of what the scheduler is configured to support and what your action
+asks for. When they don't line up, actions don't error — they queue, forever,
+which reads like a hang rather than a misconfiguration.
+
+**Toolchain hermeticity.** An action that runs on your machine because your
+machine happens to have the right compiler will not run on a worker that
+doesn't. Remote execution turns every implicit dependency on the local
+environment into a failure, which is uncomfortable the first time and
+extremely valuable afterwards.
+
+Both walls get their own page in this section rather than a footnote,
+because everyone hits them.
+
+## Start here, or skip ahead
+
+**Start here** if you have a cache serving hits and haven't run anything
+remotely yet.
+
+**Go back one rung** if you don't have a cache serving hits yet —
+[Start with caching](/getting-started) is the precondition for every page in
+this section, and pages here will fail in confusing ways without it.
+
+**Skip ahead** to [Configure it](/configuration/intro) if you already have workers
+running and what you actually want is to understand the config file you
+copy-pasted to get here.
+
+## Current pages
+
+While this section is being built out, the existing remote-execution material
+lives under [Testing remote execution](/rbe/local-testing):
+
+- [Local testing](/rbe/local-testing) — run a scheduler and worker on one
+  machine.
+- [Local Remote Execution](/rbe/local-remote-execution) — the LRE toolchain
+  mechanism that makes actions hermetic.
+- [Examples](/rbe/examples) and [Nix templates](/rbe/nix-templates) —
+  starting points to copy.
+- [Persistent workers](/remote-execution/persistent-workers) — pooled long-lived
+  worker processes for toolchains with a startup tax.
+
+<NextStep href="/rbe/local-testing" title="Local testing">
+  The shortest path to a scheduler and a worker you can watch: both on one
+  machine, where you can read every log line.
+</NextStep>
+
+<NextStep href="/configuration/intro" kind="aside" title="Configure it">
+  Rung ③. Once actions are executing, the config file is the next thing worth
+  actually understanding rather than copying.
+</NextStep>

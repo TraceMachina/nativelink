@@ -46,7 +46,7 @@ nativelink ./basic_cas.json5
 ```
 
 Point any RE-API client at `grpc://localhost:50051` (see
-[Setup](/getting-started/setup#point-your-build-system-at-it)).
+[Quickstart](/getting-started/quickstart#point-your-build-system-at-it)).
 
 ## Filesystem-backed cache
 
@@ -267,15 +267,15 @@ silently-empty caches.
   <Accordion title="When have I outgrown these configs?" id="when-have-i-outgrown-these-configs">
     When more than one node needs the same cache, or when a restart
     wiping state starts to hurt. That's the cue for the durable, sharded
-    shapes in [Production configurations](/configuration/production).
+    shapes in [Production configuration](/operate/production-config).
   </Accordion>
 </Accordions>
 
 ## What's next
 
-- [Production configurations](/configuration/production) — the
+- [Production configuration](/operate/production-config) — the
   shape this evolves into for a real fleet.
-- [Other build systems](/getting-started/other-build-systems) —
+- [Connect your build tool](/getting-started/connect-your-build) —
   pointing non-Bazel clients at the cluster.
 - [`nativelink-config/examples/`](https://github.com/TraceMachina/nativelink/tree/main/nativelink-config/examples)
   in the source — more working configs.
