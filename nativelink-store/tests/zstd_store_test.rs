@@ -944,6 +944,46 @@ async fn get_for_batch_selects_zstd_or_raw() -> Result<(), Error> {
 }
 
 #[nativelink_test]
+async fn get_for_batch_decodes_concatenated_frames() -> Result<(), Error> {
+    // Regression for `get_for_batch`'s raw-decode path: the physical stream
+    // stored for a blob can be two independently-compressed zstd frames
+    // concatenated together (see `get_zstd_preserves_concatenated_frames`).
+    // `zstd::bulk::decompress` must handle that multi-frame input, not just a
+    // single-frame stream, when the client does not accept zstd.
+    const PART_A: &[u8] = b"first frame content aaaaaaaaaaaaaaaaaaaaaaaa";
+    const PART_B: &[u8] = b"second frame content bbbbbbbbbbbbbbbbbbbbbbbb";
+
+    let frame_a = zstd::bulk::compress(PART_A, 3).unwrap();
+    let frame_b = zstd::bulk::compress(PART_B, 3).unwrap();
+
+    let mut raw = PART_A.to_vec();
+    raw.extend_from_slice(PART_B);
+    let digest = digest_for(&raw);
+
+    let (zstd, _store, _inner) = build(&spec()).await?;
+    zstd.update_zstd(
+        digest,
+        DigestHasherFunc::Sha256,
+        reader_from(vec![Bytes::from(frame_a), Bytes::from(frame_b)]),
+    )
+    .await?;
+
+    // Client does not accept zstd => `get_for_batch` must decode the stored
+    // (concatenated-frame) physical bytes to the full raw content.
+    let (payload, is_zstd) = zstd.get_for_batch(digest, false).await?;
+    assert!(
+        !is_zstd,
+        "client that does not accept zstd must get raw bytes"
+    );
+    assert_eq!(
+        &payload[..],
+        &raw[..],
+        "get_for_batch must decode a concatenated-frame physical stream to the full raw content"
+    );
+    Ok(())
+}
+
+#[nativelink_test]
 async fn zero_digest_zstd_fast_path() -> Result<(), Error> {
     let recording = Arc::new(RecordingStore::default());
     std::fs::create_dir_all(TEMP_PATH).map_err(|e| make_err!(Code::Internal, "temp dir: {e}"))?;

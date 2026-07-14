@@ -405,6 +405,9 @@ async fn create_empty_temp_file(path: &str) -> Result<(), Error> {
         .await
         .err_tip(|| format!("Failed to create zstd staging file {path}"))?;
     drop(slot);
+    // Owner-only permissions are enforced on unix only (NativeLink's supported
+    // platform); on non-unix the file inherits whatever default permissions
+    // the platform applies to newly created files.
     #[cfg(unix)]
     fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
         .await
@@ -905,8 +908,13 @@ impl ZstdStore {
 
         let mut guard = TempFileGuard::default();
         let primary_path = format!("{}/zstd-stage-{}", self.temp_path, uuid::Uuid::new_v4());
-        create_empty_temp_file(&primary_path).await?;
+        // Arm the guard BEFORE creating the file: if `create_empty_temp_file`
+        // creates the file but then fails (e.g. `set_permissions` errors) or
+        // this `.await` is cancelled, the file must still be tracked for
+        // removal. Removing a path that was never created is a harmless
+        // ENOENT no-op, so arming first is always safe.
         guard.add(primary_path.clone());
+        create_empty_temp_file(&primary_path).await?;
 
         let recompress_eligible =
             self.max_recompression_size > 0 && self.compression_level.is_some();
@@ -943,9 +951,10 @@ impl ZstdStore {
                 .await
                 .map_err(|e| make_err!(Code::Internal, "Recompression semaphore closed: {e}"))?;
             let secondary_path = format!("{}/zstd-stage-{}", self.temp_path, uuid::Uuid::new_v4());
-            create_empty_temp_file(&secondary_path).await?;
-            // Track both candidates while they coexist on disk.
+            // Arm the guard before creation for the same reason as the primary
+            // path above; track both candidates while they coexist on disk.
             guard.add(secondary_path.clone());
+            create_empty_temp_file(&secondary_path).await?;
 
             let rec_fs_permit = fs::get_permit().await?;
             let blocking_secondary = secondary_path.clone();
@@ -1031,6 +1040,27 @@ impl StoreDriver for ZstdStore {
                     self.temp_path
                 )
             })?;
+        // Probe that temp_path is actually writable: a read-only or
+        // mispermissioned directory would otherwise only surface as a failure
+        // on the first upload, long after startup.
+        let probe_path = format!(
+            "{}/.zstd-store-probe-{}",
+            self.temp_path,
+            uuid::Uuid::new_v4()
+        );
+        tokio::fs::write(&probe_path, [0u8]).await.map_err(|e| {
+            make_err!(
+                Code::Internal,
+                "ZstdStore temp_path {} is not writable: {e}",
+                self.temp_path
+            )
+        })?;
+        tokio::fs::remove_file(&probe_path).await.map_err(|e| {
+            make_err!(
+                Code::Internal,
+                "Failed to remove ZstdStore write-probe file {probe_path}: {e}"
+            )
+        })?;
         self.inner_store.clone().into_inner().post_init().await
     }
 
