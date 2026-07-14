@@ -14,8 +14,11 @@
 
 use core::cmp;
 use core::pin::Pin;
+use std::ffi::OsString;
 use std::io::{Read, Write};
-use std::sync::Arc;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -28,16 +31,32 @@ use nativelink_util::buf_channel::{
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::{
-    DigestHasher, DigestHasherFunc, digest_hasher_func_from_context,
+    DigestHasher, DigestHasherFunc, DigestHasherImpl, digest_hasher_func_from_context,
 };
+use nativelink_util::fs;
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::store_trait::{
     RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };
 use nativelink_util::{spawn, spawn_blocking};
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, SemaphorePermit};
 
 use crate::cas_utils::is_zero_digest;
+
+/// The canonical zstd encoding of empty input at [`DEFAULT_ENCODE_LEVEL`],
+/// computed once. Emitted verbatim for zero-digest `get_zstd` responses so the
+/// client always receives a valid zstd stream that decodes to nothing.
+fn empty_zstd_level3() -> Bytes {
+    static EMPTY: OnceLock<Bytes> = OnceLock::new();
+    EMPTY
+        .get_or_init(|| {
+            Bytes::from(
+                zstd::bulk::compress(&[], DEFAULT_ENCODE_LEVEL)
+                    .expect("zstd compression of empty input cannot fail"),
+            )
+        })
+        .clone()
+}
 
 /// Default number of concurrent staged uploads when the config value is `0`.
 const DEFAULT_MAX_CONCURRENT_STAGED_UPLOADS: usize = 4;
@@ -295,6 +314,204 @@ fn decode_identity(
     Ok(())
 }
 
+/// RAII guard that best-effort removes staged temp files when dropped. Because
+/// staged files are pure scratch (the inner store copies the bytes on commit),
+/// they are always removed — on success, error, or cancellation — so nothing
+/// ever lingers in `temp_path`.
+#[derive(Default)]
+struct TempFileGuard {
+    paths: Vec<String>,
+}
+
+impl TempFileGuard {
+    fn add(&mut self, path: String) {
+        self.paths.push(path);
+    }
+}
+
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        for path in &self.paths {
+            // Best-effort: the file may already have been removed (e.g. the
+            // losing recompression candidate). Ignore failures.
+            drop(std::fs::remove_file(path));
+        }
+    }
+}
+
+/// A `std::io::Write` sink for the decoded output of a staged upload. It never
+/// stores the full decoded stream unless re-compression is enabled; instead it
+/// hashes and counts every decoded byte. When `collect` is `Some`, decoded
+/// bytes are additionally buffered up to `collect_limit`; if that limit is
+/// exceeded the buffer is dropped (the upload is too large to re-compress).
+struct DecodeSink {
+    hasher: DigestHasherImpl,
+    decoded_len: u64,
+    collect: Option<Vec<u8>>,
+    collect_limit: u64,
+}
+
+impl Write for DecodeSink {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.hasher.update(buf);
+        self.decoded_len = self.decoded_len.saturating_add(buf.len() as u64);
+        if let Some(collected) = self.collect.as_mut() {
+            if self.decoded_len <= self.collect_limit {
+                collected.extend_from_slice(buf);
+            } else {
+                // Too large to re-compress in-memory; stop collecting.
+                self.collect = None;
+            }
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Result of the blocking validation pass over a staged compressed upload.
+struct StageOutput {
+    /// Physical (compressed) bytes written to the temp file.
+    compressed_size: u64,
+    /// Compressed wire bytes consumed from the client.
+    wire_bytes_consumed: u64,
+    /// Decoded content, present only when re-compression is eligible (decoded
+    /// length stayed within the configured `max_recompression_size`).
+    collected: Option<Vec<u8>>,
+}
+
+/// A validated, committed-ready staged upload. Dropping it removes the temp
+/// file(s) and releases the staging permit.
+struct StagedStream {
+    /// Path of the chosen temp file to commit from.
+    path: String,
+    /// Physical (compressed) size of the chosen stream.
+    compressed_size: u64,
+    /// Compressed wire bytes actually consumed from the client.
+    wire_bytes_consumed: u64,
+    _permit: OwnedSemaphorePermit,
+    _guard: TempFileGuard,
+}
+
+/// Creates an owner-only (0o600) temp file at `path` and closes it, leaving an
+/// empty file on disk. Callers reopen it inside `spawn_blocking!` for the
+/// actual streaming write; opening without `create` there means a concurrent
+/// cancellation (which removes the file via the guard) is observed as an open
+/// error rather than silently recreating a leftover file.
+async fn create_empty_temp_file(path: &str) -> Result<(), Error> {
+    let slot = fs::create_file(path)
+        .await
+        .err_tip(|| format!("Failed to create zstd staging file {path}"))?;
+    drop(slot);
+    #[cfg(unix)]
+    fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+        .await
+        .err_tip(|| format!("Failed to set permissions on zstd staging file {path}"))?;
+    Ok(())
+}
+
+/// Blocking validation pass: stream compressed chunks from `reader`, writing the
+/// raw compressed bytes to the temp file at `path` while decoding them to
+/// recompute the uncompressed length and hash. Enforces the compressed-size cap
+/// (`ResourceExhausted`) and, at EOF, that the decoded length and hash match the
+/// requested `digest` (`InvalidArgument`). Only runs from within
+/// `spawn_blocking!` because it blocks on channel receives and the zstd codec.
+fn stage_compressed_blocking(
+    mut reader: DropCloserReadHalf,
+    path: &str,
+    digest: DigestInfo,
+    hasher_func: DigestHasherFunc,
+    max_compressed_upload_size: u64,
+    collect_limit: Option<u64>,
+    _fs_permit: SemaphorePermit<'static>,
+) -> Result<StageOutput, Error> {
+    let expected_size = digest.size_bytes();
+    // Open the pre-created file without `create`: if it was removed by the
+    // cleanup guard (cancellation) this fails instead of recreating a leftover.
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .map_err(|e| make_err!(Code::Internal, "Failed to open zstd staging file: {e}"))?;
+
+    let sink = DecodeSink {
+        hasher: hasher_func.hasher(),
+        decoded_len: 0,
+        collect: collect_limit.map(|_| Vec::new()),
+        collect_limit: collect_limit.unwrap_or(0),
+    };
+    let mut decoder = zstd::stream::write::Decoder::new(sink).map_err(|e| {
+        make_err!(
+            Code::Internal,
+            "Zstd decoder init failed in zstd store: {e}"
+        )
+    })?;
+
+    let mut wire_bytes_consumed: u64 = 0;
+    loop {
+        let chunk = reader
+            .blocking_recv()
+            .err_tip(|| "Failed to read compressed chunk in zstd store staging")?;
+        if chunk.is_empty() {
+            break; // EOF.
+        }
+        wire_bytes_consumed = wire_bytes_consumed
+            .checked_add(chunk.len() as u64)
+            .ok_or_else(|| make_err!(Code::Internal, "Wire byte count overflow in zstd store"))?;
+        if wire_bytes_consumed > max_compressed_upload_size {
+            return Err(make_err!(
+                Code::ResourceExhausted,
+                "Compressed upload exceeded max_compressed_upload_size ({max_compressed_upload_size} bytes) in zstd store"
+            ));
+        }
+        file.write_all(&chunk)
+            .map_err(|e| make_err!(Code::Internal, "Failed to write zstd staging file: {e}"))?;
+        // A decode failure here is bad *client* input, not stored corruption.
+        decoder
+            .write_all(&chunk)
+            .map_err(|e| make_input_err!("Zstd decode failed in zstd store staging: {e}"))?;
+        if decoder.get_ref().decoded_len > expected_size {
+            return Err(make_input_err!(
+                "Decoded more than digest size in zstd store staging, digest says {expected_size}"
+            ));
+        }
+    }
+
+    decoder
+        .flush()
+        .map_err(|e| make_input_err!("Zstd decode flush failed in zstd store staging: {e}"))?;
+    let mut sink = decoder.into_inner();
+    let decoded_len = sink.decoded_len;
+    let collected = sink.collect.take();
+
+    // Validate BEFORE the upload is allowed to commit.
+    if decoded_len != expected_size {
+        return Err(make_input_err!(
+            "Decoded size {decoded_len} does not match digest size {expected_size} in zstd store"
+        ));
+    }
+    let actual_digest = sink.hasher.finalize_digest();
+    if actual_digest.packed_hash() != digest.packed_hash() {
+        return Err(make_input_err!(
+            "Hashes do not match in zstd store update, expected {} but got {}",
+            digest.packed_hash(),
+            actual_digest.packed_hash()
+        ));
+    }
+
+    file.flush()
+        .map_err(|e| make_err!(Code::Internal, "Failed to flush zstd staging file: {e}"))?;
+    file.sync_all()
+        .map_err(|e| make_err!(Code::Internal, "Failed to sync zstd staging file: {e}"))?;
+
+    Ok(StageOutput {
+        compressed_size: wire_bytes_consumed,
+        wire_bytes_consumed,
+        collected,
+    })
+}
+
 /// A pass-through store that stores blobs zstd-compressed in the inner CAS
 /// store while presenting the raw (uncompressed) view to clients.
 ///
@@ -310,17 +527,15 @@ pub struct ZstdStore {
     /// Configured encode level, already validated to `1..=19`; `None` uses
     /// [`DEFAULT_ENCODE_LEVEL`].
     compression_level: Option<i32>,
-    // TODO(task 4): used by zstd fast path.
-    #[allow(dead_code)]
+    /// Hard cap on the number of compressed wire bytes accepted for a single
+    /// staged upload before it is rejected with `ResourceExhausted`.
     max_compressed_upload_size: u64,
-    // TODO(task 4): used by zstd fast path.
-    #[allow(dead_code)]
+    /// Uncompressed-size ceiling below which a staged upload is eligible for
+    /// re-compression at `compression_level`. `0` disables re-compression.
     max_recompression_size: u64,
-    // TODO(task 4): used by zstd fast path.
-    #[allow(dead_code)]
+    /// Bounds concurrent staged uploads (temp files being validated at once).
     staged_upload_semaphore: Arc<Semaphore>,
-    // TODO(task 4): used by zstd fast path.
-    #[allow(dead_code)]
+    /// Bounds concurrent re-compression passes.
     recompression_semaphore: Arc<Semaphore>,
 }
 
@@ -502,6 +717,302 @@ impl ZstdStore {
         get_res?;
         decode_res?;
         pump_res?;
+        Ok(())
+    }
+
+    /// Byte-for-byte passthrough of the stored zstd stream. Always emits zstd:
+    /// zero digests are answered with the canonical empty encoding.
+    pub async fn get_zstd(
+        &self,
+        digest: DigestInfo,
+        mut writer: DropCloserWriteHalf,
+    ) -> Result<(), Error> {
+        if is_zero_digest(digest) {
+            writer
+                .send(empty_zstd_level3())
+                .await
+                .err_tip(|| "Failed to send empty zstd in zstd store get_zstd")?;
+            writer
+                .send_eof()
+                .err_tip(|| "Failed to send EOF in zstd store get_zstd")?;
+            return Ok(());
+        }
+        // The physical bytes are already zstd; pipe them straight through.
+        self.inner_store
+            .get_part(digest, writer, 0, None)
+            .await
+            .err_tip(|| "Inner store get_part in zstd store get_zstd failed")
+    }
+
+    /// Accept a client-supplied compressed (zstd) stream: validate, stage,
+    /// optionally re-compress, then commit. Returns the number of compressed
+    /// wire bytes consumed.
+    pub async fn update_zstd(
+        &self,
+        digest: DigestInfo,
+        digest_function: DigestHasherFunc,
+        reader: DropCloserReadHalf,
+    ) -> Result<u64, Error> {
+        if is_zero_digest(digest) {
+            return self.validate_empty_zstd_stream(reader).await;
+        }
+        let staged = self
+            .stage_compressed(digest, digest_function, reader)
+            .await?;
+        let wire_bytes_consumed = staged.wire_bytes_consumed;
+        self.commit_staged(digest, &staged).await?;
+        Ok(wire_bytes_consumed)
+    }
+
+    /// Whole-`Bytes` variant of [`ZstdStore::update_zstd`] for `BatchUpdate`.
+    pub async fn update_zstd_oneshot(
+        &self,
+        digest: DigestInfo,
+        digest_function: DigestHasherFunc,
+        data: Bytes,
+    ) -> Result<u64, Error> {
+        if is_zero_digest(digest) {
+            let wire_bytes_consumed = data.len() as u64;
+            if wire_bytes_consumed > self.max_compressed_upload_size {
+                return Err(make_err!(
+                    Code::ResourceExhausted,
+                    "Compressed upload exceeded max_compressed_upload_size ({} bytes) in zstd store",
+                    self.max_compressed_upload_size
+                ));
+            }
+            let decoded = spawn_blocking!("zstd_store_validate_empty_oneshot", move || {
+                zstd::stream::decode_all(&data[..])
+                    .map_err(|e| make_input_err!("Zstd decode failed for zero digest: {e}"))
+            })
+            .await
+            .err_tip(|| "Failed to run zstd store empty validation task")??;
+            if !decoded.is_empty() {
+                return Err(make_input_err!(
+                    "Zero-digest zstd upload did not decode to empty in zstd store"
+                ));
+            }
+            return Ok(wire_bytes_consumed);
+        }
+
+        // Feed `data` through a channel so the shared staging path handles it.
+        let (mut tx, rx) = make_buf_channel_pair();
+        let feed_fut = spawn!("zstd_store_oneshot_feed", async move {
+            if !data.is_empty() {
+                tx.send(data)
+                    .await
+                    .err_tip(|| "Failed to feed oneshot data in zstd store")?;
+            }
+            tx.send_eof()
+                .err_tip(|| "Failed to send oneshot EOF in zstd store")?;
+            Result::<(), Error>::Ok(())
+        });
+
+        let stage_res = self.stage_compressed(digest, digest_function, rx).await;
+        let feed_res = feed_fut
+            .await
+            .err_tip(|| "Failed to run zstd store oneshot feed task")?;
+        let staged = stage_res?;
+        feed_res?;
+        let wire_bytes_consumed = staged.wire_bytes_consumed;
+        self.commit_staged(digest, &staged).await?;
+        Ok(wire_bytes_consumed)
+    }
+
+    /// Batch read selection: return `(data, is_zstd)`. Prefers the physical
+    /// zstd bytes when the client accepts zstd and compression actually helped;
+    /// otherwise decodes to raw.
+    pub async fn get_for_batch(
+        &self,
+        digest: DigestInfo,
+        client_accepts_zstd: bool,
+    ) -> Result<(Bytes, bool), Error> {
+        if is_zero_digest(digest) {
+            return Ok((Bytes::new(), false));
+        }
+        let physical = self
+            .inner_store
+            .get_part_unchunked(digest, 0, None)
+            .await
+            .err_tip(|| "Inner store get in zstd store get_for_batch failed")?;
+        if client_accepts_zstd && (physical.len() as u64) < digest.size_bytes() {
+            return Ok((physical, true));
+        }
+        let expected_size = usize::try_from(digest.size_bytes())
+            .map_err(|_| make_err!(Code::Internal, "Digest size too large for this platform"))?;
+        let raw = spawn_blocking!("zstd_store_batch_decode", move || {
+            // Stored data was validated at upload time; a decode failure here is
+            // corruption of already-stored bytes.
+            zstd::bulk::decompress(&physical, expected_size)
+                .map_err(|e| make_err!(Code::DataLoss, "Zstd decode failed in zstd store: {e}"))
+        })
+        .await
+        .err_tip(|| "Failed to run zstd store batch decode task")??;
+        Ok((Bytes::from(raw), false))
+    }
+
+    /// Validate that a zero-digest client stream decodes to empty without
+    /// touching the inner store. Returns the compressed wire bytes consumed.
+    async fn validate_empty_zstd_stream(&self, reader: DropCloserReadHalf) -> Result<u64, Error> {
+        let max_compressed_upload_size = self.max_compressed_upload_size;
+        spawn_blocking!("zstd_store_validate_empty", move || {
+            let mut reader = reader;
+            let mut compressed = Vec::new();
+            let mut wire_bytes_consumed: u64 = 0;
+            loop {
+                let chunk = reader
+                    .blocking_recv()
+                    .err_tip(|| "Failed to read chunk validating zero-digest zstd")?;
+                if chunk.is_empty() {
+                    break;
+                }
+                wire_bytes_consumed += chunk.len() as u64;
+                if wire_bytes_consumed > max_compressed_upload_size {
+                    return Err(make_err!(
+                        Code::ResourceExhausted,
+                        "Compressed upload exceeded max_compressed_upload_size ({max_compressed_upload_size} bytes) in zstd store"
+                    ));
+                }
+                compressed.extend_from_slice(&chunk);
+            }
+            let decoded = zstd::stream::decode_all(&compressed[..])
+                .map_err(|e| make_input_err!("Zstd decode failed for zero digest: {e}"))?;
+            if !decoded.is_empty() {
+                return Err(make_input_err!(
+                    "Zero-digest zstd upload did not decode to empty in zstd store"
+                ));
+            }
+            Ok(wire_bytes_consumed)
+        })
+        .await
+        .err_tip(|| "Failed to run zstd store empty validation task")?
+    }
+
+    /// Stage a validated compressed upload to a temp file, optionally producing
+    /// a smaller re-compressed candidate. The returned [`StagedStream`] owns the
+    /// cleanup guard and staging permit.
+    async fn stage_compressed(
+        &self,
+        digest: DigestInfo,
+        digest_function: DigestHasherFunc,
+        reader: DropCloserReadHalf,
+    ) -> Result<StagedStream, Error> {
+        let permit = self
+            .staged_upload_semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|e| make_err!(Code::Internal, "Staged upload semaphore closed: {e}"))?;
+
+        let mut guard = TempFileGuard::default();
+        let primary_path = format!("{}/zstd-stage-{}", self.temp_path, uuid::Uuid::new_v4());
+        create_empty_temp_file(&primary_path).await?;
+        guard.add(primary_path.clone());
+
+        let recompress_eligible =
+            self.max_recompression_size > 0 && self.compression_level.is_some();
+        let collect_limit = recompress_eligible.then_some(self.max_recompression_size);
+
+        let fs_permit = fs::get_permit().await?;
+        let max_compressed_upload_size = self.max_compressed_upload_size;
+        let blocking_path = primary_path.clone();
+        let output = spawn_blocking!("zstd_store_stage", move || {
+            stage_compressed_blocking(
+                reader,
+                &blocking_path,
+                digest,
+                digest_function,
+                max_compressed_upload_size,
+                collect_limit,
+                fs_permit,
+            )
+        })
+        .await
+        .err_tip(|| "Failed to run zstd store staging task")??;
+
+        let mut chosen_path = primary_path.clone();
+        let mut compressed_size = output.compressed_size;
+
+        // Re-compression only runs when the decoded content stayed within the
+        // configured ceiling (so `collected` is present).
+        if let Some(collected) = output.collected {
+            let level = self.encode_level();
+            let _rec_permit = self
+                .recompression_semaphore
+                .clone()
+                .acquire_owned()
+                .await
+                .map_err(|e| make_err!(Code::Internal, "Recompression semaphore closed: {e}"))?;
+            let secondary_path = format!("{}/zstd-stage-{}", self.temp_path, uuid::Uuid::new_v4());
+            create_empty_temp_file(&secondary_path).await?;
+            // Track both candidates while they coexist on disk.
+            guard.add(secondary_path.clone());
+
+            let rec_fs_permit = fs::get_permit().await?;
+            let blocking_secondary = secondary_path.clone();
+            let recompressed_size = spawn_blocking!("zstd_store_recompress", move || {
+                let recompressed = zstd::bulk::compress(&collected, level).map_err(|e| {
+                    make_err!(
+                        Code::Internal,
+                        "Zstd re-compression failed in zstd store: {e}"
+                    )
+                })?;
+                let mut file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(&blocking_secondary)
+                    .map_err(|e| {
+                        make_err!(Code::Internal, "Failed to open zstd recompress file: {e}")
+                    })?;
+                file.write_all(&recompressed).map_err(|e| {
+                    make_err!(Code::Internal, "Failed to write zstd recompress file: {e}")
+                })?;
+                file.flush().map_err(|e| {
+                    make_err!(Code::Internal, "Failed to flush zstd recompress file: {e}")
+                })?;
+                file.sync_all().map_err(|e| {
+                    make_err!(Code::Internal, "Failed to sync zstd recompress file: {e}")
+                })?;
+                drop(rec_fs_permit);
+                Result::<u64, Error>::Ok(recompressed.len() as u64)
+            })
+            .await
+            .err_tip(|| "Failed to run zstd store recompress task")??;
+
+            // Keep the smaller candidate; remove the larger one now to bound
+            // disk use (the guard still covers it if removal fails).
+            if recompressed_size < compressed_size {
+                chosen_path = secondary_path;
+                compressed_size = recompressed_size;
+                drop(fs::remove_file(&primary_path).await);
+            } else {
+                drop(fs::remove_file(&secondary_path).await);
+            }
+        }
+
+        Ok(StagedStream {
+            path: chosen_path,
+            compressed_size,
+            wire_bytes_consumed: output.wire_bytes_consumed,
+            _permit: permit,
+            _guard: guard,
+        })
+    }
+
+    /// Stream a validated staged temp file into the inner store. Only called
+    /// after validation succeeded, so the inner store never sees corrupt data.
+    async fn commit_staged(&self, digest: DigestInfo, staged: &StagedStream) -> Result<(), Error> {
+        let file = fs::open_file(&staged.path, 0, u64::MAX)
+            .await
+            .err_tip(|| "Failed to open staged zstd file for commit")?
+            .into_inner();
+        self.inner_store
+            .update_with_whole_file(
+                digest,
+                OsString::from(staged.path.clone()),
+                file,
+                UploadSizeInfo::ExactSize(staged.compressed_size),
+            )
+            .await
+            .err_tip(|| "Failed to commit staged zstd upload to inner store")?;
         Ok(())
     }
 }
