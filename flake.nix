@@ -474,7 +474,6 @@
           hooks = import ./tools/pre-commit-hooks.nix {
             inherit pkgs;
             inherit (packages) generate-bazel-rc generate-stores-config;
-            renovate-patched = pkgs.callPackage ./tools/renovate.nix {};
             nightly-rust = pkgs.rust-bin.nightly.${pkgs.lre.nightly-rust.meta.version};
           };
         };
@@ -606,7 +605,7 @@
               export CC=clang
               export PULUMI_K8S_AWAIT_ALL=true
               export PLAYWRIGHT_BROWSERS_PATH=${pkgs.playwright-driver.browsers}
-              export PLAYWRIGHT_NODEJS_PATH=${pkgs.nodePackages_latest.nodejs}
+              export PLAYWRIGHT_NODEJS_PATH=${pkgs.nodejs}
             ''
             # TODO(palfrey): Generalize this.
             + pkgs.lib.optionalString (system == "x86_64-linux") ''
