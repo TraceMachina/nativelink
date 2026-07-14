@@ -288,7 +288,38 @@ impl StoreDriver for CompressionStore {
         digests: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
-        self.inner_store.has_with_results(digests, results).await
+        if !digests.iter().any(|digest| is_zero_digest(digest.borrow())) {
+            return self.inner_store.has_with_results(digests, results).await;
+        }
+
+        for (digest, result) in digests.iter().zip(results.iter_mut()) {
+            if is_zero_digest(digest.borrow()) {
+                *result = Some(0);
+            }
+        }
+
+        let nonzero_digests = digests
+            .iter()
+            .filter(|digest| !is_zero_digest(digest.borrow()))
+            .map(StoreKey::borrow)
+            .collect::<Vec<_>>();
+        if nonzero_digests.is_empty() {
+            return Ok(());
+        }
+
+        let mut nonzero_results = vec![None; nonzero_digests.len()];
+        self.inner_store
+            .has_with_results(&nonzero_digests, &mut nonzero_results)
+            .await?;
+        for (result, inner_result) in digests
+            .iter()
+            .zip(results.iter_mut())
+            .filter_map(|(digest, result)| (!is_zero_digest(digest.borrow())).then_some(result))
+            .zip(nonzero_results)
+        {
+            *result = inner_result;
+        }
+        Ok(())
     }
 
     async fn update(
@@ -297,6 +328,16 @@ impl StoreDriver for CompressionStore {
         mut reader: DropCloserReadHalf,
         upload_size: UploadSizeInfo,
     ) -> Result<u64, Error> {
+        if is_zero_digest(key.borrow()) {
+            return reader.recv().await.and_then(|should_be_empty| {
+                if should_be_empty.is_empty() {
+                    Ok(0)
+                } else {
+                    Err(make_err!(Code::Internal, "Zero byte hash not empty"))
+                }
+            });
+        }
+
         let mut output_state = UploadState::new(&self, upload_size)?;
 
         let (mut tx, rx) = make_buf_channel_pair();
