@@ -394,6 +394,15 @@ impl Store {
         self.inner.inner_store(maybe_digest).as_any().downcast_ref()
     }
 
+    /// Downcasts to `U` **only** if the immediate inner driver is a `U`, without
+    /// following `inner_store()`. Deliberately different from [`Self::downcast_ref`],
+    /// which routes recursively. Used by the service to detect a directly-configured
+    /// representation-changing store (e.g. `ZstdStore`) at an instance boundary.
+    #[inline]
+    pub fn downcast_ref_immediate<U: StoreDriver>(&self) -> Option<&U> {
+        self.inner.as_any().downcast_ref::<U>()
+    }
+
     /// Register health checks used to monitor the store.
     #[inline]
     pub fn register_health(&self, registry: &mut HealthRegistryBuilder) {
