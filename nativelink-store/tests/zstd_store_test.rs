@@ -18,13 +18,23 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use nativelink_config::stores::{MemorySpec, StoreSpec, ZstdStoreSpec};
+use nativelink_config::stores::{
+    CacheMetricsSpec, DedupSpec, ExistenceCacheSpec, FastSlowSpec, MemorySpec, NoopSpec, RefSpec,
+    ShardConfig, ShardSpec, SizePartitioningSpec, StoreDirection, StoreSpec, ZstdStoreSpec,
+};
 use nativelink_error::{Code, Error, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_metric::MetricsComponent;
+use nativelink_store::cache_metrics_store::CacheMetricsStore;
 use nativelink_store::cas_utils::{ZERO_BYTE_DIGESTS, is_zero_digest};
+use nativelink_store::dedup_store::DedupStore;
 use nativelink_store::default_store_factory::store_factory;
+use nativelink_store::existence_cache_store::ExistenceCacheStore;
+use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::memory_store::MemoryStore;
+use nativelink_store::ref_store::RefStore;
+use nativelink_store::shard_store::ShardStore;
+use nativelink_store::size_partitioning_store::SizePartitioningStore;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_store::zstd_store::ZstdStore;
 use nativelink_util::buf_channel::{
@@ -1096,6 +1106,440 @@ async fn concurrent_uploads_respect_staging_semaphore() -> Result<(), Error> {
         &store.get_part_unchunked(digest_b, 0, None).await?[..],
         DATA_B,
         "second concurrent upload must round-trip"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Cross-wrapper integration: ZstdStore composed with other stores.
+//
+// These prove ZstdStore is a well-behaved participant in a store stack. Every
+// test does a full identity round-trip (write raw via `update_oneshot`, read raw
+// back via `get_part_unchunked`) through the composed stack. Where a wrapper
+// lives INSIDE ZstdStore (so it observes the physical zstd stream) the test also
+// asserts that wrapper's side effect still fires.
+//
+// Identity-path tests do not touch `temp_path` (only the zstd fast path stages
+// files), so they reuse the shared `spec()` without creating a staging dir.
+// ---------------------------------------------------------------------------
+
+// 1. ZstdStore over `fast_slow` (fast=memory, slow=memory): round-trip, then
+//    prove a slow-hit read repopulates the fast tier with the physical zstd blob.
+#[nativelink_test]
+async fn over_fast_slow_populates_fast_tier() -> Result<(), Error> {
+    let fast_mem = MemoryStore::new(&MemorySpec::default());
+    let slow_mem = MemoryStore::new(&MemorySpec::default());
+    let fast_slow = Store::new(FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
+        },
+        Store::new(fast_mem.clone()),
+        Store::new(slow_mem.clone()),
+    ));
+    let store = Store::new(ZstdStore::new(&spec(), fast_slow)?);
+
+    let data = compressible_data(64 * 1024);
+    let digest = digest_for(&data);
+    store.update_oneshot(digest, data.clone().into()).await?;
+    assert_eq!(
+        &store.get_part_unchunked(digest, 0, None).await?[..],
+        &data[..],
+        "round-trip through zstd-over-fast_slow must return the raw bytes"
+    );
+
+    // The physical (compressed) bytes landed in both tiers; capture the slow copy.
+    let physical = slow_mem.get_part_unchunked(digest, 0, None).await?;
+    assert!(
+        physical.len() < data.len(),
+        "inner store must hold the compressed physical stream ({} !< {})",
+        physical.len(),
+        data.len()
+    );
+
+    // Evict the fast tier, leaving only the slow tier populated.
+    assert!(
+        fast_mem.remove_entry(digest.into()).await,
+        "fast tier should have held the blob before eviction"
+    );
+    assert_eq!(
+        fast_mem.has(digest).await?,
+        None,
+        "fast tier must be empty after eviction"
+    );
+
+    // A read through the stack is a slow-hit that must repopulate the fast tier.
+    assert_eq!(
+        &store.get_part_unchunked(digest, 0, None).await?[..],
+        &data[..],
+        "slow-hit read-through must still return the raw bytes"
+    );
+    assert_eq!(
+        fast_mem.has(digest).await?,
+        Some(physical.len() as u64),
+        "fast tier must be repopulated with the physical zstd blob"
+    );
+    assert_eq!(
+        &fast_mem.get_part_unchunked(digest, 0, None).await?[..],
+        &physical[..],
+        "the repopulated fast-tier bytes must be the physical zstd stream"
+    );
+    Ok(())
+}
+
+// 2. ZstdStore over `dedup`: a blob whose physical stream exceeds the dedup block
+//    size must split across multiple content chunks yet round-trip byte-for-byte.
+#[nativelink_test]
+async fn over_dedup_splits_and_round_trips() -> Result<(), Error> {
+    let content_mem = MemoryStore::new(&MemorySpec::default());
+    let dedup = Store::new(DedupStore::new(
+        &DedupSpec {
+            index_store: StoreSpec::Memory(MemorySpec::default()),
+            content_store: StoreSpec::Memory(MemorySpec::default()),
+            min_size: 8 * 1024,
+            normal_size: 32 * 1024,
+            max_size: 128 * 1024,
+            max_concurrent_fetch_per_get: 10,
+        },
+        Store::new(MemoryStore::new(&MemorySpec::default())),
+        Store::new(content_mem.clone()),
+    )?);
+    let store = Store::new(ZstdStore::new(&spec(), dedup)?);
+
+    // Incompressible data so the physical zstd stream stays ~256 KiB, comfortably
+    // above the 128 KiB max block size and therefore split into several chunks.
+    let data = random_bytes(256 * 1024);
+    let digest = digest_for(&data);
+    store.update_oneshot(digest, data.clone().into()).await?;
+    assert_eq!(
+        &store.get_part_unchunked(digest, 0, None).await?[..],
+        &data[..],
+        "round-trip through zstd-over-dedup must return the raw bytes"
+    );
+    assert!(
+        content_mem.len_for_test() > 1,
+        "dedup must split the physical zstd stream into multiple content chunks, got {}",
+        content_mem.len_for_test()
+    );
+    Ok(())
+}
+
+// 3. ZstdStore over `existence_cache`: round-trip and prove the existence cache
+//    side effect (population on write) still fires for the forwarded digest.
+#[nativelink_test]
+async fn over_existence_cache_fires_side_effect() -> Result<(), Error> {
+    let inner = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let existence = ExistenceCacheStore::new(
+        &ExistenceCacheSpec {
+            backend: StoreSpec::Noop(NoopSpec::default()), // Unused: inner is passed directly.
+            eviction_policy: None,
+        },
+        inner,
+    );
+    let store = Store::new(ZstdStore::new(&spec(), Store::new(existence.clone()))?);
+
+    let data = compressible_data(4096);
+    let digest = digest_for(&data);
+    assert!(
+        !existence.exists_in_cache(&digest).await,
+        "digest must not be cached before the write"
+    );
+
+    store.update_oneshot(digest, data.clone().into()).await?;
+    assert!(
+        existence.exists_in_cache(&digest).await,
+        "write through zstd must populate the inner existence cache"
+    );
+    assert_eq!(
+        &store.get_part_unchunked(digest, 0, None).await?[..],
+        &data[..],
+        "round-trip through zstd-over-existence_cache must return the raw bytes"
+    );
+    // `has` is served from the now-populated existence cache and reports the
+    // uncompressed digest size (not the physical zstd size).
+    assert_eq!(
+        store.has(digest).await?,
+        Some(data.len() as u64),
+        "has must report the uncompressed size via the existence cache"
+    );
+    Ok(())
+}
+
+// 4. ZstdStore over `cache_metrics`: round-trip through the metrics wrapper. The
+//    metrics themselves are process-global OpenTelemetry counters (not unit
+//    assertable without a metrics-reader harness, mirroring the existing
+//    `cache_metrics_store_test.rs`), so we assert that operations route through
+//    the wrapper and that zstd compression is still applied behind it.
+#[nativelink_test]
+async fn over_cache_metrics_round_trips() -> Result<(), Error> {
+    let inner = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let metrics = CacheMetricsStore::new(
+        &CacheMetricsSpec {
+            cache_type: "cas".to_string(),
+            backend: StoreSpec::Memory(MemorySpec::default()), // Unused: inner is passed directly.
+        },
+        inner.clone(),
+    );
+    let store = Store::new(ZstdStore::new(&spec(), Store::new(metrics))?);
+
+    let data = compressible_data(4096);
+    let digest = digest_for(&data);
+    store.update_oneshot(digest, data.clone().into()).await?;
+    assert_eq!(
+        &store.get_part_unchunked(digest, 0, None).await?[..],
+        &data[..],
+        "round-trip through zstd-over-cache_metrics must return the raw bytes"
+    );
+    assert_eq!(store.has(digest).await?, Some(data.len() as u64));
+    let physical = inner.get_part_unchunked(digest, 0, None).await?;
+    assert!(
+        physical.len() < data.len(),
+        "zstd compression must still be applied behind the metrics wrapper"
+    );
+    Ok(())
+}
+
+// 5a. ZstdStore over `size_partitioning`: identity round-trip; the physical zstd
+//     stream is routed by the (uncompressed) digest size.
+#[nativelink_test]
+async fn over_size_partitioning_round_trips() -> Result<(), Error> {
+    let lower = MemoryStore::new(&MemorySpec::default());
+    let upper = MemoryStore::new(&MemorySpec::default());
+    let size_part = Store::new(SizePartitioningStore::new(
+        &SizePartitioningSpec {
+            size: 100,
+            lower_store: StoreSpec::Memory(MemorySpec::default()),
+            upper_store: StoreSpec::Memory(MemorySpec::default()),
+        },
+        Store::new(lower.clone()),
+        Store::new(upper.clone()),
+    ));
+    let store = Store::new(ZstdStore::new(&spec(), size_part)?);
+
+    // Uncompressed size (4096) >= partition threshold (100) => routed to `upper`.
+    let data = compressible_data(4096);
+    let digest = digest_for(&data);
+    store.update_oneshot(digest, data.clone().into()).await?;
+    assert_eq!(
+        &store.get_part_unchunked(digest, 0, None).await?[..],
+        &data[..],
+        "round-trip through zstd-over-size_partitioning must return the raw bytes"
+    );
+    assert!(
+        upper.has(digest).await?.is_some(),
+        "a blob above the partition threshold must be stored in the upper partition"
+    );
+    assert_eq!(
+        lower.has(digest).await?,
+        None,
+        "the lower partition must not hold the blob"
+    );
+    Ok(())
+}
+
+// 5b. ZstdStore over `shard`: identity round-trip through a two-way shard.
+#[nativelink_test]
+async fn over_shard_round_trips() -> Result<(), Error> {
+    let shard = Store::new(ShardStore::new(
+        &ShardSpec {
+            stores: vec![
+                ShardConfig {
+                    store: StoreSpec::Memory(MemorySpec::default()),
+                    weight: Some(1),
+                },
+                ShardConfig {
+                    store: StoreSpec::Memory(MemorySpec::default()),
+                    weight: Some(1),
+                },
+            ],
+        },
+        vec![
+            Store::new(MemoryStore::new(&MemorySpec::default())),
+            Store::new(MemoryStore::new(&MemorySpec::default())),
+        ],
+    )?);
+    let store = Store::new(ZstdStore::new(&spec(), shard)?);
+
+    let data = compressible_data(4096);
+    let digest = digest_for(&data);
+    store.update_oneshot(digest, data.clone().into()).await?;
+    assert_eq!(
+        &store.get_part_unchunked(digest, 0, None).await?[..],
+        &data[..],
+        "round-trip through zstd-over-shard must return the raw bytes"
+    );
+    assert_eq!(store.has(digest).await?, Some(data.len() as u64));
+    Ok(())
+}
+
+// 5c. ZstdStore over `ref`: identity round-trip through a ref store that resolves
+//     to a named memory backend via the StoreManager.
+#[nativelink_test]
+async fn over_ref_round_trips() -> Result<(), Error> {
+    let store_manager = Arc::new(StoreManager::new());
+    let backing = Store::new(MemoryStore::new(&MemorySpec::default()));
+    store_manager.add_store("backing", backing.clone())?;
+    let ref_store = Store::new(RefStore::new(
+        &RefSpec {
+            name: "backing".to_string(),
+        },
+        Arc::downgrade(&store_manager),
+    ));
+    store_manager.add_store("ref", ref_store.clone())?;
+    store_manager.run_post_init().await.unwrap();
+
+    let store = Store::new(ZstdStore::new(&spec(), ref_store)?);
+
+    let data = compressible_data(4096);
+    let digest = digest_for(&data);
+    store.update_oneshot(digest, data.clone().into()).await?;
+    assert_eq!(
+        &store.get_part_unchunked(digest, 0, None).await?[..],
+        &data[..],
+        "round-trip through zstd-over-ref must return the raw bytes"
+    );
+    // The resolved backing store must physically hold the compressed stream.
+    let physical = backing.get_part_unchunked(digest, 0, None).await?;
+    assert!(
+        physical.len() < data.len(),
+        "the ref-resolved backend must hold the compressed physical stream"
+    );
+    Ok(())
+}
+
+// 6. A wrapper OUTSIDE ZstdStore (cache_metrics -> zstd_store -> memory). This
+//    exercises only the StoreDriver identity path (the service zstd fast path is
+//    unreachable through an outer wrapper), proving that placing a wrapper
+//    outside ZstdStore preserves identity correctness and does not bypass the
+//    outer wrapper's operations while zstd compression stays active underneath.
+#[nativelink_test]
+async fn wrapper_outside_zstd_preserves_identity() -> Result<(), Error> {
+    let backing = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let zstd = Store::new(ZstdStore::new(&spec(), backing.clone())?);
+    let outer = Store::new(CacheMetricsStore::new(
+        &CacheMetricsSpec {
+            cache_type: "cas".to_string(),
+            backend: StoreSpec::Memory(MemorySpec::default()), // Unused: zstd is passed directly.
+        },
+        zstd,
+    ));
+
+    let data = compressible_data(4096);
+    let digest = digest_for(&data);
+    outer.update_oneshot(digest, data.clone().into()).await?;
+    assert_eq!(
+        &outer.get_part_unchunked(digest, 0, None).await?[..],
+        &data[..],
+        "identity round-trip through an outer wrapper must return the raw bytes"
+    );
+    assert_eq!(
+        outer.has(digest).await?,
+        Some(data.len() as u64),
+        "the outer wrapper must report the uncompressed size"
+    );
+    let physical = backing.get_part_unchunked(digest, 0, None).await?;
+    assert!(
+        physical.len() < data.len(),
+        "zstd compression must still be active behind the outer wrapper"
+    );
+    Ok(())
+}
+
+// 7. Concatenated-frame integrity through a wrapper: upload two concatenated zstd
+//    frames (fast path) into a ZstdStore-over-fast_slow, read back via `get_zstd`
+//    byte-for-byte, and via the identity `get_part` decode to the full content.
+#[nativelink_test]
+async fn concatenated_frames_through_fast_slow() -> Result<(), Error> {
+    const PART_A: &[u8] = b"first frame content aaaaaaaaaaaaaaaaaaaaaaaa";
+    const PART_B: &[u8] = b"second frame content bbbbbbbbbbbbbbbbbbbbbbbb";
+
+    let frame_a = zstd::bulk::compress(PART_A, 3).unwrap();
+    let frame_b = zstd::bulk::compress(PART_B, 3).unwrap();
+    let mut concatenated = frame_a.clone();
+    concatenated.extend_from_slice(&frame_b);
+
+    let mut raw = PART_A.to_vec();
+    raw.extend_from_slice(PART_B);
+    let digest = digest_for(&raw);
+
+    // The fast path stages files, so a real writable temp dir is required.
+    let temp = make_temp_path("zstd-concat-fast-slow");
+    std::fs::create_dir_all(&temp)
+        .map_err(|e| make_err!(Code::Internal, "Failed to create test temp dir: {e}"))?;
+    let fast_slow = Store::new(FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
+        },
+        Store::new(MemoryStore::new(&MemorySpec::default())),
+        Store::new(MemoryStore::new(&MemorySpec::default())),
+    ));
+    let zstd = ZstdStore::new(&spec_for(temp), fast_slow)?;
+    let store = Store::new(zstd.clone());
+
+    let wire = zstd
+        .update_zstd(
+            digest,
+            DigestHasherFunc::Sha256,
+            reader_from(vec![Bytes::from(frame_a), Bytes::from(frame_b)]),
+        )
+        .await?;
+    assert_eq!(wire, concatenated.len() as u64);
+
+    let got = collect_zstd(&zstd, digest).await?;
+    assert_eq!(
+        &got[..],
+        &concatenated[..],
+        "passthrough through fast_slow must preserve the exact concatenated-frame bytes"
+    );
+
+    // The identity view decodes the concatenated frames to the full content.
+    let decoded = store.get_part_unchunked(digest, 0, None).await?;
+    assert_eq!(
+        &decoded[..],
+        &raw[..],
+        "the identity read must decode the concatenated frames to the full raw content"
+    );
+    Ok(())
+}
+
+// 8. Rollout from an empty namespace: a fresh memory backend, a full write->read
+//    cycle, confirming the digest is absent before the write and present after.
+#[nativelink_test]
+async fn rollout_from_empty_namespace() -> Result<(), Error> {
+    const DATA: &[u8] = b"rollout payload from an empty dedicated namespace aaaaaaaaaa";
+
+    let inner = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let store = Store::new(ZstdStore::new(&spec(), inner.clone())?);
+    let digest = digest_for(DATA);
+
+    assert_eq!(
+        store.has(digest).await?,
+        None,
+        "an empty namespace must report the digest as absent"
+    );
+    assert_eq!(
+        inner.has(digest).await?,
+        None,
+        "the inner backend must start empty"
+    );
+
+    store.update_oneshot(digest, DATA.into()).await?;
+    assert_eq!(
+        &store.get_part_unchunked(digest, 0, None).await?[..],
+        DATA,
+        "the rollout write->read cycle must return the raw bytes"
+    );
+    assert_eq!(
+        store.has(digest).await?,
+        Some(DATA.len() as u64),
+        "after the write the digest must be present at its uncompressed size"
     );
     Ok(())
 }
