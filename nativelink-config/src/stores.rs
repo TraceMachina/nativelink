@@ -335,6 +335,33 @@ pub enum StoreSpec {
     ///
     Compression(Box<CompressionSpec>),
 
+    /// A zstd pass-through store. Keeps CAS blobs as zstd streams at rest and serves
+    /// them byte-for-byte to `--remote_cache_compression` clients. Identity clients
+    /// receive decompressed bytes on the fly.
+    ///
+    /// **WARNING:** the `backend` MUST be a new or empty dedicated namespace, never
+    /// shared with processes that read/write the same keys as raw bytes. Rollout and
+    /// rollback require a cache flush / new namespace — there is no in-place migration.
+    ///
+    /// Placement: `ZstdStore` must be the store the instance points at directly for
+    /// byte-for-byte passthrough. `fast_slow`, `dedup`, `existence_cache`,
+    /// `cache_metrics`, `shard`, `ref`, `size_partitioning` may appear **inside** it.
+    /// Any wrapper **outside** it is correct but disables passthrough at that boundary.
+    ///
+    /// **Example JSON Config:**
+    /// ```json
+    /// "zstd_store": {
+    ///   "backend": { "fast_slow": { /* complete backend stack */ } },
+    ///   "temp_path": "/var/tmp/nativelink-zstd",
+    ///   "max_compressed_upload_size": "512MiB",
+    ///   "max_concurrent_staged_uploads": 4,
+    ///   "compression_level": 19,
+    ///   "max_recompression_size": "64MiB",
+    ///   "max_concurrent_recompressions": 1
+    /// }
+    /// ```
+    ZstdStore(Box<ZstdStoreSpec>),
+
     /// A dedup store will take the inputs and run a rolling hash
     /// algorithm on them to slice the input into smaller parts then
     /// run a sha256 algorithm on the slice and if the object doesn't
@@ -1098,6 +1125,43 @@ pub struct CompressionSpec {
 
     /// The compression algorithm to use.
     pub compression_algorithm: CompressionAlgorithm,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct ZstdStoreSpec {
+    /// The wrapped inner CAS store. MUST be a dedicated, empty namespace.
+    pub backend: StoreSpec,
+
+    /// Operator-controlled staging directory for validation/recompression.
+    #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
+    pub temp_path: String,
+
+    /// Max compressed wire bytes accepted by an upload. Exceeding it returns
+    /// `RESOURCE_EXHAUSTED`. Accepts "512MiB"-style strings.
+    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
+    pub max_compressed_upload_size: u64,
+
+    /// Max uploads holding staging files at once. `0` means "use default 4"
+    /// at construction time.
+    /// Default: 0
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub max_concurrent_staged_uploads: usize,
+
+    /// None (omitted) = pure passthrough. When set, validated 1..=19 at startup.
+    pub compression_level: Option<i32>,
+
+    /// Max uncompressed blob size eligible for optional recompression. `0` disables
+    /// recompression (still allows `compression_level` to pick the identity-upload level).
+    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
+    pub max_recompression_size: u64,
+
+    /// Concurrent recompressions admitted by this store. `0` means "use default 1"
+    /// at construction time.
+    /// Default: 0
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub max_concurrent_recompressions: usize,
 }
 
 /// Eviction policy always works on LRU (Least Recently Used). Any time an entry
@@ -1898,5 +1962,28 @@ impl Retry {
                 delay.mul_f32(local_jitter.mul_add(rand::rng().random::<f32>() - 0.5, 1.))
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zstd_store_spec_parses_and_defaults() {
+        let cfg: StoreSpec = serde_json5::from_str(
+            r#"{ zstd_store: { backend: { memory: {} }, temp_path: "/var/tmp/nl-zstd",
+                 max_compressed_upload_size: "512MiB", compression_level: 19,
+                 max_recompression_size: "64MiB" } }"#,
+        )
+        .unwrap();
+        let StoreSpec::ZstdStore(spec) = cfg else {
+            panic!("wrong variant")
+        };
+        assert_eq!(spec.max_compressed_upload_size, 512 * 1024 * 1024);
+        assert_eq!(spec.compression_level, Some(19));
+        assert_eq!(spec.max_recompression_size, 64 * 1024 * 1024);
+        assert_eq!(spec.max_concurrent_staged_uploads, 0); // 0 = "use default 4" at construction
+        assert_eq!(spec.max_concurrent_recompressions, 0); // 0 = "use default 1"
     }
 }
