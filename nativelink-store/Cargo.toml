@@ -58,9 +58,9 @@ http-body-util = { version = "0.1.3", default-features = false }
 humantime = { version = "2.3.0", default-features = false }
 hyper = { version = "1.6.0", default-features = false }
 hyper-rustls = { version = "0.27.5", default-features = false, features = [
+  "aws-lc-rs",
   "http1",
   "http2",
-  "ring",
   "rustls-native-certs",
   "rustls-platform-verifier",
 ] }
@@ -69,7 +69,7 @@ itertools = { version = "0.14.0", default-features = false }
 lz4_flex = { version = "0.11.3", default-features = false }
 mongodb = { version = "3", features = [
   "compat-3-0-0",
-  "rustls-tls",
+  "rustls-tls-aws-lc",
 ], default-features = false }
 opentelemetry = { version = "0.32.0", default-features = false }
 parking_lot = { version = "0.12.3", features = [
