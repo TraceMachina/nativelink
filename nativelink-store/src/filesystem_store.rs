@@ -1053,7 +1053,28 @@ where
             let temp_path = temp_file_encoded_file_path.get_file_path();
             trace!(?existing_path, ?temp_path, "Checking duplicate files");
             let mut temp_file = fs::open_file(&temp_path, 0, file_length).await?;
-            let mut existing_file = fs::open_file(&existing_path, 0, file_length).await?;
+            let mut existing_file = match fs::open_file(&existing_path, 0, file_length).await {
+                Ok(file) => file,
+                Err(err) if err.code == Code::NotFound => {
+                    // Map/disk divergence (same self-heal as `get_part`): the
+                    // existing entry's content file is gone — e.g. retired by
+                    // a stale `unref()` before the inode guard existed. Drop
+                    // the stale entry and let this upload re-emplace, instead
+                    // of failing every future write of this key with ENOENT.
+                    warn!(
+                        ?key,
+                        "Map/disk divergence in check_duplicate_files: dropping stale entry",
+                    );
+                    drop(existing_item_encoded_file_path);
+                    evicting_map
+                        .remove_if(&key.borrow().into_owned(), |map_entry| {
+                            Arc::<Fe>::ptr_eq(map_entry, &existing_item)
+                        })
+                        .await;
+                    return Ok(false);
+                }
+                Err(err) => return Err(err),
+            };
 
             let mut temp_buffer: [u8; CHUNK_SIZE] = [0; CHUNK_SIZE];
             let mut existing_buffer: [u8; CHUNK_SIZE] = [0; CHUNK_SIZE];
