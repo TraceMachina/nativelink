@@ -251,12 +251,23 @@ fn decode_identity(
     let mut remaining = length.unwrap_or(u64::MAX);
     let mut buffer = vec![0u8; zstd::zstd_safe::DCtx::out_size()];
 
-    while remaining > 0 {
+    // We must keep draining the decoder (and therefore the physical reader) all
+    // the way to EOF even after the requested byte budget is satisfied. Stopping
+    // early would drop `physical_rx` while the spawned inner `get` future is still
+    // streaming compressed bytes into the buffered channel; its next `send` would
+    // then fail with "receiver disconnected" and the inner get would resolve to an
+    // error even though the requested bytes were produced correctly. This mirrors
+    // `compression_store::get_part`, which likewise consumes the inner stream to
+    // EOF and merely stops *sending* to the writer once the budget is met.
+    loop {
         let read = decoder
             .read(&mut buffer)
             .map_err(|e| make_err!(Code::DataLoss, "Zstd decode failed in zstd store: {e}"))?;
         if read == 0 {
-            break; // EOF.
+            break; // EOF: physical reader fully drained.
+        }
+        if remaining == 0 {
+            continue; // Budget met; keep draining but stop forwarding.
         }
 
         let mut slice = &buffer[..read];
@@ -524,21 +535,41 @@ impl StoreDriver for ZstdStore {
             }
         }
 
-        // Presence comes from the inner store, but the reported size is always
-        // the digest's uncompressed size (the physical zstd size is meaningless
-        // to clients).
-        self.inner_store
-            .as_store_driver_pin()
-            .has_with_results(keys, results)
-            .await?;
+        // Invariant: zero digests never touch the inner store. Satisfy them
+        // directly and only forward the non-zero keys to the inner store.
         for (key, result) in keys.iter().zip(results.iter_mut()) {
             if is_zero_digest(key.borrow()) {
                 *result = Some(0);
-            } else if result.is_some()
-                && let StoreKey::Digest(digest) = key
-            {
-                *result = Some(digest.size_bytes());
             }
+        }
+
+        let nonzero_keys = keys
+            .iter()
+            .filter(|key| !is_zero_digest(key.borrow()))
+            .map(StoreKey::borrow)
+            .collect::<Vec<_>>();
+        if nonzero_keys.is_empty() {
+            return Ok(());
+        }
+
+        let mut nonzero_results = vec![None; nonzero_keys.len()];
+        self.inner_store
+            .as_store_driver_pin()
+            .has_with_results(&nonzero_keys, &mut nonzero_results)
+            .await?;
+
+        // Presence comes from the inner store, but the reported size is always
+        // the digest's uncompressed size (the physical zstd size is meaningless
+        // to clients).
+        let nonzero_slots = keys
+            .iter()
+            .zip(results.iter_mut())
+            .filter_map(|(key, result)| (!is_zero_digest(key.borrow())).then_some((key, result)));
+        for ((key, result), inner_result) in nonzero_slots.zip(nonzero_results) {
+            *result = match (inner_result, key) {
+                (Some(_), StoreKey::Digest(digest)) => Some(digest.size_bytes()),
+                (other, _) => other,
+            };
         }
         Ok(())
     }
