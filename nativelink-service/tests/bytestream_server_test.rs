@@ -24,7 +24,7 @@ use hyper_util::rt::TokioIo;
 use hyper_util::server::conn::auto;
 use hyper_util::service::TowerToHyperService;
 use nativelink_config::cas_server::{ByteStreamConfig, HttpListener, WithInstanceName};
-use nativelink_config::stores::{MemorySpec, StoreSpec, VerifySpec};
+use nativelink_config::stores::{MemorySpec, StoreSpec, VerifySpec, ZstdStoreSpec};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_proto::google::bytestream::byte_stream_client::ByteStreamClient;
@@ -36,8 +36,9 @@ use nativelink_service::bytestream_server::ByteStreamServer;
 use nativelink_service::wire_compression::RemoteCacheCompressionInstances;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
+use nativelink_store::zstd_store::ZstdStore;
 use nativelink_util::channel_body_for_tests::ChannelBody;
-use nativelink_util::common::{DigestInfo, encode_stream_proto};
+use nativelink_util::common::{DigestInfo, encode_stream_proto, make_temp_path};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
 use nativelink_util::store_trait::StoreLike;
 use nativelink_util::task::JoinHandleDropGuard;
@@ -89,6 +90,42 @@ async fn make_verify_store_manager() -> Result<Arc<StoreManager>, Error> {
         .await?,
     )?;
     Ok(store_manager)
+}
+
+/// Builds a [`StoreManager`] whose `main_cas` store is a pure-passthrough
+/// `ZstdStore` over an in-memory backend, so the `ByteStream` zstd fast paths are
+/// exercised end-to-end.
+async fn make_zstd_store_manager() -> Result<Arc<StoreManager>, Error> {
+    let store_manager = Arc::new(StoreManager::new());
+    let temp_path = make_temp_path("bytestream-zstd-store");
+    std::fs::create_dir_all(&temp_path)
+        .map_err(|e| make_err!(Code::Internal, "Failed to create zstd temp dir: {e}"))?;
+    let spec = StoreSpec::ZstdStore(Box::new(ZstdStoreSpec {
+        backend: StoreSpec::Memory(MemorySpec::default()),
+        temp_path,
+        max_compressed_upload_size: 512 * 1024 * 1024,
+        max_concurrent_staged_uploads: 0,
+        compression_level: None,
+        max_recompression_size: 0,
+        max_concurrent_recompressions: 0,
+    }));
+    store_manager.add_store(
+        "main_cas",
+        store_factory(&spec, &store_manager, None).await?,
+    )?;
+    Ok(store_manager)
+}
+
+/// Downcasts the `main_cas` store to the concrete `ZstdStore` for direct
+/// fast-path calls (e.g. staging a known zstd stream via `update_zstd_oneshot`).
+fn zstd_store_of(store_manager: &StoreManager) -> Arc<ZstdStore> {
+    store_manager
+        .get_store("main_cas")
+        .expect("main_cas store missing")
+        .into_inner()
+        .as_any_arc()
+        .downcast::<ZstdStore>()
+        .expect("main_cas store was not a ZstdStore")
 }
 
 fn make_bytestream_server(
@@ -2032,5 +2069,314 @@ async fn uuid_collision_does_not_deadlock() -> Result<(), Box<dyn core::error::E
 
     join2.await.expect("task panicked")?;
     drop(tx1);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// ZstdStore instance fast path (byte-for-byte passthrough)
+// ---------------------------------------------------------------------------
+
+/// A compressed read at offset 0 from a `ZstdStore` instance must return the
+/// exact stored zstd bytes, byte-for-byte, with no re-encode.
+#[nativelink_test]
+pub async fn zstd_store_compressed_read_is_byte_for_byte() -> Result<(), Box<dyn core::error::Error>>
+{
+    let raw_data = Bytes::from("byte-for-byte zstd passthrough ".repeat(256));
+    let hash = sha256_hex(raw_data.as_ref());
+    // A known zstd stream. With compression_level=None + max_recompression_size=0
+    // the store is a pure passthrough, so these exact bytes are what is stored.
+    let compressed = Bytes::from(zstd::bulk::compress(raw_data.as_ref(), 3)?);
+    assert_ne!(
+        compressed.as_ref(),
+        raw_data.as_ref(),
+        "test data must actually compress"
+    );
+
+    let store_manager = make_zstd_store_manager().await?;
+    let bs_server = Arc::new(
+        make_bytestream_server_with_remote_cache_compression(store_manager.as_ref(), None, true)
+            .expect("Failed to make server"),
+    );
+    let zstd_store = zstd_store_of(store_manager.as_ref());
+
+    let digest = DigestInfo::try_new(&hash, raw_data.len())?;
+    let wire_bytes = zstd_store
+        .update_zstd_oneshot(digest, DigestHasherFunc::Sha256, compressed.clone())
+        .await?;
+    assert_eq!(wire_bytes, compressed.len() as u64);
+
+    let read_data = read_all_bytes(
+        bs_server.as_ref(),
+        ReadRequest {
+            resource_name: format!(
+                "{}/compressed-blobs/zstd/{}/{}",
+                INSTANCE_NAME,
+                hash,
+                raw_data.len()
+            ),
+            read_offset: 0,
+            read_limit: 0,
+        },
+    )
+    .await?;
+
+    assert_eq!(
+        read_data.as_slice(),
+        compressed.as_ref(),
+        "offset-0 compressed read from a ZstdStore must be byte-for-byte identical to what was stored"
+    );
+    let decoded = zstd::bulk::decompress(&read_data, raw_data.len())?;
+    assert_eq!(
+        decoded.as_slice(),
+        raw_data.as_ref(),
+        "returned zstd stream must decode to the original blob"
+    );
+
+    Ok(())
+}
+
+/// A compressed upload to a `ZstdStore` instance stores the client's zstd bytes
+/// byte-for-byte, reports the compressed wire byte count as `committed_size`, and
+/// a re-upload of an already-present blob still completes.
+#[nativelink_test]
+pub async fn zstd_store_compressed_write_round_trip() -> Result<(), Box<dyn core::error::Error>> {
+    let raw_data = "zstd store compressed write round trip ".repeat(256);
+    let hash = sha256_hex(raw_data.as_bytes());
+    let compressed = zstd::bulk::compress(raw_data.as_bytes(), 3)?;
+    assert!(compressed.len() < raw_data.len(), "test data must compress");
+
+    let store_manager = make_zstd_store_manager().await?;
+    let bs_server = Arc::new(
+        make_bytestream_server_with_remote_cache_compression(store_manager.as_ref(), None, true)
+            .expect("Failed to make server"),
+    );
+
+    // Upload the compressed blob.
+    let (tx, join_handle) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name: make_compressed_resource_name(
+            "4dcec57e-1389-4ab5-b188-4a59f22ceb60",
+            &hash,
+            raw_data.len(),
+        ),
+        write_offset: 0,
+        finish_write: true,
+        data: compressed.clone().into(),
+    })?))
+    .await?;
+    let server_result = join_handle
+        .await
+        .expect("Failed to join")
+        .expect("Failed write");
+    assert_eq!(
+        server_result.into_inner().committed_size,
+        compressed.len() as i64,
+        "compressed write to a ZstdStore must report the compressed wire byte count"
+    );
+
+    // A subsequent compressed read returns the exact stored zstd bytes.
+    let read_data = read_all_bytes(
+        bs_server.as_ref(),
+        ReadRequest {
+            resource_name: format!(
+                "{}/compressed-blobs/zstd/{}/{}",
+                INSTANCE_NAME,
+                hash,
+                raw_data.len()
+            ),
+            read_offset: 0,
+            read_limit: 0,
+        },
+    )
+    .await?;
+    assert_eq!(
+        read_data.as_slice(),
+        compressed.as_slice(),
+        "read-back must be byte-for-byte identical to the uploaded zstd stream"
+    );
+    assert_eq!(
+        zstd::bulk::decompress(&read_data, raw_data.len())?.as_slice(),
+        raw_data.as_bytes()
+    );
+
+    // Re-upload an already-present blob; it must still complete (REAPI allows
+    // -1 or the byte count for an already-present blob).
+    let (tx2, join2) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    tx2.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name: make_compressed_resource_name(
+            "4dcec57e-1389-4ab5-b188-4a59f22ceb61",
+            &hash,
+            raw_data.len(),
+        ),
+        write_offset: 0,
+        finish_write: true,
+        data: compressed.clone().into(),
+    })?))
+    .await?;
+    let committed_size = join2
+        .await
+        .expect("Failed to join")
+        .expect("Failed re-upload write")
+        .into_inner()
+        .committed_size;
+    assert!(
+        committed_size == -1 || committed_size == compressed.len() as i64,
+        "re-upload committed_size must be -1 or the compressed byte count {}; got {committed_size}",
+        compressed.len()
+    );
+
+    Ok(())
+}
+
+/// A compressed read at offset > 0 from a `ZstdStore` instance takes the
+/// fallback path (`StoreDriver::get_part` decompresses, service re-encodes) and
+/// returns a valid zstd stream decoding to the uncompressed suffix.
+#[nativelink_test]
+pub async fn zstd_store_compressed_read_offset_uses_fallback()
+-> Result<(), Box<dyn core::error::Error>> {
+    let raw_data = Bytes::from(
+        (0usize..4096)
+            .map(|i| u8::try_from((i * 31 + i / 7) % 251).expect("modulo 251 fits in u8"))
+            .collect::<Vec<_>>(),
+    );
+    let hash = sha256_hex(raw_data.as_ref());
+    let compressed = Bytes::from(zstd::bulk::compress(raw_data.as_ref(), 3)?);
+
+    let store_manager = make_zstd_store_manager().await?;
+    let bs_server = Arc::new(
+        make_bytestream_server_with_remote_cache_compression(store_manager.as_ref(), None, true)
+            .expect("Failed to make server"),
+    );
+    let zstd_store = zstd_store_of(store_manager.as_ref());
+
+    let digest = DigestInfo::try_new(&hash, raw_data.len())?;
+    zstd_store
+        .update_zstd_oneshot(digest, DigestHasherFunc::Sha256, compressed)
+        .await?;
+
+    let read_offset = 100usize;
+    let ranged_data = read_all_bytes(
+        bs_server.as_ref(),
+        ReadRequest {
+            resource_name: format!(
+                "{}/compressed-blobs/zstd/{}/{}",
+                INSTANCE_NAME,
+                hash,
+                raw_data.len()
+            ),
+            read_offset: read_offset as i64,
+            read_limit: 0,
+        },
+    )
+    .await?;
+
+    let decoded = zstd::bulk::decompress(&ranged_data, raw_data.len() - read_offset)?;
+    assert_eq!(
+        decoded.as_slice(),
+        &raw_data.as_ref()[read_offset..],
+        "offset > 0 compressed read must decode to the uncompressed suffix"
+    );
+
+    Ok(())
+}
+
+/// An identity (non-compressed) write + read round trip through a `ZstdStore`
+/// instance returns the correct raw bytes via the `StoreDriver` path.
+#[nativelink_test]
+pub async fn zstd_store_identity_write_and_read_round_trip()
+-> Result<(), Box<dyn core::error::Error>> {
+    let raw_data = Bytes::from("identity round trip through a zstd store ".repeat(64));
+    let hash = sha256_hex(raw_data.as_ref());
+
+    let store_manager = make_zstd_store_manager().await?;
+    let bs_server = Arc::new(
+        make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
+    );
+
+    let (tx, join_handle) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name: format!(
+            "{}/uploads/{}/blobs/{}/{}",
+            INSTANCE_NAME,
+            "4dcec57e-1389-4ab5-b188-4a59f22ceb62",
+            hash,
+            raw_data.len()
+        ),
+        write_offset: 0,
+        finish_write: true,
+        data: raw_data.clone(),
+    })?))
+    .await?;
+    let server_result = join_handle
+        .await
+        .expect("Failed to join")
+        .expect("Failed write");
+    assert_eq!(
+        server_result.into_inner().committed_size,
+        raw_data.len() as i64
+    );
+
+    let read_data = read_all_bytes(
+        bs_server.as_ref(),
+        ReadRequest {
+            resource_name: format!("{}/blobs/{}/{}", INSTANCE_NAME, hash, raw_data.len()),
+            read_offset: 0,
+            read_limit: raw_data.len() as i64,
+        },
+    )
+    .await?;
+    assert_eq!(
+        read_data.as_slice(),
+        raw_data.as_ref(),
+        "identity round trip through a ZstdStore must return the raw bytes"
+    );
+
+    Ok(())
+}
+
+/// A compressed read with a non-zero `read_limit` against a `ZstdStore` instance
+/// must be rejected with `INVALID_ARGUMENT` (regression: the guard runs before the
+/// fast path).
+#[nativelink_test]
+pub async fn zstd_store_compressed_read_rejects_nonzero_read_limit()
+-> Result<(), Box<dyn core::error::Error>> {
+    let raw_data = Bytes::from("read_limit rejection over a zstd store ".repeat(64));
+    let hash = sha256_hex(raw_data.as_ref());
+    let compressed = Bytes::from(zstd::bulk::compress(raw_data.as_ref(), 3)?);
+
+    let store_manager = make_zstd_store_manager().await?;
+    let bs_server =
+        make_bytestream_server_with_remote_cache_compression(store_manager.as_ref(), None, true)
+            .expect("Failed to make server");
+    let zstd_store = zstd_store_of(store_manager.as_ref());
+
+    let digest = DigestInfo::try_new(&hash, raw_data.len())?;
+    zstd_store
+        .update_zstd_oneshot(digest, DigestHasherFunc::Sha256, compressed)
+        .await?;
+
+    let Err(status) = bs_server
+        .read(Request::new(ReadRequest {
+            resource_name: format!(
+                "{}/compressed-blobs/zstd/{}/{}",
+                INSTANCE_NAME,
+                hash,
+                raw_data.len()
+            ),
+            read_offset: 0,
+            read_limit: 1,
+        }))
+        .await
+    else {
+        panic!("compressed read with read_limit should fail");
+    };
+
+    assert_eq!(status.code(), Code::InvalidArgument);
+    assert!(
+        status.message().contains("read_limit must be 0"),
+        "unexpected error: {}",
+        status.message()
+    );
+
     Ok(())
 }

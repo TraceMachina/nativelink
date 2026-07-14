@@ -41,6 +41,7 @@ use nativelink_proto::google::bytestream::{
 };
 use nativelink_store::grpc_store::GrpcStore;
 use nativelink_store::store_manager::StoreManager;
+use nativelink_store::zstd_store::ZstdStore;
 use nativelink_util::buf_channel::{
     DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
 };
@@ -1101,6 +1102,57 @@ impl ByteStreamServer {
         let (bytes_received, _guard) = instance.track_compressed_upload(uuid_key);
 
         let (compressed_tx, compressed_rx) = make_buf_channel_pair();
+
+        // Fast path: when the instance store is immediately a ZstdStore we hand
+        // the client's COMPRESSED stream straight to `update_zstd`, which
+        // validates/stages/commits the zstd bytes byte-for-byte, skipping the
+        // decode + re-encode round trip entirely. We keep pumping the client
+        // stream through `process_compressed_client_stream` so `bytes_received`
+        // (and therefore QueryWriteStatus) still tracks compressed wire-byte
+        // progress, and `committed_size` remains the compressed wire byte count.
+        if let Ok(zstd_store) = instance
+            .store
+            .clone()
+            .into_inner()
+            .as_any_arc()
+            .downcast::<ZstdStore>()
+        {
+            let update_fut = zstd_store.update_zstd(digest, digest_function, compressed_rx);
+            let client_stream_fut =
+                process_compressed_client_stream(stream, compressed_tx, &bytes_received);
+            let (client_stream_result, update_result) = tokio::join!(client_stream_fut, update_fut);
+
+            // Bad client input maps to InvalidArgument immediately, mirroring the
+            // decode path below.
+            if let Err(err) = &client_stream_result
+                && err.code == Code::InvalidArgument
+            {
+                return Err(err.clone());
+            }
+            if let Err(err) = &update_result
+                && err.code == Code::InvalidArgument
+            {
+                return Err(err.clone());
+            }
+            let mut upload_error = update_result.err();
+            if let Err(err) = client_stream_result {
+                upload_error = Some(match upload_error {
+                    Some(existing) => existing.merge(err),
+                    None => err,
+                });
+            }
+            if let Some(err) = upload_error {
+                return Err(err);
+            }
+
+            // `committed_size` stays the compressed wire byte count tracked by
+            // the atomic (the source of truth the code already uses); it should
+            // agree with `update_zstd`'s returned wire byte count.
+            let committed_size = i64::try_from(bytes_received.load(Ordering::Acquire))
+                .err_tip(|| "Compressed upload size was not convertible to i64")?;
+            return Ok(Response::new(WriteResponse { committed_size }));
+        }
+
         let (decompressed_tx, decompressed_rx) = make_buf_channel_pair();
         let store = instance.store.clone();
         let store_update_context = make_ctx_for_hash_func(digest_function)?;
@@ -1211,6 +1263,8 @@ impl ByteStreamServer {
             }
         }
 
+        type BoxedResultFuture = Pin<Box<dyn Future<Output = Result<(), Error>> + Send>>;
+
         if read_request.read_limit != 0 {
             return Err(make_input_err!(
                 "read_limit must be 0 when reading compressed blobs"
@@ -1224,31 +1278,70 @@ impl ByteStreamServer {
         let read_offset = u64::try_from(read_request.read_offset)
             .err_tip(|| "Could not convert read_offset to u64")?;
 
-        let (raw_tx, raw_rx) = make_buf_channel_pair();
-        let (compressed_tx, compressed_rx) = make_buf_channel_pair();
+        // Fast path: at offset 0, when the instance store is immediately a
+        // ZstdStore, pipe the stored zstd stream byte-for-byte into the same
+        // chunking pipeline, skipping the raw `get_part` + re-encode entirely.
+        // The stored physical bytes are already a valid zstd stream, so the
+        // client receives exactly what was stored. For offset > 0 (rare resume)
+        // or a non-ZstdStore instance we keep the raw read + re-encode path,
+        // which is correct because `StoreDriver::get_part` on a ZstdStore
+        // returns decompressed bytes that we then re-compress.
+        let maybe_zstd_store = if read_offset == 0 {
+            instance
+                .store
+                .clone()
+                .into_inner()
+                .as_any_arc()
+                .downcast::<ZstdStore>()
+                .ok()
+        } else {
+            None
+        };
 
-        let store = instance.store.clone();
-        let get_part_fut = Box::pin(async move {
-            store
-                .get_part(digest, raw_tx, read_offset, None)
-                .await
-                .err_tip(|| "Failed to read blob for wire compression")
-        });
-        // The encode runs as a plain async future: it must not occupy a
-        // blocking-pool thread for the stream's lifetime, because it only
-        // progresses at the client's drain rate. Dropping the returned
-        // stream drops this future, which tears the encode down exactly
-        // like the previous task-abort-on-drop did.
-        let encode_fut = Box::pin(crate::wire_compression::stream_encode_compressed_download(
-            raw_rx,
-            wire_compressor,
-            crate::wire_compression::ZSTD_COMPRESSION_LEVEL,
-            compressed_tx,
-        ));
+        let (rx, get_part_fut, encode_fut): (
+            DropCloserReadHalf,
+            BoxedResultFuture,
+            BoxedResultFuture,
+        ) = if let Some(zstd_store) = maybe_zstd_store {
+            let (zstd_tx, zstd_rx) = make_buf_channel_pair();
+            let get_part_fut: BoxedResultFuture = Box::pin(async move {
+                zstd_store
+                    .get_zstd(digest, zstd_tx)
+                    .await
+                    .err_tip(|| "Failed to read stored zstd stream for passthrough")
+            });
+            // No re-encode on the fast path; a ready Ok keeps the existing
+            // error-merge machinery in `ReaderState::finish` a no-op here.
+            let encode_fut: BoxedResultFuture = Box::pin(async { Ok(()) });
+            (zstd_rx, get_part_fut, encode_fut)
+        } else {
+            let (raw_tx, raw_rx) = make_buf_channel_pair();
+            let (compressed_tx, compressed_rx) = make_buf_channel_pair();
+            let store = instance.store.clone();
+            let get_part_fut: BoxedResultFuture = Box::pin(async move {
+                store
+                    .get_part(digest, raw_tx, read_offset, None)
+                    .await
+                    .err_tip(|| "Failed to read blob for wire compression")
+            });
+            // The encode runs as a plain async future: it must not occupy a
+            // blocking-pool thread for the stream's lifetime, because it only
+            // progresses at the client's drain rate. Dropping the returned
+            // stream drops this future, which tears the encode down exactly
+            // like the previous task-abort-on-drop did.
+            let encode_fut: BoxedResultFuture =
+                Box::pin(crate::wire_compression::stream_encode_compressed_download(
+                    raw_rx,
+                    wire_compressor,
+                    crate::wire_compression::ZSTD_COMPRESSION_LEVEL,
+                    compressed_tx,
+                ));
+            (compressed_rx, get_part_fut, encode_fut)
+        };
 
         let state = Some(ReaderState {
             max_bytes_per_stream: instance.max_bytes_per_stream,
-            rx: compressed_rx,
+            rx,
             maybe_get_part_result: None,
             maybe_encode_result: None,
             get_part_fut,
