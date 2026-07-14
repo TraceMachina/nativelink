@@ -79,6 +79,7 @@ store name the server exposes.
 | `completeness_checking` | one store + a CAS store | Confirms an `ActionResult`'s output digests exist in CAS before returning it. AC-only. |
 | `cache_metrics` | one store | Emits OpenTelemetry cache-hit/miss metrics for the wrapped store. Opt-in — stores you don't wrap pay nothing extra. |
 | `ontap_s3_existence_cache` | (built-in ONTAP S3 backend) | Purpose-built existence cache for ONTAP S3 specifically, with disk-persisted sync instead of a generic wrapped backend. |
+| `zstd_store` | one store (dedicated, empty namespace) | Keeps blobs as zstd at rest instead of raw bytes, and — unlike `compression` — can serve them byte-for-byte to `--remote_cache_compression` clients. CAS-only. Unlike every other wrapper here, it has a required *position* (must be outermost) and a hard namespace constraint. See [below](#pass-through-compression-zstd_store). |
 
 <Callout type="warn" title="A few wrappers only make sense one way round">
   - Put `dedup` *inside* `compression` (compression wraps dedup's output),
@@ -91,7 +92,121 @@ store name the server exposes.
   - `existence_cache` and `size_partitioning` are CAS-only; `completeness_checking`
     is AC-only. Using them on the other store type produces confusing
     correctness bugs, not a config error.
+  - `zstd_store` is the one wrapper that isn't position-agnostic: it must be
+    the store an instance points at directly, or its main benefit doesn't
+    apply. See the dedicated section below before deploying it.
 </Callout>
+
+## Pass-through compression: `zstd_store`
+
+`zstd_store` keeps CAS blobs as zstd streams **at rest** instead of raw
+bytes. Unlike `compression` (LZ4, decompressed back to raw bytes at the
+`StoreDriver` boundary), a `zstd_store` can serve its stored bytes
+**byte-for-byte** to a Bazel client running `--remote_cache_compression` on
+a cache hit — no decompress-then-recompress round trip at the gRPC
+boundary. Identity clients (no `--remote_cache_compression`) are unaffected:
+they still receive plain decompressed bytes. See
+[Remote cache compression](/configuration/compression) for the wire-level
+feature this pairs with.
+
+It is **CAS-only** — every operation requires a digest key. Never point an
+AC store at it.
+
+**Example JSON5 config:**
+
+```json5
+{
+  name: "CAS_MAIN_STORE",
+  zstd_store: {
+    backend: { fast_slow: { /* complete, dedicated backend stack */ } },
+    temp_path: "/var/tmp/nativelink-zstd",
+    max_compressed_upload_size: "512MiB",
+    max_concurrent_staged_uploads: 4,
+    compression_level: 19,
+    max_recompression_size: "64MiB",
+    max_concurrent_recompressions: 1,
+  },
+}
+```
+
+### Placement: it must be the outermost store
+
+Every wrapper in the table above can nest at any depth. `zstd_store` is
+different: **it must be the store the instance/CAS/ByteStream service
+points at directly** for the byte-for-byte passthrough to apply. `fast_slow`,
+`dedup`, `existence_cache`, `cache_metrics`, `shard`, `ref_store`, and
+`size_partitioning` are all fine **inside** it — they then operate on the
+physical zstd stream exactly as they would on raw bytes.
+
+A wrapper placed **outside** `zstd_store` (for example, `verify` wrapping
+it) is still correct, but that wrapper has to decode the stream to do its
+job, which disables passthrough at that boundary.
+
+<Callout type="warn" title="backend must be a dedicated, empty namespace — no in-place migration">
+  `zstd_store`'s `backend` stores digest → zstd bytes, not digest → raw
+  bytes. The digest key is identical either way, and raw CAS payloads are
+  unstructured — an arbitrary raw blob can legitimately start with the zstd
+  magic number — so there is no safe way to sniff which encoding a given
+  entry is in. Version 1 has no in-place migration.
+
+  - `backend` must point at a brand-new or empty store namespace, never one
+    a raw-bytes reader or writer touches — including a plain
+    `filesystem`/`experimental_cloud_object_store` CAS, a different
+    instance, or a pre-`zstd_store` NativeLink version pointed at the same
+    path/bucket/prefix.
+  - Rollout **and** rollback both require a cache flush (or cutting over to
+    a new namespace) — there is no supported way to turn `zstd_store` on or
+    off in place against a populated namespace.
+  - A rolling/mixed-version deployment against **one shared namespace** is
+    unsupported: while some replicas write raw bytes and others write zstd
+    to the same keys, every reader misinterprets roughly half the entries.
+</Callout>
+
+### `compression_level`: capped at 19, not 22
+
+`compression_level` is optional. Omitted, uploads pass through with no
+forced recompression. When set, it must be in `1..=19` — NativeLink rejects
+anything outside that range at config-validation time (startup).
+
+The zstd level isn't recorded in the frame; decoders are level-agnostic. The
+actual cross-client constraint is **window size**. Standard levels 1–19 cap
+the encoded frame at `windowLog <= 23` (<= 8 MiB), decodable by every
+Bazel/zstd-jni client using plain `libzstd` defaults. Bazel's decoder never
+calls `setLongMax`, so its hard ceiling is `windowLog <= 27` (128 MiB) —
+level 19 keeps a wide margin under that ceiling rather than chasing the
+absolute cap. `zstd_store` never enables long-distance matching or external
+dictionaries (REAPI has no dictionary channel, and long-distance matching
+alone can push `windowLog` past 23).
+
+### `temp_path`: staging directory, size and place it deliberately
+
+`zstd_store` stages every compressed upload — and, when recompressing, the
+re-encoded candidate — as a temp file under `temp_path` before committing it
+to `backend`. Files use owner-only permissions (`0o600` on Unix) and
+unpredictable names, and are always removed on success, error, or
+cancellation.
+
+- **Worst-case temp disk usage** is roughly `max_concurrent_staged_uploads
+  * (max_compressed_upload_size + max_recompression_size)` — the second
+  term only applies while a given upload is actively being recompressed,
+  since the incoming and re-encoded candidates briefly coexist. Size and
+  monitor `temp_path` against that bound, not just steady-state usage.
+- **Put `temp_path` on the same filesystem as a `filesystem` backend's
+  `content_path`, where possible.** Committing a staged file moves it into
+  the inner store; for a `filesystem` backend that commit is a `rename(2)`.
+  A cross-filesystem rename fails with `EXDEV` — the upload fails, the blob
+  is never stored, and the temp file is still cleaned up — instead of
+  silently falling back to a copy.
+
+### Recompression: keep whichever encoding is smaller
+
+With `compression_level` set and `max_recompression_size > 0`, an incoming
+upload whose *decoded* size is within `max_recompression_size` gets
+re-encoded at `compression_level`, and `zstd_store` keeps whichever of the
+original or re-encoded stream is smaller. `max_recompression_size: 0`
+disables recompression entirely — `compression_level` still picks the level
+used to encode brand-new, not-already-compressed uploads; it just never
+starts a second encoder for an incoming compressed stream.
 
 ## Choosing a terminal backend
 
@@ -189,3 +304,6 @@ instead of declaring the same backend twice:
   fit alongside servers, schedulers, and workers.
 - [Configuration → Production](/configuration/production) — sharded,
   multi-region store topologies end to end.
+- [`deployment-examples/docker-compose/local-storage-cas-zstd.json5`](https://github.com/TraceMachina/nativelink/blob/main/deployment-examples/docker-compose/local-storage-cas-zstd.json5)
+  — a complete `zstd_store` deployment, annotated with the namespace and
+  placement rules above.
