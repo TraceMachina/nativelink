@@ -3246,6 +3246,7 @@ dependencies = [
  "webpki-roots 1.0.3",
  "wincode",
  "zip",
+ "zstd",
 ]
 
 [[package]]

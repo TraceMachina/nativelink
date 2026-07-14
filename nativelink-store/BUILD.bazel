@@ -49,6 +49,7 @@ rust_library(
         "src/size_partitioning_store.rs",
         "src/store_manager.rs",
         "src/verify_store.rs",
+        "src/zstd_store.rs",
     ],
     proc_macro_deps = [
         "@crates//:async-trait",
@@ -111,6 +112,7 @@ rust_library(
         "@crates//:uuid",
         "@crates//:webpki-roots",
         "@crates//:wincode",
+        "@crates//:zstd",
     ] + select({
         "@platforms//os:macos": ["@crates//:libc"],
         "//conditions:default": [],
@@ -150,6 +152,7 @@ rust_test_suite(
         "tests/size_partitioning_store_test.rs",
         "tests/store_manager_test.rs",
         "tests/verify_store_test.rs",
+        "tests/zstd_store_test.rs",
     ],
     compile_data = [
         "tests/mongo_runner/mod.rs",
