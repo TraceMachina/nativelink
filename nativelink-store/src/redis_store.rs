@@ -1313,12 +1313,12 @@ where
             if let Err(err) = local_self.clone().has_remove_callback_subscribe
                 .get_or_try_init(|| async move {
                     let mut client = local_self.get_client().await?;
-                    let cfg = redis::cmd("CONFIG").arg("GET").arg("notify-keyspace-events").to_owned().query_async::<Vec<(String,String)>>(&mut client.connection_manager).await.expect("Parsing notify-keyspace-events");
+                    let cfg = redis::cmd("CONFIG").arg("GET").arg("notify-keyspace-events").to_owned().query_async::<Vec<(String,String)>>(&mut client.connection_manager).await.map_err(|e| Error::from(e).append("Parsing notify-keyspace-events"))?;
                     if cfg.len() != 1 {
                         warn!(?cfg, "Got multiple items for CONFIG GET, expected one");
                         return Err(make_input_err!("Got multiple items for CONFIG GET, expected one"));
                     }
-                    let events_cfg = &cfg.first().expect("Only one item").1;
+                    let events_cfg = &cfg.first().ok_or_else(|| make_err!(Code::InvalidArgument, "Only one item"))?.1;
                     if events_cfg.is_empty() {
                         error!("notify-keyspace-events not enabled for Redis, will fail to get remove callbacks");
                     } else if !events_cfg.contains('K') {
