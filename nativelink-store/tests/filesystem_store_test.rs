@@ -2025,6 +2025,53 @@ async fn unref_is_idempotent_when_file_already_gone() -> Result<(), Error> {
     Ok(())
 }
 
+/// The evicting map runs `unref()` outside its state lock, so a stale unref
+/// can execute after its key was re-inserted and re-emplaced. It must not
+/// retire (rename away, then delete) the content file it no longer owns —
+/// that stranded the live entry: map said present, disk said ENOENT
+/// ("Could not make hardlink ... file was likely evicted").
+#[nativelink_test]
+async fn stale_unref_does_not_steal_reemplaced_content_file() -> Result<(), Error> {
+    let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
+    let content_path = make_temp_path("content_path");
+    let store = Box::pin(
+        FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+            content_path: content_path.clone(),
+            temp_path: make_temp_path("temp_path"),
+            eviction_policy: None,
+            ..Default::default()
+        })
+        .await?,
+    );
+    store.update_oneshot(digest, VALUE1.into()).await?;
+    let stale_entry = store.get_file_entry_for_digest(&digest).await?;
+
+    // Simulate a re-emplace landing before this entry's deferred unref: the
+    // content path keeps its name but now holds a different inode. Create
+    // the replacement while the original still exists so the filesystem
+    // cannot hand back the same inode number, then rename over it.
+    let content_file = OsString::from(format!("{content_path}/{DIGEST_FOLDER}/{digest}"));
+    let replacement_file = OsString::from(format!("{content_path}/{DIGEST_FOLDER}/replacement"));
+    std::fs::write(&replacement_file, VALUE1)?;
+    std::fs::rename(&replacement_file, &content_file)?;
+
+    stale_entry.unref().await;
+
+    assert!(
+        logs_contain("Content path was re-emplaced by a newer entry"),
+        "stale unref must detect the inode mismatch and skip the rename"
+    );
+    let content =
+        std::fs::read(&content_file).expect("content file must still exist after the stale unref");
+    assert_eq!(
+        content,
+        VALUE1.as_bytes(),
+        "re-emplaced content file must be untouched"
+    );
+
+    Ok(())
+}
+
 /// rename ENOENT is ambiguous: a missing temp directory must not be mistaken
 /// for a vanished source. With the source still present, unref must warn and
 /// leave the content file intact rather than flip to Temp and orphan it.
