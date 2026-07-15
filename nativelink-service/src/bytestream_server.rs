@@ -1110,13 +1110,7 @@ impl ByteStreamServer {
         // stream through `process_compressed_client_stream` so `bytes_received`
         // (and therefore QueryWriteStatus) still tracks compressed wire-byte
         // progress, and `committed_size` remains the compressed wire byte count.
-        if let Ok(zstd_store) = instance
-            .store
-            .clone()
-            .into_inner()
-            .as_any_arc()
-            .downcast::<ZstdStore>()
-        {
+        if let Some(zstd_store) = instance.store.downcast_arc_immediate::<ZstdStore>() {
             let update_fut = zstd_store.update_zstd(digest, digest_function, compressed_rx);
             let client_stream_fut =
                 process_compressed_client_stream(stream, compressed_tx, &bytes_received);
@@ -1287,13 +1281,7 @@ impl ByteStreamServer {
         // which is correct because `StoreDriver::get_part` on a ZstdStore
         // returns decompressed bytes that we then re-compress.
         let maybe_zstd_store = if read_offset == 0 {
-            instance
-                .store
-                .clone()
-                .into_inner()
-                .as_any_arc()
-                .downcast::<ZstdStore>()
-                .ok()
+            instance.store.downcast_arc_immediate::<ZstdStore>()
         } else {
             None
         };

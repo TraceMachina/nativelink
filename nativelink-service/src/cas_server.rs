@@ -353,12 +353,7 @@ impl CasServer {
         // a client-supplied zstd blob can be passed through byte-for-byte
         // (validate + stage + commit) instead of decompressed then recompressed.
         // Resolved once and cloned into each per-blob future.
-        let maybe_zstd_store = store
-            .clone()
-            .into_inner()
-            .as_any_arc()
-            .downcast::<ZstdStore>()
-            .ok();
+        let maybe_zstd_store = store.downcast_arc_immediate::<ZstdStore>();
         let maybe_zstd_store = &maybe_zstd_store;
         let update_futures: FuturesUnordered<_> = request
             .requests
@@ -477,12 +472,7 @@ impl CasServer {
         // accepts zstd and compression actually helped) with no
         // decompress-then-recompress round trip. Resolved once and cloned into
         // each per-blob future.
-        let maybe_zstd_store = store
-            .clone()
-            .into_inner()
-            .as_any_arc()
-            .downcast::<ZstdStore>()
-            .ok();
+        let maybe_zstd_store = store.downcast_arc_immediate::<ZstdStore>();
         let maybe_zstd_store = &maybe_zstd_store;
         let read_futures: FuturesUnordered<_> = request
             .digests

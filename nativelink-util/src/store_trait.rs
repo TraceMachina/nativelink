@@ -403,6 +403,14 @@ impl Store {
         self.inner.as_any().downcast_ref::<U>()
     }
 
+    /// Like [`Self::downcast_ref_immediate`] but returns an owned `Arc<U>` of the
+    /// immediate inner driver, for callers that must move the concrete store into a
+    /// spawned/'static future. Non-recursive: never follows `inner_store()`.
+    #[inline]
+    pub fn downcast_arc_immediate<U: StoreDriver>(&self) -> Option<Arc<U>> {
+        self.inner.clone().as_any_arc().downcast::<U>().ok()
+    }
+
     /// Register health checks used to monitor the store.
     #[inline]
     pub fn register_health(&self, registry: &mut HealthRegistryBuilder) {
