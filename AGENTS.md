@@ -91,7 +91,7 @@ bun --filter @nativelink/docs gen:config-reference vX.Y.Z   # regenerate config 
 ```
 
 - `web/apps/docs/public/llms.txt` is the served `llms.txt` for LLM agents — keep it in sync when docs structure or product framing changes.
-- Do not hand-edit generated files (`content/docs/reference/changelog.md`, `.../nativelink-config/*`); regenerate them.
+- Don't hand-edit the generated docs pages — regenerate them. These are the changelog page `web/apps/docs/content/docs/reference/changelog.md` and the config reference pages under `web/apps/docs/content/docs/reference/nativelink-config/`. (This is the docs *content*, not the `nativelink-config/` Rust crate, which is hand-written.)
 
 ## Do / don't
 
