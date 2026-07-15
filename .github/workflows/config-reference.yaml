@@ -26,9 +26,13 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing release tag to regenerate the config reference for (e.g. v1.6.1).'
-        required: true
+        description: 'Existing release tag to regenerate the config reference for (e.g. v1.6.1) or blank for all'
+        required: false # Blank to allow full regen
         type: string
+  # Weekly docs regeneration to catch any cases where we've made updates but haven't changed anything
+  schedule:
+    # Sunday 4:13am randomly picked
+    - cron: 13 4 * * SUN
 
 permissions: read-all
 
@@ -52,10 +56,12 @@ jobs:
           set -euo pipefail
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             TAG="${{ inputs.tag }}"
+          elif [[ "${{ github.event_name }}" == "schedule" ]]; then
+            TAG=
           else
             TAG="${{ github.ref_name }}"
           fi
-          if [[ ! "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          if [[ "${TAG}" != "" && ( ! "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ) ]]; then
             echo "::error::'${TAG}' is not a release tag (vMAJOR.MINOR.PATCH); refusing to regenerate."
             exit 1
           fi
