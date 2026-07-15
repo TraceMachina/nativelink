@@ -83,6 +83,22 @@ const fn zstd_compress_bound(src_size: u64) -> u64 {
         .saturating_add(64)
 }
 
+/// Whole-buffer zstd decode shared by the non-streaming paths. When `size_hint`
+/// is `Some`, the single-frame bulk decoder is used with that value as a
+/// capacity hint (the digest's uncompressed size); otherwise the multi-frame
+/// streaming decoder is used with no size hint. A decode failure is mapped to an
+/// [`Error`] by `on_err` so each caller keeps its own error code and message.
+fn decode_all_zstd<F>(data: &[u8], size_hint: Option<usize>, on_err: F) -> Result<Vec<u8>, Error>
+where
+    F: FnOnce(std::io::Error) -> Error,
+{
+    match size_hint {
+        Some(capacity) => zstd::bulk::decompress(data, capacity),
+        None => zstd::stream::decode_all(data),
+    }
+    .map_err(on_err)
+}
+
 /// Streaming zstd encode of an identity (raw) upload.
 ///
 /// Raw chunks are read from `reader`, hashed and counted, and fed through a
@@ -704,8 +720,9 @@ impl ZstdStore {
                 ));
             }
             let decoded = spawn_blocking!("zstd_store_validate_empty_oneshot", move || {
-                zstd::stream::decode_all(&data[..])
-                    .map_err(|e| make_input_err!("Zstd decode failed for zero digest: {e}"))
+                decode_all_zstd(&data, None, |e| {
+                    make_input_err!("Zstd decode failed for zero digest: {e}")
+                })
             })
             .await
             .err_tip(|| "Failed to run zstd store empty validation task")??;
@@ -765,8 +782,9 @@ impl ZstdStore {
         let raw = spawn_blocking!("zstd_store_batch_decode", move || {
             // Stored data was validated at upload time; a decode failure here is
             // corruption of already-stored bytes.
-            zstd::bulk::decompress(&physical, expected_size)
-                .map_err(|e| make_err!(Code::DataLoss, "Zstd decode failed in zstd store: {e}"))
+            decode_all_zstd(&physical, Some(expected_size), |e| {
+                make_err!(Code::DataLoss, "Zstd decode failed in zstd store: {e}")
+            })
         })
         .await
         .err_tip(|| "Failed to run zstd store batch decode task")??;
@@ -797,8 +815,9 @@ impl ZstdStore {
                 }
                 compressed.extend_from_slice(&chunk);
             }
-            let decoded = zstd::stream::decode_all(&compressed[..])
-                .map_err(|e| make_input_err!("Zstd decode failed for zero digest: {e}"))?;
+            let decoded = decode_all_zstd(&compressed, None, |e| {
+                make_input_err!("Zstd decode failed for zero digest: {e}")
+            })?;
             if !decoded.is_empty() {
                 return Err(make_input_err!(
                     "Zero-digest zstd upload did not decode to empty in zstd store"
