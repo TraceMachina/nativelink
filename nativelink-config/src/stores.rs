@@ -153,8 +153,8 @@ pub enum StoreSpec {
     ///   }
     ///   ```
     ///
-    /// 4. **`NetApp` ONTAP S3**
-    ///    `NetApp` ONTAP S3 store will use ONTAP's S3-compatible storage as a backend
+    /// 4. **NetApp ONTAP S3:**
+    ///    NetApp ONTAP S3 store will use ONTAP's S3-compatible storage as a backend
     ///    to store files. This store is specifically configured for ONTAP's S3 requirements
     ///    including custom TLS configuration, credentials management, and proper vserver
     ///    configuration.
