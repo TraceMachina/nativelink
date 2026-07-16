@@ -352,7 +352,7 @@ pub struct ByteStreamConfig {
 }
 
 // Older bytestream config. All fields are as per the newer docs, but this requires
-// the hashed cas_stores v.s. the WithInstanceName approach. This should _not_ be updated
+// the hashed `cas_stores` v.s. the WithInstanceName approach. This should _not_ be updated
 // with newer fields, and eventually dropped
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
@@ -488,7 +488,7 @@ pub struct ServicesConfig {
 
     /// Capabilities service is required in order to use most of the
     /// bazel protocol. This service is used to provide the supported
-    /// features and versions of this bazel GRPC service.
+    /// features and versions of this bazel gRPC service.
     #[serde(
         default,
         deserialize_with = "super::backcompat::opt_vec_with_instance_name"
@@ -878,7 +878,7 @@ pub struct UploadActionResultConfig {
 pub struct LocalWorkerConfig {
     /// Name of the worker. This is give a more friendly name to a worker for logging
     /// and metric publishing. This is also the prefix of the worker id
-    /// (ie: "{name}{uuidv6}").
+    /// (i.e. "{name}{uuidv6}").
     /// Default: {Index position in the workers list}
     #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
     pub name: String,
@@ -994,7 +994,7 @@ pub struct LocalWorkerConfig {
     pub platform_properties: HashMap<String, WorkerProperty>,
 
     /// An optional mapping of environment names to set for the execution
-    /// as well as those specified in the action itself.  If set, will set each
+    /// as well as those specified in the action itself. If set, will set each
     /// key as an environment variable before executing the job with the value
     /// of the environment variable being the value of the property of the
     /// action being executed of that name or the fixed value.
@@ -1006,9 +1006,9 @@ pub struct LocalWorkerConfig {
     /// Default: None (directory cache disabled)
     pub directory_cache: Option<DirectoryCacheConfig>,
 
-    /// Whether to use namespaces to isolate the execution.  This is only available
-    /// on Linux.  It is highly recommended as it avoids a number of issues with
-    /// zombie processes and also provides additional hermeticity.  If explicitly set
+    /// Whether to use namespaces to isolate the execution. This is only available
+    /// on Linux. It is highly recommended as it avoids a number of issues with
+    /// zombie processes and also provides additional hermeticity. If explicitly set
     /// to true and it is not supported the worker will exit with an error.
     ///
     /// Note: this will fail for non-privileged Dockerised workers, as workers in
@@ -1018,9 +1018,9 @@ pub struct LocalWorkerConfig {
     /// Default: False.
     pub use_namespaces: Option<bool>,
 
-    /// Whether to use a mount namespace to isolate the worker root.  This is only
-    /// available on Linux and when `use_namespaces` is true.  It is highly recommended
-    /// provides additional hermeticity.  If explicitly set to true and it is not
+    /// Whether to use a mount namespace to isolate the worker root. This is only
+    /// available on Linux and when `use_namespaces` is true. It is highly recommended
+    /// provides additional hermeticity. If explicitly set to true and it is not
     /// supported or `use_namespaces` is not set to true the worker will exit with an
     /// error.
     /// Default: False.
