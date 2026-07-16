@@ -9,6 +9,7 @@ Bazelisk
 [Kk]eyless
 Sigstore
 Cloudflare
+[Cc]oalescers?
 Colab
 composable
 CPUs
