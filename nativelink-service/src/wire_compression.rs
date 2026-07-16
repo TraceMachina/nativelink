@@ -291,13 +291,30 @@ pub async fn decompress_batch_update(
     }
 }
 
-pub fn stream_decode_compressed_upload(
-    compressed_rx: DropCloserReadHalf,
+/// Decode a client's zstd wire stream into raw bytes on `tx`, asynchronously.
+///
+/// Like [`stream_encode_compressed_download`], this must not occupy a tokio
+/// blocking-pool thread for the stream's lifetime: the input arrives at the
+/// client's upload pace and `tx` drains at the store's write pace, so a
+/// blocking implementation parks a pool thread on whichever side is slower
+/// for as long as the upload lasts. The zstd frame is consumed incrementally
+/// with the raw streaming API instead; per-chunk decode cost is bounded by
+/// the channel chunk size, so it runs inline on the async runtime with
+/// channel-native backpressure on both sides.
+///
+/// Validation semantics match the REAPI compressed-blobs contract: the
+/// decoded byte count may never exceed the digest size (checked per chunk so
+/// a decompression bomb is rejected as soon as it overshoots), the final
+/// count must equal it exactly, and the decoded bytes must hash to `digest`.
+pub async fn stream_decode_compressed_upload(
+    mut compressed_rx: DropCloserReadHalf,
     wire_compressor: compressor::Value,
     digest: DigestInfo,
     digest_function: DigestHasherFunc,
     mut tx: DropCloserWriteHalf,
 ) -> Result<(), Error> {
+    use zstd::stream::raw::{Decoder, InBuffer, Operation, OutBuffer};
+
     if wire_compressor != compressor::Value::Zstd {
         return Err(make_input_err!(
             "Streaming upload decompression only supports zstd, got {:?}",
@@ -308,36 +325,62 @@ pub fn stream_decode_compressed_upload(
     let expected_size = digest.size_bytes();
     let mut hasher = digest_function.hasher();
     let mut decoded_size = 0u64;
-    let mut buffer = vec![0u8; zstd::zstd_safe::DCtx::out_size()];
-
-    let reader = BufChannelReader::new(compressed_rx);
-    let mut decoder = zstd::stream::read::Decoder::new(reader)
+    let mut decoder = Decoder::new()
         .map_err(|e| make_err!(Code::InvalidArgument, "Zstd decompression failed: {}", e))?;
+    // `DCtx::out_size()` guarantees a full decompressed block always fits, so
+    // the decoder never stalls for lack of output space within one `run`.
+    let mut out_buf = vec![0u8; zstd::zstd_safe::DCtx::out_size()];
+    // Last input-size hint from the decoder: nonzero at input EOF means the
+    // stream ended in the middle of a frame and must be rejected.
+    let mut frame_input_hint = 0usize;
     loop {
-        let read = decoder
-            .read(&mut buffer)
-            .map_err(|e| make_err!(Code::InvalidArgument, "Zstd decompression failed: {}", e))?;
-        if read == 0 {
-            break;
+        let chunk = compressed_rx
+            .recv()
+            .await
+            .err_tip(|| "Failed to receive compressed data in stream_decode_compressed_upload")?;
+        if chunk.is_empty() {
+            break; // EOF.
         }
-        let read_u64 =
-            u64::try_from(read).err_tip(|| "Decoded chunk size was not convertible to u64")?;
-        decoded_size = decoded_size.checked_add(read_u64).ok_or_else(|| {
-            make_err!(
-                Code::InvalidArgument,
-                "Decoded compressed upload size overflow"
-            )
-        })?;
-        if decoded_size > expected_size {
-            return Err(make_err!(
-                Code::InvalidArgument,
-                "Decoded compressed upload size {} bytes exceeds digest size {} bytes",
-                decoded_size,
-                expected_size
-            ));
+        let mut in_buffer = InBuffer::around(&chunk);
+        loop {
+            let mut out_buffer = OutBuffer::around(out_buf.as_mut_slice());
+            frame_input_hint = decoder.run(&mut in_buffer, &mut out_buffer).map_err(|e| {
+                make_err!(Code::InvalidArgument, "Zstd decompression failed: {}", e)
+            })?;
+            let produced = Bytes::copy_from_slice(out_buffer.as_slice());
+            // A completely full output buffer means the decoder may still
+            // have buffered output to flush, even with no input left.
+            let output_was_full = produced.len() == out_buf.len();
+            if !produced.is_empty() {
+                let produced_u64 = u64::try_from(produced.len())
+                    .err_tip(|| "Decoded chunk size was not convertible to u64")?;
+                decoded_size = decoded_size.checked_add(produced_u64).ok_or_else(|| {
+                    make_err!(
+                        Code::InvalidArgument,
+                        "Decoded compressed upload size overflow"
+                    )
+                })?;
+                if decoded_size > expected_size {
+                    return Err(make_err!(
+                        Code::InvalidArgument,
+                        "Decoded compressed upload size {} bytes exceeds digest size {} bytes",
+                        decoded_size,
+                        expected_size
+                    ));
+                }
+                hasher.update(&produced);
+                tx.send(produced).await?;
+            }
+            if in_buffer.pos() == in_buffer.src.len() && !output_was_full {
+                break;
+            }
         }
-        hasher.update(&buffer[..read]);
-        tx.blocking_send(Bytes::copy_from_slice(&buffer[..read]))?;
+    }
+    if frame_input_hint != 0 {
+        return Err(make_err!(
+            Code::InvalidArgument,
+            "Compressed upload stream ended in the middle of a zstd frame"
+        ));
     }
 
     if decoded_size != expected_size {

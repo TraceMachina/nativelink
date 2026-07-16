@@ -50,9 +50,9 @@ use nativelink_util::digest_hasher::{
 };
 use nativelink_util::proto_stream_utils::WriteRequestStreamWrapper;
 use nativelink_util::resource_info::ResourceInfo;
+use nativelink_util::spawn;
 use nativelink_util::store_trait::{Store, StoreLike, StoreOptimizations, UploadSizeInfo};
 use nativelink_util::task::JoinHandleDropGuard;
-use nativelink_util::{spawn, spawn_blocking};
 use opentelemetry::context::FutureExt;
 use parking_lot::Mutex;
 use tokio::time::sleep;
@@ -1086,19 +1086,16 @@ impl ByteStreamServer {
                 .map(|_| ())
                 .err_tip(|| "Failed to store decompressed data")
         };
-        let decode_fut = async move {
-            spawn_blocking!("bytestream_decode_compressed_upload", move || {
-                crate::wire_compression::stream_decode_compressed_upload(
-                    compressed_rx,
-                    wire_compressor,
-                    digest,
-                    digest_function,
-                    decompressed_tx,
-                )
-            })
-            .await
-            .map_err(|e| make_err!(Code::Internal, "Decompression task failed: {}", e))?
-        };
+        // Plain async future: decode progresses at the pace of the client
+        // upload and the store write without occupying a blocking-pool thread
+        // for the stream's lifetime.
+        let decode_fut = crate::wire_compression::stream_decode_compressed_upload(
+            compressed_rx,
+            wire_compressor,
+            digest,
+            digest_function,
+            decompressed_tx,
+        );
         let client_stream_fut =
             process_compressed_client_stream(stream, compressed_tx, &bytes_received);
         let (client_stream_result, decode_result, store_update_result) =
