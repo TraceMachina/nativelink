@@ -1207,17 +1207,16 @@ impl ByteStreamServer {
                 .await
                 .err_tip(|| "Failed to read blob for wire compression")
         });
-        let encode_fut = Box::pin(async move {
-            spawn_blocking!("bytestream_encode_compressed_download", move || {
-                crate::wire_compression::stream_encode_compressed_download(
-                    raw_rx,
-                    wire_compressor,
-                    compressed_tx,
-                )
-            })
-            .await
-            .map_err(|e| make_err!(Code::Internal, "Compression task failed: {}", e))?
-        });
+        // The encode runs as a plain async future: it must not occupy a
+        // blocking-pool thread for the stream's lifetime, because it only
+        // progresses at the client's drain rate. Dropping the returned
+        // stream drops this future, which tears the encode down exactly
+        // like the previous task-abort-on-drop did.
+        let encode_fut = Box::pin(crate::wire_compression::stream_encode_compressed_download(
+            raw_rx,
+            wire_compressor,
+            compressed_tx,
+        ));
 
         let state = Some(ReaderState {
             max_bytes_per_stream: instance.max_bytes_per_stream,

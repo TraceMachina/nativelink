@@ -18,8 +18,8 @@
 //! path, and the blocking [`BufChannelReader`] adapter used by the streaming
 //! zstd encoder/decoder.
 
+use core::time::Duration;
 use std::io::Read;
-use std::time::Duration;
 
 use bytes::Bytes;
 use nativelink_error::{Code, Error};
@@ -30,7 +30,7 @@ use nativelink_service::wire_compression::{
     stream_encode_compressed_download,
 };
 use nativelink_util::buf_channel::make_buf_channel_pair;
-use nativelink_util::spawn_blocking;
+use nativelink_util::{spawn, spawn_blocking};
 use pretty_assertions::assert_eq;
 
 #[nativelink_test]
@@ -213,6 +213,11 @@ async fn buf_channel_reader_reads_partial_and_multiple_chunks() -> Result<(), Er
 /// held streams than blocking-pool threads, and asserts that a trivial
 /// unrelated `spawn_blocking` closure still gets to run.
 #[test]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the defect under test is blocking-pool capacity, so the test needs \
+              a dedicated runtime with a deterministically small blocking pool"
+)]
 fn held_compressed_download_streams_must_not_starve_blocking_pool() {
     // More encode streams than blocking-pool threads. The streams never
     // complete during the test: their input never reaches EOF and their
@@ -249,15 +254,15 @@ fn held_compressed_download_streams_must_not_starve_blocking_pool() {
                 // output channel — the "slow client" that holds the stream
                 // open. Async sends here mean the feeders themselves never
                 // occupy blocking-pool threads.
-                let feeder = tokio::spawn(async move {
+                let feeder = spawn!("test_raw_data_feeder", async move {
                     let mut state = 0x9E37_79B9_7F4A_7C15_u64;
                     loop {
                         let mut chunk = vec![0u8; 64 * 1024];
-                        for byte in &mut chunk {
+                        for word in chunk.chunks_exact_mut(8) {
                             state = state
                                 .wrapping_mul(6_364_136_223_846_793_005)
                                 .wrapping_add(1_442_695_040_888_963_407);
-                            *byte = (state >> 33) as u8;
+                            word.copy_from_slice(&state.to_le_bytes());
                         }
                         if raw_tx.send(Bytes::from(chunk)).await.is_err() {
                             break;
@@ -266,14 +271,16 @@ fn held_compressed_download_streams_must_not_starve_blocking_pool() {
                 });
 
                 // Start the encode stream the same way
-                // `ByteStreamServer::inner_read_compressed` does.
-                let encode_task = spawn_blocking!("test_encode_compressed_download", move || {
+                // `ByteStreamServer::inner_read_compressed` does: as a plain
+                // async future on the runtime, never on the blocking pool.
+                let encode_task = spawn!(
+                    "test_encode_compressed_download",
                     stream_encode_compressed_download(
                         raw_rx,
                         compressor::Value::Zstd,
                         compressed_tx,
                     )
-                });
+                );
 
                 held_streams.push((feeder, encode_task, compressed_rx));
             }

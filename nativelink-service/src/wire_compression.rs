@@ -363,11 +363,31 @@ pub fn stream_decode_compressed_upload(
     Ok(())
 }
 
-pub fn stream_encode_compressed_download(
-    raw_rx: DropCloserReadHalf,
+/// Encode a raw byte stream into a single zstd frame on `tx`, asynchronously.
+///
+/// This runs entirely on the async runtime and must never occupy a tokio
+/// blocking-pool thread for the stream's lifetime: `tx` drains at the gRPC
+/// client's pace, so a blocking implementation (blocking reads from `raw_rx`
+/// plus `blocking_send` into `tx`) parks one pool thread per concurrent
+/// compressed download until the client finishes. Enough concurrent downloads
+/// with slow consumers then exhaust the blocking pool and starve every other
+/// `spawn_blocking` user (filesystem store I/O, upload decode, credential
+/// resolution). The zstd frame is instead produced incrementally with the raw
+/// streaming API: the CPU cost per iteration is bounded by the channel chunk
+/// size (small — micro/milliseconds), so it is acceptable inline on a worker
+/// thread, and `tx.send(...).await` gives backpressure without a parked
+/// thread.
+///
+/// The output is one well-formed zstd frame, identical in wire format to what
+/// `zstd::stream::read::Encoder` produces (both drive `ZSTD_compressStream`
+/// on a fresh `CCtx`).
+pub async fn stream_encode_compressed_download(
+    mut raw_rx: DropCloserReadHalf,
     wire_compressor: compressor::Value,
     mut tx: DropCloserWriteHalf,
 ) -> Result<(), Error> {
+    use zstd::stream::raw::{Encoder, InBuffer, Operation, OutBuffer};
+
     if wire_compressor != compressor::Value::Zstd {
         return Err(make_input_err!(
             "Streaming download compression only supports zstd, got {:?}",
@@ -375,18 +395,47 @@ pub fn stream_encode_compressed_download(
         ));
     }
 
-    let reader = BufChannelReader::new(raw_rx);
-    let mut encoder = zstd::stream::read::Encoder::new(reader, ZSTD_COMPRESSION_LEVEL)
+    let mut encoder = Encoder::new(ZSTD_COMPRESSION_LEVEL)
         .map_err(|e| make_err!(Code::Internal, "Zstd compression failed: {}", e))?;
-    let mut buffer = vec![0u8; 64 * 1024];
+    // `CCtx::out_size()` guarantees a full compressed block always fits, so
+    // the encoder never stalls for lack of output space within one `run`.
+    let mut out_buf = vec![0u8; zstd::zstd_safe::CCtx::out_size()];
     loop {
-        let read = encoder
-            .read(&mut buffer)
+        let chunk = raw_rx
+            .recv()
+            .await
+            .err_tip(|| "Failed to receive raw data in stream_encode_compressed_download")?;
+        if chunk.is_empty() {
+            break; // EOF.
+        }
+        let mut in_buffer = InBuffer::around(&chunk);
+        while in_buffer.pos() < in_buffer.src.len() {
+            let mut out_buffer = OutBuffer::around(out_buf.as_mut_slice());
+            encoder
+                .run(&mut in_buffer, &mut out_buffer)
+                .map_err(|e| make_err!(Code::Internal, "Zstd compression failed: {}", e))?;
+            let produced = out_buffer.as_slice();
+            if !produced.is_empty() {
+                tx.send(Bytes::copy_from_slice(produced)).await?;
+            }
+        }
+    }
+
+    // Finish the frame: flush any internally buffered compressed data plus
+    // the frame epilogue. `finish` reports the bytes still pending, so loop
+    // until it reports none.
+    loop {
+        let mut out_buffer = OutBuffer::around(out_buf.as_mut_slice());
+        let remaining = encoder
+            .finish(&mut out_buffer, true)
             .map_err(|e| make_err!(Code::Internal, "Zstd compression failed: {}", e))?;
-        if read == 0 {
+        let produced = out_buffer.as_slice();
+        if !produced.is_empty() {
+            tx.send(Bytes::copy_from_slice(produced)).await?;
+        }
+        if remaining == 0 {
             break;
         }
-        tx.blocking_send(Bytes::copy_from_slice(&buffer[..read]))?;
     }
 
     tx.send_eof()
