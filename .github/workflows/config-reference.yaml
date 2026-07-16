@@ -61,7 +61,7 @@ jobs:
           else
             TAG="${{ github.ref_name }}"
           fi
-          if [[ "${TAG}" != "" && ( ! "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ) ]]; then
+          if [[ "${TAG}" != "" && "${TAG}" != "main" && ( ! "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ) ]]; then
             echo "::error::'${TAG}' is not a release tag (vMAJOR.MINOR.PATCH); refusing to regenerate."
             exit 1
           fi
@@ -109,8 +109,8 @@ jobs:
           fi
 
           BRANCH="docs/config-reference-${TAG}"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "config reference bot"
+          git config user.email "bot@tracemachina.com"
           git switch -c "${BRANCH}"
           git add web/apps/docs
           git commit -m "docs(config-reference): regenerate for NativeLink ${TAG}"
