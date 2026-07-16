@@ -83,6 +83,11 @@ const fn default_worker_match_logging_interval_s() -> i64 {
     10
 }
 
+// defaults to every 5s
+const fn default_fallback_match_interval_s() -> i64 {
+    5
+}
+
 #[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
@@ -167,6 +172,20 @@ pub struct SimpleSpec {
         deserialize_with = "convert_duration_with_shellexpand_and_negative"
     )]
     pub worker_match_logging_interval_s: i64,
+
+    /// Every N seconds, run a worker matching pass even if no task or worker
+    /// change notification arrived. This is a safety net for missed
+    /// notifications and for scheduler backends with eventually consistent
+    /// searches (for example Redis), where an operation that was re-queued
+    /// may not be visible to the search triggered by its own notification.
+    /// Without this, such an operation can stay queued until an unrelated
+    /// event triggers another matching pass.
+    /// Defaults to 5s. Zero or any negative value disables it.
+    #[serde(
+        default = "default_fallback_match_interval_s",
+        deserialize_with = "convert_duration_with_shellexpand_and_negative"
+    )]
+    pub fallback_match_interval_s: i64,
 }
 
 #[derive(Deserialize, Serialize, Debug)]
