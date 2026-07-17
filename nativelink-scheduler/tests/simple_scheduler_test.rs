@@ -2789,3 +2789,225 @@ async fn logs_when_no_workers_match() -> Result<(), Error> {
 
     Ok(())
 }
+
+/// Wraps a real `AwaitedActionDb`, but hides queued actions from
+/// `get_range_of_actions` while `suppress_queued_searches` is set. This
+/// simulates an eventually consistent backend (e.g. Redis), where a
+/// (re-)queued operation may not yet be visible to the search that its own
+/// change notification triggered.
+#[derive(MetricsComponent)]
+struct QueuedSearchSuppressingDb<A: AwaitedActionDb> {
+    inner: A,
+    suppress_queued_searches: Arc<AtomicBool>,
+}
+
+impl<A: AwaitedActionDb> AwaitedActionDb for QueuedSearchSuppressingDb<A> {
+    type Subscriber = A::Subscriber;
+
+    async fn get_awaited_action_by_id(
+        &self,
+        client_operation_id: &OperationId,
+    ) -> Result<Option<Self::Subscriber>, Error> {
+        self.inner
+            .get_awaited_action_by_id(client_operation_id)
+            .await
+    }
+
+    async fn get_all_awaited_actions(
+        &self,
+    ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error> {
+        self.inner.get_all_awaited_actions().await
+    }
+
+    async fn get_by_operation_id(
+        &self,
+        operation_id: &OperationId,
+    ) -> Result<Option<Self::Subscriber>, Error> {
+        self.inner.get_by_operation_id(operation_id).await
+    }
+
+    async fn get_range_of_actions(
+        &self,
+        state: SortedAwaitedActionState,
+        start: Bound<SortedAwaitedAction>,
+        end: Bound<SortedAwaitedAction>,
+        desc: bool,
+    ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error> {
+        let items = if matches!(state, SortedAwaitedActionState::Queued)
+            && self.suppress_queued_searches.load(Ordering::Acquire)
+        {
+            Vec::new()
+        } else {
+            self.inner
+                .get_range_of_actions(state, start, end, desc)
+                .await?
+                .collect::<Vec<_>>()
+                .await
+        };
+        Ok(futures::stream::iter(items))
+    }
+
+    async fn update_awaited_action(&self, new_awaited_action: AwaitedAction) -> Result<(), Error> {
+        self.inner.update_awaited_action(new_awaited_action).await
+    }
+
+    async fn add_action(
+        &self,
+        client_operation_id: OperationId,
+        action_info: Arc<ActionInfo>,
+        no_event_action_timeout: Duration,
+    ) -> Result<Self::Subscriber, Error> {
+        self.inner
+            .add_action(client_operation_id, action_info, no_event_action_timeout)
+            .await
+    }
+}
+
+/// Common setup for the fallback match interval tests: a scheduler over a
+/// `QueuedSearchSuppressingDb` with a channel that receives a message after
+/// every completed matching pass.
+type FallbackTestSetup = (
+    Arc<SimpleScheduler>,
+    Arc<Notify>,
+    Arc<AtomicBool>,
+    mpsc::UnboundedReceiver<()>,
+);
+
+fn make_fallback_test_scheduler(fallback_match_interval_s: i64) -> FallbackTestSetup {
+    let task_change_notify = Arc::new(Notify::new());
+    let suppress_queued_searches = Arc::new(AtomicBool::new(false));
+    let (match_tx, match_rx) = mpsc::unbounded_channel();
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec {
+            fallback_match_interval_s,
+            ..Default::default()
+        },
+        QueuedSearchSuppressingDb {
+            inner: memory_awaited_action_db_factory(
+                0,
+                &task_change_notify.clone(),
+                MockInstantWrapped::default,
+            ),
+            suppress_queued_searches: suppress_queued_searches.clone(),
+        },
+        move || {
+            let match_tx = match_tx.clone();
+            async move {
+                let _ = match_tx.send(());
+            }
+        },
+        task_change_notify.clone(),
+        MockInstantWrapped::default,
+        None,
+    );
+    (
+        scheduler,
+        task_change_notify,
+        suppress_queued_searches,
+        match_rx,
+    )
+}
+
+/// Waits until no matching pass has completed for a short while, which
+/// guarantees no notification permits are pending and no pass is in flight.
+async fn wait_for_matching_passes_to_settle(match_rx: &mut mpsc::UnboundedReceiver<()>) {
+    while tokio::time::timeout(Duration::from_millis(200), match_rx.recv())
+        .await
+        .is_ok()
+    {}
+}
+
+// Regression test for a queued operation not being visible to the matching
+// engine search that its own change notification triggered (e.g. an OOM-killed
+// worker's operation being re-queued while the Redis search index is stale).
+// The fallback match interval must rescue such an operation.
+#[nativelink_test(start_paused = true)]
+async fn fallback_match_interval_rescues_action_hidden_from_search() -> Result<(), Error> {
+    let worker_id = WorkerId("worker_id".to_string());
+    let (scheduler, _task_change_notify, suppress_queued_searches, mut match_rx) =
+        make_fallback_test_scheduler(1 /* fallback_match_interval_s */);
+    let action_digest = DigestInfo::new([99u8; 32], 512);
+
+    let mut rx_from_worker =
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
+
+    // Hide the action from the matching engine's queued searches, then add it.
+    suppress_queued_searches.store(true, Ordering::Release);
+    let insert_timestamp = make_system_time(1);
+    let mut action_listener =
+        setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp).await?;
+
+    wait_for_matching_passes_to_settle(&mut match_rx).await;
+
+    // All notification-triggered passes ran while the action was hidden, so
+    // nothing was assigned to the worker.
+    assert_eq!(poll!(Box::pin(rx_from_worker.recv())), Poll::Pending);
+
+    // Make the action visible again. No notification fires for this, so only
+    // the fallback match interval can rescue the action now.
+    suppress_queued_searches.store(false, Ordering::Release);
+
+    let msg_for_worker = tokio::time::timeout(Duration::from_secs(30), rx_from_worker.recv())
+        .await
+        .expect("Fallback matching pass should have assigned the action")
+        .unwrap();
+    match msg_for_worker.update {
+        Some(update_for_worker::Update::StartAction(start_execute)) => {
+            assert_eq!(
+                start_execute.execute_request.unwrap().action_digest,
+                Some(action_digest.into())
+            );
+        }
+        other => panic!("Expected StartAction, got: {other:?}"),
+    }
+
+    // Client should see the action executing.
+    let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
+    assert_eq!(action_state.stage, ActionStage::Executing);
+
+    Ok(())
+}
+
+// With the fallback match interval disabled, the same scenario leaves the
+// action stuck in the queued state until an unrelated event triggers another
+// matching pass. This documents the behavior the fallback interval fixes.
+#[nativelink_test(start_paused = true)]
+async fn fallback_match_interval_disabled_leaves_hidden_action_queued() -> Result<(), Error> {
+    let worker_id = WorkerId("worker_id".to_string());
+    let (scheduler, task_change_notify, suppress_queued_searches, mut match_rx) =
+        make_fallback_test_scheduler(-1 /* fallback_match_interval_s */);
+    let action_digest = DigestInfo::new([99u8; 32], 512);
+
+    let mut rx_from_worker =
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
+
+    // Hide the action from the matching engine's queued searches, then add it.
+    suppress_queued_searches.store(true, Ordering::Release);
+    let insert_timestamp = make_system_time(1);
+    let _action_listener =
+        setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp).await?;
+
+    wait_for_matching_passes_to_settle(&mut match_rx).await;
+    suppress_queued_searches.store(false, Ordering::Release);
+
+    // Without the fallback interval nothing ever rescues the action.
+    assert!(
+        tokio::time::timeout(Duration::from_secs(30), rx_from_worker.recv())
+            .await
+            .is_err(),
+        "Action should stay queued with the fallback match interval disabled"
+    );
+
+    // Only an unrelated task change event triggers another matching pass.
+    task_change_notify.notify_one();
+    let msg_for_worker = tokio::time::timeout(Duration::from_secs(5), rx_from_worker.recv())
+        .await
+        .expect("Task change notification should have assigned the action")
+        .unwrap();
+    assert!(matches!(
+        msg_for_worker.update,
+        Some(update_for_worker::Update::StartAction(_))
+    ));
+
+    Ok(())
+}

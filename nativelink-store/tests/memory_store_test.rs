@@ -117,7 +117,7 @@ fn store_with_max_bytes(max_bytes: usize) -> Store {
     }))
 }
 
-// A write whose exact size is >= max_bytes is skipped (drained, never buffered)
+// A write whose exact size is >= `max_bytes` is skipped (drained, never buffered)
 // rather than materialized-then-evicted, and — crucially — it leaves the rest of
 // the cache untouched (the old buffer-then-evict path would have evicted the
 // within-budget entry trying to make room for an unstorable blob).
@@ -207,7 +207,7 @@ async fn oversized_skip_fires_remove_callbacks() -> Result<(), Error> {
 }
 
 // `MaxSize` is an upper bound, not the real size, so it must NOT trigger the skip:
-// a MaxSize over max_bytes whose actual content fits is still cached.
+// a `MaxSize` over `max_bytes` whose actual content fits is still cached.
 #[nativelink_test]
 async fn max_size_over_budget_with_small_actual_is_stored() -> Result<(), Error> {
     const DATA: &[u8] = b"ab"; // 2 bytes, well within the 4-byte budget
