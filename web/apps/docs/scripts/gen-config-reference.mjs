@@ -237,7 +237,10 @@ function generateOne(v, sharedTargetDir) {
 }
 
 function writeManifest(versions) {
-  const entries = versions.map((v) => ({
+  // A tag that could not be built (pre-1.0.2 releases have no build-schema
+  // binary) has no page, and a manifest entry for it would be a dead link in
+  // the version switcher.
+  const entries = versions.filter((v) => existsSync(outFileFor(v))).map((v) => ({
     version: v.version,
     label: v.label,
     href: hrefFor(v),
@@ -276,11 +279,12 @@ export const CONFIG_VERSIONS: ConfigVersion[] = ${JSON.stringify(entries, null, 
 const HAND_WRITTEN_PAGES = ["store-overview"];
 
 function writeMeta() {
-  // The canonical page plus any hand-written companion pages appear in the
-  // sidebar; other versions are reached through the in-page version switcher.
+  // The canonical page is the folder's own link (Fumadocs uses index.mdx for
+  // that when meta.json does not list it); the hand-written companion pages
+  // appear under it. Other versions are reached through the in-page switcher.
   writeFileSync(
     join(contentDir, "meta.json"),
-    `${JSON.stringify({ pages: ["index", ...HAND_WRITTEN_PAGES], title: "NativeLink config" }, null, 2)}\n`,
+    `${JSON.stringify({ pages: [...HAND_WRITTEN_PAGES], title: "NativeLink config" }, null, 2)}\n`,
   );
 }
 

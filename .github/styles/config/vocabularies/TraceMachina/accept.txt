@@ -218,7 +218,6 @@ protoc
 stderr
 [Dd]ev
 [Mm]ulti-tenant
-[Mm]onorepo
 [Ss]ubprocess
 [Rr]ecc
 ROCm
@@ -286,7 +285,6 @@ zstd
 Kleckner
 recc
 Bloomberg
-gcc
 [Ww]alkthrough
 [Tt]eardown
 repo
@@ -326,3 +324,7 @@ inlined
 protobufs
 arg
 rustfmt
+||||||| parent of a4c90ca9 (docs: generate the metrics reference and bring the config reference to v1.6.5)
+unreferenced
+quantile
+OTel
