@@ -326,3 +326,6 @@ inlined
 protobufs
 arg
 rustfmt
+unreferenced
+quantile
+OTel
