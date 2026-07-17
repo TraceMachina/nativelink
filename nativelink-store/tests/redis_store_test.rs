@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use bytes::{Bytes, BytesMut};
 use futures::TryStreamExt;
-use nativelink_config::stores::{RedisMode, RedisSpec};
+use nativelink_config::stores::{ExistenceCacheSpec, RedisMode, RedisSpec, StoreSpec};
 use nativelink_error::{Code, Error, ErrorContext, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_redis_tester::{
@@ -29,6 +29,7 @@ use nativelink_redis_tester::{
     make_fake_redis_with_responses,
 };
 use nativelink_store::cas_utils::ZERO_BYTE_DIGESTS;
+use nativelink_store::existence_cache_store::ExistenceCacheStore;
 use nativelink_store::redis_store::{
     ClusterRedisManager, DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE, DEFAULT_MAX_COUNT_PER_CURSOR,
     LUA_VERSION_SET_SCRIPT, RedisStore, RedisSubscriptionManager, decode_key,
@@ -39,12 +40,13 @@ use nativelink_util::health_utils::HealthStatus;
 use nativelink_util::store_trait::{
     FalseValue, RemoveItemCallback, SchedulerCurrentVersionProvider, SchedulerIndexProvider,
     SchedulerStore, SchedulerStoreDataProvider, SchedulerStoreDecodeTo, SchedulerStoreKeyProvider,
-    SchedulerSubscription, SchedulerSubscriptionManager, StoreDriver, StoreKey, StoreLike,
+    SchedulerSubscription, SchedulerSubscriptionManager, Store, StoreDriver, StoreKey, StoreLike,
     TrueValue, UploadSizeInfo,
 };
 use pretty_assertions::assert_eq;
 use redis::{PushInfo, RedisError, Value, make_extension_error};
 use redis_test::{MockCmd, MockRedisConnection};
+use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::time::{sleep, timeout};
 use tracing::{Instrument, info, info_span};
 
@@ -85,9 +87,10 @@ async fn fake_redis_sentinel_master_stream_with_script() -> u16 {
         .await
 }
 
-async fn make_mock_store_with_prefix(
+async fn make_mock_store_with_prefix_and_subscriber_channel(
     mut commands: Vec<MockCmd>,
     key_prefix: String,
+    subscriber_channel: UnboundedReceiver<PushInfo>,
 ) -> RedisStore<MockRedisConnection, ClusterRedisManager<MockRedisConnection>> {
     commands.insert(
         0,
@@ -98,7 +101,6 @@ async fn make_mock_store_with_prefix(
     );
     let mock_connection = MockRedisConnection::new(commands);
     let manager = ClusterRedisManager::new(mock_connection).await.unwrap();
-    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
     RedisStore::new_from_builder_and_parts(
         None,
         mock_uuid_generator,
@@ -109,11 +111,19 @@ async fn make_mock_store_with_prefix(
         DEFAULT_MAX_PERMITS,
         DEFAULT_MAX_COUNT_PER_CURSOR,
         Duration::from_secs(4),
-        rx,
+        subscriber_channel,
         manager,
     )
     .await
     .unwrap()
+}
+
+async fn make_mock_store_with_prefix(
+    commands: Vec<MockCmd>,
+    key_prefix: String,
+) -> RedisStore<MockRedisConnection, ClusterRedisManager<MockRedisConnection>> {
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    make_mock_store_with_prefix_and_subscriber_channel(commands, key_prefix, rx).await
 }
 
 #[nativelink_test]
@@ -134,20 +144,18 @@ async fn upload_and_get_data() -> Result<(), Error> {
         // Append the real value to the temp key.
         MockCmd::new(
             redis::cmd("SETRANGE")
-                .arg(temp_key.clone())
+                .arg(&temp_key)
                 .arg(0)
                 .arg(data.to_vec()),
             Ok(Value::Int(0)),
         ),
         MockCmd::new(
-            redis::cmd("STRLEN").arg(temp_key.clone()),
+            redis::cmd("STRLEN").arg(&temp_key),
             Ok(Value::Int(data.len() as i64)),
         ),
         // Move the data from the fake key to the real key.
         MockCmd::new(
-            redis::cmd("RENAME")
-                .arg(temp_key.clone())
-                .arg(real_key.clone()),
+            redis::cmd("RENAME").arg(&temp_key).arg(&real_key),
             Ok(Value::Nil),
         ),
         // The second set of commands are for retrieving the data from the key.
@@ -155,9 +163,9 @@ async fn upload_and_get_data() -> Result<(), Error> {
         MockCmd::with_values(
             redis::pipe()
                 .cmd("STRLEN")
-                .arg(real_key.clone())
+                .arg(&real_key)
                 .cmd("EXISTS")
-                .arg(real_key.clone()),
+                .arg(&real_key),
             Ok(vec![Value::Int(2), Value::Boolean(true)]),
         ),
         // Retrieve the data from the real key.
@@ -2323,4 +2331,125 @@ async fn store_key_coding_round_trip() -> Result<(), Error> {
 #[nativelink_test]
 async fn store_key_coding_round_trip_with_prefix() -> Result<(), Error> {
     store_key_coding_round_trip_core(String::from("demo")).await
+}
+
+async fn evict_keys_for_existence_cache_core<F>(
+    prefix: String,
+    logs_contain: F,
+) -> Result<(), Error>
+where
+    F: Fn(&str) -> bool + Send + Sync,
+{
+    let spec = ExistenceCacheSpec {
+        backend: StoreSpec::RedisStore(RedisSpec::default()), // Note: Not used.
+        eviction_policy: Option::default(), // Not evicting here, we'll evict from Redis
+    };
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+
+    let data = Bytes::from_static(b"14");
+    let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
+    let real_key = format!("{prefix}{digest}");
+    let temp_key = make_temp_key(&real_key);
+
+    let commands = vec![
+        MockCmd::new(
+            redis::cmd("CONFIG")
+                .arg("GET")
+                .arg("notify-keyspace-events"),
+            Ok(Value::Map(vec![(
+                Value::BulkString(b"notify-keyspace-events".into()),
+                Value::BulkString(b"KA".into()),
+            )])),
+        ),
+        MockCmd::with_values(
+            redis::pipe()
+                .cmd("STRLEN")
+                .arg(&real_key)
+                .cmd("EXISTS")
+                .arg(&real_key),
+            Ok(vec![Value::Int(2), Value::Boolean(true)]),
+        ),
+        MockCmd::new(
+            redis::cmd("SETRANGE")
+                .arg(&temp_key)
+                .arg(0)
+                .arg(data.to_vec()),
+            Ok(Value::Int(0)),
+        ),
+        MockCmd::new(
+            redis::cmd("STRLEN").arg(&temp_key),
+            Ok(Value::Int(data.len() as i64)),
+        ),
+        // Move the data from the fake key to the real key.
+        MockCmd::new(
+            redis::cmd("RENAME").arg(&temp_key).arg(&real_key),
+            Ok(Value::Nil),
+        ),
+        // Retrieve the data from the real key.
+        MockCmd::new(
+            redis::cmd("GETRANGE").arg(&real_key).arg(0).arg(1),
+            Ok(Value::BulkString(b"14".to_vec())),
+        ),
+    ];
+
+    let redis_store = Arc::new(
+        make_mock_store_with_prefix_and_subscriber_channel(commands, prefix.clone(), rx).await,
+    );
+    let existence_store = ExistenceCacheStore::new(&spec, Store::new(redis_store.clone()));
+
+    // Wait for subscription first so the mock redis commands are in the right order
+    timeout(Duration::from_secs(5), async {
+        loop {
+            assert!(!logs_contain("ERROR"));
+            if logs_contain("Attempting to subscribe to eviction events") {
+                break;
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    existence_store
+        .update_oneshot(digest, data.clone())
+        .await
+        .unwrap();
+
+    tx.send(PushInfo {
+        kind: redis::PushKind::PMessage,
+        data: vec![
+            Value::BulkString("demo_pattern".into()),
+            Value::BulkString(format!("keyprefix:{real_key}").into()),
+            Value::BulkString("evicted".into()),
+        ],
+    })
+    .unwrap();
+
+    timeout(Duration::from_secs(5), async {
+        loop {
+            assert!(!logs_contain("ERROR"));
+            if logs_contain("Evicting (direct remove) key=DigestInfo(\"3031323334353637383961626364656630303030303030303030303030303030-2\")") {
+                break;
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    assert!(logs_contain(&format!(
+        "Eviction key eviction_key=\"keyprefix:{prefix}3031323334353637383961626364656630303030303030303030303030303030-2\""
+    )));
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn evict_keys_for_existence_cache_no_prefix() -> Result<(), Error> {
+    evict_keys_for_existence_cache_core(String::new(), logs_contain).await
+}
+
+#[nativelink_test]
+async fn evict_keys_for_existence_cache_prefix() -> Result<(), Error> {
+    evict_keys_for_existence_cache_core(String::from("demo_prefix:"), logs_contain).await
 }
