@@ -153,8 +153,8 @@ pub enum StoreSpec {
     ///   }
     ///   ```
     ///
-    /// 4. **`NetApp` ONTAP S3**
-    ///    `NetApp` ONTAP S3 store will use ONTAP's S3-compatible storage as a backend
+    /// 4. **NetApp ONTAP S3:**
+    ///    NetApp ONTAP S3 store will use ONTAP's S3-compatible storage as a backend
     ///    to store files. This store is specifically configured for ONTAP's S3 requirements
     ///    including custom TLS configuration, credentials management, and proper vserver
     ///    configuration.
@@ -438,7 +438,7 @@ pub enum StoreSpec {
     /// WARNING: If you need data to always exist in the `slow` store
     /// for something like remote execution, be careful because this
     /// store will never check to see if the objects exist in the
-    /// `slow` store if it exists in the `fast` store (ie: it assumes
+    /// `slow` store if it exists in the `fast` store (i.e. it assumes
     /// that if an object exists in the `fast` store it will exist in
     /// the `slow` store).
     ///
@@ -531,7 +531,7 @@ pub enum StoreSpec {
     /// used if the size field is the real size of the content, in other
     /// words, don't use on AC (Action Cache) stores. Any store where you can
     /// safely use `VerifySpec.verify_size = true`, this store should be safe
-    /// to use (ie: CAS stores).
+    /// to use (i.e. CAS stores).
     ///
     /// **Example JSON Config:**
     /// ```json
@@ -553,7 +553,7 @@ pub enum StoreSpec {
     ///
     SizePartitioning(Box<SizePartitioningSpec>),
 
-    /// This store will pass-through calls to another GRPC store. This store
+    /// This store will pass-through calls to another gRPC store. This store
     /// is not designed to be used as a sub-store of another store, but it
     /// does satisfy the interface and will likely work.
     ///
@@ -713,7 +713,7 @@ pub struct RefSpec {
 pub struct FilesystemSpec {
     /// Path on the system where to store the actual content. This is where
     /// the bulk of the data will be placed.
-    /// On service bootup this folder will be scanned and all files will be
+    /// On service boot this folder will be scanned and all files will be
     /// added to the cache. In the event one of the files doesn't match the
     /// criteria, the file will be deleted.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
@@ -722,7 +722,7 @@ pub struct FilesystemSpec {
     /// A temporary location of where files that are being uploaded or
     /// deleted will be placed while the content cannot be guaranteed to be
     /// accurate. This location must be on the same block device as
-    /// `content_path` so atomic moves can happen (ie: move without copy).
+    /// `content_path` so atomic moves can happen (i.e. move without copy).
     /// All files in this folder will be deleted on every startup.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub temp_path: String,
@@ -889,7 +889,7 @@ pub struct FastSlowSpec {
     /// out to the `slow` store.
     pub fast: StoreSpec,
 
-    /// How to handle the fast store.  This can be useful to set to Get for
+    /// How to handle the fast store. This can be useful to set to Get for
     /// worker nodes such that results are persisted to the slow store only.
     #[serde(default)]
     pub fast_direction: StoreDirection,
@@ -898,7 +898,7 @@ pub struct FastSlowSpec {
     /// get it from this store.
     pub slow: StoreSpec,
 
-    /// How to handle the slow store.  This can be useful if creating a diode
+    /// How to handle the slow store. This can be useful if creating a diode
     /// and you wish to have an upstream read only store.
     #[serde(default)]
     pub slow_direction: StoreDirection,
@@ -969,7 +969,7 @@ pub struct DedupSpec {
     /// Due to implementation detail, we want to prefer to download
     /// the first chunks of the file so we can stream the content
     /// out and free up some of our buffers. This configuration
-    /// will be used to to restrict the number of concurrent chunk
+    /// will be used to restrict the number of concurrent chunk
     /// downloads at a time per `get()` request.
     ///
     /// This setting will also affect how much memory might be used
@@ -1104,7 +1104,7 @@ pub struct EvictionPolicy {
     pub max_bytes: usize,
 
     /// When eviction starts based on hitting `max_bytes`, continue until
-    /// `max_bytes - evict_bytes` is met to create a low watermark.  This stops
+    /// `max_bytes - evict_bytes` is met to create a low watermark. This stops
     /// operations from thrashing when the store is close to the limit.
     /// Default: 0
     #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
@@ -1280,10 +1280,10 @@ pub struct CommonObjectSpec {
     #[serde(default, deserialize_with = "convert_boolean_with_shellexpand")]
     pub insecure_allow_http: bool,
 
-    /// Disable http/2 connections and only use http/1.1. Default client
-    /// configuration will have http/1.1 and http/2 enabled for connection
-    /// schemes. Http/2 should be disabled if environments have poor support
-    /// or performance related to http/2. Safe to keep default unless
+    /// Disable HTTP/2 connections and only use HTTP/1.1. Default client
+    /// configuration will have HTTP/1.1 and HTTP/2 enabled for connection
+    /// schemes. HTTP/2 should be disabled if environments have poor support
+    /// or performance related to HTTP/2. Safe to keep default unless
     /// underlying network environment, S3, or GCS API servers specify otherwise.
     ///
     /// Default: false
@@ -1333,7 +1333,7 @@ pub struct ClientTlsConfig {
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct GrpcEndpoint {
-    /// The endpoint address (i.e. grpc(s)://example.com:443).
+    /// The endpoint address (i.e. `grpc(s)://example.com:443`).
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub address: String,
     /// The TLS configuration to use to connect to the endpoint (if grpcs).
@@ -1373,7 +1373,7 @@ pub struct GrpcEndpoint {
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct GrpcSpec {
-    /// Instance name for GRPC calls. Proxy calls will have the `instance_name` changed to this.
+    /// Instance name for gRPC calls. Proxy calls will have the `instance_name` changed to this.
     #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
     pub instance_name: String,
 
@@ -1387,19 +1387,20 @@ pub struct GrpcSpec {
     #[serde(default)]
     pub retry: Retry,
 
-    /// Limit the number of simultaneous upstream requests to this many.  A
-    /// value of zero is treated as unlimited.  If the limit is reached the
+    /// Limit the number of simultaneous upstream requests to this many. A
+    /// value of zero is treated as unlimited. If the limit is reached the
     /// request is queued.
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_concurrent_requests: usize,
 
     /// The number of connections to make to each specified endpoint to balance
-    /// the load over multiple TCP connections.  Default 1.
+    /// the load over multiple TCP connections.
+    /// Default: 1.
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub connections_per_endpoint: usize,
 
     /// Maximum time (seconds) allowed for a single RPC request (e.g. a
-    /// ByteStream.Write call) before it is cancelled.
+    /// `ByteStream.Write` call) before it is cancelled.
     ///
     /// A value of 0 (the default) disables the per-RPC timeout. Dead
     /// connections are still detected by the HTTP/2 and TCP keepalive
@@ -1445,6 +1446,90 @@ pub struct GrpcSpec {
     /// context (`traceparent` / `tracestate`) into every outgoing request.
     #[serde(default)]
     pub forward_headers: Vec<String>,
+
+    /// Optional and experimental: coalesce small-blob reads into
+    /// `BatchReadBlobs` RPCs instead of issuing one `ByteStream` `Read`
+    /// stream per blob. Each `ByteStream` read carries a fixed per-RPC cost,
+    /// so batching many small reads into a single `BatchReadBlobs` request
+    /// can dramatically reduce read latency for small blobs.
+    ///
+    /// Only full reads (offset 0, whole blob) of blobs at or below
+    /// `max_blob_size_bytes` are batched; everything else continues to use
+    /// the `ByteStream` `Read` path.
+    ///
+    /// Incompatible with `forward_headers`: batched reads share one upstream
+    /// RPC across many client requests, so per-client forwarded headers
+    /// (e.g. credentials) cannot be attached. Configuring both is rejected
+    /// at startup.
+    ///
+    /// Default: unset (disabled). When unset there is zero behavior change.
+    #[serde(default)]
+    pub experimental_read_batching: Option<GrpcReadBatchingConfig>,
+}
+
+/// Configuration for experimental small-blob read coalescing in a gRPC
+/// store. See [`GrpcSpec::experimental_read_batching`].
+#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct GrpcReadBatchingConfig {
+    /// Only blobs at or below this size (in bytes) are eligible for
+    /// batching. Larger blobs always use the `ByteStream` `Read` path.
+    ///
+    /// Default: 131072 (128 KiB).
+    #[serde(
+        default = "default_read_batching_max_blob_size_bytes",
+        deserialize_with = "convert_data_size_with_shellexpand"
+    )]
+    pub max_blob_size_bytes: u64,
+
+    /// Maximum total payload bytes packed into a single `BatchReadBlobs`
+    /// request. This should leave headroom under the 4 MiB default gRPC
+    /// message limit for protobuf framing overhead.
+    ///
+    /// Default: 3145728 (3 MiB).
+    #[serde(
+        default = "default_read_batching_max_batch_bytes",
+        deserialize_with = "convert_data_size_with_shellexpand"
+    )]
+    pub max_batch_bytes: u64,
+
+    /// Maximum number of concurrent `BatchReadBlobs` RPCs dispatched by the
+    /// coalescer. Must be greater than zero.
+    ///
+    /// Default: 4.
+    #[serde(
+        default = "default_read_batching_dispatch_slots",
+        deserialize_with = "convert_numeric_with_shellexpand"
+    )]
+    pub dispatch_slots: usize,
+
+    /// Bound on the number of payload bytes waiting in the coalescer queue.
+    /// When exceeded, new read requests bypass batching and fall back to the
+    /// regular `ByteStream` `Read` path instead of blocking.
+    ///
+    /// Default: 33554432 (32 MiB).
+    #[serde(
+        default = "default_read_batching_max_queued_bytes",
+        deserialize_with = "convert_data_size_with_shellexpand"
+    )]
+    pub max_queued_bytes: u64,
+}
+
+const fn default_read_batching_max_blob_size_bytes() -> u64 {
+    128 * 1024 // 128 KiB.
+}
+
+const fn default_read_batching_max_batch_bytes() -> u64 {
+    3 * 1024 * 1024 // 3 MiB.
+}
+
+const fn default_read_batching_dispatch_slots() -> usize {
+    4
+}
+
+const fn default_read_batching_max_queued_bytes() -> u64 {
+    32 * 1024 * 1024 // 32 MiB.
 }
 
 /// The possible error codes that might occur on an upstream request.
@@ -1564,7 +1649,7 @@ pub struct RedisSpec {
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub read_chunk_size: usize,
 
-    /// The number of connections to keep open to the redis server(s).
+    /// The number of connections to keep open to the redis servers.
     ///
     /// Default: 3
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
@@ -1575,7 +1660,7 @@ pub struct RedisSpec {
     /// large objects to the redis server. A good rule of thumb is to
     /// think of the data as:
     /// `AVAIL_MEMORY / (read_chunk_size * max_chunk_uploads_per_update) = THORETICAL_MAX_CONCURRENT_UPLOADS`
-    /// (note: it is a good idea to divide `AVAIL_MAX_MEMORY` by ~10 to account for other memory usage)
+    /// (note: it's a good idea to divide `AVAIL_MAX_MEMORY` by ~10 to account for other memory usage)
     ///
     /// Default: 10
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
@@ -1669,8 +1754,8 @@ pub struct Retry {
     #[serde(default)]
     pub jitter: f32,
 
-    /// A list of error codes to retry on, if this is not set then the default
-    /// error codes to retry on are used.  These default codes are the most
+    /// A list of error codes to retry on, if this isn't set then the default
+    /// error codes to retry on are used. These default codes are the most
     /// likely to be non-permanent.
     ///  - `Unknown`
     ///  - `Cancelled`

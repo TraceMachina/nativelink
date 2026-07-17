@@ -87,6 +87,11 @@ function stripDescriptionDefault(md) {
 function normalizeMarkdown(md) {
   return md
     .replace(/Example JSON Config/g, "Example JSON5 config")
+
+    // Fixed now in stores, but buggy up to 1.6.1
+    .replace(/`NetApp` ONTAP S3/, "NetApp ONTAP S3:")
+    .replace(/`NetApp` ONTAP S3 store/, "NetApp ONTAP S3 store")
+
     .replace(/```json(?=\n)/g, "```json5")
     .replace(
       /will result in:\nAttempt - Delay\n1\s+0ms\n2\s+75ms - 125ms\n3\s+150ms - 250ms\n4\s+300ms - 500ms\n5\s+600ms - 1s\n6\s+1\.2s - 2s\n7\s+2\.4s - 4s\n8\s+4\.8s - 8s/g,

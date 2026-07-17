@@ -1561,6 +1561,7 @@ async fn chunking_on_grpc_store_forbids_index_store() -> Result<(), Box<dyn core
                 use_legacy_resource_names: false,
                 headers: std::collections::HashMap::new(),
                 forward_headers: vec![],
+                experimental_read_batching: None,
             }),
             &store_manager,
             None,
@@ -1594,7 +1595,7 @@ async fn chunking_on_grpc_store_forbids_index_store() -> Result<(), Box<dyn core
         "unexpected error: {error}"
     );
 
-    // Without an index_store the configuration is valid: SplitBlob and
+    // Without an `index_store` the configuration is valid: SplitBlob and
     // SpliceBlob are forwarded to the backend.
     CasServer::new(
         &make_config(None),
@@ -1606,7 +1607,7 @@ async fn chunking_on_grpc_store_forbids_index_store() -> Result<(), Box<dyn core
 
 #[nativelink_test]
 async fn max_chunk_count_limits_split_and_splice() -> Result<(), Box<dyn core::error::Error>> {
-    // avg 1024 (min allowed) with max_chunk_count 2: the 16 KiB test blob
+    // avg 1024 (min allowed) with `max_chunk_count` 2: the 16 KiB test blob
     // chunks to more than 2 pieces, so on-demand splitting must refuse.
     const AVG_CHUNK_SIZE: u64 = 1024;
     const BLOB_SIZE: usize = 16 * 1024;
@@ -1687,7 +1688,7 @@ async fn max_chunk_count_limits_split_and_splice() -> Result<(), Box<dyn core::e
     Ok(())
 }
 
-// Bazel 9.1.1 with --digest_function=blake3 leaves digest_function unset in
+// Bazel 9.1.1 with --digest_function=blake3 leaves `digest_function` unset in
 // SplitBlob/SpliceBlob requests, which is length-ambiguous (SHA256 and
 // BLAKE3 are both 32 bytes). The server must infer the function instead of
 // assuming the default.
@@ -1705,7 +1706,7 @@ async fn chunking_infers_blake3_when_digest_function_unset()
     let blob_digest: Digest = hasher.finalize_digest().into();
 
     // Splice: the single chunk is the blob itself, uploaded under its
-    // BLAKE3 digest, with digest_function left unset.
+    // BLAKE3 digest, with `digest_function` left unset.
     store
         .update_oneshot(DigestInfo::try_from(blob_digest.clone())?, VALUE.into())
         .await?;
