@@ -90,6 +90,10 @@ jobs:
         with:
           nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
 
+      - name: Rust cache
+        uses: >- # v2.9.1
+          Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+
       - name: Invoke Cargo build in Nix shell
         run: >
           nix develop --impure --command
