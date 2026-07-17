@@ -15,18 +15,16 @@
 //! Unit tests for the REAPI wire-compression helpers shared by the
 //! `ByteStream` and CAS services: compressor URI resolution, zstd
 //! encode/decode with size validation, the zero-copy identity batch-update
-//! path, and the blocking [`BufChannelReader`] adapter used by the streaming
-//! zstd encoder/decoder.
+//! path, and blocking-pool isolation of the async streaming zstd encoder.
 
 use core::time::Duration;
-use std::io::Read;
 
 use bytes::Bytes;
 use nativelink_error::{Code, Error};
 use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::compressor;
 use nativelink_service::wire_compression::{
-    BufChannelReader, compress, decompress, decompress_batch_update, resolve_wire_compressor,
+    compress, decompress, decompress_batch_update, resolve_wire_compressor,
     stream_encode_compressed_download,
 };
 use nativelink_util::buf_channel::make_buf_channel_pair;
@@ -163,42 +161,6 @@ async fn resolve_wire_compressor_accepts_only_advertised_compressors() -> Result
     );
     assert!(resolve_wire_compressor(Some("zstd"), false).is_err());
     assert!(resolve_wire_compressor(Some("brotli"), true).is_err());
-    Ok(())
-}
-
-#[nativelink_test]
-async fn buf_channel_reader_reads_partial_and_multiple_chunks() -> Result<(), Error> {
-    let (mut tx, rx) = make_buf_channel_pair();
-
-    // BufChannelReader is a blocking `Read` adapter (it uses
-    // `blocking_recv`), so it must run off the async runtime — exactly how
-    // the streaming zstd encoder/decoder drive it in production.
-    let reader_task = spawn_blocking!("buf_channel_reader_test", move || {
-        let mut reader = BufChannelReader::new(rx);
-
-        let mut first_partial_chunk = [0; 2];
-        reader
-            .read_exact(&mut first_partial_chunk)
-            .expect("failed to read first partial chunk");
-        assert_eq!(&first_partial_chunk, b"ab");
-
-        let mut remaining_chunks = [0; 6];
-        reader
-            .read_exact(&mut remaining_chunks)
-            .expect("failed to read remaining chunks");
-        assert_eq!(&remaining_chunks, b"cdefgh");
-
-        let mut eof_probe = [0; 1];
-        assert_eq!(reader.read(&mut eof_probe).expect("failed to read EOF"), 0);
-    });
-
-    tx.send(Bytes::from_static(b"abc")).await?;
-    tx.send(Bytes::from_static(b"defgh")).await?;
-    tx.send_eof()?;
-
-    reader_task
-        .await
-        .map_err(|e| Error::new(Code::Internal, format!("reader task panicked: {e:?}")))?;
     Ok(())
 }
 

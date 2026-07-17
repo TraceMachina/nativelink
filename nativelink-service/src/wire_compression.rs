@@ -78,55 +78,6 @@ impl RemoteCacheCompressionInstances {
     }
 }
 
-#[derive(Debug)]
-pub struct BufChannelReader {
-    rx: DropCloserReadHalf,
-    chunk: Bytes,
-    chunk_offset: usize,
-}
-
-impl BufChannelReader {
-    pub const fn new(rx: DropCloserReadHalf) -> Self {
-        Self {
-            rx,
-            chunk: Bytes::new(),
-            chunk_offset: 0,
-        }
-    }
-
-    fn refill_chunk(&mut self) -> std::io::Result<bool> {
-        while self.chunk_offset == self.chunk.len() {
-            self.chunk = self.rx.blocking_recv().map_err(Error::to_std_err)?;
-            self.chunk_offset = 0;
-            if self.chunk.is_empty() {
-                return Ok(false);
-            }
-        }
-
-        Ok(true)
-    }
-}
-
-impl Read for BufChannelReader {
-    fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
-        if output.is_empty() {
-            return Ok(0);
-        }
-
-        if !self.refill_chunk()? {
-            return Ok(0);
-        }
-
-        let chunk_remaining = &self.chunk[self.chunk_offset..];
-        let bytes_to_copy = output.len().min(chunk_remaining.len());
-
-        output[..bytes_to_copy].copy_from_slice(&chunk_remaining[..bytes_to_copy]);
-        self.chunk_offset += bytes_to_copy;
-
-        Ok(bytes_to_copy)
-    }
-}
-
 /// Resolve a wire compressor from a URI compressor string (as it appears in
 /// the `compressed-blobs/{compressor}/...` resource name) and validate it
 /// against whether the instance supports remote cache compression.
