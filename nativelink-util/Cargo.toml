@@ -4,7 +4,7 @@ lints.workspace = true
 [package]
 edition = "2024"
 name = "nativelink-util"
-version = "1.6.1"
+version = "1.6.2"
 
 [dependencies]
 nativelink-config = { path = "../nativelink-config" }
@@ -98,7 +98,7 @@ walkdir = { version = "2.5.0", default-features = false }
 wincode = { version = "0.5.4", default-features = false, features = ["derive"] }
 
 [dev-dependencies]
-anyhow = { version = "1.0.100", default-features = false }
+anyhow = { version = "1.0.103", default-features = false }
 nativelink-macro = { path = "../nativelink-macro" }
 opentelemetry-proto = { version = "0.32.0", default-features = false, features = [
   "gen-tonic",
