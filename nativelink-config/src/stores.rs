@@ -1389,6 +1389,42 @@ pub struct CommonObjectSpec {
     )]
     pub multipart_max_concurrent_uploads: Option<usize>,
 
+    /// Target size of each part in a multipart upload, growing only as
+    /// needed to stay under the provider's 10,000-part ceiling. Parts sized
+    /// at the 5 MiB provider floor turn a multi-GiB blob into thousands of
+    /// tiny concurrent requests, which churns HTTP connection pools; a
+    /// larger part keeps the request count low. Each queued or in-flight
+    /// part is buffered in memory, so one multipart upload buffers up to
+    /// roughly `(2 * multipart_max_concurrent_uploads + 1) *
+    /// multipart_part_size`; `max_concurrent_multipart_uploads` bounds the
+    /// aggregate across uploads. Values are clamped to the provider's
+    /// 5 MiB minimum and 5 GiB maximum part sizes.
+    ///
+    /// Currently honored by the S3 and ONTAP S3 providers.
+    ///
+    /// Default: 64MB.
+    #[serde(
+        default,
+        deserialize_with = "convert_optional_data_size_with_shellexpand"
+    )]
+    pub multipart_part_size: Option<usize>,
+
+    /// Store-wide cap on the number of blobs concurrently uploaded via the
+    /// multipart path. Each multipart upload can buffer roughly
+    /// `(2 * multipart_max_concurrent_uploads + 1) * multipart_part_size`,
+    /// so this bounds the store's aggregate upload buffer (about 5 GiB at
+    /// the defaults). Uploads over the 5 MiB multipart threshold wait for a
+    /// slot; smaller blobs are unaffected.
+    ///
+    /// Currently honored by the S3 and ONTAP S3 providers.
+    ///
+    /// Default: 4.
+    #[serde(
+        default,
+        deserialize_with = "convert_optional_numeric_with_shellexpand"
+    )]
+    pub max_concurrent_multipart_uploads: Option<usize>,
+
     /// Allow unencrypted HTTP connections. Only use this for local testing.
     ///
     /// Default: false

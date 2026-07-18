@@ -449,6 +449,98 @@ async fn get_part_simple_retries() -> Result<(), Error> {
     Ok(())
 }
 
+// A blob over the 5 MiB multipart threshold but under the default 64 MiB
+// part target must upload as ONE part. Sizing parts at the 5 MiB floor (the
+// old behaviour) maximised the part count, drowning providers in tiny
+// concurrent PUTs on multi-GiB blobs.
+#[nativelink_test]
+async fn multipart_default_part_size_uploads_one_part() -> Result<(), Error> {
+    const MIN_MULTIPART_SIZE: usize = 5 * 1024 * 1024; // 5mb.
+    const AC_ENTRY_SIZE: usize = MIN_MULTIPART_SIZE * 2 + 50;
+
+    let mut send_data: Vec<u8> = Vec::with_capacity(AC_ENTRY_SIZE);
+    for i in 0..send_data.capacity() {
+        send_data.push(u8::try_from((i * 3) % 256).expect("modulo 256 always fits in u8"));
+    }
+    let digest = DigestInfo::try_new(VALID_HASH1, send_data.len())?;
+
+    let mock_client = StaticReplayClient::new(vec![
+        ReplayEvent::new(
+            http::Request::builder()
+                .uri(format!(
+                    "https://{BUCKET_NAME}.s3.{REGION}.amazonaws.com/{VALID_HASH1}-{AC_ENTRY_SIZE}?uploads",
+                ))
+                .method("POST")
+                .body(SdkBody::empty())
+                .unwrap(),
+            http::Response::builder()
+                .status(StatusCode::OK)
+                .body(SdkBody::from(concat!(
+                    "<InitiateMultipartUploadResult>",
+                    "<UploadId>Dummy-uploadid</UploadId>",
+                    "</InitiateMultipartUploadResult>"
+                )))
+                .unwrap(),
+        ),
+        ReplayEvent::new(
+            http::Request::builder()
+                .uri(format!(
+                    "https://{BUCKET_NAME}.s3.{REGION}.amazonaws.com/{VALID_HASH1}-{AC_ENTRY_SIZE}?x-id=UploadPart&partNumber=1&uploadId=Dummy-uploadid",
+                ))
+                .method("PUT")
+                .header("content-type", "application/octet-stream")
+                .header("content-length", AC_ENTRY_SIZE.to_string())
+                .body(SdkBody::from(&send_data[..]))
+                .unwrap(),
+            http::Response::builder()
+                .status(StatusCode::OK)
+                .body(SdkBody::empty())
+                .unwrap(),
+        ),
+        ReplayEvent::new(
+            http::Request::builder()
+                .uri(format!(
+                    "https://{BUCKET_NAME}.s3.{REGION}.amazonaws.com/{VALID_HASH1}-{AC_ENTRY_SIZE}?uploadId=Dummy-uploadid",
+                ))
+                .method("POST")
+                .header("content-length", "138")
+                .body(SdkBody::from(concat!(
+                    "<CompleteMultipartUpload xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">",
+                    "<Part><PartNumber>1</PartNumber></Part>",
+                    "</CompleteMultipartUpload>",
+                )))
+                .unwrap(),
+            http::Response::builder()
+                .status(StatusCode::OK)
+                .body(SdkBody::from(concat!(
+                    "<CompleteMultipartUploadResult>",
+                    "</CompleteMultipartUploadResult>",
+                )))
+                .unwrap(),
+        ),
+    ]);
+    let test_config = Builder::new()
+        .behavior_version(BehaviorVersion::latest())
+        .region(Region::from_static(REGION))
+        .http_client(mock_client.clone())
+        .build();
+    let s3_client = aws_sdk_s3::Client::from_conf(test_config);
+    let store = S3Store::new_with_client_and_jitter(
+        &ExperimentalAwsSpec {
+            bucket: BUCKET_NAME.to_string(),
+            ..Default::default()
+        },
+        s3_client,
+        Arc::new(move |_delay| Duration::from_secs(0)),
+        MockInstantWrapped::default,
+    )?;
+    store
+        .update_oneshot(digest, send_data.clone().into())
+        .await?;
+    mock_client.assert_requests_match(&[]);
+    Ok(())
+}
+
 #[nativelink_test]
 async fn multipart_update_large_cas() -> Result<(), Error> {
     // Same as in s3_store.
@@ -561,6 +653,12 @@ async fn multipart_update_large_cas() -> Result<(), Error> {
     let store = S3Store::new_with_client_and_jitter(
         &ExperimentalAwsSpec {
             bucket: BUCKET_NAME.to_string(),
+            common: CommonObjectSpec {
+                // Keep the historical 5 MiB parts so the mocked part
+                // boundaries below stay small.
+                multipart_part_size: Some(5 * 1024 * 1024),
+                ..Default::default()
+            },
             ..Default::default()
         },
         s3_client,
@@ -913,6 +1011,12 @@ async fn multipart_chunk_size_clamp_min() -> Result<(), Error> {
     let store = S3Store::new_with_client_and_jitter(
         &ExperimentalAwsSpec {
             bucket: BUCKET_NAME.to_string(),
+            common: CommonObjectSpec {
+                // Keep the historical 5 MiB parts so the mocked part
+                // boundaries below stay small.
+                multipart_part_size: Some(5 * 1024 * 1024),
+                ..Default::default()
+            },
             ..Default::default()
         },
         s3_client,

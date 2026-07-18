@@ -719,6 +719,12 @@ async fn multipart_update_large_cas() -> Result<(), Error> {
             bucket: BUCKET_NAME.to_string(),
             vserver_name: VSERVER_NAME.to_string(),
             endpoint: "https://example.com".to_string(),
+            common: CommonObjectSpec {
+                // Keep the historical 5 MiB parts so the mocked part
+                // boundaries below stay small.
+                multipart_part_size: Some(5 * 1024 * 1024),
+                ..Default::default()
+            },
             ..Default::default()
         }),
         s3_client,

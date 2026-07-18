@@ -69,6 +69,8 @@ async fn create_test_store(mock_client: StaticReplayClient) -> Result<Store, Err
             consider_expired_after_s: 0,
             max_retry_buffer_per_request: None,
             multipart_max_concurrent_uploads: None,
+            multipart_part_size: None,
+            max_concurrent_multipart_uploads: None,
             insecure_allow_http: false,
             disable_http2: false,
         },

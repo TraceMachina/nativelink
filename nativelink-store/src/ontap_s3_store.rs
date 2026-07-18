@@ -53,6 +53,7 @@ use rustls::{ClientConfig, RootCertStore};
 use rustls_pki_types::CertificateDer;
 use rustls_pki_types::pem::PemObject;
 use sha2::{Digest, Sha256};
+use tokio::sync::Semaphore;
 use tokio::time::sleep;
 use tracing::{Level, event, warn};
 
@@ -74,6 +75,16 @@ const DEFAULT_MAX_RETRY_BUFFER_PER_REQUEST: usize = 20 * 1024 * 1024; // 20MB
 // Default limit for concurrent part uploads per multipart upload
 const DEFAULT_MULTIPART_MAX_CONCURRENT_UPLOADS: usize = 10;
 
+// Default target size for each multipart part; see the `multipart_part_size`
+// config docs. Sizing parts at the 5 MiB floor maximises the part count and
+// drowns the endpoint in tiny concurrent PUTs on multi-GiB blobs.
+const DEFAULT_MULTIPART_PART_SIZE: u64 = 64 * 1024 * 1024; // 64MB.
+
+// Default store-wide admission cap on concurrent multipart uploads; see the
+// `max_concurrent_multipart_uploads` config docs. A permit is held for the
+// whole upload (never per part), so this cannot deadlock the part loop.
+const DEFAULT_MAX_CONCURRENT_MULTIPART_UPLOADS: usize = 4;
+
 #[derive(Debug, MetricsComponent)]
 pub struct OntapS3Store<NowFn> {
     s3_client: Arc<Client>,
@@ -89,6 +100,11 @@ pub struct OntapS3Store<NowFn> {
     max_retry_buffer_per_request: usize,
     #[metric(help = "The number of concurrent uploads allowed for multipart uploads")]
     multipart_max_concurrent_uploads: usize,
+    #[metric(help = "The target size of each part in a multipart upload")]
+    multipart_part_size: u64,
+    // Store-wide admission control for concurrent multipart uploads.
+    // Bounds aggregate buffered memory.
+    multipart_upload_slots: Arc<Semaphore>,
 
     remove_callbacks: Mutex<Vec<RemoveCallback>>,
 }
@@ -214,6 +230,19 @@ where
                 .common
                 .multipart_max_concurrent_uploads
                 .unwrap_or(DEFAULT_MULTIPART_MAX_CONCURRENT_UPLOADS),
+            multipart_part_size: spec
+                .common
+                .multipart_part_size
+                .map_or(DEFAULT_MULTIPART_PART_SIZE, |size| {
+                    u64::try_from(size).unwrap_or(u64::MAX)
+                })
+                .clamp(MIN_MULTIPART_SIZE, MAX_MULTIPART_SIZE),
+            multipart_upload_slots: Arc::new(Semaphore::new(
+                spec.common
+                    .max_concurrent_multipart_uploads
+                    .unwrap_or(DEFAULT_MAX_CONCURRENT_MULTIPART_UPLOADS)
+                    .max(1),
+            )),
             remove_callbacks: Mutex::new(vec![]),
         }))
     }
@@ -465,6 +494,16 @@ where
         }
 
         // Handle multipart upload for large files
+        // Admission control: cap concurrent multipart uploads store-wide so a
+        // burst of large writes cannot multiply the per-upload buffer into an
+        // OOM. Held (RAII) for the whole upload; released on drop.
+        let _multipart_slot = self
+            .multipart_upload_slots
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|e| make_err!(Code::Internal, "multipart upload semaphore closed: {e}"))?;
+
         let upload_id = &self
             .retrier
             .retry(unfold((), move |()| async move {
@@ -498,10 +537,23 @@ where
             }))
             .await?;
 
-        let bytes_per_upload_part =
-            (max_size / (MIN_MULTIPART_SIZE - 1)).clamp(MIN_MULTIPART_SIZE, MAX_MULTIPART_SIZE);
+        // Size each part at the configured target, growing it only as needed
+        // to keep the part count within the 10,000-part ceiling for very
+        // large objects. (The previous formula divided the object size by the
+        // 5 MiB floor — a part COUNT — and clamped that as a byte size, so
+        // every blob used 5 MiB parts.)
+        let bytes_per_upload_part = cmp::max(
+            self.multipart_part_size,
+            max_size.div_ceil(MAX_UPLOAD_PARTS as u64),
+        )
+        .clamp(MIN_MULTIPART_SIZE, MAX_MULTIPART_SIZE);
 
         let upload_parts = move || async move {
+            // Together with the gated `recv` in the select loop below, this
+            // bounds buffered part data for one upload at roughly
+            // `(2 * multipart_max_concurrent_uploads + 1) * bytes_per_upload_part`:
+            // once the channel is full and N uploads are in flight, the
+            // `tx.send` above blocks and the reader stops consuming.
             let (tx, mut rx) = tokio::sync::mpsc::channel(self.multipart_max_concurrent_uploads);
 
             let read_stream_fut = (
@@ -588,7 +640,11 @@ where
                         total_uploaded = result?;
                     },
                     Some(upload_result) = upload_futures.next() => completed_parts.push(upload_result?),
-                    Some(fut) = rx.recv() => upload_futures.push(fut),
+                    // Gated so the bounded channel exerts real backpressure:
+                    // draining it eagerly into the unbounded `FuturesUnordered`
+                    // would free channel slots and let the reader buffer far
+                    // ahead of the uploads.
+                    Some(fut) = rx.recv(), if upload_futures.len() < self.multipart_max_concurrent_uploads => upload_futures.push(fut),
                 }
             }
 
