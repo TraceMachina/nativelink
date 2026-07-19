@@ -1,0 +1,76 @@
+# Copyright 2022 The NativeLink Authors. All rights reserved.
+#
+# Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    See LICENSE file for details
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# NativeLink Cloud configuration for this repository's own CI. Everything here
+# is opt-in via --config; plain local builds are unaffected. CI activates these
+# groups through a generated user.bazelrc (see
+# .github/actions/setup-nativelink-cloud), which also injects the
+# --remote_header/--bes_header credentials — no secrets belong in this file.
+
+# --- Behavior groups (endpoint-free) ---
+
+# Remote cache + BES for lanes that still execute locally. Safe on any host.
+common:nl-cache --remote_timeout=600
+common:nl-cache --remote_retries=5
+common:nl-cache --build_event_publish_all_actions
+common:nl-cache --bes_upload_mode=fully_async
+
+# Main-branch mode: populate the shared cache. Only TraceMachina main-branch
+# identities may hold a write-capable key; PR lanes instead get a plain
+# --remote_upload_local_results=false line from the setup action.
+common:nl-write --remote_upload_local_results=true
+common:nl-write --remote_cache_async
+
+# Remote execution. Mirrors the staging-rbe config proven from a developer
+# machine: hermetic LLVM plus downloaded Rust toolchains, so workers need no
+# GCC/Rust/Nix. Combine only with an *-exec endpoint group, and only on
+# x86_64 Linux hosts — macOS auto-applies conflicting LRE platforms from
+# lre.bazelrc, which the setup action guards against.
+common:nl-rbe --platforms=@llvm//platforms:linux_x86_64_gnu.2.28
+common:nl-rbe --host_platform=@llvm//platforms:linux_x86_64_gnu.2.28
+common:nl-rbe --extra_execution_platforms=@llvm//platforms:linux_x86_64_gnu.2.28
+common:nl-rbe --extra_toolchains=@rust_toolchains//:all
+# The default musl interpreter is dynamically linked against the musl loader,
+# which glibc-only worker images lack (genrule tools exit 127).
+common:nl-rbe --@rules_python//python/config_settings:py_linux_libc=glibc
+common:nl-rbe --jobs=200
+common:nl-rbe --remote_download_minimal
+common:nl-rbe --remote_retries=8
+common:nl-rbe --experimental_remote_cache_eviction_retries=5
+
+# --- Endpoint groups ---
+
+# Prod bootstrap: the shared tm-ci instance. Cache + BES only — tm-ci exposes
+# no public scheduler endpoint.
+common:nl-prod --remote_cache=grpcs://tm-ci-cas.build-faster.nativelink.net
+common:nl-prod --bes_backend=grpcs://tm-ci-bep.build-faster.nativelink.net
+common:nl-prod --bes_results_url=https://tm-ci-web.build-faster.nativelink.net/build/
+
+# Prod remote execution requires the dedicated nativelink-ci prod claim and
+# worker pool (Phase 3). Keep commented until both exist: a container-image
+# with no matching worker queues actions forever.
+# common:nl-prod-exec --config=nl-prod
+# common:nl-prod-exec --remote_executor=grpcs://scheduler-nativelink-ci.build-faster.nativelink.net:443
+# common:nl-prod-exec --remote_default_exec_properties=container-image=<exact prod pool value>
+
+# Staging: the nativelink-ci claim under the tracemachina account.
+common:nl-staging --remote_cache=grpcs://cas-nativelink-ci.staging.scdev.nativelink.net
+common:nl-staging --bes_backend=grpcs://bes-nativelink-ci.staging.scdev.nativelink.net
+common:nl-staging --bes_results_url=https://staging.nativelink.com/a/tracemachina/build
+
+common:nl-staging-exec --config=nl-staging
+common:nl-staging-exec --remote_executor=grpcs://scheduler-nativelink-ci.staging.scdev.nativelink.net:443
+# Must byte-for-byte match the container-image the staging worker pool
+# advertises, or actions queue forever.
+common:nl-staging-exec --remote_default_exec_properties=container-image=debian:bookworm-slim
