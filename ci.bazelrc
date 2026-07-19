@@ -51,26 +51,15 @@ common:nl-rbe --experimental_remote_cache_eviction_retries=5
 
 # --- Endpoint groups ---
 
-# Prod bootstrap: the shared tm-ci instance. Cache + BES only — tm-ci exposes
-# no public scheduler endpoint.
-common:nl-prod --remote_cache=grpcs://tm-ci-cas.build-faster.nativelink.net
-common:nl-prod --bes_backend=grpcs://tm-ci-bep.build-faster.nativelink.net
-common:nl-prod --bes_results_url=https://tm-ci-web.build-faster.nativelink.net/build/
-
-# Prod remote execution requires the dedicated nativelink-ci prod claim and
-# worker pool (Phase 3). Keep commented until both exist: a container-image
-# with no matching worker queues actions forever.
-# common:nl-prod-exec --config=nl-prod
-# common:nl-prod-exec --remote_executor=grpcs://scheduler-nativelink-ci.build-faster.nativelink.net:443
-# common:nl-prod-exec --remote_default_exec_properties=container-image=<exact prod pool value>
-
-# Staging: the nativelink-ci claim under the tracemachina account.
-common:nl-staging --remote_cache=grpcs://cas-nativelink-ci.staging.scdev.nativelink.net
-common:nl-staging --bes_backend=grpcs://bes-nativelink-ci.staging.scdev.nativelink.net
-common:nl-staging --bes_results_url=https://staging.nativelink.com/a/tracemachina/build
+# Staging: the marcus-eagan-h6a62e claim (marcus-eagan account). Move to a
+# dedicated nativelink-ci claim under tracemachina before enabling keyless
+# auth, which is restricted to that account.
+common:nl-staging --remote_cache=grpcs://cas-marcus-eagan-h6a62e.staging.scdev.nativelink.net
+common:nl-staging --bes_backend=grpcs://bes-marcus-eagan-h6a62e.staging.scdev.nativelink.net
+common:nl-staging --bes_results_url=https://staging.nativelink.com/a/marcus-eagan/build
 
 common:nl-staging-exec --config=nl-staging
-common:nl-staging-exec --remote_executor=grpcs://scheduler-nativelink-ci.staging.scdev.nativelink.net:443
+common:nl-staging-exec --remote_executor=grpcs://scheduler-marcus-eagan-h6a62e.staging.scdev.nativelink.net:443
 # Must byte-for-byte match the container-image the staging worker pool
 # advertises, or actions queue forever.
 common:nl-staging-exec --remote_default_exec_properties=container-image=debian:bookworm-slim

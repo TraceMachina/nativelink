@@ -34,7 +34,7 @@ inputs:
     required: false
     default: 'off'
   env:
-    description: "'prod' or 'staging' endpoint group from ci.bazelrc."
+    description: "Endpoint group from ci.bazelrc; we are only using staging for now."
     required: false
     default: staging
 
@@ -65,9 +65,9 @@ runs:
         fi
 
         case "$NL_ENV" in
-          prod|staging) ;;
+          staging) ;;
           *)
-            echo "Unknown env '$NL_ENV' (expected prod|staging)" >&2
+            echo "Unknown env '$NL_ENV' (we are only using staging for now)" >&2
             exit 1
             ;;
         esac
