@@ -1,0 +1,112 @@
+---
+name: Setup NativeLink Cloud
+description: >-
+  Writes a user.bazelrc that opts this job into NativeLink Cloud remote
+  cache/BES (and optionally remote execution) via the configs in ci.bazelrc.
+  No-ops when the API key is unavailable (fork PRs) or ci-mode is 'off', so
+  builds degrade to plain local execution.
+
+inputs:
+  api-key:
+    description: >-
+      NativeLink Cloud API key. Empty (fork PRs have no secrets) disables the
+      setup entirely.
+    required: false
+    default: ''
+  ci-mode:
+    description: >-
+      Kill switch, normally passed as vars.NATIVELINK_CI_MODE. Empty or 'off'
+      disables; 'cache' enables remote cache + BES; 'rbe' additionally honors
+      exec: on. The canary workflow pins this to 'cache'/'rbe' so it stays
+      live while regular lanes are dark.
+    required: false
+    default: ''
+  mode:
+    description: >-
+      'read' (PR lanes; never uploads action results) or 'write' (main-branch
+      push lanes; only TraceMachina main-branch identities hold write keys).
+    required: false
+    default: read
+  exec:
+    description: >-
+      'on' requests remote execution. Honored only when ci-mode is 'rbe', and
+      only on Linux runners.
+    required: false
+    default: 'off'
+  env:
+    description: "'prod' or 'staging' endpoint group from ci.bazelrc."
+    required: false
+    default: prod
+
+outputs:
+  enabled:
+    description: "'true' when a user.bazelrc was written, else 'false'."
+    value: ${{ steps.configure.outputs.enabled }}
+
+runs:
+  using: composite
+  steps:
+    - name: Write user.bazelrc
+      id: configure
+      shell: bash
+      env:
+        NL_API_KEY: ${{ inputs.api-key }}
+        NL_CI_MODE: ${{ inputs.ci-mode }}
+        NL_MODE: ${{ inputs.mode }}
+        NL_EXEC: ${{ inputs.exec }}
+        NL_ENV: ${{ inputs.env }}
+      run: |
+        set -euo pipefail
+
+        if [[ -z "$NL_API_KEY" || -z "$NL_CI_MODE" || "$NL_CI_MODE" == "off" ]]; then
+          echo "enabled=false" >> "$GITHUB_OUTPUT"
+          echo "NativeLink Cloud disabled (no API key or ci-mode off); building locally."
+          exit 0
+        fi
+
+        case "$NL_ENV" in
+          prod|staging) ;;
+          *)
+            echo "Unknown env '$NL_ENV' (expected prod|staging)" >&2
+            exit 1
+            ;;
+        esac
+
+        exec_enabled=false
+        if [[ "$NL_EXEC" == "on" ]]; then
+          if [[ "$RUNNER_OS" != "Linux" ]]; then
+            # macOS auto-applies LRE platforms from lre.bazelrc that conflict
+            # with the nl-rbe Linux platform, and no non-Linux workers exist.
+            echo "exec: on is only supported on Linux runners (got $RUNNER_OS)" >&2
+            exit 1
+          fi
+          if [[ "$NL_CI_MODE" == "rbe" ]]; then
+            exec_enabled=true
+          fi
+        fi
+
+        {
+          echo "common --config=nl-cache"
+          if [[ "$exec_enabled" == true ]]; then
+            echo "common --config=nl-${NL_ENV}-exec"
+            echo "common --config=nl-rbe"
+          else
+            echo "common --config=nl-${NL_ENV}"
+          fi
+          if [[ "$NL_MODE" == "write" ]]; then
+            echo "common --config=nl-write"
+          else
+            # Plain (non-config) line so it also beats the nix-generated
+            # nativelink.bazelrc on lanes that run under nix develop.
+            echo "common --remote_upload_local_results=false"
+          fi
+          # Both headers from the same variable: a truncated BES key once
+          # caused silent 401s while the cache header kept working.
+          echo "common --remote_header=x-nativelink-api-key=${NL_API_KEY}"
+          echo "common --bes_header=x-nativelink-api-key=${NL_API_KEY}"
+          echo "common --remote_header=x-nativelink-project=nativelink-github-ci"
+          echo "common --build_metadata=ROLE=CI"
+        } >> user.bazelrc
+
+        echo "enabled=true" >> "$GITHUB_OUTPUT"
+        echo "NativeLink Cloud enabled: env=${NL_ENV} mode=${NL_MODE} exec=${exec_enabled}"
