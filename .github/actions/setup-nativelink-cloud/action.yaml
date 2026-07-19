@@ -36,7 +36,7 @@ inputs:
   env:
     description: "'prod' or 'staging' endpoint group from ci.bazelrc."
     required: false
-    default: prod
+    default: staging
 
 outputs:
   enabled:

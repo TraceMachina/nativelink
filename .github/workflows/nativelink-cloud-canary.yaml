@@ -47,8 +47,8 @@ jobs:
           ci-mode: cache
           api-key: >-
             ${{ github.event_name == 'pull_request'
-                && secrets.NATIVELINK_PROD_API_KEY_RO
-                || secrets.NATIVELINK_PROD_API_KEY_RW }}
+                && secrets.NATIVELINK_STAGING_API_KEY_RO
+                || secrets.NATIVELINK_STAGING_API_KEY_RW }}
           mode: ${{ github.event_name == 'pull_request' && 'read' || 'write' }}
 
       - name: Build (populate cache)

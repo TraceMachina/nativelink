@@ -66,8 +66,8 @@ jobs:
           ci-mode: ${{ vars.NATIVELINK_CI_MODE }}
           api-key: >-
             ${{ github.event_name == 'push'
-                && secrets.NATIVELINK_PROD_API_KEY_RW
-                || secrets.NATIVELINK_PROD_API_KEY_RO }}
+                && secrets.NATIVELINK_STAGING_API_KEY_RW
+                || secrets.NATIVELINK_STAGING_API_KEY_RO }}
           mode: ${{ github.event_name == 'push' && 'write' || 'read' }}
 
       - name: Show Bazel version
@@ -131,8 +131,8 @@ jobs:
           ci-mode: ${{ vars.NATIVELINK_CI_MODE }}
           api-key: >-
             ${{ github.event_name == 'push'
-                && secrets.NATIVELINK_PROD_API_KEY_RW
-                || secrets.NATIVELINK_PROD_API_KEY_RO }}
+                && secrets.NATIVELINK_STAGING_API_KEY_RW
+                || secrets.NATIVELINK_STAGING_API_KEY_RO }}
           mode: ${{ github.event_name == 'push' && 'write' || 'read' }}
 
       - name: Run Store tester with sentinel
