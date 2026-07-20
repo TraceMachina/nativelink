@@ -93,7 +93,6 @@ impl ToTokens for MetricKind {
 }
 
 /// Holds general information about a specific field that is to be published.
-#[derive(Debug)]
 struct MetricFieldMetaData<'a> {
     field_name: &'a Ident,
     metric_kind: MetricKind,
@@ -133,7 +132,6 @@ impl<'a> MetricFieldMetaData<'a> {
 
 /// Holds the template information about the struct. This is needed
 /// to create the `MetricsComponent` impl.
-#[derive(Debug)]
 struct Generics<'a> {
     implementation: ImplGenerics<'a>,
     ty: TypeGenerics<'a>,
@@ -142,7 +140,6 @@ struct Generics<'a> {
 
 /// Holds metadata about the struct that is having `MetricsComponent`
 /// implemented.
-#[derive(Debug)]
 struct MetricStruct<'a> {
     name: &'a Ident,
     metric_fields: Vec<MetricFieldMetaData<'a>>,
