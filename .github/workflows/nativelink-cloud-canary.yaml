@@ -81,8 +81,10 @@ jobs:
           hits=$(jq -s '[.[] | .buildMetrics.actionSummary.runnerCount[]?
             | select(.name == "remote cache hit") | .count] | add // 0' \
             "$RUNNER_TEMP/bep.json")
+          # runnerCount includes an aggregate "total" entry alongside the
+          # per-runner entries; count only real runners or the rate is halved.
           total=$(jq -s '[.[] | .buildMetrics.actionSummary.runnerCount[]?
-            | select(.name != "internal") | .count] | add // 0' \
+            | select(.name != "internal" and .name != "total") | .count] | add // 0' \
             "$RUNNER_TEMP/bep.json")
           invocation=$(jq -rs '[.[] | select(.id.started != null)
             | .started.uuid][0] // empty' "$RUNNER_TEMP/bep.json")
