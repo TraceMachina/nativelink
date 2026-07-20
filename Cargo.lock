@@ -1328,9 +1328,9 @@ dependencies = [
 
 [[package]]
 name = "darling"
-version = "0.21.3"
+version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9cdf337090841a411e2a7f3deb9187445851f91b309c0c0a29e05f74a00a48c0"
+checksum = "25ae13da2f202d56bd7f91c25fba009e7717a1e4a1cc98a76d844b65ae912e9d"
 dependencies = [
  "darling_core",
  "darling_macro",
@@ -1338,11 +1338,10 @@ dependencies = [
 
 [[package]]
 name = "darling_core"
-version = "0.21.3"
+version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1247195ecd7e3c85f83c8d2a366e4210d588e802133e1e355180a9870b517ea4"
+checksum = "9865a50f7c335f53564bb694ef660825eb8610e0a53d3e11bf1b0d3df31e03b0"
 dependencies = [
- "fnv",
  "ident_case",
  "proc-macro2",
  "quote",
@@ -1352,9 +1351,9 @@ dependencies = [
 
 [[package]]
 name = "darling_macro"
-version = "0.21.3"
+version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d38308df82d1080de0afee5d069fa14b0326a88c14f15c5ccda35b4a6c414c81"
+checksum = "ac3984ec7bd6cfa798e62b4a642426a5be0e68f9401cfc2a01e3fa9ea2fcdb8d"
 dependencies = [
  "darling_core",
  "quote",
@@ -2964,7 +2963,7 @@ checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 
 [[package]]
 name = "nativelink"
-version = "1.6.1"
+version = "1.6.2"
 dependencies = [
  "async-lock",
  "axum",
@@ -2995,7 +2994,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-config"
-version = "1.6.1"
+version = "1.6.2"
 dependencies = [
  "byte-unit",
  "humantime",
@@ -3014,7 +3013,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-error"
-version = "1.6.1"
+version = "1.6.2"
 dependencies = [
  "base64 0.22.1",
  "mongodb",
@@ -3038,7 +3037,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-macro"
-version = "1.6.1"
+version = "1.6.2"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3047,7 +3046,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-metric"
-version = "1.6.1"
+version = "1.6.2"
 dependencies = [
  "async-lock",
  "nativelink-metric-macro-derive",
@@ -3058,7 +3057,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-metric-macro-derive"
-version = "1.6.1"
+version = "1.6.2"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3067,7 +3066,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-proto"
-version = "1.6.1"
+version = "1.6.2"
 dependencies = [
  "derive_more 2.1.0",
  "prost",
@@ -3079,7 +3078,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-redis-tester"
-version = "1.6.1"
+version = "1.6.2"
 dependencies = [
  "either",
  "nativelink-util",
@@ -3092,7 +3091,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-scheduler"
-version = "1.6.1"
+version = "1.6.2"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -3129,7 +3128,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-service"
-version = "1.6.1"
+version = "1.6.2"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -3173,7 +3172,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-store"
-version = "1.6.1"
+version = "1.6.2"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -3251,7 +3250,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-util"
-version = "1.6.1"
+version = "1.6.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3313,7 +3312,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-worker"
-version = "1.6.1"
+version = "1.6.2"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -3929,9 +3928,9 @@ dependencies = [
 
 [[package]]
 name = "quick-xml"
-version = "0.39.4"
+version = "0.41.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cdcc8dd4e2f670d309a5f0e83fe36dfdc05af317008fea29144da1a2ac858e5e"
+checksum = "e660451e55124f798a69a5af3f49ccfbefbd41910eefd25caf2393e1f3473ec1"
 dependencies = [
  "memchr",
  "serde",
@@ -4645,11 +4644,12 @@ dependencies = [
 
 [[package]]
 name = "serde_with"
-version = "3.15.1"
+version = "3.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa66c845eee442168b2c8134fec70ac50dc20e760769c8ba0ad1319ca1959b04"
+checksum = "76a5c54c7310e7b8b9577c286d7e399ddd876c3e12b3ed917a8aabc4b96e9e8c"
 dependencies = [
  "base64 0.22.1",
+ "bs58",
  "chrono",
  "hex",
  "indexmap 1.9.3",
@@ -4664,9 +4664,9 @@ dependencies = [
 
 [[package]]
 name = "serde_with_macros"
-version = "3.15.1"
+version = "3.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b91a903660542fced4e99881aa481bdbaec1634568ee02e0b8bd57c64cb38955"
+checksum = "84d57bc0c8b9a17920c178daa6bb924850d54a9c97ab45194bb8c17ad66bb660"
 dependencies = [
  "darling",
  "proc-macro2",
@@ -5451,9 +5451,9 @@ checksum = "562d481066bde0658276a35467c4af00bdc6ee726305698a55b86e61d7ad82bb"
 
 [[package]]
 name = "typespec"
-version = "1.0.0"
+version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "21666a31293beab8f41d38c2849ddbc342cd9c7cb4d71a9818868287a8934e53"
+checksum = "753a2fe021e407d4fc9ee6f4f0a33403cc306d5c54c4e4ebe1b8cbde0ca052b9"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -5837,9 +5837,9 @@ dependencies = [
 
 [[package]]
 name = "wincode"
-version = "0.5.4"
+version = "0.5.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "37095eb18dd6254c66217edc61a29d83d51f8818de8a2ffe88e4584ad73fb5f9"
+checksum = "66d967db7705dc29120bb6e8ce5b5a2e27734ed5976d1c904e95bd238d1c3c5a"
 dependencies = [
  "pastey",
  "proc-macro2",
@@ -5850,9 +5850,9 @@ dependencies = [
 
 [[package]]
 name = "wincode-derive"
-version = "0.4.5"
+version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e262d55d1261f31e2cfe49cc6385a421d14d99faa0526bbe3cc1bda0d3005c62"
+checksum = "15ab90b719560d0fda79c74550ad1c948d17b118765942838055ebaf34d67071"
 dependencies = [
  "darling",
  "proc-macro2",

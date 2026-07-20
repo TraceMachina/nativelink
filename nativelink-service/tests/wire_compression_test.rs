@@ -15,20 +15,20 @@
 //! Unit tests for the REAPI wire-compression helpers shared by the
 //! `ByteStream` and CAS services: compressor URI resolution, zstd
 //! encode/decode with size validation, the zero-copy identity batch-update
-//! path, and the blocking [`BufChannelReader`] adapter used by the streaming
-//! zstd encoder/decoder.
+//! path, and blocking-pool isolation of the async streaming zstd encoder.
 
-use std::io::Read;
+use core::time::Duration;
 
 use bytes::Bytes;
 use nativelink_error::{Code, Error};
 use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::compressor;
 use nativelink_service::wire_compression::{
-    BufChannelReader, compress, decompress, decompress_batch_update, resolve_wire_compressor,
+    compress, decompress, decompress_batch_update, resolve_wire_compressor,
+    stream_encode_compressed_download,
 };
 use nativelink_util::buf_channel::make_buf_channel_pair;
-use nativelink_util::spawn_blocking;
+use nativelink_util::{spawn, spawn_blocking};
 use pretty_assertions::assert_eq;
 
 #[nativelink_test]
@@ -164,38 +164,106 @@ async fn resolve_wire_compressor_accepts_only_advertised_compressors() -> Result
     Ok(())
 }
 
-#[nativelink_test]
-async fn buf_channel_reader_reads_partial_and_multiple_chunks() -> Result<(), Error> {
-    let (mut tx, rx) = make_buf_channel_pair();
+/// A compressed-download encode stream lives at the gRPC CLIENT's drain rate:
+/// its output channel only empties as fast as the client reads, and a blob can
+/// take arbitrarily long to stream out. If each such stream occupies a tokio
+/// blocking-pool thread for its whole lifetime, N concurrent downloads with
+/// slow consumers occupy N threads and every unrelated `spawn_blocking` user
+/// (filesystem store I/O, upload decode, credential providers) queues behind
+/// streams that may not finish for minutes. This test wires up encode streams
+/// exactly the way `ByteStreamServer::inner_read_compressed` does, with more
+/// held streams than blocking-pool threads, and asserts that a trivial
+/// unrelated `spawn_blocking` closure still gets to run.
+#[test]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the defect under test is blocking-pool capacity, so the test needs \
+              a dedicated runtime with a deterministically small blocking pool"
+)]
+fn held_compressed_download_streams_must_not_starve_blocking_pool() {
+    // More encode streams than blocking-pool threads. The streams never
+    // complete during the test: their input never reaches EOF and their
+    // consumer never reads, so any per-stream thread is held indefinitely.
+    // The blocking pool schedules FIFO, so if each stream occupies a thread
+    // the sentinel spawned afterwards can never run — no sleeps or timing
+    // races are needed for the starvation to be deterministic.
+    const MAX_BLOCKING_THREADS: usize = 4;
+    const NUM_STREAMS: usize = 8;
+    const SENTINEL_TIMEOUT: Duration = Duration::from_secs(2);
+    const OVERALL_TIMEOUT: Duration = Duration::from_secs(30);
 
-    // BufChannelReader is a blocking `Read` adapter (it uses
-    // `blocking_recv`), so it must run off the async runtime — exactly how
-    // the streaming zstd encoder/decoder drive it in production.
-    let reader_task = spawn_blocking!("buf_channel_reader_test", move || {
-        let mut reader = BufChannelReader::new(rx);
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .max_blocking_threads(MAX_BLOCKING_THREADS)
+        .enable_all()
+        .build()
+        .expect("failed to build test runtime");
 
-        let mut first_partial_chunk = [0; 2];
-        reader
-            .read_exact(&mut first_partial_chunk)
-            .expect("failed to read first partial chunk");
-        assert_eq!(&first_partial_chunk, b"ab");
+    runtime.block_on(async {
+        tokio::time::timeout(OVERALL_TIMEOUT, async {
+            // Held alive for the duration of the sentinel probe: dropping the
+            // feeders, encode handles, or receivers early would tear the
+            // streams down and release any held threads.
+            let mut held_streams = Vec::with_capacity(NUM_STREAMS);
+            for _ in 0..NUM_STREAMS {
+                let (mut raw_tx, raw_rx) = make_buf_channel_pair();
+                let (compressed_tx, compressed_rx) = make_buf_channel_pair();
 
-        let mut remaining_chunks = [0; 6];
-        reader
-            .read_exact(&mut remaining_chunks)
-            .expect("failed to read remaining chunks");
-        assert_eq!(&remaining_chunks, b"cdefgh");
+                // Feed incompressible pseudo-random data forever (no EOF) so
+                // the encoder always has input and keeps producing output.
+                // The output channel has a small fixed capacity and nothing
+                // reads `compressed_rx`, so the encoder soon waits on a full
+                // output channel — the "slow client" that holds the stream
+                // open. Async sends here mean the feeders themselves never
+                // occupy blocking-pool threads.
+                let feeder = spawn!("test_raw_data_feeder", async move {
+                    let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+                    loop {
+                        let mut chunk = vec![0u8; 64 * 1024];
+                        for word in chunk.chunks_exact_mut(8) {
+                            state = state
+                                .wrapping_mul(6_364_136_223_846_793_005)
+                                .wrapping_add(1_442_695_040_888_963_407);
+                            word.copy_from_slice(&state.to_le_bytes());
+                        }
+                        if raw_tx.send(Bytes::from(chunk)).await.is_err() {
+                            break;
+                        }
+                    }
+                });
 
-        let mut eof_probe = [0; 1];
-        assert_eq!(reader.read(&mut eof_probe).expect("failed to read EOF"), 0);
+                // Start the encode stream the same way
+                // `ByteStreamServer::inner_read_compressed` does: as a plain
+                // async future on the runtime, never on the blocking pool.
+                let encode_task = spawn!(
+                    "test_encode_compressed_download",
+                    stream_encode_compressed_download(
+                        raw_rx,
+                        compressor::Value::Zstd,
+                        compressed_tx,
+                    )
+                );
+
+                held_streams.push((feeder, encode_task, compressed_rx));
+            }
+
+            // Unrelated blocking work must not starve behind held
+            // compressed-download streams.
+            let sentinel = spawn_blocking!("test_blocking_pool_sentinel", || ());
+            let sentinel_result = tokio::time::timeout(SENTINEL_TIMEOUT, sentinel).await;
+            assert!(
+                sentinel_result.is_ok(),
+                "unrelated blocking work must not starve behind {NUM_STREAMS} held \
+                 compressed-download streams on a {MAX_BLOCKING_THREADS}-thread blocking pool"
+            );
+
+            drop(held_streams);
+        })
+        .await
+        .expect("test exceeded overall timeout");
     });
 
-    tx.send(Bytes::from_static(b"abc")).await?;
-    tx.send(Bytes::from_static(b"defgh")).await?;
-    tx.send_eof()?;
-
-    reader_task
-        .await
-        .map_err(|e| Error::new(Code::Internal, format!("reader task panicked: {e:?}")))?;
-    Ok(())
+    // Encode streams stuck on a full output channel park their blocking-pool
+    // threads indefinitely; a normal runtime drop would join them and hang.
+    runtime.shutdown_background();
 }

@@ -3,6 +3,48 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.6.2](https://github.com/TraceMachina/nativelink/compare/v1.6.1..v1.6.2) - 2026-07-17
+
+### ⛰️  Features
+
+- Add fallback match interval to simple scheduler ([#2557](https://github.com/TraceMachina/nativelink/issues/2557)) - ([7a4279b](https://github.com/TraceMachina/nativelink/commit/7a4279b4e51cfb6064937b50f763e3c13733db0a))
+- Add opt-in small-blob read coalescing to GrpcStore ([#2540](https://github.com/TraceMachina/nativelink/issues/2540)) - ([4be35e6](https://github.com/TraceMachina/nativelink/commit/4be35e6dccb7fbc08d414ca029c592e9e7853cbf))
+
+### 🐛 Bug Fixes
+
+- Remove quoting around NetApp ([#2556](https://github.com/TraceMachina/nativelink/issues/2556)) - ([65e2ec2](https://github.com/TraceMachina/nativelink/commit/65e2ec2004ca28e3d9273959c7a809f9b0dcb0e0))
+- Fix skopeo login issues on image publish ([#2549](https://github.com/TraceMachina/nativelink/issues/2549)) - ([e72490c](https://github.com/TraceMachina/nativelink/commit/e72490cc3e388a944f177ce47bca46ecbb027180))
+- Handle zero digests in CompressionStore ([#2548](https://github.com/TraceMachina/nativelink/issues/2548)) - ([b08995d](https://github.com/TraceMachina/nativelink/commit/b08995de0447d92fc5a47f71af1d83d4c4da142c))
+
+### 📚 Documentation
+
+- *(config-reference)* regenerate for NativeLink v1.6.0 ([#2553](https://github.com/TraceMachina/nativelink/issues/2553)) - ([f871377](https://github.com/TraceMachina/nativelink/commit/f871377c09ed6fea7538d372e3a3cd2240c231e2))
+- Adds weekly and "everything" docs regen ([#2551](https://github.com/TraceMachina/nativelink/issues/2551)) - ([2a061ba](https://github.com/TraceMachina/nativelink/commit/2a061ba865d2509decc762f11fbdbcf2871d04f9))
+- Remove StoreSpec docs ([#2545](https://github.com/TraceMachina/nativelink/issues/2545)) - ([fb37e86](https://github.com/TraceMachina/nativelink/commit/fb37e86317de19e757ff4e276f2021f9ae0b79cc))
+- Add opt-in subtree-keyed caching to the worker DirectoryCache ([#2541](https://github.com/TraceMachina/nativelink/issues/2541)) - ([9f9451e](https://github.com/TraceMachina/nativelink/commit/9f9451e02cfc1adf0c7830fa4003ab328f894d56))
+
+### 🧪 Testing & CI
+
+- Fix AsyncFixedBuffer with zstd compression, remove unused BufChannelReader adapter ([#2574](https://github.com/TraceMachina/nativelink/issues/2574)) - ([b01cb0d](https://github.com/TraceMachina/nativelink/commit/b01cb0db985a8c5356b58751460981c97bfffd6f))
+- Reject duplicate store names in StoreManager ([#2533](https://github.com/TraceMachina/nativelink/issues/2533)) - ([2106b1a](https://github.com/TraceMachina/nativelink/commit/2106b1a8481c502e7069b2635f39d83a54b37268))
+- Add free-disk to Redis store tester ([#2543](https://github.com/TraceMachina/nativelink/issues/2543)) - ([4b1de2c](https://github.com/TraceMachina/nativelink/commit/4b1de2cf24a86429480235d4641668531ede4e72))
+- Fix flakey MongoDB test ([#2535](https://github.com/TraceMachina/nativelink/issues/2535)) - ([b8e8171](https://github.com/TraceMachina/nativelink/commit/b8e81711a8a5d3048884ef94667415d4afe52a2a))
+
+### ⚙️ Miscellaneous
+
+- Remove more unused items ([#2561](https://github.com/TraceMachina/nativelink/issues/2561)) - ([8a8be18](https://github.com/TraceMachina/nativelink/commit/8a8be1879d70eceff4caf1b73d6ae63c61fddc5d))
+- Don't update config reference without changes ([#2562](https://github.com/TraceMachina/nativelink/issues/2562)) - ([48d9b96](https://github.com/TraceMachina/nativelink/commit/48d9b961e5403a904708e3394eead2a26df30d81))
+- Tag config regen builds to our bot account ([#2554](https://github.com/TraceMachina/nativelink/issues/2554)) - ([5003676](https://github.com/TraceMachina/nativelink/commit/50036764f6e87fe0518f62eb2ee6b2924f7fadd7))
+- Enforce Vale settings for config as well as markdown ([#2552](https://github.com/TraceMachina/nativelink/issues/2552)) - ([27fb8ad](https://github.com/TraceMachina/nativelink/commit/27fb8adde6554de68d452ef87535822ad4330680))
+- curl 8.5.0-2ubuntu10.11 security update ([#2544](https://github.com/TraceMachina/nativelink/issues/2544)) - ([a8e383a](https://github.com/TraceMachina/nativelink/commit/a8e383ae5e8bd78c8b50fdbad17e7376428a3b3e))
+
+### ⬆️ Bumps & Version Updates
+
+- Upgrade anyhow to 1.0.103 for RUSTSEC-2026-0190 ([#2569](https://github.com/TraceMachina/nativelink/issues/2569)) - ([6675acb](https://github.com/TraceMachina/nativelink/commit/6675acb9ed130ee11f174772a0677500944c8049))
+- Upgrade quick-xml to 0.41 for RUSTSEC-2026-0194 ([#2566](https://github.com/TraceMachina/nativelink/issues/2566)) - ([b173e4b](https://github.com/TraceMachina/nativelink/commit/b173e4be5a65abf56e2c0d620aa7ea23b9107900))
+- Upgrade serde_with to 3.21 for GHSA-7gcf-g7xr-8hxj ([#2559](https://github.com/TraceMachina/nativelink/issues/2559)) - ([b18311f](https://github.com/TraceMachina/nativelink/commit/b18311f46f341bf30e4067a04b9ed93866b9bd46))
+- Update nixpkgs so we can drop our patched renovate ([#2537](https://github.com/TraceMachina/nativelink/issues/2537)) - ([ad0d83d](https://github.com/TraceMachina/nativelink/commit/ad0d83dd80d4f1c88f40468722cfb950bd7e87af))
+
 ## [1.6.1](https://github.com/TraceMachina/nativelink/compare/v1.6.0..v1.6.1) - 2026-07-08
 
 ### ⛰️  Features
