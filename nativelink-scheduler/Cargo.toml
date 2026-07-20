@@ -4,7 +4,7 @@ lints.workspace = true
 [package]
 edition = "2024"
 name = "nativelink-scheduler"
-version = "1.6.1"
+version = "1.6.2"
 
 [dependencies]
 nativelink-config = { path = "../nativelink-config" }
@@ -58,6 +58,9 @@ nativelink-redis-tester = { path = "../nativelink-redis-tester" }
 
 pretty_assertions = { version = "1.4.1", features = [
   "std",
+], default-features = false }
+tokio = { version = "1.52.2", features = [
+  "test-util",
 ], default-features = false }
 tracing-test = { version = "0.2.5", default-features = false, features = [
   "no-env-filter",

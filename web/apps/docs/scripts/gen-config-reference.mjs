@@ -26,7 +26,7 @@
 // the worktrees don't each spend disk on a full target/ tree.
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -193,6 +193,17 @@ function generateOne(v, sharedTargetDir) {
     sourceDir = worktree;
   }
 
+  const outfile = outFileFor(v);
+  let existingMdx = "";
+  if (existsSync(outfile)) {
+    existingMdx = readFileSync(outfile, { encoding: 'utf8', flag: 'r' });
+  }
+  const existingVersionMatches = existingMdx.match(/Source: nativelink-config @ (.+)/);
+  var existingVersion = "<none>";
+  if (existingVersionMatches !== null) {
+    existingVersion = existingVersionMatches[1];
+  }
+
   try {
     const schema = buildSchema(sourceDir, v.isDev ? null : sharedTargetDir);
     const mdx = schemaToMdx(schema, {
@@ -203,7 +214,14 @@ function generateOne(v, sharedTargetDir) {
       switcher: "<ConfigVersionSwitcher />",
       githubBase: GITHUB_BASE,
     });
-    writeFileSync(outFileFor(v), mdx);
+    const newVersion = mdx.match(/Source: nativelink-config @ (.+)/)[1]
+
+    if (mdx.replace(newVersion, existingVersion) != existingMdx) {
+      console.log(`Diff between '${existingVersion}' and '${newVersion}', so writing file`);
+      writeFileSync(outfile, mdx);
+    } else {
+      console.log(`No diff between '${existingVersion}' and '${newVersion}', so not writing file`);
+    }
     return { ...v, commit, defs: Object.keys(schema.$defs ?? schema.definitions ?? {}).length };
   } finally {
     if (worktree) {
