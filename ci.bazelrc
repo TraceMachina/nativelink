@@ -1,0 +1,54 @@
+# Copyright 2022 The NativeLink Authors. All rights reserved.
+#
+# Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    See LICENSE file for details
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# NativeLink Cloud configuration for this repository's own CI. Everything here
+# is opt-in via --config; plain local builds are unaffected. CI activates these
+# groups through a generated user.bazelrc (see
+# .github/actions/setup-nativelink-cloud), which injects the claim endpoints
+# and the --remote_header/--bes_header credentials from repository secrets —
+# neither endpoints nor secrets belong in this file.
+
+# --- Behavior groups (endpoint-free) ---
+
+# Remote cache + BES for lanes that still execute locally. Safe on any host.
+common:nl-cache --remote_timeout=600
+common:nl-cache --remote_retries=5
+common:nl-cache --build_event_publish_all_actions
+common:nl-cache --bes_upload_mode=fully_async
+
+# Main-branch mode: populate the shared cache. Only TraceMachina main-branch
+# identities may hold a write-capable key; PR lanes instead get a plain
+# --remote_upload_local_results=false line from the setup action.
+common:nl-write --remote_upload_local_results=true
+common:nl-write --remote_cache_async
+
+# Remote execution. Mirrors the staging-rbe config proven from a developer
+# machine: hermetic LLVM plus downloaded Rust toolchains, so workers need no
+# GCC/Rust/Nix. Combine only with an *-exec endpoint group, and only on
+# x86_64 Linux hosts — macOS auto-applies conflicting LRE platforms from
+# lre.bazelrc, which the setup action guards against.
+common:nl-rbe --platforms=@llvm//platforms:linux_x86_64_gnu.2.28
+common:nl-rbe --host_platform=@llvm//platforms:linux_x86_64_gnu.2.28
+common:nl-rbe --extra_execution_platforms=@llvm//platforms:linux_x86_64_gnu.2.28
+common:nl-rbe --extra_toolchains=@rust_toolchains//:all
+# The default musl interpreter is dynamically linked against the musl loader,
+# which glibc-only worker images lack (genrule tools exit 127).
+common:nl-rbe --@rules_python//python/config_settings:py_linux_libc=glibc
+common:nl-rbe --jobs=200
+common:nl-rbe --remote_download_minimal
+common:nl-rbe --remote_retries=8
+common:nl-rbe --experimental_remote_cache_eviction_retries=5
+
+# Endpoints deliberately do not appear in this file: the setup action derives
+# them from the claim-base repository secret at job time.
