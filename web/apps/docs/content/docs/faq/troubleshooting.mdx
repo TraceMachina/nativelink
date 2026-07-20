@@ -1,0 +1,67 @@
+---
+title: Why isn't my build hitting the cache?
+description: Almost always an instance-name or toolchain mismatch between the client that wrote and the client that reads — plus a handful of known silent failure modes.
+---
+
+**Cache writes succeed but reads always miss? Compare instance names
+and toolchains first.** Action hashes computed under different
+`instance_name` values, or by differently-configured toolchains,
+never collide — so the cache looks empty even though it's full. This
+isn't an error anywhere; it's silent.
+
+## The usual suspects, in order
+
+- **Instance-name mismatch.** Every client targeting a cache must
+  use the same instance name (`--remote_instance_name` for Bazel).
+  A server config that omits `instance_name` defaults to `""` — the
+  same as Bazel's default — but if the server sets one, a client
+  that doesn't send it fails with
+  `'instance_name' not configured for ''`.
+- **Toolchain drift.** A cache entry written by one compiler version
+  is invisible to another. Chromium builds hit this as
+  "writes succeed, reads always miss." See
+  [What are toolchains?](/faq/toolchains)
+- **Only half the flags set.** Bazel needs `--remote_cache` even
+  when `--remote_executor` is set (they can be the same address) —
+  otherwise `Execute` is called with a digest that was never
+  uploaded and fails with `Action ... is missing from CAS`. Pants
+  similarly needs both `remote_cache_read` and `remote_cache_write`.
+
+## My actions queue forever and nothing happens
+
+The scheduler's `supported_platform_properties` must be satisfiable
+by at least one worker's `platform_properties`, or matching actions
+sit queued indefinitely with no error surfaced. Actions falling back
+to *local* execution are the same disease in different clients:
+Buck2 with `remote_enabled = False` on the selected platform, Siso
+requesting properties no worker advertises.
+
+## Known sharp edges
+
+- **Docker on SELinux-enforcing distributions** (Fedora, RHEL): the mounted config
+  needs an explicit `:Z` label or you get "Permission denied on
+  /config".
+- **LRE: `nix develop` did nothing.** The flake module checks for a
+  `.git` directory and silently skips installation without one —
+  `git init && git add -A` first
+  ([Local Remote Execution](/rbe/local-remote-execution)).
+- **LRE: `Unable to resolve host TODO`.** The generated
+  `user.bazelrc` ships with literal `TODO` placeholders for the
+  cache/executor endpoints; the error actually confirms everything
+  else worked — fill them in.
+- **Bazel 9.1.0 + chunking + `--disk_cache`** corrupts outputs; use
+  9.1.1+ ([Content-defined chunking](/configuration/chunking)).
+
+## How do I see what's actually happening
+
+Bazel: `--execution_log_json_file=/tmp/exec.json`, then grep for
+`remoteCacheHit`. Siso: the siso log shows the platform properties
+each action requested. Cluster-side:
+[How do I monitor NativeLink?](/faq/observability)
+
+## Further reading
+
+- [Setup → Troubleshooting](/getting-started/setup) — per-client
+  wiring checks.
+- [Local cache and executor](/rbe/local-testing) — a known-good
+  single-machine setup to test against.
