@@ -1,0 +1,69 @@
+---
+title: How does NativeLink work under the hood?
+description: Four roles glued together by the Remote Execution API — CAS, Action Cache, Scheduler, and Workers — where only the CAS holds durable state.
+---
+
+**NativeLink is four pieces glued together by the Remote Execution
+API.** The CAS stores every blob keyed by its SHA-256 hash; the
+Action Cache (AC) maps hash(Action) → ActionResult; the Scheduler
+dispatches `Execute()` calls to matching workers; Workers fetch
+inputs, run the sandboxed command, and upload outputs. Each role
+scales independently, and one binary can play all four. The full
+walkthrough with diagrams is
+[Explanations → Architecture](/explanations/architecture).
+
+## CAS versus Action Cache
+
+The CAS is the only role you must persist — losing it loses every
+cached artifact. The AC is a smaller lookup table saying "this exact
+computation has been done before"; losing it is harmless, because
+clients re-execute and refill it. That asymmetry drives most
+operational decisions (backups, replica counts, storage tiers).
+
+## What happens on a cache hit vs. a miss
+
+The client hashes the action — source digests, compiler version,
+command line — and asks the AC. On a hit, outputs come straight from
+the CAS in milliseconds and execution is skipped entirely. On a
+miss, the Scheduler dispatches to a worker whose
+`platform_properties` satisfy the action's requirements; the worker
+runs it in a sandbox (`bwrap` or `landlock` on Linux,
+`sandbox-exec` on macOS), uploads outputs, and the ActionResult
+lands in the AC for next time.
+
+## Why "stateless" schedulers and workers matter
+
+Schedulers hold no durable state — run several behind a load
+balancer and restart them at will. Workers are disposable — scaling
+them out is the cheapest way to make builds faster, which is why
+autoscaling targets workers and nothing else.
+
+## The vocabulary that makes the docs make sense
+
+- **Digest** — a content hash plus a size; used everywhere instead
+  of file paths, which is what makes content-addressing work.
+- **Instance name** — a namespace within a cluster; hashes from
+  different instance names never collide, so one cluster can serve
+  isolated teams.
+- **Platform properties** — key/value tags matched between actions
+  ("needs Linux, GPU") and workers ("has Linux, GPU") to decide
+  dispatch.
+
+The full list is in the [glossary](/reference/glossary).
+
+## Does this actually pay off in practice
+
+LLVM contributors running NativeLink under CMake + recc cut full
+clang builds from 17 minutes to 4 on the same hardware — cache hits
+did most of the work, remote execution offloaded the slow link
+steps. Adoption history and production users are in
+[History](/explanations/history).
+
+## Further reading
+
+- [What is remote execution?](/faq/remote-execution) — the concept,
+  from the client's point of view.
+- [What is remote caching?](/faq/caching) — how the hash is
+  computed.
+- [Why Rust?](/faq/rust) — the language choice behind the no-GC
+  latency profile.
