@@ -31,11 +31,11 @@ use nativelink_util::health_utils::{
     HealthRegistryBuilder, HealthStatusIndicator, default_health_status_indicator,
 };
 use nativelink_util::store_trait::{
-    RemoveItemCallback, StoreDriver, StoreKey, StoreKeyBorrow, StoreOptimizations, UploadSizeInfo,
+    RemoveCallback, StoreDriver, StoreKey, StoreKeyBorrow, StoreOptimizations, UploadSizeInfo,
 };
 use tracing::warn;
 
-use crate::callback_utils::RemoveItemCallbackHolder;
+use crate::callback_utils::RemoveCallbackHolder;
 use crate::cas_utils::is_zero_digest;
 
 #[derive(Clone)]
@@ -67,7 +67,7 @@ pub struct MemoryStore {
         StoreKey<'static>,
         BytesWrapper,
         SystemTime,
-        RemoveItemCallbackHolder,
+        RemoveCallbackHolder,
     >,
     /// The eviction policy's `max_bytes` (0 = unbounded). Cached here so `update`
     /// can skip writes larger than the entire store budget without buffering
@@ -287,12 +287,9 @@ impl StoreDriver for MemoryStore {
         registry.register_indicator(self);
     }
 
-    fn register_remove_callback(
-        self: Arc<Self>,
-        callback: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, callback: RemoveCallback) -> Result<(), Error> {
         self.evicting_map
-            .add_remove_callback(RemoveItemCallbackHolder::new(callback));
+            .add_remove_callback(RemoveCallbackHolder::new(callback));
         Ok(())
     }
 }
