@@ -429,9 +429,11 @@ where
                         .await
                     {
                         Ok(stream) => stream,
-                        Err(e) if e.code == Code::NotFound => {
-                            return Some((RetryResult::Err(e), (offset, writer)));
-                        }
+                        // NotFound is intentionally not special-cased here:
+                        // the retrier doesn't retry NotFound by default, but
+                        // emitting `Retry` lets `retry.retry_on_errors` opt
+                        // reads into retrying read-after-write races where
+                        // an object is still finalizing or being repopulated.
                         Err(e) => return Some((RetryResult::Retry(e), (offset, writer))),
                     };
 
