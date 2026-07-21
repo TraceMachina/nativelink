@@ -42,6 +42,7 @@
         ./local-remote-execution/flake-module.nix
         ./tools/darwin/flake-module.nix
         ./tools/nixos/flake-module.nix
+        ./tools/nix/flake-module.nix
         ./flake-module.nix
       ];
       flake = {
@@ -50,6 +51,7 @@
           darwin = ./tools/darwin/flake-module.nix;
           lre = ./local-remote-execution/flake-module.nix;
           nixos = ./tools/nixos/flake-module.nix;
+          nix = ./tools/nix/flake-module.nix;
         };
         overlays = {
           lre = import ./local-remote-execution/overlays/default.nix {inherit nix2container;};
@@ -599,13 +601,13 @@
               # NixOS binary paths to the bazel environment.
               ${config.nixos.installationScript}
 
+              # generate nix.bazelrc, which adds the required
+              # Nix binary paths to the bazel environment.
+              ${config.nix.installationScript}
+
               # If on Darwin, generate darwin.bazelrc, which configures darwin
               # libs and frameworks.
               ${config.darwin.installationScript}
-
-              # Export aws-lc system dir
-              export AWS_LC_SYS_SYSTEM_DIR=${aws-lc-system-dir}
-              export AWS_LC_SYS_USE_SYSTEM="true"
 
               # The Bazel and Cargo builds in nix require a Clang toolchain.
               # TODO(palfrey): The Bazel build currently uses the
