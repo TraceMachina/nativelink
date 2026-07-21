@@ -10,7 +10,7 @@ NativeLink provides the following templates to use caching and remote execution:
   C/C++ with CMake using [`recc`](https://buildgrid.gitlab.io/recc) as the
   bridge to NativeLink. Cache-only by default. Compiles run locally and
   only their outputs travel through the cache. Works on Linux and macOS.
-  Tutorial: [Build CMake projects with NativeLink](https://nativelink.com/docs/rbe/cmake-recc).
+  Tutorial: [Build CMake projects with NativeLink](https://docs.nativelink.com/getting-started/other-build-systems/cmake-recc).
 
 # Getting started
 
