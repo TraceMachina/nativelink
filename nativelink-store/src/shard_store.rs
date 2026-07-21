@@ -27,7 +27,7 @@ use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::store_trait::{
-    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+    RemoveCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };
 
 #[derive(Debug, MetricsComponent)]
@@ -40,7 +40,7 @@ struct StoreAndWeight {
 
 #[derive(Debug, MetricsComponent)]
 pub struct ShardStore {
-    // The weights will always be in ascending order a specific store is chosen based on the
+    // The weights will always be in ascending order a specific store is chosen based on
     // the hash of the key hash that is nearest-binary searched using the u32 as the index.
     #[metric(
         group = "stores",
@@ -254,10 +254,7 @@ impl StoreDriver for ShardStore {
         self
     }
 
-    fn register_remove_callback(
-        self: Arc<Self>,
-        callback: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, callback: RemoveCallback) -> Result<(), Error> {
         for store in &self.weights_and_stores {
             store.store.register_remove_callback(callback.clone())?;
         }

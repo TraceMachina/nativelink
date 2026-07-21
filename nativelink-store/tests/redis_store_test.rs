@@ -13,13 +13,14 @@
 // limitations under the License.
 
 use core::ops::RangeBounds;
+use core::pin::Pin;
 use core::time::Duration;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use bytes::{Bytes, BytesMut};
 use futures::TryStreamExt;
-use nativelink_config::stores::{RedisMode, RedisSpec};
+use nativelink_config::stores::{ExistenceCacheSpec, RedisMode, RedisSpec, StoreSpec};
 use nativelink_error::{Code, Error, ErrorContext, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_redis_tester::{
@@ -28,22 +29,24 @@ use nativelink_redis_tester::{
     make_fake_redis_with_responses,
 };
 use nativelink_store::cas_utils::ZERO_BYTE_DIGESTS;
+use nativelink_store::existence_cache_store::ExistenceCacheStore;
 use nativelink_store::redis_store::{
     ClusterRedisManager, DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE, DEFAULT_MAX_COUNT_PER_CURSOR,
-    LUA_VERSION_SET_SCRIPT, RedisStore, RedisSubscriptionManager,
+    LUA_VERSION_SET_SCRIPT, RedisStore, RedisSubscriptionManager, decode_key,
 };
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::HealthStatus;
 use nativelink_util::store_trait::{
-    FalseValue, SchedulerCurrentVersionProvider, SchedulerIndexProvider, SchedulerStore,
-    SchedulerStoreDataProvider, SchedulerStoreDecodeTo, SchedulerStoreKeyProvider,
-    SchedulerSubscription, SchedulerSubscriptionManager, StoreKey, StoreLike, TrueValue,
-    UploadSizeInfo,
+    FalseValue, RemoveItemCallback, SchedulerCurrentVersionProvider, SchedulerIndexProvider,
+    SchedulerStore, SchedulerStoreDataProvider, SchedulerStoreDecodeTo, SchedulerStoreKeyProvider,
+    SchedulerSubscription, SchedulerSubscriptionManager, Store, StoreDriver, StoreKey, StoreLike,
+    TrueValue, UploadSizeInfo,
 };
 use pretty_assertions::assert_eq;
 use redis::{PushInfo, RedisError, Value, make_extension_error};
 use redis_test::{MockCmd, MockRedisConnection};
+use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::time::{sleep, timeout};
 use tracing::{Instrument, info, info_span};
 
@@ -84,9 +87,10 @@ async fn fake_redis_sentinel_master_stream_with_script() -> u16 {
         .await
 }
 
-async fn make_mock_store_with_prefix(
+async fn make_mock_store_with_prefix_and_subscriber_channel(
     mut commands: Vec<MockCmd>,
     key_prefix: String,
+    subscriber_channel: UnboundedReceiver<PushInfo>,
 ) -> RedisStore<MockRedisConnection, ClusterRedisManager<MockRedisConnection>> {
     commands.insert(
         0,
@@ -97,7 +101,6 @@ async fn make_mock_store_with_prefix(
     );
     let mock_connection = MockRedisConnection::new(commands);
     let manager = ClusterRedisManager::new(mock_connection).await.unwrap();
-    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
     RedisStore::new_from_builder_and_parts(
         None,
         mock_uuid_generator,
@@ -108,11 +111,19 @@ async fn make_mock_store_with_prefix(
         DEFAULT_MAX_PERMITS,
         DEFAULT_MAX_COUNT_PER_CURSOR,
         Duration::from_secs(4),
-        rx,
+        subscriber_channel,
         manager,
     )
     .await
     .unwrap()
+}
+
+async fn make_mock_store_with_prefix(
+    commands: Vec<MockCmd>,
+    key_prefix: String,
+) -> RedisStore<MockRedisConnection, ClusterRedisManager<MockRedisConnection>> {
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    make_mock_store_with_prefix_and_subscriber_channel(commands, key_prefix, rx).await
 }
 
 #[nativelink_test]
@@ -133,20 +144,18 @@ async fn upload_and_get_data() -> Result<(), Error> {
         // Append the real value to the temp key.
         MockCmd::new(
             redis::cmd("SETRANGE")
-                .arg(temp_key.clone())
+                .arg(&temp_key)
                 .arg(0)
                 .arg(data.to_vec()),
             Ok(Value::Int(0)),
         ),
         MockCmd::new(
-            redis::cmd("STRLEN").arg(temp_key.clone()),
+            redis::cmd("STRLEN").arg(&temp_key),
             Ok(Value::Int(data.len() as i64)),
         ),
         // Move the data from the fake key to the real key.
         MockCmd::new(
-            redis::cmd("RENAME")
-                .arg(temp_key.clone())
-                .arg(real_key.clone()),
+            redis::cmd("RENAME").arg(&temp_key).arg(&real_key),
             Ok(Value::Nil),
         ),
         // The second set of commands are for retrieving the data from the key.
@@ -154,9 +163,9 @@ async fn upload_and_get_data() -> Result<(), Error> {
         MockCmd::with_values(
             redis::pipe()
                 .cmd("STRLEN")
-                .arg(real_key.clone())
+                .arg(&real_key)
                 .cmd("EXISTS")
-                .arg(real_key.clone()),
+                .arg(&real_key),
             Ok(vec![Value::Int(2), Value::Boolean(true)]),
         ),
         // Retrieve the data from the real key.
@@ -1863,7 +1872,8 @@ fn test_search_by_index_skips_int_from_cursor_read() -> Result<(), Error> {
 #[nativelink_test]
 async fn no_items_from_none_subscription_channel() -> Result<(), Error> {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let subscription_manager = RedisSubscriptionManager::new(rx);
+    let subscription_manager =
+        RedisSubscriptionManager::new(rx, Arc::new(async_lock::Mutex::new(vec![])), String::new());
 
     // To give the stream enough time to get polled
     sleep(Duration::from_secs(1)).await;
@@ -1882,7 +1892,8 @@ async fn no_items_from_none_subscription_channel() -> Result<(), Error> {
 #[nativelink_test]
 async fn send_messages_to_subscription_channel() -> Result<(), Error> {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let subscription_manager = RedisSubscriptionManager::new(rx);
+    let subscription_manager =
+        RedisSubscriptionManager::new(rx, Arc::new(async_lock::Mutex::new(vec![])), String::new());
 
     tx.send(PushInfo {
         kind: redis::PushKind::PSubscribe,
@@ -1921,6 +1932,10 @@ async fn send_messages_to_subscription_channel() -> Result<(), Error> {
 
     // Because otherwise it gets dropped immediately, and we need it to live to do things
     drop(subscription_manager);
+
+    assert!(logs_contain(
+        "PSubscribe, ignore push_info=PushInfo { kind: PSubscribe, data: [bulk-string('\"scheduler_key_change\"'), int(1)] }"
+    ));
 
     Ok(())
 }
@@ -2041,7 +2056,8 @@ impl SchedulerStoreKeyProvider for TestSubKey {
 #[nativelink_test]
 async fn redis_subscription_single_drop_is_silent() -> Result<(), Error> {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let manager = RedisSubscriptionManager::new(rx);
+    let manager =
+        RedisSubscriptionManager::new(rx, Arc::new(async_lock::Mutex::new(vec![])), String::new());
 
     let sub = manager.subscribe(TestSubKey("solo-key".to_string()))?;
     drop(sub);
@@ -2060,7 +2076,8 @@ async fn redis_subscription_single_drop_is_silent() -> Result<(), Error> {
 #[nativelink_test]
 async fn redis_subscription_drop_one_of_two_keeps_publisher() -> Result<(), Error> {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let manager = RedisSubscriptionManager::new(rx);
+    let manager =
+        RedisSubscriptionManager::new(rx, Arc::new(async_lock::Mutex::new(vec![])), String::new());
 
     let key = "shared-key";
     let sub_a = manager.subscribe(TestSubKey(key.to_string()))?;
@@ -2088,7 +2105,8 @@ async fn redis_subscription_drop_one_of_two_keeps_publisher() -> Result<(), Erro
 async fn redis_subscription_concurrent_drops_no_absence_warn() -> Result<(), Error> {
     const ITERATIONS: usize = 200;
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let manager = RedisSubscriptionManager::new(rx);
+    let manager =
+        RedisSubscriptionManager::new(rx, Arc::new(async_lock::Mutex::new(vec![])), String::new());
 
     for i in 0..ITERATIONS {
         let key = format!("race-key-{i}");
@@ -2122,7 +2140,8 @@ async fn redis_subscription_concurrent_drops_no_absence_warn() -> Result<(), Err
 #[nativelink_test]
 async fn redis_subscription_resubscribe_after_drop_creates_fresh_publisher() -> Result<(), Error> {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let manager = RedisSubscriptionManager::new(rx);
+    let manager =
+        RedisSubscriptionManager::new(rx, Arc::new(async_lock::Mutex::new(vec![])), String::new());
 
     let key = "cycle-key";
     let sub_a = manager.subscribe(TestSubKey(key.to_string()))?;
@@ -2147,4 +2166,290 @@ async fn redis_subscription_resubscribe_after_drop_creates_fresh_publisher() -> 
     drop(sub_c);
     drop(manager);
     Ok(())
+}
+
+#[derive(Debug)]
+struct LoggingRemoveCallback {}
+
+impl RemoveItemCallback for LoggingRemoveCallback {
+    fn callback<'a>(
+        &'a self,
+        store_key: StoreKey<'a>,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        info!(?store_key, "Callback for removed item");
+        Box::pin(async {})
+    }
+}
+
+async fn callback_for_eviction_core<F>(
+    logs_contain: F,
+    notify_keyspace_events: &[u8],
+) -> Result<(), Error>
+where
+    F: Fn(&str) -> bool,
+{
+    let redis_span = info_span!("redis");
+
+    let mut responses = add_lua_version_script(fake_redis_stream());
+    add_to_response(
+        &mut responses,
+        redis::cmd("CONFIG")
+            .arg("GET")
+            .arg("notify-keyspace-events"),
+        vec![Value::Map(vec![(
+            Value::BulkString(b"notify-keyspace-events".into()),
+            Value::BulkString(notify_keyspace_events.into()),
+        )])],
+    );
+    add_to_response(
+        &mut responses,
+        redis::cmd("PSUBSCRIBE").arg("__key*__:*"),
+        vec![Value::Nil],
+    );
+    let redis_port = make_fake_redis_with_responses(responses)
+        .instrument(redis_span)
+        .await;
+    let spec = RedisSpec {
+        addresses: vec![format!("redis://127.0.0.1:{redis_port}/")],
+        mode: RedisMode::Standard,
+        ..Default::default()
+    };
+    let mut raw_store =
+        Arc::into_inner(RedisStore::new_standard(spec).await.expect("Working spec")).unwrap();
+    raw_store.replace_temp_name_generator(mock_uuid_generator);
+    let store = Arc::new(raw_store);
+    store.register_remove_callback(Arc::new(LoggingRemoveCallback {}))?;
+
+    timeout(Duration::from_secs(3), async move {
+        loop {
+            if logs_contain("new psubscribe complete pattern=\"__key*__:*\" new_subscription=true")
+            {
+                break;
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await?;
+    Ok(())
+}
+
+#[nativelink_test]
+async fn callback_for_eviction_not_enabled() -> Result<(), Error> {
+    callback_for_eviction_core(logs_contain, b"").await?;
+    assert!(logs_contain(
+        "notify-keyspace-events not enabled for Redis, will fail to get remove callbacks"
+    ));
+    Ok(())
+}
+
+#[nativelink_test]
+async fn callback_for_eviction_no_keyspace() -> Result<(), Error> {
+    callback_for_eviction_core(logs_contain, b"E").await?;
+    assert!(logs_contain(
+        "notify-keyspace-events does not contain 'K' so won't get keyspace events we need for eviction events notify_keyspace_events=\"E\""
+    ));
+    Ok(())
+}
+
+#[nativelink_test]
+async fn callback_for_eviction_no_all() -> Result<(), Error> {
+    callback_for_eviction_core(logs_contain, b"K").await?;
+    assert!(logs_contain(
+        "notify-keyspace-events does not contain 'A' so we won't get eviction events notify_keyspace_events=\"K\""
+    ));
+    Ok(())
+}
+
+#[nativelink_test]
+async fn callback_for_eviction_good() -> Result<(), Error> {
+    callback_for_eviction_core(logs_contain, b"KA").await?;
+    assert!(!logs_contain("ERROR"));
+    Ok(())
+}
+
+#[nativelink_test]
+async fn send_eviction_to_subscription_channel() -> Result<(), Error> {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let subscription_manager = RedisSubscriptionManager::new(
+        rx,
+        Arc::new(async_lock::Mutex::new(vec![Arc::new(
+            LoggingRemoveCallback {},
+        )])),
+        String::new(),
+    );
+
+    tx.send(PushInfo {
+        kind: redis::PushKind::PMessage,
+        data: vec![
+            Value::BulkString("demo_pattern".into()),
+            Value::BulkString("keyprefix:test-eviction".into()),
+            Value::BulkString("evicted".into()),
+        ],
+    })
+    .unwrap();
+
+    timeout(Duration::from_secs(5), async {
+        loop {
+            assert!(!logs_contain("ERROR"));
+            if logs_contain("Callback for removed item store_key=Str(\"test-eviction\")") {
+                break;
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    // Because otherwise it gets dropped immediately, and we need it to live to do things
+    drop(subscription_manager);
+
+    assert!(logs_contain(
+        "Eviction key eviction_key=\"keyprefix:test-eviction\""
+    ));
+
+    Ok(())
+}
+
+async fn store_key_coding_round_trip_core(key_prefix: String) -> Result<(), Error> {
+    let store = make_mock_store_with_prefix(vec![], key_prefix.clone()).await;
+
+    for key in [
+        StoreKey::new_str("foo"),
+        StoreKey::Digest(DigestInfo::zero_digest()),
+        StoreKey::Digest(DigestInfo::new([99u8; 32], 512)),
+    ] {
+        assert_eq!(key, decode_key(&key_prefix, store.encode_key(&key))?);
+    }
+    Ok(())
+}
+
+#[nativelink_test]
+async fn store_key_coding_round_trip() -> Result<(), Error> {
+    store_key_coding_round_trip_core(String::new()).await
+}
+
+#[nativelink_test]
+async fn store_key_coding_round_trip_with_prefix() -> Result<(), Error> {
+    store_key_coding_round_trip_core(String::from("demo")).await
+}
+
+async fn evict_keys_for_existence_cache_core<F>(
+    prefix: String,
+    logs_contain: F,
+) -> Result<(), Error>
+where
+    F: Fn(&str) -> bool + Send + Sync,
+{
+    let spec = ExistenceCacheSpec {
+        backend: StoreSpec::RedisStore(RedisSpec::default()), // Note: Not used.
+        eviction_policy: Option::default(), // Not evicting here, we'll evict from Redis
+    };
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+
+    let data = Bytes::from_static(b"14");
+    let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
+    let real_key = format!("{prefix}{digest}");
+    let temp_key = make_temp_key(&real_key);
+
+    let commands = vec![
+        MockCmd::new(
+            redis::cmd("CONFIG")
+                .arg("GET")
+                .arg("notify-keyspace-events"),
+            Ok(Value::Map(vec![(
+                Value::BulkString(b"notify-keyspace-events".into()),
+                Value::BulkString(b"KA".into()),
+            )])),
+        ),
+        MockCmd::with_values(
+            redis::pipe()
+                .cmd("STRLEN")
+                .arg(&real_key)
+                .cmd("EXISTS")
+                .arg(&real_key),
+            Ok(vec![Value::Int(2), Value::Boolean(true)]),
+        ),
+        MockCmd::new(
+            redis::cmd("SETRANGE")
+                .arg(&temp_key)
+                .arg(0)
+                .arg(data.to_vec()),
+            Ok(Value::Int(0)),
+        ),
+        MockCmd::new(
+            redis::cmd("STRLEN").arg(&temp_key),
+            Ok(Value::Int(data.len() as i64)),
+        ),
+        // Move the data from the fake key to the real key.
+        MockCmd::new(
+            redis::cmd("RENAME").arg(&temp_key).arg(&real_key),
+            Ok(Value::Nil),
+        ),
+        // Retrieve the data from the real key.
+        MockCmd::new(
+            redis::cmd("GETRANGE").arg(&real_key).arg(0).arg(1),
+            Ok(Value::BulkString(b"14".to_vec())),
+        ),
+    ];
+
+    let redis_store = Arc::new(
+        make_mock_store_with_prefix_and_subscriber_channel(commands, prefix.clone(), rx).await,
+    );
+    let existence_store = ExistenceCacheStore::new(&spec, Store::new(redis_store.clone()));
+
+    // Wait for subscription first so the mock redis commands are in the right order
+    timeout(Duration::from_secs(5), async {
+        loop {
+            assert!(!logs_contain("ERROR"));
+            if logs_contain("Attempting to subscribe to eviction events") {
+                break;
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    existence_store
+        .update_oneshot(digest, data.clone())
+        .await
+        .unwrap();
+
+    tx.send(PushInfo {
+        kind: redis::PushKind::PMessage,
+        data: vec![
+            Value::BulkString("demo_pattern".into()),
+            Value::BulkString(format!("keyprefix:{real_key}").into()),
+            Value::BulkString("evicted".into()),
+        ],
+    })
+    .unwrap();
+
+    timeout(Duration::from_secs(5), async {
+        loop {
+            assert!(!logs_contain("ERROR"));
+            if logs_contain("Evicting (direct remove) key=DigestInfo(\"3031323334353637383961626364656630303030303030303030303030303030-2\")") {
+                break;
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    assert!(logs_contain(&format!(
+        "Eviction key eviction_key=\"keyprefix:{prefix}3031323334353637383961626364656630303030303030303030303030303030-2\""
+    )));
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn evict_keys_for_existence_cache_no_prefix() -> Result<(), Error> {
+    evict_keys_for_existence_cache_core(String::new(), logs_contain).await
+}
+
+#[nativelink_test]
+async fn evict_keys_for_existence_cache_prefix() -> Result<(), Error> {
+    evict_keys_for_existence_cache_core(String::from("demo_prefix:"), logs_contain).await
 }

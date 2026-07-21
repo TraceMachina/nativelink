@@ -15,26 +15,34 @@
 use core::cmp;
 use core::pin::Pin;
 use core::str::from_utf8;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use std::io::Cursor;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
+use async_trait::async_trait;
 use bytes::Bytes;
 use nativelink_config::stores::{CompressionSpec, MemorySpec, StoreSpec};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
+use nativelink_metric::MetricsComponent;
+use nativelink_store::cas_utils::ZERO_BYTE_DIGESTS;
 use nativelink_store::compression_store::{
     CURRENT_STREAM_FORMAT_VERSION, CompressionStore, DEFAULT_BLOCK_SIZE, FOOTER_FRAME_TYPE, Footer,
     Lz4Config, SliceIndex, WincodeConfig,
 };
 use nativelink_store::memory_store::MemoryStore;
-use nativelink_util::buf_channel::make_buf_channel_pair;
+use nativelink_util::buf_channel::{
+    DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
+};
 use nativelink_util::common::DigestInfo;
+use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::spawn;
-use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{
+    RemoveItemCallback, Store, StoreKey, StoreLike, UploadSizeInfo,
+};
 use pretty_assertions::assert_eq;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
-use sha2::{Digest, Sha256};
 use tokio::io::AsyncReadExt;
 
 /// Utility function that will build a Footer object from the input.
@@ -66,6 +74,105 @@ fn extract_footer(data: &[u8]) -> Result<Footer, Error> {
 const VALID_HASH: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
 const DUMMY_DATA_SIZE: usize = 100; // Some dummy size to populate DigestInfo with.
 const MEGABYTE_SZ: usize = 1024 * 1024;
+
+mod recording_store {
+    use nativelink_util::store_trait::StoreDriver;
+
+    use super::*;
+
+    #[derive(MetricsComponent)]
+    pub(super) struct RecordingStore {
+        pub(super) has_call_count: AtomicUsize,
+        pub(super) has_key_count: AtomicUsize,
+        pub(super) has_keys: Mutex<Vec<StoreKey<'static>>>,
+        pub(super) update_count: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl StoreDriver for RecordingStore {
+        async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+            Ok(())
+        }
+
+        async fn has_with_results(
+            self: Pin<&Self>,
+            keys: &[StoreKey<'_>],
+            results: &mut [Option<u64>],
+        ) -> Result<(), Error> {
+            self.has_call_count.fetch_add(1, Ordering::Relaxed);
+            self.has_key_count.fetch_add(keys.len(), Ordering::Relaxed);
+            *self.has_keys.lock().unwrap() =
+                keys.iter().map(|key| key.borrow().into_owned()).collect();
+            for (size, result) in (100..).zip(results.iter_mut()) {
+                *result = Some(size);
+            }
+            Ok(())
+        }
+
+        async fn update(
+            self: Pin<&Self>,
+            _key: StoreKey<'_>,
+            _reader: DropCloserReadHalf,
+            _size_info: UploadSizeInfo,
+        ) -> Result<u64, Error> {
+            self.update_count.fetch_add(1, Ordering::Relaxed);
+            Ok(0)
+        }
+
+        async fn get_part(
+            self: Pin<&Self>,
+            _key: StoreKey<'_>,
+            _writer: &mut DropCloserWriteHalf,
+            _offset: u64,
+            _length: Option<u64>,
+        ) -> Result<(), Error> {
+            Err(make_err!(Code::NotFound, "Not found"))
+        }
+
+        fn inner_store(&self, _key: Option<StoreKey>) -> &dyn StoreDriver {
+            self
+        }
+
+        fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
+            self
+        }
+
+        fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+            self
+        }
+
+        fn register_remove_callback(
+            self: Arc<Self>,
+            _callback: Arc<dyn RemoveItemCallback>,
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    default_health_status_indicator!(RecordingStore);
+}
+
+use recording_store::RecordingStore;
+
+fn make_recording_compression_store() -> Result<(Arc<CompressionStore>, Arc<RecordingStore>), Error>
+{
+    let inner_store = Arc::new(RecordingStore {
+        has_call_count: AtomicUsize::new(0),
+        has_key_count: AtomicUsize::new(0),
+        has_keys: Mutex::new(Vec::new()),
+        update_count: AtomicUsize::new(0),
+    });
+    let store = CompressionStore::new(
+        &CompressionSpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            compression_algorithm: nativelink_config::stores::CompressionAlgorithm::Lz4(
+                nativelink_config::stores::Lz4Config::default(),
+            ),
+        },
+        Store::new(inner_store.clone()),
+    )?;
+    Ok((store, inner_store))
+}
 
 #[nativelink_test]
 async fn simple_smoke_test() -> Result<(), Error> {
@@ -469,7 +576,7 @@ async fn check_footer_test() -> Result<(), Error> {
 async fn get_part_is_zero_digest() -> Result<(), Error> {
     const BLOCK_SIZE: u32 = 32 * 1024;
 
-    let digest = DigestInfo::new(Sha256::new().finalize().into(), 0);
+    let digest = ZERO_BYTE_DIGESTS[0];
 
     let inner_store = MemoryStore::new(&MemorySpec::default());
     let store_owned = CompressionStore::new(
@@ -507,6 +614,109 @@ async fn get_part_is_zero_digest() -> Result<(), Error> {
     let empty_bytes = Bytes::new();
     assert_eq!(&file_data, &empty_bytes, "Expected file content to match");
 
+    Ok(())
+}
+
+#[nativelink_test]
+async fn update_zero_digest_skips_inner_store() -> Result<(), Error> {
+    let (store, inner_store) = make_recording_compression_store()?;
+    for digest in ZERO_BYTE_DIGESTS {
+        store.update_oneshot(digest, Bytes::new()).await?;
+    }
+    assert_eq!(inner_store.update_count.load(Ordering::Relaxed), 0);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn update_zero_digest_rejects_nonempty_data() -> Result<(), Error> {
+    let (store, inner_store) = make_recording_compression_store()?;
+    for digest in ZERO_BYTE_DIGESTS {
+        let err = store
+            .update_oneshot(digest, Bytes::from_static(b"not empty"))
+            .await
+            .expect_err("Expected nonempty data for a zero digest to fail");
+        assert!(
+            err.to_string().contains("Zero byte hash not empty"),
+            "Unexpected error: {err}"
+        );
+    }
+    assert_eq!(inner_store.update_count.load(Ordering::Relaxed), 0);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn has_zero_digests_skips_inner_store() -> Result<(), Error> {
+    let (store, inner_store) = make_recording_compression_store()?;
+    let keys = ZERO_BYTE_DIGESTS.map(StoreKey::from);
+    let mut results = [None; ZERO_BYTE_DIGESTS.len()];
+
+    store.has_with_results(&keys, &mut results).await?;
+    let expected_keys: &[StoreKey<'static>] = &[];
+    assert_eq!(
+        (
+            results,
+            inner_store.has_call_count.load(Ordering::Relaxed),
+            inner_store.has_key_count.load(Ordering::Relaxed),
+            inner_store.has_keys.lock().unwrap().as_slice(),
+        ),
+        ([Some(0); ZERO_BYTE_DIGESTS.len()], 0, 0, expected_keys,)
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn has_mixed_digests_preserves_result_order() -> Result<(), Error> {
+    let (store, inner_store) = make_recording_compression_store()?;
+    let keys = [
+        StoreKey::from(ZERO_BYTE_DIGESTS[0]),
+        StoreKey::new_str("first"),
+        StoreKey::from(ZERO_BYTE_DIGESTS[1]),
+        StoreKey::new_str("second"),
+    ];
+    let mut results = [None; 4];
+
+    store.has_with_results(&keys, &mut results).await?;
+    let expected_keys = [
+        StoreKey::new_str("first").into_owned(),
+        StoreKey::new_str("second").into_owned(),
+    ];
+    assert_eq!(
+        (
+            results,
+            inner_store.has_call_count.load(Ordering::Relaxed),
+            inner_store.has_key_count.load(Ordering::Relaxed),
+            inner_store.has_keys.lock().unwrap().as_slice(),
+        ),
+        (
+            [Some(0), Some(100), Some(0), Some(101)],
+            1,
+            2,
+            expected_keys.as_slice(),
+        )
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn has_nonzero_digests_delegates_single_batch() -> Result<(), Error> {
+    let (store, inner_store) = make_recording_compression_store()?;
+    let keys = [StoreKey::new_str("first"), StoreKey::new_str("second")];
+    let mut results = [None; 2];
+
+    store.has_with_results(&keys, &mut results).await?;
+    let expected_keys = [
+        StoreKey::new_str("first").into_owned(),
+        StoreKey::new_str("second").into_owned(),
+    ];
+    assert_eq!(
+        (
+            results,
+            inner_store.has_call_count.load(Ordering::Relaxed),
+            inner_store.has_key_count.load(Ordering::Relaxed),
+            inner_store.has_keys.lock().unwrap().as_slice(),
+        ),
+        ([Some(100), Some(101)], 1, 2, expected_keys.as_slice())
+    );
     Ok(())
 }
 

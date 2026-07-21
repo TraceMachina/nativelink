@@ -13,15 +13,17 @@
 // limitations under the License.
 
 use core::pin::Pin;
+use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
 use std::borrow::Cow;
-use std::sync::Arc;
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use futures::stream::{FuturesUnordered, unfold};
 use futures::{Future, Stream, StreamExt, TryFutureExt, TryStreamExt, future};
-use nativelink_config::stores::GrpcSpec;
+use nativelink_config::stores::{GrpcReadBatchingConfig, GrpcSpec};
 use nativelink_error::{Error, ResultExt, error_if, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_proto::build::bazel::remote::execution::v2::action_cache_client::ActionCacheClient;
@@ -47,14 +49,15 @@ use nativelink_util::proto_stream_utils::{
 };
 use nativelink_util::resource_info::ResourceInfo;
 use nativelink_util::retry::{Retrier, RetryResult};
-use nativelink_util::store_trait::{RemoveItemCallback, StoreDriver, StoreKey, UploadSizeInfo};
+use nativelink_util::store_trait::{RemoveCallback, StoreDriver, StoreKey, UploadSizeInfo};
 use nativelink_util::telemetry::ClientHeaders;
-use nativelink_util::{default_health_status_indicator, tls_utils};
+use nativelink_util::{background_spawn, default_health_status_indicator, tls_utils};
 use opentelemetry::context::Context;
 use opentelemetry::global;
 use opentelemetry::propagation::Injector;
 use parking_lot::Mutex;
 use prost::Message;
+use tokio::sync::{Semaphore, oneshot};
 use tokio::time::sleep;
 use tonic::metadata::{Ascii, MetadataKey, MetadataValue};
 use tonic::{Code, IntoRequest, Request, Response, Status, Streaming};
@@ -105,6 +108,90 @@ fn enrich_request<T>(
     request
 }
 
+/// Estimated per-entry protobuf and framing overhead charged against
+/// `max_batch_bytes`, so that batches of many tiny blobs cannot push a
+/// `BatchReadBlobs` response over the gRPC message size limit.
+const BATCH_READ_PER_ENTRY_OVERHEAD_BYTES: u64 = 256;
+
+/// A small-blob read waiting to be coalesced into a `BatchReadBlobs` RPC.
+#[derive(Debug)]
+struct PendingRead {
+    digest: DigestInfo,
+    digest_function: i32,
+    tx: oneshot::Sender<Result<Bytes, Error>>,
+}
+
+/// The pending small-blob reads plus the total payload bytes they declare.
+#[derive(Debug, Default)]
+struct ReadQueue {
+    items: VecDeque<PendingRead>,
+    bytes: u64,
+}
+
+/// State for coalescing small-blob reads into `BatchReadBlobs` RPCs.
+///
+/// This uses a slot-based group commit scheme: callers enqueue their read and
+/// then try to start a detached dispatcher task by acquiring one of
+/// `dispatch_slots` semaphore permits. A dispatcher repeatedly drains up to
+/// `max_batch_bytes` worth of pending reads into a single `BatchReadBlobs`
+/// request until the queue is empty. This is work-conserving (a read never
+/// waits while a dispatch slot is free) and uses no timers.
+#[derive(Debug, MetricsComponent)]
+struct ReadBatcher {
+    max_blob_size_bytes: u64,
+    max_batch_bytes: u64,
+    max_queued_bytes: u64,
+    queue: Mutex<ReadQueue>,
+    dispatch_slots: Arc<Semaphore>,
+    #[metric(help = "Number of BatchReadBlobs RPCs sent by the read coalescer")]
+    batches_sent: AtomicU64,
+    #[metric(help = "Number of blob reads coalesced into BatchReadBlobs RPCs")]
+    blobs_batched: AtomicU64,
+    #[metric(
+        help = "Number of reads that bypassed batching because the queue byte budget was full"
+    )]
+    queue_bypasses: AtomicU64,
+    #[metric(help = "Number of batched reads that resolved to a per-entry error")]
+    batched_read_errors: AtomicU64,
+    #[metric(help = "Payload bytes currently waiting in the read coalescer queue")]
+    queued_bytes: AtomicU64,
+}
+
+impl ReadBatcher {
+    fn new(config: &GrpcReadBatchingConfig) -> Self {
+        Self {
+            max_blob_size_bytes: config.max_blob_size_bytes,
+            max_batch_bytes: config.max_batch_bytes,
+            max_queued_bytes: config.max_queued_bytes,
+            queue: Mutex::new(ReadQueue::default()),
+            dispatch_slots: Arc::new(Semaphore::new(config.dispatch_slots)),
+            batches_sent: AtomicU64::new(0),
+            blobs_batched: AtomicU64::new(0),
+            queue_bypasses: AtomicU64::new(0),
+            batched_read_errors: AtomicU64::new(0),
+            queued_bytes: AtomicU64::new(0),
+        }
+    }
+}
+
+/// Mirrors the default retryable-code classification used by
+/// `nativelink_util::retry::Retrier::should_retry`: only codes that are
+/// always terminal are considered non-retryable.
+const fn is_retryable_code(code: Code) -> bool {
+    !matches!(
+        code,
+        Code::Ok
+            | Code::InvalidArgument
+            | Code::FailedPrecondition
+            | Code::OutOfRange
+            | Code::Unimplemented
+            | Code::NotFound
+            | Code::AlreadyExists
+            | Code::PermissionDenied
+            | Code::Unauthenticated
+    )
+}
+
 // This store is usually a pass-through store, but can also be used as a CAS store. Using it as an
 // AC store has one major side-effect... The has() function may not give the proper size of the
 // underlying data. This might cause issues if embedded in certain stores.
@@ -120,6 +207,13 @@ pub struct GrpcStore {
     use_legacy_resource_names: bool,
     headers: Vec<(MetadataKey<Ascii>, MetadataValue<Ascii>)>,
     forward_headers: Vec<String>,
+    /// When configured, coalesces small-blob reads into `BatchReadBlobs`
+    /// RPCs. `None` means reads always use the `ByteStream` `Read` path.
+    #[metric(group = "read_batcher")]
+    read_batcher: Option<ReadBatcher>,
+    /// Used by the read coalescer to hand a strong reference of this store
+    /// to detached dispatcher tasks.
+    weak_self: Weak<Self>,
 }
 
 impl GrpcStore {
@@ -146,6 +240,24 @@ impl GrpcStore {
 
         let rpc_timeout = Duration::from_secs(spec.rpc_timeout_s);
 
+        let read_batcher = match &spec.experimental_read_batching {
+            Some(config) => {
+                error_if!(
+                    config.dispatch_slots == 0,
+                    "experimental_read_batching.dispatch_slots must be greater than zero"
+                );
+                // Batched reads share one upstream RPC across many client
+                // requests, so per-client forwarded headers (e.g. credentials)
+                // cannot be attached correctly.
+                error_if!(
+                    !spec.forward_headers.is_empty(),
+                    "experimental_read_batching is incompatible with forward_headers"
+                );
+                Some(ReadBatcher::new(config))
+            }
+            None => None,
+        };
+
         let mut headers = Vec::with_capacity(spec.headers.len());
         for (name, value) in &spec.headers {
             // We lowercase keys as HTTP headers are case-insensitive so we should match all cases
@@ -161,7 +273,8 @@ impl GrpcStore {
             headers.push((key, val));
         }
 
-        Ok(Arc::new(Self {
+        Ok(Arc::new_cyclic(|weak_self| Self {
+            weak_self: weak_self.clone(),
             instance_name: spec.instance_name.clone(),
             store_type: spec.store_type,
             retrier: Retrier::new(
@@ -178,6 +291,7 @@ impl GrpcStore {
             ),
             rpc_timeout,
             use_legacy_resource_names: spec.use_legacy_resource_names,
+            read_batcher,
             headers,
             // We lowercase keys as HTTP headers are case-insensitive so we should match all cases
             forward_headers: spec
@@ -305,6 +419,217 @@ impl GrpcStore {
                 .err_tip(|| "in GrpcStore::batch_read_blobs")
         })
         .await
+    }
+
+    /// Enqueues a small-blob read for coalescing into a `BatchReadBlobs` RPC
+    /// and waits for its result. Returns `None` when the queue is over its
+    /// byte budget, in which case the caller must fall back to the
+    /// `ByteStream` `Read` path.
+    async fn batched_read(
+        &self,
+        batcher: &ReadBatcher,
+        digest: DigestInfo,
+    ) -> Option<Result<Bytes, Error>> {
+        // Capture the digest function from the caller's ambient context now;
+        // the dispatcher runs on a detached task with no such context.
+        let digest_function: i32 = Context::current()
+            .get::<DigestHasherFunc>()
+            .map_or_else(default_digest_hasher_func, |v| *v)
+            .proto_digest_func()
+            .into();
+        let (tx, rx) = oneshot::channel();
+        {
+            let mut queue = batcher.queue.lock();
+            // Admission control. On overflow gracefully degrade to the
+            // stream path instead of blocking.
+            let new_bytes = queue.bytes.saturating_add(digest.size_bytes());
+            if new_bytes > batcher.max_queued_bytes {
+                batcher.queue_bypasses.fetch_add(1, Ordering::Relaxed);
+                return None;
+            }
+            queue.bytes = new_bytes;
+            batcher.queued_bytes.store(new_bytes, Ordering::Relaxed);
+            queue.items.push_back(PendingRead {
+                digest,
+                digest_function,
+                tx,
+            });
+        }
+
+        self.maybe_dispatch_read_batches(batcher);
+
+        Some(rx.await.unwrap_or_else(|_| {
+            Err(make_err!(
+                Code::Internal,
+                "Read batch dispatcher dropped result in GrpcStore::batched_read"
+            ))
+        }))
+    }
+
+    /// Tries to start a read batch dispatcher. This is work-conserving: if a
+    /// dispatch slot is free a dispatcher is started immediately, otherwise
+    /// one of the active dispatchers is responsible for every currently
+    /// queued item. The dispatcher runs as a detached task so that
+    /// cancellation of any individual reader can neither abort an in-flight
+    /// `BatchReadBlobs` RPC nor strand still-queued waiters.
+    fn maybe_dispatch_read_batches(&self, batcher: &ReadBatcher) {
+        let Ok(mut permit) = batcher.dispatch_slots.clone().try_acquire_owned() else {
+            return;
+        };
+        let Some(store) = self.weak_self.upgrade() else {
+            return;
+        };
+        background_spawn!("grpc_store_read_batch_dispatch", async move {
+            let Some(batcher) = &store.read_batcher else {
+                return;
+            };
+            loop {
+                store.dispatch_read_batches(batcher).await;
+                drop(permit);
+                // Items may have been enqueued between the last drain and
+                // the permit release. Re-check so they are not stranded
+                // with no active dispatcher.
+                if batcher.queue.lock().items.is_empty() {
+                    return;
+                }
+                match batcher.dispatch_slots.clone().try_acquire_owned() {
+                    Ok(new_permit) => permit = new_permit,
+                    // Another dispatcher is active and will observe these
+                    // items (or re-check after releasing its own permit).
+                    Err(_) => return,
+                }
+            }
+        });
+    }
+
+    /// Drains the pending read queue, sending one `BatchReadBlobs` RPC per
+    /// drained batch, until the queue is empty.
+    async fn dispatch_read_batches(&self, batcher: &ReadBatcher) {
+        loop {
+            let batch = {
+                let mut queue = batcher.queue.lock();
+                let Some(head) = queue.items.front() else {
+                    return;
+                };
+                // All digests in one BatchReadBlobsRequest must use the same
+                // digest function. Partition-drain: take items matching the
+                // head's digest function from anywhere in the queue (up to
+                // the batch budget) and keep the rest in relative order.
+                let digest_function = head.digest_function;
+                let mut batch = Vec::new();
+                let mut batch_bytes = 0u64;
+                let mut rest = VecDeque::with_capacity(queue.items.len());
+                while let Some(item) = queue.items.pop_front() {
+                    let item_cost = item
+                        .digest
+                        .size_bytes()
+                        .saturating_add(BATCH_READ_PER_ENTRY_OVERHEAD_BYTES);
+                    if item.digest_function == digest_function
+                        && (batch.is_empty()
+                            || batch_bytes.saturating_add(item_cost) <= batcher.max_batch_bytes)
+                    {
+                        batch_bytes = batch_bytes.saturating_add(item_cost);
+                        queue.bytes = queue.bytes.saturating_sub(item.digest.size_bytes());
+                        batch.push(item);
+                    } else {
+                        rest.push_back(item);
+                    }
+                }
+                queue.items = rest;
+                batcher.queued_bytes.store(queue.bytes, Ordering::Relaxed);
+                batch
+            };
+            self.send_read_batch(batcher, batch).await;
+        }
+    }
+
+    /// Sends one `BatchReadBlobs` RPC for `batch` and demultiplexes the
+    /// per-blob responses back to the waiting readers. One failed item does
+    /// not affect its batch-mates; failure of the whole RPC is broadcast to
+    /// every item in the batch.
+    async fn send_read_batch(&self, batcher: &ReadBatcher, batch: Vec<PendingRead>) {
+        let Some(digest_function) = batch.first().map(|item| item.digest_function) else {
+            return;
+        };
+        // Servers may dedupe duplicate digests within one request, so group
+        // the waiters per digest and request each digest exactly once,
+        // fanning the (refcounted) data out to every waiter.
+        let batch_len = u64::try_from(batch.len()).unwrap_or(u64::MAX);
+        let mut waiters: HashMap<DigestInfo, Vec<PendingRead>> = HashMap::new();
+        for item in batch {
+            waiters.entry(item.digest).or_default().push(item);
+        }
+        let request = BatchReadBlobsRequest {
+            // batch_read_blobs() overwrites the instance name, so there is
+            // no need to set it here.
+            instance_name: String::new(),
+            digests: waiters.keys().map(|digest| (*digest).into()).collect(),
+            acceptable_compressors: vec![],
+            digest_function,
+        };
+        batcher.batches_sent.fetch_add(1, Ordering::Relaxed);
+        batcher
+            .blobs_batched
+            .fetch_add(batch_len, Ordering::Relaxed);
+        let response = match self.batch_read_blobs(Request::new(request)).await {
+            Ok(response) => response.into_inner(),
+            Err(err) => {
+                // The whole RPC failed, so every waiter in this batch gets
+                // the error. Waiters may have gone away, ignore send errors.
+                for item in waiters.into_values().flatten() {
+                    drop(item.tx.send(Err(err.clone())));
+                }
+                return;
+            }
+        };
+        for entry in response.responses {
+            let Some(Ok(entry_digest)) = entry.digest.map(DigestInfo::try_from) else {
+                continue;
+            };
+            let Some(items) = waiters.remove(&entry_digest) else {
+                continue;
+            };
+            let entry_len = u64::try_from(entry.data.len()).unwrap_or(u64::MAX);
+            let result = if let Some(status) = entry.status.filter(|status| status.code != 0) {
+                Err(Error::from(status)
+                    .append("Batch read entry failed in GrpcStore::send_read_batch"))
+            } else if entry.compressor != 0 {
+                // We requested no acceptable compressors, so data must be
+                // returned with the identity compressor.
+                Err(make_err!(
+                    Code::Internal,
+                    "BatchReadBlobs entry for {entry_digest} used unsupported compressor {}",
+                    entry.compressor
+                ))
+            } else if entry_len != entry_digest.size_bytes() {
+                Err(make_err!(
+                    Code::Internal,
+                    "BatchReadBlobs entry for {entry_digest} returned {entry_len} bytes, expected {}",
+                    entry_digest.size_bytes()
+                ))
+            } else {
+                Ok(entry.data)
+            };
+            if result.is_err() {
+                batcher.batched_read_errors.fetch_add(
+                    u64::try_from(items.len()).unwrap_or(u64::MAX),
+                    Ordering::Relaxed,
+                );
+            }
+            for item in items {
+                drop(item.tx.send(result.clone()));
+            }
+        }
+        // Any waiter with no matching response entry is missing upstream.
+        for item in waiters.into_values().flatten() {
+            batcher.batched_read_errors.fetch_add(1, Ordering::Relaxed);
+            let err = make_err!(
+                Code::NotFound,
+                "Blob {} not found in BatchReadBlobs response",
+                item.digest
+            );
+            drop(item.tx.send(Err(err)));
+        }
     }
 
     pub async fn get_tree(
@@ -946,6 +1271,7 @@ impl StoreDriver for GrpcStore {
             read_limit: i64,
         }
 
+        let is_digest_key = matches!(key, StoreKey::Digest(_));
         let digest = key.into_digest();
         if matches!(self.store_type, nativelink_config::stores::StoreType::Ac) {
             let offset = usize::try_from(offset).err_tip(|| "Could not convert offset to usize")?;
@@ -961,6 +1287,41 @@ impl StoreDriver for GrpcStore {
         // Shortcut for empty blobs.
         if digest.size_bytes() == 0 {
             return writer.send_eof();
+        }
+
+        // When configured, coalesce full reads of small blobs into
+        // BatchReadBlobs RPCs. `batched_read` returns `None` when the queue
+        // is over budget, in which case we fall through to the stream path.
+        if let Some(batcher) = &self.read_batcher
+            && is_digest_key
+            && offset == 0
+            && length.is_none_or(|len| len >= digest.size_bytes())
+            && digest.size_bytes() <= batcher.max_blob_size_bytes
+            && let Some(result) = self.batched_read(batcher, digest).await
+        {
+            match result {
+                Ok(data) => {
+                    if !data.is_empty() {
+                        writer
+                            .send(data)
+                            .await
+                            .err_tip(|| "Failed to write data in GrpcStore::get_part()")?;
+                    }
+                    return writer
+                        .send_eof()
+                        .err_tip(|| "Failed to send EOF in GrpcStore::get_part()");
+                }
+                // A retryable error falls through to the ByteStream path
+                // below, which re-enters the full retry machinery. This
+                // matches the retry behavior reads had before batching.
+                Err(err) if is_retryable_code(err.code) => {
+                    warn!(
+                        ?err,
+                        "Batched read failed with retryable error, falling back to ByteStream read",
+                    );
+                }
+                Err(err) => return Err(err.append("in GrpcStore::get_part()")),
+            }
         }
 
         let resource_name = if self.use_legacy_resource_names {
@@ -1013,7 +1374,7 @@ impl StoreDriver for GrpcStore {
                 loop {
                     let data = match stream.next().await {
                         // Create an empty response to represent EOF.
-                        None => bytes::Bytes::new(),
+                        None => Bytes::new(),
                         Some(Ok(message)) => message.data,
                         Some(Err(status)) => {
                             return Some((
@@ -1062,10 +1423,7 @@ impl StoreDriver for GrpcStore {
         self
     }
 
-    fn register_remove_callback(
-        self: Arc<Self>,
-        _callback: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, _callback: RemoveCallback) -> Result<(), Error> {
         Err(Error::new(
             Code::Internal,
             "gRPC stores are incompatible with removal callbacks".to_string(),

@@ -1,0 +1,9 @@
+# Ignore false positives as per https://github.com/taiki-e/cargo-llvm-cov/blob/main/.deny.toml
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0194"
+reason = "quick-xml (via lcov2cobertura). Not affected since lcov2cobertura emits xml, but doesn't parse."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0195"
+reason = "quick-xml (via lcov2cobertura). Not affected since lcov2cobertura doesn't use affected APIs."

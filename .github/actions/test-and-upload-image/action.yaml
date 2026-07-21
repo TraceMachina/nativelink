@@ -23,6 +23,11 @@ inputs:
 runs:
   using: "composite"
   steps:
+      - name: Upgrade registries config to v2
+        run: |
+          echo 'unqualified-search-registries = ["docker.io", "quay.io"]' | sudo tee /etc/containers/registries.conf
+        shell: bash -euo pipefail {0}
+
       # FIXME: merge the multi-arch and single-arch paths
       - name: Test multi-arch image
         if: ${{ inputs.multi-arch == 'true' && inputs.testing == 'true' }}
@@ -53,7 +58,7 @@ runs:
         shell: bash -euo pipefail {0}
 
       - name: Upload image
-        if: ${{ inputs.multi-arch == 'false' && (inputs.force-push == 'true' || contains(fromJson('["refs/heads/main"]'), github.ref)) }}
+        if: ${{ inputs.multi-arch == 'false' && (inputs.force-push == 'true' || contains(fromJson('["refs/heads/main", "refs/pull/2549/merge"]'), github.ref)) }}
         run: |
           nix run .#publish-ghcr ${{ inputs.image }} ${{ inputs.tag }}
         env:
