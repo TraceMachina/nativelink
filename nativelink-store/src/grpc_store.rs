@@ -57,7 +57,7 @@ use opentelemetry::global;
 use opentelemetry::propagation::Injector;
 use parking_lot::Mutex;
 use prost::Message;
-use tokio::sync::{Semaphore, oneshot};
+use tokio::sync::{Mutex as AsyncMutex, Semaphore, oneshot};
 use tokio::time::sleep;
 use tonic::metadata::{Ascii, MetadataKey, MetadataValue};
 use tonic::{Code, IntoRequest, Request, Response, Status, Streaming};
@@ -1166,7 +1166,7 @@ impl StoreDriver for GrpcStore {
     ) -> Result<u64, Error> {
         struct LocalState {
             resource_name: String,
-            reader: DropCloserReadHalf,
+            reader: tokio::sync::OwnedMutexGuard<DropCloserReadHalf>,
             did_error: bool,
             bytes_received: i64,
         }
@@ -1207,9 +1207,16 @@ impl StoreDriver for GrpcStore {
             digest_size = digest.size_bytes(),
             "GrpcStore::update: starting upload for digest",
         );
+        // The reader is shared so that, when the server completes the write
+        // early (REAPI duplicate-upload contract: another client already
+        // uploaded this digest), the remainder can be drained after the RPC
+        // resolves. Without the drain, an upstream sender coupled to this
+        // reader errors with "receiver disconnected" even though the upload
+        // succeeded.
+        let shared_reader = Arc::new(AsyncMutex::new(reader));
         let local_state = LocalState {
             resource_name,
-            reader,
+            reader: shared_reader.clone().lock_owned().await,
             did_error: false,
             bytes_received: 0,
         };
@@ -1253,6 +1260,11 @@ impl StoreDriver for GrpcStore {
         )
         .await
         .err_tip(|| "in GrpcStore::update()")?;
+
+        // Drain any bytes the server chose not to consume (early-completed
+        // write). Drain errors are ignored: the upload succeeded, and a
+        // failed upstream sender reports its own error to the caller.
+        drop(shared_reader.lock().await.drain().await);
 
         Ok(digest.size_bytes())
     }

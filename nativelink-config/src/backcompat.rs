@@ -102,6 +102,7 @@ where
                         max_bytes_per_stream: old_config.max_bytes_per_stream,
                         persist_stream_on_disconnect_timeout_s: old_config
                             .persist_stream_on_disconnect_timeout_s,
+                        experimental_write_dedup: false,
                     },
                 })
                 .collect();

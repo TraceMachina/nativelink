@@ -349,6 +349,24 @@ pub struct ByteStreamConfig {
         alias = "persist_stream_on_disconnect_timeout"
     )]
     pub persist_stream_on_disconnect_timeout_s: usize,
+
+    /// Deduplicate concurrent uploads of the same digest ("join the flight").
+    /// When multiple clients upload a blob with the same digest at the same
+    /// time, only the first upload is streamed to the store; the others wait
+    /// for it to durably commit and then complete early without transferring
+    /// their payload, as permitted by the REAPI specification. Uploads of
+    /// blobs that already exist in the store also complete early after a
+    /// single existence check.
+    ///
+    /// If the leading upload fails, waiting uploads receive a retryable
+    /// ABORTED error and one of the retrying clients becomes the new leader.
+    ///
+    /// This saves upload bandwidth and store work when many actions produce
+    /// identical outputs, at the cost of one existence check per new upload.
+    ///
+    /// Default: false (disabled)
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub experimental_write_dedup: bool,
 }
 
 // Older bytestream config. All fields are as per the newer docs, but this requires

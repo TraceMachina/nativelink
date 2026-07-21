@@ -55,6 +55,7 @@ use nativelink_util::store_trait::{Store, StoreLike, StoreOptimizations, UploadS
 use nativelink_util::task::JoinHandleDropGuard;
 use opentelemetry::context::FutureExt;
 use parking_lot::Mutex;
+use tokio::sync::watch;
 use tokio::time::sleep;
 use tonic::{Request, Response, Status, Streaming};
 use tracing::{Instrument, Level, debug, error, error_span, info, instrument, trace, warn};
@@ -101,6 +102,17 @@ pub struct ByteStreamMetrics {
     pub resumed_uploads: AtomicU64,
     /// Number of idle streams that timed out
     pub idle_stream_timeouts: AtomicU64,
+    /// Number of uploads that joined an in-flight upload of the same digest
+    pub write_dedup_flights_joined: AtomicU64,
+    /// Number of uploads completed early because the digest was already durable
+    pub write_dedup_early_completes: AtomicU64,
+    /// Number of leading uploads that failed or were cancelled while waiters were joined
+    pub write_dedup_leader_failures: AtomicU64,
+    /// Approximate upper bound of upload bytes not transferred thanks to
+    /// write dedup (payload bytes already carried by a request's first
+    /// message cannot be subtracted, and compressed uploads are counted at
+    /// their uncompressed size)
+    pub write_dedup_bytes_saved: AtomicU64,
 }
 
 impl MetricsComponent for ByteStreamMetrics {
@@ -201,8 +213,52 @@ impl MetricsComponent for ByteStreamMetrics {
             MetricKind::Counter,
             "Number of idle streams that timed out"
         );
+        {
+            let _write_dedup_enter = group!("write_dedup").entered();
+            publish!(
+                "flights_joined",
+                &self.write_dedup_flights_joined,
+                MetricKind::Counter,
+                "Number of uploads that joined an in-flight upload of the same digest"
+            );
+            publish!(
+                "early_completes",
+                &self.write_dedup_early_completes,
+                MetricKind::Counter,
+                "Number of uploads completed early because the digest was already durable"
+            );
+            publish!(
+                "leader_failures",
+                &self.write_dedup_leader_failures,
+                MetricKind::Counter,
+                "Number of leading uploads that failed or were cancelled"
+            );
+            publish!(
+                "bytes_saved",
+                &self.write_dedup_bytes_saved,
+                MetricKind::Counter,
+                "Approximate upper bound of upload bytes not transferred thanks to write dedup"
+            );
+        }
 
         Ok(MetricPublishKnownKindData::Component)
+    }
+}
+
+impl ByteStreamMetrics {
+    /// Records the shared write-request epilogue: duration plus the
+    /// success/failure counter. `bytes_written_total` is recorded separately
+    /// by paths that actually stored bytes.
+    fn record_write_result(&self, start_time: Instant, success: bool) {
+        #[allow(clippy::cast_possible_truncation)]
+        let elapsed_ns = start_time.elapsed().as_nanos() as u64;
+        self.write_duration_ns
+            .fetch_add(elapsed_ns, Ordering::Relaxed);
+        if success {
+            self.write_requests_success.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.write_requests_failure.fetch_add(1, Ordering::Relaxed);
+        }
     }
 }
 
@@ -259,6 +315,11 @@ pub struct InstanceInfo {
     _sweeper_handle: Arc<JoinHandleDropGuard<()>>,
     /// Whether this instance supports Bazel remote cache compression.
     remote_cache_compression_enabled: bool,
+    /// Whether join-the-flight write dedup is enabled for this instance.
+    write_dedup_enabled: bool,
+    /// In-flight upload flights keyed by digest. Only used when
+    /// `write_dedup_enabled` is set.
+    write_flights: Arc<Mutex<HashMap<DigestInfo, Arc<WriteFlight>>>>,
 }
 
 impl Debug for InstanceInfo {
@@ -478,6 +539,97 @@ impl IdleStream {
     }
 }
 
+/// A single-flight registration for an in-progress upload of a digest, used
+/// when `experimental_write_dedup` is enabled. Waiters subscribe to the watch
+/// channel and are released when the leading upload durably commits (`Ok`) or
+/// fails/cancels (`Err`).
+#[derive(Debug)]
+struct WriteFlight {
+    result_tx: watch::Sender<Option<Result<(), Error>>>,
+}
+
+/// Owned by the leading upload of a write flight. Exactly one terminal
+/// transition fires: `succeed()`, `fail()`, or (if the leader is cancelled at
+/// any await point) `Drop` — each removes the flight from the map first and
+/// then broadcasts the outcome, so waiters can never be stranded and a late
+/// arrival always starts a fresh flight instead of joining a settled one.
+struct WriteFlightGuard {
+    digest: DigestInfo,
+    flight: Option<Arc<WriteFlight>>,
+    write_flights: Arc<Mutex<HashMap<DigestInfo, Arc<WriteFlight>>>>,
+    metrics: Arc<ByteStreamMetrics>,
+}
+
+impl WriteFlightGuard {
+    /// The leading upload durably committed; waiters may complete early.
+    fn succeed(mut self) {
+        if let Some(flight) = self.flight.take() {
+            self.complete(&flight, Ok(()));
+        }
+    }
+
+    /// The leading upload failed; waiters receive a retryable error so one
+    /// of their retries becomes the new leading upload.
+    fn fail(mut self) {
+        if let Some(flight) = self.flight.take() {
+            self.complete(
+                &flight,
+                Err(make_err!(
+                    Code::Aborted,
+                    "The leading upload of this digest failed; retrying may succeed"
+                )),
+            );
+        }
+    }
+
+    fn complete(&self, flight: &Arc<WriteFlight>, result: Result<(), Error>) {
+        self.write_flights.lock().remove(&self.digest);
+        // Only count a leader failure when waiters were actually joined;
+        // otherwise every routine failed upload would inflate the metric.
+        if result.is_err() && flight.result_tx.receiver_count() > 0 {
+            self.metrics
+                .write_dedup_leader_failures
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        // Ignore send errors: every waiter may already be gone.
+        drop(flight.result_tx.send(Some(result)));
+    }
+}
+
+impl Drop for WriteFlightGuard {
+    fn drop(&mut self) {
+        if let Some(flight) = self.flight.take() {
+            self.complete(
+                &flight,
+                Err(make_err!(
+                    Code::Aborted,
+                    "The leading upload of this digest was cancelled; retrying may succeed"
+                )),
+            );
+        }
+    }
+}
+
+/// Outcome of the write-dedup check for a new upload.
+enum WriteDedupOutcome {
+    /// Proceed with the upload. Carries the flight guard when this request
+    /// was elected the leading upload for its digest; `None` when dedup does
+    /// not apply (resumed stream).
+    Proceed(Option<Box<WriteFlightGuard>>),
+    /// Respond immediately without receiving the payload: the digest is
+    /// already durable, per the REAPI duplicate-upload contract.
+    EarlyComplete { committed_size: i64 },
+    /// Another upload of the same digest is in flight. The caller must drain
+    /// the client stream while awaiting the flight result (unread request
+    /// bytes would otherwise pin the HTTP/2 connection flow-control window
+    /// and could stall the leading upload sharing the connection), then
+    /// respond with `committed_size` on success.
+    Waiter {
+        result_rx: watch::Receiver<Option<Result<(), Error>>>,
+        committed_size: i64,
+    },
+}
+
 #[derive(Debug)]
 pub struct ByteStreamServer {
     instance_infos: HashMap<InstanceName, InstanceInfo>,
@@ -600,11 +752,169 @@ impl ByteStreamServer {
             metrics,
             _sweeper_handle: Arc::new(sweeper_handle),
             remote_cache_compression_enabled,
+            write_dedup_enabled: config.experimental_write_dedup,
+            write_flights: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
     pub fn into_service(self) -> Server<Self> {
         Server::new(self)
+    }
+
+    /// Runs the join-the-flight write-dedup check for a new upload.
+    ///
+    /// Exactly one concurrent upload per digest is elected the leading upload
+    /// (`Proceed(Some(guard))`); the caller must consume the guard with
+    /// `succeed()`/`fail()` once the upload settles. Concurrent uploads of
+    /// the same digest wait for the leading upload instead of transferring
+    /// their payload: on durable commit they get `EarlyComplete`, on leader
+    /// failure a retryable `Aborted` error so one retry becomes the new
+    /// leader. Uploads whose digest is already durable get `EarlyComplete`
+    /// after a single existence check.
+    ///
+    /// Resumed streams (UUID already tracked in `active_uploads`) bypass
+    /// dedup entirely (`Proceed(None)`) to preserve resume semantics.
+    async fn check_write_dedup(
+        instance: &InstanceInfo,
+        digest: DigestInfo,
+        uuid_str: &str,
+        is_compressed: bool,
+    ) -> Result<WriteDedupOutcome, Error> {
+        let uuid_key = parse_uuid_to_key(uuid_str);
+        if instance.active_uploads.lock().contains_key(&uuid_key) {
+            return Ok(WriteDedupOutcome::Proceed(None));
+        }
+        let committed_size = if is_compressed {
+            // The REAPI compressed-blobs contract reports -1 as the
+            // committed_size of an upload completed by another client.
+            -1
+        } else {
+            i64::try_from(digest.size_bytes())
+                .err_tip(|| "Digest size not convertible to i64 in check_write_dedup")?
+        };
+        let claim = {
+            let mut write_flights = instance.write_flights.lock();
+            match write_flights.entry(digest) {
+                Entry::Occupied(entry) => Err(entry.get().result_tx.subscribe()),
+                Entry::Vacant(entry) => {
+                    let (result_tx, _result_rx) = watch::channel(None);
+                    let flight = Arc::new(WriteFlight { result_tx });
+                    entry.insert(flight.clone());
+                    Ok(flight)
+                }
+            }
+        };
+        match claim {
+            Err(result_rx) => {
+                instance
+                    .metrics
+                    .write_dedup_flights_joined
+                    .fetch_add(1, Ordering::Relaxed);
+                Ok(WriteDedupOutcome::Waiter {
+                    result_rx,
+                    committed_size,
+                })
+            }
+            Ok(flight) => {
+                let guard = WriteFlightGuard {
+                    digest,
+                    flight: Some(flight),
+                    write_flights: instance.write_flights.clone(),
+                    metrics: instance.metrics.clone(),
+                };
+                // One existence check: uploads of already-durable digests
+                // complete early per the REAPI duplicate-upload contract.
+                match instance.store.has(digest).await {
+                    Ok(Some(_size)) => {
+                        // Broadcast success so any waiter that joined while
+                        // the existence check ran completes early too.
+                        guard.succeed();
+                        instance
+                            .metrics
+                            .write_dedup_early_completes
+                            .fetch_add(1, Ordering::Relaxed);
+                        instance
+                            .metrics
+                            .write_dedup_bytes_saved
+                            .fetch_add(digest.size_bytes(), Ordering::Relaxed);
+                        Ok(WriteDedupOutcome::EarlyComplete { committed_size })
+                    }
+                    Ok(None) => Ok(WriteDedupOutcome::Proceed(Some(Box::new(guard)))),
+                    Err(err) => {
+                        // An existence-check failure must not fail the
+                        // upload; proceed as the leading upload.
+                        debug!(
+                            ?err,
+                            "Existence check failed in write dedup; proceeding with upload"
+                        );
+                        Ok(WriteDedupOutcome::Proceed(Some(Box::new(guard))))
+                    }
+                }
+            }
+        }
+    }
+
+    /// Waits for the leading upload of `digest` to settle while draining the
+    /// waiter's client stream.
+    ///
+    /// Draining matters: the server must keep consuming request bytes so
+    /// they cannot accumulate against the HTTP/2 connection flow-control
+    /// window — with an unread waiter stream, a leading upload sharing the
+    /// same connection would stall once the window is exhausted, deadlocking
+    /// both. Drained bytes are discarded without touching the store.
+    async fn wait_on_write_flight(
+        instance: &InstanceInfo,
+        mut stream: WriteRequestStreamWrapper<
+            impl Stream<Item = Result<WriteRequest, Status>> + Unpin,
+        >,
+        mut result_rx: watch::Receiver<Option<Result<(), Error>>>,
+        digest: DigestInfo,
+    ) -> Result<(), Error> {
+        async fn settle(
+            result_rx: &mut watch::Receiver<Option<Result<(), Error>>>,
+        ) -> Result<(), Error> {
+            fn closed_flight_error() -> Error {
+                make_err!(
+                    Code::Aborted,
+                    "The leading upload of this digest went away before completing; retrying may succeed"
+                )
+            }
+            match result_rx.wait_for(Option::is_some).await {
+                Ok(value) => value.clone().unwrap_or_else(|| Err(closed_flight_error())),
+                Err(_closed) => Err(closed_flight_error()),
+            }
+        }
+        let mut drained_bytes: u64 = 0;
+        let mut client_stream_done = false;
+        let flight_result = loop {
+            if client_stream_done {
+                break settle(&mut result_rx).await;
+            }
+            tokio::select! {
+                settled = settle(&mut result_rx) => break settled,
+                message = stream.next() => match message {
+                    Some(Ok(write_request)) => {
+                        drained_bytes += write_request.data.len() as u64;
+                        if write_request.finish_write {
+                            client_stream_done = true;
+                        }
+                    }
+                    // The client ended or went away early; the flight outcome
+                    // still decides our response.
+                    Some(Err(_)) | None => client_stream_done = true,
+                },
+            }
+        };
+        match flight_result {
+            Ok(()) => {
+                instance.metrics.write_dedup_bytes_saved.fetch_add(
+                    digest.size_bytes().saturating_sub(drained_bytes),
+                    Ordering::Relaxed,
+                );
+                Ok(())
+            }
+            Err(err) => Err(err),
+        }
     }
 
     /// Creates or joins an upload stream for the given UUID.
@@ -1512,10 +1822,46 @@ impl ByteStream for ByteStreamServer {
             stream.resource_info.compressor.as_deref(),
             instance.remote_cache_compression_enabled,
         )?;
+        let is_compressed_upload = wire_compressor != compressor::Value::Identity;
+
+        // Join-the-flight write dedup: concurrent uploads of the same digest
+        // collapse into one leading upload and uploads of already-durable
+        // digests complete immediately, without receiving the payload.
+        let write_flight_guard = if instance.write_dedup_enabled
+            && let Some(uuid_str) = stream.resource_info.uuid.as_deref()
+        {
+            match Self::check_write_dedup(instance, digest, uuid_str, is_compressed_upload).await {
+                Ok(WriteDedupOutcome::Proceed(maybe_guard)) => maybe_guard,
+                Ok(WriteDedupOutcome::Waiter {
+                    result_rx,
+                    committed_size,
+                }) => {
+                    let result =
+                        Self::wait_on_write_flight(instance, stream, result_rx, digest).await;
+                    instance
+                        .metrics
+                        .record_write_result(start_time, result.is_ok());
+                    return match result {
+                        Ok(()) => Ok(Response::new(WriteResponse { committed_size })),
+                        Err(err) => Err(err.into()),
+                    };
+                }
+                Ok(WriteDedupOutcome::EarlyComplete { committed_size }) => {
+                    instance.metrics.record_write_result(start_time, true);
+                    return Ok(Response::new(WriteResponse { committed_size }));
+                }
+                Err(err) => {
+                    instance.metrics.record_write_result(start_time, false);
+                    return Err(err.into());
+                }
+            }
+        } else {
+            None
+        };
 
         // For compressed uploads, stream compressed wire bytes through the
         // decoder and store the resulting raw bytes.
-        if wire_compressor != compressor::Value::Identity {
+        if is_compressed_upload {
             let result = self
                 .inner_write_compressed(instance, digest, digest_function, wire_compressor, stream)
                 .instrument(error_span!("bytestream_write_compressed"))
@@ -1525,6 +1871,13 @@ impl ByteStream for ByteStreamServer {
                 )
                 .await
                 .err_tip(|| "In ByteStreamServer::write_compressed");
+
+            if let Some(guard) = write_flight_guard {
+                match &result {
+                    Ok(_) => guard.succeed(),
+                    Err(_) => guard.fail(),
+                }
+            }
 
             // Track metrics based on result
             #[allow(clippy::cast_possible_truncation)]
@@ -1604,6 +1957,13 @@ impl ByteStream for ByteStreamServer {
                 .await
                 .err_tip(|| "In ByteStreamServer::write")
         };
+
+        if let Some(guard) = write_flight_guard {
+            match &result {
+                Ok(_) => guard.succeed(),
+                Err(_) => guard.fail(),
+            }
+        }
 
         // Track metrics based on result
         #[allow(clippy::cast_possible_truncation)]
