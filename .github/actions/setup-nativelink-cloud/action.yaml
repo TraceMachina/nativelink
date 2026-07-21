@@ -30,6 +30,22 @@ inputs:
       empty.
     required: false
     default: ''
+  public-read-key:
+    description: >-
+      World-readable cache_read-only API key, normally passed from
+      vars.NATIVELINK_PUBLIC_CACHE_KEY. Used only when api-key/claim-base are
+      unavailable (fork PRs have no secrets), giving fork contributors
+      read-only cache hits. Deliberately a variable rather than a secret:
+      fork code runs with the value in hand either way, so it is public by
+      definition and must never carry more than cache_read.
+    required: false
+    default: ''
+  public-claim-base:
+    description: >-
+      Claim endpoint base for the public read-only path, normally passed from
+      vars.NATIVELINK_PUBLIC_CLAIM_BASE.
+    required: false
+    default: ''
   ci-mode:
     description: >-
       Kill switch, normally passed as vars.NATIVELINK_CI_MODE. Empty or 'off'
@@ -73,6 +89,8 @@ runs:
         NL_API_KEY: ${{ inputs.api-key }}
         NL_CLAIM_BASE: ${{ inputs.claim-base }}
         NL_BES_RESULTS_URL: ${{ inputs.bes-results-url }}
+        NL_PUBLIC_KEY: ${{ inputs.public-read-key }}
+        NL_PUBLIC_CLAIM_BASE: ${{ inputs.public-claim-base }}
         NL_CI_MODE: ${{ inputs.ci-mode }}
         NL_MODE: ${{ inputs.mode }}
         NL_EXEC: ${{ inputs.exec }}
@@ -80,9 +98,18 @@ runs:
       run: |
         set -euo pipefail
 
-        if [[ -z "$NL_API_KEY" || -z "$NL_CLAIM_BASE" || -z "$NL_CI_MODE" || "$NL_CI_MODE" == "off" ]]; then
+        cred_kind=""
+        if [[ -n "$NL_CI_MODE" && "$NL_CI_MODE" != "off" ]]; then
+          if [[ -n "$NL_API_KEY" && -n "$NL_CLAIM_BASE" ]]; then
+            cred_kind="private"
+          elif [[ -n "$NL_PUBLIC_KEY" && -n "$NL_PUBLIC_CLAIM_BASE" ]]; then
+            cred_kind="public"
+          fi
+        fi
+
+        if [[ -z "$cred_kind" ]]; then
           echo "enabled=false" >> "$GITHUB_OUTPUT"
-          echo "NativeLink Cloud disabled (no API key/claim or ci-mode off); building locally."
+          echo "NativeLink Cloud disabled (no credentials or ci-mode off); building locally."
           exit 0
         fi
 
@@ -94,9 +121,26 @@ runs:
             echo "exec: on is only supported on Linux runners (got $RUNNER_OS)" >&2
             exit 1
           fi
-          if [[ "$NL_CI_MODE" == "rbe" ]]; then
+          # Remote execution needs a write-capable identity; the public
+          # read-only path never executes remotely.
+          if [[ "$NL_CI_MODE" == "rbe" && "$cred_kind" == "private" ]]; then
             exec_enabled=true
           fi
+        fi
+
+        if [[ "$cred_kind" == "public" ]]; then
+          {
+            echo "common --config=nl-cache"
+            echo "common --remote_cache=grpcs://cas-${NL_PUBLIC_CLAIM_BASE}"
+            # The public key carries cache_read only: no uploads, no BES.
+            echo "common --remote_upload_local_results=false"
+            echo "common --remote_header=x-nativelink-api-key=${NL_PUBLIC_KEY}"
+            echo "common --remote_header=x-nativelink-project=nativelink-github-ci"
+            echo "common --build_metadata=ROLE=CI"
+          } >> user.bazelrc
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+          echo "NativeLink Cloud enabled: public read-only cache (no uploads, no BES)"
+          exit 0
         fi
 
         {
