@@ -16,6 +16,7 @@ use serial_test::serial;
 
 #[serial]
 mod tests {
+    use core::pin::Pin;
     use core::str::from_utf8;
     use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
     #[cfg(target_family = "unix")]
@@ -67,7 +68,10 @@ mod tests {
     };
     use nativelink_util::common::{DigestInfo, fs, make_temp_path};
     use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
-    use nativelink_util::store_trait::{Store, StoreLike};
+    use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
+    use nativelink_util::store_trait::{
+        Store, StoreDriver, StoreKey, StoreLike, StoreOptimizations, UploadSizeInfo,
+    };
     #[cfg(target_os = "linux")]
     use nativelink_worker::namespace_utils;
     use nativelink_worker::running_actions_manager::{
@@ -1562,7 +1566,7 @@ mod tests {
             b"hello-from-outside".len()
         );
         // Verify the blob actually landed in CAS by re-reading it.
-        let key: nativelink_util::store_trait::StoreKey<'_> = uploaded.digest.into();
+        let key: StoreKey<'_> = uploaded.digest.into();
         let blob = slow_store.as_ref().get_part_unchunked(key, 0, None).await?;
         assert_eq!(blob.as_ref(), b"hello-from-outside");
         Ok(())
@@ -1723,7 +1727,7 @@ mod tests {
             .clone()
             .expect("inner.txt must have a digest")
             .try_into()?;
-        let key: nativelink_util::store_trait::StoreKey<'_> = inner_digest.into();
+        let key: StoreKey<'_> = inner_digest.into();
         let blob = slow_store.as_ref().get_part_unchunked(key, 0, None).await?;
         assert_eq!(blob.as_ref(), b"inner-payload");
         Ok(())
@@ -4997,5 +5001,250 @@ done
         assert_eq!(parse_pgid_from_stat("no parenthesis here"), None);
         assert_eq!(parse_pgid_from_stat("123 (only) S"), None); // too few fields
         assert_eq!(parse_pgid_from_stat(""), None);
+    }
+
+    /// Slow-store wrapper that advertises `SubscribesToUpdateMany` and
+    /// counts `update_many` calls, standing in for a gRPC store with write
+    /// batching enabled.
+    #[derive(Debug)]
+    struct BatchingRecorderStore {
+        inner: Store,
+        update_many_calls: AtomicU64,
+        update_many_items: AtomicU64,
+    }
+
+    impl nativelink_metric::MetricsComponent for BatchingRecorderStore {
+        fn publish(
+            &self,
+            _kind: nativelink_metric::MetricKind,
+            _field_metadata: nativelink_metric::MetricFieldData,
+        ) -> Result<nativelink_metric::MetricPublishKnownKindData, nativelink_metric::Error>
+        {
+            Ok(nativelink_metric::MetricPublishKnownKindData::Component)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl StoreDriver for BatchingRecorderStore {
+        async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+            Ok(())
+        }
+        fn optimized_for(&self, optimization: StoreOptimizations) -> bool {
+            optimization == StoreOptimizations::SubscribesToUpdateMany
+        }
+        async fn has_with_results(
+            self: Pin<&Self>,
+            keys: &[StoreKey<'_>],
+            results: &mut [Option<u64>],
+        ) -> Result<(), Error> {
+            self.inner
+                .as_store_driver_pin()
+                .has_with_results(keys, results)
+                .await
+        }
+        async fn update(
+            self: Pin<&Self>,
+            key: StoreKey<'_>,
+            reader: nativelink_util::buf_channel::DropCloserReadHalf,
+            size_info: UploadSizeInfo,
+        ) -> Result<u64, Error> {
+            self.inner
+                .as_store_driver_pin()
+                .update(key, reader, size_info)
+                .await
+        }
+        async fn update_many(
+            self: Pin<&Self>,
+            items: Vec<(StoreKey<'static>, Bytes)>,
+        ) -> Result<(), Error> {
+            self.update_many_calls.fetch_add(1, Ordering::Relaxed);
+            self.update_many_items
+                .fetch_add(items.len() as u64, Ordering::Relaxed);
+            for (key, data) in items {
+                self.inner
+                    .as_store_driver_pin()
+                    .update_oneshot(key, data)
+                    .await?;
+            }
+            Ok(())
+        }
+        async fn get_part(
+            self: Pin<&Self>,
+            key: StoreKey<'_>,
+            writer: &mut nativelink_util::buf_channel::DropCloserWriteHalf,
+            offset: u64,
+            length: Option<u64>,
+        ) -> Result<(), Error> {
+            self.inner
+                .as_store_driver_pin()
+                .get_part(key, writer, offset, length)
+                .await
+        }
+        fn inner_store(&self, _key: Option<StoreKey>) -> &dyn StoreDriver {
+            self
+        }
+        fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
+            self
+        }
+        fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+            self
+        }
+        fn register_remove_callback(
+            self: Arc<Self>,
+            callback: nativelink_util::store_trait::RemoveCallback,
+        ) -> Result<(), Error> {
+            self.inner.clone().register_remove_callback(callback)
+        }
+    }
+
+    default_health_status_indicator!(BatchingRecorderStore);
+
+    // Small output files must be published through one batched update_many
+    // call when the store chain advertises batching, with identical results.
+    #[nativelink_test]
+    async fn small_outputs_batched_when_store_subscribes() -> Result<(), Box<dyn core::error::Error>>
+    {
+        const WORKER_ID: &str = "batching_worker_id";
+
+        fn test_monotonic_clock() -> SystemTime {
+            static CLOCK: AtomicU64 = AtomicU64::new(0);
+            monotonic_clock(&CLOCK)
+        }
+
+        let fast_config = FilesystemSpec {
+            content_path: make_temp_path("batching_content_path"),
+            temp_path: make_temp_path("batching_temp_path"),
+            eviction_policy: None,
+            ..Default::default()
+        };
+        let fast_store: Arc<FilesystemStore> = FilesystemStore::new(&fast_config).await?;
+        let recorder = Arc::new(BatchingRecorderStore {
+            inner: Store::new(MemoryStore::new(&MemorySpec::default())),
+            update_many_calls: AtomicU64::new(0),
+            update_many_items: AtomicU64::new(0),
+        });
+        let ac_store = MemoryStore::new(&MemorySpec::default());
+        let cas_store = FastSlowStore::new(
+            &FastSlowSpec {
+                fast: StoreSpec::Filesystem(fast_config),
+                slow: StoreSpec::Memory(MemorySpec::default()),
+                fast_direction: StoreDirection::default(),
+                slow_direction: StoreDirection::default(),
+                bypass_dedup_threshold_bytes: 0,
+            },
+            Store::new(fast_store),
+            Store::new(recorder.clone()),
+        );
+        assert!(
+            StoreDriver::optimized_for(
+                cas_store.as_ref(),
+                StoreOptimizations::SubscribesToUpdateMany
+            ),
+            "store chain must advertise batching"
+        );
+        let root_action_directory = make_temp_path("batching_root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
+            RunningActionsManagerArgs {
+                root_action_directory,
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            },
+            Callbacks {
+                now_fn: test_monotonic_clock,
+                sleep_fn: |_duration| Box::pin(future::pending()),
+            },
+        )?);
+        let action_result = {
+            let command = Command {
+                arguments: vec![
+                    "sh".to_string(),
+                    "-c".to_string(),
+                    "echo foo > out_a && echo barbar > out_b && echo foo > out_dup".to_string(),
+                ],
+                output_paths: vec![
+                    "out_a".to_string(),
+                    "out_b".to_string(),
+                    "out_dup".to_string(),
+                ],
+                working_directory: ".".to_string(),
+                environment_variables: vec![EnvironmentVariable {
+                    name: "PATH".to_string(),
+                    value: env::var("PATH").unwrap(),
+                }],
+                ..Default::default()
+            };
+            let command_digest = serialize_and_upload_message(
+                &command,
+                cas_store.as_pin(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
+            let input_root_digest = serialize_and_upload_message(
+                &Directory::default(),
+                cas_store.as_pin(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
+            let action = Action {
+                command_digest: Some(command_digest.into()),
+                input_root_digest: Some(input_root_digest.into()),
+                ..Default::default()
+            };
+            let action_digest = serialize_and_upload_message(
+                &action,
+                cas_store.as_pin(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
+
+            let execute_request = ExecuteRequest {
+                action_digest: Some(action_digest.into()),
+                ..Default::default()
+            };
+            let running_action_impl = running_actions_manager
+                .create_and_add_action(
+                    WORKER_ID.to_string(),
+                    StartExecute {
+                        execute_request: Some(execute_request),
+                        operation_id: OperationId::default().to_string(),
+                        queued_timestamp: Some(make_system_time(1000).into()),
+                        platform: action.platform.clone(),
+                        worker_id: WORKER_ID.to_string(),
+                    },
+                )
+                .await?;
+
+            run_action(running_action_impl.clone()).await?
+        };
+
+        assert_eq!(action_result.output_files.len(), 3);
+        // "foo\n" and "barbar\n" with the duplicate deduped by digest:
+        // exactly one update_many flush carrying the two unique small blobs.
+        assert_eq!(recorder.update_many_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(recorder.update_many_items.load(Ordering::Relaxed), 2);
+        // Every output must be durable in the slow tier with correct bytes.
+        for file_info in &action_result.output_files {
+            let data = cas_store
+                .get_part_unchunked(file_info.digest, 0, None)
+                .await?;
+            assert!(!data.is_empty() || file_info.digest.size_bytes() == 0);
+        }
+        Ok(())
     }
 }

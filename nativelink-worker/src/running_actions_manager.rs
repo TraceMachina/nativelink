@@ -66,7 +66,9 @@ use nativelink_util::action_messages::{
 use nativelink_util::common::{DigestInfo, fs};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime};
-use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{
+    Store, StoreKey, StoreLike, StoreOptimizations, UploadSizeInfo,
+};
 use nativelink_util::{background_spawn, spawn, spawn_blocking};
 use parking_lot::Mutex;
 use prost::Message;
@@ -604,12 +606,64 @@ fn is_executable(metadata: &std::fs::Metadata, _full_path: &impl AsRef<Path>) ->
 
 type DigestUploader = Arc<tokio::sync::OnceCell<()>>;
 
+/// Output files at or below this size are queued for a batched publish
+/// instead of one upload stream each. Matches the default small-blob
+/// threshold of the gRPC store's write batching; operators tuning
+/// `max_blob_size_bytes` should keep it at or above this value so queued
+/// files stay batchable.
+const SMALL_OUTPUT_FILE_MAX_SIZE: u64 =
+    nativelink_config::stores::DEFAULT_WRITE_BATCHING_MAX_BLOB_SIZE_BYTES;
+
+/// Byte budget for queued small output files; when exceeded, the queue is
+/// flushed in place so memory stays bounded for actions with very many
+/// small outputs.
+const SMALL_OUTPUT_FLUSH_BYTES: u64 = 32 * 1024 * 1024;
+
+/// Accumulates small output files for one action so they are published with
+/// batched `update_many` calls instead of one upload stream per file. Only
+/// created when the CAS store advertises
+/// `StoreOptimizations::SubscribesToUpdateMany`; otherwise every file keeps
+/// the streaming path and behavior is unchanged.
+struct SmallFileBatcher {
+    /// Queued items plus their total payload bytes.
+    items: Mutex<(Vec<(StoreKey<'static>, Bytes)>, u64)>,
+}
+
+impl SmallFileBatcher {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            items: Mutex::new((Vec::new(), 0)),
+        })
+    }
+
+    /// Queues an item. Returns a drained batch when the queue exceeds its
+    /// byte budget; the caller must publish that batch.
+    fn push(&self, key: StoreKey<'static>, data: Bytes) -> Option<Vec<(StoreKey<'static>, Bytes)>> {
+        let mut inner = self.items.lock();
+        inner.1 += data.len() as u64;
+        inner.0.push((key, data));
+        if inner.1 >= SMALL_OUTPUT_FLUSH_BYTES {
+            inner.1 = 0;
+            Some(core::mem::take(&mut inner.0))
+        } else {
+            None
+        }
+    }
+
+    fn take_all(&self) -> Vec<(StoreKey<'static>, Bytes)> {
+        let mut inner = self.items.lock();
+        inner.1 = 0;
+        core::mem::take(&mut inner.0)
+    }
+}
+
 async fn upload_file(
     cas_store: Pin<&impl StoreLike>,
     full_path: impl AsRef<Path> + Debug + Send + Sync,
     hasher: DigestHasherFunc,
     metadata: std::fs::Metadata,
     digest_uploaders: Arc<Mutex<HashMap<DigestInfo, DigestUploader>>>,
+    small_file_batcher: Option<Arc<SmallFileBatcher>>,
 ) -> Result<FileInfo, Error> {
     let is_executable = is_executable(&metadata, &full_path);
     let file_size = metadata.len();
@@ -637,7 +691,7 @@ async fn upload_file(
             // Only upload if the digest doesn't already exist, this should be
             // a much cheaper operation than an upload.
             let cas_store = cas_store.as_store_driver_pin();
-            let store_key: nativelink_util::store_trait::StoreKey<'_> = digest.into();
+            let store_key: StoreKey<'_> = digest.into();
             let has_start = std::time::Instant::now();
             if cas_store
                 .has(store_key.borrow())
@@ -657,6 +711,34 @@ async fn upload_file(
                 file_size = digest.size_bytes(),
                 "upload_file: digest not in CAS, starting upload",
             );
+
+            // Small files are queued for a batched publish at the end of the
+            // action's output upload instead of one upload stream each.
+            if let Some(batcher) = &small_file_batcher
+                && digest.size_bytes() <= SMALL_OUTPUT_FILE_MAX_SIZE
+            {
+                file.rewind().await.err_tip(|| "Could not rewind file")?;
+                let expected_len = usize::try_from(digest.size_bytes())
+                    .err_tip(|| "Digest size too large for memory buffer")?;
+                let mut data = Vec::with_capacity(expected_len);
+                file.read_to_end(&mut data)
+                    .await
+                    .err_tip(|| format!("Reading small output file {full_path:?}"))?;
+                if data.len() != expected_len {
+                    return Err(make_err!(
+                        Code::Internal,
+                        "Small output file {full_path:?} changed size during upload ({} vs {expected_len})",
+                        data.len(),
+                    ));
+                }
+                if let Some(flush_items) = batcher.push(digest.into(), Bytes::from(data)) {
+                    cas_store
+                        .update_many(flush_items)
+                        .await
+                        .err_tip(|| "Flushing batched small output files")?;
+                }
+                return Ok(());
+            }
 
             file.rewind().await.err_tip(|| "Could not rewind file")?;
 
@@ -784,6 +866,7 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
     full_work_directory: &'a str,
     hasher: DigestHasherFunc,
     digest_uploaders: Arc<Mutex<HashMap<DigestInfo, DigestUploader>>>,
+    small_file_batcher: Option<Arc<SmallFileBatcher>>,
 ) -> BoxFuture<'a, Result<(Directory, VecDeque<ProtoDirectory>), Error>> {
     Box::pin(async move {
         let file_futures = FuturesUnordered::new();
@@ -815,6 +898,7 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
                             full_work_directory,
                             hasher,
                             digest_uploaders.clone(),
+                            small_file_batcher.clone(),
                         )
                         .and_then(|(dir, all_dirs)| async move {
                             let directory_name = full_path
@@ -849,13 +933,21 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
                     );
                 } else if file_type.is_file() {
                     let digest_uploaders = digest_uploaders.clone();
+                    let small_file_batcher = small_file_batcher.clone();
                     file_futures.push(async move {
                         let metadata = fs::metadata(&full_path)
                             .await
                             .err_tip(|| format!("Could not open file {}", full_path.display()))?;
-                        upload_file(cas_store, &full_path, hasher, metadata, digest_uploaders)
-                            .map_ok(TryInto::try_into)
-                            .await?
+                        upload_file(
+                            cas_store,
+                            &full_path,
+                            hasher,
+                            metadata,
+                            digest_uploaders,
+                            small_file_batcher,
+                        )
+                        .map_ok(TryInto::try_into)
+                        .await?
                     });
                 } else if file_type.is_symlink() {
                     symlink_futures.push(
@@ -1743,6 +1835,12 @@ impl RunningActionImpl {
             output_paths.append(&mut command_proto.output_directories);
         }
         let digest_uploaders = Arc::new(Mutex::new(HashMap::new()));
+        // Batch small output files into update_many calls when the store
+        // chain can amortize them (e.g. gRPC write batching); otherwise the
+        // streaming per-file path is kept exactly as before.
+        let small_file_batcher = cas_store
+            .optimized_for(StoreOptimizations::SubscribesToUpdateMany)
+            .then(SmallFileBatcher::new);
         for entry in output_paths {
             let full_path = OsString::from(if command_proto.working_directory.is_empty() {
                 format!("{}/{}", self.work_directory, entry)
@@ -1754,6 +1852,7 @@ impl RunningActionImpl {
             });
             let work_directory = &self.work_directory;
             let digest_uploaders = digest_uploaders.clone();
+            let small_file_batcher = small_file_batcher.clone();
             output_path_futures.push(async move {
                 let metadata = {
                     let metadata = match fs::symlink_metadata(&full_path).await {
@@ -1778,6 +1877,7 @@ impl RunningActionImpl {
                                 hasher,
                                 metadata,
                                 digest_uploaders,
+                                small_file_batcher,
                             )
                             .await
                             .map(|mut file_info| {
@@ -1797,6 +1897,7 @@ impl RunningActionImpl {
                             work_directory,
                             hasher,
                             digest_uploaders,
+                            small_file_batcher,
                         )
                         .and_then(|(root_dir, children)| async move {
                             let tree = ProtoTree {
@@ -1843,6 +1944,7 @@ impl RunningActionImpl {
                                             work_directory,
                                             hasher,
                                             digest_uploaders,
+                                            small_file_batcher,
                                         )
                                         .and_then(|(root_dir, children)| async move {
                                             let tree = ProtoTree {
@@ -1878,6 +1980,7 @@ impl RunningActionImpl {
                                             hasher,
                                             resolved_meta,
                                             digest_uploaders,
+                                            small_file_batcher,
                                         )
                                         .await
                                         .map(|mut file_info| {
@@ -2033,6 +2136,17 @@ impl RunningActionImpl {
             Ok((stdout_digest, stderr_digest, ())) => (stdout_digest, stderr_digest),
             Err(e) => return Err(e).err_tip(|| "Error while uploading results"),
         };
+
+        // Publish all queued small output files with one batched call.
+        if let Some(batcher) = small_file_batcher {
+            let items = batcher.take_all();
+            if !items.is_empty() {
+                cas_store
+                    .update_many(items)
+                    .await
+                    .err_tip(|| "Flushing batched small output files")?;
+            }
+        }
 
         execution_metadata.output_upload_completed_timestamp =
             (self.running_actions_manager.callbacks.now_fn)();

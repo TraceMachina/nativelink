@@ -134,6 +134,7 @@ rust_test_suite(
         "tests/gcs_store_test.rs",
         "tests/grpc_read_batching_test.rs",
         "tests/grpc_store_test.rs",
+        "tests/grpc_write_batching_test.rs",
         "tests/memory_store_test.rs",
         "tests/mongo_store_test.rs",
         "tests/oci_store_test.rs",

@@ -16,14 +16,14 @@ use core::pin::Pin;
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
 use std::borrow::Cow;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use futures::stream::{FuturesUnordered, unfold};
 use futures::{Future, Stream, StreamExt, TryFutureExt, TryStreamExt, future};
-use nativelink_config::stores::{GrpcReadBatchingConfig, GrpcSpec};
+use nativelink_config::stores::{GrpcReadBatchingConfig, GrpcSpec, GrpcWriteBatchingConfig};
 use nativelink_error::{Error, ResultExt, error_if, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_proto::build::bazel::remote::execution::v2::action_cache_client::ActionCacheClient;
@@ -32,7 +32,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
     ActionResult, BatchReadBlobsRequest, BatchReadBlobsResponse, BatchUpdateBlobsRequest,
     BatchUpdateBlobsResponse, FindMissingBlobsRequest, FindMissingBlobsResponse,
     GetActionResultRequest, GetTreeRequest, GetTreeResponse, SpliceBlobRequest, SpliceBlobResponse,
-    SplitBlobRequest, SplitBlobResponse, UpdateActionResultRequest,
+    SplitBlobRequest, SplitBlobResponse, UpdateActionResultRequest, batch_update_blobs_request,
 };
 use nativelink_proto::google::bytestream::byte_stream_client::ByteStreamClient;
 use nativelink_proto::google::bytestream::{
@@ -49,7 +49,9 @@ use nativelink_util::proto_stream_utils::{
 };
 use nativelink_util::resource_info::ResourceInfo;
 use nativelink_util::retry::{Retrier, RetryResult};
-use nativelink_util::store_trait::{RemoveCallback, StoreDriver, StoreKey, UploadSizeInfo};
+use nativelink_util::store_trait::{
+    RemoveCallback, StoreDriver, StoreKey, StoreOptimizations, UploadSizeInfo,
+};
 use nativelink_util::telemetry::ClientHeaders;
 use nativelink_util::{background_spawn, default_health_status_indicator, tls_utils};
 use opentelemetry::context::Context;
@@ -61,7 +63,7 @@ use tokio::sync::{Semaphore, oneshot};
 use tokio::time::sleep;
 use tonic::metadata::{Ascii, MetadataKey, MetadataValue};
 use tonic::{Code, IntoRequest, Request, Response, Status, Streaming};
-use tracing::{error, trace, warn};
+use tracing::{debug, error, trace, warn};
 use uuid::Uuid;
 
 struct TonicMetadataInjector<'a>(&'a mut tonic::metadata::MetadataMap);
@@ -108,10 +110,18 @@ fn enrich_request<T>(
     request
 }
 
-/// Estimated per-entry protobuf and framing overhead charged against
-/// `max_batch_bytes`, so that batches of many tiny blobs cannot push a
-/// `BatchReadBlobs` response over the gRPC message size limit.
-const BATCH_READ_PER_ENTRY_OVERHEAD_BYTES: u64 = 256;
+/// Estimated per-entry protobuf and framing overhead charged against a
+/// batch's byte budget, so that batches of many tiny blobs cannot push a
+/// `BatchReadBlobs`/`BatchUpdateBlobs` message over the gRPC size limit.
+const BATCH_PER_ENTRY_OVERHEAD_BYTES: u64 = 256;
+
+/// Number of `BatchUpdateBlobs` RPCs `update_many` dispatches concurrently.
+const BATCH_WRITE_DISPATCH_CONCURRENCY: usize = 4;
+
+/// Maximum concurrent per-blob streaming uploads used by `update_many`'s
+/// non-batched paths (disabled batching and fallback entries), restoring
+/// the concurrency callers previously got from per-file upload streams.
+const STREAMING_UPLOAD_CONCURRENCY: usize = 32;
 
 /// A small-blob read waiting to be coalesced into a `BatchReadBlobs` RPC.
 #[derive(Debug)]
@@ -211,6 +221,10 @@ pub struct GrpcStore {
     /// RPCs. `None` means reads always use the `ByteStream` `Read` path.
     #[metric(group = "read_batcher")]
     read_batcher: Option<ReadBatcher>,
+    /// When configured, `update_many` packs small blobs into
+    /// `BatchUpdateBlobs` RPCs. `None` means every blob uses the
+    /// `ByteStream` `Write` path.
+    write_batching: Option<GrpcWriteBatchingConfig>,
     /// Used by the read coalescer to hand a strong reference of this store
     /// to detached dispatcher tasks.
     weak_self: Weak<Self>,
@@ -258,6 +272,19 @@ impl GrpcStore {
             None => None,
         };
 
+        if let Some(config) = &spec.experimental_write_batching {
+            // A blob at the batching threshold must fit in one batch,
+            // otherwise an over-budget request bypasses the per-entry
+            // streaming fallback and fails the whole call.
+            error_if!(
+                config
+                    .max_blob_size_bytes
+                    .saturating_add(BATCH_PER_ENTRY_OVERHEAD_BYTES)
+                    > config.max_batch_bytes,
+                "experimental_write_batching.max_batch_bytes must be at least max_blob_size_bytes plus the {BATCH_PER_ENTRY_OVERHEAD_BYTES}-byte per-entry overhead"
+            );
+        }
+
         let mut headers = Vec::with_capacity(spec.headers.len());
         for (name, value) in &spec.headers {
             // We lowercase keys as HTTP headers are case-insensitive so we should match all cases
@@ -292,6 +319,7 @@ impl GrpcStore {
             rpc_timeout,
             use_legacy_resource_names: spec.use_legacy_resource_names,
             read_batcher,
+            write_batching: spec.experimental_write_batching,
             headers,
             // We lowercase keys as HTTP headers are case-insensitive so we should match all cases
             forward_headers: spec
@@ -390,6 +418,27 @@ impl GrpcStore {
                 .err_tip(|| "in GrpcStore::batch_update_blobs")
         })
         .await
+    }
+
+    /// Uploads items through the regular streaming path with bounded
+    /// concurrency. Used by `update_many` when write batching is disabled
+    /// and as the fallback for entries that could not be batched.
+    async fn update_items_streaming(
+        self: Pin<&Self>,
+        items: Vec<(StoreKey<'static>, Bytes)>,
+    ) -> Result<(), Error> {
+        // Plain loop instead of an iterator closure: async closures over
+        // borrowed keys hit HRTB inference errors.
+        let mut upload_futures = Vec::with_capacity(items.len());
+        for (key, data) in items {
+            upload_futures.push(async move { self.update_oneshot(key, data).await });
+        }
+        let mut uploads =
+            futures::stream::iter(upload_futures).buffer_unordered(STREAMING_UPLOAD_CONCURRENCY);
+        while let Some(result) = uploads.next().await {
+            result.err_tip(|| "In GrpcStore::update_items_streaming")?;
+        }
+        Ok(())
     }
 
     pub async fn batch_read_blobs(
@@ -523,7 +572,7 @@ impl GrpcStore {
                     let item_cost = item
                         .digest
                         .size_bytes()
-                        .saturating_add(BATCH_READ_PER_ENTRY_OVERHEAD_BYTES);
+                        .saturating_add(BATCH_PER_ENTRY_OVERHEAD_BYTES);
                     if item.digest_function == digest_function
                         && (batch.is_empty()
                             || batch_bytes.saturating_add(item_cost) <= batcher.max_batch_bytes)
@@ -1089,6 +1138,141 @@ impl GrpcStore {
 impl StoreDriver for GrpcStore {
     async fn post_init(self: Arc<Self>) -> Result<(), Error> {
         Ok(())
+    }
+
+    fn optimized_for(&self, optimization: StoreOptimizations) -> bool {
+        optimization == StoreOptimizations::SubscribesToUpdateMany
+            && self.write_batching.is_some()
+            && !matches!(self.store_type, nativelink_config::stores::StoreType::Ac)
+    }
+
+    async fn update_many(
+        self: Pin<&Self>,
+        items: Vec<(StoreKey<'static>, Bytes)>,
+    ) -> Result<(), Error> {
+        let Some(config) = self.write_batching else {
+            return self.update_items_streaming(items).await;
+        };
+        if matches!(self.store_type, nativelink_config::stores::StoreType::Ac) {
+            return self.update_items_streaming(items).await;
+        }
+
+        // Partition into batchable small blobs and streaming fallbacks.
+        // Duplicate digests are uploaded once: CAS content is identical by
+        // definition and servers may reject duplicates within one request.
+        let mut seen_digests: HashSet<DigestInfo> = HashSet::with_capacity(items.len());
+        let mut batchable: Vec<(DigestInfo, Bytes)> = Vec::with_capacity(items.len());
+        let mut fallback: Vec<(StoreKey<'static>, Bytes)> = Vec::new();
+        for (key, data) in items {
+            let digest = key.borrow().into_digest();
+            if data.len() as u64 > config.max_blob_size_bytes {
+                fallback.push((key, data));
+            } else if seen_digests.insert(digest) {
+                batchable.push((digest, data));
+            }
+        }
+
+        let digest_function: i32 = Context::current()
+            .get::<DigestHasherFunc>()
+            .map_or_else(default_digest_hasher_func, |v| *v)
+            .proto_digest_func()
+            .into();
+
+        // Pack under the batch byte budget.
+        let mut chunks: Vec<Vec<(DigestInfo, Bytes)>> = Vec::new();
+        let mut chunk: Vec<(DigestInfo, Bytes)> = Vec::new();
+        let mut chunk_bytes = 0u64;
+        for (digest, data) in batchable {
+            let entry_cost = data.len() as u64 + BATCH_PER_ENTRY_OVERHEAD_BYTES;
+            if !chunk.is_empty() && chunk_bytes + entry_cost > config.max_batch_bytes {
+                chunks.push(core::mem::take(&mut chunk));
+                chunk_bytes = 0;
+            }
+            chunk.push((digest, data));
+            chunk_bytes += entry_cost;
+        }
+        if !chunk.is_empty() {
+            chunks.push(chunk);
+        }
+
+        // Dispatch chunk RPCs concurrently; each task returns the items of
+        // that chunk that must fall back to the streaming path.
+        let mut chunk_tasks = futures::stream::iter(chunks.into_iter().map(|chunk| async move {
+            let request = BatchUpdateBlobsRequest {
+                // batch_update_blobs() overwrites the instance name.
+                instance_name: String::new(),
+                requests: chunk
+                    .iter()
+                    .map(|(digest, data)| batch_update_blobs_request::Request {
+                        digest: Some((*digest).into()),
+                        data: data.clone(),
+                        compressor: 0,
+                    })
+                    .collect(),
+                digest_function,
+            };
+            let response = match self.batch_update_blobs(Request::new(request)).await {
+                Ok(response) => response.into_inner(),
+                // A whole-RPC failure (already through the retrier) falls
+                // back to per-blob streams: an intermediary's message-size
+                // limit can reject the batch while individual streams
+                // would succeed.
+                Err(err) => {
+                    debug!(
+                        ?err,
+                        "BatchUpdateBlobs failed as a whole; falling back to streaming uploads for this chunk",
+                    );
+                    return Ok(chunk
+                        .into_iter()
+                        .map(|(digest, data)| (StoreKey::from(digest), data))
+                        .collect::<Vec<_>>());
+                }
+            };
+
+            let mut error_by_digest: HashMap<DigestInfo, Option<Error>> =
+                HashMap::with_capacity(response.responses.len());
+            for entry in response.responses {
+                let Some(Ok(digest)) = entry.digest.map(DigestInfo::try_from) else {
+                    continue;
+                };
+                let entry_error = entry
+                    .status
+                    .filter(|status| status.code != 0)
+                    .map(Error::from);
+                error_by_digest.insert(digest, entry_error);
+            }
+            let mut chunk_fallback = Vec::new();
+            for (digest, data) in chunk {
+                match error_by_digest.remove(&digest) {
+                    // Entry succeeded.
+                    Some(None) => {}
+                    Some(Some(err)) if is_retryable_code(err.code) => {
+                        trace!(
+                            ?digest,
+                            ?err,
+                            "Batched upload entry failed with retryable error, falling back to ByteStream write",
+                        );
+                        chunk_fallback.push((digest.into(), data));
+                    }
+                    Some(Some(err)) => {
+                        return Err(err.append(format!(
+                            "in BatchUpdateBlobs response for {digest} in GrpcStore::update_many"
+                        )));
+                    }
+                    // Server omitted the entry; fall back to the streaming
+                    // path rather than guessing at its state.
+                    None => chunk_fallback.push((digest.into(), data)),
+                }
+            }
+            Ok::<_, Error>(chunk_fallback)
+        }))
+        .buffer_unordered(BATCH_WRITE_DISPATCH_CONCURRENCY);
+        while let Some(chunk_fallback) = chunk_tasks.next().await {
+            fallback.extend(chunk_fallback?);
+        }
+        drop(chunk_tasks);
+
+        self.update_items_streaming(fallback).await
     }
 
     // NOTE: This function can only be safely used on CAS stores. AC stores may return a size that
