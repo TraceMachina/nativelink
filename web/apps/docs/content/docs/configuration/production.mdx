@@ -210,7 +210,6 @@ What's worth alerting on:
 The [Metrics deployment guide](/deployment/metrics) has a Grafana
 dashboard JSON file you can import.
 
-
 ## Sandboxing
 
 We've seen in some client configurations issues where Bazel in particular can leave zombie processes around on workers.
@@ -229,6 +228,29 @@ workers: [{
 
 `use_namespaces` enables process namespacing for workers, and `use_mount_namespace` then also isolates the worker
 root in a new mount namespace. Note, `use_mount_namespace` only works if `use_namespaces` is switched on as well.
+
+## FAQ
+
+<Accordions type="multiple">
+  <Accordion title="What happens to in-flight actions when a scheduler restarts?" id="what-happens-to-in-flight-actions-when-a-scheduler-restarts">
+    The queue lives in scheduler memory and is restored from the Action
+    Cache on restart — which is why running two or three stateless
+    schedulers behind a load balancer is enough for HA.
+  </Accordion>
+  <Accordion title="How do I route GPU or other special-hardware actions?" id="how-do-i-route-gpu-or-other-special-hardware-actions">
+    Tag the workers (`gpu: { values: ["nvidia-a100"] }`) and declare the
+    property as `"exact"` in the scheduler's
+    `supported_platform_properties`. An action requesting that value is
+    only ever dispatched to matching workers.
+  </Accordion>
+  <Accordion title="Does fast_slow guarantee everything reaches the slow tier?" id="does-fast-slow-guarantee-everything-reaches-the-slow-tier">
+    No — it never verifies that an object in `fast` also exists in
+    `slow`. For artifacts that must survive a fast-tier wipe — remote
+    execution outputs especially — make sure the write path covers both
+    tiers deliberately. More store gotchas:
+    [Store overview](/reference/nativelink-config/store-overview#faq).
+  </Accordion>
+</Accordions>
 
 ## A reference production config
 

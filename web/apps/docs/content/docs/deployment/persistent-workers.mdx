@@ -110,6 +110,22 @@ clusters don't waste memory.
   a soft mitigation; for serious workloads, set a hard
   `max_invocations` and recycle.
 
+## FAQ
+
+<Accordions type="multiple">
+  <Accordion title="Are persistent workers worth it for C++?" id="are-persistent-workers-worth-it-for-c">
+    Rarely — plain `clang` starts in ~10 ms, so the win is negligible and
+    not worth the caveats. They pay back almost immediately on JVM-family
+    toolchains (`javac`, `kotlinc`) and modestly on `rustc`.
+  </Accordion>
+  <Accordion title="Do they weaken hermeticity?" id="do-they-weaken-hermeticity">
+    They can — a warm process isn't sandboxed by default, so a toolchain
+    that mutates global state between invocations produces
+    nondeterministic results. Sandbox the worker process itself and
+    recycle workers periodically (see [Caveats](#caveats)).
+  </Accordion>
+</Accordions>
+
 ## What's next
 
 - [Configuration → Production](/configuration/production) — the

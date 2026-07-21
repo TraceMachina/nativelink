@@ -79,6 +79,22 @@ Meaningful contributors may be eligible for license waivers for
 Business Source License modules. Open an issue or contact the
 maintainers before depending on a waiver.
 
+## FAQ
+
+<Accordions type="multiple">
+  <Accordion title="Which dev workflow should I pick?" id="which-dev-workflow-should-i-pick">
+    [Cargo](/contribute/cargo) for small, localized changes — it's the
+    fastest way in. [Bazel](/contribute/bazel) when you want exactly what
+    CI runs. [Nix](/contribute/nix) for the fully-pinned shell, and
+    required for LRE work.
+  </Accordion>
+  <Accordion title="cargo test --workspace is green — why is CI red?" id="cargo-test-workspace-is-green-why-is-ci-red">
+    CI runs Bazel, and some crates are Bazel-only (the LRE flake outputs,
+    the Bazel-generated proto bindings). Run `bazel test //...` before
+    submitting if you touched anything Bazel-specific.
+  </Accordion>
+</Accordions>
+
 ## What's next
 
 Pick the dev environment that fits how you work:

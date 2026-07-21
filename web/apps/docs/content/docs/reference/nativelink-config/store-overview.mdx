@@ -161,6 +161,26 @@ instead of declaring the same backend twice:
 }
 ```
 
+## FAQ
+
+<Accordions type="multiple">
+  <Accordion title="Does fast_slow guarantee the slow tier has everything?" id="does-fast-slow-guarantee-the-slow-tier-has-everything">
+    No — it never checks that an object in `fast` also made it to `slow`.
+    If an artifact must survive a fast-tier wipe, make sure the write
+    path covers both tiers deliberately.
+  </Accordion>
+  <Accordion title="Why pair redis_store with size_partitioning?" id="why-pair-redis-store-with-size-partitioning">
+    Redis caps uploads at roughly 256-512 MB. Route large blobs to a
+    disk- or object-store backend with `size_partitioning` and keep Redis
+    serving the small, hot objects it's good at.
+  </Accordion>
+  <Accordion title="Which wrappers only apply to the CAS or the AC?" id="which-wrappers-only-apply-to-the-cas-or-the-ac">
+    `existence_cache` and `size_partitioning` are CAS-only;
+    `completeness_checking` is AC-only. Misplacing one isn't a config
+    error — it surfaces as a confusing correctness bug.
+  </Accordion>
+</Accordions>
+
 ## What's next
 
 - [Configuration reference](/reference/nativelink-config) — every

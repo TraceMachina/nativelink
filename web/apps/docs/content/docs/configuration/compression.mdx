@@ -88,3 +88,20 @@ Wire compression doesn't change what's stored: the CAS holds raw bytes.
 To also shrink bytes at rest, wrap the backing store in a
 [`compression` store](/reference/nativelink-config/main#compressionspec);
 the two compose, since one covers the wire and the other covers storage.
+
+## FAQ
+
+<Accordions type="multiple">
+  <Accordion title="Is it safe to enable with a mixed client fleet?" id="is-it-safe-to-enable-with-a-mixed-client-fleet">
+    Yes. Clients only compress when the server advertises support, so
+    anything that doesn't request `compressed-blobs/zstd` keeps using
+    identity transfers against the same instance.
+  </Accordion>
+  <Accordion title="Can I combine this with the dedup store?" id="can-i-combine-this-with-the-dedup-store">
+    Yes, but order matters at the store level: deduplication must operate
+    on raw content — identical chunks stop being identical after
+    compression, so a `dedup` store fed compressed bytes finds no
+    duplicates. Wire compression is fine either way; it's undone at the
+    gRPC boundary before any store sees the bytes.
+  </Accordion>
+</Accordions>

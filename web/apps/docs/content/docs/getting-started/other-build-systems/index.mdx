@@ -35,3 +35,27 @@ For a local Docker server, start with
 [Getting Started → Setup](/getting-started/setup). For the Buck2 integration
 test shape, see
 [`integration_tests/buck2/buck2_cas.json5`](https://github.com/TraceMachina/nativelink/tree/main/integration_tests/buck2/buck2_cas.json5).
+
+## FAQ
+
+<Accordions type="multiple">
+  <Accordion title="Can different build tools share one cache?" id="can-different-build-tools-share-one-cache">
+    Yes — they speak the same protocol against the same endpoint. Each
+    tool hashes its actions differently, so tools won't share entries
+    with each other, but every client of the same tool and toolchain
+    will.
+  </Accordion>
+  <Accordion title="Why does the instance name matter so much?" id="why-does-the-instance-name-matter-so-much">
+    Action hashes computed under different `instance_name` values never
+    collide, and a mismatch produces no error — just a cache that looks
+    permanently empty. Every client targeting a cache must send the same
+    instance name the server exposes.
+  </Accordion>
+  <Accordion title="Which client is the fastest way to try NativeLink?" id="which-client-is-the-fastest-way-to-try-nativelink">
+    If you're on CMake,
+    [recc in cache-only mode](/getting-started/other-build-systems/cmake-recc)
+    needs no worker fleet and no build-file changes. For Bazel, two
+    `.bazelrc` lines against the [Setup](/getting-started/setup) server
+    do it.
+  </Accordion>
+</Accordions>
