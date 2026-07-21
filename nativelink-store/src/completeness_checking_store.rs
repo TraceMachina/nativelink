@@ -29,7 +29,7 @@ use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::metrics_utils::CounterWithTime;
 use nativelink_util::store_trait::{
-    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+    RemoveCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };
 use parking_lot::Mutex;
 use tokio::sync::Notify;
@@ -398,10 +398,7 @@ impl StoreDriver for CompletenessCheckingStore {
         self
     }
 
-    fn register_remove_callback(
-        self: Arc<Self>,
-        callback: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, callback: RemoveCallback) -> Result<(), Error> {
         self.ac_store.register_remove_callback(callback.clone())?;
         self.cas_store.register_remove_callback(callback)?;
         Ok(())
