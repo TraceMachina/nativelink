@@ -166,6 +166,7 @@
             # CFLAGS = "-femit-all-decls";
             ${linkerEnvVar} = linkerPath;
             AWS_LC_SYS_SYSTEM_DIR = "${aws-lc-system-dir}";
+            AWS_LC_SYS_USE_SYSTEM = "true";
           });
 
         # Additional target for external dependencies to simplify caching.
@@ -604,6 +605,7 @@
 
               # Export aws-lc system dir
               export AWS_LC_SYS_SYSTEM_DIR=${aws-lc-system-dir}
+              export AWS_LC_SYS_USE_SYSTEM="true"
 
               # The Bazel and Cargo builds in nix require a Clang toolchain.
               # TODO(palfrey): The Bazel build currently uses the
