@@ -420,10 +420,10 @@ impl DirectoryCache {
     ///
     /// `protos` is a map of prefetched `Directory` protos consulted during
     /// construction (see [`Self::prefetch_tree_protos`]); `prefetch_on_miss`
-    /// is true only for root-level calls, which issue the tree's single
+    /// is true only for root-level calls, which issue the tree's logical
     /// `GetTree` prefetch on a cold miss. Subtree flights pass the root's
-    /// map down instead, so cache hits (root or subtree) never prefetch and
-    /// a tree construction issues at most one `GetTree` RPC.
+    /// map down instead, so cache hits (root or subtree) never prefetch. A
+    /// server may paginate that traversal across multiple RPCs.
     async fn get_or_create_entry(
         &self,
         digest: DigestInfo,
@@ -556,9 +556,9 @@ impl DirectoryCache {
         // same blob — the inode-corruption bug PR #2347 fixed.
         let cache_path = self.get_cache_path(&digest);
         // Root-level cold miss: prefetch the whole tree's `Directory` protos
-        // with one `GetTree` stream. Subtree flights never prefetch — they
-        // inherit the root's map (or `None`) through `protos` instead, so a
-        // tree construction issues at most one `GetTree` RPC total.
+        // with one logical `GetTree` traversal, following server pagination.
+        // Subtree flights never prefetch — they inherit the root's map (or
+        // `None`) through `protos` instead.
         let prefetched = if prefetch_on_miss {
             Box::pin(self.prefetch_tree_protos(digest)).await
         } else {
@@ -772,14 +772,15 @@ impl DirectoryCache {
     ///
     /// Each directory's final mode (0o755) is set at creation time, so no
     /// separate recursive permission pass is needed after construction.
-    /// Prefetches every `Directory` proto of `root`'s tree with a single
-    /// `GetTree` stream, keyed by each proto's re-computed digest (the
-    /// stream carries protos, not digests). Returns `None` — meaning
+    /// Prefetches every `Directory` proto of `root`'s tree with a logical
+    /// `GetTree` traversal, following `next_page_token` when the server
+    /// paginates it, and keys each proto by its re-computed digest (the
+    /// responses carry protos, not digests). Returns `None` — meaning
     /// "use the per-level fetch path" — when the feature is disabled, the
     /// slow tier is not a `GrpcStore`, or the stream fails; a `Some` map
     /// may also be incomplete, which `construct_directory` tolerates by
     /// fetching any missing proto individually. One fetch permit covers
-    /// the whole stream (it is one RPC).
+    /// the entire paginated traversal.
     async fn prefetch_tree_protos(
         &self,
         root: DigestInfo,
@@ -796,33 +797,42 @@ impl DirectoryCache {
             .map_or_else(default_digest_hasher_func, |v| *v);
         let result: Result<HashMap<DigestInfo, ProtoDirectory>, Error> = async {
             let _permit = self.acquire_fetch_permit().await?;
-            let mut stream = grpc_store
-                .get_tree(tonic::Request::new(GetTreeRequest {
-                    instance_name: String::new(),
-                    root_digest: Some(root.into()),
-                    page_size: 0,
-                    page_token: String::new(),
-                    digest_function: digest_hasher.proto_digest_func().into(),
-                }))
-                .await
-                .err_tip(|| "in prefetch_tree_protos")?
-                .into_inner();
             let mut protos = HashMap::new();
-            while let Some(response) = stream
-                .message()
-                .await
-                .map_err(Error::from)
-                .err_tip(|| "reading GetTree stream in prefetch_tree_protos")?
-            {
-                for directory in response.directories {
-                    // GetTree yields protos without digests; recompute with
-                    // the caller's digest function so lookups match the
-                    // digests embedded in parent directories.
-                    let encoded = directory.encode_to_vec();
-                    let mut hasher = digest_hasher.hasher();
-                    hasher.update(&encoded);
-                    protos.insert(hasher.finalize_digest(), directory);
+            let mut page_token = String::new();
+            loop {
+                let mut stream = grpc_store
+                    .get_tree(tonic::Request::new(GetTreeRequest {
+                        instance_name: String::new(),
+                        root_digest: Some(root.into()),
+                        page_size: 0,
+                        page_token,
+                        digest_function: digest_hasher.proto_digest_func().into(),
+                    }))
+                    .await
+                    .err_tip(|| "in prefetch_tree_protos")?
+                    .into_inner();
+                let mut next_page_token = String::new();
+                while let Some(response) = stream
+                    .message()
+                    .await
+                    .map_err(Error::from)
+                    .err_tip(|| "reading GetTree stream in prefetch_tree_protos")?
+                {
+                    next_page_token = response.next_page_token;
+                    for directory in response.directories {
+                        // GetTree yields protos without digests; recompute with
+                        // the caller's digest function so lookups match the
+                        // digests embedded in parent directories.
+                        let encoded = directory.encode_to_vec();
+                        let mut hasher = digest_hasher.hasher();
+                        hasher.update(&encoded);
+                        protos.insert(hasher.finalize_digest(), directory);
+                    }
                 }
+                if next_page_token.is_empty() {
+                    break;
+                }
+                page_token = next_page_token;
             }
             Ok(protos)
         }

@@ -3,9 +3,9 @@ title: Why Rust?
 description: Memory safety without garbage collection — the right shape for a service that has to be fast and never lie.
 ---
 
-Three reasons:
+## Three reasons
 
-## No GC pauses
+### No GC pauses
 
 Build infrastructure runs under sustained load. A scheduler hiccup
 during a `p99` request is the difference between "the build felt
@@ -16,7 +16,7 @@ heap.
 Rust has no garbage collector. The tail latency on a NativeLink
 cluster comes from network and storage, not the language runtime.
 
-## Memory safety
+### Memory safety
 
 A miscompiled binary that ships across an organisation is a serious
 problem. Worse, build systems are pure-function critical
@@ -27,7 +27,7 @@ Rust catches those bugs at compile time. The class of incident
 involving "we shipped something that wasn't what we compiled" doesn't
 happen.
 
-## Throughput
+### Throughput
 
 A single NativeLink instance handles over a billion build requests
 per month on modest hardware. That's `~400 req/s` sustained,

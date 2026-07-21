@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use bytes::{BufMut, Bytes, BytesMut};
 use mock_instant::thread_local::MockClock;
-use nativelink_config::stores::{CommonObjectSpec, ExperimentalGcsSpec};
+use nativelink_config::stores::{CommonObjectSpec, ErrorCode, ExperimentalGcsSpec, Retry};
 use nativelink_error::{Code, Error, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_store::cas_utils::ZERO_BYTE_DIGESTS;
@@ -176,6 +176,90 @@ async fn get_part_handles_not_found_error() -> Result<(), Error> {
         err.code,
         Code::NotFound,
         "Expected NotFound error to be propagated immediately"
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn get_part_not_found_not_retried_by_default() -> Result<(), Error> {
+    // Create mock GCS operations without adding any object, so reads
+    // yield NotFound.
+    let mock_ops = Arc::new(MockGcsOperations::new());
+    let store = create_test_store_with_retry(
+        mock_ops.clone(),
+        Retry {
+            max_retries: 2,
+            delay: 0.001,
+            jitter: 0.0,
+            ..Default::default()
+        },
+    )
+    .await?;
+
+    let digest = DigestInfo::try_new(VALID_HASH1, 100)?;
+    let store_key: StoreKey = to_store_key(digest);
+    let (mut tx, _rx) = make_buf_channel_pair();
+
+    let store_clone = store.clone();
+    let get_part_fut = nativelink_util::spawn!("get_part_task", async move {
+        store_clone.get_part(store_key, &mut tx, 0, None).await
+    });
+
+    let err = get_part_fut.await?.unwrap_err();
+    assert_eq!(err.code, Code::NotFound, "Expected NotFound error");
+
+    // Even with a retry budget configured, NotFound must not consume it
+    // unless explicitly opted in via `retry_on_errors`.
+    let call_counts = mock_ops.get_call_counts();
+    assert_eq!(
+        call_counts.read_calls.load(Ordering::Relaxed),
+        1,
+        "read_object_content should not be retried on NotFound by default"
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn get_part_retries_not_found_when_opted_in() -> Result<(), Error> {
+    // Create mock GCS operations without adding any object, so reads
+    // yield NotFound.
+    let mock_ops = Arc::new(MockGcsOperations::new());
+    let store = create_test_store_with_retry(
+        mock_ops.clone(),
+        Retry {
+            max_retries: 2,
+            delay: 0.001,
+            jitter: 0.0,
+            retry_on_errors: Some(vec![ErrorCode::NotFound]),
+        },
+    )
+    .await?;
+
+    let digest = DigestInfo::try_new(VALID_HASH1, 100)?;
+    let store_key: StoreKey = to_store_key(digest);
+    let (mut tx, _rx) = make_buf_channel_pair();
+
+    let store_clone = store.clone();
+    let get_part_fut = nativelink_util::spawn!("get_part_task", async move {
+        store_clone.get_part(store_key, &mut tx, 0, None).await
+    });
+
+    let err = get_part_fut.await?.unwrap_err();
+    assert_eq!(
+        err.code,
+        Code::NotFound,
+        "Expected NotFound error after retries are exhausted"
+    );
+
+    // With NotFound in `retry_on_errors`, the read should be attempted
+    // once plus `max_retries` more times before giving up.
+    let call_counts = mock_ops.get_call_counts();
+    assert_eq!(
+        call_counts.read_calls.load(Ordering::Relaxed),
+        3,
+        "read_object_content should be retried on NotFound when opted in"
     );
 
     Ok(())
@@ -696,6 +780,26 @@ async fn create_test_store(
             bucket: BUCKET_NAME.to_string(),
             common: CommonObjectSpec {
                 key_prefix: Some(KEY_PREFIX.to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        ops,
+        MockInstantWrapped::default,
+    )
+}
+
+// Helper function to create a test GCS store with a custom retry config
+async fn create_test_store_with_retry(
+    ops: Arc<MockGcsOperations>,
+    retry: Retry,
+) -> Result<Arc<GcsStore<MockGcsOperations, fn() -> MockInstantWrapped>>, Error> {
+    GcsStore::new_with_ops(
+        &ExperimentalGcsSpec {
+            bucket: BUCKET_NAME.to_string(),
+            common: CommonObjectSpec {
+                key_prefix: Some(KEY_PREFIX.to_string()),
+                retry,
                 ..Default::default()
             },
             ..Default::default()

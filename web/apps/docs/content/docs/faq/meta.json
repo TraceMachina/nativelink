@@ -3,11 +3,19 @@
     "cost",
     "caching",
     "remote-execution",
+    "architecture",
     "lre",
     "toolchains",
     "hermeticity",
     "nix",
-    "rust"
+    "rust",
+    "clients",
+    "configuration",
+    "stores",
+    "deployment",
+    "observability",
+    "troubleshooting",
+    "contributing"
   ],
   "title": "FAQ"
 }

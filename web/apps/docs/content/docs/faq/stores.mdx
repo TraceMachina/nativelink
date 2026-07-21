@@ -1,0 +1,70 @@
+---
+title: Which store backend should I use?
+description: Memory for demos, filesystem for single nodes, a cloud object store for anything multi-node — then compose wrappers like verify, compression, and fast_slow on top.
+---
+
+**Pick the terminal store by durability and sharing needs, then
+compose wrapper stores on top.** A store is a named backend declared
+once in the top-level `stores` array; its type is whichever key
+appears inside the object. The prose companion to the generated
+reference is [Store overview](/reference/nativelink-config/store-overview).
+
+## Terminal stores (hold actual bytes)
+
+- **`memory`** — fastest, wiped on restart. Dev setups and fast
+  tiers.
+- **`filesystem`** — survives restarts, single-node. Small-team
+  caches and CI runners with persistent volumes.
+- **`experimental_cloud_object_store`** — durable and shared across
+  nodes; one store type with six providers (`aws`, `gcs`, `azure`,
+  `ontap`, `r2`, `oci`).
+- **`redis_store`** — shared, low-latency hot tier; pair it with
+  `size_partitioning` since Redis caps uploads around 256-512 MB.
+- **`experimental_mongo`** — durable, shared, supports scheduler
+  change streams.
+
+## Wrapper stores (add behavior in front of another store)
+
+Wrappers nest arbitrarily deep. The shape most self-hosted
+production clusters converge on, outermost first:
+
+- **`verify`** — hash + size checking, wrapping
+- **`compression`** — lz4, wrapping
+- **`fast_slow`** — where `fast` is a small in-memory tier and
+  `slow` is the durable cloud object store.
+
+Sharing one backend between two store trees? Use `ref_store` to
+reference a store declared elsewhere by name instead of declaring it
+twice.
+
+## The gotchas worth knowing up front
+
+- **`fast_slow` doesn't guarantee durability.** It never checks that
+  an object in `fast` also exists in `slow`. For artifacts that must
+  survive a fast-tier wipe (remote execution outputs), write through
+  both tiers deliberately.
+- **`dedup` goes inside `compression`, not the other way around.**
+  Compressing before deduplication makes content-identical chunks
+  compress slightly differently, and deduplication stops working.
+- **Some wrappers are CAS-only or AC-only.** `existence_cache` and
+  `size_partitioning` are CAS-only; `completeness_checking` is
+  AC-only. Misplacing them isn't a config error — it's a confusing
+  correctness bug.
+
+## How big should each piece be
+
+Rules of thumb from [On-prem overview](/deployment/on-prem-overview):
+5-20 GB of CAS storage per active developer (C++ high, Go
+low), Redis sized for the last 24-48 hours of artifacts (~20-40 GiB
+for 1 TB/day of traffic), and an Action Cache typically under 1% of
+CAS by bytes — losing it is harmless but forces rebuilds until it
+warms back up.
+
+## Further reading
+
+- [Production configurations](/configuration/production) — the full
+  sharded S3 + Redis composition.
+- [Basic configurations](/configuration/basic) — filesystem and
+  compression starters.
+- [Store overview](/reference/nativelink-config/store-overview) —
+  every terminal and wrapper store, with JSON5 snippets.

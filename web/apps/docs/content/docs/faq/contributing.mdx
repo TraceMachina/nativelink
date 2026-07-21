@@ -1,0 +1,59 @@
+---
+title: How do I contribute to NativeLink?
+description: Open an issue first, develop with Bazel, Cargo, or Nix, sign every commit with DCO, and expect a first review response within two business days.
+---
+
+**Open an issue before anything bigger than a typo fix, then pick
+whichever dev loop fits your change.** The complete rules live in
+[Contribution guidelines](/contribute/guidelines); this is the
+short version.
+
+## Which dev workflow should I use
+
+- **Cargo** ([guide](/contribute/cargo)) — fastest into a small,
+  localized change. `cargo build --workspace`, `cargo test -p
+  <crate>`. The Rust toolchain is pinned in `rust-toolchain.toml`;
+  `protoc` 3+ must be on PATH.
+- **Bazel** ([guide](/contribute/bazel)) — what CI runs.
+  `bazel test //...` (first build 10-20 minutes, seconds after).
+  Editor integration via `bazel run //tools:gen-rust-project`.
+- **Nix** ([guide](/contribute/nix)) — `nix develop` reproduces the
+  exact CI toolchain (Cargo, Bazel, protoc, mold, clang, linters).
+  Required for LRE work; needs 15-20 GB free disk on first run.
+
+A green `cargo test --workspace` does not guarantee green CI — some
+crates are Bazel-only, and CI runs Bazel. Run `bazel test //...`
+before submitting if you touched anything Bazel-specific.
+
+## What the review process expects
+
+- **DCO sign-off on every commit** (`git commit -s`) — this is the
+  formal license declaration for your contribution.
+- **Formatter and linter clean**: `cargo fmt --all`,
+  `cargo clippy --all-targets`.
+- **One change per PR**, imperative-mood title, a body that explains
+  *why*, and tests for new behavior.
+- First response within 2 business days (ping the PR if slower); one
+  reviewer per change (others sometimes chime in); every merge is
+  squashed to one commit on `main`.
+
+Accepted: bug fixes with regression tests, performance work with
+reproducible benchmarks, new storage backends/schedulers/worker
+types (issue first), docs, and tooling. Rejected: RE-API breaking
+changes, single-vendor code paths, and refactoring for its own sake.
+
+## How do I contribute to the docs or website
+
+The docs live in `web/apps/docs/content/docs/` as MDX;
+`cd web && bun install && bun dev:docs` serves them at
+localhost:3001/docs with live reload. Frontmatter needs `title` and
+`description`; sidebar order comes from each section's `meta.json`.
+Style rules and available components are in
+[Working on documentation](/contribute/docs).
+
+## Further reading
+
+- [Contribution guidelines](/contribute/guidelines) — the full
+  accepted/rejected list and licensing details.
+- [Is NativeLink free?](/faq/cost) — how the FSL + BSL module
+  licensing fits together, including contributor waivers.

@@ -35,14 +35,15 @@ use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_redis_tester::SubscriptionManagerNotify;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
+use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
-use nativelink_util::spawn;
 use nativelink_util::store_trait::{
-    BoolValue, RemoveItemCallback, SchedulerCurrentVersionProvider, SchedulerIndexProvider,
+    BoolValue, RemoveCallback, SchedulerCurrentVersionProvider, SchedulerIndexProvider,
     SchedulerStore, SchedulerStoreDataProvider, SchedulerStoreDecodeTo, SchedulerStoreKeyProvider,
     SchedulerSubscription, SchedulerSubscriptionManager, StoreDriver, StoreKey, UploadSizeInfo,
 };
 use nativelink_util::task::JoinHandleDropGuard;
+use nativelink_util::{background_spawn, spawn};
 use parking_lot::{Mutex, RwLock};
 use patricia_tree::StringPatriciaMap;
 use redis::aio::{ConnectionLike, ConnectionManager, ConnectionManagerConfig};
@@ -53,9 +54,11 @@ use redis::{
     AsyncCommands, AsyncIter, Client, IntoConnectionInfo, PushInfo, ScanOptions, Script, Value,
     pipe,
 };
+use serde::Deserialize;
+use serde::de::IntoDeserializer;
 use tokio::select;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{OnceCell, OwnedSemaphorePermit, Semaphore};
 use tokio::time::{sleep, timeout};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::{debug, error, info, trace, warn};
@@ -325,6 +328,7 @@ impl RedisManager<ConnectionManager> for StandardRedisManager<ConnectionManager>
     }
 
     async fn psubscribe(&self, pattern: &str) -> Result<(), Error> {
+        debug!(pattern, "new psubscribe");
         let mut connection = self.get_connection().await?.0;
         let new_subscription = self.subscriptions.lock().insert(String::from(pattern));
         if new_subscription {
@@ -334,6 +338,7 @@ impl RedisManager<ConnectionManager> for StandardRedisManager<ConnectionManager>
             }
             result?;
         }
+        debug!(pattern, new_subscription, "new psubscribe complete");
         Ok(())
     }
 }
@@ -386,10 +391,7 @@ where
     max_count_per_cursor: u64,
 
     /// A manager for subscriptions to keys in Redis.
-    subscription_manager: tokio::sync::OnceCell<Arc<RedisSubscriptionManager>>,
-
-    /// Channel for getting subscription messages
-    subscriber_channel: Mutex<Option<UnboundedReceiver<PushInfo>>>,
+    subscription_manager: Arc<RedisSubscriptionManager>,
 
     /// Permits to limit inflight Redis requests. Technically only
     /// limits the calls to `get_client()`, but the requests per client
@@ -398,6 +400,11 @@ where
 
     /// Per-call ceiling for `check_health` PING.
     health_check_timeout: Duration,
+
+    /// Have we done a subscribe for messages for `remove_callback` subscribes?
+    has_remove_callback_subscribe: OnceCell<()>,
+
+    remove_callbacks: Arc<async_lock::Mutex<Vec<RemoveCallback>>>,
 }
 
 impl<C, M> Debug for RedisStore<C, M>
@@ -416,7 +423,6 @@ where
             )
             .field("scan_count", &self.scan_count)
             .field("subscription_manager", &self.subscription_manager)
-            .field("subscriber_channel", &self.subscriber_channel)
             .field("client_permits", &self.client_permits)
             .finish()
     }
@@ -447,6 +453,35 @@ impl<C: ConnectionLike> Drop for ClientWithPermit<C> {
     }
 }
 
+/// Decode a `StoreKey` coming from Redis
+pub fn decode_key<'a>(
+    key_prefix: &String,
+    encoded_key: Cow<'a, str>,
+) -> Result<StoreKey<'a>, Error> {
+    let key_no_prefix = if key_prefix.is_empty() {
+        encoded_key
+    } else {
+        match encoded_key.strip_prefix(key_prefix) {
+            Some(r) => Cow::from(r.to_string()),
+            None => {
+                return Err(make_err!(
+                    Code::InvalidArgument,
+                    "Redis key ({}) is missing prefix ({})",
+                    encoded_key,
+                    key_prefix
+                ));
+            }
+        }
+    };
+    let maybe_digest_info: Result<_, serde::de::value::Error> =
+        DigestInfo::deserialize(key_no_prefix.clone().into_deserializer());
+    if let Ok(digest_info) = maybe_digest_info {
+        Ok(StoreKey::Digest(digest_info))
+    } else {
+        Ok(StoreKey::Str(key_no_prefix))
+    }
+}
+
 impl<C, M> RedisStore<C, M>
 where
     C: ConnectionLike + Clone + Sync,
@@ -468,6 +503,15 @@ where
         connection_manager: M,
     ) -> Result<Self, Error> {
         info!("Redis index fingerprint: {FINGERPRINT_CREATE_INDEX_HEX}");
+        let remove_callbacks = Arc::new(async_lock::Mutex::new(Vec::new()));
+        let subscription_manager = Arc::new(RedisSubscriptionManager::new(
+            subscriber_channel,
+            remove_callbacks.clone(),
+            key_prefix.clone(),
+        ));
+        if let Some(channel) = &pub_sub_channel {
+            connection_manager.psubscribe(channel).await?;
+        }
 
         Ok(Self {
             connection_manager,
@@ -478,11 +522,12 @@ where
             read_chunk_size,
             max_chunk_uploads_per_update,
             scan_count,
-            subscription_manager: tokio::sync::OnceCell::new(),
-            subscriber_channel: Mutex::new(Some(subscriber_channel)),
+            subscription_manager,
             client_permits: Arc::new(Semaphore::new(max_client_permits)),
             max_count_per_cursor,
             health_check_timeout,
+            has_remove_callback_subscribe: OnceCell::const_new(),
+            remove_callbacks,
         })
     }
 
@@ -499,8 +544,8 @@ where
         })
     }
 
-    /// Encode a [`StoreKey`] so it can be sent to Redis.
-    fn encode_key<'a>(&self, key: &'a StoreKey<'a>) -> Cow<'a, str> {
+    /// Encode a `StoreKey` so it can be sent to Redis.
+    pub fn encode_key<'a>(&self, key: &'a StoreKey<'a>) -> Cow<'a, str> {
         let key_body = key.as_str();
         if self.key_prefix.is_empty() {
             key_body
@@ -913,19 +958,21 @@ where
                             errors.push(format!("Non-utf8 key {raw_key:?}"));
                             continue;
                         };
-                        if let Some(key) = str_key.strip_prefix(&self.key_prefix) {
-                            let key = StoreKey::new_str(key);
-                            if range.contains(&key) {
-                                iterations += 1;
-                                if !handler(&key) {
-                                    error!("Issue in handler");
-                                    errors.push("Issue in handler".to_string());
+                        match decode_key(&self.key_prefix, Cow::from(str_key)) {
+                            Ok(key) => {
+                                if range.contains(&key) {
+                                    iterations += 1;
+                                    if !handler(&key) {
+                                        error!("Issue in handler");
+                                        errors.push("Issue in handler".to_string());
+                                    }
+                                } else {
+                                    trace!(%key, ?range, "Key not in range");
                                 }
-                            } else {
-                                trace!(%key, ?range, "Key not in range");
                             }
-                        } else {
-                            errors.push("Key doesn't match prefix".to_string());
+                            Err(e) => {
+                                errors.push(e.to_string());
+                            }
                         }
                     }
                     Err(err)
@@ -1293,11 +1340,38 @@ where
         registry.register_indicator(self);
     }
 
-    fn register_remove_callback(
-        self: Arc<Self>,
-        _callback: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error> {
-        // As redis doesn't drop stuff, we can just ignore this
+    fn register_remove_callback(self: Arc<Self>, callback: RemoveCallback) -> Result<(), Error> {
+        debug!(?callback, "New callback");
+        let local_self = self.clone();
+        background_spawn!("remove_callback_subscribe", async move {
+            self.remove_callbacks.lock().await.push(callback);
+            if let Err(err) = local_self.clone().has_remove_callback_subscribe
+                .get_or_try_init(|| async move {
+                    let mut client = local_self.get_client().await?;
+                    let cfg = redis::cmd("CONFIG").arg("GET").arg("notify-keyspace-events").to_owned().query_async::<Vec<(String,String)>>(&mut client.connection_manager).await.map_err(|e| Error::from(e).append("Parsing notify-keyspace-events"))?;
+                    if cfg.len() != 1 {
+                        warn!(?cfg, "Got multiple items for CONFIG GET, expected one");
+                        return Err(make_input_err!("Got multiple items for CONFIG GET, expected one"));
+                    }
+                    let events_cfg = &cfg.first().ok_or_else(|| make_err!(Code::InvalidArgument, "Only one item"))?.1;
+                    if events_cfg.is_empty() {
+                        error!("notify-keyspace-events not enabled for Redis, will fail to get remove callbacks");
+                    } else if !events_cfg.contains('K') {
+                        error!(notify_keyspace_events=events_cfg, "notify-keyspace-events does not contain 'K' so won't get keyspace events we need for eviction events");
+                    } else if !events_cfg.contains('A') {
+                        error!(notify_keyspace_events=events_cfg, "notify-keyspace-events does not contain 'A' so we won't get eviction events");
+                    }
+                    // FIXME: Redis events spec appears unreliable, so we subscribe anyways
+                    // It should just need Ke as per https://redis.io/docs/latest/develop/pubsub/keyspace-notifications/
+                    // but I'm yet to get reliable eviction events out of that
+                    info!(notify_keyspace_events=events_cfg, "Attempting to subscribe to eviction events");
+                    self.connection_manager.psubscribe("__key*__:*").await?;
+                    Ok::<(), Error>(())
+                 })
+                .await {
+                    error!(?err, "Error while trying to initialise remove_callback_subscribe");
+                }
+        });
         Ok(())
     }
 }
@@ -1645,7 +1719,11 @@ pub struct RedisSubscriptionManager {
 }
 
 impl RedisSubscriptionManager {
-    pub fn new(subscriber_channel: UnboundedReceiver<PushInfo>) -> Self {
+    pub fn new(
+        subscriber_channel: UnboundedReceiver<PushInfo>,
+        remove_callbacks: Arc<async_lock::Mutex<Vec<RemoveCallback>>>,
+        key_prefix: String,
+    ) -> Self {
         let subscribed_keys = Arc::new(RwLock::new(StringPatriciaMap::new()));
         let subscribed_keys_weak = Arc::downgrade(&subscribed_keys);
         let (tx_for_test, mut rx_for_test) = unbounded_channel();
@@ -1656,6 +1734,7 @@ impl RedisSubscriptionManager {
             _subscription_spawn: Arc::new(Mutex::new(spawn!(
                 "redis_subscribe_spawn",
                 async move {
+                    debug!("running subscribe loop");
                     loop {
                         loop {
                             let key = select! {
@@ -1682,7 +1761,7 @@ impl RedisSubscriptionManager {
                                             error!(?push_info, "Expected exactly 3 values on subscriber channel (pattern, channel, value)");
                                             continue;
                                         }
-                                        match push_info.data.last().unwrap() {
+                                        let value = match push_info.data.last().unwrap() {
                                             Value::SimpleString(s) => {
                                                 s.clone()
                                             }
@@ -1693,7 +1772,42 @@ impl RedisSubscriptionManager {
                                                 error!(?other, "Received non-string message in RedisSubscriptionManager");
                                                 continue;
                                             }
+                                        };
+                                        if value == "evicted" {
+                                            trace!(?push_info, "Eviction event");
+                                            let eviction_key = if let Some(key) = push_info.data.get(1) {
+                                                if let Value::BulkString(s) = key {
+                                                    String::from_utf8(s.clone()).expect("String message")
+                                                } else {
+                                                    error!(?push_info, "Eviction key wasn't bulk-string");
+                                                    continue;
+                                                }
+                                            } else {
+                                                error!(?push_info, "No key in eviction event");
+                                                continue;
+                                            };
+                                            trace!(?eviction_key, "Eviction key");
+                                            let Some((_prefix, internal_key)) = eviction_key.split_once(':') else {
+                                                error!(?eviction_key, "Eviction key doesn't contain a colon");
+                                                continue;
+                                            };
+
+                                            let store_key = match decode_key(&key_prefix, Cow::from(internal_key)) {
+                                                Ok(k) => k.into_owned(),
+                                                Err(err) => {
+                                                    error!(%err, internal_key, "Bad redis key");
+                                                    continue;
+                                                }
+                                            };
+                                            let locked_remove_callbacks = remove_callbacks.lock().await;
+                                            let mut callbacks: FuturesUnordered<_> =
+                                                locked_remove_callbacks.iter()
+                                                .map(|callback| callback.callback(store_key.borrow()))
+                                                .collect();
+                                            while callbacks.next().await.is_some() {}
+                                            continue
                                         }
+                                        value
                                     } else {
                                         error!("Error receiving message in RedisSubscriptionManager from subscriber_channel");
                                         break;
@@ -1786,23 +1900,12 @@ where
     type SubscriptionManager = RedisSubscriptionManager;
 
     async fn subscription_manager(&self) -> Result<Arc<RedisSubscriptionManager>, Error> {
-        self.subscription_manager
-            .get_or_try_init(|| async move {
-                let Some(subscriber_channel) = self.subscriber_channel.lock().take() else {
-                    return Err(make_input_err!(
-                        "Multiple attempts to obtain the subscription manager in RedisStore"
-                    ));
-                };
-                let Some(pub_sub_channel) = &self.pub_sub_channel else {
-                    return Err(make_input_err!(
-                        "RedisStore must have a pubsub for Redis Scheduler if using subscriptions"
-                    ));
-                };
-                self.connection_manager.psubscribe(pub_sub_channel).await?;
-                Ok(Arc::new(RedisSubscriptionManager::new(subscriber_channel)))
-            })
-            .await
-            .map(Clone::clone)
+        if self.pub_sub_channel.is_none() {
+            return Err(make_input_err!(
+                "RedisStore must have a pubsub for Redis Scheduler if using subscriptions"
+            ));
+        }
+        Ok(self.subscription_manager.clone())
     }
 
     async fn update_data<T>(&self, data: T, expiry: Option<Duration>) -> Result<Option<i64>, Error>
