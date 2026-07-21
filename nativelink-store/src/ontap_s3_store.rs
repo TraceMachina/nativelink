@@ -47,7 +47,7 @@ use nativelink_util::buf_channel::{
 use nativelink_util::health_utils::{HealthStatus, HealthStatusIndicator};
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::retry::{Retrier, RetryResult};
-use nativelink_util::store_trait::{RemoveItemCallback, StoreDriver, StoreKey, UploadSizeInfo};
+use nativelink_util::store_trait::{RemoveCallback, StoreDriver, StoreKey, UploadSizeInfo};
 use parking_lot::Mutex;
 use rustls::{ClientConfig, RootCertStore};
 use rustls_pki_types::CertificateDer;
@@ -73,8 +73,6 @@ const DEFAULT_MAX_RETRY_BUFFER_PER_REQUEST: usize = 20 * 1024 * 1024; // 20MB
 
 // Default limit for concurrent part uploads per multipart upload
 const DEFAULT_MULTIPART_MAX_CONCURRENT_UPLOADS: usize = 10;
-
-type RemoveCallback = Arc<dyn RemoveItemCallback>;
 
 #[derive(Debug, MetricsComponent)]
 pub struct OntapS3Store<NowFn> {
@@ -767,10 +765,7 @@ where
         self
     }
 
-    fn register_remove_callback(
-        self: Arc<Self>,
-        callback: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, callback: RemoveCallback) -> Result<(), Error> {
         self.remove_callbacks.lock().push(callback);
         Ok(())
     }

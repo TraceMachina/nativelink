@@ -48,7 +48,7 @@ use nativelink_util::common::encode_stream_proto;
 use nativelink_util::default_health_status_indicator;
 use nativelink_util::health_utils::HealthStatusIndicator;
 use nativelink_util::store_trait::{
-    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+    RemoveCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };
 use pretty_assertions::assert_eq;
 use prost::Message;
@@ -154,10 +154,7 @@ impl StoreDriver for FlakyStore {
         self
     }
 
-    fn register_remove_callback(
-        self: Arc<Self>,
-        _callback: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, _callback: RemoveCallback) -> Result<(), Error> {
         todo!();
     }
 }
