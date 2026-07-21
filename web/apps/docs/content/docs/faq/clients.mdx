@@ -1,0 +1,65 @@
+---
+title: Which build tools work with NativeLink?
+description: Any client that speaks the Remote Execution API — Bazel, Buck2, Siso, Pants, BuildStream, Goma, and CMake via recc — with no build-file rewrites.
+---
+
+**Any build tool that implements the Remote Execution API can point
+at NativeLink without rewriting build files.** That includes Bazel,
+Buck2, Siso (Chromium's Ninja replacement), Pants, BuildStream, Goma,
+and plain CMake projects via [`recc`](/getting-started/other-build-systems/cmake-recc).
+The full guides live in
+[Getting started → Setup](/getting-started/setup) and
+[Other build systems](/getting-started/other-build-systems); this page
+is the short version.
+
+## How each client is wired
+
+- **Bazel** — `.bazelrc` flags:
+  `build --remote_cache=grpc://localhost:50051`,
+  `--remote_executor=...`, and `--remote_instance_name=main`.
+- **Buck2** — a `[buck2_re_client]` section in `.buckconfig` with
+  `engine_address`, `action_cache_address`, and `cas_address` all
+  pointing at the same listener, plus an execution platform with
+  `remote_enabled = True`.
+- **Siso** — environment variables: `SISO_REAPI_ADDRESS`,
+  `SISO_REAPI_INSTANCE`, and `RBE_service_no_security=true` for
+  local, non-TLS development.
+- **Pants** — `remote_cache_read`, `remote_cache_write`,
+  `remote_store_address`, and `remote_instance_name` under
+  `[GLOBAL]` in `pants.toml`.
+- **BuildStream** — `artifacts.servers` (with `push: true`) and the
+  `remote-execution` service URLs.
+- **CMake** — set `recc` as the compiler launcher
+  (`CMAKE_C_COMPILER_LAUNCHER`) in cache-only mode; compiles happen
+  locally and outputs travel through NativeLink.
+
+All clients targeting the same cache must agree on the instance name
+— see [Why isn't my build hitting the cache?](/faq/troubleshooting)
+for what happens when they don't.
+
+## What platforms can I run the server on
+
+- **Linux (x86_64 and ARM64)** — Docker image
+  (`ghcr.io/tracemachina/nativelink`, multi-arch) or Nix.
+- **macOS (Apple Silicon and Intel)** — the Docker image runs
+  natively on both architectures; the Nix path builds from source
+  (needs 15-20 GB of free disk) for a native binary.
+- **Windows (x86_64 and ARM64)** — via Docker, or WSL2 following the
+  Linux instructions.
+
+## How do I confirm it's actually working
+
+Rebuild without changing source. With Bazel,
+`--execution_log_json_file=/tmp/exec.json` lets you count hits with
+`grep -c '"remoteCacheHit": true'`; unchanged targets report
+`(remote cache hit)` in the console. `recc` prints an
+`Action Cache hit` line at `RECC_LOG_LEVEL=info`.
+
+## Further reading
+
+- [Setup](/getting-started/setup) — running a server in under ten
+  minutes.
+- [Classic RBE examples](/rbe/examples) — cache-only vs. full remote
+  execution vs. hybrid, and which to start with.
+- [What is remote caching?](/faq/caching) — how the cache hash is
+  computed.
