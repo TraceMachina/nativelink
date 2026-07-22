@@ -135,6 +135,11 @@
             else "${pkgs.llvmPackages_22.lld}/bin/ld.lld";
 
           linkerEnvVar = "CARGO_TARGET_${pkgs.lib.toUpper (pkgs.lib.replaceStrings ["-"] ["_"] targetArch)}_LINKER";
+
+          aws-lc-system-dir = pkgs.callPackage ./tools/aws-lc-system-dir.nix {
+            inherit (p) aws-lc;
+            aws-lc-dev = p.aws-lc.dev;
+          };
         in
           {
             inherit src;
@@ -201,10 +206,6 @@
         nativelink-is-executable-test = pkgs.callPackage ./tools/nativelink-is-executable-test.nix {inherit nativelink;};
 
         generate-toolchains = pkgs.callPackage ./tools/generate-toolchains.nix {};
-        aws-lc-system-dir = pkgs.callPackage ./tools/aws-lc-system-dir.nix {
-          inherit (pkgs) aws-lc;
-          aws-lc-dev = pkgs.aws-lc.dev;
-        };
 
         build-chromium-tests =
           pkgs.writeShellScriptBin
