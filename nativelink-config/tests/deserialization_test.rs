@@ -689,7 +689,7 @@ mod grpc_endpoint_http2_tests {
                 "address": "grpc://localhost:50051",
                 "experimental_http2_initial_stream_window_size": "8mb",
                 "experimental_http2_initial_connection_window_size": "32mb",
-                "experimental_http2_adaptive_window": true,
+                "experimental_http2_adaptive_window": "true",
                 "experimental_http2_max_frame_size": "1mb"
             }"#,
         )
@@ -710,5 +710,22 @@ mod grpc_endpoint_http2_tests {
             endpoint_config.experimental_http2_max_frame_size,
             Some(1_000_000)
         );
+    }
+
+    #[test]
+    fn grpc_endpoint_http2_fields_default_to_transport_defaults() {
+        let endpoint_config: GrpcEndpoint =
+            serde_json5::from_str(r#"{"address": "grpc://localhost:50051"}"#)
+                .expect("config should deserialize");
+        assert_eq!(
+            endpoint_config.experimental_http2_initial_stream_window_size,
+            None
+        );
+        assert_eq!(
+            endpoint_config.experimental_http2_initial_connection_window_size,
+            None
+        );
+        assert_eq!(endpoint_config.experimental_http2_adaptive_window, None);
+        assert_eq!(endpoint_config.experimental_http2_max_frame_size, None);
     }
 }
