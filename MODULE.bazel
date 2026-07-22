@@ -17,6 +17,30 @@ bazel_dep(name = "rules_shell", version = "0.6.1")
 # these hermetic toolchains replace the host autodetect path.
 bazel_dep(name = "llvm", version = "0.8.9")
 
+osx = use_extension("@llvm//extensions:osx.bzl", "osx")
+
+# Using the list from https://github.com/hermeticbuild/rules_rs/blob/main/test/MODULE.bazel#L40
+# aws-lc doesn't need all of these, but it's better than figuring out which ones!
+osx.frameworks(names = [
+    "AudioToolbox",
+    "AudioUnit",
+    "CFNetwork",
+    "CoreAudio",
+    "CoreAudioTypes",
+    "CoreFoundation",
+    "CoreMIDI",
+    "CoreServices",
+    "DiskArbitration",
+    "Foundation",
+    "IOKit",
+    "Kernel",
+    "OSLog",
+    "OpenAL",
+    "Security",
+    "SystemConfiguration",
+])
+use_repo(osx, "macos_sdk")
+
 register_toolchains("@llvm//toolchain:all")
 
 # We use the Nix Python install, as per https://rules-python.readthedocs.io/en/latest/toolchains.html#local-toolchain
