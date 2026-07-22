@@ -54,7 +54,7 @@ use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::store_trait::{RemoveCallback, StoreDriver, StoreKey, UploadSizeInfo};
 use nativelink_util::telemetry::ClientHeaders;
 use nativelink_util::wire_compression::{
-    stream_decode_compressed_upload, stream_encode_compressed_download,
+    stream_decode_compressed_upload, stream_encode_compressed_download_from_reader,
 };
 use nativelink_util::{background_spawn, default_health_status_indicator, tls_utils};
 use opentelemetry::context::Context;
@@ -1167,8 +1167,9 @@ impl GrpcStore {
         };
 
         let (compressed_tx, compressed_rx) = make_buf_channel_pair();
-        let encode_fut = stream_encode_compressed_download(
-            reader,
+        let mut reader = reader;
+        let encode_fut = stream_encode_compressed_download_from_reader(
+            &mut reader,
             compressor::Value::Zstd,
             WIRE_COMPRESSION_ZSTD_LEVEL,
             compressed_tx,
@@ -1223,19 +1224,44 @@ impl GrpcStore {
             .map(|_| ())
             .err_tip(|| "in GrpcStore::update_compressed()")
         };
-        match future::select(core::pin::pin!(write_fut), core::pin::pin!(encode_fut)).await {
-            future::Either::Left((write_result, _encode_fut)) => {
+        enum UploadCompletion {
+            Write(Result<(), Error>),
+            Encode(Result<(), Error>, Result<(), Error>),
+        }
+        let completion = async {
+            let write_fut = Box::pin(write_fut);
+            let encode_fut = Box::pin(encode_fut);
+            match future::select(write_fut, encode_fut).await {
+                future::Either::Left((write_result, encode_fut)) => {
+                    drop(encode_fut);
+                    UploadCompletion::Write(write_result)
+                }
+                future::Either::Right((encode_result, write_fut)) => {
+                    UploadCompletion::Encode(encode_result, write_fut.await)
+                }
+            }
+        }
+        .await;
+        match completion {
+            UploadCompletion::Write(write_result) => {
                 write_result?;
                 // The server settled the write before consuming the whole
                 // stream (REAPI early completion of a duplicate upload). Do
-                // NOT await the encoder: it may be blocked on a stalled
-                // producer. Returning drops the pinned encoder, releasing
-                // the raw reader so the producer is notified, mirroring the
-                // plain path. Full reader-drain parity arrives with the
-                // write-dedup branch's drain pattern on rebase.
+                // not await the encoder: it may be blocked on a stalled
+                // producer. Cancel it, then drain the raw reader in the
+                // background so the producer can finish without observing a
+                // broken pipe from a successful upload.
+                background_spawn!("grpc_store_compressed_upload_drain", async move {
+                    if let Err(err) = reader.drain().await {
+                        debug!(
+                            ?err,
+                            "Compressed upload reader drain failed after early completion"
+                        );
+                    }
+                });
             }
-            future::Either::Right((encode_result, write_fut)) => {
-                write_fut.await?;
+            UploadCompletion::Encode(encode_result, write_result) => {
+                write_result?;
                 // An encode error with a successful write means the server
                 // finished without consuming the whole stream; the upload
                 // itself succeeded.
@@ -1245,6 +1271,18 @@ impl GrpcStore {
                         "Compressed upload encoder ended early after successful write"
                     );
                 }
+                // The encoder may have stopped because the server completed
+                // the write while its response stream was still being
+                // finalized. It has already released its borrow of `reader`,
+                // so drain any raw input the producer still has in flight.
+                background_spawn!("grpc_store_compressed_upload_drain", async move {
+                    if let Err(err) = reader.drain().await {
+                        debug!(
+                            ?err,
+                            "Compressed upload reader drain failed after early completion"
+                        );
+                    }
+                });
             }
         }
         Ok(digest.size_bytes())
@@ -1363,46 +1401,50 @@ impl GrpcStore {
                     .err_tip(|| "in GrpcStore::get_part_compressed()")?;
             }
         };
-        let (feed_result, decode_result, pump_result) =
-            tokio::join!(feed_fut, decode_fut, pump_fut);
+        #[derive(Debug)]
+        enum CompressedReadStage {
+            Feed,
+            Decode,
+            Pump,
+        }
 
-        if feed_result.is_ok() && decode_result.is_ok() && pump_result.is_ok() {
-            return Ok(None);
-        }
-        // A local writer failure is terminal regardless of transport state.
-        if let Err(err) = pump_result
-            && !is_retryable_code(err.code)
-        {
-            return Err(err);
-        }
-        // Transport interruptions (and the decoder errors they cascade
-        // into) are retryable: hand back how much was already forwarded so
-        // the caller resumes via the identity path.
-        let ((Err(transport_err), _) | (Ok(()), Err(transport_err))) =
-            (&feed_result, &decode_result)
-        else {
-            // Only the pump failed, and retryably.
-            return Ok(Some(forwarded.load(Ordering::Relaxed)));
-        };
-        if matches!(&feed_result, Err(err) if !is_retryable_code(err.code)) {
-            return Err(transport_err
-                .clone()
-                .append("in GrpcStore::get_part_compressed()"));
-        }
-        // Digest/size mismatches from a COMPLETE transfer are terminal data
-        // errors; decode failures after a broken feed are retryable fallout.
-        if feed_result.is_ok()
-            && let Err(err) = &decode_result
-            && err.code == Code::InvalidArgument
-        {
-            return Err(err.clone().append("in GrpcStore::get_part_compressed()"));
-        }
-        warn!(
-            ?transport_err,
-            forwarded = forwarded.load(Ordering::Relaxed),
-            "Compressed read interrupted, falling back to identity read"
+        let result = tokio::try_join!(
+            async {
+                feed_fut
+                    .await
+                    .map_err(|err| (CompressedReadStage::Feed, err))
+            },
+            async {
+                decode_fut
+                    .await
+                    .map_err(|err| (CompressedReadStage::Decode, err))
+            },
+            async {
+                pump_fut
+                    .await
+                    .map_err(|err| (CompressedReadStage::Pump, err))
+            },
         );
-        Ok(Some(forwarded.load(Ordering::Relaxed)))
+
+        match result {
+            Ok(((), (), ())) => Ok(None),
+            Err((CompressedReadStage::Decode, err)) if err.code == Code::InvalidArgument => {
+                Err(err.append("in GrpcStore::get_part_compressed()"))
+            }
+            Err((CompressedReadStage::Pump, err)) if !is_retryable_code(err.code) => Err(err),
+            Err((CompressedReadStage::Feed, err)) if !is_retryable_code(err.code) => {
+                Err(err.append("in GrpcStore::get_part_compressed()"))
+            }
+            Err((stage, err)) => {
+                debug!(?stage, ?err, "Compressed read interrupted");
+                warn!(
+                    ?err,
+                    forwarded = forwarded.load(Ordering::Relaxed),
+                    "Compressed read interrupted, falling back to identity read"
+                );
+                Ok(Some(forwarded.load(Ordering::Relaxed)))
+            }
+        }
     }
 }
 

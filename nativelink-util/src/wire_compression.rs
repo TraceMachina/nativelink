@@ -271,6 +271,24 @@ pub async fn stream_encode_compressed_download(
     mut raw_rx: DropCloserReadHalf,
     wire_compressor: compressor::Value,
     compression_level: i32,
+    tx: DropCloserWriteHalf,
+) -> Result<(), Error> {
+    stream_encode_compressed_download_from_reader(
+        &mut raw_rx,
+        wire_compressor,
+        compression_level,
+        tx,
+    )
+    .await
+}
+
+/// Encode a raw byte stream into a single zstd frame, borrowing the input
+/// reader so a caller can continue draining it if the downstream consumer
+/// finishes before the encoder does.
+pub async fn stream_encode_compressed_download_from_reader(
+    raw_rx: &mut DropCloserReadHalf,
+    wire_compressor: compressor::Value,
+    compression_level: i32,
     mut tx: DropCloserWriteHalf,
 ) -> Result<(), Error> {
     use zstd::stream::raw::{Encoder, InBuffer, Operation, OutBuffer};

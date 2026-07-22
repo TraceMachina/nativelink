@@ -71,6 +71,7 @@ rust_test_suite(
         "tests/fetch_server_test.rs",
         "tests/health_server_test.rs",
         "tests/push_server_test.rs",
+        "tests/grpc_wire_compression_test.rs",
         "tests/wire_compression_test.rs",
         "tests/worker_api_server_test.rs",
     ],

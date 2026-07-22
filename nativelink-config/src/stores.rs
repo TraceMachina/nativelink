@@ -1487,7 +1487,7 @@ pub struct GrpcSpec {
     /// take precedence for blobs at or above the chunking threshold.
     ///
     /// Default: false (disabled).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "convert_boolean_with_shellexpand")]
     pub experimental_remote_cache_compression: bool,
 }
 

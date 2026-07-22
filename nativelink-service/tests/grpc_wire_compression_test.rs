@@ -16,9 +16,9 @@
 //! (`GrpcSpec.experimental_remote_cache_compression`) against a real
 //! compression-enabled `ByteStream`/CAS server.
 
+use core::sync::atomic::{AtomicU64, Ordering};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use bytes::Bytes;
 use futures::Future;
@@ -160,9 +160,9 @@ fn make_content(tag: u8, len: usize) -> (Bytes, DigestInfo) {
     let mut data = vec![0u8; len];
     for (i, b) in data.iter_mut().enumerate() {
         *b = match i % 8 {
-            0 | 1 | 2 | 3 | 4 => tag,
-            5 => (i / 8) as u8,
-            _ => (i / 4096) as u8,
+            0..=4 => tag,
+            5 => u8::try_from((i / 8) % 256).expect("value is reduced modulo 256"),
+            _ => u8::try_from((i / 4096) % 256).expect("value is reduced modulo 256"),
         };
     }
     let mut hasher = Sha256::new();
@@ -286,6 +286,10 @@ struct FakeByteStream {
     /// Pause the compressed read stream after this many chunks (forces the
     /// client feed to lag the decoder, exercising the cascade race).
     pause_compressed_read_after_chunks: Option<usize>,
+    /// Hold the compressed read stream open forever after this many chunks.
+    /// This ensures a decoder error must cancel the feed rather than waiting
+    /// for the upstream stream to finish.
+    hold_compressed_read_after_chunks: Option<usize>,
     /// Payload served for identity reads (fallback detector).
     identity_read_payload: Option<Bytes>,
 }
@@ -312,10 +316,14 @@ impl nativelink_proto::google::bytestream::byte_stream_server::ByteStream for Fa
                 .map(Bytes::copy_from_slice)
                 .collect();
             let pause_after = self.pause_compressed_read_after_chunks;
+            let hold_after = self.hold_compressed_read_after_chunks;
             let stream =
                 futures::stream::unfold((chunks, 0usize), move |(chunks, index)| async move {
                     if index >= chunks.len() {
                         return None;
+                    }
+                    if Some(index) == hold_after {
+                        futures::future::pending::<()>().await;
                     }
                     if Some(index) == pause_after {
                         // Hold the wire open long enough that the client
@@ -478,7 +486,7 @@ async fn corrupt_compressed_download_is_terminal() -> Result<(), Box<dyn core::e
         // Pause just after the first frame ends: the decoder hits the
         // size overshoot while the feed is still blocked on the wire, so
         // the feed's next send hits the dropped receiver.
-        pause_compressed_read_after_chunks: Some(valid_frame_chunks + 1),
+        hold_compressed_read_after_chunks: Some(valid_frame_chunks + 1),
         compressed_read_payload: Some(Bytes::from(corrupt)),
         identity_read_payload: Some(content),
         ..Default::default()
@@ -486,7 +494,12 @@ async fn corrupt_compressed_download_is_terminal() -> Result<(), Box<dyn core::e
     .await?;
     let grpc_store = GrpcStore::new(&grpc_spec(port, true)).await?;
 
-    let result = grpc_store.get_part_unchunked(digest, 0, None).await;
+    let result = tokio::time::timeout(
+        core::time::Duration::from_secs(2),
+        grpc_store.get_part_unchunked(digest, 0, None),
+    )
+    .await
+    .expect("decoder failure must cancel the held compressed read stream");
     let err = result.expect_err("corrupt compressed data must be terminal");
     assert_eq!(
         err.code,
@@ -501,8 +514,9 @@ async fn corrupt_compressed_download_is_terminal() -> Result<(), Box<dyn core::e
     Ok(())
 }
 
-// W3: a server that early-completes a compressed upload while the producer
-// is stalled must not hang the update.
+// W3: a server that early-completes a compressed upload while the worker
+// producer is still sending must not turn the producer's send/drain into an
+// error.
 #[nativelink_test]
 async fn compressed_upload_returns_after_early_completion()
 -> Result<(), Box<dyn core::error::Error>> {
@@ -516,15 +530,23 @@ async fn compressed_upload_returns_after_early_completion()
     .await?;
     let grpc_store = GrpcStore::new(&grpc_spec(port, true)).await?;
 
-    let (content, digest) = make_content(0x33, 1024 * 1024);
+    let (content, digest) = make_content(0x33, 4 * 1024 * 1024);
     let (mut tx, rx) = make_buf_channel_pair();
-    // Send half the payload, then stall (no EOF) while keeping tx alive.
-    tx.send(content.slice(0..content.len() / 2)).await?;
+    let producer_content = content.clone();
+    let producer = async move {
+        for chunk in producer_content.chunks(64 * 1024) {
+            tx.send(Bytes::copy_from_slice(chunk)).await?;
+        }
+        tx.send_eof()
+    };
     let update_fut = grpc_store.update(digest, rx, UploadSizeInfo::ExactSize(content.len() as u64));
-    let result = tokio::time::timeout(core::time::Duration::from_secs(10), update_fut)
+    let (result, producer_result) =
+        tokio::time::timeout(core::time::Duration::from_secs(10), async {
+            tokio::join!(update_fut, producer)
+        })
         .await
-        .expect("early-completed compressed upload must not hang on a stalled producer");
+        .expect("early-completed compressed upload must not hang the producer");
     result?;
-    drop(tx);
+    producer_result?;
     Ok(())
 }

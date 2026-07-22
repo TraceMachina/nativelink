@@ -382,6 +382,8 @@ mod optional_values_tests {
 }
 
 mod boolean_tests {
+    use nativelink_config::stores::GrpcSpec;
+
     use crate::BoolEntity;
 
     #[test]
@@ -403,6 +405,32 @@ mod boolean_tests {
                 serde_json5::from_str(input).unwrap_or_else(|_| panic!("Failed on '{input}'"));
             assert_eq!(deserialized.value, expected, "{input}");
         }
+    }
+
+    #[test]
+    fn grpc_compression_accepts_string_and_environment_boolean() {
+        let string_spec: GrpcSpec = serde_json5::from_str(
+            r#"{
+                endpoints: [{ address: "http://localhost:1234" }],
+                store_type: "cas",
+                experimental_remote_cache_compression: "true"
+            }"#,
+        )
+        .expect("string boolean should deserialize");
+        assert!(string_spec.experimental_remote_cache_compression);
+
+        // Safety: this test uses a unique variable and does not run code that
+        // reads mutable environment state concurrently.
+        unsafe { std::env::set_var("TEST_GRPC_REMOTE_CACHE_COMPRESSION", "false") };
+        let environment_spec: GrpcSpec = serde_json5::from_str(
+            r#"{
+                endpoints: [{ address: "http://localhost:1234" }],
+                store_type: "cas",
+                experimental_remote_cache_compression: "${TEST_GRPC_REMOTE_CACHE_COMPRESSION}"
+            }"#,
+        )
+        .expect("environment boolean should deserialize");
+        assert!(!environment_spec.experimental_remote_cache_compression);
     }
 }
 
