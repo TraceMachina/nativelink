@@ -1,0 +1,11 @@
+# We copy this over aws-lc.MODULE.bazel on nix builds as that version only works for native bazel
+crate = use_extension("@rules_rs//rs:extensions.bzl", "crate")
+crate.annotation(
+    allow_build_script_to_detect_nonhermetic_paths = True,
+    crate = "aws-lc-rs",
+)
+crate.annotation(
+    allow_build_script_to_detect_nonhermetic_paths = True,
+    crate = "aws-lc-sys",
+    gen_build_script = "on",
+)
