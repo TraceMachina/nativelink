@@ -363,6 +363,9 @@ pub struct ByteStreamConfig {
     ///
     /// This saves upload bandwidth and store work when many actions produce
     /// identical outputs, at the cost of one existence check per new upload.
+    /// The check uses the digest function in the upload resource name, and
+    /// proxy-backed `GrpcStore` instances participate in the same local
+    /// single-flight behavior.
     ///
     /// Default: false (disabled)
     #[serde(default, skip_serializing_if = "is_default")]

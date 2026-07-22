@@ -317,9 +317,9 @@ pub struct InstanceInfo {
     remote_cache_compression_enabled: bool,
     /// Whether join-the-flight write dedup is enabled for this instance.
     write_dedup_enabled: bool,
-    /// In-flight upload flights keyed by digest. Only used when
+    /// In-flight upload flights keyed by digest and digest function. Only used when
     /// `write_dedup_enabled` is set.
-    write_flights: Arc<Mutex<HashMap<DigestInfo, Arc<WriteFlight>>>>,
+    write_flights: Arc<Mutex<HashMap<(DigestInfo, DigestHasherFunc), Arc<WriteFlight>>>>,
 }
 
 impl Debug for InstanceInfo {
@@ -556,7 +556,8 @@ struct WriteFlight {
 struct WriteFlightGuard {
     digest: DigestInfo,
     flight: Option<Arc<WriteFlight>>,
-    write_flights: Arc<Mutex<HashMap<DigestInfo, Arc<WriteFlight>>>>,
+    digest_function: DigestHasherFunc,
+    write_flights: Arc<Mutex<HashMap<(DigestInfo, DigestHasherFunc), Arc<WriteFlight>>>>,
     metrics: Arc<ByteStreamMetrics>,
 }
 
@@ -583,7 +584,9 @@ impl WriteFlightGuard {
     }
 
     fn complete(&self, flight: &Arc<WriteFlight>, result: Result<(), Error>) {
-        self.write_flights.lock().remove(&self.digest);
+        self.write_flights
+            .lock()
+            .remove(&(self.digest, self.digest_function));
         // Only count a leader failure when waiters were actually joined;
         // otherwise every routine failed upload would inflate the metric.
         if result.is_err() && flight.result_tx.receiver_count() > 0 {
@@ -777,6 +780,7 @@ impl ByteStreamServer {
     async fn check_write_dedup(
         instance: &InstanceInfo,
         digest: DigestInfo,
+        digest_function: DigestHasherFunc,
         uuid_str: &str,
         is_compressed: bool,
     ) -> Result<WriteDedupOutcome, Error> {
@@ -794,7 +798,7 @@ impl ByteStreamServer {
         };
         let claim = {
             let mut write_flights = instance.write_flights.lock();
-            match write_flights.entry(digest) {
+            match write_flights.entry((digest, digest_function)) {
                 Entry::Occupied(entry) => Err(entry.get().result_tx.subscribe()),
                 Entry::Vacant(entry) => {
                     let (result_tx, _result_rx) = watch::channel(None);
@@ -818,13 +822,19 @@ impl ByteStreamServer {
             Ok(flight) => {
                 let guard = WriteFlightGuard {
                     digest,
+                    digest_function,
                     flight: Some(flight),
                     write_flights: instance.write_flights.clone(),
                     metrics: instance.metrics.clone(),
                 };
                 // One existence check: uploads of already-durable digests
                 // complete early per the REAPI duplicate-upload contract.
-                match instance.store.has(digest).await {
+                let has_result = instance
+                    .store
+                    .has(digest)
+                    .with_context(make_ctx_for_hash_func(digest_function)?)
+                    .await;
+                match has_result {
                     Ok(Some(_size)) => {
                         // Broadcast success so any waiter that joined while
                         // the existence check ran completes early too.
@@ -1802,12 +1812,6 @@ impl ByteStream for ByteStreamServer {
         )
         .err_tip(|| "Invalid digest input in ByteStream::write")?;
 
-        // If we are a GrpcStore we shortcut here, as this is a special store.
-        if let Some(grpc_store) = store.downcast_ref::<GrpcStore>(Some(digest.into())) {
-            let resp = grpc_store.write(stream).await.map_err(Into::into);
-            return resp;
-        }
-
         let digest_function = stream
             .resource_info
             .digest_function
@@ -1830,7 +1834,15 @@ impl ByteStream for ByteStreamServer {
         let write_flight_guard = if instance.write_dedup_enabled
             && let Some(uuid_str) = stream.resource_info.uuid.as_deref()
         {
-            match Self::check_write_dedup(instance, digest, uuid_str, is_compressed_upload).await {
+            match Self::check_write_dedup(
+                instance,
+                digest,
+                digest_function,
+                uuid_str,
+                is_compressed_upload,
+            )
+            .await
+            {
                 Ok(WriteDedupOutcome::Proceed(maybe_guard)) => maybe_guard,
                 Ok(WriteDedupOutcome::Waiter {
                     result_rx,
@@ -1858,6 +1870,23 @@ impl ByteStream for ByteStreamServer {
         } else {
             None
         };
+
+        // GrpcStore is a proxy for the upstream ByteStream service. Run the
+        // local dedup check first so enabling experimental write dedup does
+        // not silently bypass the feature for proxy-backed instances.
+        if let Some(grpc_store) = store.downcast_ref::<GrpcStore>(Some(digest.into())) {
+            let result = grpc_store.write(stream).await;
+            if let Some(guard) = write_flight_guard {
+                match &result {
+                    Ok(_) => guard.succeed(),
+                    Err(_) => guard.fail(),
+                }
+            }
+            instance
+                .metrics
+                .record_write_result(start_time, result.is_ok());
+            return result.map_err(Into::into);
+        }
 
         // For compressed uploads, stream compressed wire bytes through the
         // decoder and store the resulting raw bytes.

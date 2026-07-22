@@ -1262,9 +1262,16 @@ impl StoreDriver for GrpcStore {
         .err_tip(|| "in GrpcStore::update()")?;
 
         // Drain any bytes the server chose not to consume (early-completed
-        // write). Drain errors are ignored: the upload succeeded, and a
-        // failed upstream sender reports its own error to the caller.
-        drop(shared_reader.lock().await.drain().await);
+        // write), but do not make the successful upstream response depend on
+        // the producer reaching EOF. A worker can still be producing data, or
+        // can be cancelled while the upstream has already durably committed.
+        // Keep the reader alive in a detached task so a coupled producer sees
+        // a live receiver; producer cancellation and drain errors are local
+        // to that task and must not turn the committed upload into a failure.
+        let mut reader = shared_reader.lock_owned().await;
+        background_spawn!("grpc_store_update_drain", async move {
+            drop(reader.drain().await);
+        });
 
         Ok(digest.size_bytes())
     }

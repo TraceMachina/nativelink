@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -23,8 +24,10 @@ use hyper::body::Frame;
 use hyper_util::rt::TokioIo;
 use hyper_util::server::conn::auto;
 use hyper_util::service::TowerToHyperService;
-use nativelink_config::cas_server::{ByteStreamConfig, HttpListener, WithInstanceName};
-use nativelink_config::stores::{MemorySpec, StoreSpec};
+use nativelink_config::cas_server::{
+    ByteStreamConfig, CasStoreConfig, HttpListener, WithInstanceName,
+};
+use nativelink_config::stores::{GrpcEndpoint, GrpcSpec, MemorySpec, Retry, StoreSpec, StoreType};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_proto::google::bytestream::byte_stream_client::ByteStreamClient;
@@ -33,12 +36,14 @@ use nativelink_proto::google::bytestream::{
     QueryWriteStatusRequest, QueryWriteStatusResponse, ReadRequest, WriteRequest, WriteResponse,
 };
 use nativelink_service::bytestream_server::ByteStreamServer;
+use nativelink_service::cas_server::CasServer;
 use nativelink_service::wire_compression::RemoteCacheCompressionInstances;
 use nativelink_store::default_store_factory::store_factory;
+use nativelink_store::grpc_store::GrpcStore;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::channel_body_for_tests::ChannelBody;
 use nativelink_util::common::{DigestInfo, encode_stream_proto};
-use nativelink_util::store_trait::StoreLike;
+use nativelink_util::store_trait::{Store, StoreLike};
 use nativelink_util::task::JoinHandleDropGuard;
 use nativelink_util::{background_spawn, spawn};
 use pretty_assertions::assert_eq;
@@ -50,7 +55,8 @@ use tokio::task::yield_now;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::codec::{Codec, CompressionEncoding};
-use tonic::transport::{Channel, Endpoint};
+use tonic::transport::server::TcpIncoming;
+use tonic::transport::{Channel, Endpoint, Server};
 use tonic::{Request, Response, Streaming};
 use tonic_prost::ProstCodec;
 use tower::service_fn;
@@ -103,6 +109,46 @@ fn make_bytestream_server_with_remote_cache_compression(
         RemoteCacheCompressionInstances::default()
     };
     ByteStreamServer::new(&config, store_manager, &remote_cache_compression_instances)
+}
+
+async fn make_tcp_proxy_backend(store_manager: &StoreManager) -> Result<u16, Error> {
+    let instance_name = INSTANCE_NAME.to_string();
+    let remote_cache_compression_instances = RemoteCacheCompressionInstances::default();
+    let bytestream = ByteStreamServer::new(
+        &[WithInstanceName {
+            instance_name: instance_name.clone(),
+            config: ByteStreamConfig {
+                cas_store: "main_cas".to_string(),
+                persist_stream_on_disconnect_timeout_s: 0,
+                max_bytes_per_stream: 1024,
+                ..Default::default()
+            },
+        }],
+        store_manager,
+        &remote_cache_compression_instances,
+    )?;
+    let cas = CasServer::new(
+        &[WithInstanceName {
+            instance_name,
+            config: CasStoreConfig {
+                cas_store: "main_cas".to_string(),
+                experimental_chunking: None,
+            },
+        }],
+        store_manager,
+        &remote_cache_compression_instances,
+    )?;
+    let listener = TcpIncoming::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    background_spawn!("bytestream_proxy_backend", async move {
+        Server::builder()
+            .add_service(bytestream.into_service())
+            .add_service(cas.into_service())
+            .serve_with_incoming(listener)
+            .await
+            .expect("proxy backend server failed");
+    });
+    Ok(port)
 }
 
 fn make_stream(
@@ -1902,6 +1948,14 @@ fn make_dedup_resource_name(uuid: &str, data_len: usize) -> String {
     format!("{INSTANCE_NAME}/uploads/{uuid}/blobs/{HASH1}/{data_len}")
 }
 
+fn make_dedup_resource_name_with_digest_function(
+    uuid: &str,
+    digest_function: &str,
+    data_len: usize,
+) -> String {
+    format!("{INSTANCE_NAME}/uploads/{uuid}/blobs/{digest_function}/{HASH1}/{data_len}")
+}
+
 /// An upload whose digest is already durable must complete immediately with
 /// the full committed size, without the client sending the payload.
 #[nativelink_test]
@@ -2157,5 +2211,122 @@ pub async fn write_dedup_compressed_early_complete_returns_negative_one()
     let response = join_handle.await.expect("Failed to join")?;
     assert_eq!(response.into_inner().committed_size, -1);
     drop(tx);
+    Ok(())
+}
+
+/// A proxy-backed instance must run local write dedup before forwarding a
+/// write. Otherwise an already-present upstream blob would be overwritten by
+/// the forwarded payload despite dedup being enabled locally.
+#[nativelink_test]
+pub async fn write_dedup_works_for_grpc_store_proxy() -> Result<(), Box<dyn core::error::Error>> {
+    const ORIGINAL: &[u8] = b"proxy-original-data";
+    const FORWARDED: &[u8] = b"proxy-forwarded-xxx";
+    assert_eq!(ORIGINAL.len(), FORWARDED.len());
+
+    let upstream_manager = make_store_manager().await?;
+    let upstream_store = upstream_manager.get_store("main_cas").unwrap();
+    let digest = DigestInfo::try_new(HASH1, ORIGINAL.len())?;
+    upstream_store
+        .update_oneshot(digest, ORIGINAL.into())
+        .await?;
+    let port = make_tcp_proxy_backend(upstream_manager.as_ref()).await?;
+
+    let local_manager = Arc::new(StoreManager::new());
+    let grpc_store = GrpcStore::new(&GrpcSpec {
+        instance_name: INSTANCE_NAME.to_string(),
+        endpoints: vec![GrpcEndpoint {
+            address: format!("http://127.0.0.1:{port}"),
+            tls_config: None,
+            concurrency_limit: None,
+            connect_timeout_s: 0,
+            tcp_keepalive_s: 0,
+            http2_keepalive_interval_s: 0,
+            http2_keepalive_timeout_s: 0,
+        }],
+        store_type: StoreType::Cas,
+        retry: Retry::default(),
+        max_concurrent_requests: 0,
+        connections_per_endpoint: 1,
+        rpc_timeout_s: 0,
+        use_legacy_resource_names: false,
+        headers: HashMap::new(),
+        forward_headers: vec![],
+        experimental_read_batching: None,
+    })
+    .await?;
+    local_manager.add_store("main_cas", Store::new(grpc_store))?;
+    let bs_server = Arc::new(
+        make_write_dedup_server(local_manager.as_ref(), false).expect("Failed to make server"),
+    );
+
+    let (tx, join_handle) = make_stream_and_writer_spawn(bs_server, None);
+    tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name: make_dedup_resource_name(
+            "bbbbbbbb-1389-4ab5-b188-4a59f22ceb4b",
+            FORWARDED.len(),
+        ),
+        write_offset: 0,
+        finish_write: true,
+        data: FORWARDED.into(),
+    })?))
+    .await?;
+    let response = join_handle.await.expect("Failed to join")?;
+    assert_eq!(response.into_inner().committed_size, FORWARDED.len() as i64);
+    assert_eq!(
+        upstream_store.get_part_unchunked(digest, 0, None).await?,
+        ORIGINAL
+    );
+    Ok(())
+}
+
+/// The requested digest function is part of a write flight key. A SHA-256
+/// upload must not make a concurrent BLAKE3 upload of the same hash/size wait
+/// for it.
+#[nativelink_test]
+pub async fn write_dedup_does_not_collide_across_digest_functions()
+-> Result<(), Box<dyn core::error::Error>> {
+    const DATA: &[u8] = b"write dedup digest function flight key";
+    let store_manager = make_store_manager().await?;
+    let bs_server = Arc::new(
+        make_write_dedup_server(store_manager.as_ref(), false).expect("Failed to make server"),
+    );
+
+    let (leader_tx, leader_join) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    leader_tx
+        .send(Frame::data(encode_stream_proto(&WriteRequest {
+            resource_name: make_dedup_resource_name_with_digest_function(
+                "99999999-1389-4ab5-b188-4a59f22ceb4b",
+                "sha256",
+                DATA.len(),
+            ),
+            write_offset: 0,
+            finish_write: false,
+            data: DATA[..1].into(),
+        })?))
+        .await?;
+    tokio::time::sleep(core::time::Duration::from_millis(50)).await;
+
+    let (blake3_tx, blake3_join) = make_stream_and_writer_spawn(bs_server, None);
+    blake3_tx
+        .send(Frame::data(encode_stream_proto(&WriteRequest {
+            resource_name: make_dedup_resource_name_with_digest_function(
+                "aaaaaaaa-1389-4ab5-b188-4a59f22ceb4b",
+                "blake3",
+                DATA.len(),
+            ),
+            write_offset: 0,
+            finish_write: true,
+            data: DATA.into(),
+        })?))
+        .await?;
+
+    let response = tokio::time::timeout(core::time::Duration::from_secs(1), blake3_join)
+        .await
+        .expect("BLAKE3 upload incorrectly joined the SHA-256 flight")??;
+    assert_eq!(response.into_inner().committed_size, DATA.len() as i64);
+
+    drop(blake3_tx);
+    drop(leader_tx);
+    assert!(leader_join.await.expect("Failed to join").is_err());
     Ok(())
 }
