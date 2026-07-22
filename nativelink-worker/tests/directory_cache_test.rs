@@ -1602,6 +1602,7 @@ async fn get_tree_prefetch_follows_server_pagination() -> Result<(), Error> {
         headers: HashMap::new(),
         forward_headers: vec![],
         experimental_read_batching: None,
+        experimental_remote_cache_compression: false,
     };
     let fast_spec = FilesystemSpec {
         content_path: make_temp_path("paginated_get_tree_cas_content"),

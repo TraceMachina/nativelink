@@ -1465,6 +1465,30 @@ pub struct GrpcSpec {
     /// Default: unset (disabled). When unset there is zero behavior change.
     #[serde(default)]
     pub experimental_read_batching: Option<GrpcReadBatchingConfig>,
+
+    /// Compress this store's own blob transfers on the wire with REAPI
+    /// `compressed-blobs/zstd`. Uploads and full-blob downloads of blobs at
+    /// or above 64 KiB are zstd-compressed; smaller blobs and ranged reads
+    /// keep the identity path.
+    ///
+    /// The upstream instance must have
+    /// `capabilities.remote_cache_compression` enabled, otherwise compressed
+    /// requests fail with `InvalidArgument`. This setting is what makes
+    /// NativeLink-to-NativeLink hops (for example worker to CAS) benefit
+    /// from wire compression; it is independent of what external clients
+    /// such as Bazel negotiate for themselves.
+    ///
+    /// Compressed uploads do not resume mid-stream (mirroring the REAPI
+    /// server contract): a transport failure part-way through a compressed
+    /// upload surfaces immediately to the caller instead of retrying, and
+    /// outer callers retry the whole upload.
+    ///
+    /// When combined with `experimental_chunked_uploads`, chunked uploads
+    /// take precedence for blobs at or above the chunking threshold.
+    ///
+    /// Default: false (disabled).
+    #[serde(default)]
+    pub experimental_remote_cache_compression: bool,
 }
 
 /// Configuration for experimental small-blob read coalescing in a gRPC
