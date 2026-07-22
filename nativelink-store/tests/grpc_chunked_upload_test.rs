@@ -55,6 +55,9 @@ use tonic::{Request, Response, Status, Streaming};
 struct FakeCas {
     blobs: Mutex<HashMap<String, Bytes>>,
     batch_update_payload_bytes: AtomicU64,
+    batch_update_calls: AtomicU64,
+    batch_update_entry_failures: AtomicU64,
+    omit_batch_update_response: AtomicBool,
     bytestream_writes: AtomicU64,
     splice_requests: AtomicU64,
     fail_splice_not_found: AtomicBool,
@@ -105,17 +108,45 @@ impl ContentAddressableStorage for FakeCasHandle {
         request: Request<BatchUpdateBlobsRequest>,
     ) -> Result<Response<BatchUpdateBlobsResponse>, Status> {
         let request = request.into_inner();
+        self.batch_update_calls.fetch_add(1, Ordering::Relaxed);
         let mut blobs = self.blobs.lock().await;
         let mut responses = Vec::with_capacity(request.requests.len());
         for entry in request.requests {
             let digest = entry.digest.clone().expect("digest must be set");
             self.batch_update_payload_bytes
                 .fetch_add(entry.data.len() as u64, Ordering::Relaxed);
+            if self
+                .batch_update_entry_failures
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
+                    if remaining > 0 {
+                        Some(remaining - 1)
+                    } else {
+                        None
+                    }
+                })
+                .is_ok()
+            {
+                responses.push(batch_update_blobs_response::Response {
+                    digest: Some(digest),
+                    status: Some(nativelink_proto::google::rpc::Status {
+                        code: Code::Unavailable as i32,
+                        message: "injected retryable entry failure".to_string(),
+                        details: vec![],
+                    }),
+                });
+                continue;
+            }
             blobs.insert(digest_key(&digest), entry.data);
             responses.push(batch_update_blobs_response::Response {
                 digest: Some(digest),
                 status: Some(nativelink_proto::google::rpc::Status::default()),
             });
+        }
+        if self
+            .omit_batch_update_response
+            .swap(false, Ordering::Relaxed)
+        {
+            responses.pop();
         }
         Ok(Response::new(BatchUpdateBlobsResponse { responses }))
     }
@@ -348,6 +379,47 @@ async fn large_blob_chunk_uploads_and_splices() -> Result<(), Error> {
     assert_eq!(cas.bytestream_writes.load(Ordering::Relaxed), 0);
     assert_eq!(cas.splice_requests.load(Ordering::Relaxed), 1);
     assert_eq!(stored_blob(&cas, digest).await.as_deref(), Some(&data[..]));
+    Ok(())
+}
+
+// Retryable per-entry statuses must use the configured Retrier rather than
+// failing the whole chunked upload.
+#[nativelink_test]
+async fn retryable_batch_update_entry_failure_is_retried() -> Result<(), Error> {
+    let cas = Arc::new(FakeCas::default());
+    cas.batch_update_entry_failures.store(1, Ordering::Relaxed);
+    let port = start_fake_cas(cas.clone()).await;
+    let mut spec = chunked_spec(port, test_config());
+    spec.retry.max_retries = 1;
+    let store = GrpcStore::new(&spec).await?;
+
+    let data = make_payload(2 * 1024 * 1024, 8);
+    let digest = stream_upload(&store, &data).await?;
+
+    assert!(
+        cas.batch_update_calls.load(Ordering::Relaxed) >= 2,
+        "the failed BatchUpdateBlobs entry was not retried"
+    );
+    assert_eq!(stored_blob(&cas, digest).await.as_deref(), Some(&data[..]));
+    Ok(())
+}
+
+// A successful BatchUpdateBlobs RPC with incomplete response coverage must
+// fail before SpliceBlob is attempted.
+#[nativelink_test]
+async fn missing_batch_update_response_is_rejected() -> Result<(), Error> {
+    let cas = Arc::new(FakeCas::default());
+    cas.omit_batch_update_response
+        .store(true, Ordering::Relaxed);
+    let port = start_fake_cas(cas.clone()).await;
+    let store = GrpcStore::new(&chunked_spec(port, test_config())).await?;
+
+    let data = make_payload(2 * 1024 * 1024, 9);
+    let error = stream_upload(&store, &data)
+        .await
+        .expect_err("missing BatchUpdateBlobs response should fail");
+    assert_eq!(error.code, Code::Internal);
+    assert_eq!(cas.splice_requests.load(Ordering::Relaxed), 0);
     Ok(())
 }
 
