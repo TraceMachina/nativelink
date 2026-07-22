@@ -35,7 +35,7 @@
             extra_cmds = ''
               git update-index --assume-unchanged ./tools/aws-lc.MODULE.bazel
               echo "# We ignore changes here so we can do a nix version. Run git update-index --no-assume-unchanged ./tools/aws-lc.MODULE.bazel to reset" > tools/aws-lc.MODULE.bazel
-              cat tools/aws-lc-nix.MODULE.bazel >> tools/aws-lc-nix.MODULE.bazel
+              cat tools/aws-lc-nix.MODULE.bazel >> tools/aws-lc.MODULE.bazel
             '';
           };
       };
