@@ -1601,6 +1601,7 @@ async fn get_tree_prefetch_follows_server_pagination() -> Result<(), Error> {
         use_legacy_resource_names: false,
         headers: HashMap::new(),
         forward_headers: vec![],
+        experimental_chunked_uploads: None,
         experimental_read_batching: None,
     };
     let fast_spec = FilesystemSpec {

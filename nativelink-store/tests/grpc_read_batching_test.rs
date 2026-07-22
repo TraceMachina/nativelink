@@ -276,6 +276,7 @@ async fn make_fixture(read_batching: Option<GrpcReadBatchingConfig>) -> Result<T
         use_legacy_resource_names: false,
         headers: HashMap::new(),
         forward_headers: vec![],
+        experimental_chunked_uploads: None,
         experimental_read_batching: read_batching,
     };
     let store = GrpcStore::new(&spec).await?;
@@ -562,6 +563,7 @@ async fn forward_headers_with_batching_rejected() -> Result<(), Error> {
         use_legacy_resource_names: false,
         headers: HashMap::new(),
         forward_headers: vec!["authorization".to_string()],
+        experimental_chunked_uploads: None,
         experimental_read_batching: Some(batching_config()),
     };
     let err = GrpcStore::new(&spec)

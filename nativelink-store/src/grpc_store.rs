@@ -16,23 +16,25 @@ use core::pin::Pin;
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
 use std::borrow::Cow;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
+use fastcdc::v2020::{AsyncStreamCDC, Normalization};
 use futures::stream::{FuturesUnordered, unfold};
 use futures::{Future, Stream, StreamExt, TryFutureExt, TryStreamExt, future};
-use nativelink_config::stores::{GrpcReadBatchingConfig, GrpcSpec};
+use nativelink_config::stores::{GrpcChunkedUploadsConfig, GrpcReadBatchingConfig, GrpcSpec};
 use nativelink_error::{Error, ResultExt, error_if, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_proto::build::bazel::remote::execution::v2::action_cache_client::ActionCacheClient;
 use nativelink_proto::build::bazel::remote::execution::v2::content_addressable_storage_client::ContentAddressableStorageClient;
 use nativelink_proto::build::bazel::remote::execution::v2::{
     ActionResult, BatchReadBlobsRequest, BatchReadBlobsResponse, BatchUpdateBlobsRequest,
-    BatchUpdateBlobsResponse, FindMissingBlobsRequest, FindMissingBlobsResponse,
+    BatchUpdateBlobsResponse, Digest, FindMissingBlobsRequest, FindMissingBlobsResponse,
     GetActionResultRequest, GetTreeRequest, GetTreeResponse, SpliceBlobRequest, SpliceBlobResponse,
-    SplitBlobRequest, SplitBlobResponse, UpdateActionResultRequest,
+    SplitBlobRequest, SplitBlobResponse, UpdateActionResultRequest, batch_update_blobs_request,
+    chunking_function,
 };
 use nativelink_proto::google::bytestream::byte_stream_client::ByteStreamClient;
 use nativelink_proto::google::bytestream::{
@@ -42,7 +44,7 @@ use nativelink_proto::google::bytestream::{
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::connection_manager::ConnectionManager;
-use nativelink_util::digest_hasher::{DigestHasherFunc, default_digest_hasher_func};
+use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc, default_digest_hasher_func};
 use nativelink_util::health_utils::HealthStatusIndicator;
 use nativelink_util::proto_stream_utils::{
     FirstStream, WriteRequestStreamWrapper, WriteState, WriteStateWrapper,
@@ -51,7 +53,9 @@ use nativelink_util::resource_info::ResourceInfo;
 use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::store_trait::{RemoveCallback, StoreDriver, StoreKey, UploadSizeInfo};
 use nativelink_util::telemetry::ClientHeaders;
-use nativelink_util::{background_spawn, default_health_status_indicator, tls_utils};
+use nativelink_util::{
+    background_spawn, default_health_status_indicator, spawn_blocking, tls_utils,
+};
 use opentelemetry::context::Context;
 use opentelemetry::global;
 use opentelemetry::propagation::Injector;
@@ -59,6 +63,7 @@ use parking_lot::Mutex;
 use prost::Message;
 use tokio::sync::{Semaphore, oneshot};
 use tokio::time::sleep;
+use tokio_util::io::StreamReader;
 use tonic::metadata::{Ascii, MetadataKey, MetadataValue};
 use tonic::{Code, IntoRequest, Request, Response, Status, Streaming};
 use tracing::{error, trace, warn};
@@ -112,6 +117,40 @@ fn enrich_request<T>(
 /// `max_batch_bytes`, so that batches of many tiny blobs cannot push a
 /// `BatchReadBlobs` response over the gRPC message size limit.
 const BATCH_READ_PER_ENTRY_OVERHEAD_BYTES: u64 = 256;
+
+/// v1 cap on the configured average chunk size for chunked uploads: the
+/// largest possible chunk (avg * 4) plus per-entry overhead must fit into a
+/// single `BatchUpdateBlobs` request under `CHUNKED_UPLOAD_MAX_BATCH_BYTES`.
+const CHUNKED_UPLOAD_MAX_AVG_CHUNK_SIZE_BYTES: u64 = 768 * 1024;
+
+/// Maximum payload bytes per `BatchUpdateBlobs` request used to upload
+/// missing chunks (leaves headroom under the 4 MiB default gRPC message
+/// limit for protobuf framing).
+const CHUNKED_UPLOAD_MAX_BATCH_BYTES: u64 = 3 * 1024 * 1024;
+
+/// Chunked uploads buffer at most this many payload bytes (one window)
+/// before checking chunk existence and transferring only the missing ones.
+const CHUNKED_UPLOAD_WINDOW_BYTES: usize = 8 * 1024 * 1024;
+
+/// Upper bound on chunks per window (relevant for tiny average chunk sizes).
+const CHUNKED_UPLOAD_WINDOW_CHUNKS: usize = 128;
+
+/// Ceiling on blocking tasks chunk digests are fanned out across per
+/// window; the effective width is capped at the host's available
+/// parallelism so small workers are not oversubscribed. Hashing dominates
+/// the chunked-upload CPU cost (~4x the boundary pass) and parallelizes
+/// near-linearly since chunks are independent. Note the CPU accounting:
+/// parallel hashing performs the same total work as serial hashing — it
+/// narrows the burst rather than growing it — and runs in the post-action
+/// upload phase alongside the already-concurrent output upload fan-out.
+const CHUNKED_UPLOAD_HASH_PARALLELISM_CEILING: usize = 8;
+
+/// Effective chunk-hash fan-out for this host.
+fn chunk_hash_parallelism() -> usize {
+    std::thread::available_parallelism()
+        .map_or(4, usize::from)
+        .min(CHUNKED_UPLOAD_HASH_PARALLELISM_CEILING)
+}
 
 /// A small-blob read waiting to be coalesced into a `BatchReadBlobs` RPC.
 #[derive(Debug)]
@@ -195,6 +234,38 @@ const fn is_retryable_code(code: Code) -> bool {
 // This store is usually a pass-through store, but can also be used as a CAS store. Using it as an
 // AC store has one major side-effect... The has() function may not give the proper size of the
 // underlying data. This might cause issues if embedded in certain stores.
+
+/// State and metrics for experimental chunked uploads. Large blobs are
+/// split locally with `FastCDC` 2020, only missing chunks are transferred,
+/// and the blob is assembled remotely with `SpliceBlob`.
+#[derive(Debug, MetricsComponent)]
+struct ChunkedUploader {
+    config: GrpcChunkedUploadsConfig,
+    #[metric(help = "Number of uploads that took the chunked path")]
+    chunked_uploads_total: AtomicU64,
+    #[metric(help = "Number of chunks transferred by chunked uploads")]
+    chunks_sent: AtomicU64,
+    #[metric(help = "Number of chunks skipped because the backend already had them")]
+    chunks_deduped: AtomicU64,
+    #[metric(help = "Payload bytes transferred by chunked uploads")]
+    bytes_sent: AtomicU64,
+    #[metric(help = "Payload bytes skipped because the backend already had their chunks")]
+    bytes_deduped: AtomicU64,
+}
+
+impl ChunkedUploader {
+    const fn new(config: GrpcChunkedUploadsConfig) -> Self {
+        Self {
+            config,
+            chunked_uploads_total: AtomicU64::new(0),
+            chunks_sent: AtomicU64::new(0),
+            chunks_deduped: AtomicU64::new(0),
+            bytes_sent: AtomicU64::new(0),
+            bytes_deduped: AtomicU64::new(0),
+        }
+    }
+}
+
 #[derive(Debug, MetricsComponent)]
 pub struct GrpcStore {
     #[metric(help = "Instance name for the store")]
@@ -211,6 +282,11 @@ pub struct GrpcStore {
     /// RPCs. `None` means reads always use the `ByteStream` `Read` path.
     #[metric(group = "read_batcher")]
     read_batcher: Option<ReadBatcher>,
+    /// When configured, uploads large blobs as content-defined chunks via
+    /// `FindMissingBlobs` + `BatchUpdateBlobs` + `SpliceBlob`. `None` means
+    /// uploads always use the plain `ByteStream` `Write` path.
+    #[metric(group = "chunked_uploads")]
+    chunked_uploader: Option<ChunkedUploader>,
     /// Used by the read coalescer to hand a strong reference of this store
     /// to detached dispatcher tasks.
     weak_self: Weak<Self>,
@@ -258,6 +334,36 @@ impl GrpcStore {
             None => None,
         };
 
+        let chunked_uploader = match &spec.experimental_chunked_uploads {
+            Some(config) => {
+                error_if!(
+                    matches!(spec.store_type, nativelink_config::stores::StoreType::Ac),
+                    "experimental_chunked_uploads is not supported on AC stores"
+                );
+                // REAPI FastCDC bounds are 1KiB..=1MiB, but the largest chunk
+                // (avg * 4) must also fit into one BatchUpdateBlobs request
+                // under the batch byte budget, so v1 caps the average lower.
+                error_if!(
+                    !(1024..=CHUNKED_UPLOAD_MAX_AVG_CHUNK_SIZE_BYTES)
+                        .contains(&config.avg_chunk_size_bytes),
+                    "experimental_chunked_uploads.avg_chunk_size_bytes is {}, must be between 1024 and {CHUNKED_UPLOAD_MAX_AVG_CHUNK_SIZE_BYTES}",
+                    config.avg_chunk_size_bytes
+                );
+                error_if!(
+                    config.min_blob_size_bytes < config.avg_chunk_size_bytes * 4,
+                    "experimental_chunked_uploads.min_blob_size_bytes ({}) must be at least avg_chunk_size_bytes * 4 ({})",
+                    config.min_blob_size_bytes,
+                    config.avg_chunk_size_bytes * 4
+                );
+                error_if!(
+                    config.max_chunk_count == 0,
+                    "experimental_chunked_uploads.max_chunk_count must be greater than zero"
+                );
+                Some(ChunkedUploader::new(*config))
+            }
+            None => None,
+        };
+
         let mut headers = Vec::with_capacity(spec.headers.len());
         for (name, value) in &spec.headers {
             // We lowercase keys as HTTP headers are case-insensitive so we should match all cases
@@ -292,6 +398,7 @@ impl GrpcStore {
             rpc_timeout,
             use_legacy_resource_names: spec.use_legacy_resource_names,
             read_batcher,
+            chunked_uploader,
             headers,
             // We lowercase keys as HTTP headers are case-insensitive so we should match all cases
             forward_headers: spec
@@ -1083,6 +1190,248 @@ impl GrpcStore {
             .await
             .map(|_| len)
     }
+    /// Uploads one window of chunks: checks which are missing on the
+    /// backend and transfers only those, packed into `BatchUpdateBlobs`
+    /// requests under the batch byte budget.
+    async fn flush_chunk_window(
+        &self,
+        uploader: &ChunkedUploader,
+        window: Vec<(DigestInfo, Bytes)>,
+        digest_function: i32,
+    ) -> Result<(), Error> {
+        // Dedup digests within the window (identical chunks are common in
+        // sparse or repetitive regions).
+        let mut unique: HashMap<DigestInfo, Bytes> = HashMap::with_capacity(window.len());
+        for (chunk_digest, data) in window {
+            unique.entry(chunk_digest).or_insert(data);
+        }
+        let request = FindMissingBlobsRequest {
+            instance_name: self.instance_name.clone(),
+            blob_digests: unique.keys().map(|d| Digest::from(*d)).collect(),
+            digest_function,
+        };
+        let missing_digests = self
+            .find_missing_blobs(Request::new(request))
+            .await
+            .err_tip(|| "In GrpcStore::flush_chunk_window")?
+            .into_inner()
+            .missing_blob_digests;
+
+        let mut missing: Vec<(DigestInfo, Bytes)> = Vec::with_capacity(missing_digests.len());
+        let mut taken: HashSet<DigestInfo> = HashSet::with_capacity(missing_digests.len());
+        for digest in missing_digests {
+            let digest_info = DigestInfo::try_from(digest)
+                .err_tip(|| "Invalid missing digest in flush_chunk_window")?;
+            let Some(data) = unique.remove(&digest_info) else {
+                // REAPI does not forbid a backend repeating a digest in
+                // missing_blob_digests; tolerate repeats but still reject
+                // digests that were never requested.
+                error_if!(
+                    !taken.contains(&digest_info),
+                    "Backend reported chunk {digest_info} missing that was never requested in flush_chunk_window"
+                );
+                continue;
+            };
+            taken.insert(digest_info);
+            missing.push((digest_info, data));
+        }
+        for (chunk_digest, data) in unique {
+            drop(data);
+            uploader.chunks_deduped.fetch_add(1, Ordering::Relaxed);
+            uploader
+                .bytes_deduped
+                .fetch_add(chunk_digest.size_bytes(), Ordering::Relaxed);
+        }
+        if missing.is_empty() {
+            return Ok(());
+        }
+
+        // Pack missing chunks into batch requests under the byte budget.
+        let mut batch: Vec<batch_update_blobs_request::Request> = Vec::new();
+        let mut batch_bytes: u64 = 0;
+        let mut batches = Vec::new();
+        for (chunk_digest, data) in missing {
+            let entry_cost = data.len() as u64 + BATCH_READ_PER_ENTRY_OVERHEAD_BYTES;
+            if batch_bytes + entry_cost > CHUNKED_UPLOAD_MAX_BATCH_BYTES && !batch.is_empty() {
+                batches.push(core::mem::take(&mut batch));
+                batch_bytes = 0;
+            }
+            uploader.chunks_sent.fetch_add(1, Ordering::Relaxed);
+            uploader
+                .bytes_sent
+                .fetch_add(data.len() as u64, Ordering::Relaxed);
+            batch.push(batch_update_blobs_request::Request {
+                digest: Some(chunk_digest.into()),
+                data,
+                compressor: 0,
+            });
+            batch_bytes += entry_cost;
+        }
+        if !batch.is_empty() {
+            batches.push(batch);
+        }
+        for requests in batches {
+            let response = self
+                .batch_update_blobs(Request::new(BatchUpdateBlobsRequest {
+                    instance_name: self.instance_name.clone(),
+                    requests,
+                    digest_function,
+                }))
+                .await
+                .err_tip(|| "In GrpcStore::flush_chunk_window")?;
+            for entry in &response.get_ref().responses {
+                let status_code = entry.status.as_ref().map_or(0, |status| status.code);
+                if status_code != 0 {
+                    return Err(make_err!(
+                        Code::from(status_code),
+                        "Chunk upload failed in flush_chunk_window: {entry:?}"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Digests a window of chunks in parallel on the blocking pool,
+    /// preserving order. Chunk hashing is the dominant CPU cost of a
+    /// chunked upload; the chunks are independent so this parallelizes
+    /// near-linearly. Dropping the returned future merely abandons pure
+    /// hash work (no side effects), so cancellation stays safe.
+    async fn hash_chunks_parallel(
+        hasher_func: DigestHasherFunc,
+        chunks: Vec<Bytes>,
+    ) -> Result<Vec<(DigestInfo, Bytes)>, Error> {
+        let num_chunks = chunks.len();
+        let parallelism = chunk_hash_parallelism();
+        let partition_len = num_chunks.div_ceil(parallelism).max(1);
+        let mut handles = Vec::with_capacity(parallelism);
+        for partition in chunks.chunks(partition_len) {
+            // Bytes clones are refcount bumps, not copies.
+            let partition: Vec<Bytes> = partition.to_vec();
+            handles.push(spawn_blocking!("grpc_chunked_upload_hash", move || {
+                partition
+                    .into_iter()
+                    .map(|data| {
+                        let mut hasher = hasher_func.hasher();
+                        hasher.update(&data);
+                        (hasher.finalize_digest(), data)
+                    })
+                    .collect::<Vec<_>>()
+            }));
+        }
+        let mut hashed = Vec::with_capacity(num_chunks);
+        for handle in handles {
+            hashed.extend(
+                handle
+                    .await
+                    .map_err(|e| make_err!(Code::Internal, "Chunk hashing task failed: {e:?}"))
+                    .err_tip(|| "In GrpcStore::hash_chunks_parallel")?,
+            );
+        }
+        Ok(hashed)
+    }
+
+    /// Uploads a large blob as content-defined chunks: `FastCDC`-splits the
+    /// stream, transfers only the chunks the backend is missing, and
+    /// assembles the blob remotely with `SpliceBlob`.
+    async fn chunked_update(
+        &self,
+        digest: DigestInfo,
+        reader: DropCloserReadHalf,
+        expected_size: u64,
+        hasher_func: DigestHasherFunc,
+    ) -> Result<u64, Error> {
+        let uploader = self
+            .chunked_uploader
+            .as_ref()
+            .err_tip(|| "chunked_update called without chunked_uploader")?;
+        uploader
+            .chunked_uploads_total
+            .fetch_add(1, Ordering::Relaxed);
+        let avg_size = u32::try_from(uploader.config.avg_chunk_size_bytes)
+            .err_tip(|| "avg_chunk_size_bytes did not fit in u32 in chunked_update")?;
+        let (min_size, max_size) = (avg_size / 4, avg_size * 4);
+        // The hasher is resolved once in update() — the same source the
+        // plain path uses for its resource name — so chunk digests, the
+        // digest_function field, and the blob digest can never diverge.
+        let digest_function = hasher_func.proto_digest_func() as i32;
+
+        let mut bytes_reader = StreamReader::new(reader);
+        let mut cdc = AsyncStreamCDC::with_level(
+            &mut bytes_reader,
+            min_size,
+            avg_size,
+            max_size,
+            Normalization::Level2,
+        );
+        let mut cdc_stream = core::pin::pin!(cdc.as_stream());
+
+        let mut all_chunk_digests: Vec<Digest> = Vec::new();
+        let mut window: Vec<Bytes> = Vec::new();
+        let mut window_bytes = 0usize;
+        let mut total_bytes = 0u64;
+        let mut chunk_count = 0u64;
+        while let Some(chunk_result) = cdc_stream.next().await {
+            let chunk = chunk_result
+                .map_err(|e| make_err!(Code::Internal, "Failed to chunk blob: {e:?}"))
+                .err_tip(|| "In GrpcStore::chunked_update")?;
+            total_bytes += chunk.data.len() as u64;
+            window_bytes += chunk.data.len();
+            chunk_count += 1;
+            window.push(chunk.data.into());
+            error_if!(
+                chunk_count > uploader.config.max_chunk_count,
+                "Blob {digest} produced more than max_chunk_count ({}) chunks in chunked_update",
+                uploader.config.max_chunk_count
+            );
+            if window.len() >= CHUNKED_UPLOAD_WINDOW_CHUNKS
+                || window_bytes >= CHUNKED_UPLOAD_WINDOW_BYTES
+            {
+                let hashed =
+                    Self::hash_chunks_parallel(hasher_func, core::mem::take(&mut window)).await?;
+                all_chunk_digests.extend(hashed.iter().map(|(d, _)| Digest::from(*d)));
+                self.flush_chunk_window(uploader, hashed, digest_function)
+                    .await?;
+                window_bytes = 0;
+            }
+        }
+        if !window.is_empty() {
+            let hashed = Self::hash_chunks_parallel(hasher_func, window).await?;
+            all_chunk_digests.extend(hashed.iter().map(|(d, _)| Digest::from(*d)));
+            self.flush_chunk_window(uploader, hashed, digest_function)
+                .await?;
+        }
+        error_if!(
+            total_bytes != expected_size,
+            "Chunked upload of {digest} received {total_bytes} bytes, expected {expected_size}"
+        );
+
+        self.splice_blob(Request::new(SpliceBlobRequest {
+            instance_name: self.instance_name.clone(),
+            blob_digest: Some(digest.into()),
+            chunk_digests: all_chunk_digests,
+            digest_function,
+            chunking_function: chunking_function::Value::FastCdc2020.into(),
+        }))
+        .await
+        .map_err(|err| {
+            if err.code == Code::NotFound {
+                // A chunk was evicted between its upload and the splice. The
+                // stream is consumed, so this upload cannot be re-run here:
+                // external ByteStream clients retry the whole Write (and
+                // re-enter chunking); internal callers (e.g. worker output
+                // upload) surface this to their action-level retry.
+                make_err!(
+                    Code::Aborted,
+                    "Chunk evicted before SpliceBlob completed; re-running the upload may succeed: {err}"
+                )
+            } else {
+                err
+            }
+        })
+        .err_tip(|| "In GrpcStore::chunked_update")?;
+        Ok(expected_size)
+    }
 }
 
 #[async_trait]
@@ -1162,7 +1511,7 @@ impl StoreDriver for GrpcStore {
         self: Pin<&Self>,
         key: StoreKey<'_>,
         reader: DropCloserReadHalf,
-        _size_info: UploadSizeInfo,
+        size_info: UploadSizeInfo,
     ) -> Result<u64, Error> {
         struct LocalState {
             resource_name: String,
@@ -1176,6 +1525,31 @@ impl StoreDriver for GrpcStore {
             return self.update_action_result_from_bytes(digest, reader).await;
         }
 
+        // Resolved once and shared by the chunked and plain paths so their
+        // digest-function handling can never diverge.
+        let hasher_func = Context::current()
+            .get::<DigestHasherFunc>()
+            .map_or_else(default_digest_hasher_func, |v| *v);
+
+        // Large blobs take the chunked-upload path when configured: split
+        // locally, transfer only missing chunks, assemble with SpliceBlob.
+        // Blobs that could exceed max_chunk_count use plain streaming (a
+        // chunked upload cannot fall back once the stream is consumed).
+        if let Some(uploader) = &self.chunked_uploader
+            && let UploadSizeInfo::ExactSize(expected_size) = size_info
+            && expected_size >= uploader.config.min_blob_size_bytes
+            && expected_size
+                / u64::from(
+                    u32::try_from(uploader.config.avg_chunk_size_bytes / 4).unwrap_or(u32::MAX),
+                )
+                .max(1)
+                < uploader.config.max_chunk_count
+        {
+            return self
+                .chunked_update(digest, reader, expected_size, hasher_func)
+                .await;
+        }
+
         let mut buf = Uuid::encode_buffer();
         let resource_name = if self.use_legacy_resource_names {
             format!(
@@ -1186,9 +1560,7 @@ impl StoreDriver for GrpcStore {
                 digest.size_bytes(),
             )
         } else {
-            let digest_function = Context::current()
-                .get::<DigestHasherFunc>()
-                .map_or_else(default_digest_hasher_func, |v| *v)
+            let digest_function = hasher_func
                 .proto_digest_func()
                 .as_str_name()
                 .to_ascii_lowercase();
