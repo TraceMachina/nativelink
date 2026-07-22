@@ -1466,24 +1466,27 @@ pub struct GrpcSpec {
     #[serde(default)]
     pub experimental_read_batching: Option<GrpcReadBatchingConfig>,
 
-    /// Experimental: upload large blobs as content-defined chunks. Blobs at
-    /// or above `min_blob_size_bytes` are split locally with `FastCDC` 2020,
-    /// only the chunks the backend reports missing are transferred, and the
-    /// blob is assembled remotely with `SpliceBlob`. On incremental changes
-    /// to large artifacts this transfers only the changed chunks.
+    /// Experimental: upload large blobs from the worker/`StoreDriver` path as
+    /// content-defined chunks. Blobs at or above `min_blob_size_bytes` are
+    /// split locally with `FastCDC` 2020, only the chunks the backend reports
+    /// missing are transferred, and the blob is assembled remotely with
+    /// `SpliceBlob`. On incremental changes to large artifacts this transfers
+    /// only the changed chunks.
     ///
     /// The backend MUST support the REAPI chunking extension (a `NativeLink`
     /// CAS with `experimental_chunking` configured, or another server
-    /// advertising `FastCDC` 2020). Chunked uploads against a backend
+    /// advertising `FastCDC` 2020). Its advertised average chunk size must
+    /// match `avg_chunk_size_bytes`; a mismatch is rejected when the local
+    /// CAS proxy has both configurations. Chunked uploads against a backend
     /// without chunking support fail; there is no runtime capability probe
     /// yet.
     ///
     /// If a chunk is evicted from the backend between its upload and the
     /// final `SpliceBlob`, the upload fails with a retryable ABORTED error.
-    /// External `ByteStream` clients re-enter chunking when they retry the
-    /// `Write`; internal callers (e.g. worker output uploads) have no
-    /// upload-level retry layer, so the failure surfaces to action-level
-    /// retry.
+    /// This option does not change the `ByteStream.Write` proxy path: external
+    /// `ByteStream` uploads remain ordinary streaming writes. If a chunked
+    /// worker upload fails after its input stream is consumed, the failure
+    /// surfaces to the caller's higher-level retry (normally action retry).
     ///
     /// Takes precedence over `experimental_remote_cache_compression` for
     /// blobs at or above `min_blob_size_bytes` (chunks are transferred
@@ -1513,8 +1516,10 @@ pub struct GrpcChunkedUploadsConfig {
     /// The average `FastCDC` 2020 chunk size in bytes. The minimum and
     /// maximum chunk sizes are derived from this value (avg / 4 and
     /// avg * 4). MUST match the average chunk size the backend uses for its
-    /// own chunking so worker-uploaded and server-split chunks share
-    /// digests. Must be between 1 KiB and 1 MiB (REAPI bounds).
+    /// own chunking so worker-uploaded and server-split chunks share digests.
+    /// The worker path currently caps this at 768 KiB so a largest possible
+    /// chunk fits under its `BatchUpdateBlobs` request budget. Must be between
+    /// 1 KiB and 768 KiB for worker uploads.
     ///
     /// Default: 524288 (512 KiB), the REAPI-recommended value.
     #[serde(
@@ -1946,5 +1951,46 @@ impl Retry {
                 delay.mul_f32(local_jitter.mul_add(rand::rng().random::<f32>() - 0.5, 1.))
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{GrpcChunkedUploadsConfig, GrpcSpec};
+
+    #[test]
+    fn grpc_chunked_uploads_defaults_are_backward_compatible() {
+        let config: GrpcChunkedUploadsConfig = serde_json5::from_str("{}").unwrap();
+        assert_eq!(config.min_blob_size_bytes, 8 * 1024 * 1024);
+        assert_eq!(config.avg_chunk_size_bytes, 512 * 1024);
+        assert_eq!(config.max_chunk_count, 50_000);
+
+        let spec: GrpcSpec = serde_json5::from_str(
+            r#"{
+                endpoints: [{ address: "http://127.0.0.1:50051" }],
+                store_type: "cas"
+            }"#,
+        )
+        .unwrap();
+        assert!(spec.experimental_chunked_uploads.is_none());
+    }
+
+    #[test]
+    fn grpc_chunked_uploads_parse_data_sizes_and_reject_unknown_fields() {
+        let config: GrpcChunkedUploadsConfig = serde_json5::from_str(
+            r#"{
+                min_blob_size_bytes: "16MiB",
+                avg_chunk_size_bytes: "256KiB",
+                max_chunk_count: 1234
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(config.min_blob_size_bytes, 16 * 1024 * 1024);
+        assert_eq!(config.avg_chunk_size_bytes, 256 * 1024);
+        assert_eq!(config.max_chunk_count, 1234);
+
+        let error =
+            serde_json5::from_str::<GrpcChunkedUploadsConfig>(r"{ unknown: true }").unwrap_err();
+        assert!(error.to_string().contains("unknown"));
     }
 }

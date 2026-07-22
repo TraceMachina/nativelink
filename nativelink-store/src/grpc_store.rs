@@ -409,6 +409,15 @@ impl GrpcStore {
         }))
     }
 
+    /// Returns the FastCDC average used by worker/StoreDriver-only chunked
+    /// uploads, when that upload path is enabled.
+    #[must_use]
+    pub fn chunked_upload_avg_chunk_size_bytes(&self) -> Option<u64> {
+        self.chunked_uploader
+            .as_ref()
+            .map(|uploader| uploader.config.avg_chunk_size_bytes)
+    }
+
     async fn perform_request<F, Fut, R, I>(&self, input: I, mut request: F) -> Result<R, Error>
     where
         F: FnMut(I) -> Fut + Send + Copy,
@@ -1190,6 +1199,128 @@ impl GrpcStore {
             .await
             .map(|_| len)
     }
+
+    /// Validates that a BatchUpdateBlobs response covers exactly the request
+    /// entries and returns the entries whose per-entry status failed. REAPI
+    /// permits response entries to be returned in a different order, so
+    /// coverage is checked by digest rather than by position.
+    fn batch_update_failures(
+        requests: &[batch_update_blobs_request::Request],
+        response: BatchUpdateBlobsResponse,
+    ) -> Result<Vec<(batch_update_blobs_request::Request, Error)>, Error> {
+        let mut requests_by_digest = HashMap::with_capacity(requests.len());
+        for request in requests {
+            let digest = request
+                .digest
+                .clone()
+                .err_tip(|| "Missing digest in BatchUpdateBlobs request")?;
+            let digest_info = DigestInfo::try_from(digest)
+                .err_tip(|| "Invalid digest in BatchUpdateBlobs request")?;
+            error_if!(
+                requests_by_digest
+                    .insert(digest_info, request.clone())
+                    .is_some(),
+                "Duplicate digest {digest_info} in BatchUpdateBlobs request"
+            );
+        }
+
+        let mut seen = HashSet::with_capacity(response.responses.len());
+        let mut failures = Vec::new();
+        for entry in response.responses {
+            let digest = entry
+                .digest
+                .err_tip(|| "Missing digest in BatchUpdateBlobs response")?;
+            let digest_info = DigestInfo::try_from(digest)
+                .err_tip(|| "Invalid digest in BatchUpdateBlobs response")?;
+            let request = requests_by_digest.get(&digest_info).ok_or_else(|| {
+                make_err!(
+                    Code::Internal,
+                    "BatchUpdateBlobs response contains unrequested digest {digest_info}"
+                )
+            })?;
+            error_if!(
+                !seen.insert(digest_info),
+                "Duplicate digest {digest_info} in BatchUpdateBlobs response"
+            );
+
+            let status = entry.status.ok_or_else(|| {
+                make_err!(
+                    Code::Internal,
+                    "BatchUpdateBlobs response omitted status for {digest_info}"
+                )
+            })?;
+            let status_code = status.code;
+            if status_code != 0 {
+                failures.push((
+                    request.clone(),
+                    make_err!(
+                        Code::from(status_code),
+                        "BatchUpdateBlobs entry failed for {digest_info}: {status:?}"
+                    ),
+                ));
+            }
+        }
+
+        let missing_responses: Vec<_> = requests_by_digest
+            .keys()
+            .filter(|digest| !seen.contains(digest))
+            .collect();
+        if !missing_responses.is_empty() {
+            return Err(make_err!(
+                Code::Internal,
+                "BatchUpdateBlobs response omitted {} requested digest(s): {:?}",
+                missing_responses.len(),
+                missing_responses
+            ));
+        }
+        Ok(failures)
+    }
+
+    /// Retries one failed BatchUpdateBlobs entry using the store's configured
+    /// retry policy. The first error is yielded to Retrier so its delay and
+    /// max-retry semantics apply between the original attempt and retries.
+    async fn retry_batch_update_entry(
+        &self,
+        request: batch_update_blobs_request::Request,
+        digest_function: i32,
+        initial_error: Error,
+    ) -> Result<(), Error> {
+        let mut initial_error = Some(initial_error);
+        self.retrier
+            .retry(unfold((), move |_| {
+                let request = request.clone();
+                let initial_error = initial_error.take();
+                async move {
+                    let result = if let Some(error) = initial_error {
+                        RetryResult::Retry(error)
+                    } else {
+                        match self
+                            .batch_update_blobs(Request::new(BatchUpdateBlobsRequest {
+                                instance_name: self.instance_name.clone(),
+                                requests: vec![request.clone()],
+                                digest_function,
+                            }))
+                            .await
+                        {
+                            Err(error) => RetryResult::Retry(error),
+                            Ok(response) => match Self::batch_update_failures(
+                                core::slice::from_ref(&request),
+                                response.into_inner(),
+                            ) {
+                                Ok(mut failures) => {
+                                    failures.pop().map_or(RetryResult::Ok(()), |(_, error)| {
+                                        RetryResult::Retry(error)
+                                    })
+                                }
+                                Err(error) => RetryResult::Err(error),
+                            },
+                        }
+                    };
+                    Some((result, ()))
+                }
+            }))
+            .await
+    }
     /// Uploads one window of chunks: checks which are missing on the
     /// backend and transfers only those, packed into `BatchUpdateBlobs`
     /// requests under the batch byte budget.
@@ -1205,6 +1336,7 @@ impl GrpcStore {
         for (chunk_digest, data) in window {
             unique.entry(chunk_digest).or_insert(data);
         }
+        let requested_digests: Vec<DigestInfo> = unique.keys().copied().collect();
         let request = FindMissingBlobsRequest {
             instance_name: self.instance_name.clone(),
             blob_digests: unique.keys().map(|d| Digest::from(*d)).collect(),
@@ -1271,6 +1403,7 @@ impl GrpcStore {
             batches.push(batch);
         }
         for requests in batches {
+            let request_entries = requests.clone();
             let response = self
                 .batch_update_blobs(Request::new(BatchUpdateBlobsRequest {
                     instance_name: self.instance_name.clone(),
@@ -1279,14 +1412,37 @@ impl GrpcStore {
                 }))
                 .await
                 .err_tip(|| "In GrpcStore::flush_chunk_window")?;
-            for entry in &response.get_ref().responses {
-                let status_code = entry.status.as_ref().map_or(0, |status| status.code);
-                if status_code != 0 {
-                    return Err(make_err!(
-                        Code::from(status_code),
-                        "Chunk upload failed in flush_chunk_window: {entry:?}"
-                    ));
-                }
+            for (request, error) in
+                Self::batch_update_failures(&request_entries, response.into_inner())?
+            {
+                self.retry_batch_update_entry(request, digest_function, error)
+                    .await
+                    .err_tip(|| "Retrying failed BatchUpdateBlobs entry")?;
+            }
+        }
+
+        // A server may report a transient per-entry error after it has
+        // durably stored the chunk. Recheck by digest before SpliceBlob so a
+        // retry never depends on whether the failed response was received
+        // before or after the write committed.
+        for requested in requested_digests.chunks(CHUNKED_UPLOAD_WINDOW_CHUNKS) {
+            let missing = self
+                .find_missing_blobs(Request::new(FindMissingBlobsRequest {
+                    instance_name: self.instance_name.clone(),
+                    blob_digests: requested.iter().copied().map(Into::into).collect(),
+                    digest_function,
+                }))
+                .await
+                .err_tip(|| "Rechecking chunks after BatchUpdateBlobs")?
+                .into_inner()
+                .missing_blob_digests;
+            if !missing.is_empty() {
+                return Err(make_err!(
+                    Code::Aborted,
+                    "{} chunk(s) remained missing after BatchUpdateBlobs: {:?}",
+                    missing.len(),
+                    missing
+                ));
             }
         }
         Ok(())
@@ -1538,12 +1694,8 @@ impl StoreDriver for GrpcStore {
         if let Some(uploader) = &self.chunked_uploader
             && let UploadSizeInfo::ExactSize(expected_size) = size_info
             && expected_size >= uploader.config.min_blob_size_bytes
-            && expected_size
-                / u64::from(
-                    u32::try_from(uploader.config.avg_chunk_size_bytes / 4).unwrap_or(u32::MAX),
-                )
-                .max(1)
-                < uploader.config.max_chunk_count
+            && expected_size.div_ceil((uploader.config.avg_chunk_size_bytes / 4).max(1))
+                <= uploader.config.max_chunk_count
         {
             return self
                 .chunked_update(digest, reader, expected_size, hasher_func)
