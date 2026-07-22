@@ -108,3 +108,26 @@ materializes the full blob, so non-chunking clients and every existing read
 path see ordinary blobs. Storage grows by roughly the chunk bytes for
 chunk-eligible blobs; pairing the CAS with a `dedup` or `compression` store
 composes normally.
+
+## FAQ
+
+<Accordions type="multiple">
+  <Accordion title="Do I need to change anything for existing clients?" id="do-i-need-to-change-anything-for-existing-clients">
+    No. Chunking is opt-in and advertised through the capabilities
+    service — clients that don't request it (or predate it) keep using
+    regular transfers against the same CAS.
+  </Accordion>
+  <Accordion title="My outputs corrupt with --disk_cache — what gives?" id="my-outputs-corrupt-with-disk-cache-what-gives">
+    Bazel 9.1.0 has a client bug that corrupts outputs when the chunking
+    flag is combined with `--disk_cache`. Use 9.1.1+ (or 8.7.0+).
+  </Accordion>
+  <Accordion title="Chunking or wire compression?" id="chunking-or-wire-compression">
+    They solve different transfer problems. Chunking re-transfers only
+    the changed parts of large, incrementally-changing blobs;
+    [wire compression](/configuration/compression) shrinks compressible
+    blobs wholesale. Compressed artifacts chunk poorly — everything after
+    the first changed byte re-transfers — so lean on chunking for
+    archives, binaries, and layers, and on compression for text-heavy
+    outputs.
+  </Accordion>
+</Accordions>

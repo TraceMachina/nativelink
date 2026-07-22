@@ -135,8 +135,35 @@ filesystem state.
 That's the entire reason. Nix gives us hash-pinned tools; everything
 else follows.
 
-For background, see [What is Nix?](/faq/nix) and
-[How do I make my Bazel setup hermetic?](/faq/hermeticity).
+For background on Nix itself, see
+[Develop with Nix](/contribute/nix); for the hermeticity checklist,
+see the [FAQ](#faq) below.
+
+## FAQ
+
+<Accordions type="multiple">
+  <Accordion title="How do I make my Bazel setup hermetic?" id="hermetic-bazel">
+    Pin the toolchain (Nix or `rules_cc`'s toolchain abstraction —
+    never `/usr/bin/cc`), pin every `http_archive` URL and sha256,
+    add `build --incompatible_strict_action_env` to stop `$PATH`
+    leaks, enable strict include checking
+    (`--features=layering_check`), and compare action hashes across
+    machines with `bazel aquery`. LRE gives you the toolchain-pinning
+    piece for free.
+  </Accordion>
+  <Accordion title="How do I find a hermeticity leak?" id="hermeticity-leak">
+    Build the same target twice on the same machine under LRE and
+    compare outputs — anything that differs is a leak. At the cluster
+    level, non-hermetic actions surface as cache misses where you
+    expected hits, or as nondeterministic action results.
+  </Accordion>
+  <Accordion title="Is LRE a replacement for a remote worker fleet?" id="lre-vs-fleet">
+    No — it solves determinism, not throughput. Fan-out across
+    hundreds of cores, or building for platforms you can't host,
+    still wants remote workers. The point is that action hashes
+    match, so local and remote execution share one cache.
+  </Accordion>
+</Accordions>
 
 ## What's next
 
