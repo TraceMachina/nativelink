@@ -66,8 +66,6 @@ jobs:
           ci-mode: ${{ vars.NATIVELINK_CI_MODE }}
           claim-base: ${{ secrets.NATIVELINK_STAGING_CLAIM_BASE }}
           bes-results-url: ${{ secrets.NATIVELINK_STAGING_BES_RESULTS_URL }}
-          public-read-key: ${{ vars.NATIVELINK_PUBLIC_CACHE_KEY }}
-          public-claim-base: ${{ vars.NATIVELINK_PUBLIC_CLAIM_BASE }}
           api-key: >-
             ${{ github.event_name == 'push'
                 && secrets.NATIVELINK_STAGING_API_KEY_RW
@@ -135,8 +133,6 @@ jobs:
           ci-mode: ${{ vars.NATIVELINK_CI_MODE }}
           claim-base: ${{ secrets.NATIVELINK_STAGING_CLAIM_BASE }}
           bes-results-url: ${{ secrets.NATIVELINK_STAGING_BES_RESULTS_URL }}
-          public-read-key: ${{ vars.NATIVELINK_PUBLIC_CACHE_KEY }}
-          public-claim-base: ${{ vars.NATIVELINK_PUBLIC_CLAIM_BASE }}
           api-key: >-
             ${{ github.event_name == 'push'
                 && secrets.NATIVELINK_STAGING_API_KEY_RW
