@@ -402,20 +402,34 @@ impl GrpcStore {
 
         let mut request = grpc_request.into_inner();
         request.instance_name.clone_from(&self.instance_name);
+        let rpc_timeout = self.rpc_timeout;
         self.perform_request(request, |request| async move {
-            let channel = self
+            let rpc_fut = self
                 .connection_manager
                 .connection("batch_update_blobs".into())
-                .await
-                .err_tip(|| "in batch_update_blobs")?;
-            ContentAddressableStorageClient::new(channel)
-                .batch_update_blobs(enrich_request(
-                    Request::new(request),
-                    &self.headers,
-                    &self.forward_headers,
-                ))
-                .await
-                .err_tip(|| "in GrpcStore::batch_update_blobs")
+                .and_then(|channel| async move {
+                    ContentAddressableStorageClient::new(channel)
+                        .batch_update_blobs(enrich_request(
+                            Request::new(request),
+                            &self.headers,
+                            &self.forward_headers,
+                        ))
+                        .await
+                        .err_tip(|| "in GrpcStore::batch_update_blobs")
+                });
+            if rpc_timeout > Duration::ZERO {
+                tokio::time::timeout(rpc_timeout, rpc_fut)
+                    .await
+                    .map_err(|_| {
+                        make_err!(
+                            Code::DeadlineExceeded,
+                            "GrpcStore::batch_update_blobs RPC timed out after {}s",
+                            rpc_timeout.as_secs()
+                        )
+                    })?
+            } else {
+                rpc_fut.await
+            }
         })
         .await
     }
@@ -1229,24 +1243,52 @@ impl StoreDriver for GrpcStore {
                 }
             };
 
-            let mut error_by_digest: HashMap<DigestInfo, Option<Error>> =
+            enum BatchEntryStatus {
+                Success,
+                Error(Error),
+                Malformed,
+            }
+
+            let mut status_by_digest: HashMap<DigestInfo, BatchEntryStatus> =
                 HashMap::with_capacity(response.responses.len());
             for entry in response.responses {
                 let Some(Ok(digest)) = entry.digest.map(DigestInfo::try_from) else {
                     continue;
                 };
-                let entry_error = entry
-                    .status
-                    .filter(|status| status.code != 0)
-                    .map(Error::from);
-                error_by_digest.insert(digest, entry_error);
+                let entry_status = match entry.status {
+                    None => BatchEntryStatus::Malformed,
+                    Some(status) if !(0..=16).contains(&status.code) => {
+                        BatchEntryStatus::Malformed
+                    }
+                    Some(status) if status.code == Code::Ok as i32 => BatchEntryStatus::Success,
+                    Some(status) => BatchEntryStatus::Error(Error::from(status)),
+                };
+
+                // A malformed or non-success duplicate must not be hidden by
+                // a later success response for the same digest.
+                if let Some(existing) = status_by_digest.get_mut(&digest) {
+                    let replace = match existing {
+                        BatchEntryStatus::Malformed => false,
+                        BatchEntryStatus::Error(_) => {
+                            matches!(entry_status, BatchEntryStatus::Malformed)
+                        }
+                        BatchEntryStatus::Success => {
+                            !matches!(entry_status, BatchEntryStatus::Success)
+                        }
+                    };
+                    if replace {
+                        *existing = entry_status;
+                    }
+                } else {
+                    status_by_digest.insert(digest, entry_status);
+                }
             }
             let mut chunk_fallback = Vec::new();
             for (digest, data) in chunk {
-                match error_by_digest.remove(&digest) {
+                match status_by_digest.remove(&digest) {
                     // Entry succeeded.
-                    Some(None) => {}
-                    Some(Some(err)) if is_retryable_code(err.code) => {
+                    Some(BatchEntryStatus::Success) => {}
+                    Some(BatchEntryStatus::Error(err)) if is_retryable_code(err.code) => {
                         trace!(
                             ?digest,
                             ?err,
@@ -1254,10 +1296,17 @@ impl StoreDriver for GrpcStore {
                         );
                         chunk_fallback.push((digest.into(), data));
                     }
-                    Some(Some(err)) => {
+                    Some(BatchEntryStatus::Error(err)) => {
                         return Err(err.append(format!(
                             "in BatchUpdateBlobs response for {digest} in GrpcStore::update_many"
                         )));
+                    }
+                    Some(BatchEntryStatus::Malformed) => {
+                        trace!(
+                            ?digest,
+                            "Batched upload entry had a missing or malformed status, falling back to ByteStream write",
+                        );
+                        chunk_fallback.push((digest.into(), data));
                     }
                     // Server omitted the entry; fall back to the streaming
                     // path rather than guessing at its state.

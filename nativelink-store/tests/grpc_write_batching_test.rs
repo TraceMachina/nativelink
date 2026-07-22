@@ -13,7 +13,8 @@
 // limitations under the License.
 
 use core::pin::Pin;
-use std::collections::HashMap;
+use core::time::Duration;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use async_lock::Mutex;
@@ -47,6 +48,7 @@ use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::background_spawn;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::store_trait::{Store, StoreKey, StoreLike, StoreOptimizations};
+use tokio::time::sleep;
 use tonic::transport::Server;
 use tonic::transport::server::TcpIncoming;
 use tonic::{Request, Response, Status, Streaming};
@@ -58,9 +60,13 @@ use tonic::{Request, Response, Status, Streaming};
 struct FakeCasServer {
     blobs: Arc<Mutex<HashMap<String, Bytes>>>,
     error_hashes: Arc<Mutex<HashMap<String, i32>>>,
+    missing_status_hashes: Arc<Mutex<HashSet<String>>>,
+    malformed_status_hashes: Arc<Mutex<HashSet<String>>>,
     batch_update_requests: Arc<Mutex<Vec<BatchUpdateBlobsRequest>>>,
     /// When set, every `BatchUpdateBlobs` RPC fails as a whole.
     fail_batch_rpc: Arc<Mutex<bool>>,
+    /// When set, every `BatchUpdateBlobs` RPC waits before responding.
+    batch_update_delay: Arc<Mutex<Option<Duration>>>,
 }
 
 impl FakeCasServer {
@@ -68,8 +74,11 @@ impl FakeCasServer {
         Self {
             blobs: Arc::new(Mutex::new(HashMap::new())),
             error_hashes: Arc::new(Mutex::new(HashMap::new())),
+            missing_status_hashes: Arc::new(Mutex::new(HashSet::new())),
+            malformed_status_hashes: Arc::new(Mutex::new(HashSet::new())),
             batch_update_requests: Arc::new(Mutex::new(vec![])),
             fail_batch_rpc: Arc::new(Mutex::new(false)),
+            batch_update_delay: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -102,31 +111,45 @@ impl ContentAddressableStorage for FakeCasServer {
                 "Injected whole-RPC failure (e.g. message-size limit)",
             ));
         }
+        let batch_update_delay = *self.batch_update_delay.lock().await;
+        if let Some(delay) = batch_update_delay {
+            sleep(delay).await;
+        }
 
         let mut blobs = self.blobs.lock().await;
         let error_hashes = self.error_hashes.lock().await;
+        let missing_status_hashes = self.missing_status_hashes.lock().await;
+        let malformed_status_hashes = self.malformed_status_hashes.lock().await;
         let mut responses = Vec::with_capacity(request.requests.len());
         for entry in request.requests {
             let Some(digest) = entry.digest else {
                 return Err(Status::invalid_argument("Missing digest in request"));
             };
             let status = if let Some(&code) = error_hashes.get(&digest.hash) {
-                RpcStatus {
+                Some(RpcStatus {
                     code,
                     message: format!("Injected error for {}", digest.hash),
                     details: vec![],
-                }
+                })
             } else {
                 blobs.insert(digest.hash.clone(), entry.data);
-                RpcStatus {
-                    code: Code::Ok as i32,
-                    message: String::new(),
-                    details: vec![],
+                if missing_status_hashes.contains(&digest.hash) {
+                    None
+                } else {
+                    Some(RpcStatus {
+                        code: if malformed_status_hashes.contains(&digest.hash) {
+                            99
+                        } else {
+                            Code::Ok as i32
+                        },
+                        message: String::new(),
+                        details: vec![],
+                    })
                 }
             };
             responses.push(batch_update_blobs_response::Response {
                 digest: Some(digest),
-                status: Some(status),
+                status,
             });
         }
         Ok(Response::new(BatchUpdateBlobsResponse { responses }))
@@ -245,6 +268,14 @@ struct TestFixture {
 async fn make_fixture(
     write_batching: Option<GrpcWriteBatchingConfig>,
 ) -> Result<TestFixture, Error> {
+    make_fixture_with_options(write_batching, 0, Retry::default()).await
+}
+
+async fn make_fixture_with_options(
+    write_batching: Option<GrpcWriteBatchingConfig>,
+    rpc_timeout_s: u64,
+    retry: Retry,
+) -> Result<TestFixture, Error> {
     let cas_server = FakeCasServer::new();
     let bytestream_server = FakeByteStreamServer::new(cas_server.blobs.clone());
     let listener = TcpIncoming::bind("127.0.0.1:0".parse().unwrap()).unwrap();
@@ -273,10 +304,10 @@ async fn make_fixture(
             http2_keepalive_timeout_s: 0,
         }],
         store_type: StoreType::Cas,
-        retry: Retry::default(),
+        retry,
         max_concurrent_requests: 0,
         connections_per_endpoint: 0,
-        rpc_timeout_s: 0,
+        rpc_timeout_s,
         use_legacy_resource_names: false,
         headers: HashMap::new(),
         forward_headers: vec![],
@@ -438,6 +469,43 @@ async fn retryable_entry_error_falls_back_to_streaming() -> Result<(), Error> {
             .cloned();
         assert_eq!(stored.as_ref(), Some(content), "for {digest}");
     }
+    Ok(())
+}
+
+// Missing or invalid per-entry statuses are ambiguous: the upstream may have
+// committed the blob, so retry through the idempotent streaming path instead
+// of treating either response as a successful batch entry.
+#[nativelink_test]
+async fn missing_or_malformed_status_falls_back_per_entry() -> Result<(), Error> {
+    let fixture = make_fixture(Some(batching_config())).await?;
+    let blobs: Vec<_> = (0..3).map(make_blob).collect();
+    fixture
+        .cas_server
+        .missing_status_hashes
+        .lock()
+        .await
+        .insert(blobs[0].0.packed_hash().to_string());
+    fixture
+        .cas_server
+        .malformed_status_hashes
+        .lock()
+        .await
+        .insert(blobs[1].0.packed_hash().to_string());
+
+    fixture.store.update_many(make_items(&blobs)).await?;
+
+    let streams = fixture.bytestream_server.write_resource_names.lock().await;
+    assert_eq!(streams.len(), 2, "only ambiguous entries should fall back");
+    assert!(
+        streams
+            .iter()
+            .any(|name| name.contains(&blobs[0].0.packed_hash().to_string()))
+    );
+    assert!(
+        streams
+            .iter()
+            .any(|name| name.contains(&blobs[1].0.packed_hash().to_string()))
+    );
     Ok(())
 }
 
@@ -645,6 +713,44 @@ async fn whole_rpc_failure_falls_back_to_streaming() -> Result<(), Error> {
         streams.len(),
         NUM_BLOBS,
         "every blob must arrive via the streaming fallback"
+    );
+    Ok(())
+}
+
+// The configured batch RPC deadline must participate in the normal retrier;
+// after retries are exhausted, update_many falls back to idempotent streams.
+#[nativelink_test]
+async fn timed_out_batch_retries_then_falls_back_to_streaming() -> Result<(), Error> {
+    let fixture = make_fixture_with_options(
+        Some(batching_config()),
+        1,
+        Retry {
+            max_retries: 1,
+            delay: 0.0,
+            jitter: 0.0,
+            retry_on_errors: None,
+        },
+    )
+    .await?;
+    *fixture.cas_server.batch_update_delay.lock().await = Some(Duration::from_secs(2));
+    let blobs: Vec<_> = (0..3).map(make_blob).collect();
+
+    fixture.store.update_many(make_items(&blobs)).await?;
+
+    assert_eq!(
+        fixture.cas_server.batch_update_requests.lock().await.len(),
+        2,
+        "the timeout should be retried once before fallback"
+    );
+    assert_eq!(
+        fixture
+            .bytestream_server
+            .write_resource_names
+            .lock()
+            .await
+            .len(),
+        blobs.len(),
+        "all entries should use streaming fallback after batch timeout"
     );
     Ok(())
 }

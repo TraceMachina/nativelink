@@ -657,6 +657,37 @@ impl SmallFileBatcher {
     }
 }
 
+async fn read_small_output<R>(
+    file: R,
+    expected_len: usize,
+    full_path: impl Debug,
+) -> Result<Bytes, Error>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    // Read at most one byte past the expected digest size. This bounds the
+    // allocation even if the file grows after hashing, while retaining an
+    // explicit overflow signal below.
+    let read_limit = expected_len
+        .checked_add(1)
+        .ok_or_else(|| make_err!(Code::Internal, "Small output size is too large"))?;
+    let read_limit = u64::try_from(read_limit)
+        .err_tip(|| "Small output size cannot be represented as a read limit")?;
+    let mut data = Vec::with_capacity(expected_len);
+    file.take(read_limit)
+        .read_to_end(&mut data)
+        .await
+        .err_tip(|| format!("Reading small output file {full_path:?}"))?;
+    if data.len() != expected_len {
+        return Err(make_err!(
+            Code::Internal,
+            "Small output file {full_path:?} changed size during upload ({} vs {expected_len})",
+            data.len(),
+        ));
+    }
+    Ok(Bytes::from(data))
+}
+
 async fn upload_file(
     cas_store: Pin<&impl StoreLike>,
     full_path: impl AsRef<Path> + Debug + Send + Sync,
@@ -720,18 +751,8 @@ async fn upload_file(
                 file.rewind().await.err_tip(|| "Could not rewind file")?;
                 let expected_len = usize::try_from(digest.size_bytes())
                     .err_tip(|| "Digest size too large for memory buffer")?;
-                let mut data = Vec::with_capacity(expected_len);
-                file.read_to_end(&mut data)
-                    .await
-                    .err_tip(|| format!("Reading small output file {full_path:?}"))?;
-                if data.len() != expected_len {
-                    return Err(make_err!(
-                        Code::Internal,
-                        "Small output file {full_path:?} changed size during upload ({} vs {expected_len})",
-                        data.len(),
-                    ));
-                }
-                if let Some(flush_items) = batcher.push(digest.into(), Bytes::from(data)) {
+                let data = read_small_output(file, expected_len, &full_path).await?;
+                if let Some(flush_items) = batcher.push(digest.into(), data) {
                     cas_store
                         .update_many(flush_items)
                         .await
@@ -1062,6 +1083,32 @@ async fn do_cleanup(
         error!(%operation_id, ?err, "Error removing working directory");
         Err(err)
     } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use nativelink_macro::nativelink_test;
+
+    use super::*;
+
+    #[nativelink_test]
+    async fn small_output_read_caps_at_expected_size_plus_one() -> Result<(), Error> {
+        let data = read_small_output(Cursor::new(vec![1, 2, 3, 4]), 4, "exact")
+            .await
+            .expect("exact-sized output should be accepted");
+        assert_eq!(&data[..], &[1, 2, 3, 4]);
+
+        let err = read_small_output(Cursor::new(vec![1, 2, 3, 4, 5, 6]), 4, "overflow")
+            .await
+            .expect_err("oversized output should be rejected");
+        assert!(
+            err.to_string().contains("5 vs 4"),
+            "unexpected error: {err}"
+        );
         Ok(())
     }
 }
