@@ -192,6 +192,22 @@ Both runs were captured against the exact config above, on macOS
   platform makes the worker exit immediately.
 </Callout>
 
+## FAQ
+
+<Accordions type="multiple">
+  <Accordion title="Can clients other than Bazel use this server?" id="can-clients-other-than-bazel-use-this-server">
+    Yes — the config exposes standard RE-API services, so Buck2, Pants,
+    Siso, or recc can point at `127.0.0.1:50051` the same way. The Bazel
+    flags are just the worked example.
+  </Accordion>
+  <Accordion title="How do I know an action ran remotely and not locally?" id="how-do-i-know-an-action-ran-remotely-and-not-locally">
+    The process counts in Bazel's output (`3 remote`,
+    `2 remote cache hit`) are the quick check;
+    `--execution_log_json_file` records the runner per action when you
+    need the per-action truth.
+  </Accordion>
+</Accordions>
+
 ## What's next
 
 - [Local Remote Execution](/rbe/local-remote-execution) — add

@@ -115,3 +115,19 @@ and checks that NativeLink did not log an error.
 - **Remote actions do not match a worker.** Compare the platform properties
   BuildStream requests with the properties your NativeLink worker advertises.
   The integration test worker advertises `ISA: x86-64`.
+
+## FAQ
+
+<Accordions type="multiple">
+  <Accordion title="Why does the config have both artifacts and remote-execution blocks?" id="why-does-the-config-have-both-artifacts-and-remote-execution-blocks">
+    They configure different BuildStream subsystems — artifact push/pull
+    storage versus the execution, action-cache, and storage services used
+    for remote builds. Pointing every URL at the same NativeLink listener
+    is fine; it exposes all of those services on one port.
+  </Accordion>
+  <Accordion title="Why http:// URLs instead of grpc://?" id="why-http-urls-instead-of-grpc">
+    BuildStream expresses these endpoints as URLs rather than bare
+    `host:port` pairs. The checked-in integration test runs without TLS,
+    hence `http://localhost:50051`.
+  </Accordion>
+</Accordions>

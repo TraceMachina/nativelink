@@ -179,6 +179,24 @@ the same CAS your local Bazel reads from. Re-run and it's a cache hit.
   — it also covers verifying the setup against a Kubernetes cluster.
 </Callout>
 
+## FAQ
+
+<Accordions type="multiple">
+  <Accordion title="How is this different from the local cache and executor page?" id="how-is-this-different-from-the-local-cache-and-executor-page">
+    [Local cache and executor](/rbe/local-testing) validates the protocol
+    with whatever toolchain is on your `PATH` — it has no toolchain
+    opinion. This page pins the toolchain with Nix so local and remote
+    actions hash identically. Run that one first if you just want to see
+    `Execute` work.
+  </Accordion>
+  <Accordion title="Can I get LRE without Nix?" id="can-i-get-lre-without-nix">
+    No — the guarantee *is* the Nix pinning: every tool lives at a
+    content-addressed `/nix/store` path, which is what makes action
+    hashes match across machines. The server side, by contrast, runs fine
+    without Nix.
+  </Accordion>
+</Accordions>
+
 ## What's next
 
 - [Explanations → LRE](/explanations/lre) — the conceptual write-up.
