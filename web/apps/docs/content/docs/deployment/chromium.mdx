@@ -99,6 +99,20 @@ directory in the source tree has the worker config Samsung uses.
   toolchain version mismatch between the action that wrote the
   cache and the one trying to read.
 
+## FAQ
+
+<Accordions type="multiple">
+  <Accordion title="Do I need to patch the Chromium tree?" id="do-i-need-to-patch-the-chromium-tree">
+    No — pointing Siso at NativeLink is configuration only: GN args plus
+    the Siso environment variables. The same applies to Chromium forks;
+    Samsung Internet runs this pattern in production.
+  </Accordion>
+  <Accordion title="Can I start cache-only?" id="can-i-start-cache-only">
+    Yes. A cache-only cluster already cuts incremental build times; add
+    remote execution later for the full win on link-heavy full builds.
+  </Accordion>
+</Accordions>
+
 ## What's next
 
 - [Persistent workers](/deployment/persistent-workers) for the

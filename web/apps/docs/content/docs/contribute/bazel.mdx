@@ -76,6 +76,21 @@ editor of choice will pick up.
   reuse Bazel's local cache; pointing at a remote NativeLink cluster
   makes a fresh clone fast for everyone.
 
-For non-Bazel workflows, see
-[Develop with Cargo](/contribute/cargo) or
-[Develop with Nix](/contribute/nix).
+## FAQ
+
+<Accordions type="multiple">
+  <Accordion title="Why does the first build take 10-20 minutes?" id="why-does-the-first-build-take-10-20-minutes">
+    It bootstraps the toolchain and builds every dependency from source.
+    Subsequent builds are seconds — and pointing `--remote_cache` at a
+    NativeLink cluster (above) makes even a fresh clone fast.
+  </Accordion>
+  <Accordion title="Do I have to run the whole test suite every time?" id="do-i-have-to-run-the-whole-test-suite-every-time">
+    No — target what you touched
+    (`bazel test //nativelink-store/tests:s3_store_test`), then run the
+    full `bazel test //...` once before submitting.
+
+    For non-Bazel workflows, see
+    [Develop with Cargo](/contribute/cargo) or
+    [Develop with Nix](/contribute/nix).
+  </Accordion>
+</Accordions>

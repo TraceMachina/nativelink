@@ -66,3 +66,18 @@ On a warm cache, cache hits should climb and network errors should stay at
 zero. If actions fall back to local execution, compare the platform
 properties Siso requests with the properties your NativeLink workers
 advertise.
+
+## FAQ
+
+<Accordions type="multiple">
+  <Accordion title="Is RBE_service_no_security=true safe?" id="is-rbe-service-no-security-true-safe">
+    Only for TLS-free local development. Against any shared endpoint, use
+    the TLS variables shown above instead.
+  </Accordion>
+  <Accordion title="Siso or recc — which do I want?" id="siso-or-recc-which-do-i-want">
+    Siso replaces Ninja and speaks full remote execution — it's the path
+    for Chromium-style builds. recc is a compiler launcher for ordinary
+    CMake projects that want caching with minimal setup — see
+    [CMake with recc](/getting-started/other-build-systems/cmake-recc).
+  </Accordion>
+</Accordions>

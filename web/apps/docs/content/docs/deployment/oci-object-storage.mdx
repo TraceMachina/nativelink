@@ -137,3 +137,17 @@ would for the AWS backend.
   cache round-trip, a 2 GiB multipart upload (~400 parts) with full byte
   verification, multipart abort/cleanup, and 200-way concurrent load. It has not
   been benchmarked at sustained production scale or duration.
+
+## FAQ
+
+<Accordions type="multiple">
+  <Accordion title="Can the CAS and Action Cache share one bucket?" id="can-the-cas-and-action-cache-share-one-bucket">
+    Yes — segment them with `key_prefix` (`cas/` and `ac/` in the example
+    above) rather than provisioning two buckets.
+  </Accordion>
+  <Accordion title="Which other providers does experimental_cloud_object_store support?" id="which-other-providers-does-experimental-cloud-object-store-support">
+    `aws`, `gcs`, `azure`, `ontap`, and `r2`, alongside `oci` — one store
+    type, six providers, sharing the same multipart, retry, and streaming
+    code paths.
+  </Accordion>
+</Accordions>

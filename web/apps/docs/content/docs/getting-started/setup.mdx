@@ -18,22 +18,24 @@ system to the running cluster.
 The fastest way is the prebuilt container image. It runs anywhere Docker
 runs and ships with a tested configuration.
 
-<Tabs items={["Linux (x86_64)", "macOS / Linux (Nix)", "Windows (x86_64)"]}>
+<Tabs items={["Linux (Docker)", "macOS / Linux (Nix)", "Windows (Docker)"]}>
 
-  <Tab value="Linux (x86_64)">
+  <Tab value="Linux (Docker)">
 
 ```bash
 # Grab a known-good basic configuration
-curl -O https://raw.githubusercontent.com/TraceMachina/nativelink/v1.4.0/nativelink-config/examples/basic_cas.json5
+curl -O https://raw.githubusercontent.com/TraceMachina/nativelink/v1.6.1/nativelink-config/examples/basic_cas.json5
 
 # Run the official image
 docker run \
   -v $(pwd)/basic_cas.json5:/config \
   -p 50051:50051 \
-  ghcr.io/tracemachina/nativelink:v1.4.0 config
+  ghcr.io/tracemachina/nativelink:v1.6.1 config
 ```
 
-The server is now listening on `localhost:50051`.
+The image is multi-arch — x86_64 and ARM64 both run natively (use
+v1.6.0 or later; earlier tags are x86_64-only). The server is now
+listening on `localhost:50051`.
 
   </Tab>
 
@@ -46,8 +48,9 @@ nix run github:TraceMachina/nativelink ./basic_cas.json5
 ```
 
 Slower than the prebuilt image because it builds from source, but works on
-macOS (Apple Silicon and Intel) and any Linux with Nix. Also the only path
-that supports Apple Silicon natively at the moment.
+macOS (Apple Silicon and Intel) and any Linux with Nix. Use it when you
+want a native binary instead of a container — the Docker path above also
+runs natively on Apple Silicon.
 
 <Callout type="warn">
   - **Prerequisites**: Make sure your Nix installation has experimental features enabled (add `experimental-features = nix-command flakes` to your `~/.config/nix/nix.conf`).
@@ -60,21 +63,21 @@ that supports Apple Silicon natively at the moment.
 
   </Tab>
 
-  <Tab value="Windows (x86_64)">
+  <Tab value="Windows (Docker)">
 
 ```powershell
 Invoke-WebRequest `
-  -Uri "https://raw.githubusercontent.com/TraceMachina/nativelink/v1.4.0/nativelink-config/examples/basic_cas.json5" `
+  -Uri "https://raw.githubusercontent.com/TraceMachina/nativelink/v1.6.1/nativelink-config/examples/basic_cas.json5" `
   -OutFile "basic_cas.json5"
 
 docker run `
   -v ${PWD}/basic_cas.json5:/config `
   -p 50051:50051 `
-  ghcr.io/tracemachina/nativelink:v1.4.0 config
+  ghcr.io/tracemachina/nativelink:v1.6.1 config
 ```
 
-Native Windows support is x86_64 only. ARM64 Windows users should use
-WSL2 with the Linux instructions above.
+The multi-arch image covers x86_64 and ARM64 Windows machines alike.
+WSL2 with the Linux instructions above works too.
 
   </Tab>
 
@@ -210,6 +213,31 @@ section below.
   `:Z` label on the mounted volume:
   `-v $(pwd)/basic_cas.json5:/config:Z`.
 </Callout>
+
+## FAQ
+
+<Accordions type="multiple">
+  <Accordion title="What is remote caching actually doing?" id="what-is-remote-caching-actually-doing">
+    Every action's inputs — source digests, the compiler binary, the
+    exact command line, declared headers — are hashed together, and the
+    action's outputs are stored under that hash. Anyone whose action
+    hashes identically gets the stored outputs back in milliseconds
+    instead of redoing the work.
+  </Accordion>
+  <Accordion title="Why does a one-byte change cause a miss?" id="why-does-a-one-byte-change-cause-a-miss">
+    The hash covers every declared input, so any difference — a header,
+    a compiler patch version, a leaked environment variable — produces a
+    new hash. That's by design: a hit is a guarantee the result is
+    identical. If you see misses where you expect hits, start with the
+    [troubleshooting](#troubleshooting) section above and the
+    [hermeticity FAQ](/explanations/lre#faq).
+  </Accordion>
+  <Accordion title="Do I need --remote_cache when --remote_executor is set?" id="do-i-need-remote-cache-when-remote-executor-is-set">
+    Yes — set both, even to the same address. Without `--remote_cache`,
+    Bazel calls `Execute` with an action digest it never uploaded, and
+    the server rejects it with `Action ... is missing from CAS`.
+  </Accordion>
+</Accordions>
 
 ## What's next
 

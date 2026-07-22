@@ -270,6 +270,30 @@ storage:
     out_of_order_time_window: 1h
 ```
 
+## FAQ
+
+<Accordions type="multiple">
+  <Accordion title="Can Prometheus scrape NativeLink directly?" id="can-prometheus-scrape-nativelink-directly">
+    No — NativeLink emits OTLP only; there is no scrape endpoint. Either
+    run an OpenTelemetry Collector and let Prometheus scrape the
+    Collector's exporter, or enable Prometheus's OTLP receiver
+    (`--web.enable-otlp-receiver`) and send straight to it. The
+    [quick start](#quick-start) wires up the first path.
+  </Accordion>
+  <Accordion title="Do metrics require a commercial license?" id="do-metrics-require-a-commercial-license">
+    Metrics are one of the few Business Source License modules.
+    Individual developer use is fine; shared, production, or commercial
+    settings need NativeLink Cloud, Enterprise, or an intentionally
+    inexpensive commercial license — see the
+    [license page](https://nativelink.com/license).
+  </Accordion>
+  <Accordion title="Which metric should drive worker autoscaling?" id="which-metric-should-drive-worker-autoscaling">
+    `nativelink_scheduler_queue_depth` — the signal the
+    [Kubernetes HPA example](/deployment/kubernetes) targets. CPU-based
+    scaling reacts too slowly because workers are mostly I/O-bound.
+  </Accordion>
+</Accordions>
+
 ## Additional resources
 
 - [Metrics deployment examples](https://github.com/TraceMachina/nativelink/tree/main/deployment-examples/metrics)
