@@ -1663,6 +1663,66 @@ async fn executable_hardlink_source_created_once_and_readonly() -> Result<(), Er
     Ok(())
 }
 
+/// A store whose `.exec` directory cannot be cleared must still start and
+/// serve ordinary CAS reads. It must not, however, trust an executable variant
+/// left behind by an earlier process: that file may be stale or torn after an
+/// unclean shutdown, so the executable hardlink fast path stays disabled until
+/// the directory can be wiped on a later writable startup.
+#[cfg(target_family = "unix")]
+#[nativelink_test]
+async fn read_only_executable_dir_preserves_cas_reads_without_reusing_variants() -> Result<(), Error>
+{
+    use std::os::unix::fs::PermissionsExt;
+
+    struct RestoreWritable(String);
+
+    impl Drop for RestoreWritable {
+        fn drop(&mut self) {
+            use std::os::unix::fs::PermissionsExt;
+
+            std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755))
+                .expect("restore executable digest directory permissions");
+        }
+    }
+
+    let content_path = make_temp_path("content_path_read_only_exec");
+    let temp_path = make_temp_path("temp_path_read_only_exec");
+    let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
+    let spec = FilesystemSpec {
+        content_path: content_path.clone(),
+        temp_path,
+        ..Default::default()
+    };
+
+    {
+        let store = FilesystemStore::<FileEntryImpl>::new(&spec).await?;
+        store.update_oneshot(digest, VALUE1.into()).await?;
+        store.get_executable_hardlink_source(&digest).await?;
+    }
+
+    let executable_digest_dir = format!("{content_path}.exec/{DIGEST_FOLDER}");
+    fs::set_permissions(
+        &executable_digest_dir,
+        std::fs::Permissions::from_mode(0o555),
+    )
+    .await?;
+    let _restore_permissions = RestoreWritable(executable_digest_dir);
+
+    let store = FilesystemStore::<FileEntryImpl>::new(&spec).await?;
+    assert_eq!(
+        store.get_part_unchunked(digest, 0, None).await?,
+        VALUE1.as_bytes(),
+        "read-only executable cleanup must not prevent ordinary CAS reads"
+    );
+    let err = store
+        .get_executable_hardlink_source(&digest)
+        .await
+        .expect_err("a surviving executable variant must not be trusted");
+    assert_eq!(err.code, Code::FailedPrecondition);
+
+    Ok(())
+}
+
 /// Regression test for #2474: the `.exec` variant directory was never
 /// registered in `evicting_map`, so it was invisible to `max_bytes` and only
 /// ever cleared by the startup `remove_dir_all` — growing without bound at
@@ -1984,9 +2044,12 @@ async fn unref_does_not_orphan_content_file_when_temp_dir_missing() -> Result<()
 }
 
 // Exercises the macOS flush coalescer's round machinery under a burst of
-// concurrent uploads (on other platforms this is a plain concurrency
-// smoke test): every upload must complete durably and round-trip, and a
-// store restart must still see every blob.
+// concurrent uploads (on other platforms this is a plain concurrency smoke
+// test). Two hundred small, independently durable blobs are used because each
+// upload would otherwise issue its own multi-millisecond `F_FULLFSYNC` on
+// macOS. The data volume is deliberately small so file I/O does not hide the
+// synchronization behavior: every blob must complete and survive restart,
+// while the device-wide barrier count must remain far below the blob count.
 #[nativelink_test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_upload_burst_round_trip_test() -> Result<(), Error> {
     const NUM_BLOBS: u64 = 200;
@@ -2006,7 +2069,8 @@ async fn concurrent_upload_burst_round_trip_test() -> Result<(), Error> {
         DigestInfo::new(hash, 25)
     };
     {
-        let store = Store::new(FilesystemStore::<FileEntryImpl>::new(&spec).await?);
+        let filesystem_store = FilesystemStore::<FileEntryImpl>::new(&spec).await?;
+        let store = Store::new(filesystem_store.clone());
         let mut handles = Vec::new();
         for i in 0..NUM_BLOBS {
             let store = store.clone();
@@ -2019,6 +2083,16 @@ async fn concurrent_upload_burst_round_trip_test() -> Result<(), Error> {
         }
         for handle in handles {
             handle.await.expect("upload task panicked")?;
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let full_flush_count = filesystem_store
+                .full_flush_count_for_test()
+                .expect("writable test store must have a flush coalescer");
+            assert!(
+                full_flush_count > 0 && full_flush_count < NUM_BLOBS / 2,
+                "{NUM_BLOBS} concurrent uploads should share device-wide barriers; observed {full_flush_count} F_FULLFSYNC rounds"
+            );
         }
         for i in 0..NUM_BLOBS {
             assert_eq!(
