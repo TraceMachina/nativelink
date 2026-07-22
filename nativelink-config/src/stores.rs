@@ -357,7 +357,8 @@ pub enum StoreSpec {
     ///   "max_concurrent_staged_uploads": 4,
     ///   "compression_level": 19,
     ///   "max_recompression_size": "64MiB",
-    ///   "max_concurrent_recompressions": 1
+    ///   "max_concurrent_recompressions": 1,
+    ///   "commit_timeout_s": 300
     /// }
     /// ```
     ZstdStore(Box<ZstdStoreSpec>),
@@ -1162,6 +1163,16 @@ pub struct ZstdStoreSpec {
     /// Default: 0
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_concurrent_recompressions: usize,
+
+    /// Maximum time, in seconds, to wait for a staged upload's inner-store commit
+    /// (and any recompression) to finish before failing with `DEADLINE_EXCEEDED`,
+    /// removing the staged file, and releasing the staging slot. This bounds how
+    /// long a stalled or hung backend can hold a staging permit and prevents a
+    /// convoy of validated temp files from piling up behind a stuck commit.
+    /// `0` means "use default 300" at construction time.
+    /// Default: 0
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub commit_timeout_s: u64,
 }
 
 /// Eviction policy always works on LRU (Least Recently Used). Any time an entry

@@ -108,6 +108,7 @@ async fn make_zstd_store_manager() -> Result<Arc<StoreManager>, Error> {
         compression_level: None,
         max_recompression_size: 0,
         max_concurrent_recompressions: 0,
+        commit_timeout_s: 0,
     }));
     store_manager.add_store(
         "main_cas",
@@ -2378,5 +2379,180 @@ pub async fn zstd_store_compressed_read_rejects_nonzero_read_limit()
         status.message()
     );
 
+    Ok(())
+}
+
+/// Builds a [`StoreManager`] whose `main_cas` store is a pure-passthrough
+/// `ZstdStore` over memory with a configurable staged-upload bound.
+async fn make_zstd_store_manager_with_staging(
+    max_concurrent_staged_uploads: usize,
+) -> Result<Arc<StoreManager>, Error> {
+    let store_manager = Arc::new(StoreManager::new());
+    let temp_path = make_temp_path("bytestream-zstd-idle");
+    std::fs::create_dir_all(&temp_path)
+        .map_err(|e| make_err!(Code::Internal, "Failed to create zstd temp dir: {e}"))?;
+    let spec = StoreSpec::ZstdStore(Box::new(ZstdStoreSpec {
+        backend: StoreSpec::Memory(MemorySpec::default()),
+        temp_path,
+        max_compressed_upload_size: 512 * 1024 * 1024,
+        max_concurrent_staged_uploads,
+        compression_level: None,
+        max_recompression_size: 0,
+        max_concurrent_recompressions: 0,
+        commit_timeout_s: 0,
+    }));
+    store_manager.add_store(
+        "main_cas",
+        store_factory(&spec, &store_manager, None).await?,
+    )?;
+    Ok(store_manager)
+}
+
+/// A compressed `ByteStream` client that acquires the single staging slot and then
+/// stalls (never sends `finish_write`, never disconnects) is timed out with
+/// `DeadlineExceeded`, its staging permit is released, and a subsequent valid
+/// upload behind the `max_concurrent_staged_uploads = 1` bound completes.
+///
+/// Uses a short real-time (1s) idle timeout rather than a paused clock: the
+/// stalled upload parks a `spawn_blocking` recv thread inside the store, and
+/// tokio's `start_paused` auto-advance will not fire the idle timer while a
+/// blocking task is outstanding — so a paused clock would deadlock here.
+#[nativelink_test]
+async fn zstd_compressed_upload_idle_timeout_frees_staging_slot()
+-> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_zstd_store_manager_with_staging(1).await?;
+    // Short idle timeout; under start_paused the virtual clock advances past it.
+    let config = vec![WithInstanceName {
+        instance_name: INSTANCE_NAME.to_string(),
+        config: ByteStreamConfig {
+            cas_store: "main_cas".to_string(),
+            persist_stream_on_disconnect_timeout_s: 1,
+            max_bytes_per_stream: 1024,
+        },
+    }];
+    let bs_server = Arc::new(make_bytestream_server_with_remote_cache_compression(
+        store_manager.as_ref(),
+        Some(config),
+        true,
+    )?);
+
+    let raw = "idle timeout regression payload ".repeat(64);
+    let compressed = zstd::bulk::compress(raw.as_bytes(), 3)?;
+    let hash = sha256_hex(raw.as_bytes());
+
+    // --- Upload A: send a partial chunk, then stall (keep tx alive). ---
+    let resource_a =
+        make_compressed_resource_name("aaaaaaaa-1111-2222-3333-444444444444", &hash, raw.len());
+    let (tx_a, join_a) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    tx_a.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name: resource_a,
+        write_offset: 0,
+        finish_write: false,
+        data: Bytes::copy_from_slice(&compressed[..compressed.len() / 2]),
+    })?))
+    .await?;
+
+    // Do not send more and do not drop tx_a: the server is left waiting for the
+    // next WriteRequest. The idle timeout must fire (DeadlineExceeded), not an
+    // InvalidArgument "stream ended without finish_write".
+    let status_a = join_a
+        .await
+        .expect("join A")
+        .expect_err("stalled upload A must fail");
+    assert_eq!(
+        status_a.code(),
+        Code::DeadlineExceeded,
+        "an idle-stalled compressed upload must time out with DeadlineExceeded, got: {status_a:?}"
+    );
+    drop(tx_a);
+
+    // --- Upload B: a full valid upload must complete (slot was released). ---
+    let resource_b =
+        make_compressed_resource_name("bbbbbbbb-1111-2222-3333-444444444444", &hash, raw.len());
+    let (tx_b, join_b) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    tx_b.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name: resource_b,
+        write_offset: 0,
+        finish_write: true,
+        data: compressed.clone().into(),
+    })?))
+    .await?;
+    join_b
+        .await
+        .expect("join B")
+        .expect("valid upload B behind the freed slot must succeed");
+
+    let store = store_manager.get_store("main_cas").unwrap();
+    let digest = DigestInfo::try_new(&hash, raw.len())?;
+    assert_eq!(
+        store.get_part_unchunked(digest, 0, None).await?.as_ref(),
+        raw.as_bytes(),
+        "the recovered upload must store the decompressed bytes"
+    );
+    Ok(())
+}
+
+/// A client that keeps making progress is NOT idle-timed-out even when the whole
+/// upload takes longer than the idle timeout: the deadline is per-WriteRequest
+/// and resets on every chunk. Real-time test with sub-timeout inter-chunk gaps
+/// whose sum exceeds the timeout.
+#[nativelink_test]
+async fn zstd_compressed_upload_making_progress_is_not_idle_timed_out()
+-> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_zstd_store_manager_with_staging(1).await?;
+    let config = vec![WithInstanceName {
+        instance_name: INSTANCE_NAME.to_string(),
+        config: ByteStreamConfig {
+            cas_store: "main_cas".to_string(),
+            persist_stream_on_disconnect_timeout_s: 1,
+            max_bytes_per_stream: 1024,
+        },
+    }];
+    let bs_server = Arc::new(make_bytestream_server_with_remote_cache_compression(
+        store_manager.as_ref(),
+        Some(config),
+        true,
+    )?);
+
+    let raw = "progress keeps the stream alive ".repeat(256);
+    let compressed = zstd::bulk::compress(raw.as_bytes(), 3)?;
+    let hash = sha256_hex(raw.as_bytes());
+    let resource_name =
+        make_compressed_resource_name("cccccccc-1111-2222-3333-444444444444", &hash, raw.len());
+    let (tx, join_handle) = make_stream_and_writer_spawn(bs_server.clone(), None);
+
+    // Five chunks, ~300ms apart: each inter-chunk gap is well under the 1s idle
+    // timeout, but their sum (~1.2s) exceeds it. A per-message deadline that
+    // resets on progress lets this succeed; a whole-upload deadline would not.
+    let chunk_count = 5usize;
+    let chunk_len = compressed.len().div_ceil(chunk_count);
+    let mut offset = 0usize;
+    while offset < compressed.len() {
+        let end = (offset + chunk_len).min(compressed.len());
+        tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+            resource_name: resource_name.clone(),
+            write_offset: offset as i64,
+            finish_write: end == compressed.len(),
+            data: Bytes::copy_from_slice(&compressed[offset..end]),
+        })?))
+        .await?;
+        offset = end;
+        if offset < compressed.len() {
+            tokio::time::sleep(core::time::Duration::from_millis(300)).await;
+        }
+    }
+
+    join_handle
+        .await
+        .expect("join")
+        .expect("a continuously-progressing upload must not be idle-timed-out");
+
+    let store = store_manager.get_store("main_cas").unwrap();
+    let digest = DigestInfo::try_new(&hash, raw.len())?;
+    assert_eq!(
+        store.get_part_unchunked(digest, 0, None).await?.as_ref(),
+        raw.as_bytes(),
+        "the progressive upload must store the decompressed bytes"
+    );
     Ok(())
 }

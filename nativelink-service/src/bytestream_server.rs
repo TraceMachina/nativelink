@@ -346,9 +346,26 @@ async fn process_compressed_client_stream(
     mut stream: WriteRequestStreamWrapper<impl Stream<Item = Result<WriteRequest, Status>> + Unpin>,
     mut tx: DropCloserWriteHalf,
     bytes_received: &Arc<AtomicU64>,
+    idle_timeout: Duration,
 ) -> Result<(), Error> {
     loop {
-        match stream.next().await {
+        // Bound the wait for the *next* `WriteRequest`, not the whole upload: a
+        // client that keeps making progress resets the deadline every message,
+        // so a large upload never trips it, but a client that acquires the store
+        // slot then stalls (or never sends `finish_write`) is timed out. Dropping
+        // `tx` on return disconnects the compressed channel, which unwinds the
+        // store-side validation task through the caller's `join`.
+        let next = match tokio::time::timeout(idle_timeout, stream.next()).await {
+            Ok(next) => next,
+            Err(_elapsed) => {
+                return Err(make_err!(
+                    Code::DeadlineExceeded,
+                    "Compressed upload idle timeout ({}s) elapsed waiting for the next WriteRequest",
+                    idle_timeout.as_secs()
+                ));
+            }
+        };
+        match next {
             Some(Ok(write_request)) => {
                 if write_request.write_offset < 0 {
                     return Err(make_input_err!(
@@ -1112,10 +1129,22 @@ impl ByteStreamServer {
         // progress, and `committed_size` remains the compressed wire byte count.
         if let Some(zstd_store) = instance.store.downcast_arc_immediate::<ZstdStore>() {
             let update_fut = zstd_store.update_zstd(digest, digest_function, compressed_rx);
-            let client_stream_fut =
-                process_compressed_client_stream(stream, compressed_tx, &bytes_received);
+            let client_stream_fut = process_compressed_client_stream(
+                stream,
+                compressed_tx,
+                &bytes_received,
+                instance.idle_stream_timeout,
+            );
             let (client_stream_result, update_result) = tokio::join!(client_stream_fut, update_fut);
 
+            // An idle-timeout expiry in the client pump is the primary cause of
+            // failure; surface it as-is (DeadlineExceeded) rather than letting the
+            // downstream channel-disconnect error from `update_zstd` mask it.
+            if let Err(err) = &client_stream_result
+                && err.code == Code::DeadlineExceeded
+            {
+                return Err(err.clone());
+            }
             // Bad client input maps to InvalidArgument immediately, mirroring the
             // decode path below.
             if let Err(err) = &client_stream_result
@@ -1124,7 +1153,7 @@ impl ByteStreamServer {
                 return Err(err.clone());
             }
             if let Err(err) = &update_result
-                && err.code == Code::InvalidArgument
+                && (err.code == Code::InvalidArgument || err.code == Code::DeadlineExceeded)
             {
                 return Err(err.clone());
             }
@@ -1172,13 +1201,17 @@ impl ByteStreamServer {
             digest_function,
             decompressed_tx,
         );
-        let client_stream_fut =
-            process_compressed_client_stream(stream, compressed_tx, &bytes_received);
+        let client_stream_fut = process_compressed_client_stream(
+            stream,
+            compressed_tx,
+            &bytes_received,
+            instance.idle_stream_timeout,
+        );
         let (client_stream_result, decode_result, store_update_result) =
             tokio::join!(client_stream_fut, decode_fut, store_update_fut);
 
         if let Err(err) = &client_stream_result
-            && err.code == Code::InvalidArgument
+            && (err.code == Code::InvalidArgument || err.code == Code::DeadlineExceeded)
         {
             return Err(err.clone());
         }

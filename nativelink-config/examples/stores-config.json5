@@ -180,6 +180,19 @@
     },
     {
       name: "12",
+      "zstd_store": {
+       "backend": { "fast_slow": { /* complete backend stack */ } },
+       "temp_path": "/var/tmp/nativelink-zstd",
+       "max_compressed_upload_size": "512MiB",
+       "max_concurrent_staged_uploads": 4,
+       "compression_level": 19,
+       "max_recompression_size": "64MiB",
+       "max_concurrent_recompressions": 1,
+       "commit_timeout_s": 300
+     }
+    },
+    {
+      name: "13",
       "dedup": {
        "index_store": {
          "memory": {
@@ -218,7 +231,7 @@
      }
     },
     {
-      name: "13",
+      name: "14",
       "existence_cache": {
        "backend": {
          "memory": {
@@ -234,7 +247,7 @@
      }
     },
     {
-      name: "14",
+      name: "15",
       "fast_slow": {
        "fast": {
          "filesystem": {
@@ -257,7 +270,7 @@
      }
     },
     {
-      name: "15",
+      name: "16",
       "shard": {
        "stores": [
         {
@@ -273,7 +286,7 @@
      }
     },
     {
-      name: "16",
+      name: "17",
       "filesystem": {
        "content_path": "/tmp/nativelink/data-worker-test/content_path-cas",
        "temp_path": "/tmp/nativelink/data-worker-test/tmp_path-cas",
@@ -283,13 +296,13 @@
      }
     },
     {
-      name: "17",
+      name: "18",
       "ref_store": {
        "name": "FS_CONTENT_STORE"
      }
     },
     {
-      name: "18",
+      name: "19",
       "size_partitioning": {
        "size": "128mib",
        "lower_store": {
@@ -306,7 +319,7 @@
      }
     },
     {
-      name: "19",
+      name: "20",
       "grpc": {
        "instance_name": "main",
        "endpoints": [
@@ -327,7 +340,7 @@
      }
     },
     {
-      name: "20",
+      name: "21",
       "redis_store": {
        "addresses": [
          "redis://127.0.0.1:6379/",
@@ -336,11 +349,11 @@
      }
     },
     {
-      name: "21",
+      name: "22",
       "noop": {}
     },
     {
-      name: "22",
+      name: "23",
       "experimental_mongo": {
          "connection_string": "mongodb://localhost:27017",
          "database": "nativelink",

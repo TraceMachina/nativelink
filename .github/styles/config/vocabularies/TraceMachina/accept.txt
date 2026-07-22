@@ -316,3 +316,14 @@ subtree
 hardlink
 multiplicatively
 SELinux
+[Pp]assthrough
+[Rr]ecompression
+[Rr]ecompressions
+[Dd]ecodable
+libzstd
+windowLog
+[Ss]eekable
+[Tt]ranscodes
+[Ii]nterop
+[Dd]esynchronization
+max_recompression_size

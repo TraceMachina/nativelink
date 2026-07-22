@@ -125,6 +125,7 @@ AC store at it.
     compression_level: 19,
     max_recompression_size: "64MiB",
     max_concurrent_recompressions: 1,
+    commit_timeout_s: 300,
   },
 }
 ```
@@ -170,21 +171,60 @@ anything outside that range at config-validation time (startup).
 
 The zstd level isn't recorded in the frame; decoders are level-agnostic. The
 actual cross-client constraint is **window size**. Standard levels 1–19 cap
-the encoded frame at `windowLog <= 23` (<= 8 MiB), decodable by every
+the encoded frame at `windowLog ≤ 23` (≤ 8 MiB), decodable by every
 Bazel/zstd-jni client using plain `libzstd` defaults. Bazel's decoder never
-calls `setLongMax`, so its hard ceiling is `windowLog <= 27` (128 MiB) —
+calls `setLongMax`, so its hard ceiling is `windowLog ≤ 27` (128 MiB) —
 level 19 keeps a wide margin under that ceiling rather than chasing the
 absolute cap. `zstd_store` never enables long-distance matching or external
 dictionaries (REAPI has no dictionary channel, and long-distance matching
 alone can push `windowLog` past 23).
 
+### Bounds and admission: stopping a zstd bomb
+
+Every compressed input is bounded from both ends. `max_compressed_upload_size`
+caps the compressed bytes a client may push; exceeding it fails the upload with
+`RESOURCE_EXHAUSTED`. Independently, the decoder's output sink is capped at the
+digest's declared uncompressed size and rejects with `INVALID_ARGUMENT` the
+moment decoded bytes *would* exceed it — so a small "zstd bomb" that expands to
+a huge buffer is stopped at the first over-limit block rather than being fully
+materialized. Zero-digest validation streams through the same bounded decoder
+with an output cap of zero: it never allocates the decoded output, and it takes
+an admission permit like any other staged upload, so it cannot spawn unbounded
+decode jobs.
+
+`max_concurrent_staged_uploads` admits a bounded number of uploads at a time,
+but admission alone can't stop a stalled client or backend from parking on a
+slot forever, so the store also enforces two deadlines. The ByteStream
+compressed client pump has an idle timeout on waiting for the next
+`WriteRequest`, reusing the ByteStream instance's
+`persist_stream_on_disconnect_timeout_s` setting — a client making continuous
+progress is never timed out, only an idle or stalled one. The inner-store
+commit (and any recompression) is bounded separately by `commit_timeout_s`. On
+an idle or commit timeout the request fails with `DEADLINE_EXCEEDED`, the staged
+file is removed, and the staging slot is released — a stalled backend cannot
+hold a staging permit indefinitely. Cancellation, idle timeout, commit timeout,
+validation failure, and success all remove the staged temp file(s) and release
+the permit.
+
+- **`commit_timeout_s`** — maximum seconds to wait for a staged upload's
+  inner-store commit (and any recompression) before failing with
+  `DEADLINE_EXCEEDED`, removing the staged file and releasing the staging slot.
+  `0` uses the default of 300.
+
 ### `temp_path`: staging directory, size and place it deliberately
 
 `zstd_store` stages every compressed upload — and, when recompressing, the
 re-encoded candidate — as a temp file under `temp_path` before committing it
-to `backend`. Files use owner-only permissions (`0o600` on Unix) and
-unpredictable names, and are always removed on success, error, or
-cancellation.
+to `backend`. `temp_path` must be a private directory owned by the operator and
+**not** writable by untrusted local users; at startup the store verifies it is
+a directory and rejects a world-writable directory that lacks the sticky bit.
+Each staging file is created exclusively (`O_EXCL` / `create_new`) with `0o600`
+applied atomically at creation, and the exact validated open file descriptor is
+retained, rewound, and handed to the inner store at commit — the pathname is
+never reopened for reading, which defeats observe-and-replace races. The
+security here comes from exclusive creation plus descriptor pinning plus a
+private directory, not from unpredictable names alone. Every staged file is
+removed on success, error, or cancellation.
 
 - **Worst-case temp disk usage** is roughly `max_concurrent_staged_uploads
   * (max_compressed_upload_size + max_recompression_size)` — the second
@@ -206,7 +246,10 @@ re-encoded at `compression_level`, and `zstd_store` keeps whichever of the
 original or re-encoded stream is smaller. `max_recompression_size: 0`
 disables recompression entirely — `compression_level` still picks the level
 used to encode brand-new, not-already-compressed uploads; it just never
-starts a second encoder for an incoming compressed stream.
+starts a second encoder for an incoming compressed stream. Recompression is
+serialized by `max_concurrent_recompressions` and runs under the same
+`commit_timeout_s` deadline as the inner-store commit, so a slow re-encode
+can't hold a staging slot past that bound.
 
 ## Choosing a terminal backend
 

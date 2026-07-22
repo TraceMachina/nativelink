@@ -14,6 +14,7 @@
 
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::ffi::OsString;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -42,6 +43,7 @@ use nativelink_util::buf_channel::{
 };
 use nativelink_util::common::{DigestInfo, make_temp_path};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc, make_ctx_for_hash_func};
+use nativelink_util::fs::FileSlot;
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::store_trait::{
     RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
@@ -50,6 +52,7 @@ use nativelink_util::{background_spawn, spawn};
 use opentelemetry::context::FutureExt;
 use pretty_assertions::assert_eq;
 use sha2::{Digest, Sha256};
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 #[derive(Default, MetricsComponent)]
 struct RecordingStore {
@@ -208,6 +211,7 @@ fn spec() -> ZstdStoreSpec {
         compression_level: None,
         max_recompression_size: 0,
         max_concurrent_recompressions: 0,
+        commit_timeout_s: 0,
     }
 }
 
@@ -566,6 +570,7 @@ fn spec_for(temp_path: String) -> ZstdStoreSpec {
         compression_level: None,
         max_recompression_size: 0,
         max_concurrent_recompressions: 0,
+        commit_timeout_s: 0,
     }
 }
 
@@ -1540,6 +1545,375 @@ async fn rollout_from_empty_namespace() -> Result<(), Error> {
         store.has(digest).await?,
         Some(DATA.len() as u64),
         "after the write the digest must be present at its uncompressed size"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Security & starvation hardening (bounded decode, descriptor pinning, commit
+// deadline). See the PR's issues 1-3.
+// ---------------------------------------------------------------------------
+
+/// Inner store that, on `update_with_whole_file`, first *replaces* the staged
+/// pathname's contents (simulating an observe-and-replace attacker) and then
+/// reads the retained descriptor it was handed, storing whatever the descriptor
+/// yields into an inner `MemoryStore`. If the zstd store commits from the
+/// validated descriptor (as it must), the stored bytes are the validated stream
+/// regardless of what happened to the pathname.
+#[derive(MetricsComponent)]
+struct ClobberingStore {
+    #[metric(group = "inner")]
+    inner: Store,
+}
+
+#[async_trait]
+impl StoreDriver for ClobberingStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn has_with_results(
+        self: Pin<&Self>,
+        keys: &[StoreKey<'_>],
+        results: &mut [Option<u64>],
+    ) -> Result<(), Error> {
+        self.inner.has_with_results(keys, results).await
+    }
+
+    async fn update(
+        self: Pin<&Self>,
+        key: StoreKey<'_>,
+        reader: DropCloserReadHalf,
+        size_info: UploadSizeInfo,
+    ) -> Result<u64, Error> {
+        self.inner
+            .as_store_driver_pin()
+            .update(key, reader, size_info)
+            .await
+    }
+
+    async fn update_with_whole_file(
+        self: Pin<&Self>,
+        key: StoreKey<'_>,
+        path: OsString,
+        mut file: FileSlot,
+        _upload_size: UploadSizeInfo,
+    ) -> Result<(u64, Option<FileSlot>), Error> {
+        // Replace the pathname with attacker-controlled content *after* the zstd
+        // store validated the descriptor. Unlink first so the retained fd points
+        // at a now-orphaned inode, then create a fresh file at the same path.
+        drop(std::fs::remove_file(&path));
+        std::fs::write(&path, b"CLOBBERED-BY-ATTACKER").expect("clobber write");
+
+        // Read the *descriptor* the store handed us (the validated bytes).
+        file.rewind()
+            .await
+            .map_err(|e| make_err!(Code::Internal, "rewind clobber fd: {e}"))?;
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf)
+            .await
+            .map_err(|e| make_err!(Code::Internal, "read clobber fd: {e}"))?;
+        let size = buf.len() as u64;
+        self.inner
+            .update_oneshot(key.into_digest(), Bytes::from(buf))
+            .await?;
+        Ok((size, None))
+    }
+
+    async fn get_part(
+        self: Pin<&Self>,
+        key: StoreKey<'_>,
+        writer: &mut DropCloserWriteHalf,
+        offset: u64,
+        length: Option<u64>,
+    ) -> Result<(), Error> {
+        self.inner
+            .as_store_driver_pin()
+            .get_part(key, writer, offset, length)
+            .await
+    }
+
+    fn inner_store(&self, _key: Option<StoreKey>) -> &dyn StoreDriver {
+        self
+    }
+
+    fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
+        self
+    }
+
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+        self
+    }
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        _callback: Arc<dyn RemoveItemCallback>,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+default_health_status_indicator!(ClobberingStore);
+
+/// Inner store whose whole-file commit never resolves, used to prove the zstd
+/// store bounds a stalled backend commit with its `commit_timeout` and releases
+/// the staging permit afterwards.
+#[derive(Default, MetricsComponent)]
+struct StallStore {}
+
+#[async_trait]
+impl StoreDriver for StallStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn has_with_results(
+        self: Pin<&Self>,
+        _keys: &[StoreKey<'_>],
+        _results: &mut [Option<u64>],
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn update(
+        self: Pin<&Self>,
+        _key: StoreKey<'_>,
+        _reader: DropCloserReadHalf,
+        _size_info: UploadSizeInfo,
+    ) -> Result<u64, Error> {
+        // Never completes.
+        core::future::pending::<()>().await;
+        unreachable!("StallStore::update never resolves")
+    }
+
+    async fn update_with_whole_file(
+        self: Pin<&Self>,
+        _key: StoreKey<'_>,
+        _path: OsString,
+        _file: FileSlot,
+        _upload_size: UploadSizeInfo,
+    ) -> Result<(u64, Option<FileSlot>), Error> {
+        // Simulate a permanently stalled backend commit.
+        core::future::pending::<()>().await;
+        unreachable!("StallStore::update_with_whole_file never resolves")
+    }
+
+    async fn get_part(
+        self: Pin<&Self>,
+        _key: StoreKey<'_>,
+        _writer: &mut DropCloserWriteHalf,
+        _offset: u64,
+        _length: Option<u64>,
+    ) -> Result<(), Error> {
+        Err(make_err!(Code::NotFound, "Not found"))
+    }
+
+    fn inner_store(&self, _key: Option<StoreKey>) -> &dyn StoreDriver {
+        self
+    }
+
+    fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
+        self
+    }
+
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+        self
+    }
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        _callback: Arc<dyn RemoveItemCallback>,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+default_health_status_indicator!(StallStore);
+
+/// A compressed stream that decodes to non-empty content is rejected under a
+/// zero digest — via both the streaming and one-shot entry points — and stops
+/// at the output sink without materializing the (large) decoded output.
+#[nativelink_test]
+async fn zero_digest_decoding_nonempty_is_rejected_at_sink() -> Result<(), Error> {
+    let temp = make_temp_path("zstd-zero-bomb");
+    let (zstd, _store, _inner) = build(&spec_for(temp.clone())).await?;
+
+    // 16 MiB of zeros compresses to a few KiB. Under a zero digest the decoded
+    // output cap is 0, so the first decoded block is rejected immediately — the
+    // 16 MiB is never materialized (the test would be far slower / OOM if it
+    // were).
+    let bomb = zstd::bulk::compress(&vec![0u8; 16 * 1024 * 1024], 3).unwrap();
+    assert!(
+        bomb.len() < 64 * 1024,
+        "bomb should be tiny compressed ({} bytes)",
+        bomb.len()
+    );
+    let zero = ZERO_BYTE_DIGESTS[0];
+
+    // One-shot entry point.
+    let err = zstd
+        .update_zstd_oneshot(zero, DigestHasherFunc::Sha256, Bytes::from(bomb.clone()))
+        .await
+        .expect_err("a non-empty-decoding zero-digest upload must be rejected");
+    assert_eq!(err.code, Code::InvalidArgument, "got: {err}");
+
+    // Streaming entry point.
+    let err = zstd
+        .update_zstd(
+            zero,
+            DigestHasherFunc::Sha256,
+            reader_from(vec![Bytes::from(bomb)]),
+        )
+        .await
+        .expect_err("a non-empty-decoding zero-digest stream must be rejected");
+    assert_eq!(err.code, Code::InvalidArgument, "got: {err}");
+
+    assert_eq!(
+        dir_entry_count(&temp),
+        0,
+        "zero-digest validation must never stage a temp file"
+    );
+    Ok(())
+}
+
+/// A non-zero upload whose decoded output exceeds the declared digest size is
+/// stopped at the decoder sink (`InvalidArgument`), commits nothing, and leaves
+/// no staging file. The decoded output (256 KiB) dwarfs the declared size (100
+/// bytes), so the sink rejects the very first over-limit block.
+#[nativelink_test]
+async fn decoded_output_exceeding_digest_size_is_stopped_at_sink() -> Result<(), Error> {
+    let temp = make_temp_path("zstd-decode-overflow");
+    let (zstd, _store, inner) = build(&spec_for(temp.clone())).await?;
+
+    let data = compressible_data(256 * 1024);
+    let compressed = zstd::bulk::compress(&data, 3).unwrap();
+    // Claim a digest for only the first 100 decoded bytes: the actual decoded
+    // stream is far larger than the declared size.
+    let bad_digest = digest_for(&data[..100]);
+    assert_eq!(bad_digest.size_bytes(), 100);
+
+    let err = zstd
+        .update_zstd_oneshot(
+            bad_digest,
+            DigestHasherFunc::Sha256,
+            Bytes::from(compressed),
+        )
+        .await
+        .expect_err("decoded output larger than the digest size must be rejected");
+    assert_eq!(err.code, Code::InvalidArgument, "got: {err}");
+
+    assert_eq!(
+        inner.has(bad_digest).await?,
+        None,
+        "an over-decoding upload must not commit to the inner store"
+    );
+    assert_eq!(
+        dir_entry_count(&temp),
+        0,
+        "an over-decoding upload must not leave staged temp files"
+    );
+    Ok(())
+}
+
+/// The commit streams the exact validated descriptor, not a reopened pathname:
+/// replacing the pathname's contents after validation cannot change what is
+/// committed.
+#[nativelink_test]
+async fn commit_uses_validated_descriptor_not_reopened_path() -> Result<(), Error> {
+    const DATA: &[u8] = b"descriptor-pinned commit payload aaaaaaaaaaaaaaaaaaaaaaaa";
+
+    let temp = make_temp_path("zstd-fd-pin");
+    std::fs::create_dir_all(&temp).map_err(|e| make_err!(Code::Internal, "temp dir: {e}"))?;
+    let inner_mem = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let clobber = Store::new(Arc::new(ClobberingStore {
+        inner: inner_mem.clone(),
+    }));
+    let zstd = ZstdStore::new(&spec_for(temp.clone()), clobber)?;
+
+    let compressed = zstd::bulk::compress(DATA, 3).unwrap();
+    let digest = digest_for(DATA);
+
+    zstd.update_zstd_oneshot(
+        digest,
+        DigestHasherFunc::Sha256,
+        Bytes::from(compressed.clone()),
+    )
+    .await?;
+
+    // The bytes the inner store committed came from the retained descriptor, so
+    // they equal the validated stream — NOT the "CLOBBERED-BY-ATTACKER" content
+    // that replaced the pathname during the commit.
+    let committed = inner_mem.get_part_unchunked(digest, 0, None).await?;
+    assert_eq!(
+        &committed[..],
+        &compressed[..],
+        "committed bytes must be the validated descriptor's contents, not the replaced pathname's"
+    );
+    assert_eq!(
+        zstd::stream::decode_all(&committed[..]).unwrap(),
+        DATA,
+        "the descriptor-committed stream must still decode to the original content"
+    );
+    assert_eq!(
+        dir_entry_count(&temp),
+        0,
+        "a successful commit must leave no staged temp files"
+    );
+    Ok(())
+}
+
+/// A permanently stalled backend commit is bounded by `commit_timeout`: the
+/// upload fails with `DeadlineExceeded`, the staged file is removed, and the
+/// staging permit is released — so a second upload behind a `max_concurrent
+/// staged_uploads = 1` bound is admitted rather than blocked forever.
+// Uses a short real-time `commit_timeout_s = 1` rather than a paused clock:
+// the `nativelink-store` test crate does not enable tokio's `test-util`
+// feature, so `start_paused` is unavailable here.
+#[nativelink_test]
+async fn stalled_commit_times_out_and_releases_staging_slot() -> Result<(), Error> {
+    const DATA: &[u8] = b"payload whose commit stalls forever bbbbbbbbbbbbbbbbbbbb";
+
+    let temp = make_temp_path("zstd-commit-stall");
+    let mut spec = spec_for(temp.clone());
+    spec.max_concurrent_staged_uploads = 1;
+    spec.commit_timeout_s = 1;
+    std::fs::create_dir_all(&temp).map_err(|e| make_err!(Code::Internal, "temp dir: {e}"))?;
+    let zstd = ZstdStore::new(&spec, Store::new(Arc::new(StallStore {})))?;
+
+    let compressed = zstd::bulk::compress(DATA, 3).unwrap();
+    let digest = digest_for(DATA);
+
+    let err = zstd
+        .update_zstd_oneshot(
+            digest,
+            DigestHasherFunc::Sha256,
+            Bytes::from(compressed.clone()),
+        )
+        .await
+        .expect_err("a stalled commit must fail rather than hang");
+    assert_eq!(
+        err.code,
+        Code::DeadlineExceeded,
+        "a stalled commit must surface DeadlineExceeded, got: {err}"
+    );
+    assert_eq!(
+        dir_entry_count(&temp),
+        0,
+        "a timed-out commit must remove its staged temp file"
+    );
+
+    // If the first upload had not released the staging permit, this second
+    // upload (staging bound = 1) would block on the semaphore forever and the
+    // test would hang. It resolving at all proves the slot was freed.
+    let err2 = zstd
+        .update_zstd_oneshot(digest, DigestHasherFunc::Sha256, Bytes::from(compressed))
+        .await
+        .expect_err("second stalled commit must also time out, not hang");
+    assert_eq!(err2.code, Code::DeadlineExceeded, "got: {err2}");
+    assert_eq!(
+        dir_entry_count(&temp),
+        0,
+        "the second timed-out commit must also clean up"
     );
     Ok(())
 }

@@ -1046,6 +1046,7 @@ fn zstd_instance_spec(temp_path: String) -> ZstdStoreSpec {
         compression_level: None,
         max_recompression_size: 0,
         max_concurrent_recompressions: 0,
+        commit_timeout_s: 0,
     }
 }
 
@@ -2142,5 +2143,166 @@ async fn chunking_infers_blake3_when_digest_function_unset()
         .await?
         .into_inner();
     assert_eq!(split_response.chunk_digests, vec![other_digest]);
+    Ok(())
+}
+
+/// Inner store that stalls indefinitely for one specific digest while serving
+/// every other digest from an inner `MemoryStore`. Used to prove a batch's
+/// per-blob timeout isolates a stalled sibling from a healthy one.
+#[derive(MetricsComponent)]
+struct SelectiveStallStore {
+    stall_digest: DigestInfo,
+    delay: Duration,
+    #[metric(group = "inner")]
+    inner: Store,
+}
+
+impl SelectiveStallStore {
+    fn stalls(&self, key: &StoreKey<'_>) -> bool {
+        matches!(key, StoreKey::Digest(d)
+            if d.packed_hash() == self.stall_digest.packed_hash()
+                && d.size_bytes() == self.stall_digest.size_bytes())
+    }
+}
+
+#[async_trait]
+impl StoreDriver for SelectiveStallStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn has_with_results(
+        self: Pin<&Self>,
+        keys: &[StoreKey<'_>],
+        results: &mut [Option<u64>],
+    ) -> Result<(), Error> {
+        self.inner.has_with_results(keys, results).await
+    }
+
+    async fn update(
+        self: Pin<&Self>,
+        key: StoreKey<'_>,
+        reader: DropCloserReadHalf,
+        size_info: UploadSizeInfo,
+    ) -> Result<u64, Error> {
+        if self.stalls(&key) {
+            tokio::time::sleep(self.delay).await;
+            return Ok(0);
+        }
+        self.inner
+            .as_store_driver_pin()
+            .update(key, reader, size_info)
+            .await
+    }
+
+    async fn get_part(
+        self: Pin<&Self>,
+        key: StoreKey<'_>,
+        writer: &mut DropCloserWriteHalf,
+        offset: u64,
+        length: Option<u64>,
+    ) -> Result<(), Error> {
+        if self.stalls(&key) {
+            tokio::time::sleep(self.delay).await;
+            return Ok(());
+        }
+        self.inner
+            .as_store_driver_pin()
+            .get_part(key, writer, offset, length)
+            .await
+    }
+
+    fn inner_store(&self, _key: Option<StoreKey>) -> &dyn StoreDriver {
+        self
+    }
+
+    fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
+        self
+    }
+
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+        self
+    }
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        _callback: Arc<dyn RemoveItemCallback>,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+default_health_status_indicator!(SelectiveStallStore);
+
+/// A batch update whose siblings are one healthy blob and one blob that stalls
+/// past `BATCH_PER_BLOB_TIMEOUT` isolates the two: the healthy blob commits
+/// (`Ok`), the stalled one fails with its own `DeadlineExceeded` status, and
+/// neither outcome affects the other.
+#[nativelink_test(start_paused = true)]
+async fn batch_update_per_blob_timeout_isolates_siblings() -> Result<(), Box<dyn core::error::Error>>
+{
+    let good_data = b"healthy sibling blob".to_vec();
+    let (good_di, good_digest) = sha256_digest(&good_data);
+    let stall_data = b"stalling sibling blob".to_vec();
+    let (stall_di, stall_digest) = sha256_digest(&stall_data);
+
+    let inner = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let store = Store::new(Arc::new(SelectiveStallStore {
+        stall_digest: stall_di,
+        delay: Duration::from_mins(2), // Longer than BATCH_PER_BLOB_TIMEOUT (30s).
+        inner: inner.clone(),
+    }));
+    let store_manager = Arc::new(StoreManager::new());
+    store_manager.add_store("main_cas", store)?;
+    let cas_server = make_cas_server(&store_manager)?;
+
+    let response = cas_server
+        .batch_update_blobs(Request::new(BatchUpdateBlobsRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            requests: vec![
+                batch_update_blobs_request::Request {
+                    digest: Some(good_digest.clone()),
+                    data: good_data.clone().into(),
+                    compressor: compressor::Value::Identity.into(),
+                },
+                batch_update_blobs_request::Request {
+                    digest: Some(stall_digest.clone()),
+                    data: stall_data.into(),
+                    compressor: compressor::Value::Identity.into(),
+                },
+            ],
+            digest_function: digest_function::Value::Sha256.into(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert_eq!(response.responses.len(), 2);
+    let good = response
+        .responses
+        .iter()
+        .find(|r| r.digest.as_ref() == Some(&good_digest))
+        .expect("healthy sibling response present");
+    assert_eq!(
+        good.status.as_ref().map(|s| s.code),
+        Some(Code::Ok as i32),
+        "healthy sibling must commit despite the stalled one: {:?}",
+        good.status
+    );
+    let stalled = response
+        .responses
+        .iter()
+        .find(|r| r.digest.as_ref() == Some(&stall_digest))
+        .expect("stalled sibling response present");
+    assert_eq!(
+        stalled.status.as_ref().map(|s| s.code),
+        Some(Code::DeadlineExceeded as i32),
+        "stalled sibling must surface its own DeadlineExceeded: {:?}",
+        stalled.status
+    );
+
+    // The healthy blob actually committed; the stalled one did not.
+    assert_eq!(inner.has(good_di).await?, Some(good_data.len() as u64));
+    assert_eq!(inner.has(stall_di).await?, None);
     Ok(())
 }
