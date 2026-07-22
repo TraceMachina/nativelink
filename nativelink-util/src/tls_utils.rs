@@ -155,6 +155,10 @@ pub fn endpoint(endpoint_config: &GrpcEndpoint) -> Result<tonic::transport::Endp
         tcp_keepalive_s = tcp_keepalive.as_secs(),
         http2_keepalive_interval_s = http2_keepalive_interval.as_secs(),
         http2_keepalive_timeout_s = http2_keepalive_timeout.as_secs(),
+        http2_initial_stream_window_size = ?endpoint_config.experimental_http2_initial_stream_window_size,
+        http2_initial_connection_window_size = ?endpoint_config.experimental_http2_initial_connection_window_size,
+        http2_adaptive_window = ?endpoint_config.experimental_http2_adaptive_window,
+        http2_max_frame_size = ?endpoint_config.experimental_http2_max_frame_size,
         "tls_utils::endpoint: creating gRPC endpoint with keepalive",
     );
 
@@ -167,6 +171,21 @@ pub fn endpoint(endpoint_config: &GrpcEndpoint) -> Result<tonic::transport::Endp
 
     if let Some(concurrency_limit) = endpoint_config.concurrency_limit {
         endpoint = endpoint.concurrency_limit(concurrency_limit);
+    }
+    // HTTP/2 flow-control tuning: per-stream and per-connection windows cap
+    // in-flight bytes (throughput ~= window / RTT per stream), which caps
+    // large-blob transfer throughput at the transport defaults otherwise.
+    if let Some(window_size) = endpoint_config.experimental_http2_initial_stream_window_size {
+        endpoint = endpoint.initial_stream_window_size(window_size);
+    }
+    if let Some(window_size) = endpoint_config.experimental_http2_initial_connection_window_size {
+        endpoint = endpoint.initial_connection_window_size(window_size);
+    }
+    if let Some(adaptive_window) = endpoint_config.experimental_http2_adaptive_window {
+        endpoint = endpoint.http2_adaptive_window(adaptive_window);
+    }
+    if let Some(frame_size) = endpoint_config.experimental_http2_max_frame_size {
+        endpoint = endpoint.max_frame_size(frame_size);
     }
 
     Ok(endpoint)

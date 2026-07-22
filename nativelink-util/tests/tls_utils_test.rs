@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use nativelink_config::stores::ClientTlsConfig;
+use nativelink_config::stores::{ClientTlsConfig, GrpcEndpoint};
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
-use nativelink_util::tls_utils::{endpoint_from, load_client_config};
+use nativelink_util::tls_utils::{endpoint, endpoint_from, load_client_config};
 use tempfile::NamedTempFile;
 
 #[nativelink_test]
@@ -183,5 +183,43 @@ async fn test_endpoint_from_missing_authority() -> Result<(), Error> {
         result,
         Err(e) if e.to_string().contains("Unable to determine authority of endpoint")
     ));
+    Ok(())
+}
+
+#[nativelink_test]
+async fn test_endpoint_with_http2_window_tuning() -> Result<(), Error> {
+    let config = GrpcEndpoint {
+        address: "grpc://localhost:50051".to_string(),
+        tls_config: None,
+        concurrency_limit: None,
+        connect_timeout_s: 0,
+        tcp_keepalive_s: 0,
+        http2_keepalive_interval_s: 0,
+        http2_keepalive_timeout_s: 0,
+        experimental_http2_initial_stream_window_size: Some(8 * 1024 * 1024),
+        experimental_http2_initial_connection_window_size: Some(32 * 1024 * 1024),
+        experimental_http2_adaptive_window: Some(true),
+        experimental_http2_max_frame_size: Some(1024 * 1024),
+    };
+    drop(endpoint(&config)?);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn test_endpoint_without_http2_window_tuning() -> Result<(), Error> {
+    let config = GrpcEndpoint {
+        address: "grpc://localhost:50051".to_string(),
+        tls_config: None,
+        concurrency_limit: None,
+        connect_timeout_s: 0,
+        tcp_keepalive_s: 0,
+        http2_keepalive_interval_s: 0,
+        http2_keepalive_timeout_s: 0,
+        experimental_http2_initial_stream_window_size: None,
+        experimental_http2_initial_connection_window_size: None,
+        experimental_http2_adaptive_window: None,
+        experimental_http2_max_frame_size: None,
+    };
+    drop(endpoint(&config)?);
     Ok(())
 }
