@@ -322,7 +322,16 @@ pub async fn stream_decode_compressed_upload(
                 hasher.update(&produced);
                 tx.send(produced).await?;
             }
-            if in_buffer.pos() == in_buffer.src.len() && !output_was_full {
+            // `hint == 0` means the frame is completely decoded AND fully
+            // flushed. It must terminate the loop even when the output
+            // buffer was filled exactly: polling the decoder again after
+            // frame end would return the input-size hint for a NEW frame
+            // header, and the post-EOF `frame_input_hint != 0` check would
+            // then misreport a fully-decoded stream as truncated. This is
+            // deterministic for blobs whose decompressed size is an exact
+            // multiple of the decoder output buffer size.
+            if in_buffer.pos() == in_buffer.src.len() && (frame_input_hint == 0 || !output_was_full)
+            {
                 break;
             }
         }

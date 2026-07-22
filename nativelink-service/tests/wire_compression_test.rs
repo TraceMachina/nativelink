@@ -267,3 +267,70 @@ fn held_compressed_download_streams_must_not_starve_blocking_pool() {
     // threads indefinitely; a normal runtime drop would join them and hang.
     runtime.shutdown_background();
 }
+
+// Regression: a blob whose decompressed size is an exact multiple of the
+// decoder output buffer made the final `run` fill the output exactly with
+// `hint == 0` (frame done); the loop then polled the finished decoder once
+// more, received the new-frame-header hint, and the EOF check misreported
+// the complete stream as truncated.
+#[nativelink_test]
+async fn decode_accepts_exact_output_buffer_multiple() -> Result<(), Error> {
+    use nativelink_service::wire_compression::{
+        ZSTD_COMPRESSION_LEVEL, stream_decode_compressed_upload,
+    };
+    use nativelink_util::common::DigestInfo;
+    use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
+
+    const SPLIT_AT: usize = 65536;
+
+    let content = {
+        let mut data = vec![0u8; 1024 * 1024];
+        for (i, b) in data.iter_mut().enumerate() {
+            #[allow(clippy::cast_possible_truncation)]
+            let byte = match i % 8 {
+                0..=4 => 0xB2,
+                5 => (i / 8) as u8,
+                _ => (i / 4096) as u8,
+            };
+            *b = byte;
+        }
+        Bytes::from(data)
+    };
+    let digest: DigestInfo = {
+        let mut hasher = DigestHasherFunc::Sha256.hasher();
+        hasher.update(&content);
+        hasher.finalize_digest()
+    };
+    let frame =
+        Bytes::from(zstd::bulk::compress(&content, ZSTD_COMPRESSION_LEVEL).expect("compress"));
+
+    let (mut compressed_tx, compressed_rx) = make_buf_channel_pair();
+    let (decoded_tx, mut decoded_rx) = make_buf_channel_pair();
+    let decode_fut = stream_decode_compressed_upload(
+        compressed_rx,
+        compressor::Value::Zstd,
+        digest,
+        DigestHasherFunc::Sha256,
+        decoded_tx,
+    );
+    let feed_fut = async move {
+        compressed_tx.send(frame.slice(0..SPLIT_AT)).await?;
+        compressed_tx.send(frame.slice(SPLIT_AT..)).await?;
+        compressed_tx.send_eof()
+    };
+    let pump_fut = async move {
+        let mut total = 0usize;
+        loop {
+            let chunk = decoded_rx.recv().await?;
+            if chunk.is_empty() {
+                return Ok::<_, Error>(total);
+            }
+            total += chunk.len();
+        }
+    };
+    let (feed_result, decode_result, pump_result) = tokio::join!(feed_fut, decode_fut, pump_fut);
+    feed_result.expect("feed must succeed");
+    decode_result.expect("exact-multiple frame must decode");
+    assert_eq!(pump_result.expect("pump"), content.len());
+    Ok(())
+}
