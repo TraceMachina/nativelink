@@ -1,0 +1,75 @@
+---
+title: Scaling the CAS
+description: Scale cache capacity, throughput, and serving with store composition, sharding, and CAS replicas.
+---
+
+<Callout type="info" title="Work in progress">
+  This page is a skeleton. The sections below are the planned outline;
+  the bodies land in follow-up changes.
+</Callout>
+
+The CAS scales on two axes: **capacity and throughput** (store composition
+and sharding) and **serving** (running more CAS server processes). Both use
+open-source NativeLink store specs and standard Kubernetes; no enterprise
+components are required.
+
+## Overview
+
+The two scaling axes and why each matters.
+
+## Prerequisites
+
+A working CAS, a durable backend (S3, R2, GCS, Azure, or OCI) for cold
+storage, optionally Redis for the hot tier, and metrics enabled.
+
+## Store composition
+
+Layering `fast_slow`, `size_partitioning`, `compression`, `dedup`, and
+`existence_cache` into a production CAS store, with each layer explained.
+
+## Sharding with `shard`
+
+Using the `shard` store to spread keys across multiple backing stores to
+avoid a hot partition and parallelize throughput; choosing shard count and
+weights.
+
+## Scale the CAS service horizontally
+
+Running multiple stateless CAS server processes in front of the same
+backing store, with a Deployment and a Horizontal Pod Autoscaler. Why it is
+safe: content-addressed and idempotent.
+
+## The Redis hot tier at scale
+
+Sizing Redis, sentinel, and eviction policy, and the failover behavior to
+be aware of.
+
+## Durability and consistency
+
+What content-addressing guarantees, backend replication, and how eviction
+interacts with it.
+
+## Capacity planning
+
+Working set to Redis size, backend throughput, CAS replica count, and shard
+count.
+
+## Cost knobs
+
+Compression and size partitioning to control object-store request costs;
+eviction and TTL.
+
+## Verification
+
+Drive read and write load and confirm shard distribution, replica
+autoscaling, and hit ratios.
+
+## Troubleshooting
+
+Symptom to cause to fix: hot shard, Redis eviction thrash, backend
+throttling, backend TLS trust failures, replica imbalance.
+
+## What's next
+
+- [Scaling the RBE worker pool](/operate/scaling-workers)
+- [Deployment → Metrics](/deployment/metrics)

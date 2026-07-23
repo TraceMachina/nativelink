@@ -1,0 +1,8 @@
+{
+  "pages": [
+    "index",
+    "scaling-workers",
+    "scaling-cas"
+  ],
+  "title": "Operate"
+}

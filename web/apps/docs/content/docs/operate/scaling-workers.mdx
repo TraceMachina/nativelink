@@ -1,0 +1,72 @@
+---
+title: Scaling the RBE worker pool
+description: Run more workers and autoscale them on queue depth, using open-source NativeLink and standard Kubernetes.
+---
+
+<Callout type="info" title="Work in progress">
+  This page is a skeleton. The sections below are the planned outline;
+  the bodies land in follow-up changes.
+</Callout>
+
+NativeLink scales remote execution by running more worker processes. Each
+worker is a `LocalWorkerConfig` that connects to the scheduler and
+advertises its platform properties; the scheduler matches actions to
+workers that satisfy them. Two levers control capacity: **horizontal**
+(more worker replicas) and **vertical** (per-worker concurrency). This is
+all open-source NativeLink plus standard Kubernetes autoscaling.
+
+## Overview
+
+The two scaling levers and how the scheduler distributes actions.
+
+## Prerequisites
+
+A working RBE deployment (CAS, scheduler, and at least one worker), metrics
+enabled, and a Kubernetes cluster with a Horizontal Pod Autoscaler and, for
+node scaling, cluster-autoscaler or Karpenter.
+
+## The scaling signal: queue depth
+
+Why queue depth drives worker scaling rather than CPU utilization, and the
+exact query to scale on.
+
+## Run multiple workers manually
+
+The multi-worker topology (one scheduler, a shared CAS, N workers), based
+on the checked-in
+[`deployment-examples/docker-compose`](https://github.com/TraceMachina/nativelink/tree/main/deployment-examples/docker-compose)
+multi-worker example.
+
+## Autoscale workers on Kubernetes
+
+A worker Deployment plus a Horizontal Pod Autoscaler on the queue-depth
+metric, with cluster-autoscaler for node scaling. No Helm.
+
+## Interruptible (spot) workers
+
+Treating workers as disposable; the scheduler retries actions when a worker
+disconnects.
+
+## Heterogeneous worker pools
+
+Multiple worker pools distinguished by platform properties (for example CPU
+versus GPU), and how the scheduler routes actions to each.
+
+## Sizing and capacity
+
+Choosing per-worker concurrency and Horizontal Pod Autoscaler min/max for a
+target queue depth.
+
+## Verification
+
+Drive a large build and confirm replicas scale up and the queue drains.
+
+## Troubleshooting
+
+Symptom to cause to fix: pending actions with no scale-up, workers
+OOM-killed, spot evictions looping, platform-property mismatches.
+
+## What's next
+
+- [Scaling the CAS](/operate/scaling-cas)
+- [Deployment → Metrics](/deployment/metrics)
