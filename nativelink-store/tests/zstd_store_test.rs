@@ -14,6 +14,7 @@
 
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::time::Duration;
 use std::ffi::OsString;
 use std::sync::Arc;
 
@@ -804,6 +805,52 @@ async fn update_zstd_rejects_hash_mismatch() -> Result<(), Error> {
     Ok(())
 }
 
+/// A complete frame followed by the beginning of a second frame is not a
+/// complete concatenated zstd stream. `flush` alone accepted this shape, so it
+/// is important that both the staged and zero-digest validation paths finalize
+/// the decoder at EOF.
+#[nativelink_test]
+async fn update_zstd_rejects_incomplete_trailing_frame() -> Result<(), Error> {
+    const DATA: &[u8] = b"complete first frame followed by a truncated second frame";
+
+    let temp = make_temp_path("zstd-incomplete-trailing-frame");
+    let (zstd, _store, inner) = build(&spec_for(temp.clone())).await?;
+    let digest = digest_for(DATA);
+    let mut trailing = zstd::bulk::compress(DATA, 3).unwrap();
+    let next_frame = zstd::bulk::compress(b"second frame", 3).unwrap();
+    trailing.extend_from_slice(&next_frame[..4]); // zstd magic, but no full frame.
+
+    let err = zstd
+        .update_zstd_oneshot(digest, DigestHasherFunc::Sha256, Bytes::from(trailing))
+        .await
+        .expect_err("a partial trailing zstd frame must be rejected");
+    assert_eq!(err.code, Code::InvalidArgument, "got: {err}");
+    assert_eq!(
+        inner.has(digest).await?,
+        None,
+        "a stream with an incomplete trailing frame must not commit"
+    );
+    assert_eq!(
+        dir_entry_count(&temp),
+        0,
+        "a rejected trailing frame must not leave a staging file"
+    );
+
+    let zero = ZERO_BYTE_DIGESTS[0];
+    let mut empty_then_partial = zstd::bulk::compress(&[], 3).unwrap();
+    empty_then_partial.extend_from_slice(&next_frame[..4]);
+    let err = zstd
+        .update_zstd_oneshot(
+            zero,
+            DigestHasherFunc::Sha256,
+            Bytes::from(empty_then_partial),
+        )
+        .await
+        .expect_err("zero-digest validation must reject a partial trailing frame too");
+    assert_eq!(err.code, Code::InvalidArgument, "got: {err}");
+    Ok(())
+}
+
 #[nativelink_test]
 async fn update_zstd_rejects_oversize_and_cleans_up() -> Result<(), Error> {
     let temp = make_temp_path("zstd-oversize");
@@ -836,6 +883,52 @@ async fn update_zstd_rejects_oversize_and_cleans_up() -> Result<(), Error> {
         0,
         "an oversize upload must not leave staged temp files"
     );
+    Ok(())
+}
+
+/// Cancelling the async request after the blocking stage creates its file must
+/// not leak it. The guard is moved into the detached blocking task before that
+/// task can create the path; after EOF lets it finish, dropping its unobserved
+/// result closes the descriptor before removing the file.
+#[nativelink_test]
+async fn cancelled_staging_task_eventually_cleans_its_temp_file() -> Result<(), Error> {
+    const DATA: &[u8] = b"cancelled staging cleanup payload";
+
+    let temp = make_temp_path("zstd-cancelled-stage");
+    let (zstd, _store, _inner) = build(&spec_for(temp.clone())).await?;
+    let digest = digest_for(DATA);
+    let compressed = zstd::bulk::compress(DATA, 3).unwrap();
+    let (mut tx, rx) = make_buf_channel_pair();
+    let task_store = zstd.clone();
+    let task = tokio::spawn(async move {
+        task_store
+            .update_zstd(digest, DigestHasherFunc::Sha256, rx)
+            .await
+    });
+
+    tx.send(Bytes::from(compressed))
+        .await
+        .map_err(|e| make_err!(Code::Internal, "failed to feed staging task: {e}"))?;
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while dir_entry_count(&temp) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the blocking stage must create its temp file before EOF");
+
+    task.abort();
+    assert!(task.await.is_err(), "the request task must be cancelled");
+    tx.send_eof()
+        .map_err(|e| make_err!(Code::Internal, "failed to finish staging input: {e}"))?;
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while dir_entry_count(&temp) != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the detached blocking stage must eventually remove its temp file");
     Ok(())
 }
 
@@ -1063,13 +1156,13 @@ async fn cancelled_update_zstd_leaves_no_temp_files() -> Result<(), Error> {
     tx.send(Bytes::copy_from_slice(&compressed[..half]))
         .await
         .ok();
-    tokio::time::sleep(core::time::Duration::from_millis(50)).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Cancel the upload mid-stream (dropping the guard aborts it), then
     // release the sender.
     drop(handle);
     drop(tx);
-    tokio::time::sleep(core::time::Duration::from_millis(150)).await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
 
     assert_eq!(
         dir_entry_count(&temp),

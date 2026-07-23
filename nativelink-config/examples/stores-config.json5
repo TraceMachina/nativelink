@@ -181,7 +181,13 @@
     {
       name: "12",
       "zstd_store": {
-       "backend": { "fast_slow": { /* complete backend stack */ } },
+       "backend": {
+         "memory": {
+           "eviction_policy": {
+             "max_bytes": "10GiB"
+           }
+         }
+       },
        "temp_path": "/var/tmp/nativelink-zstd",
        "max_compressed_upload_size": "512MiB",
        "max_concurrent_staged_uploads": 4,

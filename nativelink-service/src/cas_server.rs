@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use core::convert::Into;
+use core::future::Future;
 use core::pin::{Pin, pin};
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::time::Duration;
@@ -185,6 +186,25 @@ type GetTreeStream = Pin<Box<dyn Stream<Item = Result<GetTreeResponse, Status>> 
 
 /// Per-blob deadline applied inside `BatchReadBlobs` / `BatchUpdateBlobs`.
 const BATCH_PER_BLOB_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Runs one BatchReadBlobs/BatchUpdateBlobs store operation under its individual
+/// deadline, preserving the RPC-specific timeout and store-error context.
+async fn run_batch_blob_with_timeout<T>(
+    rpc_name: &str,
+    digest: DigestInfo,
+    store_error_context: &'static str,
+    operation: impl Future<Output = Result<T, Error>>,
+) -> Result<T, Error> {
+    match tokio::time::timeout(BATCH_PER_BLOB_TIMEOUT, operation).await {
+        Ok(result) => result.err_tip(|| store_error_context),
+        Err(_elapsed) => Err(make_err!(
+            Code::DeadlineExceeded,
+            "{rpc_name} per-blob timeout ({} s) elapsed for digest {}",
+            BATCH_PER_BLOB_TIMEOUT.as_secs(),
+            digest,
+        )),
+    }
+}
 
 /// Maximum size of a single chunk accepted in a `SpliceBlob` request.
 /// Deliberately looser than the largest chunk the server ever advertises
@@ -382,8 +402,10 @@ impl CasServer {
                         // ZstdStore, which validates them against the digest and
                         // stores them verbatim. A malformed stream surfaces here
                         // as this blob's `InvalidArgument`, isolated from siblings.
-                        match tokio::time::timeout(
-                            BATCH_PER_BLOB_TIMEOUT,
+                        run_batch_blob_with_timeout(
+                            "BatchUpdateBlobs",
+                            digest_info,
+                            "Error writing to store",
                             zstd_store.update_zstd_oneshot(
                                 digest_info,
                                 digest_function,
@@ -391,15 +413,7 @@ impl CasServer {
                             ),
                         )
                         .await
-                        {
-                            Ok(r) => r.map(|_| ()).err_tip(|| "Error writing to store"),
-                            Err(_elapsed) => Err(make_err!(
-                                Code::DeadlineExceeded,
-                                "BatchUpdateBlobs per-blob timeout ({} s) elapsed for digest {}",
-                                BATCH_PER_BLOB_TIMEOUT.as_secs(),
-                                digest_info,
-                            )),
-                        }
+                        .map(|_| ())
                     } else {
                         let size_bytes = usize::try_from(digest_info.size_bytes())
                             .err_tip(|| "Digest size_bytes was not convertible to usize")?;
@@ -410,20 +424,13 @@ impl CasServer {
                             remote_cache_compression_enabled,
                         )
                         .await?;
-                        match tokio::time::timeout(
-                            BATCH_PER_BLOB_TIMEOUT,
+                        run_batch_blob_with_timeout(
+                            "BatchUpdateBlobs",
+                            digest_info,
+                            "Error writing to store",
                             store_ref.update_oneshot(digest_info, store_data),
                         )
                         .await
-                        {
-                            Ok(r) => r.err_tip(|| "Error writing to store"),
-                            Err(_elapsed) => Err(make_err!(
-                                Code::DeadlineExceeded,
-                                "BatchUpdateBlobs per-blob timeout ({} s) elapsed for digest {}",
-                                BATCH_PER_BLOB_TIMEOUT.as_secs(),
-                                digest_info,
-                            )),
-                        }
                     };
                     Ok::<_, Error>(batch_update_blobs_response::Response {
                         digest: Some(digest),
@@ -490,20 +497,13 @@ impl CasServer {
                         // zstd bytes (when the client accepts zstd and they are
                         // smaller than the raw size) and the decoded raw bytes,
                         // avoiding a decompress-then-recompress round trip.
-                        let result = match tokio::time::timeout(
-                            BATCH_PER_BLOB_TIMEOUT,
+                        let result = run_batch_blob_with_timeout(
+                            "BatchReadBlobs",
+                            digest_copy,
+                            "Error reading from store",
                             zstd_store.get_for_batch(digest_copy, client_accepts_zstd),
                         )
-                        .await
-                        {
-                            Ok(r) => r.err_tip(|| "Error reading from store"),
-                            Err(_elapsed) => Err(make_err!(
-                                Code::DeadlineExceeded,
-                                "BatchReadBlobs per-blob timeout ({} s) elapsed for digest {}",
-                                BATCH_PER_BLOB_TIMEOUT.as_secs(),
-                                digest_copy,
-                            )),
-                        };
+                        .await;
                         match result {
                             Ok((data, is_zstd)) => {
                                 let compressor = if is_zstd {
@@ -521,20 +521,13 @@ impl CasServer {
                             }
                         }
                     } else {
-                        let result = match tokio::time::timeout(
-                            BATCH_PER_BLOB_TIMEOUT,
+                        let result = run_batch_blob_with_timeout(
+                            "BatchReadBlobs",
+                            digest_copy,
+                            "Error reading from store",
                             store_ref.get_part_unchunked(digest_copy, 0, None),
                         )
-                        .await
-                        {
-                            Ok(r) => r.err_tip(|| "Error reading from store"),
-                            Err(_elapsed) => Err(make_err!(
-                                Code::DeadlineExceeded,
-                                "BatchReadBlobs per-blob timeout ({} s) elapsed for digest {}",
-                                BATCH_PER_BLOB_TIMEOUT.as_secs(),
-                                digest_copy,
-                            )),
-                        };
+                        .await;
                         match result {
                             Ok(raw_data) => {
                                 let (output_data, chosen_compressor) = if client_accepts_zstd {

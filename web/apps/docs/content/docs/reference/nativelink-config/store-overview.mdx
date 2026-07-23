@@ -118,7 +118,7 @@ AC store at it.
 {
   name: "CAS_MAIN_STORE",
   zstd_store: {
-    backend: { fast_slow: { /* complete, dedicated backend stack */ } },
+    backend: { memory: { eviction_policy: { max_bytes: "10GiB" } } },
     temp_path: "/var/tmp/nativelink-zstd",
     max_compressed_upload_size: "512MiB",
     max_concurrent_staged_uploads: 4,
@@ -198,25 +198,27 @@ slot forever, so the store also enforces two deadlines. The ByteStream
 compressed client pump has an idle timeout on waiting for the next
 `WriteRequest`, reusing the ByteStream instance's
 `persist_stream_on_disconnect_timeout_s` setting — a client making continuous
-progress is never timed out, only an idle or stalled one. The inner-store
-commit (and any recompression) is bounded separately by `commit_timeout_s`. On
-an idle or commit timeout the request fails with `DEADLINE_EXCEEDED`, the staged
+progress is never timed out, only an idle or stalled one. After validation and
+staging complete, `commit_timeout_s` bounds optional recompression plus the
+inner-store commit. On an idle or commit timeout the request fails with
+`DEADLINE_EXCEEDED`, the staged
 file is removed, and the staging slot is released — a stalled backend cannot
 hold a staging permit indefinitely. Cancellation, idle timeout, commit timeout,
-validation failure, and success all remove the staged temp file(s) and release
+validation failure, and success all remove the staged temp files and release
 the permit.
 
-- **`commit_timeout_s`** — maximum seconds to wait for a staged upload's
-  inner-store commit (and any recompression) before failing with
+- **`commit_timeout_s`** — maximum seconds to wait, after client validation and
+  staging, for optional recompression and the inner-store commit before failing with
   `DEADLINE_EXCEEDED`, removing the staged file and releasing the staging slot.
   `0` uses the default of 300.
 
 ### `temp_path`: staging directory, size and place it deliberately
 
-`zstd_store` stages every compressed upload — and, when recompressing, the
-re-encoded candidate — as a temp file under `temp_path` before committing it
-to `backend`. `temp_path` must be a private directory owned by the operator and
-**not** writable by untrusted local users; at startup the store verifies it is
+`zstd_store` stages every compressed upload as a temp file under `temp_path`
+before committing it to `backend`. Recompression uses bounded decoded bytes in
+memory and overwrites the same retained validated descriptor only when the
+result is smaller. `temp_path` must be a private directory owned by the operator
+and **not** writable by local users who are not trusted; at startup the store verifies it is
 a directory and rejects a world-writable directory that lacks the sticky bit.
 Each staging file is created exclusively (`O_EXCL` / `create_new`) with `0o600`
 applied atomically at creation, and the exact validated open file descriptor is
@@ -227,12 +229,11 @@ private directory, not from unpredictable names alone. Every staged file is
 removed on success, error, or cancellation.
 
 - **Worst-case temp disk usage** is roughly `max_concurrent_staged_uploads
-  * (max_compressed_upload_size + max_recompression_size)` — the second
-  term only applies while a given upload is actively being recompressed,
-  since the incoming and re-encoded candidates briefly coexist. Size and
-  monitor `temp_path` against that bound, not just steady-state usage.
-- **Put `temp_path` on the same filesystem as a `filesystem` backend's
-  `content_path`, where possible.** Committing a staged file moves it into
+  * max_compressed_upload_size`. Recompression uses bounded memory, capped by
+  `max_recompression_size`, rather than an additional staging file. Size and
+  monitor `temp_path` against the disk bound, not just steady-state usage.
+- **Put `temp_path` on the same filesystem as the `content_path` of a
+  `filesystem` backend, where possible.** Committing a staged file moves it into
   the inner store; for a `filesystem` backend that commit is a `rename(2)`.
   A cross-filesystem rename fails with `EXDEV` — the upload fails, the blob
   is never stored, and the temp file is still cleaned up — instead of
@@ -245,8 +246,8 @@ upload whose *decoded* size is within `max_recompression_size` gets
 re-encoded at `compression_level`, and `zstd_store` keeps whichever of the
 original or re-encoded stream is smaller. `max_recompression_size: 0`
 disables recompression entirely — `compression_level` still picks the level
-used to encode brand-new, not-already-compressed uploads; it just never
-starts a second encoder for an incoming compressed stream. Recompression is
+used to encode brand-new, not-already-compressed uploads; incoming compressed
+streams are left unchanged. Recompression is
 serialized by `max_concurrent_recompressions` and runs under the same
 `commit_timeout_s` deadline as the inner-store commit, so a slow re-encode
 can't hold a staging slot past that bound.

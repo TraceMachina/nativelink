@@ -1164,11 +1164,11 @@ pub struct ZstdStoreSpec {
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_concurrent_recompressions: usize,
 
-    /// Maximum time, in seconds, to wait for a staged upload's inner-store commit
-    /// (and any recompression) to finish before failing with `DEADLINE_EXCEEDED`,
-    /// removing the staged file, and releasing the staging slot. This bounds how
-    /// long a stalled or hung backend can hold a staging permit and prevents a
-    /// convoy of validated temp files from piling up behind a stuck commit.
+    /// Maximum time, in seconds, for a staged upload's optional recompression
+    /// and inner-store commit. The timer starts after the client stream has
+    /// finished validation/staging, so it does not reject a steadily progressing
+    /// large upload. On expiry it fails with `DEADLINE_EXCEEDED`, removes the
+    /// staged file, and releases its slot.
     /// `0` means "use default 300" at construction time.
     /// Default: 0
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
