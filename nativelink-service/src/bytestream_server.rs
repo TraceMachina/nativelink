@@ -50,9 +50,9 @@ use nativelink_util::digest_hasher::{
 };
 use nativelink_util::proto_stream_utils::WriteRequestStreamWrapper;
 use nativelink_util::resource_info::ResourceInfo;
+use nativelink_util::spawn;
 use nativelink_util::store_trait::{Store, StoreLike, StoreOptimizations, UploadSizeInfo};
 use nativelink_util::task::JoinHandleDropGuard;
-use nativelink_util::{spawn, spawn_blocking};
 use opentelemetry::context::FutureExt;
 use parking_lot::Mutex;
 use tokio::time::sleep;
@@ -1086,19 +1086,16 @@ impl ByteStreamServer {
                 .map(|_| ())
                 .err_tip(|| "Failed to store decompressed data")
         };
-        let decode_fut = async move {
-            spawn_blocking!("bytestream_decode_compressed_upload", move || {
-                crate::wire_compression::stream_decode_compressed_upload(
-                    compressed_rx,
-                    wire_compressor,
-                    digest,
-                    digest_function,
-                    decompressed_tx,
-                )
-            })
-            .await
-            .map_err(|e| make_err!(Code::Internal, "Decompression task failed: {}", e))?
-        };
+        // Plain async future: decode progresses at the pace of the client
+        // upload and the store write without occupying a blocking-pool thread
+        // for the stream's lifetime.
+        let decode_fut = crate::wire_compression::stream_decode_compressed_upload(
+            compressed_rx,
+            wire_compressor,
+            digest,
+            digest_function,
+            decompressed_tx,
+        );
         let client_stream_fut =
             process_compressed_client_stream(stream, compressed_tx, &bytes_received);
         let (client_stream_result, decode_result, store_update_result) =
@@ -1207,17 +1204,16 @@ impl ByteStreamServer {
                 .await
                 .err_tip(|| "Failed to read blob for wire compression")
         });
-        let encode_fut = Box::pin(async move {
-            spawn_blocking!("bytestream_encode_compressed_download", move || {
-                crate::wire_compression::stream_encode_compressed_download(
-                    raw_rx,
-                    wire_compressor,
-                    compressed_tx,
-                )
-            })
-            .await
-            .map_err(|e| make_err!(Code::Internal, "Compression task failed: {}", e))?
-        });
+        // The encode runs as a plain async future: it must not occupy a
+        // blocking-pool thread for the stream's lifetime, because it only
+        // progresses at the client's drain rate. Dropping the returned
+        // stream drops this future, which tears the encode down exactly
+        // like the previous task-abort-on-drop did.
+        let encode_fut = Box::pin(crate::wire_compression::stream_encode_compressed_download(
+            raw_rx,
+            wire_compressor,
+            compressed_tx,
+        ));
 
         let state = Some(ReaderState {
             max_bytes_per_stream: instance.max_bytes_per_stream,
@@ -1367,13 +1363,19 @@ impl ByteStream for ByteStreamServer {
         let start_time = Instant::now();
 
         let read_request = grpc_request.into_inner();
-        let resource_info = ResourceInfo::new(&read_request.resource_name, false)?;
+        let resource_name = read_request.resource_name.clone();
+        let resource_info = ResourceInfo::new(&resource_name, false)?;
         let instance_name = resource_info.instance_name.as_ref();
         let expected_size = resource_info.expected_size as u64;
         let instance = self
             .instance_infos
             .get(instance_name)
             .err_tip(|| format!("'instance_name' not configured for '{instance_name}'"))?;
+
+        trace!(
+            resource_name,
+            instance_name, expected_size, "Starting bytestream request"
+        );
 
         // Track read request
         instance
@@ -1427,12 +1429,18 @@ impl ByteStream for ByteStreamServer {
         };
 
         // Track metrics based on result
+        let elapsed = start_time.elapsed();
         #[allow(clippy::cast_possible_truncation)]
-        let elapsed_ns = start_time.elapsed().as_nanos() as u64;
+        let elapsed_ns = elapsed.as_nanos() as u64;
         instance
             .metrics
             .read_duration_ns
             .fetch_add(elapsed_ns, Ordering::Relaxed);
+
+        trace!(
+            ?elapsed,
+            resource_name, instance_name, expected_size, "Completed bytestream request"
+        );
 
         match &resp {
             Ok(_) => {

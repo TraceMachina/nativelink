@@ -21,29 +21,43 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use futures::Stream;
 use nativelink_config::stores::{
-    FastSlowSpec, FilesystemSpec, MemorySpec, StoreDirection, StoreSpec,
+    FastSlowSpec, FilesystemSpec, GrpcEndpoint, GrpcSpec, MemorySpec, Retry, StoreDirection,
+    StoreSpec, StoreType,
 };
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
 };
+use nativelink_proto::build::bazel::remote::execution::v2::content_addressable_storage_server::{
+    ContentAddressableStorage, ContentAddressableStorageServer,
+};
 use nativelink_proto::build::bazel::remote::execution::v2::{
-    Directory as ProtoDirectory, DirectoryNode, FileNode, SymlinkNode,
+    BatchReadBlobsRequest, BatchReadBlobsResponse, BatchUpdateBlobsRequest,
+    BatchUpdateBlobsResponse, Directory as ProtoDirectory, DirectoryNode, FileNode,
+    FindMissingBlobsRequest, FindMissingBlobsResponse, GetTreeRequest, GetTreeResponse,
+    SpliceBlobRequest, SpliceBlobResponse, SplitBlobRequest, SplitBlobResponse, SymlinkNode,
 };
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::FilesystemStore;
+use nativelink_store::grpc_store::GrpcStore;
 use nativelink_store::memory_store::MemoryStore;
+use nativelink_util::background_spawn;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::{DigestInfo, make_temp_path};
+use nativelink_util::digest_hasher::{DigestHasher, default_digest_hasher_func};
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::store_trait::{
     RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };
 use nativelink_worker::directory_cache::{DirectoryCache, DirectoryCacheConfig};
 use prost::Message;
-use tonic::Code;
+use tokio::sync::Mutex;
+use tonic::transport::Server;
+use tonic::transport::server::TcpIncoming;
+use tonic::{Code, Request, Response, Status};
 use uuid::Uuid;
 
 /// Wraps a `MemoryStore` as the slow tier of a `FastSlowStore` whose fast
@@ -1430,5 +1444,203 @@ async fn subtree_caching_size_accounting_not_depth_multiplied() -> Result<(), Er
         (MID_DIRS * LEAF_DIRS + MID_DIRS + 1) as usize,
         "every subtree plus the root must have its own entry"
     );
+    Ok(())
+}
+
+#[derive(Clone)]
+struct PaginatedGetTreeServer {
+    root: ProtoDirectory,
+    child: ProtoDirectory,
+    requests: Arc<Mutex<Vec<GetTreeRequest>>>,
+}
+
+type PaginatedGetTreeStream =
+    Pin<Box<dyn Stream<Item = Result<GetTreeResponse, Status>> + Send + 'static>>;
+
+#[async_trait]
+impl ContentAddressableStorage for PaginatedGetTreeServer {
+    type GetTreeStream = PaginatedGetTreeStream;
+
+    async fn find_missing_blobs(
+        &self,
+        _request: Request<FindMissingBlobsRequest>,
+    ) -> Result<Response<FindMissingBlobsResponse>, Status> {
+        Err(Status::unimplemented("not used by this test"))
+    }
+
+    async fn batch_update_blobs(
+        &self,
+        _request: Request<BatchUpdateBlobsRequest>,
+    ) -> Result<Response<BatchUpdateBlobsResponse>, Status> {
+        Err(Status::unimplemented("not used by this test"))
+    }
+
+    async fn batch_read_blobs(
+        &self,
+        _request: Request<BatchReadBlobsRequest>,
+    ) -> Result<Response<BatchReadBlobsResponse>, Status> {
+        Err(Status::unimplemented("not used by this test"))
+    }
+
+    async fn get_tree(
+        &self,
+        request: Request<GetTreeRequest>,
+    ) -> Result<Response<Self::GetTreeStream>, Status> {
+        const SECOND_PAGE_TOKEN: &str = "child-directory-page";
+
+        let request = request.into_inner();
+        self.requests.lock().await.push(request.clone());
+        let response = match request.page_token.as_str() {
+            "" => GetTreeResponse {
+                directories: vec![self.root.clone()],
+                next_page_token: SECOND_PAGE_TOKEN.to_string(),
+            },
+            SECOND_PAGE_TOKEN => GetTreeResponse {
+                directories: vec![self.child.clone()],
+                next_page_token: String::new(),
+            },
+            token => {
+                return Err(Status::invalid_argument(format!(
+                    "unexpected token: {token}"
+                )));
+            }
+        };
+        Ok(Response::new(Box::pin(futures::stream::iter([Ok(
+            response,
+        )]))))
+    }
+
+    async fn split_blob(
+        &self,
+        _request: Request<SplitBlobRequest>,
+    ) -> Result<Response<SplitBlobResponse>, Status> {
+        Err(Status::unimplemented("not used by this test"))
+    }
+
+    async fn splice_blob(
+        &self,
+        _request: Request<SpliceBlobRequest>,
+    ) -> Result<Response<SpliceBlobResponse>, Status> {
+        Err(Status::unimplemented("not used by this test"))
+    }
+}
+
+fn proto_digest(directory: &ProtoDirectory) -> DigestInfo {
+    let mut hasher = default_digest_hasher_func().hasher();
+    hasher.update(&directory.encode_to_vec());
+    hasher.finalize_digest()
+}
+
+/// The [REAPI request contract] says a zero page size does not require a
+/// server to return the entire tree in one response, and the [REAPI response
+/// contract] tells the client to continue with `next_page_token`. This test
+/// therefore deliberately uses the smallest tree that cannot be represented
+/// by the first page alone. The first page contains only the root `Directory`,
+/// whose `DirectoryNode` names and hashes the child, while the second page
+/// contains only that child `Directory`.
+///
+/// Using two different, content-derived directory digests matters here: the
+/// public `get_or_create` operation cannot materialize the named child unless
+/// the prefetch map contains both pages. The fake server also records the
+/// requests so the test verifies that the continuation token was copied
+/// exactly into the follow-up request and that fetching stopped as soon as the
+/// server returned an empty token. No directory protos are seeded into the
+/// filesystem store, and the server intentionally does not expose a
+/// `ByteStream` service. Consequently, ignoring the second page cannot be
+/// hidden by the normal per-level fallback: that fallback would fail while
+/// fetching the absent child proto. Before the fix, the client drained the first response
+/// stream, discarded the advertised child-directory page, and took precisely
+/// that failing fallback path.
+///
+/// [REAPI request contract]: https://github.com/bazelbuild/remote-apis/blob/becdd8f9ff811df88a22d3eadd6341753d51d167/build/bazel/remote/execution/v2/remote_execution.proto#L1932-L1942
+/// [REAPI response contract]: https://github.com/bazelbuild/remote-apis/blob/becdd8f9ff811df88a22d3eadd6341753d51d167/build/bazel/remote/execution/v2/remote_execution.proto#L1961-L1965
+#[nativelink_test]
+async fn get_tree_prefetch_follows_server_pagination() -> Result<(), Error> {
+    let child = ProtoDirectory::default();
+    let child_digest = proto_digest(&child);
+    let root = ProtoDirectory {
+        directories: vec![DirectoryNode {
+            name: "second-page".to_string(),
+            digest: Some(child_digest.into()),
+        }],
+        ..Default::default()
+    };
+    let root_digest = proto_digest(&root);
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let service = PaginatedGetTreeServer {
+        root,
+        child,
+        requests: Arc::clone(&requests),
+    };
+    let listener = TcpIncoming::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    background_spawn!("paginated_get_tree_server", async move {
+        Server::builder()
+            .add_service(ContentAddressableStorageServer::new(service))
+            .serve_with_incoming(listener)
+            .await
+            .unwrap();
+    });
+
+    let grpc_spec = GrpcSpec {
+        instance_name: String::new(),
+        endpoints: vec![GrpcEndpoint {
+            address: format!("http://127.0.0.1:{port}"),
+            tls_config: None,
+            concurrency_limit: None,
+            connect_timeout_s: 0,
+            tcp_keepalive_s: 0,
+            http2_keepalive_interval_s: 0,
+            http2_keepalive_timeout_s: 0,
+        }],
+        store_type: StoreType::Cas,
+        retry: Retry::default(),
+        max_concurrent_requests: 0,
+        connections_per_endpoint: 0,
+        rpc_timeout_s: 1,
+        use_legacy_resource_names: false,
+        headers: HashMap::new(),
+        forward_headers: vec![],
+        experimental_read_batching: None,
+    };
+    let fast_spec = FilesystemSpec {
+        content_path: make_temp_path("paginated_get_tree_cas_content"),
+        temp_path: make_temp_path("paginated_get_tree_cas_temp"),
+        ..Default::default()
+    };
+    let fast_store: Arc<FilesystemStore> = FilesystemStore::new(&fast_spec).await?;
+    let grpc_store = GrpcStore::new(&grpc_spec).await?;
+    let cas_store = FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Filesystem(fast_spec),
+            slow: StoreSpec::Grpc(grpc_spec),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
+        },
+        Store::new(fast_store),
+        Store::new(grpc_store),
+    );
+    let cache = DirectoryCache::new(
+        DirectoryCacheConfig {
+            cache_root: make_temp_path("paginated_get_tree_directory_cache").into(),
+            experimental_get_tree_prefetch: true,
+            ..Default::default()
+        },
+        cas_store,
+    )
+    .await?;
+
+    let destination = PathBuf::from(make_temp_path("paginated_get_tree_destination"));
+    assert!(!cache.get_or_create(root_digest, &destination).await?);
+    assert!(destination.join("second-page").is_dir());
+
+    let requests = requests.lock().await;
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].page_token, "");
+    assert_eq!(requests[1].page_token, "child-directory-page");
+    assert_eq!(requests[0].root_digest, Some(root_digest.into()));
+    assert_eq!(requests[1].root_digest, Some(root_digest.into()));
+
     Ok(())
 }

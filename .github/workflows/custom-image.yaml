@@ -29,7 +29,7 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       issues: write
-      pull-requests: read
+      pull-requests: write
     outputs:
       should_build: ${{ steps.check.outputs.should_build }}
       pr_sha: ${{ steps.check.outputs.pr_sha }}
@@ -46,67 +46,78 @@ jobs:
           actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
         with:
           script: |
-            var fs = require('fs');
-            var matrix = JSON.parse(fs.readFileSync('.github/images-matrix.json', 'utf8'));
-            var validImages = [];
-            for (const option of matrix['include']) {
-              validImages.push(option['image']);
-            }
-            if (context.eventName === 'workflow_dispatch') {
-              core.setOutput('should_build', 'true');
-              core.setOutput('pr_sha', context.sha);
-              image = '${{ inputs.image }}';
-            }
-            else if (context.eventName === 'issue_comment') {
-              const body = context.payload.comment.body.trim();
-              const isPR = !!context.payload.issue.pull_request;
+            const fs = require('fs');
+            const matrix = JSON.parse(fs.readFileSync('.github/images-matrix.json', 'utf8'));
+            const validImages = matrix['include'].map((o) => o['image']);
 
-              // Match /build-image or /build-image <image-name>
-              const match = body.match(/^\/build-image(?:\s+(\S+))?/i);
-
-              if (isPR && match) {
-                const { data: pr } = await github.rest.pulls.get({
+            // Never fail the job over a courtesy comment (e.g. a read-only
+            // token); the build is what matters.
+            const tryComment = async (body) => {
+              try {
+                await github.rest.issues.createComment({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
-                  pull_number: context.payload.issue.number
+                  issue_number: context.payload.issue.number,
+                  body,
                 });
+              } catch (e) {
+                core.warning(`Could not post comment: ${e.message}`);
+              }
+            };
 
-                const image = match[1] || 'image';
+            let image;
+            let prSha;
 
-                if (!validImages.includes(image)) {
-                  await github.rest.issues.createComment({
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    issue_number: context.payload.issue.number,
-                    body: `Unknown image: \`${image}\`\n\nValid options: ${validImages.map(i => `\`${i}\``).join(', ')}`
-                  });
-                  core.setOutput('should_build', 'false');
-                  return;
-                }
-
-                core.setOutput('should_build', 'true');
-                core.setOutput('pr_sha', pr.head.sha);
-                core.setOutput('image', image);
-
+            if (context.eventName === 'workflow_dispatch') {
+              image = '${{ inputs.image }}';
+              prSha = context.sha;
+            } else if (context.eventName === 'issue_comment') {
+              const body = context.payload.comment.body.trim();
+              const isPR = !!context.payload.issue.pull_request;
+              // Match /build-image or /build-image <image-name>
+              const match = body.match(/^\/build-image(?:\s+(\S+))?/i);
+              if (!isPR || !match) {
+                core.setOutput('should_build', 'false');
+                return;
+              }
+              image = match[1];
+              if (!image || !validImages.includes(image)) {
+                const hint = image
+                  ? `Unknown image: \`${image}\``
+                  : 'Specify an image to build.';
+                await tryComment(
+                  `${hint}\n\nValid options: ${validImages.map((i) => `\`${i}\``).join(', ')}`
+                );
+                core.setOutput('should_build', 'false');
+                return;
+              }
+              const { data: pr } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.payload.issue.number,
+              });
+              prSha = pr.head.sha;
+              try {
                 await github.rest.reactions.createForIssueComment({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   comment_id: context.payload.comment.id,
-                  content: 'rocket'
+                  content: 'rocket',
                 });
+              } catch (e) {
+                core.warning(`Could not add reaction: ${e.message}`);
               }
             } else {
               core.setOutput('should_build', 'false');
-              return
+              return;
             }
+
+            const option = matrix['include'].find((o) => o['image'] === image);
+            core.setOutput('should_build', 'true');
+            core.setOutput('pr_sha', prSha);
             core.setOutput('image', image);
-            for (const option of matrix['include']) {
-              if (option['image'] == image) {
-                core.setOutput('multi-arch', option['multi-arch'] ?? false);
-                core.setOutput('components', option['components'] ?? "");
-                return
-              }
-            }
+            core.setOutput('multi-arch', option?.['multi-arch'] ?? false);
+            core.setOutput('components', option?.['components'] ?? '');
 
   build-image:
     name: Build and Push Image
@@ -116,6 +127,7 @@ jobs:
     permissions:
       contents: read
       issues: write
+      pull-requests: write
     timeout-minutes: 45
     steps:
       - name: Checkout
@@ -155,14 +167,20 @@ jobs:
         if: github.event_name == 'issue_comment'
         uses: >- #v8.0.0
           actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        env:
+          IMAGE_REF: ghcr.io/${{ github.repository_owner }}/${{ needs.check-trigger.outputs.image }}:${{ steps.version.outputs.version-string }}
         with:
           script: |
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.payload.issue.number,
-              body: `Image built and pushed!\n\n\`\`\`\n${{ steps.upload.outputs.image_tag }}\n\`\`\``
-            });
+            try {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.issue.number,
+                body: `Image built and pushed!\n\n\`\`\`\n${process.env.IMAGE_REF}\n\`\`\``,
+              });
+            } catch (e) {
+              core.warning(`Could not post comment: ${e.message}`);
+            }
 
       - name: Teardown Worker
         uses: ./.github/actions/end-nix

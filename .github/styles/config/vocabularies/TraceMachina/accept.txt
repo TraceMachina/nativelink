@@ -296,6 +296,8 @@ shellexpand
 pluggable
 [Cc]allout
 hostnames
+prefetch
+protos
 Serde
 camelCase
 SDK
@@ -313,3 +315,4 @@ Merkle
 subtree
 hardlink
 multiplicatively
+SELinux

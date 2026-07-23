@@ -1459,23 +1459,26 @@ impl RunningActionImpl {
         #[cfg(target_os = "linux")]
         {
             let use_namespaces = self.running_actions_manager.use_namespaces;
-            let root_action_directory =
-                std::ffi::CString::new(self.running_actions_manager.root_action_directory.clone())
-                    .err_tip(|| "In RunningActionImpl::inner_execute()")?;
-            let action_directory = std::ffi::CString::new(self.action_directory.clone())
-                .err_tip(|| "In RunningActionImpl::inner_execute()")?;
 
-            // SAFETY: This function is specifically designed to operate in a async-signal-safe
-            // environment.
-            unsafe {
-                command_builder.pre_exec(move || match use_namespaces {
-                    UseNamespaces::No => Ok(()),
-                    _ => crate::namespace_utils::configure_namespace(
-                        matches!(use_namespaces, UseNamespaces::YesAndMount),
-                        &root_action_directory,
-                        &action_directory,
-                    ),
-                });
+            if !matches!(use_namespaces, UseNamespaces::No) {
+                let root_action_directory = std::ffi::CString::new(
+                    self.running_actions_manager.root_action_directory.clone(),
+                )
+                .err_tip(|| "In RunningActionImpl::inner_execute()")?;
+                let action_directory = std::ffi::CString::new(self.action_directory.clone())
+                    .err_tip(|| "In RunningActionImpl::inner_execute()")?;
+
+                // SAFETY: This function is specifically designed to operate in a async-signal-safe
+                // environment.
+                unsafe {
+                    command_builder.pre_exec(move || {
+                        crate::namespace_utils::configure_namespace(
+                            matches!(use_namespaces, UseNamespaces::YesAndMount),
+                            &root_action_directory,
+                            &action_directory,
+                        )
+                    });
+                }
             }
 
             // Run the action as its own process-group leader (pgid == child

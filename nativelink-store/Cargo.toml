@@ -4,7 +4,7 @@ lints.workspace = true
 [package]
 edition = "2024"
 name = "nativelink-store"
-version = "1.6.1"
+version = "1.6.2"
 
 [dependencies]
 nativelink-config = { path = "../nativelink-config" }
@@ -130,6 +130,9 @@ wincode = { version = "0.5.4", default-features = false, features = [
   "alloc",
   "derive",
 ] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = { version = "0.2.177", default-features = false }
 
 [dev-dependencies]
 nativelink-macro = { path = "../nativelink-macro" }

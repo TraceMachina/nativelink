@@ -101,3 +101,20 @@ For tabbed content, use Fumadocs's `Tabs` and `Tab`:
 Same flow as any other change — see
 [Contribution guidelines](/contribute/guidelines). Small docs
 PRs land same-day in most cases.
+
+## FAQ
+
+<Accordions type="multiple">
+  <Accordion title="Where do FAQs live?" id="where-do-faqs-live">
+    At the bottom of the page they belong to — each page ends with a
+    `## FAQ` section holding the questions readers actually ask about
+    that material. Add new Q&As there rather than to a standalone FAQ
+    section; there isn't one.
+  </Accordion>
+  <Accordion title="What checks run on a docs PR?" id="what-checks-run-on-a-docs-pr">
+    The same pre-commit suite as any PR, including
+    [Vale](https://vale.sh) style linting and typo checks over the MDX.
+    Run `pre-commit run --files <changed files>` locally to catch
+    failures before CI does.
+  </Accordion>
+</Accordions>
