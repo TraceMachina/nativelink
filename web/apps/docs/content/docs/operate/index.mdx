@@ -1,0 +1,34 @@
+---
+title: Operate
+description: Run NativeLink in production — scale the worker pool and the CAS, tune it, and recover from failure.
+---
+
+This section covers running NativeLink once it is deployed: scaling each
+role with load, tuning it, and recovering from failure. Everything here
+uses open-source NativeLink and standard Kubernetes primitives; no
+enterprise components are required.
+
+## Guides
+
+- [Scaling the RBE worker pool](/operate/scaling-workers) — run more
+  workers and autoscale them on queue depth.
+- [Scaling the CAS](/operate/scaling-cas) — scale cache capacity,
+  throughput, and serving.
+
+## Coming soon
+
+These pages are planned for this track:
+
+- Operations overview — what to watch and the SLOs that matter.
+- Metrics catalog and dashboards.
+- Autoscaling reference deployment — a hands-off manifest set.
+- Tuning — page cache, concurrency, chunking, and eviction.
+- Failure modes and runbooks.
+- Troubleshooting — symptom to cause to fix.
+
+## Prerequisites
+
+The guides here assume a working deployment (CAS, scheduler, and at least
+one worker) and metrics enabled. Start from
+[Getting Started → Setup](/getting-started/setup) and
+[Deployment → Metrics](/deployment/metrics) if you do not have those yet.

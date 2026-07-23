@@ -316,3 +316,14 @@ subtree
 hardlink
 multiplicatively
 SELinux
+Karpenter
+SLOs
+runbooks
+runbook
+autoscale
+Autoscale
+autoscaler
+protobufs
+rustfmt
+Interruptible
+prometheus-adapter
