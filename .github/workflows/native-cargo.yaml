@@ -21,6 +21,7 @@ concurrency:
 
 env:
   RUSTFLAGS: -Dwarnings
+  AWS_LC_SYS_PREBUILT_NASM: 1 # For windows https://github.com/aws/aws-lc-rs/tree/main/aws-lc-sys#use-of-prebuilt-nasm-objects
 
 jobs:
   cargo-native:

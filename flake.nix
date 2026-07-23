@@ -42,6 +42,7 @@
         ./local-remote-execution/flake-module.nix
         ./tools/darwin/flake-module.nix
         ./tools/nixos/flake-module.nix
+        ./tools/nix/flake-module.nix
         ./flake-module.nix
       ];
       flake = {
@@ -50,6 +51,7 @@
           darwin = ./tools/darwin/flake-module.nix;
           lre = ./local-remote-execution/flake-module.nix;
           nixos = ./tools/nixos/flake-module.nix;
+          nix = ./tools/nix/flake-module.nix;
         };
         overlays = {
           lre = import ./local-remote-execution/overlays/default.nix {inherit nix2container;};
@@ -133,6 +135,11 @@
             else "${pkgs.llvmPackages_22.lld}/bin/ld.lld";
 
           linkerEnvVar = "CARGO_TARGET_${pkgs.lib.toUpper (pkgs.lib.replaceStrings ["-"] ["_"] targetArch)}_LINKER";
+
+          aws-lc-system-dir = pkgs.callPackage ./tools/aws-lc-system-dir.nix {
+            inherit (p) aws-lc;
+            aws-lc-dev = p.aws-lc.dev;
+          };
         in
           {
             inherit src;
@@ -165,6 +172,8 @@
             # FIXME(palfrey): Attempted workaround from https://github.com/llvm/llvm-project/issues/32849#issuecomment-2353071071 but doesn't work
             # CFLAGS = "-femit-all-decls";
             ${linkerEnvVar} = linkerPath;
+            AWS_LC_SYS_SYSTEM_DIR = "${aws-lc-system-dir}";
+            AWS_LC_SYS_USE_SYSTEM = "true";
           });
 
         # Additional target for external dependencies to simplify caching.
@@ -592,6 +601,10 @@
               # If on NixOS, generate nixos.bazelrc, which adds the required
               # NixOS binary paths to the bazel environment.
               ${config.nixos.installationScript}
+
+              # generate nix.bazelrc, which adds the required
+              # Nix binary paths to the bazel environment.
+              ${config.nix.installationScript}
 
               # If on Darwin, generate darwin.bazelrc, which configures darwin
               # libs and frameworks.

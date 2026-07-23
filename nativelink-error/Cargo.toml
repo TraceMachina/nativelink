@@ -17,7 +17,7 @@ nativelink-proto = { path = "../nativelink-proto" }
 base64 = { version = "0.22.1", default-features = false, features = ["std"] }
 mongodb = { version = "3", features = [
   "compat-3-0-0",
-  "rustls-tls",
+  "rustls-tls-aws-lc",
 ], default-features = false }
 prost = { version = "0.14.4", default-features = false }
 prost-types = { version = "0.14.4", default-features = false, features = [

@@ -73,7 +73,7 @@ tokio = { version = "1.52.2", features = [
   "signal",
 ], default-features = false }
 tokio-rustls = { version = "0.26.2", default-features = false, features = [
-  "ring",
+  "aws_lc_rs",
 ] }
 tonic = { version = "0.14.0", features = [
   "tls-ring",

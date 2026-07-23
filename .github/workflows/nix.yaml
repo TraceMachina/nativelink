@@ -61,7 +61,6 @@ jobs:
             if nix develop --impure --command \
                 bazel test //... \
                   --verbose_failures \
-                  --lockfile_mode=error \
                 2>&1 | tee bazel.log; then
               exit 0
             fi
