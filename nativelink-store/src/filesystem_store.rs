@@ -1110,6 +1110,9 @@ pub struct FilesystemStore<Fe: FileEntry = FileEntryImpl> {
     block_size: u64,
     #[metric(help = "Size of the configured read buffer size")]
     read_buffer_size: usize,
+    /// See [`FilesystemSpec::evict_page_cache`]. When false (the default) the
+    /// per-blob `posix_fadvise(DONTNEED)` calls are skipped.
+    evict_page_cache: bool,
     weak_self: Weak<Self>,
     rename_fn: fn(&OsStr, &OsStr) -> Result<(), std::io::Error>,
     /// Limits concurrent write operations to prevent disk I/O saturation.
@@ -1243,6 +1246,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             evicting_map,
             block_size,
             read_buffer_size,
+            evict_page_cache: spec.evict_page_cache,
             weak_self: weak_self.clone(),
             rename_fn,
             write_semaphore,
@@ -1518,7 +1522,9 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
 
         drop(permit);
 
-        temp_file.advise_dontneed();
+        if self.evict_page_cache {
+            temp_file.advise_dontneed();
+        }
         trace!(?temp_file, "Dropping file to update_file");
         drop(temp_file);
 
@@ -1846,7 +1852,9 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
 
         drop(_permit);
 
-        temp_file.advise_dontneed();
+        if self.evict_page_cache {
+            temp_file.advise_dontneed();
+        }
         drop(temp_file);
 
         *entry.data_size_mut() = data.len() as u64;
@@ -1885,7 +1893,9 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         // We are done with the file, if we hold a reference to the file here, it could
         // result in a deadlock if `emplace_file()` also needs file descriptors.
         trace!(?file, "Dropping file to to update_with_whole_file");
-        file.advise_dontneed();
+        if self.evict_page_cache {
+            file.advise_dontneed();
+        }
         drop(file);
         self.emplace_file(key.into_owned(), Arc::new(entry))
             .await
@@ -1949,7 +1959,9 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
                 .await
                 .err_tip(|| "Failed to send chunk in filesystem store get_part")?;
         }
-        temp_file.get_ref().advise_dontneed();
+        if self.evict_page_cache {
+            temp_file.get_ref().advise_dontneed();
+        }
         writer
             .send_eof()
             .err_tip(|| "Filed to send EOF in filesystem store get_part")?;
