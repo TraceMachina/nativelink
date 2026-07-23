@@ -138,7 +138,7 @@ async fn store_one_item_existence() -> Result<(), Box<dyn core::error::Error>> {
             instance_name: INSTANCE_NAME.to_string(),
             blob_digests: vec![Digest {
                 hash: HASH1.to_string(),
-                size_bytes: VALUE.len() as i64,
+                size_bytes: VALUE.len().try_into().unwrap_or(i64::MAX),
             }],
             digest_function: digest_function::Value::Sha256.into(),
         }))
@@ -166,15 +166,15 @@ async fn has_three_requests_one_bad_hash() -> Result<(), Box<dyn core::error::Er
             blob_digests: vec![
                 Digest {
                     hash: HASH1.to_string(),
-                    size_bytes: VALUE.len() as i64,
+                    size_bytes: VALUE.len().try_into().unwrap_or(i64::MAX),
                 },
                 Digest {
                     hash: BAD_HASH.to_string(),
-                    size_bytes: VALUE.len() as i64,
+                    size_bytes: VALUE.len().try_into().unwrap_or(i64::MAX),
                 },
                 Digest {
                     hash: HASH1.to_string(),
-                    size_bytes: VALUE.len() as i64,
+                    size_bytes: VALUE.len().try_into().unwrap_or(i64::MAX),
                 },
             ],
             digest_function: digest_function::Value::Sha256.into(),
@@ -199,7 +199,7 @@ async fn update_existing_item() -> Result<(), Box<dyn core::error::Error>> {
 
     let digest = Digest {
         hash: HASH1.to_string(),
-        size_bytes: VALUE2.len() as i64,
+        size_bytes: VALUE2.len().try_into().unwrap_or(i64::MAX),
     };
 
     store
@@ -256,11 +256,11 @@ async fn batch_read_blobs_read_two_blobs_success_one_fail()
 
     let digest1 = Digest {
         hash: HASH1.to_string(),
-        size_bytes: VALUE1.len() as i64,
+        size_bytes: VALUE1.len().try_into().unwrap_or(i64::MAX),
     };
     let digest2 = Digest {
         hash: HASH2.to_string(),
-        size_bytes: VALUE2.len() as i64,
+        size_bytes: VALUE2.len().try_into().unwrap_or(i64::MAX),
     };
     {
         // Insert dummy data.
@@ -614,11 +614,11 @@ async fn batch_update_blobs_two_items_existence_with_third_missing()
 
     let digest1 = Digest {
         hash: HASH1.to_string(),
-        size_bytes: VALUE1.len() as i64,
+        size_bytes: VALUE1.len().try_into().unwrap_or(i64::MAX),
     };
     let digest2 = Digest {
         hash: HASH2.to_string(),
-        size_bytes: VALUE2.len() as i64,
+        size_bytes: VALUE2.len().try_into().unwrap_or(i64::MAX),
     };
 
     {
@@ -679,12 +679,12 @@ async fn batch_update_blobs_two_items_existence_with_third_missing()
                 blob_digests: vec![
                     Digest {
                         hash: HASH1.to_string(),
-                        size_bytes: VALUE1.len() as i64,
+                        size_bytes: VALUE1.len().try_into().unwrap_or(i64::MAX),
                     },
                     missing_digest.clone(),
                     Digest {
                         hash: HASH2.to_string(),
-                        size_bytes: VALUE2.len() as i64,
+                        size_bytes: VALUE2.len().try_into().unwrap_or(i64::MAX),
                     },
                 ],
                 digest_function: digest_function::Value::Sha256.into(),
@@ -786,7 +786,7 @@ async fn batch_update_blobs_per_blob_timeout_returns_deadline_exceeded()
 
     let digest = Digest {
         hash: HASH1.to_string(),
-        size_bytes: VALUE.len() as i64,
+        size_bytes: VALUE.len().try_into().unwrap_or(i64::MAX),
     };
     let raw_response = cas_server
         .batch_update_blobs(Request::new(BatchUpdateBlobsRequest {
@@ -918,7 +918,7 @@ async fn batch_update_blobs_zstd_rejected_when_remote_cache_compression_disabled
     let compressed_data = zstd::bulk::compress(raw_data, 3)?;
     let digest = Digest {
         hash: HASH1.to_string(),
-        size_bytes: raw_data.len() as i64,
+        size_bytes: raw_data.len().try_into().unwrap_or(i64::MAX),
     };
 
     let Err(status) = cas_server
@@ -955,7 +955,7 @@ async fn batch_read_blobs_zstd_compressed() -> Result<(), Box<dyn core::error::E
 
     // Upload uncompressed data first.
     let raw_data: Vec<u8> = "hello world ".repeat(100).into_bytes();
-    let raw_size = raw_data.len() as i64;
+    let raw_size = raw_data.len().try_into().unwrap_or(i64::MAX);
 
     // Compute the sha256 digest.
     let mut hasher = DigestHasherFunc::Sha256.hasher();
@@ -1009,7 +1009,7 @@ async fn batch_read_blobs_zstd_falls_back_to_identity_when_not_smaller()
 
     let digest = Digest {
         hash: HASH1.to_string(),
-        size_bytes: raw_data.len() as i64,
+        size_bytes: raw_data.len().try_into().unwrap_or(i64::MAX),
     };
     let response = cas_server
         .batch_read_blobs(Request::new(BatchReadBlobsRequest {
@@ -1078,11 +1078,11 @@ fn make_chunking_cas_server_with_avg(
 async fn upload_test_chunks(store: &Store) -> Result<(Digest, Digest, Digest), Error> {
     let chunk1_digest = Digest {
         hash: HASH1.to_string(),
-        size_bytes: CHUNK1_VALUE.len() as i64,
+        size_bytes: CHUNK1_VALUE.len().try_into().unwrap_or(i64::MAX),
     };
     let chunk2_digest = Digest {
         hash: HASH2.to_string(),
-        size_bytes: CHUNK2_VALUE.len() as i64,
+        size_bytes: CHUNK2_VALUE.len().try_into().unwrap_or(i64::MAX),
     };
     store
         .update_oneshot(
@@ -1247,7 +1247,7 @@ async fn splice_blob_missing_chunk_returns_not_found() -> Result<(), Box<dyn cor
     // Only upload the first chunk.
     let chunk1_digest = Digest {
         hash: HASH1.to_string(),
-        size_bytes: CHUNK1_VALUE.len() as i64,
+        size_bytes: CHUNK1_VALUE.len().try_into().unwrap_or(i64::MAX),
     };
     store
         .update_oneshot(
@@ -1257,7 +1257,7 @@ async fn splice_blob_missing_chunk_returns_not_found() -> Result<(), Box<dyn cor
         .await?;
     let missing_chunk_digest = Digest {
         hash: HASH2.to_string(),
-        size_bytes: CHUNK2_VALUE.len() as i64,
+        size_bytes: CHUNK2_VALUE.len().try_into().unwrap_or(i64::MAX),
     };
     let mut hasher = DigestHasherFunc::Sha256.hasher();
     hasher.update(CHUNK1_VALUE.as_bytes());
@@ -1291,7 +1291,7 @@ async fn split_blob_absent_blob_returns_not_found() -> Result<(), Box<dyn core::
             instance_name: INSTANCE_NAME.to_string(),
             blob_digest: Some(Digest {
                 hash: HASH1.to_string(),
-                size_bytes: VALUE.len() as i64,
+                size_bytes: VALUE.len().try_into().unwrap_or(i64::MAX),
             }),
             digest_function: digest_function::Value::Sha256.into(),
             chunking_function: chunking_function::Value::FastCdc2020.into(),
@@ -1316,7 +1316,7 @@ async fn split_and_splice_disabled_return_unimplemented() -> Result<(), Box<dyn 
 
     let digest = Digest {
         hash: HASH1.to_string(),
-        size_bytes: VALUE.len() as i64,
+        size_bytes: VALUE.len().try_into().unwrap_or(i64::MAX),
     };
     let split_status = cas_server
         .split_blob(Request::new(SplitBlobRequest {
@@ -1405,7 +1405,7 @@ async fn split_blob_chunks_large_blob_on_demand_and_reuses_layout()
         .collect();
     let blob_digest = Digest {
         hash: HASH1.to_string(),
-        size_bytes: BLOB_SIZE as i64,
+        size_bytes: BLOB_SIZE.try_into().unwrap_or(i64::MAX),
     };
     store
         .update_oneshot(
@@ -1479,7 +1479,7 @@ async fn split_blob_falls_back_when_layout_unusable() -> Result<(), Box<dyn core
     let stale_layout = SplitBlobResponse {
         chunk_digests: vec![Digest {
             hash: HASH2.to_string(),
-            size_bytes: VALUE.len() as i64,
+            size_bytes: VALUE.len().try_into().unwrap_or(i64::MAX),
         }],
         chunking_function: chunking_function::Value::FastCdc2020.into(),
     };
@@ -1639,7 +1639,7 @@ async fn max_chunk_count_limits_split_and_splice() -> Result<(), Box<dyn core::e
         .collect();
     let blob_digest = Digest {
         hash: HASH1.to_string(),
-        size_bytes: BLOB_SIZE as i64,
+        size_bytes: BLOB_SIZE.try_into().unwrap_or(i64::MAX),
     };
     store
         .update_oneshot(

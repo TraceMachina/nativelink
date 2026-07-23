@@ -163,7 +163,7 @@ impl ByteStream for FakeStreamServer {
             Some(Ok(write_request)) => write_request,
         };
         info!(?write_request, "write request");
-        let committed_size = write_request.data.len() as i64;
+        let committed_size = write_request.data.len().try_into().unwrap_or(i64::MAX);
         self.write_requests.lock().await.push(write_request);
         Ok(Response::new(WriteResponse { committed_size }))
     }
@@ -433,7 +433,7 @@ async fn split_and_splice_blob_forward_to_backend() -> Result<(), Error> {
 
     let digest = Digest {
         hash: VALID_HASH.to_string(),
-        size_bytes: RAW_INPUT.len() as i64,
+        size_bytes: RAW_INPUT.len().try_into().unwrap_or(i64::MAX),
     };
 
     let split_response = store
