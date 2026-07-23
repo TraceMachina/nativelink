@@ -69,7 +69,9 @@ pub const DIGEST_FOLDER: &str = "d";
 /// **executable** (0o555) variants of CAS blobs (see
 /// [`FilesystemStore::get_executable_hardlink_source`]). It is a sibling of
 /// `content_path` rather than a child so the normal content/temp scan and prune
-/// logic never touches it. Cleared on startup; entries are regenerable.
+/// logic never touches it. Cleared on writable startup; entries are
+/// regenerable. If the wipe is blocked by a read-only filesystem, executable
+/// variants are disabled so surviving files are never trusted.
 #[cfg(unix)]
 const EXECUTABLE_DIR_SUFFIX: &str = ".exec";
 
@@ -425,6 +427,9 @@ struct FlushCoalescer {
     /// neither the startup scan nor `move_old_cache`'s legacy root sweep
     /// ever sees it.
     sentinel: Arc<std::fs::File>,
+    /// Number of device-wide barriers issued. Kept separately from the
+    /// per-file `fsync(2)` count so tests can pin the coalescing invariant.
+    full_flush_count: Arc<AtomicU64>,
 }
 
 #[cfg(target_os = "macos")]
@@ -508,6 +513,7 @@ impl FlushCoalescer {
             current_round: parking_lot::Mutex::new(FlushRound::new()),
             wake: Arc::new(tokio::sync::Notify::new()),
             sentinel: Arc::new(sentinel),
+            full_flush_count: Arc::new(AtomicU64::new(0)),
         });
 
         let weak = Arc::downgrade(&coalescer);
@@ -570,6 +576,7 @@ impl FlushCoalescer {
             }
         }
         let sentinel = self.sentinel.clone();
+        let full_flush_count = self.full_flush_count.clone();
         let flush_result = spawn_blocking!("filesystem_store_full_flush", move || {
             use std::os::fd::AsRawFd;
             use std::os::unix::fs::FileExt;
@@ -580,6 +587,9 @@ impl FlushCoalescer {
             if let Err(err) = sentinel.write_at(b"f", 0) {
                 warn!(?err, "Flush sentinel write failed; issuing flush anyway");
             }
+            // Count the actual blocking operation, rather than merely counting
+            // rounds scheduled by the async task.
+            full_flush_count.fetch_add(1, Ordering::Relaxed);
             loop {
                 if unsafe { libc::fcntl(sentinel.as_raw_fd(), libc::F_FULLFSYNC) } != -1 {
                     return Ok(());
@@ -597,6 +607,43 @@ impl FlushCoalescer {
         });
         send_guard.finish(flush_result);
     }
+}
+
+#[cfg(unix)]
+async fn prepare_executable_dir(content_path: &str) -> Result<bool, Error> {
+    fn is_non_writable_error(err: &std::io::Error) -> bool {
+        matches!(
+            err.kind(),
+            std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem
+        )
+    }
+
+    let executable_dir = format!("{content_path}{EXECUTABLE_DIR_SUFFIX}");
+    let executable_digest_dir = format!("{executable_dir}/{DIGEST_FOLDER}");
+    spawn_blocking!("filesystem_store_prepare_executable_dir", move || {
+        match std::fs::remove_dir_all(&executable_dir) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            // A read-only cache must remain available for ordinary reads. Do
+            // not reuse the directory, though: a surviving executable variant
+            // may be stale or torn after an unclean shutdown.
+            Err(err) if is_non_writable_error(&err) => return Ok(false),
+            Err(err) => {
+                return Err(Error::from(err)
+                    .append(format!("Failed to clear executable dir {executable_dir}")));
+            }
+        }
+
+        match std::fs::create_dir_all(&executable_digest_dir) {
+            Ok(()) => Ok(true),
+            Err(err) if is_non_writable_error(&err) => Ok(false),
+            Err(err) => Err(Error::from(err).append(format!(
+                "Failed to create executable dir {executable_digest_dir}"
+            ))),
+        }
+    })
+    .await
+    .err_tip(|| "Failed to join executable-dir preparation task")?
 }
 
 impl LenEntry for FileEntryImpl {
@@ -1080,6 +1127,11 @@ pub struct FilesystemStore<Fe: FileEntry = FileEntryImpl> {
     /// get/insert/remove the per-digest async lock — never across I/O.
     #[cfg(unix)]
     executable_locks: std::sync::Mutex<HashMap<DigestInfo, Arc<Mutex<()>>>>,
+    /// False when the startup wipe could not safely remove old executable
+    /// variants from a read-only filesystem. Ordinary CAS reads remain
+    /// available, but executable hardlink sources must not reuse stale files.
+    #[cfg(unix)]
+    executable_variants_enabled: bool,
 }
 
 impl<Fe: FileEntry> FilesystemStore<Fe> {
@@ -1113,32 +1165,33 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
 
         // Executable-variant directory: a sibling of `content_path` holding
         // per-digest 0o555 copies used as hardlink sources for executable
-        // inputs (see `get_executable_hardlink_source`). Cleared on startup —
-        // the variants are regenerable and we never want a stale one to leak
-        // across runs. Unix-only: the executable bit (and the ETXTBSY race it
-        // guards against) does not apply on Windows.
+        // inputs (see `get_executable_hardlink_source`). Cleared on writable
+        // startup — the variants are regenerable and we never want a stale one
+        // to leak across runs. If a read-only filesystem prevents the wipe,
+        // ordinary CAS reads remain enabled but executable variants do not.
+        // Unix-only: the executable bit (and the ETXTBSY race it guards
+        // against) does not apply on Windows.
         #[cfg(unix)]
-        {
-            let executable_dir = format!("{}{EXECUTABLE_DIR_SUFFIX}", spec.content_path);
-            // The wipe must not fail silently: a variant surviving an
-            // unclean shutdown would be served by the hardlink fast path,
-            // so a failed clear has to abort construction rather than
-            // risk publishing stale (or torn) executables.
-            if let Err(err) = fs::remove_dir_all(&executable_dir).await
-                && err.code != Code::NotFound
-            {
-                return Err(err)
-                    .err_tip(|| format!("Failed to clear executable dir {executable_dir}"));
+        let executable_variants_enabled = {
+            let enabled = prepare_executable_dir(&spec.content_path).await?;
+            if !enabled {
+                warn!(
+                    executable_dir = %format!("{}{EXECUTABLE_DIR_SUFFIX}", spec.content_path),
+                    "Executable directory is not writable; serving CAS reads with executable variants disabled"
+                );
             }
-            fs::create_dir_all(format!("{executable_dir}/{DIGEST_FOLDER}"))
-                .await
-                .err_tip(|| format!("Failed to create executable dir {executable_dir}"))?;
-            evicting_map.add_remove_callback(RemoveCallbackHolder::new(Arc::new(
-                ExecutableVariantRemover {
-                    content_path: spec.content_path.clone(),
-                },
-            )));
-        }
+            if enabled {
+                // Only register cleanup when executable variants are enabled.
+                // Otherwise surviving variants are deliberately quarantined,
+                // and repeated deletion warnings would obscure the fallback.
+                evicting_map.add_remove_callback(RemoveCallbackHolder::new(Arc::new(
+                    ExecutableVariantRemover {
+                        content_path: spec.content_path.clone(),
+                    },
+                )));
+            }
+            enabled
+        };
 
         let shared_context = Arc::new(SharedContext {
             active_drop_spawns: AtomicU64::new(0),
@@ -1197,6 +1250,8 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             flush_coalescer,
             #[cfg(unix)]
             executable_locks: std::sync::Mutex::new(HashMap::new()),
+            #[cfg(unix)]
+            executable_variants_enabled,
         }))
     }
 
@@ -1235,6 +1290,12 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         &self,
         digest: &DigestInfo,
     ) -> Result<OsString, Error> {
+        if !self.executable_variants_enabled {
+            return Err(make_err!(
+                Code::FailedPrecondition,
+                "Executable hardlink sources are disabled because the startup wipe could not safely clear the read-only executable directory"
+            ));
+        }
         let variant_path = self.executable_variant_path(digest);
 
         // Fast path: the variant already exists, so the caller can hardlink it
@@ -1353,14 +1414,14 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
                         )
                     })?;
                 // Belt-and-suspenders flush before publish. The `.exec`
-                // directory is cleared on every startup, so durability is
-                // only load-bearing if that best-effort wipe ever fails —
-                // but flushing keeps a surviving variant VALID rather than
-                // possibly torn. Non-macOS keeps the prior `sync_all`
-                // behavior; macOS uses plain `fsync(2)` (data handed to
-                // the device, no multi-ms `F_FULLFSYNC` device-cache
-                // drain), which covers kernel panics — the startup wipe
-                // covers power loss.
+                // directory is cleared before executable variants are enabled,
+                // so durability is not needed across process restarts. The
+                // flush still ensures a published variant is complete for the
+                // current process. Non-macOS keeps the prior `sync_all`
+                // behavior; macOS uses plain `fsync(2)` (data handed to the
+                // device, no multi-ms `F_FULLFSYNC` device-cache drain), which
+                // covers kernel panics — the next writable startup wipe covers
+                // power loss.
                 let f = std::fs::File::open(&temp_owned)
                     .map_err(|e| make_err!(Code::Internal, "executable-variant reopen: {e:?}"))?;
                 #[cfg(target_os = "macos")]
@@ -1638,6 +1699,16 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
     // Only for tests, so we can run check_duplicate_files
     pub fn get_evicting_map(&self) -> Arc<FsEvictingMap<'static, Fe>> {
         self.evicting_map.clone()
+    }
+
+    /// Returns the number of device-wide durability barriers issued by this
+    /// store's macOS flush coalescer. Exposed so the integration test can pin
+    /// the batching behavior rather than only checking data correctness.
+    #[cfg(target_os = "macos")]
+    pub fn full_flush_count_for_test(&self) -> Option<u64> {
+        self.flush_coalescer
+            .as_ref()
+            .map(|coalescer| coalescer.full_flush_count.load(Ordering::Relaxed))
     }
 
     // Separated out so tests can use this
