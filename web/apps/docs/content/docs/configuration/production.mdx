@@ -155,6 +155,55 @@ alarm) can read NativeLink's Prometheus output and scale accordingly.
 The [Kubernetes deployment guide](/deployment/kubernetes) has a
 working HPA config.
 
+## Filesystem store: page-cache eviction
+
+The `filesystem` store has an opt-in `evict_page_cache` flag (default
+`false`). When enabled, after every blob it writes or reads it asks the
+kernel to drop that file's pages from the page cache
+(`posix_fadvise(POSIX_FADV_DONTNEED)`).
+
+Most production deployments should leave it **off**. The common
+enterprise topology (an object store with multiple CAS nodes) never
+benefits from it, and enabling it carries two costs.
+
+```json5
+stores: [{
+  filesystem: {
+    content_path: "/var/lib/nativelink/cas",
+    // Leave this off unless the narrow case below applies.
+    evict_page_cache: false,
+  },
+}],
+```
+
+<Callout type="warn" title="The cost grows with core count">
+  On a real filesystem (xfs/ext4), `POSIX_FADV_DONTNEED` takes the
+  kernel's `lru_add_drain_all()` path: it schedules and waits on a drain
+  across **every online CPU**, and concurrent callers serialize on a
+  global lock. The per-call cost therefore grows with the number of
+  cores, and **adding workers or concurrent actions cannot overcome
+  it**: every caller converges on the same serialized kernel path, so
+  throughput is capped no matter how much parallelism you add. On a
+  many-core host this
+  turns a busy store into a bottleneck while CPU and disk sit near idle.
+  (On `tmpfs` the call is a no-op, so this cost is invisible in
+  tmpfs-backed tests.)
+</Callout>
+
+The second cost: it evicts the page cache. A store kept on a fast local
+disk that relies on the page cache as its hot read tier loses that cache
+after every read and write.
+
+**When to enable it:** only for a filesystem-backed store on a low-core
+host where keeping this store's I/O out of the page cache is specifically
+desired (for example, to bound page-cache growth on a co-located
+filesystem-only deployment). It was originally added to relieve page-cache
+pressure that contributed to worker OOM-kills on such a deployment; note
+that page cache is reclaimable and the dominant OOM driver is a worker's
+anonymous memory (action processes and allocator retention), so this flag
+is a narrow mitigation, not a general OOM fix. Do **not** enable it on
+many-core hosts or object-store / multi-CAS deployments.
+
 ## TLS and authentication
 
 In production, every hop runs over mTLS:

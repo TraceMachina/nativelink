@@ -272,6 +272,33 @@ const VALUE2: &str = "9876543210";
 const STRING_NAME: &str = "String_Filename";
 
 #[nativelink_test]
+async fn evict_page_cache_defaults_off_and_round_trips_when_on() -> Result<(), Error> {
+    assert!(
+        !FilesystemSpec::default().evict_page_cache,
+        "evict_page_cache should default to off"
+    );
+
+    let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
+    let store = Store::new(
+        FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+            content_path: make_temp_path("content_path"),
+            temp_path: make_temp_path("temp_path"),
+            eviction_policy: None,
+            block_size: 1,
+            evict_page_cache: true,
+            ..Default::default()
+        })
+        .await?,
+    );
+    store.update_oneshot(digest, VALUE1.into()).await?;
+    let content = store
+        .get_part_unchunked(StoreKey::Digest(digest), 0, None)
+        .await?;
+    assert_eq!(content, VALUE1.as_bytes());
+    Ok(())
+}
+
+#[nativelink_test]
 async fn valid_results_after_shutdown_test() -> Result<(), Error> {
     let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
     let content_path = make_temp_path("content_path");
