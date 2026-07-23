@@ -35,6 +35,7 @@ use rand::Rng;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::sleep;
 
+use crate::common_s3_utils::install_default_rustls_crypto_provider;
 use crate::gcs_client::types::{
     CHUNK_SIZE, DEFAULT_CONCURRENT_UPLOADS, DEFAULT_CONTENT_TYPE, GcsObject,
     INITIAL_UPLOAD_RETRY_DELAY_MS, MAX_UPLOAD_RETRIES, MAX_UPLOAD_RETRY_DELAY_MS, ObjectPath,
@@ -109,6 +110,8 @@ pub struct GcsClient {
 
 impl GcsClient {
     fn create_client_config(spec: &ExperimentalGcsSpec) -> Result<ClientConfig, Error> {
+        install_default_rustls_crypto_provider();
+
         let mut client_config = ClientConfig::default();
         let connect_timeout = if spec.connection_timeout_s > 0 {
             Duration::from_secs(spec.connection_timeout_s)

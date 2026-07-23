@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::stream::{FuturesUnordered, StreamExt};
-use futures::{FutureExt, TryFutureExt, select};
+use futures::{FutureExt, TryFutureExt, select, try_join};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_proto::build::bazel::remote::execution::v2::{
@@ -29,7 +29,7 @@ use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::metrics_utils::CounterWithTime;
 use nativelink_util::store_trait::{
-    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+    RemoveCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };
 use parking_lot::Mutex;
 use tokio::sync::Notify;
@@ -341,6 +341,14 @@ impl CompletenessCheckingStore {
 
 #[async_trait]
 impl StoreDriver for CompletenessCheckingStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        try_join!(
+            self.cas_store.clone().into_inner().post_init(),
+            self.ac_store.clone().into_inner().post_init()
+        )?;
+        Ok(())
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],
@@ -390,10 +398,7 @@ impl StoreDriver for CompletenessCheckingStore {
         self
     }
 
-    fn register_remove_callback(
-        self: Arc<Self>,
-        callback: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, callback: RemoveCallback) -> Result<(), Error> {
         self.ac_store.register_remove_callback(callback.clone())?;
         self.cas_store.register_remove_callback(callback)?;
         Ok(())

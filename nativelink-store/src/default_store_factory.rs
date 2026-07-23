@@ -36,6 +36,7 @@ use crate::grpc_store::GrpcStore;
 use crate::memory_store::MemoryStore;
 use crate::mongo_store::ExperimentalMongoStore;
 use crate::noop_store::NoopStore;
+use crate::oci_store::OciStore;
 use crate::ontap_s3_existence_cache_store::OntapS3ExistenceCache;
 use crate::ontap_s3_store::OntapS3Store;
 use crate::r2_store::R2Store;
@@ -76,6 +77,9 @@ pub fn store_factory<'a>(
                 }
                 ExperimentalCloudObjectSpec::R2(r2_config) => {
                     R2Store::new(r2_config, SystemTime::now).await?
+                }
+                ExperimentalCloudObjectSpec::Oci(oci_config) => {
+                    OciStore::new(oci_config, SystemTime::now).await?
                 }
             },
             StoreSpec::RedisStore(spec) => {

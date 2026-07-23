@@ -14,7 +14,8 @@
 
 # Current supported Ubuntu version, Noble Numbat aka 24.04 LTS
 # Locked down to a specific revision to avoid issues with package versions
-ARG OS_VERSION=noble-20250925@sha256:728785b59223d755e3e5c5af178fab1be7031f3522c5ccd7a0b32b80d8248123
+ARG BAZELISK_URL=https://github.com/bazelbuild/bazelisk/releases/download/v1.25.0/bazelisk-linux-amd64
+ARG BAZELISK_SHA256=fd8fdff418a1758887520fa42da7e6ae39aefc788cf5e7f7bb8db6934d279fc4
 # `--compilation_mode` to pass into bazel (eg: opt, dbg, fastbuild).
 ARG OPT_LEVEL=opt
 # Additional bazel flags.
@@ -23,12 +24,12 @@ ARG ADDITIONAL_BAZEL_FLAGS=
 # needed by the user. Useful if your worker needs specific dependencies installed.
 ARG ADDITIONAL_SETUP_WORKER_CMD=
 
-FROM ubuntu:${OS_VERSION} AS dependencies
-ARG OS_VERSION
+FROM ubuntu:noble-20250925@sha256:728785b59223d755e3e5c5af178fab1be7031f3522c5ccd7a0b32b80d8248123 AS dependencies
+ARG BAZELISK_URL
+ARG BAZELISK_SHA256
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive \
     apt-get install --no-install-recommends -y \
-        npm=9.2.0~ds1-2 \
         git=1:2.43.0-1ubuntu7.3 \
         gcc=4:13.2.0-7ubuntu1 \
         g++=4:13.2.0-7ubuntu1 \
@@ -36,7 +37,7 @@ RUN apt-get update \
         ca-certificates=20240203 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
-    && npm install -g @bazel/bazelisk@1.25.0
+    && python3 -c 'import hashlib, pathlib, stat, sys, urllib.request; data = urllib.request.urlopen(sys.argv[1], timeout=60).read(); digest = hashlib.sha256(data).hexdigest(); assert digest == sys.argv[2], f"sha256 mismatch: {digest}"; path = pathlib.Path("/usr/local/bin/bazel"); path.write_bytes(data); path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)' "$BAZELISK_URL" "$BAZELISK_SHA256"
 
 # Build the binary.
 FROM dependencies AS builder
@@ -52,14 +53,13 @@ RUN bazel \
     cp ./bazel-bin/nativelink /root/nativelink-bin
 
 # Go back to a fresh ubuntu container and copy only the compiled binary.
-FROM ubuntu:${OS_VERSION} AS final
-ARG OS_VERSION
+FROM ubuntu:noble-20250925@sha256:728785b59223d755e3e5c5af178fab1be7031f3522c5ccd7a0b32b80d8248123 AS final
 COPY --from=builder /root/nativelink-bin /usr/local/bin/nativelink
 
 ARG ADDITIONAL_SETUP_WORKER_CMD
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl=8.5.0-2ubuntu10.9 \
+    && apt-get install -y --no-install-recommends curl=8.5.0-2ubuntu10.11 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
     && bash -ueo pipefail -c "${ADDITIONAL_SETUP_WORKER_CMD}" \

@@ -19,20 +19,22 @@ ARG ADDITIONAL_BAZEL_FLAGS=
 # Bash arguments may be passed in here to install any additional dependencies
 # needed by the user. Useful if your worker needs specific dependencies installed.
 ARG ADDITIONAL_SETUP_WORKER_CMD=
+ARG BAZELISK_URL=https://github.com/bazelbuild/bazelisk/releases/download/v1.25.0/bazelisk-linux-amd64
+ARG BAZELISK_SHA256=fd8fdff418a1758887520fa42da7e6ae39aefc788cf5e7f7bb8db6934d279fc4
 
 # RHEL8-equivalent image
 # see https://www.redhat.com/en/blog/introducing-red-hat-universal-base-image
 FROM redhat/ubi8:8.10-1756195303@sha256:534c2c0efa4150ede18e3f9d7480d3b9ec2a52e62bc91cd54e08ee7336819619 AS dependencies
-ARG OS_VERSION
+ARG BAZELISK_URL
+ARG BAZELISK_SHA256
 RUN yum update --assumeyes && \
     yum install --assumeyes \
-        npm-1:6.14.11 \
         git-2.43.7 \
         gcc-8.5.0 \
         gcc-c++-8.5.0 \
         python3.12-3.12.12 \
         ca-certificates-2025.2.80_v9.0.304 \
-    && npm install -g @bazel/bazelisk@1.25.0
+    && python3.12 -c 'import hashlib, pathlib, stat, sys, urllib.request; data = urllib.request.urlopen(sys.argv[1], timeout=60).read(); digest = hashlib.sha256(data).hexdigest(); assert digest == sys.argv[2], f"sha256 mismatch: {digest}"; path = pathlib.Path("/usr/local/bin/bazel"); path.write_bytes(data); path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)' "$BAZELISK_URL" "$BAZELISK_SHA256"
 
 # Build the binary.
 FROM dependencies AS builder

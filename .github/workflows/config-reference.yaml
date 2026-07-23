@@ -1,0 +1,139 @@
+---
+# Automates step 8 of the release process in CONTRIBUTING.md: when a release
+# tag is pushed, regenerate the versioned NativeLink configuration reference
+# (web/apps/docs) from that tag and open a PR against main with auto-merge
+# enabled.
+#
+# The generator needs the tag to exist (it builds the config schema from a
+# `git worktree` of the tag), which is why this runs on tag push rather than
+# on the release PR itself.
+#
+# Full automation requires two repository settings:
+#   - "Allow auto-merge" must be enabled (Settings → General).
+#   - A `WORKFLOW_PR_TOKEN` secret (fine-grained PAT or GitHub App token with
+#     contents:write + pull-requests:write). PRs created with the default
+#     GITHUB_TOKEN do not trigger CI workflows, so required checks would never
+#     report and auto-merge would never fire. Without the secret this workflow
+#     still opens the PR; it just needs a human to merge it.
+name: Regenerate config reference
+
+on:
+  push:
+    tags:
+      - 'v1.*'
+  # Manual entry point to (re)generate docs for an existing tag, e.g. to
+  # backfill a release where this workflow failed.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to regenerate the config reference for (e.g. v1.6.1) or blank for all'
+        required: false # Blank to allow full regen
+        type: string
+  # Weekly docs regeneration to catch any cases where we've made updates but haven't changed anything
+  schedule:
+    # Sunday 4:13am randomly picked
+    - cron: 13 4 * * SUN
+
+permissions: read-all
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  regenerate:
+    name: Regenerate and open PR
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      pull-requests: write
+      id-token: write
+    steps:
+      - name: Resolve tag
+        id: resolve
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            TAG="${{ inputs.tag }}"
+          elif [[ "${{ github.event_name }}" == "schedule" ]]; then
+            TAG=
+          else
+            TAG="${{ github.ref_name }}"
+          fi
+          if [[ "${TAG}" != "" && "${TAG}" != "main" && ( ! "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ) ]]; then
+            echo "::error::'${TAG}' is not a release tag (vMAJOR.MINOR.PATCH); refusing to regenerate."
+            exit 1
+          fi
+          echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
+
+      - name: Checkout
+        uses: >- # v6.0.2
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          # The docs update lands on main; the generator resolves every
+          # release tag itself, so it needs the full history and all tags.
+          ref: main
+          fetch-depth: 0
+
+      - name: Prepare Worker
+        uses: ./.github/actions/prepare-nix
+        with:
+          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
+
+      - name: Regenerate config reference
+        working-directory: web
+        run: |
+          nix develop --impure --command bash -c "
+            bun install && bun --filter @nativelink/docs gen:config-reference ${{ steps.resolve.outputs.tag }}
+          "
+
+      - name: Lint generated docs
+        run: |
+          nix develop --impure --command bash -c "
+            vale web/apps/docs/content/docs/reference/nativelink-config/*.mdx
+          "
+
+      - name: Open auto-merge PR
+        env:
+          GH_TOKEN: ${{ secrets.WORKFLOW_PR_TOKEN || github.token }}
+          TAG: ${{ steps.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # The generator also creates new untracked pages (the previous
+          # latest release gets its own versioned page), so check the whole
+          # docs tree, not just tracked modifications.
+          if [[ -z "$(git status --porcelain -- web/apps/docs)" ]]; then
+            echo "Config reference already up to date for ${TAG}; nothing to do."
+            exit 0
+          fi
+
+          BRANCH="docs/config-reference-${TAG}"
+          git config user.name "config reference bot"
+          git config user.email "bot@tracemachina.com"
+          git switch -c "${BRANCH}"
+          git add web/apps/docs
+          git commit -m "docs(config-reference): regenerate for NativeLink ${TAG}"
+          git push --force origin "${BRANCH}"
+
+          PR_URL=$(gh pr list --head "${BRANCH}" --base main --state open --json url --jq '.[0].url // empty')
+          if [[ -z "${PR_URL}" ]]; then
+            PR_URL=$(gh pr create \
+              --base main \
+              --head "${BRANCH}" \
+              --title "docs(config-reference): regenerate for NativeLink ${TAG}" \
+              --body "Automated regeneration of the NativeLink configuration reference for ${TAG} (CONTRIBUTING.md release step 8). Generated by the \`${{ github.workflow }}\` workflow.")
+          fi
+          echo "PR: ${PR_URL}"
+
+          # Best effort: requires "Allow auto-merge" in the repo settings and,
+          # with the default GITHUB_TOKEN, required checks never run — see the
+          # header comment.
+          gh pr merge --auto --squash "${PR_URL}" ||
+            echo "::notice::Auto-merge could not be enabled; merge ${PR_URL} manually."
+
+      - name: Teardown Worker
+        uses: ./.github/actions/end-nix
+        if: always()
+        with:
+          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}

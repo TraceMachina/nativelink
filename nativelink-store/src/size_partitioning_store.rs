@@ -16,13 +16,14 @@ use core::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use futures::try_join;
 use nativelink_config::stores::SizePartitioningSpec;
 use nativelink_error::{Error, ResultExt, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::store_trait::{
-    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+    RemoveCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };
 use tokio::join;
 
@@ -48,6 +49,14 @@ impl SizePartitioningStore {
 
 #[async_trait]
 impl StoreDriver for SizePartitioningStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        try_join!(
+            self.upper_store.clone().into_inner().post_init(),
+            self.lower_store.clone().into_inner().post_init(),
+        )?;
+        Ok(())
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],
@@ -162,10 +171,7 @@ impl StoreDriver for SizePartitioningStore {
         self
     }
 
-    fn register_remove_callback(
-        self: Arc<Self>,
-        callback: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, callback: RemoveCallback) -> Result<(), Error> {
         self.lower_store
             .register_remove_callback(callback.clone())?;
         self.upper_store.register_remove_callback(callback)?;

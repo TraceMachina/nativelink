@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use clap::{Arg, ArgAction, Command};
-use prost_build::Config;
+use tonic_prost_build::Config;
 
 fn main() -> std::io::Result<()> {
     let matches = Command::new("Rust gRPC Codegen")
@@ -48,8 +48,8 @@ fn main() -> std::io::Result<()> {
 
     config.skip_debug(structs_with_data_to_ignore.keys());
 
-    tonic_build::configure()
+    tonic_prost_build::configure()
         .out_dir(output_dir)
-        .compile_protos_with_config(config, &paths, &["nativelink-proto"])?;
+        .compile_with_config(config, &paths, &[&"nativelink-proto".into()])?;
     Ok(())
 }

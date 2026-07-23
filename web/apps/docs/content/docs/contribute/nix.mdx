@@ -22,6 +22,18 @@ curl --proto '=https' --tlsv1.2 -sSf \
 
 It enables flakes by default.
 
+<Callout type="warn" title="macOS / Linux Nix Setup Gotchas">
+  - **Environment Paths**: If your shell doesn't recognize `nix` commands immediately after installation, you need to restart your terminal or run:
+    ```bash
+    . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+    ```
+  - **Experimental Features**: If you used the standard Nix installer and get `experimental Nix feature 'nix-command' is disabled`, enable them by adding the following to your `~/.config/nix/nix.conf` file:
+    ```text
+    experimental-features = nix-command flakes
+    ```
+  - **Disk Space**: Unpacking toolchains, compiler binaries, and caching build artifacts requires considerable storage. Ensure you have at least **15–20 GB of free space** on your drive before running `nix develop`.
+</Callout>
+
 ## Enter the dev shell
 
 ```bash
@@ -70,3 +82,19 @@ If you're making a small, localised change — typo fix, doc tweak, a
 unit test — the Cargo workflow is faster to get into. Nix shines for
 work touching the build graph, the LRE flow, or anything that needs
 exact toolchain reproducibility.
+
+## FAQ
+
+<Accordions type="multiple">
+  <Accordion title="What is Nix, in one sentence?" id="what-is-nix-in-one-sentence">
+    A package manager that builds every package in isolation and
+    addresses the result by a hash of all its inputs — which is why two
+    machines running `nix develop` on this repo get bit-identical
+    toolchains.
+  </Accordion>
+  <Accordion title="Is the dev shell required?" id="is-the-dev-shell-required">
+    Only for [LRE](/explanations/lre) work. For everything else it's the
+    most reproducible option, not the mandatory one — the Cargo and Bazel
+    workflows stand on their own.
+  </Accordion>
+</Accordions>

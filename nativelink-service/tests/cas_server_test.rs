@@ -13,10 +13,12 @@
 // limitations under the License.
 
 use core::pin::Pin;
+use core::sync::atomic::Ordering;
 use core::time::Duration;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use futures::StreamExt;
 use nativelink_config::cas_server::WithInstanceName;
 use nativelink_config::stores::{MemorySpec, StoreSpec};
@@ -27,22 +29,25 @@ use nativelink_proto::build::bazel::remote::execution::v2::content_addressable_s
 use nativelink_proto::build::bazel::remote::execution::v2::{
     BatchReadBlobsRequest, BatchReadBlobsResponse, BatchUpdateBlobsRequest,
     BatchUpdateBlobsResponse, Digest, Directory, DirectoryNode, FindMissingBlobsRequest,
-    GetTreeRequest, GetTreeResponse, NodeProperties, batch_read_blobs_response,
-    batch_update_blobs_request, batch_update_blobs_response, compressor, digest_function,
+    GetTreeRequest, GetTreeResponse, NodeProperties, SpliceBlobRequest, SplitBlobRequest,
+    SplitBlobResponse, batch_read_blobs_response, batch_update_blobs_request,
+    batch_update_blobs_response, chunking_function, compressor, digest_function,
 };
 use nativelink_proto::google::rpc::Status as GrpcStatus;
 use nativelink_service::cas_server::CasServer;
+use nativelink_service::wire_compression::RemoteCacheCompressionInstances;
 use nativelink_store::ac_utils::serialize_and_upload_message;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
-use nativelink_util::digest_hasher::DigestHasherFunc;
+use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::store_trait::{
-    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+    RemoveCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };
 use pretty_assertions::assert_eq;
+use prost::Message;
 use prost_types::Timestamp;
 use tonic::{Code, Request};
 
@@ -62,7 +67,7 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
             None,
         )
         .await?,
-    );
+    )?;
     Ok(store_manager)
 }
 
@@ -72,9 +77,27 @@ fn make_cas_server(store_manager: &StoreManager) -> Result<CasServer, Error> {
             instance_name: "foo_instance_name".to_string(),
             config: nativelink_config::cas_server::CasStoreConfig {
                 cas_store: "main_cas".to_string(),
+                experimental_chunking: None,
             },
         }],
         store_manager,
+        &RemoteCacheCompressionInstances::default(),
+    )
+}
+
+fn make_cas_server_with_zstd(store_manager: &StoreManager) -> Result<CasServer, Error> {
+    CasServer::new(
+        &[WithInstanceName {
+            instance_name: "foo_instance_name".to_string(),
+            config: nativelink_config::cas_server::CasStoreConfig {
+                cas_store: "main_cas".to_string(),
+                experimental_chunking: None,
+            },
+        }],
+        store_manager,
+        &RemoteCacheCompressionInstances::from_enabled_instance_names([
+            "foo_instance_name".to_string()
+        ]),
     )
 }
 
@@ -681,6 +704,10 @@ struct StallStore {
 
 #[async_trait]
 impl StoreDriver for StallStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         _digests: &[StoreKey<'_>],
@@ -725,10 +752,7 @@ impl StoreDriver for StallStore {
         self
     }
 
-    fn register_remove_callback(
-        self: Arc<Self>,
-        _callback: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, _callback: RemoveCallback) -> Result<(), Error> {
         Ok(())
     }
 }
@@ -737,15 +761,17 @@ default_health_status_indicator!(StallStore);
 
 fn make_cas_server_with_stall_store(delay: Duration) -> Result<CasServer, Error> {
     let store_manager = Arc::new(StoreManager::new());
-    store_manager.add_store("main_cas", Store::new(Arc::new(StallStore { delay })));
+    store_manager.add_store("main_cas", Store::new(Arc::new(StallStore { delay })))?;
     CasServer::new(
         &[WithInstanceName {
             instance_name: INSTANCE_NAME.to_string(),
             config: nativelink_config::cas_server::CasStoreConfig {
                 cas_store: "main_cas".to_string(),
+                experimental_chunking: None,
             },
         }],
         &store_manager,
+        &RemoteCacheCompressionInstances::default(),
     )
 }
 
@@ -756,7 +782,7 @@ async fn batch_update_blobs_per_blob_timeout_returns_deadline_exceeded()
 
     // Stall longer than `BATCH_PER_BLOB_TIMEOUT` (30 s) so the
     // per-blob timeout fires before the store ever resolves.
-    let cas_server = make_cas_server_with_stall_store(Duration::from_secs(120))?;
+    let cas_server = make_cas_server_with_stall_store(Duration::from_mins(2))?;
 
     let digest = Digest {
         hash: HASH1.to_string(),
@@ -795,7 +821,7 @@ async fn batch_update_blobs_per_blob_timeout_returns_deadline_exceeded()
 #[nativelink_test(start_paused = true)]
 async fn batch_read_blobs_per_blob_timeout_returns_deadline_exceeded()
 -> Result<(), Box<dyn core::error::Error>> {
-    let cas_server = make_cas_server_with_stall_store(Duration::from_secs(120))?;
+    let cas_server = make_cas_server_with_stall_store(Duration::from_mins(2))?;
 
     let digest = Digest {
         hash: HASH1.to_string(),
@@ -829,5 +855,893 @@ async fn batch_read_blobs_per_blob_timeout_returns_deadline_exceeded()
         "unexpected message: {}",
         status.message,
     );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn batch_update_blobs_zstd_compressed() -> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let cas_server = make_cas_server_with_zstd(&store_manager)?;
+
+    // Use repetitive data so zstd compresses well.
+    let raw_data: Vec<u8> = "hello world ".repeat(100).into_bytes();
+
+    // Compute the sha256 digest.
+    let mut hasher = DigestHasherFunc::Sha256.hasher();
+    DigestHasher::update(&mut hasher, &raw_data);
+    let digest_info = hasher.finalize_digest();
+    let digest = Digest::from(&digest_info);
+    let compressed_data = zstd::bulk::compress(&raw_data, 3)?;
+
+    let raw_response = cas_server
+        .batch_update_blobs(Request::new(BatchUpdateBlobsRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            requests: vec![batch_update_blobs_request::Request {
+                digest: Some(digest.clone()),
+                data: compressed_data.into(),
+                compressor: compressor::Value::Zstd.into(),
+            }],
+            digest_function: digest_function::Value::Sha256.into(),
+        }))
+        .await;
+
+    let response = raw_response.unwrap().into_inner();
+    assert_eq!(response.responses.len(), 1);
+    let entry = &response.responses[0];
+    assert_eq!(entry.status.as_ref().map(|s| s.code), Some(Code::Ok as i32));
+
+    // Verify we can read the data back uncompressed (store holds raw data).
+    let raw_response = cas_server
+        .batch_read_blobs(Request::new(BatchReadBlobsRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            digests: vec![digest.clone()],
+            acceptable_compressors: vec![compressor::Value::Identity.into()],
+            digest_function: digest_function::Value::Sha256.into(),
+        }))
+        .await;
+
+    let response = raw_response.unwrap().into_inner();
+    assert_eq!(response.responses.len(), 1);
+    let entry = &response.responses[0];
+    assert_eq!(entry.data.as_ref(), &raw_data);
+    assert_eq!(entry.compressor, compressor::Value::Identity as i32);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn batch_update_blobs_zstd_rejected_when_remote_cache_compression_disabled()
+-> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let cas_server = make_cas_server(&store_manager)?;
+
+    let raw_data = b"zstd disabled batch update";
+    let compressed_data = zstd::bulk::compress(raw_data, 3)?;
+    let digest = Digest {
+        hash: HASH1.to_string(),
+        size_bytes: raw_data.len().try_into().unwrap_or(i64::MAX),
+    };
+
+    let Err(status) = cas_server
+        .batch_update_blobs(Request::new(BatchUpdateBlobsRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            requests: vec![batch_update_blobs_request::Request {
+                digest: Some(digest),
+                data: compressed_data.into(),
+                compressor: compressor::Value::Zstd.into(),
+            }],
+            digest_function: digest_function::Value::Sha256.into(),
+        }))
+        .await
+    else {
+        panic!("zstd BatchUpdateBlobs should fail when compression is disabled");
+    };
+
+    assert_eq!(status.code(), Code::InvalidArgument);
+    assert!(
+        status
+            .message()
+            .contains("Remote cache compression is not supported"),
+        "unexpected error: {}",
+        status.message()
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn batch_read_blobs_zstd_compressed() -> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let cas_server = make_cas_server_with_zstd(&store_manager)?;
+
+    // Upload uncompressed data first.
+    let raw_data: Vec<u8> = "hello world ".repeat(100).into_bytes();
+    let raw_size = raw_data.len().try_into().unwrap_or(i64::MAX);
+
+    // Compute the sha256 digest.
+    let mut hasher = DigestHasherFunc::Sha256.hasher();
+    DigestHasher::update(&mut hasher, &raw_data);
+    let digest_info = hasher.finalize_digest();
+    let digest = Digest::from(&digest_info);
+
+    cas_server
+        .batch_update_blobs(Request::new(BatchUpdateBlobsRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            requests: vec![batch_update_blobs_request::Request {
+                digest: Some(digest.clone()),
+                data: raw_data.clone().into(),
+                compressor: compressor::Value::Identity.into(),
+            }],
+            digest_function: digest_function::Value::Sha256.into(),
+        }))
+        .await?;
+
+    // Request compressed data.
+    let raw_response = cas_server
+        .batch_read_blobs(Request::new(BatchReadBlobsRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            digests: vec![digest.clone()],
+            acceptable_compressors: vec![compressor::Value::Zstd.into()],
+            digest_function: digest_function::Value::Sha256.into(),
+        }))
+        .await;
+
+    let response = raw_response.unwrap().into_inner();
+    assert_eq!(response.responses.len(), 1);
+    let entry = &response.responses[0];
+    assert_eq!(entry.compressor, compressor::Value::Zstd as i32);
+
+    // Decompress and verify the data matches.
+    let decompressed = zstd::bulk::decompress(&entry.data, usize::try_from(raw_size)?)?;
+    assert_eq!(decompressed.as_slice(), raw_data.as_slice());
+    Ok(())
+}
+
+#[nativelink_test]
+async fn batch_read_blobs_zstd_falls_back_to_identity_when_not_smaller()
+-> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let cas_server = make_cas_server_with_zstd(&store_manager)?;
+    let store = store_manager.get_store("main_cas").unwrap();
+
+    let raw_data = Bytes::from_static(b"x");
+    let digest_info = DigestInfo::try_new(HASH1, raw_data.len())?;
+    store.update_oneshot(digest_info, raw_data.clone()).await?;
+
+    let digest = Digest {
+        hash: HASH1.to_string(),
+        size_bytes: raw_data.len().try_into().unwrap_or(i64::MAX),
+    };
+    let response = cas_server
+        .batch_read_blobs(Request::new(BatchReadBlobsRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            digests: vec![digest.clone()],
+            acceptable_compressors: vec![9999, compressor::Value::Zstd.into()],
+            digest_function: digest_function::Value::Sha256.into(),
+        }))
+        .await?
+        .into_inner();
+
+    assert_eq!(response.responses.len(), 1);
+    let entry = &response.responses[0];
+    assert_eq!(entry.digest.as_ref(), Some(&digest));
+    assert_eq!(entry.status, Some(GrpcStatus::default()));
+    assert_eq!(entry.compressor, compressor::Value::Identity as i32);
+    assert_eq!(entry.data, raw_data);
+
+    Ok(())
+}
+
+const CHUNK1_VALUE: &str = "hello ";
+const CHUNK2_VALUE: &str = "world";
+
+async fn make_chunking_store_manager() -> Result<Arc<StoreManager>, Error> {
+    let store_manager = make_store_manager().await?;
+    store_manager.add_store(
+        "chunk_index",
+        store_factory(
+            &StoreSpec::Memory(MemorySpec::default()),
+            &store_manager,
+            None,
+        )
+        .await?,
+    )?;
+    Ok(store_manager)
+}
+
+fn make_chunking_cas_server(store_manager: &StoreManager) -> Result<CasServer, Error> {
+    make_chunking_cas_server_with_avg(store_manager, 0)
+}
+
+fn make_chunking_cas_server_with_avg(
+    store_manager: &StoreManager,
+    avg_chunk_size_bytes: u64,
+) -> Result<CasServer, Error> {
+    CasServer::new(
+        &[WithInstanceName {
+            instance_name: INSTANCE_NAME.to_string(),
+            config: nativelink_config::cas_server::CasStoreConfig {
+                cas_store: "main_cas".to_string(),
+                experimental_chunking: Some(nativelink_config::cas_server::CasChunkingConfig {
+                    index_store: Some("chunk_index".to_string()),
+                    avg_chunk_size_bytes,
+                    max_chunk_count: 0,
+                }),
+            },
+        }],
+        store_manager,
+        &RemoteCacheCompressionInstances::default(),
+    )
+}
+
+/// Uploads the two test chunks to the store and returns their digests and
+/// the digest of their concatenation.
+async fn upload_test_chunks(store: &Store) -> Result<(Digest, Digest, Digest), Error> {
+    let chunk1_digest = Digest {
+        hash: HASH1.to_string(),
+        size_bytes: CHUNK1_VALUE.len().try_into().unwrap_or(i64::MAX),
+    };
+    let chunk2_digest = Digest {
+        hash: HASH2.to_string(),
+        size_bytes: CHUNK2_VALUE.len().try_into().unwrap_or(i64::MAX),
+    };
+    store
+        .update_oneshot(
+            DigestInfo::try_from(chunk1_digest.clone())?,
+            CHUNK1_VALUE.into(),
+        )
+        .await?;
+    store
+        .update_oneshot(
+            DigestInfo::try_from(chunk2_digest.clone())?,
+            CHUNK2_VALUE.into(),
+        )
+        .await?;
+    let mut hasher = DigestHasherFunc::Sha256.hasher();
+    hasher.update(CHUNK1_VALUE.as_bytes());
+    hasher.update(CHUNK2_VALUE.as_bytes());
+    let blob_digest: Digest = hasher.finalize_digest().into();
+    Ok((chunk1_digest, chunk2_digest, blob_digest))
+}
+
+#[nativelink_test]
+async fn splice_and_split_round_trip() -> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_chunking_store_manager().await?;
+    let cas_server = make_chunking_cas_server(&store_manager)?;
+    let store = store_manager.get_store("main_cas").unwrap();
+
+    let (chunk1_digest, chunk2_digest, blob_digest) = upload_test_chunks(&store).await?;
+
+    let splice_response = cas_server
+        .splice_blob(Request::new(SpliceBlobRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            blob_digest: Some(blob_digest.clone()),
+            chunk_digests: vec![chunk1_digest.clone(), chunk2_digest.clone()],
+            digest_function: digest_function::Value::Sha256.into(),
+            chunking_function: chunking_function::Value::FastCdc2020.into(),
+        }))
+        .await?
+        .into_inner();
+    assert_eq!(splice_response.blob_digest.as_ref(), Some(&blob_digest));
+
+    // The spliced blob must be materialized in the CAS so non-chunking
+    // clients can read it.
+    let blob_data = store
+        .get_part_unchunked(DigestInfo::try_from(blob_digest.clone())?, 0, None)
+        .await?;
+    assert_eq!(blob_data, format!("{CHUNK1_VALUE}{CHUNK2_VALUE}"));
+
+    let split_response = cas_server
+        .split_blob(Request::new(SplitBlobRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            blob_digest: Some(blob_digest),
+            digest_function: digest_function::Value::Sha256.into(),
+            chunking_function: chunking_function::Value::FastCdc2020.into(),
+        }))
+        .await?
+        .into_inner();
+    assert_eq!(
+        split_response.chunk_digests,
+        vec![chunk1_digest, chunk2_digest]
+    );
+    assert_eq!(
+        split_response.chunking_function,
+        i32::from(chunking_function::Value::FastCdc2020)
+    );
+
+    let metrics = cas_server.chunking_metrics();
+    assert_eq!(metrics.splice_requests_total.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        metrics.splice_bytes_total.load(Ordering::Relaxed),
+        (CHUNK1_VALUE.len() + CHUNK2_VALUE.len()) as u64
+    );
+    assert_eq!(metrics.split_requests_total.load(Ordering::Relaxed), 1);
+    assert_eq!(metrics.split_hits.load(Ordering::Relaxed), 1);
+    assert_eq!(metrics.split_misses.load(Ordering::Relaxed), 0);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn splice_blob_rejects_digest_mismatch() -> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_chunking_store_manager().await?;
+    let cas_server = make_chunking_cas_server(&store_manager)?;
+    let store = store_manager.get_store("main_cas").unwrap();
+
+    let (chunk1_digest, chunk2_digest, _blob_digest) = upload_test_chunks(&store).await?;
+    let total_size = chunk1_digest.size_bytes + chunk2_digest.size_bytes;
+    let wrong_blob_digest = Digest {
+        hash: HASH3.to_string(),
+        size_bytes: total_size,
+    };
+
+    let status = cas_server
+        .splice_blob(Request::new(SpliceBlobRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            blob_digest: Some(wrong_blob_digest.clone()),
+            chunk_digests: vec![chunk1_digest, chunk2_digest],
+            digest_function: digest_function::Value::Sha256.into(),
+            chunking_function: chunking_function::Value::FastCdc2020.into(),
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), Code::InvalidArgument);
+    assert!(
+        status
+            .message()
+            .contains("does not match the expected digest"),
+        "unexpected message: {}",
+        status.message()
+    );
+
+    // The blob must not have been committed to the CAS.
+    let blob_exists = store.has(DigestInfo::try_from(wrong_blob_digest)?).await?;
+    assert_eq!(blob_exists, None);
+    assert_eq!(
+        cas_server
+            .chunking_metrics()
+            .splice_verification_failures
+            .load(Ordering::Relaxed),
+        1
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn splice_blob_rejects_size_mismatch() -> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_chunking_store_manager().await?;
+    let cas_server = make_chunking_cas_server(&store_manager)?;
+    let store = store_manager.get_store("main_cas").unwrap();
+
+    let (chunk1_digest, chunk2_digest, blob_digest) = upload_test_chunks(&store).await?;
+    let wrong_blob_digest = Digest {
+        size_bytes: blob_digest.size_bytes + 1,
+        ..blob_digest
+    };
+
+    let status = cas_server
+        .splice_blob(Request::new(SpliceBlobRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            blob_digest: Some(wrong_blob_digest),
+            chunk_digests: vec![chunk1_digest, chunk2_digest],
+            digest_function: digest_function::Value::Sha256.into(),
+            chunking_function: chunking_function::Value::FastCdc2020.into(),
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), Code::InvalidArgument);
+    assert!(
+        status
+            .message()
+            .contains("does not match the expected blob size"),
+        "unexpected message: {}",
+        status.message()
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn splice_blob_missing_chunk_returns_not_found() -> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_chunking_store_manager().await?;
+    let cas_server = make_chunking_cas_server(&store_manager)?;
+    let store = store_manager.get_store("main_cas").unwrap();
+
+    // Only upload the first chunk.
+    let chunk1_digest = Digest {
+        hash: HASH1.to_string(),
+        size_bytes: CHUNK1_VALUE.len().try_into().unwrap_or(i64::MAX),
+    };
+    store
+        .update_oneshot(
+            DigestInfo::try_from(chunk1_digest.clone())?,
+            CHUNK1_VALUE.into(),
+        )
+        .await?;
+    let missing_chunk_digest = Digest {
+        hash: HASH2.to_string(),
+        size_bytes: CHUNK2_VALUE.len().try_into().unwrap_or(i64::MAX),
+    };
+    let mut hasher = DigestHasherFunc::Sha256.hasher();
+    hasher.update(CHUNK1_VALUE.as_bytes());
+    hasher.update(CHUNK2_VALUE.as_bytes());
+    let blob_digest: Digest = hasher.finalize_digest().into();
+
+    let status = cas_server
+        .splice_blob(Request::new(SpliceBlobRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            blob_digest: Some(blob_digest),
+            chunk_digests: vec![chunk1_digest, missing_chunk_digest],
+            digest_function: digest_function::Value::Sha256.into(),
+            chunking_function: chunking_function::Value::FastCdc2020.into(),
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), Code::NotFound);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn split_blob_absent_blob_returns_not_found() -> Result<(), Box<dyn core::error::Error>> {
+    const VALUE: &str = "1";
+
+    let store_manager = make_chunking_store_manager().await?;
+    let cas_server = make_chunking_cas_server(&store_manager)?;
+
+    // The blob was never uploaded.
+    let status = cas_server
+        .split_blob(Request::new(SplitBlobRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            blob_digest: Some(Digest {
+                hash: HASH1.to_string(),
+                size_bytes: VALUE.len().try_into().unwrap_or(i64::MAX),
+            }),
+            digest_function: digest_function::Value::Sha256.into(),
+            chunking_function: chunking_function::Value::FastCdc2020.into(),
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), Code::NotFound);
+    let metrics = cas_server.chunking_metrics();
+    assert_eq!(metrics.split_requests_total.load(Ordering::Relaxed), 1);
+    assert_eq!(metrics.split_hits.load(Ordering::Relaxed), 0);
+    assert_eq!(metrics.split_misses.load(Ordering::Relaxed), 1);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn split_and_splice_disabled_return_unimplemented() -> Result<(), Box<dyn core::error::Error>>
+{
+    const VALUE: &str = "1";
+
+    let store_manager = make_store_manager().await?;
+    let cas_server = make_cas_server(&store_manager)?;
+
+    let digest = Digest {
+        hash: HASH1.to_string(),
+        size_bytes: VALUE.len().try_into().unwrap_or(i64::MAX),
+    };
+    let split_status = cas_server
+        .split_blob(Request::new(SplitBlobRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            blob_digest: Some(digest.clone()),
+            digest_function: digest_function::Value::Sha256.into(),
+            chunking_function: chunking_function::Value::FastCdc2020.into(),
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(split_status.code(), Code::Unimplemented);
+
+    let splice_status = cas_server
+        .splice_blob(Request::new(SpliceBlobRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            blob_digest: Some(digest.clone()),
+            chunk_digests: vec![digest],
+            digest_function: digest_function::Value::Sha256.into(),
+            chunking_function: chunking_function::Value::FastCdc2020.into(),
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(splice_status.code(), Code::Unimplemented);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn split_blob_chunks_small_blob_on_demand() -> Result<(), Box<dyn core::error::Error>> {
+    const VALUE: &str = "1";
+
+    let store_manager = make_chunking_store_manager().await?;
+    let cas_server = make_chunking_cas_server(&store_manager)?;
+    let store = store_manager.get_store("main_cas").unwrap();
+
+    // Upload the blob whole (as a remote execution worker would) under its
+    // real digest, without ever calling SpliceBlob.
+    let mut hasher = DigestHasherFunc::Sha256.hasher();
+    hasher.update(VALUE.as_bytes());
+    let blob_digest: Digest = hasher.finalize_digest().into();
+    store
+        .update_oneshot(DigestInfo::try_from(blob_digest.clone())?, VALUE.into())
+        .await?;
+
+    let split_response = cas_server
+        .split_blob(Request::new(SplitBlobRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            blob_digest: Some(blob_digest.clone()),
+            digest_function: digest_function::Value::Sha256.into(),
+            chunking_function: chunking_function::Value::FastCdc2020.into(),
+        }))
+        .await?
+        .into_inner();
+    // A blob smaller than the minimum chunk size is a single chunk whose
+    // digest equals the blob digest.
+    assert_eq!(split_response.chunk_digests, vec![blob_digest]);
+    assert_eq!(
+        split_response.chunking_function,
+        i32::from(chunking_function::Value::FastCdc2020)
+    );
+    let metrics = cas_server.chunking_metrics();
+    assert_eq!(metrics.split_chunked_on_demand.load(Ordering::Relaxed), 1);
+    assert_eq!(metrics.split_hits.load(Ordering::Relaxed), 0);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn split_blob_chunks_large_blob_on_demand_and_reuses_layout()
+-> Result<(), Box<dyn core::error::Error>> {
+    // Use the smallest allowed average (1 KiB -> min 256, max 4096) so a
+    // small test blob still produces multiple chunks.
+    const AVG_CHUNK_SIZE: u64 = 1024;
+    const BLOB_SIZE: usize = 16 * 1024;
+
+    let store_manager = make_chunking_store_manager().await?;
+    let cas_server = make_chunking_cas_server_with_avg(&store_manager, AVG_CHUNK_SIZE)?;
+    let store = store_manager.get_store("main_cas").unwrap();
+
+    // Deterministic pseudo-random content so FastCDC finds content-defined
+    // boundaries.
+    let mut state = 0x9e37_79b9_u32;
+    let data: Vec<u8> = (0..BLOB_SIZE)
+        .map(|_| {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (state >> 24) as u8
+        })
+        .collect();
+    let blob_digest = Digest {
+        hash: HASH1.to_string(),
+        size_bytes: BLOB_SIZE.try_into().unwrap_or(i64::MAX),
+    };
+    store
+        .update_oneshot(
+            DigestInfo::try_from(blob_digest.clone())?,
+            Bytes::from(data.clone()),
+        )
+        .await?;
+
+    let split_response = cas_server
+        .split_blob(Request::new(SplitBlobRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            blob_digest: Some(blob_digest.clone()),
+            digest_function: digest_function::Value::Sha256.into(),
+            chunking_function: chunking_function::Value::FastCdc2020.into(),
+        }))
+        .await?
+        .into_inner();
+    assert!(
+        split_response.chunk_digests.len() > 1,
+        "expected multiple chunks, got {}",
+        split_response.chunk_digests.len()
+    );
+
+    // All chunks must be stored in the CAS and concatenate to the original
+    // blob in order.
+    let mut reassembled = Vec::with_capacity(BLOB_SIZE);
+    for chunk_digest in &split_response.chunk_digests {
+        let chunk_data = store
+            .get_part_unchunked(DigestInfo::try_from(chunk_digest.clone())?, 0, None)
+            .await?;
+        reassembled.extend_from_slice(&chunk_data);
+    }
+    assert_eq!(reassembled, data);
+
+    // A second split must be served from the stored layout.
+    let second_response = cas_server
+        .split_blob(Request::new(SplitBlobRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            blob_digest: Some(blob_digest),
+            digest_function: digest_function::Value::Sha256.into(),
+            chunking_function: chunking_function::Value::FastCdc2020.into(),
+        }))
+        .await?
+        .into_inner();
+    assert_eq!(second_response.chunk_digests, split_response.chunk_digests);
+    let metrics = cas_server.chunking_metrics();
+    assert_eq!(metrics.split_requests_total.load(Ordering::Relaxed), 2);
+    assert_eq!(metrics.split_chunked_on_demand.load(Ordering::Relaxed), 1);
+    assert_eq!(metrics.split_hits.load(Ordering::Relaxed), 1);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn split_blob_falls_back_when_layout_unusable() -> Result<(), Box<dyn core::error::Error>> {
+    const VALUE: &str = "1";
+
+    let store_manager = make_chunking_store_manager().await?;
+    let cas_server = make_chunking_cas_server(&store_manager)?;
+    let store = store_manager.get_store("main_cas").unwrap();
+    let index_store = store_manager.get_store("chunk_index").unwrap();
+
+    let mut hasher = DigestHasherFunc::Sha256.hasher();
+    hasher.update(VALUE.as_bytes());
+    let blob_digest: Digest = hasher.finalize_digest().into();
+    store
+        .update_oneshot(DigestInfo::try_from(blob_digest.clone())?, VALUE.into())
+        .await?;
+
+    // Register a layout whose only chunk is not present in the CAS,
+    // simulating a chunk that was evicted after the layout was stored.
+    let stale_layout = SplitBlobResponse {
+        chunk_digests: vec![Digest {
+            hash: HASH2.to_string(),
+            size_bytes: VALUE.len().try_into().unwrap_or(i64::MAX),
+        }],
+        chunking_function: chunking_function::Value::FastCdc2020.into(),
+    };
+    index_store
+        .update_oneshot(
+            DigestInfo::try_from(blob_digest.clone())?,
+            stale_layout.encode_to_vec().into(),
+        )
+        .await?;
+
+    // The unusable layout must be ignored and the blob re-chunked on demand.
+    let split_response = cas_server
+        .split_blob(Request::new(SplitBlobRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            blob_digest: Some(blob_digest.clone()),
+            digest_function: digest_function::Value::Sha256.into(),
+            chunking_function: chunking_function::Value::FastCdc2020.into(),
+        }))
+        .await?
+        .into_inner();
+    assert_eq!(split_response.chunk_digests, vec![blob_digest]);
+    let metrics = cas_server.chunking_metrics();
+    assert_eq!(metrics.split_hits.load(Ordering::Relaxed), 0);
+    assert_eq!(metrics.split_chunked_on_demand.load(Ordering::Relaxed), 1);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn chunking_rejects_index_store_same_as_cas_store() -> Result<(), Box<dyn core::error::Error>>
+{
+    let store_manager = make_store_manager().await?;
+    let error = CasServer::new(
+        &[WithInstanceName {
+            instance_name: INSTANCE_NAME.to_string(),
+            config: nativelink_config::cas_server::CasStoreConfig {
+                cas_store: "main_cas".to_string(),
+                experimental_chunking: Some(nativelink_config::cas_server::CasChunkingConfig {
+                    index_store: Some("main_cas".to_string()),
+                    avg_chunk_size_bytes: 0,
+                    max_chunk_count: 0,
+                }),
+            },
+        }],
+        &store_manager,
+        &RemoteCacheCompressionInstances::default(),
+    )
+    .expect_err("expected same-store index_store to be rejected");
+    assert!(
+        error
+            .to_string()
+            .contains("must not be the same store as 'cas_store'"),
+        "unexpected error: {error}"
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn chunking_on_grpc_store_forbids_index_store() -> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = Arc::new(StoreManager::new());
+    store_manager.add_store(
+        "grpc_cas",
+        store_factory(
+            &StoreSpec::Grpc(nativelink_config::stores::GrpcSpec {
+                instance_name: "backend".to_string(),
+                endpoints: vec![nativelink_config::stores::GrpcEndpoint {
+                    address: "http://localhost:1".to_string(),
+                    tls_config: None,
+                    concurrency_limit: None,
+                    connect_timeout_s: 0,
+                    tcp_keepalive_s: 0,
+                    http2_keepalive_interval_s: 0,
+                    http2_keepalive_timeout_s: 0,
+                }],
+                store_type: nativelink_config::stores::StoreType::Cas,
+                retry: nativelink_config::stores::Retry::default(),
+                max_concurrent_requests: 0,
+                connections_per_endpoint: 0,
+                rpc_timeout_s: 1,
+                use_legacy_resource_names: false,
+                headers: std::collections::HashMap::new(),
+                forward_headers: vec![],
+                experimental_read_batching: None,
+            }),
+            &store_manager,
+            None,
+        )
+        .await?,
+    )?;
+
+    let make_config = |index_store: Option<String>| {
+        vec![WithInstanceName {
+            instance_name: INSTANCE_NAME.to_string(),
+            config: nativelink_config::cas_server::CasStoreConfig {
+                cas_store: "grpc_cas".to_string(),
+                experimental_chunking: Some(nativelink_config::cas_server::CasChunkingConfig {
+                    index_store,
+                    avg_chunk_size_bytes: 0,
+                    max_chunk_count: 0,
+                }),
+            },
+        }]
+    };
+
+    // A local index store is meaningless when the RPCs are forwarded.
+    let error = CasServer::new(
+        &make_config(Some("grpc_cas".to_string())),
+        &store_manager,
+        &RemoteCacheCompressionInstances::default(),
+    )
+    .expect_err("expected index_store on grpc store to be rejected");
+    assert!(
+        error.to_string().contains("must not be set"),
+        "unexpected error: {error}"
+    );
+
+    // Without an `index_store` the configuration is valid: SplitBlob and
+    // SpliceBlob are forwarded to the backend.
+    CasServer::new(
+        &make_config(None),
+        &store_manager,
+        &RemoteCacheCompressionInstances::default(),
+    )?;
+    Ok(())
+}
+
+#[nativelink_test]
+async fn max_chunk_count_limits_split_and_splice() -> Result<(), Box<dyn core::error::Error>> {
+    // avg 1024 (min allowed) with `max_chunk_count` 2: the 16 KiB test blob
+    // chunks to more than 2 pieces, so on-demand splitting must refuse.
+    const AVG_CHUNK_SIZE: u64 = 1024;
+    const BLOB_SIZE: usize = 16 * 1024;
+
+    let store_manager = make_chunking_store_manager().await?;
+    let cas_server = CasServer::new(
+        &[WithInstanceName {
+            instance_name: INSTANCE_NAME.to_string(),
+            config: nativelink_config::cas_server::CasStoreConfig {
+                cas_store: "main_cas".to_string(),
+                experimental_chunking: Some(nativelink_config::cas_server::CasChunkingConfig {
+                    index_store: Some("chunk_index".to_string()),
+                    avg_chunk_size_bytes: AVG_CHUNK_SIZE,
+                    max_chunk_count: 2,
+                }),
+            },
+        }],
+        &store_manager,
+        &RemoteCacheCompressionInstances::default(),
+    )?;
+    let store = store_manager.get_store("main_cas").unwrap();
+
+    let mut state = 0x9e37_79b9_u32;
+    let data: Vec<u8> = (0..BLOB_SIZE)
+        .map(|_| {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (state >> 24) as u8
+        })
+        .collect();
+    let blob_digest = Digest {
+        hash: HASH1.to_string(),
+        size_bytes: BLOB_SIZE.try_into().unwrap_or(i64::MAX),
+    };
+    store
+        .update_oneshot(
+            DigestInfo::try_from(blob_digest.clone())?,
+            Bytes::from(data),
+        )
+        .await?;
+
+    let status = cas_server
+        .split_blob(Request::new(SplitBlobRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            blob_digest: Some(blob_digest.clone()),
+            digest_function: digest_function::Value::Sha256.into(),
+            chunking_function: chunking_function::Value::FastCdc2020.into(),
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), Code::NotFound);
+    assert!(
+        status.message().contains("max_chunk_count"),
+        "unexpected message: {}",
+        status.message()
+    );
+
+    // Splices above the cap are rejected outright.
+    let chunk_digest = Digest {
+        hash: HASH2.to_string(),
+        size_bytes: 1,
+    };
+    let status = cas_server
+        .splice_blob(Request::new(SpliceBlobRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            blob_digest: Some(blob_digest),
+            chunk_digests: vec![chunk_digest.clone(), chunk_digest.clone(), chunk_digest],
+            digest_function: digest_function::Value::Sha256.into(),
+            chunking_function: chunking_function::Value::FastCdc2020.into(),
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), Code::InvalidArgument);
+    assert!(
+        status.message().contains("expected at most 2"),
+        "unexpected message: {}",
+        status.message()
+    );
+    Ok(())
+}
+
+// Bazel 9.1.1 with --digest_function=blake3 leaves `digest_function` unset in
+// SplitBlob/SpliceBlob requests, which is length-ambiguous (SHA256 and
+// BLAKE3 are both 32 bytes). The server must infer the function instead of
+// assuming the default.
+#[nativelink_test]
+async fn chunking_infers_blake3_when_digest_function_unset()
+-> Result<(), Box<dyn core::error::Error>> {
+    const VALUE: &str = "blake3 blob content";
+
+    let store_manager = make_chunking_store_manager().await?;
+    let cas_server = make_chunking_cas_server(&store_manager)?;
+    let store = store_manager.get_store("main_cas").unwrap();
+
+    let mut hasher = DigestHasherFunc::Blake3.hasher();
+    hasher.update(VALUE.as_bytes());
+    let blob_digest: Digest = hasher.finalize_digest().into();
+
+    // Splice: the single chunk is the blob itself, uploaded under its
+    // BLAKE3 digest, with `digest_function` left unset.
+    store
+        .update_oneshot(DigestInfo::try_from(blob_digest.clone())?, VALUE.into())
+        .await?;
+    let splice_response = cas_server
+        .splice_blob(Request::new(SpliceBlobRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            blob_digest: Some(blob_digest.clone()),
+            chunk_digests: vec![blob_digest.clone()],
+            digest_function: 0,
+            chunking_function: chunking_function::Value::FastCdc2020.into(),
+        }))
+        .await?
+        .into_inner();
+    assert_eq!(splice_response.blob_digest.as_ref(), Some(&blob_digest));
+
+    // On-demand split of a fresh blob uploaded whole: the returned chunk
+    // digests must be BLAKE3 (here a single chunk equal to the blob).
+    let mut hasher = DigestHasherFunc::Blake3.hasher();
+    hasher.update(b"other blake3 content");
+    let other_digest: Digest = hasher.finalize_digest().into();
+    store
+        .update_oneshot(
+            DigestInfo::try_from(other_digest.clone())?,
+            Bytes::from_static(b"other blake3 content"),
+        )
+        .await?;
+    let split_response = cas_server
+        .split_blob(Request::new(SplitBlobRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            blob_digest: Some(other_digest.clone()),
+            digest_function: 0,
+            chunking_function: chunking_function::Value::FastCdc2020.into(),
+        }))
+        .await?
+        .into_inner();
+    assert_eq!(split_response.chunk_digests, vec![other_digest]);
     Ok(())
 }

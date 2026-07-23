@@ -47,6 +47,10 @@ use nativelink_util::fs;
 use nativelink_util::retry::{Retrier, RetryResult};
 use tokio::time::sleep;
 
+pub(crate) fn install_default_rustls_crypto_provider() {
+    drop(rustls::crypto::ring::default_provider().install_default());
+}
+
 #[derive(Clone)]
 pub struct TlsClient {
     client: LegacyClient<HttpsConnector<LegacyHttpConnector>, SdkBody>,
@@ -56,6 +60,8 @@ pub struct TlsClient {
 impl TlsClient {
     #[must_use]
     pub fn new(common: &CommonObjectSpec) -> Self {
+        install_default_rustls_crypto_provider();
+
         let connector_with_roots = HttpsConnectorBuilder::new().with_platform_verifier();
 
         let connector_with_schemes = if common.insecure_allow_http {
@@ -77,6 +83,8 @@ impl TlsClient {
         common: &CommonObjectSpec,
         connector: HttpsConnector<LegacyHttpConnector>,
     ) -> Self {
+        install_default_rustls_crypto_provider();
+
         let client = LegacyClient::builder(TokioExecutor::new()).build(connector);
 
         Self {

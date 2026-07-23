@@ -1,5 +1,6 @@
 bazel-*
 target/
+nativelink-test/fuzz/target/
 .vscode/
 .idea/
 .zed
@@ -26,3 +27,4 @@ user.bazelrc
 buck-out/
 nativelink_config.schema.json
 .gstack/
+.worktrees/

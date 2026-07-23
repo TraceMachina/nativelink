@@ -1,0 +1,109 @@
+---
+title: Buck2
+description: Configure Buck2 to use NativeLink for remote cache and execution.
+---
+
+Buck2 has a native Remote Execution API client. NativeLink can serve the
+CAS, Action Cache, capabilities, and execution services that Buck2 expects.
+
+The repo includes a runnable Buck2 integration test at
+[`integration_tests/buck2/`](https://github.com/TraceMachina/nativelink/tree/main/integration_tests/buck2).
+It starts NativeLink with a combined scheduler and local worker, runs
+`buck2 build //...`, and checks for `BUILD SUCCEEDED`.
+
+## Start NativeLink
+
+Use a config that exposes these services on `localhost:50051`:
+
+- CAS
+- Action Cache
+- execution
+- capabilities
+- ByteStream
+
+The integration test uses
+[`integration_tests/buck2/buck2_cas.json5`](https://github.com/TraceMachina/nativelink/tree/main/integration_tests/buck2/buck2_cas.json5)
+and instance name `main`.
+
+## Configure Buck2
+
+In your Buck2 project, add `.buckconfig`:
+
+```ini
+[cells]
+root = .
+
+[buck2_re_client]
+engine_address = localhost:50051
+action_cache_address = localhost:50051
+cas_address = localhost:50051
+tls = false
+instance_name = main
+
+[build]
+execution_platforms = root//platforms:platforms
+```
+
+The checked-in integration test uses the same settings in
+[`integration_tests/buck2/.buckconfig`](https://github.com/TraceMachina/nativelink/tree/main/integration_tests/buck2/.buckconfig).
+
+## Register an execution platform
+
+Buck2 needs an execution platform that allows remote actions. The
+integration test registers one with `remote_enabled = true` and
+`local_enabled = true`:
+
+```python
+platform = ExecutionPlatformInfo(
+    label = ctx.label.raw_target(),
+    configuration = configuration,
+    executor_config = CommandExecutorConfig(
+        local_enabled = True,
+        remote_enabled = True,
+        use_limited_hybrid = True,
+        remote_execution_properties = {},
+        remote_execution_use_case = "buck2-default",
+        remote_output_paths = "output_paths",
+    ),
+)
+```
+
+See
+[`integration_tests/buck2/platforms/defs.bzl`](https://github.com/TraceMachina/nativelink/tree/main/integration_tests/buck2/platforms/defs.bzl)
+for the complete rule.
+
+## Run a build
+
+```bash
+buck2 build //...
+```
+
+The integration test uses a small staged build graph that mixes local-only
+and remote-capable actions, then verifies the output with `diff`. That shape
+is useful when validating a new cluster because it proves both upload and
+download paths are working.
+
+## Troubleshooting
+
+- **Buck2 cannot connect.** Confirm NativeLink is listening on `50051` and
+  Buck2 is not expecting TLS.
+- **Everything runs locally.** Check that your selected execution platform
+  sets `remote_enabled = True`.
+- **Instance-name errors.** Make sure Buck2's `instance_name` matches the
+  NativeLink config. The integration test uses `main`.
+
+## FAQ
+
+<Accordions type="multiple">
+  <Accordion title="Why do all three addresses point at the same listener?" id="why-do-all-three-addresses-point-at-the-same-listener">
+    `engine_address`, `action_cache_address`, and `cas_address` are
+    separate settings because Buck2 lets you split those services across
+    hosts. NativeLink serves them all from one listener, so all three
+    point at the same `host:port`.
+  </Accordion>
+  <Accordion title="Does NativeLink support Buck2 remote execution, or only caching?" id="does-nativelink-support-buck2-remote-execution-or-only-caching">
+    Both. Execution needs an execution platform registered with
+    `remote_enabled = True` (above) plus a NativeLink scheduler and
+    worker — the integration test config runs one of each.
+  </Accordion>
+</Accordions>

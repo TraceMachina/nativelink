@@ -192,7 +192,7 @@ impl SimpleScheduler {
         }
     }
 
-    fn publish_scheduler_start_execute(
+    async fn publish_scheduler_start_execute(
         maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
         origin_metadata: &OriginMetadata,
         event_id: String,
@@ -211,7 +211,10 @@ impl SimpleScheduler {
             event: Some(event),
         };
 
-        if let Err(err) = origin_event_tx.try_send(origin_event) {
+        // Awaited send (not try_send): backpressure rather than drop, so the
+        // start-execute event that later resource-usage events reference as
+        // their parent isn't silently lost when the queue is full.
+        if let Err(err) = origin_event_tx.send(origin_event).await {
             warn!(
                 ?err,
                 "Failed to publish scheduler start execute origin event"
@@ -367,7 +370,8 @@ impl SimpleScheduler {
                         &event_origin_metadata,
                         event_id,
                         event,
-                    );
+                    )
+                    .await;
                 }
 
                 Ok(())
@@ -528,6 +532,12 @@ impl SimpleScheduler {
 
         let worker_scheduler_clone = worker_scheduler.clone();
 
+        let fallback_match_interval = match spec.fallback_match_interval_s {
+            // Zero or any negative value means disabled.
+            ..=0 => None,
+            secs => Some(Duration::from_secs(secs.unsigned_abs())),
+        };
+
         let action_scheduler = Arc::new_cyclic(move |weak_self| -> Self {
             let weak_inner = weak_self.clone();
             let task_worker_matching_spawn =
@@ -542,16 +552,28 @@ impl SimpleScheduler {
                         tokio::pin!(worker_change_fut);
                         // Wait for either of these futures to be ready.
                         let state_changed = future::select(task_change_fut, worker_change_fut);
-                        if last_match_successful {
-                            let _ = state_changed.await;
+                        let max_wait = if last_match_successful {
+                            // Even on success, periodically re-run the match as a
+                            // fallback for missed notifications and eventually
+                            // consistent backends (e.g. a re-queued operation that
+                            // was not yet visible to the search triggered by its
+                            // own notification). Without this, such an operation
+                            // can stay queued until an unrelated event triggers
+                            // another matching pass.
+                            fallback_match_interval
                         } else {
                             // If the last match failed, then run again after a short sleep.
                             // This resolves issues where we tried to re-schedule a job to
                             // a disconnected worker.  The sleep ensures we don't enter a
                             // hard loop if there's something wrong inside do_try_match.
-                            let sleep_fut = tokio::time::sleep(Duration::from_millis(100));
+                            Some(Duration::from_millis(100))
+                        };
+                        if let Some(max_wait) = max_wait {
+                            let sleep_fut = tokio::time::sleep(max_wait);
                             tokio::pin!(sleep_fut);
                             let _ = future::select(state_changed, sleep_fut).await;
+                        } else {
+                            let _ = state_changed.await;
                         }
 
                         let result = match weak_inner.upgrade() {

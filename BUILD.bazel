@@ -133,3 +133,12 @@ sh_test(
     timeout = "short",
     srcs = [":dummy_test_sh"],
 )
+
+# Large deterministic output used by integration_tests/chunking_cache_test.sh
+# to exercise --experimental_remote_cache_chunking (must exceed the chunking
+# threshold of 4x the average chunk size).
+genrule(
+    name = "chunking_test_artifact",
+    outs = ["chunking_test_artifact.txt"],
+    cmd = "seq 1 1000000 > \"$@\"",
+)

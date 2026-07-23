@@ -2,7 +2,9 @@
   "pages": [
     "intro",
     "basic",
-    "production"
+    "production",
+    "chunking",
+    "compression"
   ],
   "title": "Configuring NativeLink"
 }

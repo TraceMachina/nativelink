@@ -401,10 +401,7 @@ impl Store {
     }
 
     #[inline]
-    pub fn register_remove_callback(
-        &self,
-        callback: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error> {
+    pub fn register_remove_callback(&self, callback: RemoveCallback) -> Result<(), Error> {
         self.inner.clone().register_remove_callback(callback)
     }
 }
@@ -617,10 +614,16 @@ pub trait StoreLike: Send + Sync + Sized + Unpin + 'static {
     }
 }
 
+pub type RemoveCallback = Arc<dyn RemoveItemCallback>;
+
 #[async_trait]
 pub trait StoreDriver:
     Sync + Send + Unpin + MetricsComponent + HealthStatusIndicator + 'static
 {
+    // Do "all the stores are setup" init e.g. if we need access to the store manager
+    // for ref stores
+    async fn post_init(self: Arc<Self>) -> Result<(), Error>;
+
     /// See: [`StoreLike::has`] for details.
     #[inline]
     async fn has(self: Pin<&Self>, key: StoreKey<'_>) -> Result<Option<u64>, Error> {
@@ -861,10 +864,7 @@ pub trait StoreDriver:
     // Register health checks used to monitor the store.
     fn register_health(self: Arc<Self>, _registry: &mut HealthRegistryBuilder) {}
 
-    fn register_remove_callback(
-        self: Arc<Self>,
-        callback: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error>;
+    fn register_remove_callback(self: Arc<Self>, callback: RemoveCallback) -> Result<(), Error>;
 }
 
 // Callback to be called when a store deletes an item. This is used so

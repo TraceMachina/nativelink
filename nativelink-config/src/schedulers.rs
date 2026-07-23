@@ -83,6 +83,11 @@ const fn default_worker_match_logging_interval_s() -> i64 {
     10
 }
 
+// defaults to every 5s
+const fn default_fallback_match_interval_s() -> i64 {
+    5
+}
+
 #[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
@@ -100,7 +105,7 @@ pub struct SimpleSpec {
     /// { "cpu_count": "8", "cpu_arch": "arm" }
     /// ```
     /// Will result in the scheduler filtering out any workers that do not have
-    /// `"cpu_arch" = "arm"` and filter out any workers that have less than 8 cpu
+    /// `"cpu_arch" = "arm"` and filter out any workers that have less than 8 CPU
     /// cores available.
     ///
     /// The property names here must match the property keys provided by the
@@ -108,26 +113,26 @@ pub struct SimpleSpec {
     /// publish their capabilities to the scheduler when they join the worker
     /// pool. If the worker fails to notify the scheduler of its (for example)
     /// `"cpu_arch"`, the scheduler will never send any jobs to it, if all jobs
-    /// have the `"cpu_arch"` label. There is no special treatment of any platform
+    /// have the `"cpu_arch"` label. We have no special treatment of any platform
     /// property labels other and entirely driven by worker configs and this
     /// config.
     pub supported_platform_properties: Option<HashMap<String, PropertyType>>,
 
     /// The amount of time to retain completed actions for in case
     /// a `WaitExecution` is called after the action has completed.
-    /// Default: 60 (seconds)
+    /// Default: 60 seconds
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub retain_completed_for_s: u32,
 
     /// Mark operations as completed with error if no client has updated them
     /// within this duration.
-    /// Default: 60 (seconds)
+    /// Default: 60 seconds
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub client_action_timeout_s: u64,
 
     /// Remove workers from pool once the worker has not responded in this
     /// amount of time in seconds.
-    /// Default: 5 (seconds)
+    /// Default: 5 seconds
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub worker_timeout_s: u64,
 
@@ -167,6 +172,20 @@ pub struct SimpleSpec {
         deserialize_with = "convert_duration_with_shellexpand_and_negative"
     )]
     pub worker_match_logging_interval_s: i64,
+
+    /// Every N seconds, run a worker matching pass even if no task or worker
+    /// change notification arrived. This is a safety net for missed
+    /// notifications and for scheduler backends with eventually consistent
+    /// searches (for example Redis), where an operation that was re-queued
+    /// may not be visible to the search triggered by its own notification.
+    /// Without this, such an operation can stay queued until an unrelated
+    /// event triggers another matching pass.
+    /// Defaults to 5s. Zero or any negative value disables it.
+    #[serde(
+        default = "default_fallback_match_interval_s",
+        deserialize_with = "convert_duration_with_shellexpand_and_negative"
+    )]
+    pub fallback_match_interval_s: i64,
 }
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -188,9 +207,9 @@ pub struct ExperimentalRedisSchedulerBackend {
     pub redis_store: StoreRefName,
 }
 
-/// A scheduler that simply forwards requests to an upstream scheduler.  This
+/// A scheduler that forwards requests to an upstream scheduler. This
 /// is useful to use when doing some kind of local action cache or CAS away from
-/// the main cluster of workers.  In general, it's more efficient to point the
+/// the main cluster of workers. In general, it's more efficient to point the
 /// build at the main scheduler directly though.
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
@@ -203,14 +222,16 @@ pub struct GrpcSpec {
     #[serde(default)]
     pub retry: Retry,
 
-    /// Limit the number of simultaneous upstream requests to this many.  A
-    /// value of zero is treated as unlimited.  If the limit is reached the
+    /// Limit the number of simultaneous upstream requests to this many. A
+    /// value of zero is treated as unlimited. If the limit is reached the
     /// request is queued.
+    /// Default: unlimited
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_concurrent_requests: usize,
 
     /// The number of connections to make to each specified endpoint to balance
-    /// the load over multiple TCP connections.  Default 1.
+    /// the load over multiple TCP connections.
+    /// Default: 1.
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub connections_per_endpoint: usize,
 }
@@ -244,7 +265,7 @@ pub struct PlatformPropertyAddition {
 pub struct PlatformPropertyReplacement {
     /// The name of the property to replace.
     pub name: String,
-    /// The the value to match against, if unset then any instance matches.
+    /// The value to match against, if unset then any instance matches.
     #[serde(default)]
     pub value: Option<String>,
     /// The new name of the property.
@@ -271,9 +292,9 @@ pub enum PropertyModification {
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct PropertyModifierSpec {
     /// A list of modifications to perform to incoming actions for the nested
-    /// scheduler.  These are performed in order and blindly, so removing a
+    /// scheduler. These are performed in order and blindly, so removing a
     /// property that doesn't exist is fine and overwriting an existing property
-    /// is also fine.  If adding properties that do not exist in the nested
+    /// is also fine. If adding properties that do not exist in the nested
     /// scheduler is not supported and will likely cause unexpected behaviour.
     pub modifications: Vec<PropertyModification>,
 
@@ -314,7 +335,7 @@ pub struct HistoricalResourceSpec {
     pub hints_file: String,
 
     /// Reload interval for `hints_file`. Set to 0 to load once.
-    /// Default: 30 (seconds)
+    /// Default: 30 seconds
     #[serde(
         default = "default_historical_resource_refresh_interval_s",
         deserialize_with = "convert_duration_with_shellexpand"

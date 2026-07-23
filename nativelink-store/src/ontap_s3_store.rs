@@ -47,7 +47,7 @@ use nativelink_util::buf_channel::{
 use nativelink_util::health_utils::{HealthStatus, HealthStatusIndicator};
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::retry::{Retrier, RetryResult};
-use nativelink_util::store_trait::{RemoveItemCallback, StoreDriver, StoreKey, UploadSizeInfo};
+use nativelink_util::store_trait::{RemoveCallback, StoreDriver, StoreKey, UploadSizeInfo};
 use parking_lot::Mutex;
 use rustls::{ClientConfig, RootCertStore};
 use rustls_pki_types::CertificateDer;
@@ -57,7 +57,7 @@ use tokio::time::sleep;
 use tracing::{Level, event, warn};
 
 use crate::cas_utils::is_zero_digest;
-use crate::common_s3_utils::TlsClient;
+use crate::common_s3_utils::{TlsClient, install_default_rustls_crypto_provider};
 
 // S3 parts cannot be smaller than this number
 const MIN_MULTIPART_SIZE: u64 = 5 * 1024 * 1024; // 5MB
@@ -73,8 +73,6 @@ const DEFAULT_MAX_RETRY_BUFFER_PER_REQUEST: usize = 20 * 1024 * 1024; // 20MB
 
 // Default limit for concurrent part uploads per multipart upload
 const DEFAULT_MULTIPART_MAX_CONCURRENT_UPLOADS: usize = 10;
-
-type RemoveCallback = Arc<dyn RemoveItemCallback>;
 
 #[derive(Debug, MetricsComponent)]
 pub struct OntapS3Store<NowFn> {
@@ -129,6 +127,8 @@ where
     NowFn: Fn() -> I + Send + Sync + Unpin + 'static,
 {
     pub async fn new(spec: &ExperimentalOntapS3Spec, now_fn: NowFn) -> Result<Arc<Self>, Error> {
+        install_default_rustls_crypto_provider();
+
         // Load custom CA config
         let ca_config = if let Some(cert_path) = &spec.root_certificates {
             load_custom_certs(cert_path)?
@@ -296,6 +296,10 @@ where
     I: InstantWrapper,
     NowFn: Fn() -> I + Send + Sync + Unpin + 'static,
 {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],
@@ -765,10 +769,7 @@ where
         self
     }
 
-    fn register_remove_callback(
-        self: Arc<Self>,
-        callback: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, callback: RemoveCallback) -> Result<(), Error> {
         self.remove_callbacks.lock().push(callback);
         Ok(())
     }

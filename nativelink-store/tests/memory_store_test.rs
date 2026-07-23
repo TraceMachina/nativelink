@@ -12,8 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::future::Future;
 use core::ops::RangeBounds;
 use core::pin::Pin;
+use core::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use bytes::{BufMut, Bytes, BytesMut};
 use memory_stats::memory_stats;
@@ -24,7 +27,9 @@ use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::spawn;
-use nativelink_util::store_trait::{StoreKey, StoreLike};
+use nativelink_util::store_trait::{
+    RemoveItemCallback, Store, StoreKey, StoreLike, UploadSizeInfo,
+};
 use pretty_assertions::assert_eq;
 use sha2::{Digest, Sha256};
 
@@ -78,6 +83,143 @@ async fn insert_one_item_then_update() -> Result<(), Error> {
         VALID_HASH1,
         VALUE2,
         store_data
+    );
+    Ok(())
+}
+
+// Streams `data` into the store via the streaming `update` path. Tests must use
+// this (not `update_oneshot`, which takes the bytes already in memory and hits
+// MemoryStore's optimized direct-insert path, bypassing the oversized-skip logic
+// these tests exercise).
+async fn update_streamed(
+    store: &Store,
+    digest: DigestInfo,
+    data: &'static [u8],
+    size_info: UploadSizeInfo,
+) -> Result<(), Error> {
+    let (mut tx, rx) = make_buf_channel_pair();
+    let send_fut = async move {
+        tx.send(Bytes::from_static(data)).await?;
+        tx.send_eof()
+    };
+    let pinned_store = Pin::new(store);
+    let (res1, res2) = futures::join!(send_fut, pinned_store.update(digest, rx, size_info));
+    // `merge` returns its argument's Ok value (the byte count); discard it.
+    res1.merge(res2).map(|_| ())
+}
+
+fn store_with_max_bytes(max_bytes: usize) -> Store {
+    Store::new(MemoryStore::new(&MemorySpec {
+        eviction_policy: Some(nativelink_config::stores::EvictionPolicy {
+            max_bytes,
+            ..Default::default()
+        }),
+    }))
+}
+
+// A write whose exact size is >= `max_bytes` is skipped (drained, never buffered)
+// rather than materialized-then-evicted, and — crucially — it leaves the rest of
+// the cache untouched (the old buffer-then-evict path would have evicted the
+// within-budget entry trying to make room for an unstorable blob).
+#[nativelink_test]
+async fn skips_writes_larger_than_max_bytes() -> Result<(), Error> {
+    const SMALL: &[u8] = b"ab"; // 2 bytes, within the 4-byte budget
+    const BIG: &[u8] = b"0123456789"; // 10 bytes, over budget
+
+    let store = store_with_max_bytes(4);
+    let small_digest = DigestInfo::try_new(VALID_HASH1, SMALL.len() as u64)?;
+    let big_digest = DigestInfo::try_new(VALID_HASH2, BIG.len() as u64)?;
+
+    // Within budget → stored.
+    update_streamed(
+        &store,
+        small_digest,
+        SMALL,
+        UploadSizeInfo::ExactSize(SMALL.len() as u64),
+    )
+    .await?;
+    assert_eq!(store.has(small_digest).await, Ok(Some(SMALL.len() as u64)));
+
+    // Over budget → skipped, not stored.
+    update_streamed(
+        &store,
+        big_digest,
+        BIG,
+        UploadSizeInfo::ExactSize(BIG.len() as u64),
+    )
+    .await?;
+    assert_eq!(
+        store.has(big_digest).await,
+        Ok(None),
+        "oversized write should be skipped, not stored",
+    );
+
+    // The skip must leave the within-budget entry intact.
+    assert_eq!(
+        store.has(small_digest).await,
+        Ok(Some(SMALL.len() as u64)),
+        "within-budget entry must survive an oversized write",
+    );
+
+    Ok(())
+}
+
+#[derive(Debug)]
+struct CountingRemoveCallback(Arc<AtomicUsize>);
+
+impl RemoveItemCallback for CountingRemoveCallback {
+    fn callback<'a>(
+        &'a self,
+        _store_key: StoreKey<'a>,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        let count = self.0.clone();
+        Box::pin(async move {
+            count.fetch_add(1, Ordering::SeqCst);
+        })
+    }
+}
+
+// Skipping an oversized write must still fire the remove callbacks, so a wrapping
+// store that tracks existence (e.g. `ExistenceCacheStore`) doesn't keep a stale
+// entry for a blob that was never stored.
+#[nativelink_test]
+async fn oversized_skip_fires_remove_callbacks() -> Result<(), Error> {
+    const BIG: &[u8] = b"0123456789"; // 10 bytes, over the 4-byte budget
+
+    let store = store_with_max_bytes(4);
+    let count = Arc::new(AtomicUsize::new(0));
+    store.register_remove_callback(Arc::new(CountingRemoveCallback(count.clone())))?;
+
+    update_streamed(
+        &store,
+        DigestInfo::try_new(VALID_HASH1, BIG.len() as u64)?,
+        BIG,
+        UploadSizeInfo::ExactSize(BIG.len() as u64),
+    )
+    .await?;
+
+    assert_eq!(
+        count.load(Ordering::SeqCst),
+        1,
+        "skipping an oversized write must fire the remove callback",
+    );
+    Ok(())
+}
+
+// `MaxSize` is an upper bound, not the real size, so it must NOT trigger the skip:
+// a `MaxSize` over `max_bytes` whose actual content fits is still cached.
+#[nativelink_test]
+async fn max_size_over_budget_with_small_actual_is_stored() -> Result<(), Error> {
+    const DATA: &[u8] = b"ab"; // 2 bytes, well within the 4-byte budget
+
+    let store = store_with_max_bytes(4);
+    let digest = DigestInfo::try_new(VALID_HASH1, DATA.len() as u64)?;
+    update_streamed(&store, digest, DATA, UploadSizeInfo::MaxSize(100)).await?;
+
+    assert_eq!(
+        store.has(digest).await,
+        Ok(Some(DATA.len() as u64)),
+        "MaxSize over budget but small actual content must still be cached",
     );
     Ok(())
 }

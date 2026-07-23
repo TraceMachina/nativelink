@@ -34,7 +34,7 @@ A content hash plus a size. Used everywhere instead of file paths.
 
 A build whose outputs depend only on its declared inputs. Same
 inputs → same outputs, on any machine, any time. See
-[How do I make my Bazel setup hermetic?](/faq/hermeticity).
+[the hermeticity FAQ](/explanations/lre#faq).
 
 ## Instance name
 
@@ -67,15 +67,19 @@ in-flight actions.
 ## Worker
 
 The process that runs an action. Fetches inputs from CAS, runs the
-command in a sandbox, uploads outputs to CAS.
+command, uploads outputs to CAS.
 
-## Sandbox
+## Isolation
 
-The isolated environment a worker runs an action in. On Linux,
-typically `bwrap` or `landlock`; on macOS, `sandbox-exec`. The
-sandbox makes hermeticity enforceable.
+Keeping an action from seeing state outside its declared inputs.
+On Linux, workers can isolate actions with kernel namespaces via
+the `use_namespaces` and `use_mount_namespace` worker options,
+which also reap zombie processes and improve hermeticity.
+NativeLink doesn't currently integrate external sandboxing tools
+like `bwrap`, `landlock`, or `sandbox-exec`.
 
 ## Toolchain
 
 The bundle of binaries an action needs to run — compiler, linker,
-standard library, etc. See [What are toolchains?](/faq/toolchains).
+standard library, etc. See
+[how toolchains are provided](/rbe/examples#faq).

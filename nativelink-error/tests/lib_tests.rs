@@ -275,7 +275,7 @@ fn test_error_make_input_err_macro() {
 
 #[test]
 fn test_error_conversion_from_prost_decode_error() {
-    let prost_error = prost::DecodeError::new("Decode failure");
+    let prost_error = prost::DecodeError::new_unexpected_type_url("Decode failure", "http://foo");
     let error: Error = prost_error.into();
     assert_eq!(error.code, Code::Internal);
     assert!(

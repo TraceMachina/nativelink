@@ -1,8 +1,9 @@
 {
   "pages": [
+    "local-testing",
+    "local-remote-execution",
     "examples",
-    "nix-templates",
-    "cmake-recc"
+    "nix-templates"
   ],
   "title": "Testing Remote Execution"
 }

@@ -3,7 +3,6 @@
   nightly-rust,
   generate-bazel-rc,
   generate-stores-config,
-  renovate-patched,
   ...
 }: let
   excludes = ["nativelink-proto/genproto"];
@@ -84,7 +83,10 @@ in {
 
   # Nix
   alejandra.enable = true;
-  deadnix.enable = true;
+  deadnix = {
+    excludes = ["tools/cargo-llvm-cov/package.nix"] ++ excludes; # because the upstream pattern has some things we don't want to drop
+    enable = true;
+  };
   statix.enable = true;
 
   # Rust
@@ -169,7 +171,7 @@ in {
   renovate = {
     description = "Validate renovate config";
     enable = true;
-    entry = "${renovate-patched}/bin/renovate-config-validator";
+    entry = "${pkgs.renovate}/bin/renovate-config-validator";
     args = ["--strict"];
     files = "renovate.json5";
   };

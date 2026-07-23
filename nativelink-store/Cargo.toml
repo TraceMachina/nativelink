@@ -4,7 +4,7 @@ lints.workspace = true
 [package]
 edition = "2024"
 name = "nativelink-store"
-version = "1.4.0"
+version = "1.6.2"
 
 [dependencies]
 nativelink-config = { path = "../nativelink-config" }
@@ -28,14 +28,15 @@ aws-smithy-runtime-api = { version = "1.7.4", default-features = false, features
 aws-smithy-types = { version = "1.3.0", default-features = false, features = [
   "http-body-1-x",
 ] }
-azure_core = { version = "0.21.0", default-features = false, features = [
-  "hmac_rust",
+azure_core = { version = "1", default-features = false, features = [
+  "reqwest",
+  "tokio",
 ] }
-azure_storage = { version = "0.21.0", default-features = false, features = [
-  "hmac_rust",
+azure_identity = { version = "1", default-features = false, features = [
+  "tokio",
 ] }
-azure_storage_blobs = { version = "0.21.0", default-features = false, features = [
-  "hmac_rust",
+azure_storage_blob = { version = "1", default-features = false, features = [
+  "tokio",
 ] }
 base64 = { version = "0.22.1", default-features = false, features = ["std"] }
 blake3 = { version = "1.8.0", default-features = false }
@@ -43,12 +44,15 @@ byteorder = { version = "1.5.0", default-features = false }
 bytes = { version = "1.10.1", default-features = false }
 const_format = { version = "0.2.34", default-features = false }
 futures = { version = "0.3.31", default-features = false, features = ["std"] }
-gcloud-auth = { version = "1.2", default-features = false, features = [
+gcloud-auth = { version = "1.3", default-features = false, features = [
   "jwt-rust-crypto",
 ] }
-gcloud-storage = { version = "1", default-features = false, features = [
+gcloud-storage = { version = "1.3", default-features = false, features = [
   "auth",
-  "rustls-tls",
+  # reqwest 0.13's `rustls` feature pulls aws-lc-rs; `rustls-no-provider` uses
+  # the process-default rustls provider (ring, installed by common_s3_utils) so
+  # the whole binary stays on a single crypto provider.
+  "rustls-no-provider",
 ] }
 hex = { version = "0.4.3", default-features = false }
 http = { version = "1.3.1", default-features = false }
@@ -70,13 +74,13 @@ mongodb = { version = "3", features = [
   "compat-3-0-0",
   "rustls-tls",
 ], default-features = false }
-opentelemetry = { version = "0.29.1", default-features = false }
+opentelemetry = { version = "0.32.0", default-features = false }
 parking_lot = { version = "0.12.3", features = [
   "arc_lock",
   "send_guard",
 ], default-features = false }
 patricia_tree = { version = "0.9.0", default-features = false }
-prost = { version = "0.13.5", default-features = false }
+prost = { version = "0.14.4", default-features = false }
 rand = { version = "0.9.0", default-features = false, features = [
   "thread_rng",
 ] }
@@ -89,9 +93,14 @@ redis = { version = "1.0.0", default-features = false, features = [
   "tokio-comp",
 ] }
 regex = { version = "1.11.1", default-features = false }
-reqwest = { version = "0.12", default-features = false }
-reqwest-middleware = { version = "0.4.2", default-features = false }
-rustls = { version = "0.23.27", default-features = false, features = [] }
+reqwest = { version = "0.13", default-features = false, features = [
+  "charset",
+  "http2",
+  "rustls-no-provider",
+  "stream",
+] }
+reqwest-middleware = { version = "0.5", default-features = false }
+rustls = { version = "0.23.27", default-features = false, features = ["ring"] }
 rustls-pki-types = { version = "1.13.1", default-features = false }
 serde = { version = "1.0.219", default-features = false }
 serde_json = { version = "1.0.140", default-features = false }
@@ -106,7 +115,7 @@ tokio-stream = { version = "0.1.17", features = [
   "fs",
 ], default-features = false }
 tokio-util = { version = "0.7.14", default-features = false }
-tonic = { version = "0.13.0", features = [
+tonic = { version = "0.14.0", features = [
   "tls-ring",
   "transport",
 ], default-features = false }
@@ -116,10 +125,14 @@ uuid = { version = "1.16.0", default-features = false, features = [
   "serde",
   "v4",
 ] }
+webpki-roots = { version = "1", default-features = false }
 wincode = { version = "0.5.4", default-features = false, features = [
   "alloc",
   "derive",
 ] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = { version = "0.2.177", default-features = false }
 
 [dev-dependencies]
 nativelink-macro = { path = "../nativelink-macro" }

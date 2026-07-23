@@ -30,7 +30,7 @@ use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthS
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::store_trait::{
-    RemoveItemCallback, StoreDriver, StoreKey, StoreOptimizations, UploadSizeInfo,
+    RemoveCallback, StoreDriver, StoreKey, StoreOptimizations, UploadSizeInfo,
 };
 use rand::Rng;
 use tokio::time::{sleep, timeout};
@@ -206,6 +206,10 @@ where
     Client: GcsOperations + 'static,
     NowFn: Fn() -> I + Send + Sync + Unpin + 'static,
 {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],
@@ -425,9 +429,11 @@ where
                         .await
                     {
                         Ok(stream) => stream,
-                        Err(e) if e.code == Code::NotFound => {
-                            return Some((RetryResult::Err(e), (offset, writer)));
-                        }
+                        // NotFound is intentionally not special-cased here:
+                        // the retrier doesn't retry NotFound by default, but
+                        // emitting `Retry` lets `retry.retry_on_errors` opt
+                        // reads into retrying read-after-write races where
+                        // an object is still finalizing or being repopulated.
                         Err(e) => return Some((RetryResult::Retry(e), (offset, writer))),
                     };
 
@@ -469,10 +475,7 @@ where
         registry.register_indicator(self);
     }
 
-    fn register_remove_callback(
-        self: Arc<Self>,
-        _callback: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, _callback: RemoveCallback) -> Result<(), Error> {
         // As we're backed by GCS, this store doesn't actually drop stuff
         // so we can actually just ignore this
         Ok(())

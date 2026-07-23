@@ -24,10 +24,26 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-26]
-    name: ${{ matrix.os }}
+        include:
+          # Keep the existing required check names on the project-pinned Bazel.
+          - os: ubuntu-24.04
+            bazel_version: 9.1.1
+            check_name: ubuntu-24.04
+          - os: macos-26
+            bazel_version: 9.1.1
+            check_name: macos-26
+          # Deterministic Bazel compatibility lane. Randomizing Bazel versions
+          # makes failures harder to reproduce. Bazel 8 cannot read the
+          # Bazel 9 lockfile format, so this lane tests source compatibility
+          # without enforcing the committed MODULE.bazel.lock.
+          - os: ubuntu-24.04
+            bazel_version: 8.7.0
+            check_name: ubuntu-24.04 / Bazel 8.7.0
+    name: ${{ matrix.check_name }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    env:
+      USE_BAZEL_VERSION: ${{ matrix.bazel_version }}
     steps:
       - name: Checkout
         uses: >- # v6.0.2
@@ -42,15 +58,38 @@ jobs:
         with:
           bazelisk-cache: true
           repository-cache: true
-          disk-cache: ${{ github.workflow }}-${{ matrix.os }}
+          disk-cache: ${{ github.workflow }}-${{ matrix.os }}-bazel-${{ matrix.bazel_version }}
+
+      - name: Setup NativeLink Cloud
+        uses: ./.github/actions/setup-nativelink-cloud
+        with:
+          ci-mode: ${{ vars.NATIVELINK_CI_MODE }}
+          claim-base: ${{ secrets.NATIVELINK_STAGING_CLAIM_BASE }}
+          bes-results-url: ${{ secrets.NATIVELINK_STAGING_BES_RESULTS_URL }}
+          api-key: >-
+            ${{ github.event_name == 'push'
+                && secrets.NATIVELINK_STAGING_API_KEY_RW
+                || secrets.NATIVELINK_STAGING_API_KEY_RO }}
+          mode: ${{ github.event_name == 'push' && 'write' || 'read' }}
+
+      - name: Show Bazel version
+        run: bazel --version
 
       - name: Run Bazel tests
         run: |
           if [ "$RUNNER_OS" == "Linux" ] || [ "$RUNNER_OS" == "macOS" ]; then
-            bazel test //... \
-              --lockfile_mode=error \
-              --extra_toolchains=@rust_toolchains//:all \
-              --verbose_failures
+            if [ "${{ matrix.bazel_version }}" == "8.7.0" ]; then
+              # Bazel 8 cannot parse the Bazel 9 MODULE.bazel.lock format.
+              bazel test //... \
+                --lockfile_mode=off \
+                --extra_toolchains=@rust_toolchains//:all \
+                --verbose_failures
+            else
+              bazel test //... \
+                --lockfile_mode=error \
+                --extra_toolchains=@rust_toolchains//:all \
+                --verbose_failures
+            fi
           elif [ "$RUNNER_OS" == "Windows" ]; then
             bazel \
               --lockfile_mode=error \
@@ -63,7 +102,6 @@ jobs:
             echo "Unknown runner OS: $RUNNER_OS"
             exit 1
           fi
-        shell: bash
 
   redis-store-tester:
     name: Redis store tester
@@ -73,6 +111,9 @@ jobs:
       - name: Checkout
         uses: >- # v6.0.2
           actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Free disk space
+        uses: ./.github/actions/free-disk
 
       - uses: hoverkraft-tech/compose-action@11beaa1c2dae4e8ed7b1665aa074723b6cecb0e4 # v3.0.0
         with:
@@ -86,6 +127,18 @@ jobs:
           repository-cache: true
           disk-cache: ${{ github.workflow }}-ubuntu-24.04
 
+      - name: Setup NativeLink Cloud
+        uses: ./.github/actions/setup-nativelink-cloud
+        with:
+          ci-mode: ${{ vars.NATIVELINK_CI_MODE }}
+          claim-base: ${{ secrets.NATIVELINK_STAGING_CLAIM_BASE }}
+          bes-results-url: ${{ secrets.NATIVELINK_STAGING_BES_RESULTS_URL }}
+          api-key: >-
+            ${{ github.event_name == 'push'
+                && secrets.NATIVELINK_STAGING_API_KEY_RW
+                || secrets.NATIVELINK_STAGING_API_KEY_RO }}
+          mode: ${{ github.event_name == 'push' && 'write' || 'read' }}
+
       - name: Run Store tester with sentinel
         run: |
           bazel run //:redis_store_tester \
@@ -96,7 +149,6 @@ jobs:
           RUST_LOG: trace
           REDIS_HOST: localhost
           MAX_LOOPS: 10 # running sequentially just to test all the actions work
-        shell: bash
 
       - name: Run Store tester with standard
         run: |
@@ -108,7 +160,6 @@ jobs:
           RUST_LOG: trace
           REDIS_HOST: localhost
           MAX_LOOPS: 10 # running sequentially just to test all the actions work
-        shell: bash
 
       - name: Run Store tester with cluster
         run: |
@@ -120,4 +171,3 @@ jobs:
           RUST_LOG: trace
           REDIS_HOST: localhost
           MAX_LOOPS: 10 # running sequentially just to test all the actions work
-        shell: bash

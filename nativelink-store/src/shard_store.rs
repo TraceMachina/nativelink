@@ -19,6 +19,7 @@ use std::hash::DefaultHasher;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use futures::future::try_join_all;
 use futures::stream::{FuturesUnordered, TryStreamExt};
 use nativelink_config::stores::ShardSpec;
 use nativelink_error::{Error, ResultExt, error_if};
@@ -26,7 +27,7 @@ use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::store_trait::{
-    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+    RemoveCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };
 
 #[derive(Debug, MetricsComponent)]
@@ -39,7 +40,7 @@ struct StoreAndWeight {
 
 #[derive(Debug, MetricsComponent)]
 pub struct ShardStore {
-    // The weights will always be in ascending order a specific store is chosen based on the
+    // The weights will always be in ascending order a specific store is chosen based on
     // the hash of the key hash that is nearest-binary searched using the u32 as the index.
     #[metric(
         group = "stores",
@@ -146,6 +147,15 @@ impl ShardStore {
 
 #[async_trait]
 impl StoreDriver for ShardStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        let mut futures = vec![];
+        for store_and_weight in &self.weights_and_stores {
+            futures.push(store_and_weight.store.clone().into_inner().post_init());
+        }
+        try_join_all(futures).await?;
+        Ok(())
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],
@@ -244,10 +254,7 @@ impl StoreDriver for ShardStore {
         self
     }
 
-    fn register_remove_callback(
-        self: Arc<Self>,
-        callback: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, callback: RemoveCallback) -> Result<(), Error> {
         for store in &self.weights_and_stores {
             store.store.register_remove_callback(callback.clone())?;
         }

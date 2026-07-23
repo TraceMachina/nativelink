@@ -6,30 +6,38 @@ runs:
   steps:
     - name: Check disk space
       run: df -h /
-      shell: bash
+      shell: bash -euo pipefail {0}
     - if: runner.os == 'Linux' # Only works on Linux
       name: Free disk space
       uses: >- # v3.2.2
         endersonmenezes/free-disk-space@7901478139cff6e9d44df5972fd8ab8fcade4db1
       with:
         rm_cmd: "rmz" # For speed up
+        rmz_version: "3.2.0"
         remove_android: false # Takes too long.
         remove_dotnet: true
         remove_haskell: true
-        remove_tool_cache: false # TODO(palfrey): Do we really need this?
-        # Note: Not deleting google-cloud-cli because it takes too long.
+        remove_tool_cache: false
         remove_folders: >
+          /opt/go
+          /opt/Ruby
+          /opt/microsoft/msedge
+          /usr/local/lib/android
           /usr/share/swift
           /usr/share/miniconda
           /usr/share/az*
           /usr/share/glade*
           /usr/local/share/chromium
           /usr/local/share/powershell
+          /usr/local/julia
+          /usr/local/aws-cli
+          /usr/local/aws-sam-cli
+          /usr/share/gradle
 
     # using hints from https://github.com/actions/runner-images/issues/10511#issuecomment-3984466720
     - if: runner.os == 'macOS'
       name: Free Disk space
-      shell: bash
+      shell: bash -euo pipefail {0}
       run: |
         # Remove unnecessary pre-installed tools (saves 5-10GB)
         sudo rm -rf /usr/local/share/powershell
@@ -41,4 +49,4 @@ runs:
         xcrun simctl runtime list
     - name: Check disk space
       run: df -h /
-      shell: bash
+      shell: bash -euo pipefail {0}

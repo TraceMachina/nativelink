@@ -1459,23 +1459,26 @@ impl RunningActionImpl {
         #[cfg(target_os = "linux")]
         {
             let use_namespaces = self.running_actions_manager.use_namespaces;
-            let root_action_directory =
-                std::ffi::CString::new(self.running_actions_manager.root_action_directory.clone())
-                    .err_tip(|| "In RunningActionImpl::inner_execute()")?;
-            let action_directory = std::ffi::CString::new(self.action_directory.clone())
-                .err_tip(|| "In RunningActionImpl::inner_execute()")?;
 
-            // SAFETY: This function is specifically designed to operate in a async-signal-safe
-            // environment.
-            unsafe {
-                command_builder.pre_exec(move || match use_namespaces {
-                    UseNamespaces::No => Ok(()),
-                    _ => crate::namespace_utils::configure_namespace(
-                        matches!(use_namespaces, UseNamespaces::YesAndMount),
-                        &root_action_directory,
-                        &action_directory,
-                    ),
-                });
+            if !matches!(use_namespaces, UseNamespaces::No) {
+                let root_action_directory = std::ffi::CString::new(
+                    self.running_actions_manager.root_action_directory.clone(),
+                )
+                .err_tip(|| "In RunningActionImpl::inner_execute()")?;
+                let action_directory = std::ffi::CString::new(self.action_directory.clone())
+                    .err_tip(|| "In RunningActionImpl::inner_execute()")?;
+
+                // SAFETY: This function is specifically designed to operate in a async-signal-safe
+                // environment.
+                unsafe {
+                    command_builder.pre_exec(move || {
+                        crate::namespace_utils::configure_namespace(
+                            matches!(use_namespaces, UseNamespaces::YesAndMount),
+                            &root_action_directory,
+                            &action_directory,
+                        )
+                    });
+                }
             }
 
             // Run the action as its own process-group leader (pgid == child
@@ -2560,6 +2563,8 @@ pub struct RunningActionsManagerArgs<'a> {
     pub upload_action_result_config: &'a UploadActionResultConfig,
     pub max_action_timeout: Duration,
     pub max_upload_timeout: Duration,
+    pub max_cleanup_wait: Duration,
+    pub max_cleanup_backoff: Duration,
     pub timeout_handled_externally: bool,
     pub directory_cache: Option<Arc<crate::directory_cache::DirectoryCache>>,
     #[cfg(target_os = "linux")]
@@ -2607,6 +2612,8 @@ pub struct RunningActionsManagerImpl {
     /// attempt's directory is fully cleaned up before creating a new one.
     /// See: <https://github.com/TraceMachina/nativelink/issues/1859>
     cleaning_up_operations: Mutex<HashSet<OperationId>>,
+    max_cleanup_wait: Duration,
+    max_cleanup_backoff: Duration,
     /// Notify waiters when a cleanup operation completes. This is used in conjunction with
     /// `cleaning_up_operations` to coordinate directory cleanup and creation.
     cleanup_complete_notify: Arc<Notify>,
@@ -2617,11 +2624,6 @@ pub struct RunningActionsManagerImpl {
 }
 
 impl RunningActionsManagerImpl {
-    /// Maximum time to wait for a cleanup operation to complete before timing out.
-    /// TODO(marcussorealheis): Consider making cleanup wait timeout configurable in the future
-    const MAX_WAIT: Duration = Duration::from_secs(30);
-    /// Maximum backoff duration for exponential backoff when waiting for cleanup.
-    const MAX_BACKOFF: Duration = Duration::from_millis(500);
     pub fn new_with_callbacks(
         args: RunningActionsManagerArgs<'_>,
         callbacks: Callbacks,
@@ -2654,8 +2656,13 @@ impl RunningActionsManagerImpl {
             running_actions: Mutex::new(HashMap::new()),
             action_done_tx,
             callbacks,
-            metrics: Arc::new(Metrics::default()),
+            metrics: Arc::new(Metrics {
+                directory_cache: args.directory_cache.as_ref().map(Arc::downgrade),
+                ..Default::default()
+            }),
             cleaning_up_operations: Mutex::new(HashSet::new()),
+            max_cleanup_wait: args.max_cleanup_wait,
+            max_cleanup_backoff: args.max_cleanup_backoff,
             cleanup_complete_notify: Arc::new(Notify::new()),
             directory_cache: args.directory_cache,
             persistent_worker_pool: PersistentWorkerPool::default(),
@@ -2741,7 +2748,7 @@ impl RunningActionsManagerImpl {
                 return Ok(());
             }
 
-            if start.elapsed() > Self::MAX_WAIT {
+            if start.elapsed() > self.max_cleanup_wait {
                 self.metrics.cleanup_wait_timeouts.inc();
                 warn!(%operation_id, waited=?start.elapsed(), "Timeout waiting for previous operation cleanup");
                 return Err(make_err!(
@@ -2768,7 +2775,7 @@ impl RunningActionsManagerImpl {
                 () = self.cleanup_complete_notify.notified() => {},
                 () = tokio::time::sleep(backoff) => {
                     // Exponential backoff
-                    backoff = (backoff * 2).min(Self::MAX_BACKOFF);
+                    backoff = (backoff * 2).min(self.max_cleanup_backoff);
                 },
             }
         }
@@ -2970,10 +2977,7 @@ impl RunningActionsManager for RunningActionsManagerImpl {
             .wrap_no_capture_result(async move {
                 let kill_operations: Vec<Arc<RunningActionImpl>> = {
                     let running_actions = self.running_actions.lock();
-                    running_actions
-                        .iter()
-                        .filter_map(|(_operation_id, action)| action.upgrade())
-                        .collect()
+                    running_actions.values().filter_map(Weak::upgrade).collect()
                 };
                 let mut kill_futures: FuturesUnordered<_> = kill_operations
                     .into_iter()
@@ -3047,4 +3051,8 @@ pub struct Metrics {
     upload_stderr: AsyncCounterWrapper,
     #[metric(help = "Total number of task timeouts.")]
     task_timeouts: CounterWithTime,
+    #[metric(
+        help = "Stats about the input-directory cache (hits, misses, subtree reuse, evictions, size)."
+    )]
+    directory_cache: Option<Weak<crate::directory_cache::DirectoryCache>>,
 }

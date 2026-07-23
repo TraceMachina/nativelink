@@ -1,3 +1,4 @@
+use core::pin::Pin;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 use std::borrow::Cow;
@@ -12,7 +13,7 @@ use nativelink_error::{Code, Error, ResultExt};
 use nativelink_store::redis_store::RedisStore;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::store_trait::{
-    SchedulerCurrentVersionProvider, SchedulerIndexProvider, SchedulerStore,
+    RemoveItemCallback, SchedulerCurrentVersionProvider, SchedulerIndexProvider, SchedulerStore,
     SchedulerStoreDataProvider, SchedulerStoreDecodeTo, SchedulerStoreKeyProvider, StoreDriver,
     StoreKey, StoreLike, TrueValue, UploadSizeInfo,
 };
@@ -155,6 +156,11 @@ async fn run<S: StoreDriver + SchedulerStore>(
 ) -> Result<(), Error> {
     let mut count = 0;
     let in_flight = Arc::new(AtomicUsize::new(0));
+    let fixed_action_value = if let Ok(str_action_value) = env::var("ACTION_VALUE") {
+        Some(str::parse::<usize>(&str_action_value).unwrap())
+    } else {
+        None
+    };
 
     loop {
         if count % 1000 == 0 {
@@ -187,9 +193,13 @@ async fn run<S: StoreDriver + SchedulerStore>(
         let local_in_flight = in_flight.clone();
 
         let max_action_value = 7;
-        let action_value = match mode {
-            TestMode::Random => rand::rng().random_range(0..max_action_value),
-            TestMode::Sequential => count % max_action_value,
+        let action_value = if let Some(av) = fixed_action_value {
+            av
+        } else {
+            match mode {
+                TestMode::Random => rand::rng().random_range(0..max_action_value),
+                TestMode::Sequential => count % max_action_value,
+            }
         };
 
         background_spawn!("action", async move {
@@ -222,9 +232,11 @@ async fn run<S: StoreDriver + SchedulerStore>(
                             .await?;
                     }
                     3 => {
+                        let key = random_key();
                         store_clone
-                            .update_oneshot(random_key(), Bytes::from_static(b"1234"))
+                            .update_oneshot(key.borrow(), Bytes::from_static(b"1234"))
                             .await?;
+                        info!(?key, "Updated");
                     }
                     4 => {
                         let res = store_clone
@@ -284,6 +296,19 @@ async fn run<S: StoreDriver + SchedulerStore>(
     }
 }
 
+#[derive(Debug)]
+struct LoggingRemoveCallback {}
+
+impl RemoveItemCallback for LoggingRemoveCallback {
+    fn callback<'a>(
+        &'a self,
+        store_key: StoreKey<'a>,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        info!(?store_key, "Callback for removed item");
+        Box::pin(async {})
+    }
+}
+
 fn main() -> Result<(), Box<dyn core::error::Error>> {
     let args = Args::parse();
     let redis_mode: RedisMode = args.redis_mode.into();
@@ -307,7 +332,7 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
         .unwrap()
         .block_on(async {
             // The OTLP exporters need to run in a Tokio context.
-            spawn!("init tracing", async { init_tracing() })
+            spawn!("init tracing", async { init_tracing().await })
                 .await?
                 .expect("Init tracing should work");
 
@@ -330,10 +355,16 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
             match spec.mode {
                 RedisMode::Standard | RedisMode::Sentinel => {
                     let store = RedisStore::new_standard(spec).await?;
+                    store
+                        .clone()
+                        .register_remove_callback(Arc::new(LoggingRemoveCallback {}))?;
                     run(store, max_loops, failed.clone(), args.mode).await
                 }
                 RedisMode::Cluster => {
                     let store = RedisStore::new_cluster(spec).await?;
+                    store
+                        .clone()
+                        .register_remove_callback(Arc::new(LoggingRemoveCallback {}))?;
                     run(store, max_loops, failed.clone(), args.mode).await
                 }
             }
