@@ -45,8 +45,11 @@ Verify: open `https://<docs-url>/docs` — should show the docs index.
 1. **Vercel → New Project**, same repo.
 2. **Root Directory**: `web/apps/web`.
 3. **Framework Preset**: Next.js.
-4. **Environment Variables** — add one:
+4. **Environment Variables**:
    - `DOCS_URL` = `https://<docs-url-from-step-1>` (no trailing slash).
+   - `NEXT_PUBLIC_GTM_ID` / `NEXT_PUBLIC_LSI` / `NEXT_PUBLIC_LSU` /
+     `NEXT_PUBLIC_LTH` — tracker config (see the Environment variables
+     table below). Skip on forks.
 5. Deploy. The marketing app's `next.config.mjs` reads `DOCS_URL` and
    adds production rewrites:
 
@@ -82,11 +85,15 @@ you run the docs server elsewhere.
 
 ## Environment variables
 
-| Var               | Where         | Required | Default                  | Notes                                              |
-| ----------------- | ------------- | :------: | ------------------------ | -------------------------------------------------- |
-| `DOCS_URL`        | apps/web prod | ✓        | —                        | Full URL of the docs deployment, no trailing slash |
-| `DOCS_DEV_URL`    | apps/web dev  |          | `http://localhost:3001`  | Override the local docs target                     |
-| `GITHUB_TOKEN`    | apps/web      |          | unauthenticated          | Lifts the GitHub API rate limit on `/community`    |
+| Var                              | Where         | Required | Default                  | Notes                                              |
+| -------------------------------- | ------------- | :------: | ------------------------ | -------------------------------------------------- |
+| `DOCS_URL`                       | apps/web prod | ✓        | —                        | Full URL of the docs deployment, no trailing slash |
+| `DOCS_DEV_URL`                   | apps/web dev  |          | `http://localhost:3001`  | Override the local docs target                     |
+| `GITHUB_TOKEN`                   | apps/web      |          | unauthenticated          | Lifts the GitHub API rate limit on `/community`    |
+| `NEXT_PUBLIC_GTM_ID`             | apps/web      |          | unset → GTM omitted      | Google Tag Manager container ID                    |
+| `NEXT_PUBLIC_LSI`                | apps/web      |          | unset → tracker omitted  | Visitor-analytics site ID                          |
+| `NEXT_PUBLIC_LSU`                | apps/web      |          | unset → tracker omitted  | Visitor-analytics script URL prefix                |
+| `NEXT_PUBLIC_LTH`                | apps/web      |          | unset → no preconnect    | Visitor-analytics beacon origin                    |
 
 ## Preview deployments
 

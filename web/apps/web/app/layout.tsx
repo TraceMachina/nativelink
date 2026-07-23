@@ -7,9 +7,28 @@ import Script from "next/script";
 import type { ReactNode } from "react";
 import "./globals.css";
 
-// Official Leadfeeder (Dealfront) tracker snippet, verbatim. The site ID is the
-// same one deployed on tracemachina.com.
-const leadfeederScript = `(function(ss,ex){ window.ldfdr=window.ldfdr||function(){(ldfdr._q=ldfdr._q||[]).push([].slice.call(arguments));}; (function(d,s){ fs=d.getElementsByTagName(s)[0]; function ce(src){ var cs=d.createElement(s); cs.src=src; cs.async=1; fs.parentNode.insertBefore(cs,fs); }; ce('https://sc.lfeeder.com/lftracker_v1_'+ss+(ex?'_'+ex:'')+'.js'); })(document,'script'); })('lAxoEaKMQGd7OYGd');`;
+const gtmId = process.env.NEXT_PUBLIC_GTM_ID;
+const lsi = process.env.NEXT_PUBLIC_LSI;
+const lsu = process.env.NEXT_PUBLIC_LSU;
+const lth = process.env.NEXT_PUBLIC_LTH;
+
+if (process.env.NODE_ENV === "production") {
+  for (const [key, value] of Object.entries({
+    NEXT_PUBLIC_GTM_ID: gtmId,
+    NEXT_PUBLIC_LSI: lsi,
+    NEXT_PUBLIC_LSU: lsu,
+    NEXT_PUBLIC_LTH: lth,
+  })) {
+    if (!value) {
+      console.warn(`${key} unset — omitted from this build`);
+    }
+  }
+}
+
+const lsScript =
+  lsi && lsu
+    ? `(function(ss,ex){ window.ldfdr=window.ldfdr||function(){(ldfdr._q=ldfdr._q||[]).push([].slice.call(arguments));}; (function(d,s){ fs=d.getElementsByTagName(s)[0]; function ce(src){ var cs=d.createElement(s); cs.src=src; cs.async=1; fs.parentNode.insertBefore(cs,fs); }; ce('${lsu}'+ss+(ex?'_'+ex:'')+'.js'); })(document,'script'); })('${lsi}');`
+    : undefined;
 
 export const metadata: Metadata = {
   title: {
@@ -30,15 +49,12 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       className={`${GeistSans.variable} ${GeistMono.variable}`}
     >
       <head>
-        {/* Leadfeeder origins: script host and beacon host. No crossorigin —
-            the tracker loads as a plain script, which can't reuse a CORS-warmed
-            connection. */}
-        <link rel="preconnect" href="https://sc.lfeeder.com" />
-        <link rel="preconnect" href="https://tr.lfeeder.com" />
+        {lsu && <link rel="preconnect" href={new URL(lsu).origin} />}
+        {lth && <link rel="preconnect" href={lth} />}
         {/* biome-ignore lint/security/noDangerouslySetInnerHtml: Inline before hydration so the theme is correct on first paint. */}
         <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
       </head>
-      <GoogleTagManager gtmId="GTM-NNLLRWGB" />
+      {gtmId && <GoogleTagManager gtmId={gtmId} />}
       <body className="flex min-h-screen flex-col bg-background text-foreground antialiased">
         <ThemeProvider>
           <SiteHeader />
@@ -56,9 +72,11 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           />
           <SiteFooter />
         </ThemeProvider>
-        <Script id="leadfeeder" strategy="afterInteractive">
-          {leadfeederScript}
-        </Script>
+        {lsScript && (
+          <Script id="ls" strategy="afterInteractive">
+            {lsScript}
+          </Script>
+        )}
       </body>
     </html>
   );
