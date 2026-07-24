@@ -1377,6 +1377,56 @@ pub struct GrpcEndpoint {
     /// If not set or 0, defaults to 20 seconds.
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub http2_keepalive_timeout_s: u64,
+
+    /// Initial HTTP/2 stream-level flow-control window size in bytes.
+    /// The per-stream window caps in-flight response bytes per transfer, so
+    /// on links with non-trivial round-trip time a small window limits each
+    /// stream to roughly `window / RTT` throughput. Increase (e.g. `8mb`)
+    /// when downloading large blobs over WAN links, or prefer
+    /// `experimental_http2_adaptive_window`. Valid values are
+    /// `1..=2147483647` bytes.
+    /// If not set, uses the transport default. This is a client receive
+    /// window and primarily affects downloads; upload flow control is set by
+    /// the receiving server.
+    #[serde(
+        default,
+        deserialize_with = "convert_optional_data_size_with_shellexpand"
+    )]
+    pub experimental_http2_initial_stream_window_size: Option<u32>,
+
+    /// Initial HTTP/2 connection-level flow-control window size in bytes.
+    /// Shared by every stream multiplexed on the connection; parallel large
+    /// transfers on one connection stall once it is exhausted. Increase
+    /// together with the stream window, or prefer
+    /// `experimental_http2_adaptive_window`. Valid values are
+    /// `1..=2147483647` bytes.
+    /// If not set, uses the transport default. This is a client receive
+    /// window and primarily affects downloads; upload flow control is set by
+    /// the receiving server.
+    #[serde(
+        default,
+        deserialize_with = "convert_optional_data_size_with_shellexpand"
+    )]
+    pub experimental_http2_initial_connection_window_size: Option<u32>,
+
+    /// Enable HTTP/2 adaptive flow-control (BDP probing): window sizes are
+    /// tuned automatically per connection. When true, adaptive flow control
+    /// overrides any explicit initial window sizes above. When false or
+    /// unset, explicit window sizes apply. This primarily affects client
+    /// receives/downloads, not uploads. If not set, uses the transport
+    /// default (disabled).
+    #[serde(default, deserialize_with = "convert_boolean_with_shellexpand")]
+    pub experimental_http2_adaptive_window: Option<bool>,
+
+    /// Maximum HTTP/2 frame size in bytes. Larger frames reduce framing
+    /// overhead for large downloads. This is primarily a client receive
+    /// control, not an upload control. Valid values are
+    /// `16384..=16777215` bytes. If not set, uses the transport default.
+    #[serde(
+        default,
+        deserialize_with = "convert_optional_data_size_with_shellexpand"
+    )]
+    pub experimental_http2_max_frame_size: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

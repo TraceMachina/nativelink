@@ -676,3 +676,56 @@ mod convert_optional_numeric_with_shellexpand_tests {
         assert_eq!(deserialized.value, None);
     }
 }
+
+#[cfg(test)]
+mod grpc_endpoint_http2_tests {
+    use nativelink_config::stores::GrpcEndpoint;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn grpc_endpoint_http2_fields_deserialize_data_sizes() {
+        let endpoint_config: GrpcEndpoint = serde_json5::from_str(
+            r#"{
+                "address": "grpc://localhost:50051",
+                "experimental_http2_initial_stream_window_size": "8mb",
+                "experimental_http2_initial_connection_window_size": "32mb",
+                "experimental_http2_adaptive_window": "true",
+                "experimental_http2_max_frame_size": "1mb"
+            }"#,
+        )
+        .expect("config should deserialize");
+        assert_eq!(
+            endpoint_config.experimental_http2_initial_stream_window_size,
+            Some(8_000_000)
+        );
+        assert_eq!(
+            endpoint_config.experimental_http2_initial_connection_window_size,
+            Some(32_000_000)
+        );
+        assert_eq!(
+            endpoint_config.experimental_http2_adaptive_window,
+            Some(true)
+        );
+        assert_eq!(
+            endpoint_config.experimental_http2_max_frame_size,
+            Some(1_000_000)
+        );
+    }
+
+    #[test]
+    fn grpc_endpoint_http2_fields_default_to_transport_defaults() {
+        let endpoint_config: GrpcEndpoint =
+            serde_json5::from_str(r#"{"address": "grpc://localhost:50051"}"#)
+                .expect("config should deserialize");
+        assert_eq!(
+            endpoint_config.experimental_http2_initial_stream_window_size,
+            None
+        );
+        assert_eq!(
+            endpoint_config.experimental_http2_initial_connection_window_size,
+            None
+        );
+        assert_eq!(endpoint_config.experimental_http2_adaptive_window, None);
+        assert_eq!(endpoint_config.experimental_http2_max_frame_size, None);
+    }
+}

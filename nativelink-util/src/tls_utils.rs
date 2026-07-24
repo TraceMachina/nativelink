@@ -122,6 +122,34 @@ pub fn endpoint_from(
 }
 
 pub fn endpoint(endpoint_config: &GrpcEndpoint) -> Result<tonic::transport::Endpoint, Error> {
+    const MAX_HTTP2_WINDOW_SIZE: u32 = 0x7fff_ffff;
+    const MIN_HTTP2_FRAME_SIZE: u32 = 16_384;
+    const MAX_HTTP2_FRAME_SIZE: u32 = 16_777_215;
+
+    if endpoint_config
+        .experimental_http2_initial_stream_window_size
+        .is_some_and(|size| size == 0 || size > MAX_HTTP2_WINDOW_SIZE)
+    {
+        return Err(make_input_err!(
+            "experimental_http2_initial_stream_window_size must be between 1 and {MAX_HTTP2_WINDOW_SIZE}"
+        ));
+    }
+    if endpoint_config
+        .experimental_http2_initial_connection_window_size
+        .is_some_and(|size| size == 0 || size > MAX_HTTP2_WINDOW_SIZE)
+    {
+        return Err(make_input_err!(
+            "experimental_http2_initial_connection_window_size must be between 1 and {MAX_HTTP2_WINDOW_SIZE}"
+        ));
+    }
+    if endpoint_config
+        .experimental_http2_max_frame_size
+        .is_some_and(|size| !(MIN_HTTP2_FRAME_SIZE..=MAX_HTTP2_FRAME_SIZE).contains(&size))
+    {
+        return Err(make_input_err!(
+            "experimental_http2_max_frame_size must be between {MIN_HTTP2_FRAME_SIZE} and {MAX_HTTP2_FRAME_SIZE}"
+        ));
+    }
     let endpoint = endpoint_from(
         &endpoint_config.address,
         load_client_config(&endpoint_config.tls_config)?,
@@ -155,6 +183,10 @@ pub fn endpoint(endpoint_config: &GrpcEndpoint) -> Result<tonic::transport::Endp
         tcp_keepalive_s = tcp_keepalive.as_secs(),
         http2_keepalive_interval_s = http2_keepalive_interval.as_secs(),
         http2_keepalive_timeout_s = http2_keepalive_timeout.as_secs(),
+        http2_initial_stream_window_size = ?endpoint_config.experimental_http2_initial_stream_window_size,
+        http2_initial_connection_window_size = ?endpoint_config.experimental_http2_initial_connection_window_size,
+        http2_adaptive_window = ?endpoint_config.experimental_http2_adaptive_window,
+        http2_max_frame_size = ?endpoint_config.experimental_http2_max_frame_size,
         "tls_utils::endpoint: creating gRPC endpoint with keepalive",
     );
 
@@ -167,6 +199,24 @@ pub fn endpoint(endpoint_config: &GrpcEndpoint) -> Result<tonic::transport::Endp
 
     if let Some(concurrency_limit) = endpoint_config.concurrency_limit {
         endpoint = endpoint.concurrency_limit(concurrency_limit);
+    }
+    // HTTP/2 flow-control tuning: these are client receive windows and
+    // primarily affect downloads from the upstream endpoint. Upload receive
+    // windows are controlled by the receiving server.
+    if endpoint_config.experimental_http2_adaptive_window != Some(true) {
+        if let Some(window_size) = endpoint_config.experimental_http2_initial_stream_window_size {
+            endpoint = endpoint.initial_stream_window_size(window_size);
+        }
+        if let Some(window_size) = endpoint_config.experimental_http2_initial_connection_window_size
+        {
+            endpoint = endpoint.initial_connection_window_size(window_size);
+        }
+    }
+    if let Some(adaptive_window) = endpoint_config.experimental_http2_adaptive_window {
+        endpoint = endpoint.http2_adaptive_window(adaptive_window);
+    }
+    if let Some(frame_size) = endpoint_config.experimental_http2_max_frame_size {
+        endpoint = endpoint.max_frame_size(frame_size);
     }
 
     Ok(endpoint)
