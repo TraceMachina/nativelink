@@ -93,7 +93,7 @@ jobs:
           # Pin cosign: v3.x forces the new bundle format and drops the legacy
           # split signature/certificate output the release assets and verifiers
           # depend on. v2.5.3 still emits .sig/.pem files.
-          cosign-release: v2.5.3
+          cosign-release: v3.1.2
 
       - name: Build static binary
         run: |
