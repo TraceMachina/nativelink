@@ -11,11 +11,11 @@ runs:
       uses: ./.github/actions/free-disk
 
     - name: Install Nix
-      uses: >- # https://github.com/DeterminateSystems/nix-installer-action/releases/tag/v22
-        DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25
+      uses: >- # https://github.com/nixbuild/nix-quick-install-action/releases/tag/v35
+        nixbuild/nix-quick-install-action@9f63be77f412a248c9d9a65a4c82cf066cdf8f0c
       with:
-        source-tag: v3.13.0
-        extra-conf: |
+        nix_version: 2.34.7
+        nix_conf: |
           fallback = true # So we always work even if the cache is down
           log-lines = 100 # Necessary in CI to get enough failure context
           keep-outputs = true # Don't delete non-root outputs, because might be needed for other builds
