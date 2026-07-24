@@ -3190,6 +3190,7 @@ dependencies = [
  "bytes",
  "const_format",
  "dirs",
+ "fastcdc",
  "flate2",
  "fs-set-times",
  "futures",

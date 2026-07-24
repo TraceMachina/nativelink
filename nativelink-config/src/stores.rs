@@ -1475,6 +1475,93 @@ pub struct GrpcSpec {
     /// Default: unset (disabled). When unset there is zero behavior change.
     #[serde(default)]
     pub experimental_read_batching: Option<GrpcReadBatchingConfig>,
+
+    /// Experimental: upload large blobs from the worker/`StoreDriver` path as
+    /// content-defined chunks. Blobs at or above `min_blob_size_bytes` are
+    /// split locally with `FastCDC` 2020, only the chunks the backend reports
+    /// missing are transferred, and the blob is assembled remotely with
+    /// `SpliceBlob`. On incremental changes to large artifacts this transfers
+    /// only the changed chunks.
+    ///
+    /// The backend MUST support the REAPI chunking extension (a `NativeLink`
+    /// CAS with `experimental_chunking` configured, or another server
+    /// advertising `FastCDC` 2020). Its advertised average chunk size must
+    /// match `avg_chunk_size_bytes`; a mismatch is rejected when the local
+    /// CAS proxy has both configurations. Chunked uploads against a backend
+    /// without chunking support fail; there is no runtime capability probe
+    /// yet.
+    ///
+    /// If a chunk is evicted from the backend between its upload and the
+    /// final `SpliceBlob`, the upload fails with a retryable ABORTED error.
+    /// This option does not change the `ByteStream.Write` proxy path: external
+    /// `ByteStream` uploads remain ordinary streaming writes. If a chunked
+    /// worker upload fails after its input stream is consumed, the failure
+    /// surfaces to the caller's higher-level retry (normally action retry).
+    ///
+    /// Takes precedence over `experimental_remote_cache_compression` for
+    /// blobs at or above `min_blob_size_bytes` (chunks are transferred
+    /// uncompressed; the two features do not compose on the chunked path).
+    ///
+    /// Default: unset (disabled). When unset there is zero behavior change.
+    #[serde(default)]
+    pub experimental_chunked_uploads: Option<GrpcChunkedUploadsConfig>,
+}
+
+/// Configuration for experimental chunked uploads in a gRPC store.
+/// See [`GrpcSpec::experimental_chunked_uploads`].
+#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct GrpcChunkedUploadsConfig {
+    /// Only blobs at or above this size (in bytes) are uploaded as chunks.
+    /// Smaller blobs always use the plain `ByteStream` `Write` path.
+    ///
+    /// Default: 8388608 (8 MiB).
+    #[serde(
+        default = "default_chunked_uploads_min_blob_size_bytes",
+        deserialize_with = "convert_data_size_with_shellexpand"
+    )]
+    pub min_blob_size_bytes: u64,
+
+    /// The average `FastCDC` 2020 chunk size in bytes. The minimum and
+    /// maximum chunk sizes are derived from this value (avg / 4 and
+    /// avg * 4). MUST match the average chunk size the backend uses for its
+    /// own chunking so worker-uploaded and server-split chunks share digests.
+    /// The worker path currently caps this at 768 KiB so a largest possible
+    /// chunk fits under its `BatchUpdateBlobs` request budget. Must be between
+    /// 1 KiB and 768 KiB for worker uploads.
+    ///
+    /// Default: 524288 (512 KiB), the REAPI-recommended value.
+    #[serde(
+        default = "default_chunked_uploads_avg_chunk_size_bytes",
+        deserialize_with = "convert_data_size_with_shellexpand"
+    )]
+    pub avg_chunk_size_bytes: u64,
+
+    /// Blobs that could produce more than this many chunks (at the minimum
+    /// chunk size) use the plain streaming path instead, since a chunked
+    /// upload cannot fall back once the stream is partially consumed.
+    /// Should not exceed the `max_chunk_count` of the backend.
+    ///
+    /// Default: 50000 (matches the backend default; ~25 GiB at the default
+    /// average chunk size).
+    #[serde(
+        default = "default_chunked_uploads_max_chunk_count",
+        deserialize_with = "convert_numeric_with_shellexpand"
+    )]
+    pub max_chunk_count: u64,
+}
+
+const fn default_chunked_uploads_min_blob_size_bytes() -> u64 {
+    8 * 1024 * 1024 // 8 MiB.
+}
+
+const fn default_chunked_uploads_avg_chunk_size_bytes() -> u64 {
+    512 * 1024 // 512 KiB.
+}
+
+const fn default_chunked_uploads_max_chunk_count() -> u64 {
+    50_000
 }
 
 /// Configuration for experimental small-blob read coalescing in a gRPC
@@ -1874,5 +1961,46 @@ impl Retry {
                 delay.mul_f32(local_jitter.mul_add(rand::rng().random::<f32>() - 0.5, 1.))
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{GrpcChunkedUploadsConfig, GrpcSpec};
+
+    #[test]
+    fn grpc_chunked_uploads_defaults_are_backward_compatible() {
+        let config: GrpcChunkedUploadsConfig = serde_json5::from_str("{}").unwrap();
+        assert_eq!(config.min_blob_size_bytes, 8 * 1024 * 1024);
+        assert_eq!(config.avg_chunk_size_bytes, 512 * 1024);
+        assert_eq!(config.max_chunk_count, 50_000);
+
+        let spec: GrpcSpec = serde_json5::from_str(
+            r#"{
+                endpoints: [{ address: "http://127.0.0.1:50051" }],
+                store_type: "cas"
+            }"#,
+        )
+        .unwrap();
+        assert!(spec.experimental_chunked_uploads.is_none());
+    }
+
+    #[test]
+    fn grpc_chunked_uploads_parse_data_sizes_and_reject_unknown_fields() {
+        let config: GrpcChunkedUploadsConfig = serde_json5::from_str(
+            r#"{
+                min_blob_size_bytes: "16MiB",
+                avg_chunk_size_bytes: "256KiB",
+                max_chunk_count: 1234
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(config.min_blob_size_bytes, 16 * 1024 * 1024);
+        assert_eq!(config.avg_chunk_size_bytes, 256 * 1024);
+        assert_eq!(config.max_chunk_count, 1234);
+
+        let error =
+            serde_json5::from_str::<GrpcChunkedUploadsConfig>(r"{ unknown: true }").unwrap_err();
+        assert!(error.to_string().contains("unknown"));
     }
 }
