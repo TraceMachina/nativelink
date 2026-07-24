@@ -1212,6 +1212,7 @@ impl ByteStreamServer {
         let encode_fut = Box::pin(crate::wire_compression::stream_encode_compressed_download(
             raw_rx,
             wire_compressor,
+            crate::wire_compression::ZSTD_COMPRESSION_LEVEL,
             compressed_tx,
         ));
 
