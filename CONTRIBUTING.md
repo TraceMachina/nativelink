@@ -513,6 +513,19 @@ most automatically generated changelogs provide.
    use previous release notes as template by clicking on the "Edit" button on a
    previous release and copy-pasting the contents into the new release notes.
 
+   Attribute every entry to its author. Keep the same category headings as the
+   changelog and write each line as `<summary> by @author in (#PR) - (short-sha)`,
+   then close the notes with a `New Contributors` section and a `Full Changelog`
+   link. To pull the author list and first-time contributors for the range, run:
+
+   ```bash
+   gh api -X POST repos/TraceMachina/nativelink/releases/generate-notes \
+     -f tag_name=v0.x.y -f previous_tag_name=v0.x.z
+   ```
+
+   Fold that output into the categorized notes rather than pasting it verbatim,
+   since the changelog groups commits by type.
+
    Make sure to include migration instructions for all breaking changes.
 
    Explicitly list whatever changes you think are worth mentioning as `Major
