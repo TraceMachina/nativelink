@@ -10,7 +10,7 @@ const roles = [
   {
     name: "Member of Technical Staff",
     location: "London · In-office",
-    href: "/careers/members-of-technical-staff",
+    href: "/careers/member-of-technical-staff",
     summary:
       "Operate large clusters and own real systems end to end. Strong Go and Kubernetes, a love of build systems and low latency, and an interest in Rust. Safety-critical or aerospace experience is a plus, not a requirement.",
   },
