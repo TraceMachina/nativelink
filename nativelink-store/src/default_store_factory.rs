@@ -18,7 +18,9 @@ use std::time::SystemTime;
 
 use futures::stream::FuturesOrdered;
 use futures::{Future, TryStreamExt};
-use nativelink_config::stores::{ExperimentalCloudObjectSpec, RedisMode, StoreSpec};
+use nativelink_config::stores::{
+    CompressionAlgorithm, ExperimentalCloudObjectSpec, RedisMode, StoreSpec,
+};
 use nativelink_error::Error;
 use nativelink_util::health_utils::HealthRegistryBuilder;
 use nativelink_util::store_trait::{Store, StoreDriver};
@@ -94,14 +96,13 @@ pub fn store_factory<'a>(
                 spec,
                 store_factory(&spec.backend, store_manager, None).await?,
             ),
-            StoreSpec::Compression(spec) => CompressionStore::new(
-                &spec.clone(),
-                store_factory(&spec.backend, store_manager, None).await?,
-            )?,
-            StoreSpec::ZstdStore(spec) => ZstdStore::new(
-                spec,
-                store_factory(&spec.backend, store_manager, None).await?,
-            )?,
+            StoreSpec::Compression(spec) => {
+                let inner = store_factory(&spec.backend, store_manager, None).await?;
+                match &spec.compression_algorithm {
+                    CompressionAlgorithm::Lz4(_) => CompressionStore::new(spec, inner)?,
+                    CompressionAlgorithm::Zstd(config) => ZstdStore::new(config, inner)?,
+                }
+            }
             StoreSpec::Dedup(spec) => DedupStore::new(
                 spec,
                 store_factory(&spec.index_store, store_manager, None).await?,

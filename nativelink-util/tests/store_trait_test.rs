@@ -1,14 +1,18 @@
 use core::pin::Pin;
 use std::sync::Arc;
 
-use nativelink_error::Error;
+use bytes::Bytes;
+use nativelink_error::{Code, Error, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
+use nativelink_util::common::DigestInfo;
 use nativelink_util::default_health_status_indicator;
+use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::health_utils::HealthStatusIndicator;
 use nativelink_util::store_trait::{
     RemoveCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+    WireCompressionStore, WireCompressor,
 };
 use tonic::async_trait;
 
@@ -20,6 +24,10 @@ struct FakeStore {}
 impl StoreDriver for FakeStore {
     async fn post_init(self: Arc<Self>) -> Result<(), Error> {
         Ok(())
+    }
+
+    fn wire_compression_store(self: Arc<Self>) -> Option<Arc<dyn WireCompressionStore>> {
+        Some(self)
     }
 
     async fn has_with_results(
@@ -68,11 +76,50 @@ impl StoreDriver for FakeStore {
 
 default_health_status_indicator!(FakeStore);
 
+#[async_trait]
+impl WireCompressionStore for FakeStore {
+    async fn update_compressed(
+        self: Arc<Self>,
+        _digest: DigestInfo,
+        _digest_function: DigestHasherFunc,
+        _compressor: WireCompressor,
+        _reader: DropCloserReadHalf,
+    ) -> Result<u64, Error> {
+        Err(make_err!(Code::Unimplemented, "fake wire store"))
+    }
+
+    async fn get_compressed(
+        self: Arc<Self>,
+        _digest: DigestInfo,
+        _compressor: WireCompressor,
+        _writer: DropCloserWriteHalf,
+    ) -> Result<(), Error> {
+        Err(make_err!(Code::Unimplemented, "fake wire store"))
+    }
+
+    async fn update_compressed_oneshot(
+        self: Arc<Self>,
+        _digest: DigestInfo,
+        _digest_function: DigestHasherFunc,
+        _compressor: WireCompressor,
+        _data: Bytes,
+    ) -> Result<(), Error> {
+        Err(make_err!(Code::Unimplemented, "fake wire store"))
+    }
+
+    async fn get_for_batch(
+        self: Arc<Self>,
+        _digest: DigestInfo,
+        _acceptable_compressors: &[WireCompressor],
+    ) -> Result<(Bytes, Option<WireCompressor>), Error> {
+        Err(make_err!(Code::Unimplemented, "fake wire store"))
+    }
+}
+
 /// A wrapper `StoreDriver` whose `inner_store()` forwards to its wrapped
 /// `Store`, unlike most production wrappers (e.g. `CompressionStore`,
-/// `VerifyStore`) which return `self`. Used to exercise the distinction
-/// between `Store::downcast_ref` (recursive, follows `inner_store()`) and
-/// `Store::downcast_ref_immediate` (checks only the immediate driver).
+/// `VerifyStore`) which return `self`. It proves wire-compression capability
+/// discovery remains deliberately immediate.
 #[derive(Debug, MetricsComponent)]
 struct ForwardingWrapperStore {
     inner: Store,
@@ -126,7 +173,7 @@ impl StoreDriver for ForwardingWrapperStore {
 
     fn register_remove_callback(
         self: Arc<Self>,
-        _callback: Arc<dyn RemoveItemCallback>,
+        _callback: RemoveCallback,
     ) -> Result<(), Error> {
         todo!();
     }
@@ -135,18 +182,17 @@ impl StoreDriver for ForwardingWrapperStore {
 default_health_status_indicator!(ForwardingWrapperStore);
 
 #[nativelink_test]
-async fn downcast_ref_immediate_only_matches_outer_driver() -> Result<(), Error> {
-    let store = Store::new(Arc::new(ForwardingWrapperStore {
-        inner: Store::new(Arc::new(FakeStore {})),
-    }));
+async fn wire_compression_capability_only_matches_outer_driver() -> Result<(), Error> {
+    let immediate_store = Store::new(Arc::new(FakeStore {}));
+    assert!(immediate_store.wire_compression_store().is_some());
 
+    let wrapped_store = Store::new(Arc::new(ForwardingWrapperStore {
+        inner: immediate_store,
+    }));
     assert!(
-        store
-            .downcast_ref_immediate::<ForwardingWrapperStore>()
-            .is_some()
+        wrapped_store.wire_compression_store().is_none(),
+        "wrappers must not recursively expose a representation-changing store's wire capability"
     );
-    assert!(store.downcast_ref_immediate::<FakeStore>().is_none());
-    assert!(store.downcast_ref::<FakeStore>(None).is_some());
 
     Ok(())
 }

@@ -41,7 +41,6 @@ use nativelink_proto::google::bytestream::{
 };
 use nativelink_store::grpc_store::GrpcStore;
 use nativelink_store::store_manager::StoreManager;
-use nativelink_store::zstd_store::ZstdStore;
 use nativelink_util::buf_channel::{
     DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
 };
@@ -52,7 +51,9 @@ use nativelink_util::digest_hasher::{
 use nativelink_util::proto_stream_utils::WriteRequestStreamWrapper;
 use nativelink_util::resource_info::ResourceInfo;
 use nativelink_util::spawn;
-use nativelink_util::store_trait::{Store, StoreLike, StoreOptimizations, UploadSizeInfo};
+use nativelink_util::store_trait::{
+    Store, StoreLike, StoreOptimizations, UploadSizeInfo, WireCompressor,
+};
 use nativelink_util::task::JoinHandleDropGuard;
 use opentelemetry::context::FutureExt;
 use parking_lot::Mutex;
@@ -1120,15 +1121,21 @@ impl ByteStreamServer {
 
         let (compressed_tx, compressed_rx) = make_buf_channel_pair();
 
-        // Fast path: when the instance store is immediately a ZstdStore we hand
-        // the client's COMPRESSED stream straight to `update_zstd`, which
-        // validates/stages/commits the zstd bytes byte-for-byte, skipping the
-        // decode + re-encode round trip entirely. We keep pumping the client
-        // stream through `process_compressed_client_stream` so `bytes_received`
-        // (and therefore QueryWriteStatus) still tracks compressed wire-byte
-        // progress, and `committed_size` remains the compressed wire byte count.
-        if let Some(zstd_store) = instance.store.downcast_arc_immediate::<ZstdStore>() {
-            let update_fut = zstd_store.update_zstd(digest, digest_function, compressed_rx);
+        // Fast path: when the immediate instance store exposes a zstd wire
+        // capability we hand the client's COMPRESSED stream straight to it,
+        // which validates/stages/commits the zstd bytes byte-for-byte, skipping
+        // the decode + re-encode round trip entirely. We keep pumping the
+        // client stream through `process_compressed_client_stream` so
+        // `bytes_received` (and therefore QueryWriteStatus) still tracks
+        // compressed wire-byte progress, and `committed_size` remains the
+        // compressed wire byte count.
+        if let Some(wire_store) = instance.store.wire_compression_store() {
+            let update_fut = wire_store.update_compressed(
+                digest,
+                digest_function,
+                WireCompressor::Zstd,
+                compressed_rx,
+            );
             let client_stream_fut = process_compressed_client_stream(
                 stream,
                 compressed_tx,
@@ -1139,7 +1146,7 @@ impl ByteStreamServer {
 
             // An idle-timeout expiry in the client pump is the primary cause of
             // failure; surface it as-is (DeadlineExceeded) rather than letting the
-            // downstream channel-disconnect error from `update_zstd` mask it.
+            // downstream channel-disconnect error from the store mask it.
             if let Err(err) = &client_stream_result
                 && err.code == Code::DeadlineExceeded
             {
@@ -1170,7 +1177,7 @@ impl ByteStreamServer {
 
             // `committed_size` stays the compressed wire byte count tracked by
             // the atomic (the source of truth the code already uses); it should
-            // agree with `update_zstd`'s returned wire byte count.
+            // agree with the capability's returned wire byte count.
             let committed_size = i64::try_from(bytes_received.load(Ordering::Acquire))
                 .err_tip(|| "Compressed upload size was not convertible to i64")?;
             return Ok(Response::new(WriteResponse { committed_size }));
@@ -1305,16 +1312,17 @@ impl ByteStreamServer {
         let read_offset = u64::try_from(read_request.read_offset)
             .err_tip(|| "Could not convert read_offset to u64")?;
 
-        // Fast path: at offset 0, when the instance store is immediately a
-        // ZstdStore, pipe the stored zstd stream byte-for-byte into the same
-        // chunking pipeline, skipping the raw `get_part` + re-encode entirely.
+        // Fast path: at offset 0, when the immediate instance store exposes a
+        // zstd wire capability, pipe the stored zstd stream byte-for-byte into
+        // the same chunking pipeline, skipping the raw `get_part` + re-encode
+        // entirely.
         // The stored physical bytes are already a valid zstd stream, so the
         // client receives exactly what was stored. For offset > 0 (rare resume)
-        // or a non-ZstdStore instance we keep the raw read + re-encode path,
-        // which is correct because `StoreDriver::get_part` on a ZstdStore
-        // returns decompressed bytes that we then re-compress.
-        let maybe_zstd_store = if read_offset == 0 {
-            instance.store.downcast_arc_immediate::<ZstdStore>()
+        // or an instance without that capability we keep the raw read +
+        // re-encode path, which is correct because `StoreDriver::get_part`
+        // returns decoded bytes that we then re-compress.
+        let maybe_wire_store = if read_offset == 0 {
+            instance.store.wire_compression_store()
         } else {
             None
         };
@@ -1323,11 +1331,11 @@ impl ByteStreamServer {
             DropCloserReadHalf,
             BoxedResultFuture,
             BoxedResultFuture,
-        ) = if let Some(zstd_store) = maybe_zstd_store {
+        ) = if let Some(wire_store) = maybe_wire_store {
             let (zstd_tx, zstd_rx) = make_buf_channel_pair();
             let get_part_fut: BoxedResultFuture = Box::pin(async move {
-                zstd_store
-                    .get_zstd(digest, zstd_tx)
+                wire_store
+                    .get_compressed(digest, WireCompressor::Zstd, zstd_tx)
                     .await
                     .err_tip(|| "Failed to read stored zstd stream for passthrough")
             });

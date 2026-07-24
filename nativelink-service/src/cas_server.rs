@@ -42,14 +42,13 @@ use nativelink_proto::google::rpc::Status as GrpcStatus;
 use nativelink_store::ac_utils::get_and_decode_digest;
 use nativelink_store::grpc_store::GrpcStore;
 use nativelink_store::store_manager::StoreManager;
-use nativelink_store::zstd_store::ZstdStore;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::{
     DigestHasher, DigestHasherFunc, digest_hasher_func_from_context, make_ctx_for_hash_func,
 };
 use nativelink_util::spawn_blocking;
-use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo, WireCompressor};
 use opentelemetry::context::FutureExt;
 use prost::Message;
 use tokio_util::io::StreamReader;
@@ -366,15 +365,15 @@ impl CasServer {
             .enabled_for(instance_name);
         // The digest hasher is set on the ambient context by the
         // `batch_update_blobs` wrapper (via `make_ctx_for_hash_func`); resolve
-        // it once for the whole request so the zstd fast path can validate the
-        // staged blob against the client's declared digest function.
+        // it once for the whole request so the wire-compression fast path can
+        // validate the staged blob against the client's declared digest function.
         let digest_function = digest_hasher_func_from_context();
-        // Detect a directly-configured `ZstdStore` at the instance boundary so
-        // a client-supplied zstd blob can be passed through byte-for-byte
-        // (validate + stage + commit) instead of decompressed then recompressed.
-        // Resolved once and cloned into each per-blob future.
-        let maybe_zstd_store = store.downcast_arc_immediate::<ZstdStore>();
-        let maybe_zstd_store = &maybe_zstd_store;
+        // Detect an immediate wire-compression capability at the instance
+        // boundary so a client-supplied zstd blob can be passed through
+        // byte-for-byte (validate + stage + commit) instead of decompressed then
+        // recompressed. Resolved once and cloned into each per-blob future.
+        let maybe_wire_store = store.wire_compression_store();
+        let maybe_wire_store = &maybe_wire_store;
         let update_futures: FuturesUnordered<_> = request
             .requests
             .into_iter()
@@ -393,22 +392,24 @@ impl CasServer {
                     // compression is enabled for this instance; otherwise a
                     // zstd-compressed blob falls through to
                     // `decompress_batch_update` below, which rejects it the
-                    // same way it would for a non-`ZstdStore` instance.
+                    // same way it would without a wire-compression capability.
                     let result = if remote_cache_compression_enabled
-                        && let (Some(zstd_store), Some(compressor::Value::Zstd)) =
-                            (maybe_zstd_store.clone(), request_compressor)
+                        && let (Some(wire_store), Some(compressor::Value::Zstd)) =
+                            (maybe_wire_store.clone(), request_compressor)
                     {
                         // Fast path: hand the compressed bytes straight to the
-                        // ZstdStore, which validates them against the digest and
-                        // stores them verbatim. A malformed stream surfaces here
-                        // as this blob's `InvalidArgument`, isolated from siblings.
+                        // wire-capable store, which validates them against the
+                        // digest and stores them verbatim. A malformed stream
+                        // surfaces here as this blob's `InvalidArgument`, isolated
+                        // from siblings.
                         run_batch_blob_with_timeout(
                             "BatchUpdateBlobs",
                             digest_info,
                             "Error writing to store",
-                            zstd_store.update_zstd_oneshot(
+                            wire_store.update_compressed_oneshot(
                                 digest_info,
                                 digest_function,
+                                WireCompressor::Zstd,
                                 request.data,
                             ),
                         )
@@ -474,13 +475,13 @@ impl CasServer {
                 compressor::Value::try_from(*compressor_i32)
                     .is_ok_and(|compressor| compressor == compressor::Value::Zstd)
             });
-        // Detect a directly-configured `ZstdStore` at the instance boundary so
-        // stored zstd bytes can be returned byte-for-byte (when the client
-        // accepts zstd and compression actually helped) with no
+        // Detect an immediate wire-compression capability at the instance
+        // boundary so stored zstd bytes can be returned byte-for-byte (when the
+        // client accepts zstd and compression actually helped) with no
         // decompress-then-recompress round trip. Resolved once and cloned into
         // each per-blob future.
-        let maybe_zstd_store = store.downcast_arc_immediate::<ZstdStore>();
-        let maybe_zstd_store = &maybe_zstd_store;
+        let maybe_wire_store = store.wire_compression_store();
+        let maybe_wire_store = &maybe_wire_store;
         let read_futures: FuturesUnordered<_> = request
             .digests
             .into_iter()
@@ -490,10 +491,12 @@ impl CasServer {
                     // TODO(palfrey) There is a security risk here of someone taking all the memory on the instance.
                     // Apply a per-blob deadline so one slow read does not
                     // make the whole batch hit the client's overall deadline.
-                    let (status, data, response_compressor) = if let Some(zstd_store) =
-                        maybe_zstd_store.clone()
+                    let (status, data, response_compressor) = if let Some(wire_store) =
+                        maybe_wire_store.clone()
                     {
-                        // Fast path: the ZstdStore chooses between its stored
+                        let acceptable_compressors =
+                            client_accepts_zstd.then_some(WireCompressor::Zstd);
+                        // Fast path: the wire-capable store chooses between its stored
                         // zstd bytes (when the client accepts zstd and they are
                         // smaller than the raw size) and the decoded raw bytes,
                         // avoiding a decompress-then-recompress round trip.
@@ -501,15 +504,17 @@ impl CasServer {
                             "BatchReadBlobs",
                             digest_copy,
                             "Error reading from store",
-                            zstd_store.get_for_batch(digest_copy, client_accepts_zstd),
+                            wire_store.get_for_batch(
+                                digest_copy,
+                                acceptable_compressors.as_slice(),
+                            ),
                         )
                         .await;
                         match result {
-                            Ok((data, is_zstd)) => {
-                                let compressor = if is_zstd {
-                                    compressor::Value::Zstd
-                                } else {
-                                    compressor::Value::Identity
+                            Ok((data, maybe_compressor)) => {
+                                let compressor = match maybe_compressor {
+                                    Some(WireCompressor::Zstd) => compressor::Value::Zstd,
+                                    None => compressor::Value::Identity,
                                 };
                                 (GrpcStatus::default(), data, compressor)
                             }

@@ -24,7 +24,7 @@ use std::sync::{Arc, OnceLock};
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::future::FutureExt;
-use nativelink_config::stores::ZstdStoreSpec;
+use nativelink_config::stores::ZstdConfig;
 use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{
@@ -38,7 +38,8 @@ use nativelink_util::digest_hasher::{
 use nativelink_util::fs::{self, FileSlot};
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::store_trait::{
-    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+    RemoveCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+    WireCompressionStore, WireCompressor,
 };
 use nativelink_util::{spawn, spawn_blocking};
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
@@ -602,6 +603,8 @@ fn validate_bounded_zstd_blocking(
 ///
 /// This is CAS-only: only digest keys are supported. Zero-byte digests are
 /// never forwarded to the inner store.
+///
+/// Zstd implementation selected by `CompressionAlgorithm::Zstd`.
 #[derive(MetricsComponent)]
 pub struct ZstdStore {
     #[metric(group = "inner_store")]
@@ -639,7 +642,7 @@ impl core::fmt::Debug for ZstdStore {
 }
 
 impl ZstdStore {
-    pub fn new(spec: &ZstdStoreSpec, inner_store: Store) -> Result<Arc<Self>, Error> {
+    pub fn new(spec: &ZstdConfig, inner_store: Store) -> Result<Arc<Self>, Error> {
         if let Some(level) = spec.compression_level
             && !(1..=19).contains(&level)
         {
@@ -1138,6 +1141,57 @@ impl ZstdStore {
 }
 
 #[async_trait]
+impl WireCompressionStore for ZstdStore {
+    async fn update_compressed(
+        self: Arc<Self>,
+        digest: DigestInfo,
+        digest_function: DigestHasherFunc,
+        compressor: WireCompressor,
+        reader: DropCloserReadHalf,
+    ) -> Result<u64, Error> {
+        match compressor {
+            WireCompressor::Zstd => self.update_zstd(digest, digest_function, reader).await,
+        }
+    }
+
+    async fn get_compressed(
+        self: Arc<Self>,
+        digest: DigestInfo,
+        compressor: WireCompressor,
+        writer: DropCloserWriteHalf,
+    ) -> Result<(), Error> {
+        match compressor {
+            WireCompressor::Zstd => self.get_zstd(digest, writer).await,
+        }
+    }
+
+    async fn update_compressed_oneshot(
+        self: Arc<Self>,
+        digest: DigestInfo,
+        digest_function: DigestHasherFunc,
+        compressor: WireCompressor,
+        data: Bytes,
+    ) -> Result<(), Error> {
+        match compressor {
+            WireCompressor::Zstd => self
+                .update_zstd_oneshot(digest, digest_function, data)
+                .await
+                .map(|_| ()),
+        }
+    }
+
+    async fn get_for_batch(
+        self: Arc<Self>,
+        digest: DigestInfo,
+        acceptable_compressors: &[WireCompressor],
+    ) -> Result<(Bytes, Option<WireCompressor>), Error> {
+        let accepts_zstd = acceptable_compressors.contains(&WireCompressor::Zstd);
+        let (data, is_zstd) = ZstdStore::get_for_batch(self.as_ref(), digest, accepts_zstd).await?;
+        Ok((data, is_zstd.then_some(WireCompressor::Zstd)))
+    }
+}
+
+#[async_trait]
 impl StoreDriver for ZstdStore {
     async fn post_init(self: Arc<Self>) -> Result<(), Error> {
         // Ensure the staging directory exists and is writable for the zstd fast
@@ -1207,6 +1261,10 @@ impl StoreDriver for ZstdStore {
             )
         })?;
         self.inner_store.clone().into_inner().post_init().await
+    }
+
+    fn wire_compression_store(self: Arc<Self>) -> Option<Arc<dyn WireCompressionStore>> {
+        Some(self)
     }
 
     async fn has_with_results(
@@ -1294,7 +1352,7 @@ impl StoreDriver for ZstdStore {
 
     fn register_remove_callback(
         self: Arc<Self>,
-        callback: Arc<dyn RemoveItemCallback>,
+        callback: RemoveCallback,
     ) -> Result<(), Error> {
         self.inner_store.register_remove_callback(callback)
     }

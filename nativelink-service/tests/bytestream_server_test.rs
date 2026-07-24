@@ -24,7 +24,9 @@ use hyper_util::rt::TokioIo;
 use hyper_util::server::conn::auto;
 use hyper_util::service::TowerToHyperService;
 use nativelink_config::cas_server::{ByteStreamConfig, HttpListener, WithInstanceName};
-use nativelink_config::stores::{MemorySpec, StoreSpec, VerifySpec, ZstdStoreSpec};
+use nativelink_config::stores::{
+    CompressionAlgorithm, CompressionSpec, MemorySpec, StoreSpec, VerifySpec, ZstdConfig,
+};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_proto::google::bytestream::byte_stream_client::ByteStreamClient;
@@ -36,11 +38,10 @@ use nativelink_service::bytestream_server::ByteStreamServer;
 use nativelink_service::wire_compression::RemoteCacheCompressionInstances;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
-use nativelink_store::zstd_store::ZstdStore;
 use nativelink_util::channel_body_for_tests::ChannelBody;
 use nativelink_util::common::{DigestInfo, encode_stream_proto, make_temp_path};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
-use nativelink_util::store_trait::StoreLike;
+use nativelink_util::store_trait::{StoreLike, WireCompressionStore, WireCompressor};
 use nativelink_util::task::JoinHandleDropGuard;
 use nativelink_util::{background_spawn, spawn};
 use pretty_assertions::assert_eq;
@@ -93,22 +94,24 @@ async fn make_verify_store_manager() -> Result<Arc<StoreManager>, Error> {
 }
 
 /// Builds a [`StoreManager`] whose `main_cas` store is a pure-passthrough
-/// `ZstdStore` over an in-memory backend, so the `ByteStream` zstd fast paths are
-/// exercised end-to-end.
+/// zstd compression over an in-memory backend, so the `ByteStream` zstd fast
+/// paths are exercised end-to-end.
 async fn make_zstd_store_manager() -> Result<Arc<StoreManager>, Error> {
     let store_manager = Arc::new(StoreManager::new());
     let temp_path = make_temp_path("bytestream-zstd-store");
     std::fs::create_dir_all(&temp_path)
         .map_err(|e| make_err!(Code::Internal, "Failed to create zstd temp dir: {e}"))?;
-    let spec = StoreSpec::ZstdStore(Box::new(ZstdStoreSpec {
+    let spec = StoreSpec::Compression(Box::new(CompressionSpec {
         backend: StoreSpec::Memory(MemorySpec::default()),
-        temp_path,
-        max_compressed_upload_size: 512 * 1024 * 1024,
-        max_concurrent_staged_uploads: 0,
-        compression_level: None,
-        max_recompression_size: 0,
-        max_concurrent_recompressions: 0,
-        commit_timeout_s: 0,
+        compression_algorithm: CompressionAlgorithm::Zstd(ZstdConfig {
+            temp_path,
+            max_compressed_upload_size: 512 * 1024 * 1024,
+            max_concurrent_staged_uploads: 0,
+            compression_level: None,
+            max_recompression_size: 0,
+            max_concurrent_recompressions: 0,
+            commit_timeout_s: 0,
+        }),
     }));
     store_manager.add_store(
         "main_cas",
@@ -117,16 +120,14 @@ async fn make_zstd_store_manager() -> Result<Arc<StoreManager>, Error> {
     Ok(store_manager)
 }
 
-/// Downcasts the `main_cas` store to the concrete `ZstdStore` for direct
-/// fast-path calls (e.g. staging a known zstd stream via `update_zstd_oneshot`).
-fn zstd_store_of(store_manager: &StoreManager) -> Arc<ZstdStore> {
+/// Gets the configured store's immediate wire-compression capability for
+/// direct fast-path setup without coupling this service test to a store type.
+fn wire_compression_store_of(store_manager: &StoreManager) -> Arc<dyn WireCompressionStore> {
     store_manager
         .get_store("main_cas")
         .expect("main_cas store missing")
-        .into_inner()
-        .as_any_arc()
-        .downcast::<ZstdStore>()
-        .expect("main_cas store was not a ZstdStore")
+        .wire_compression_store()
+        .expect("main_cas store was not wire-compression capable")
 }
 
 fn make_bytestream_server(
@@ -2098,13 +2099,17 @@ pub async fn zstd_store_compressed_read_is_byte_for_byte() -> Result<(), Box<dyn
         make_bytestream_server_with_remote_cache_compression(store_manager.as_ref(), None, true)
             .expect("Failed to make server"),
     );
-    let zstd_store = zstd_store_of(store_manager.as_ref());
+    let wire_store = wire_compression_store_of(store_manager.as_ref());
 
     let digest = DigestInfo::try_new(&hash, raw_data.len())?;
-    let wire_bytes = zstd_store
-        .update_zstd_oneshot(digest, DigestHasherFunc::Sha256, compressed.clone())
+    wire_store
+        .update_compressed_oneshot(
+            digest,
+            DigestHasherFunc::Sha256,
+            WireCompressor::Zstd,
+            compressed.clone(),
+        )
         .await?;
-    assert_eq!(wire_bytes, compressed.len() as u64);
 
     let read_data = read_all_bytes(
         bs_server.as_ref(),
@@ -2248,11 +2253,16 @@ pub async fn zstd_store_compressed_read_offset_uses_fallback()
         make_bytestream_server_with_remote_cache_compression(store_manager.as_ref(), None, true)
             .expect("Failed to make server"),
     );
-    let zstd_store = zstd_store_of(store_manager.as_ref());
+    let wire_store = wire_compression_store_of(store_manager.as_ref());
 
     let digest = DigestInfo::try_new(&hash, raw_data.len())?;
-    zstd_store
-        .update_zstd_oneshot(digest, DigestHasherFunc::Sha256, compressed)
+    wire_store
+        .update_compressed_oneshot(
+            digest,
+            DigestHasherFunc::Sha256,
+            WireCompressor::Zstd,
+            compressed,
+        )
         .await?;
 
     let read_offset = 100usize;
@@ -2349,11 +2359,16 @@ pub async fn zstd_store_compressed_read_rejects_nonzero_read_limit()
     let bs_server =
         make_bytestream_server_with_remote_cache_compression(store_manager.as_ref(), None, true)
             .expect("Failed to make server");
-    let zstd_store = zstd_store_of(store_manager.as_ref());
+    let wire_store = wire_compression_store_of(store_manager.as_ref());
 
     let digest = DigestInfo::try_new(&hash, raw_data.len())?;
-    zstd_store
-        .update_zstd_oneshot(digest, DigestHasherFunc::Sha256, compressed)
+    wire_store
+        .update_compressed_oneshot(
+            digest,
+            DigestHasherFunc::Sha256,
+            WireCompressor::Zstd,
+            compressed,
+        )
         .await?;
 
     let Err(status) = bs_server
@@ -2391,15 +2406,17 @@ async fn make_zstd_store_manager_with_staging(
     let temp_path = make_temp_path("bytestream-zstd-idle");
     std::fs::create_dir_all(&temp_path)
         .map_err(|e| make_err!(Code::Internal, "Failed to create zstd temp dir: {e}"))?;
-    let spec = StoreSpec::ZstdStore(Box::new(ZstdStoreSpec {
+    let spec = StoreSpec::Compression(Box::new(CompressionSpec {
         backend: StoreSpec::Memory(MemorySpec::default()),
-        temp_path,
-        max_compressed_upload_size: 512 * 1024 * 1024,
-        max_concurrent_staged_uploads,
-        compression_level: None,
-        max_recompression_size: 0,
-        max_concurrent_recompressions: 0,
-        commit_timeout_s: 0,
+        compression_algorithm: CompressionAlgorithm::Zstd(ZstdConfig {
+            temp_path,
+            max_compressed_upload_size: 512 * 1024 * 1024,
+            max_concurrent_staged_uploads,
+            compression_level: None,
+            max_recompression_size: 0,
+            max_concurrent_recompressions: 0,
+            commit_timeout_s: 0,
+        }),
     }));
     store_manager.add_store(
         "main_cas",

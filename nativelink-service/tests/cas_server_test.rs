@@ -21,7 +21,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::StreamExt;
 use nativelink_config::cas_server::WithInstanceName;
-use nativelink_config::stores::{MemorySpec, StoreSpec, ZstdStoreSpec};
+use nativelink_config::stores::{MemorySpec, StoreSpec, ZstdConfig};
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
 use nativelink_metric::MetricsComponent;
@@ -1033,13 +1033,10 @@ async fn batch_read_blobs_zstd_falls_back_to_identity_when_not_smaller()
     Ok(())
 }
 
-// --- ZstdStore instance-store fast path (BatchRead / BatchUpdate) ---
-
-/// A pure passthrough `ZstdStore` spec over an in-memory backend (no
-/// recompression), staging to a fresh temp dir.
-fn zstd_instance_spec(temp_path: String) -> ZstdStoreSpec {
-    ZstdStoreSpec {
-        backend: StoreSpec::Memory(MemorySpec::default()),
+/// A passthrough zstd configuration over an in-memory backend with no
+/// recompression.
+const fn zstd_instance_spec(temp_path: String) -> ZstdConfig {
+    ZstdConfig {
         temp_path,
         max_compressed_upload_size: 512 * 1024 * 1024,
         max_concurrent_staged_uploads: 0,
@@ -1050,9 +1047,8 @@ fn zstd_instance_spec(temp_path: String) -> ZstdStoreSpec {
     }
 }
 
-/// Builds a `CasServer` whose instance CAS store is directly a `ZstdStore`
-/// (over memory) with remote cache compression enabled. Returns the server
-/// and a handle to the `ZstdStore` so tests can seed it directly.
+/// Builds a zstd-compressing `CasServer` over memory with wire compression
+/// enabled, returning the concrete store so tests can seed it directly.
 fn make_zstd_instance_cas_server() -> Result<(CasServer, Arc<ZstdStore>), Error> {
     let temp_path = make_temp_path("cas_server_zstd_instance");
     std::fs::create_dir_all(&temp_path).expect("create temp dir");
@@ -1322,12 +1318,7 @@ async fn batch_update_zstd_instance_identity_entry_roundtrips()
     Ok(())
 }
 
-/// Builds a `CasServer` whose instance CAS store is directly a `ZstdStore`
-/// (over memory) but with remote cache compression DISABLED for the
-/// instance (unlike `make_zstd_instance_cas_server`). Used to verify the
-/// `ZstdStore` fast path in `BatchUpdateBlobs` does not bypass the
-/// `remote_cache_compression_enabled` gate that the non-`ZstdStore` path
-/// already enforces.
+/// Builds the same zstd-compressing server with wire compression disabled.
 fn make_zstd_instance_cas_server_compression_disabled() -> Result<(CasServer, Arc<ZstdStore>), Error>
 {
     let temp_path = make_temp_path("cas_server_zstd_instance_disabled");
@@ -1343,10 +1334,7 @@ fn make_zstd_instance_cas_server_compression_disabled() -> Result<(CasServer, Ar
 #[nativelink_test]
 async fn batch_update_zstd_instance_rejected_when_remote_cache_compression_disabled()
 -> Result<(), Box<dyn core::error::Error>> {
-    // A ZstdStore-backed instance with remote_cache_compression DISABLED must
-    // still reject a client-supplied zstd-compressed entry, exactly like the
-    // non-ZstdStore path does: the fast path must not bypass the
-    // `remote_cache_compression_enabled` gate.
+    // The wire-compression capability must not bypass the instance-level gate.
     let (cas_server, _zstd_store) = make_zstd_instance_cas_server_compression_disabled()?;
 
     let raw_data = b"zstd disabled batch update to zstd-backed instance";

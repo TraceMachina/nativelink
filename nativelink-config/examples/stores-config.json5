@@ -172,7 +172,7 @@
            "content_path": "/tmp/nativelink/data/content_path-cas",
            "temp_path": "/tmp/nativelink/data/tmp_path-cas",
            "eviction_policy": {
-             "max_bytes": "2gb",
+             "max_bytes": "2gb"
            }
          }
        }
@@ -180,21 +180,23 @@
     },
     {
       name: "12",
-      "zstd_store": {
-       "backend": {
-         "memory": {
-           "eviction_policy": {
-             "max_bytes": "10GiB"
-           }
+      "compression": {
+       "compression_algorithm": {
+         "zstd": {
+           "temp_path": "/var/tmp/nativelink-zstd",
+           "max_compressed_upload_size": "512MiB",
+           "max_concurrent_staged_uploads": 4,
+           "compression_level": 19,
+           "max_recompression_size": "64MiB",
+           "max_concurrent_recompressions": 1,
+           "commit_timeout_s": 300
          }
        },
-       "temp_path": "/var/tmp/nativelink-zstd",
-       "max_compressed_upload_size": "512MiB",
-       "max_concurrent_staged_uploads": 4,
-       "compression_level": 19,
-       "max_recompression_size": "64MiB",
-       "max_concurrent_recompressions": 1,
-       "commit_timeout_s": 300
+       "backend": {
+         "memory": {
+           "eviction_policy": { "max_bytes": "10GiB" }
+         }
+       }
      }
     },
     {

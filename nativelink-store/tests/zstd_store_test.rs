@@ -21,8 +21,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bytes::Bytes;
 use nativelink_config::stores::{
-    CacheMetricsSpec, DedupSpec, ExistenceCacheSpec, FastSlowSpec, MemorySpec, NoopSpec, RefSpec,
-    ShardConfig, ShardSpec, SizePartitioningSpec, StoreDirection, StoreSpec, ZstdStoreSpec,
+    CacheMetricsSpec, CompressionAlgorithm, CompressionSpec, DedupSpec, ExistenceCacheSpec,
+    FastSlowSpec, MemorySpec, NoopSpec, RefSpec, ShardConfig, ShardSpec, SizePartitioningSpec,
+    StoreDirection, StoreSpec, ZstdConfig,
 };
 use nativelink_error::{Code, Error, make_err};
 use nativelink_macro::nativelink_test;
@@ -47,7 +48,7 @@ use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc, make_ctx_fo
 use nativelink_util::fs::FileSlot;
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::store_trait::{
-    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+    RemoveCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo, WireCompressor,
 };
 use nativelink_util::{background_spawn, spawn};
 use opentelemetry::context::FutureExt;
@@ -116,7 +117,7 @@ impl StoreDriver for RecordingStore {
 
     fn register_remove_callback(
         self: Arc<Self>,
-        _callback: Arc<dyn RemoveItemCallback>,
+        _callback: RemoveCallback,
     ) -> Result<(), Error> {
         Ok(())
     }
@@ -193,7 +194,7 @@ impl StoreDriver for ChunkingStore {
 
     fn register_remove_callback(
         self: Arc<Self>,
-        _callback: Arc<dyn RemoveItemCallback>,
+        _callback: RemoveCallback,
     ) -> Result<(), Error> {
         Ok(())
     }
@@ -203,9 +204,8 @@ default_health_status_indicator!(ChunkingStore);
 
 const TEMP_PATH: &str = "/tmp/nativelink-zstd-store-test";
 
-fn spec() -> ZstdStoreSpec {
-    ZstdStoreSpec {
-        backend: StoreSpec::Memory(MemorySpec::default()),
+fn spec() -> ZstdConfig {
+    ZstdConfig {
         temp_path: TEMP_PATH.to_string(),
         max_compressed_upload_size: 512 * 1024 * 1024,
         max_concurrent_staged_uploads: 0,
@@ -545,13 +545,16 @@ async fn has_mixed_batch_reports_correct_sizes() -> Result<(), Error> {
 }
 
 #[nativelink_test]
-async fn factory_builds_zstd_store() -> Result<(), Error> {
-    let store_spec = StoreSpec::ZstdStore(Box::new(spec()));
+async fn factory_selects_zstd_wire_capability() -> Result<(), Error> {
+    let store_spec = StoreSpec::Compression(Box::new(CompressionSpec {
+        backend: StoreSpec::Memory(MemorySpec::default()),
+        compression_algorithm: CompressionAlgorithm::Zstd(spec()),
+    }));
     let store_manager = Arc::new(StoreManager::new());
     let store = store_factory(&store_spec, &store_manager, None).await?;
     assert!(
-        store.downcast_ref_immediate::<ZstdStore>().is_some(),
-        "Expected store_factory to build a ZstdStore for StoreSpec::ZstdStore"
+        store.wire_compression_store().is_some(),
+        "Expected CompressionAlgorithm::Zstd to expose the wire-compression capability"
     );
     Ok(())
 }
@@ -562,9 +565,8 @@ async fn factory_builds_zstd_store() -> Result<(), Error> {
 
 /// A spec pointing at a specific temp dir (for tests that assert temp-dir
 /// emptiness and therefore must not share the global staging directory).
-fn spec_for(temp_path: String) -> ZstdStoreSpec {
-    ZstdStoreSpec {
-        backend: StoreSpec::Memory(MemorySpec::default()),
+const fn spec_for(temp_path: String) -> ZstdConfig {
+    ZstdConfig {
         temp_path,
         max_compressed_upload_size: 512 * 1024 * 1024,
         max_concurrent_staged_uploads: 0,
@@ -579,7 +581,7 @@ fn spec_for(temp_path: String) -> ZstdStoreSpec {
 /// exists. Returns the concrete store (for the fast-path methods), a `Store`
 /// wrapper (for the identity round-trip view), and the inner store (for
 /// physical inspection).
-async fn build(spec: &ZstdStoreSpec) -> Result<(Arc<ZstdStore>, Store, Store), Error> {
+async fn build(spec: &ZstdConfig) -> Result<(Arc<ZstdStore>, Store, Store), Error> {
     std::fs::create_dir_all(&spec.temp_path)
         .map_err(|e| make_err!(Code::Internal, "Failed to create test temp dir: {e}"))?;
     let inner = Store::new(MemoryStore::new(&MemorySpec::default()));
@@ -1007,6 +1009,9 @@ async fn update_zstd_skips_recompression_above_threshold() -> Result<(), Error> 
 #[nativelink_test]
 async fn get_for_batch_selects_zstd_or_raw() -> Result<(), Error> {
     let (zstd, store, _inner) = build(&spec()).await?;
+    let wire_store = Store::new(zstd.clone())
+        .wire_compression_store()
+        .expect("ZstdStore must expose the wire-compression capability");
 
     // Compressible blob (stored via the identity path so inner holds zstd).
     let compressible = vec![0u8; 4096];
@@ -1015,9 +1020,13 @@ async fn get_for_batch_selects_zstd_or_raw() -> Result<(), Error> {
         .update_oneshot(comp_digest, compressible.clone().into())
         .await?;
 
-    let (payload, is_zstd) = zstd.get_for_batch(comp_digest, true).await?;
-    assert!(
-        is_zstd,
+    let (payload, compressor) = wire_store
+        .clone()
+        .get_for_batch(comp_digest, &[WireCompressor::Zstd])
+        .await?;
+    assert_eq!(
+        compressor,
+        Some(WireCompressor::Zstd),
         "compressible blob with accepts_zstd must return zstd"
     );
     assert!(
@@ -1031,8 +1040,8 @@ async fn get_for_batch_selects_zstd_or_raw() -> Result<(), Error> {
     );
 
     // Same blob, but the client does not accept zstd => raw.
-    let (raw, is_zstd) = zstd.get_for_batch(comp_digest, false).await?;
-    assert!(!is_zstd);
+    let (raw, compressor) = wire_store.clone().get_for_batch(comp_digest, &[]).await?;
+    assert_eq!(compressor, None);
     assert_eq!(
         &raw[..],
         &compressible[..],
@@ -1045,8 +1054,13 @@ async fn get_for_batch_selects_zstd_or_raw() -> Result<(), Error> {
     store
         .update_oneshot(inc_digest, incompressible.clone().into())
         .await?;
-    let (raw, is_zstd) = zstd.get_for_batch(inc_digest, true).await?;
-    assert!(!is_zstd, "incompressible blob must not be served as zstd");
+    let (raw, compressor) = wire_store
+        .get_for_batch(inc_digest, &[WireCompressor::Zstd])
+        .await?;
+    assert_eq!(
+        compressor, None,
+        "incompressible blob must not be served as zstd"
+    );
     assert_eq!(&raw[..], &incompressible[..]);
     Ok(())
 }
@@ -1740,7 +1754,7 @@ impl StoreDriver for ClobberingStore {
 
     fn register_remove_callback(
         self: Arc<Self>,
-        _callback: Arc<dyn RemoveItemCallback>,
+        _callback: RemoveCallback,
     ) -> Result<(), Error> {
         Ok(())
     }
@@ -1815,7 +1829,7 @@ impl StoreDriver for StallStore {
 
     fn register_remove_callback(
         self: Arc<Self>,
-        _callback: Arc<dyn RemoveItemCallback>,
+        _callback: RemoveCallback,
     ) -> Result<(), Error> {
         Ok(())
     }

@@ -1,5 +1,6 @@
 // Variant of `local-storage-cas.json5` that stores CAS blobs as zstd streams
-// at rest via `zstd_store`, instead of raw bytes behind `compression` (LZ4).
+// at rest via the `zstd` algorithm of `compression`, instead of raw bytes
+// behind `compression` with its `lz4` algorithm.
 //
 // The payoff over plain `compression`: a Bazel client built with
 // `--remote_cache_compression` (enabled below via `remote_cache_compression`
@@ -8,13 +9,15 @@
 // the gRPC boundary. Identity clients (no `--remote_cache_compression`) are
 // unaffected: they still get plain decompressed bytes.
 //
-// Read this whole comment block before adapting this file. `zstd_store`'s
-// deployment constraints are not optional footnotes; getting them wrong
+// Read this whole comment block before adapting this file. `compression` with
+// the `zstd` algorithm has deployment constraints that are not optional
+// footnotes; getting them wrong
 // either silently corrupts a mixed namespace or forces a cache flush later.
 // Full explanation:
 // https://github.com/TraceMachina/nativelink/blob/main/web/apps/docs/content/docs/reference/nativelink-config/store-overview.mdx
 //
-// 1. DEDICATED, EMPTY NAMESPACE ONLY. `zstd_store.backend` below
+// 1. DEDICATED, EMPTY NAMESPACE ONLY. The `compression.backend` below,
+//    when `compression_algorithm.zstd` is selected,
 //    (`CAS_ZSTD_CONTENT_STORE`, and the paths it writes) must never be shared
 //    with a store, instance, or NativeLink version that reads or writes those
 //    same keys as raw bytes. The digest key is identical either way, raw CAS
@@ -24,29 +27,75 @@
 //    instead of the `content_path-cas` paths from `local-storage-cas.json5` —
 //    reusing those would mix raw and zstd values under one namespace.
 //
-// 2. NO IN-PLACE MIGRATION. Turning `zstd_store` on for an existing
+// 2. NO IN-PLACE MIGRATION. Selecting `compression_algorithm.zstd` for an existing
 //    populated CAS, or turning it back off, both require a cache flush (or
 //    cutting over to a new namespace as done here) — not an in-place
 //    conversion. The same applies to a rolling/mixed-version deploy against
 //    one shared namespace: unsupported, because some replicas would write
 //    raw and others zstd to the same keys.
 //
-// 3. PLACEMENT: `zstd_store` must be the store an instance/service points at
-//    directly for the passthrough optimization above to apply. Wrappers such
+// 3. PLACEMENT: the `compression` store with `compression_algorithm.zstd` must
+//    be the store an instance/service points at directly for the passthrough
+//    optimization above to apply. Wrappers such
 //    as `fast_slow`, `dedup`, `existence_cache`, `cache_metrics`, `shard`,
 //    `ref_store`, and `size_partitioning` are fine *inside* it (they then
 //    operate on the physical zstd stream). A wrapper placed *outside*
-//    `zstd_store` (e.g. `verify` around it) is still correct, but forces
-//    that wrapper to decode the stream, which disables passthrough at that
+//    the zstd compression store (e.g. `verify` around it) is still correct,
+//    but forces that wrapper to decode the stream, which disables passthrough at that
 //    boundary.
 //
-// 4. CAS-ONLY. `zstd_store` only supports digest-keyed CAS entries; never
+// 4. CAS-ONLY. `compression_algorithm.zstd` only supports digest-keyed CAS entries; never
 //    point an AC store at it (`AC_MAIN_STORE` below stays plain `filesystem`).
 {
   stores: [
     {
       name: "CAS_MAIN_STORE",
-      zstd_store: {
+      compression: {
+        compression_algorithm: {
+          zstd: {
+            // Staging directory for upload validation and optional
+            // recompression. Kept on the same `/root/.cache/nativelink` tree as
+            // the `filesystem` backend's `content_path` below (note 2 above).
+            temp_path: "/root/.cache/nativelink/tmp_path-cas-zstd-stage",
+
+            // Reject a compressed upload over this many wire bytes with
+            // RESOURCE_EXHAUSTED rather than staging it.
+            max_compressed_upload_size: "512MiB",
+
+            // How many uploads may hold a staged file at once. Sizes worst-case
+            // temp disk usage together with the two size limits below:
+            //   max_concurrent_staged_uploads * (max_compressed_upload_size + max_recompression_size)
+            // (the recompression term only applies while a given upload is
+            // actively being re-encoded). Monitor `temp_path` against that bound.
+            max_concurrent_staged_uploads: 4,
+
+            // Optional: force re-encoding at this level when it beats the
+            // incoming stream, keeping whichever is smaller. Omit entirely for
+            // pure passthrough (no forced recompression).
+            //
+            // Valid range is 1..=19 — enforced at startup. This is *not* the
+            // full zstd range (up to 22): standard levels 1-19 cap the encoded
+            // frame's window size at windowLog <= 23 (<= 8MiB), which every
+            // Bazel/zstd-jni client can decode with plain libzstd defaults.
+            // Bazel's decoder never calls setLongMax, so its hard ceiling is
+            // windowLog <= 27 (128MiB) - 19 keeps a large margin under that and
+            // is what caps the field, not a smaller "safe zstd" limit. Long-
+            // distance matching and dictionaries are never enabled by this
+            // store.
+            compression_level: 19,
+
+            // Recompression is only attempted for uploads whose *decoded* size
+            // is within this bound. 0 disables recompression entirely (an
+            // incoming compressed stream is always stored as-is), while still
+            // letting `compression_level` pick the level used for brand-new,
+            // non-precompressed uploads.
+            max_recompression_size: "64MiB",
+
+            // Concurrent recompressions admitted by this store instance.
+            max_concurrent_recompressions: 1,
+          },
+        },
+
         // MUST be a brand-new/empty namespace — see note 1 above. Everything
         // under `backend` here is a complete, dedicated CAS stack; nothing
         // else in this file (or any other deployment) may read or write it
@@ -72,48 +121,6 @@
               },
             },
           },
-        },
-
-        // Staging directory for upload validation and optional
-        // recompression. Kept on the same `/root/.cache/nativelink` tree as
-        // the `filesystem` backend's `content_path` above (note 2 below).
-        temp_path: "/root/.cache/nativelink/tmp_path-cas-zstd-stage",
-
-        // Reject a compressed upload over this many wire bytes with
-        // RESOURCE_EXHAUSTED rather than staging it.
-        max_compressed_upload_size: "512MiB",
-
-        // How many uploads may hold a staged file at once. Sizes worst-case
-        // temp disk usage together with the two size limits below:
-        //   max_concurrent_staged_uploads * (max_compressed_upload_size + max_recompression_size)
-        // (the recompression term only applies while a given upload is
-        // actively being re-encoded). Monitor `temp_path` against that bound.
-        max_concurrent_staged_uploads: 4,
-
-        // Optional: force re-encoding at this level when it beats the
-        // incoming stream, keeping whichever is smaller. Omit entirely for
-        // pure passthrough (no forced recompression).
-        //
-        // Valid range is 1..=19 — enforced at startup. This is *not* the
-        // full zstd range (up to 22): standard levels 1-19 cap the encoded
-        // frame's window size at windowLog <= 23 (<= 8MiB), which every
-        // Bazel/zstd-jni client can decode with plain libzstd defaults.
-        // Bazel's decoder never calls setLongMax, so its hard ceiling is
-        // windowLog <= 27 (128MiB) - 19 keeps a large margin under that and
-        // is what caps the field, not a smaller "safe zstd" limit. Long-
-        // distance matching and dictionaries are never enabled by this
-        // store.
-        compression_level: 19,
-
-        // Recompression is only attempted for uploads whose *decoded* size
-        // is within this bound. 0 disables recompression entirely (an
-        // incoming compressed stream is always stored as-is), while still
-        // letting `compression_level` pick the level used for brand-new,
-        // non-precompressed uploads.
-        max_recompression_size: "64MiB",
-
-        // Concurrent recompressions admitted by this store instance.
-        max_concurrent_recompressions: 1,
       },
     },
     {
@@ -131,7 +138,7 @@
       },
     },
     {
-      // Plain filesystem store: zstd_store is CAS-only (note 4 above), so
+      // Plain filesystem store: zstd compression is CAS-only (note 4 above), so
       // the AC never goes anywhere near it.
       name: "AC_MAIN_STORE",
       filesystem: {
@@ -173,9 +180,9 @@
           {
             // Advertises zstd to clients so ByteStream/CAS RPCs accept and
             // serve compressed-blobs/zstd/... payloads. This is what makes
-            // the byte-for-byte passthrough in `zstd_store` reachable —
+            // the byte-for-byte passthrough in the zstd compression store reachable —
             // without it, every client uses identity transfers and
-            // `zstd_store` still stores zstd at rest, but every read pays
+            // zstd compression still stores zstd at rest, but every read pays
             // a decompress.
             remote_cache_compression: true,
           },

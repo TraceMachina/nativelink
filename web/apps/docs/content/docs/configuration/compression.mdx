@@ -89,20 +89,21 @@ To also shrink bytes at rest, wrap the backing store in a
 [`compression` store](/reference/nativelink-config/main#compressionspec);
 the two compose, since one covers the wire and the other covers storage.
 
-## Skipping the decompress/recompress round trip: `zstd_store`
+## Skipping the decompress/recompress round trip: `compression_algorithm.zstd`
 
-`compression` (above) always decompresses to raw bytes at the store
-boundary, so a wire-compressed request still pays a decompress-on-write and
-recompress-on-read even though the bytes were zstd on the wire the whole
-time. `zstd_store` closes that gap: it keeps blobs as zstd **at rest** and,
-when it's the outermost store an instance points at, serves them
+`compression_algorithm: { lz4: ... }` always decompresses to raw bytes at
+the store boundary, so a wire-compressed request still pays a
+decompress-on-write and recompress-on-read even though the bytes were zstd on
+the wire the whole time. `compression_algorithm: { zstd: ... }` closes that
+gap: it keeps blobs as zstd **at rest** and, when it's the outermost store an
+instance points at, serves them
 byte-for-byte to `--remote_cache_compression` clients — no recompress on a
 hit. Identity clients still get plain decompressed bytes.
 
 It has real deployment constraints — a dedicated, empty backend namespace,
 no in-place migration, and a capped `compression_level` — that don't apply
-to `compression`. See
-[Store overview → Pass-through compression](/reference/nativelink-config/store-overview#pass-through-compression-zstd_store)
+to `compression_algorithm: { lz4: ... }`. See
+[Store overview → Pass-through compression](/reference/nativelink-config/store-overview#pass-through-compression-compression_algorithmzstd)
 for the full picture before adopting it.
 
 ## FAQ

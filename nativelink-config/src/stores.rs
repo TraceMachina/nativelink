@@ -315,7 +315,7 @@ pub enum StoreSpec {
     /// is a concern it is often faster and more efficient to use this
     /// store before those stores.
     ///
-    /// **Example JSON Config:**
+    /// **LZ4 example:**
     /// ```json
     /// "compression": {
     ///   "compression_algorithm": {
@@ -326,42 +326,48 @@ pub enum StoreSpec {
     ///       "content_path": "/tmp/nativelink/data/content_path-cas",
     ///       "temp_path": "/tmp/nativelink/data/tmp_path-cas",
     ///       "eviction_policy": {
-    ///         "max_bytes": "2gb",
+    ///         "max_bytes": "2gb"
     ///       }
     ///     }
     ///   }
     /// }
     /// ```
     ///
-    Compression(Box<CompressionSpec>),
-
-    /// A zstd pass-through store. Keeps CAS blobs as zstd streams at rest and serves
-    /// them byte-for-byte to `--remote_cache_compression` clients. Identity clients
-    /// receive decompressed bytes on the fly.
-    ///
-    /// **WARNING:** the `backend` MUST be a new or empty dedicated namespace, never
-    /// shared with processes that read/write the same keys as raw bytes. Rollout and
-    /// rollback require a cache flush / new namespace — there is no in-place migration.
-    ///
-    /// Placement: `ZstdStore` must be the store the instance points at directly for
-    /// byte-for-byte passthrough. `fast_slow`, `dedup`, `existence_cache`,
-    /// `cache_metrics`, `shard`, `ref`, `size_partitioning` may appear **inside** it.
-    /// Any wrapper **outside** it is correct but disables passthrough at that boundary.
-    ///
-    /// **Example JSON Config:**
+    /// **Zstd example:**
     /// ```json
-    /// "zstd_store": {
-    ///   "backend": { "fast_slow": { /* complete backend stack */ } },
-    ///   "temp_path": "/var/tmp/nativelink-zstd",
-    ///   "max_compressed_upload_size": "512MiB",
-    ///   "max_concurrent_staged_uploads": 4,
-    ///   "compression_level": 19,
-    ///   "max_recompression_size": "64MiB",
-    ///   "max_concurrent_recompressions": 1,
-    ///   "commit_timeout_s": 300
+    /// "compression": {
+    ///   "compression_algorithm": {
+    ///     "zstd": {
+    ///       "temp_path": "/var/tmp/nativelink-zstd",
+    ///       "max_compressed_upload_size": "512MiB",
+    ///       "max_concurrent_staged_uploads": 4,
+    ///       "compression_level": 19,
+    ///       "max_recompression_size": "64MiB",
+    ///       "max_concurrent_recompressions": 1,
+    ///       "commit_timeout_s": 300
+    ///     }
+    ///   },
+    ///   "backend": {
+    ///     "memory": {
+    ///       "eviction_policy": { "max_bytes": "10GiB" }
+    ///     }
+    ///   }
     /// }
     /// ```
-    ZstdStore(Box<ZstdStoreSpec>),
+    ///
+    /// The `zstd` algorithm keeps CAS blobs as zstd streams at rest and serves them
+    /// byte-for-byte to `--remote_cache_compression` clients. Its `backend` MUST be
+    /// a new or empty dedicated namespace, never shared with processes that read or
+    /// write the same keys as raw bytes. Rollout and rollback require a cache flush
+    /// or new namespace — there is no in-place migration.
+    ///
+    /// For byte-for-byte passthrough, this compression store must be the store the
+    /// instance points at directly. `fast_slow`, `dedup`, `existence_cache`,
+    /// `cache_metrics`, `shard`, `ref`, and `size_partitioning` may appear **inside**
+    /// its `backend`. Any wrapper **outside** it is correct but disables passthrough
+    /// at that boundary.
+    ///
+    Compression(Box<CompressionSpec>),
 
     /// A dedup store will take the inputs and run a rolling hash
     /// algorithm on them to slice the input into smaller parts then
@@ -1099,7 +1105,7 @@ pub struct Lz4Config {
     pub max_decode_block_size: u32,
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum CompressionAlgorithm {
@@ -1111,6 +1117,11 @@ pub enum CompressionAlgorithm {
     ///
     /// see: <https://lz4.github.io/lz4/>
     Lz4(Lz4Config),
+
+    /// Zstd compression keeps blobs as standard zstd streams at rest. When this
+    /// compression store is directly configured for an instance, zstd wire-compression
+    /// clients can receive the stored stream byte-for-byte.
+    Zstd(ZstdConfig),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -1128,13 +1139,10 @@ pub struct CompressionSpec {
     pub compression_algorithm: CompressionAlgorithm,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
-pub struct ZstdStoreSpec {
-    /// The wrapped inner CAS store. MUST be a dedicated, empty namespace.
-    pub backend: StoreSpec,
-
+pub struct ZstdConfig {
     /// Operator-controlled staging directory for validation/recompression.
     #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
     pub temp_path: String,
@@ -1981,15 +1989,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn zstd_store_spec_parses_and_defaults() {
+    fn zstd_compression_algorithm_parses_and_defaults() {
         let cfg: StoreSpec = serde_json5::from_str(
-            r#"{ zstd_store: { backend: { memory: {} }, temp_path: "/var/tmp/nl-zstd",
-                 max_compressed_upload_size: "512MiB", compression_level: 19,
-                 max_recompression_size: "64MiB" } }"#,
+            r#"{ compression: { compression_algorithm: { zstd: {
+                 temp_path: "/var/tmp/nl-zstd", max_compressed_upload_size: "512MiB",
+                 compression_level: 19, max_recompression_size: "64MiB" } },
+                 backend: { memory: {} } } }"#,
         )
         .unwrap();
-        let StoreSpec::ZstdStore(spec) = cfg else {
+        let StoreSpec::Compression(spec) = cfg else {
             panic!("wrong variant")
+        };
+        let CompressionAlgorithm::Zstd(spec) = spec.compression_algorithm else {
+            panic!("wrong compression algorithm")
         };
         assert_eq!(spec.max_compressed_upload_size, 512 * 1024 * 1024);
         assert_eq!(spec.compression_level, Some(19));
