@@ -297,6 +297,7 @@ pluggable
 [Cc]allout
 hostnames
 prefetch
+preconnect
 protos
 Serde
 camelCase
