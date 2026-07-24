@@ -239,83 +239,101 @@ fn hardlink_directory_tree_recursive<'a>(
     dst: &'a Path,
 ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
     Box::pin(async move {
-        let mut entries = fs::read_dir(src)
-            .await
-            .err_tip(|| format!("Failed to read directory: {}", src.display()))?;
+        let src_buf = src.to_path_buf();
+        let dst_buf = dst.to_path_buf();
 
-        while let Some(entry) = entries
-            .next_entry()
-            .await
-            .err_tip(|| format!("Failed to get next entry in: {}", src.display()))?
-        {
-            let entry_path = entry.path();
-            let file_name = entry.file_name().into_string().map_err(|os_str| {
-                make_err!(
-                    Code::InvalidArgument,
-                    "Invalid UTF-8 in filename: {:?}",
-                    os_str
-                )
-            })?;
+        let subdirs = tokio::task::spawn_blocking(
+            move || -> Result<Vec<(PathBuf, PathBuf)>, Error> {
+                let mut subdirs = Vec::new();
+                let read_dir = std::fs::read_dir(&src_buf)
+                    .err_tip(|| format!("Failed to read directory: {}", src_buf.display()))?;
+                for entry in read_dir {
+                    let entry = entry
+                        .err_tip(|| format!("Failed to get next entry in: {}", src_buf.display()))?;
+                    let entry_path = entry.path();
+                    let file_name = entry.file_name().into_string().map_err(|os_str| {
+                        make_err!(Code::InvalidArgument, "Invalid UTF-8 in filename: {:?}", os_str)
+                    })?;
+                    let dst_path = dst_buf.join(&file_name);
 
-            let dst_path = dst.join(&file_name);
-            // `DirEntry::metadata` does NOT traverse symlinks (it has
-            // `symlink_metadata`/lstat semantics), so `is_symlink()` below
-            // correctly identifies symlink entries and the symlink branch
-            // recreates them as symlinks rather than dereferencing them.
-            let metadata = entry
-                .metadata()
-                .await
-                .err_tip(|| format!("Failed to get metadata for: {}", entry_path.display()))?;
+                    // `DirEntry::metadata` does NOT traverse symlinks (it has
+                    // `symlink_metadata`/lstat semantics), so `is_symlink()`
+                    // below correctly identifies symlink entries and the
+                    // symlink branch recreates them rather than dereferencing.
+                    let metadata = entry
+                        .metadata()
+                        .err_tip(|| format!("Failed to get metadata for: {}", entry_path.display()))?;
 
-            if metadata.is_symlink() {
-                // Recreate the symlink as a symlink. Checked BEFORE `is_dir()`
-                // / `is_file()` so a symlink that resolves to a directory is
-                // never treated as a real directory and recursed *through*
-                // (which would dereference the link and potentially escape
-                // the tree).
-                let target = fs::read_link(&entry_path)
-                    .await
-                    .err_tip(|| format!("Failed to read symlink: {}", entry_path.display()))?;
-
-                #[cfg(unix)]
-                fs::symlink(&target, &dst_path)
-                    .await
-                    .err_tip(|| format!("Failed to create symlink: {}", dst_path.display()))?;
-
-                #[cfg(windows)]
-                {
-                    if target.is_dir() {
-                        fs::symlink_dir(&target, &dst_path).await.err_tip(|| {
-                            format!("Failed to create directory symlink: {}", dst_path.display())
+                    if metadata.is_symlink() {
+                        // Recreate the symlink as a symlink. Checked BEFORE
+                        // `is_dir()`/`is_file()` so a symlink that resolves to a
+                        // directory is never recursed *through*.
+                        let target = std::fs::read_link(&entry_path).err_tip(|| {
+                            format!("Failed to read symlink: {}", entry_path.display())
                         })?;
-                    } else {
-                        fs::symlink_file(&target, &dst_path).await.err_tip(|| {
-                            format!("Failed to create file symlink: {}", dst_path.display())
+
+                        #[cfg(unix)]
+                        std::os::unix::fs::symlink(&target, &dst_path).err_tip(|| {
+                            format!("Failed to create symlink: {}", dst_path.display())
+                        })?;
+
+                        #[cfg(windows)]
+                        {
+                            if target.is_dir() {
+                                std::os::windows::fs::symlink_dir(&target, &dst_path).err_tip(
+                                    || {
+                                        format!(
+                                            "Failed to create directory symlink: {}",
+                                            dst_path.display()
+                                        )
+                                    },
+                                )?;
+                            } else {
+                                std::os::windows::fs::symlink_file(&target, &dst_path).err_tip(
+                                    || {
+                                        format!(
+                                            "Failed to create file symlink: {}",
+                                            dst_path.display()
+                                        )
+                                    },
+                                )?;
+                            }
+                        }
+                    } else if metadata.is_dir() {
+                        std::fs::create_dir(&dst_path).err_tip(|| {
+                            format!("Failed to create directory: {}", dst_path.display())
+                        })?;
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            std::fs::set_permissions(
+                                &dst_path,
+                                std::fs::Permissions::from_mode(0o755),
+                            )
+                            .err_tip(|| {
+                                format!("Failed to set directory mode: {}", dst_path.display())
+                            })?;
+                        }
+                        subdirs.push((entry_path, dst_path));
+                    } else if metadata.is_file() {
+                        std::fs::hard_link(&entry_path, &dst_path).err_tip(|| {
+                            format!(
+                                "Failed to hardlink {} to {}. This may occur if the source and destination are on different filesystems",
+                                entry_path.display(),
+                                dst_path.display()
+                            )
                         })?;
                     }
                 }
-            } else if metadata.is_dir() {
-                // Create subdirectory and recurse
-                fs::create_dir(&dst_path)
-                    .await
-                    .err_tip(|| format!("Failed to create directory: {}", dst_path.display()))?;
-                chmod_dir_0o755(&dst_path).await?;
+                Ok(subdirs)
+            },
+        )
+        .await
+        .map_err(|e| make_err!(Code::Internal, "hardlink blocking task failed: {e:?}"))??;
 
-                hardlink_directory_tree_recursive(&entry_path, &dst_path).await?;
-            } else if metadata.is_file() {
-                // Hardlink the file
-                fs::hard_link(&entry_path, &dst_path)
-                    .await
-                    .err_tip(|| {
-                        format!(
-                            "Failed to hardlink {} to {}. This may occur if the source and destination are on different filesystems",
-                            entry_path.display(),
-                            dst_path.display()
-                        )
-                    })?;
-            }
+        for (sub_src, sub_dst) in subdirs {
+            hardlink_directory_tree_recursive(&sub_src, &sub_dst).await?;
         }
-
         Ok(())
     })
 }
@@ -381,156 +399,172 @@ pub async fn set_dir_writable_recursive(dir: &Path) -> Result<(), Error> {
     set_perms_recursive_impl(dir.to_path_buf(), set_dir_writable_one_path).await
 }
 
-fn set_readonly_one_path(
-    path: PathBuf,
-    metadata: Metadata,
-) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>> {
-    Box::pin(async move {
-        // Directories are left writable on purpose. They are not
-        // hardlink-shared between cache entries — only file content inodes
-        // are — so a writable directory mode cannot corrupt anything. Keeping
-        // them writable means the materialized destination tree already
-        // accepts the nested output files Bazel actions declare, with no
-        // separate per-materialization chmod walk.
-        if metadata.is_dir() {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let mut perms = metadata.permissions();
-                perms.set_mode(0o755);
-
-                fs::set_permissions(&path, perms)
-                    .await
-                    .err_tip(|| format!("Failed to set permissions for: {}", path.display()))?;
-            }
-
-            // On Windows directories are already writable; clearing the
-            // read-only attribute here would be a no-op, so leave them alone.
-
-            return Ok(());
-        }
-
-        // Set the file to read-only.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = metadata.permissions();
-
-            // Files get r-xr-xr-x (0o555): read and execute for everyone,
-            // write for no one. Files use 0o555 rather than 0o444 so the
-            // execute bit survives on cached executables — a stripped +x bit
-            // makes an action's interpreter or wrapper script fail with
-            // EACCES once the tree is materialized into a workspace. The
-            // write bit stays cleared, so the hermeticity contract (inputs
-            // are immutable) is unchanged.
-            perms.set_mode(0o555);
-
-            fs::set_permissions(&path, perms)
-                .await
-                .err_tip(|| format!("Failed to set permissions for: {}", path.display()))?;
-        }
-
-        #[cfg(windows)]
-        {
-            let mut perms = metadata.permissions();
-            perms.set_readonly(true);
-
-            fs::set_permissions(&path, perms)
-                .await
-                .err_tip(|| format!("Failed to set permissions for: {}", path.display()))?;
-        }
-
-        Ok(())
-    })
-}
-
-fn set_dir_writable_one_path(
-    path: PathBuf,
-    metadata: Metadata,
-) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>> {
-    Box::pin(async move {
-        // Files are intentionally skipped here. They may be hardlinked into
-        // the CAS (FilesystemStore); chmoding them would corrupt the shared
-        // inode's mode for every other in-flight action.
-        if !metadata.is_dir() {
-            return Ok(());
-        }
-
+// Synchronous: called from inside the per-directory blocking task in
+// `set_perms_recursive_impl`, so it must not await.
+fn set_readonly_one_path(path: &Path, metadata: &Metadata) -> Result<(), Error> {
+    // Directories are left writable on purpose. They are not
+    // hardlink-shared between cache entries — only file content inodes
+    // are — so a writable directory mode cannot corrupt anything. Keeping
+    // them writable means the materialized destination tree already
+    // accepts the nested output files Bazel actions declare, with no
+    // separate per-materialization chmod walk.
+    if metadata.is_dir() {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let mut perms = metadata.permissions();
             perms.set_mode(0o755);
 
-            fs::set_permissions(&path, perms)
-                .await
+            std::fs::set_permissions(path, perms)
                 .err_tip(|| format!("Failed to set permissions for: {}", path.display()))?;
         }
 
-        #[cfg(windows)]
-        {
-            let mut perms = metadata.permissions();
-            perms.set_readonly(false);
+        // On Windows directories are already writable; clearing the
+        // read-only attribute here would be a no-op, so leave them alone.
 
-            fs::set_permissions(&path, perms)
-                .await
-                .err_tip(|| format!("Failed to set permissions for: {}", path.display()))?;
-        }
+        return Ok(());
+    }
 
-        Ok(())
-    })
+    // Set the file to read-only.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = metadata.permissions();
+
+        // Files get r-xr-xr-x (0o555): read and execute for everyone,
+        // write for no one. Files use 0o555 rather than 0o444 so the
+        // execute bit survives on cached executables — a stripped +x bit
+        // makes an action's interpreter or wrapper script fail with
+        // EACCES once the tree is materialized into a workspace. The
+        // write bit stays cleared, so the hermeticity contract (inputs
+        // are immutable) is unchanged.
+        perms.set_mode(0o555);
+
+        std::fs::set_permissions(path, perms)
+            .err_tip(|| format!("Failed to set permissions for: {}", path.display()))?;
+    }
+
+    #[cfg(windows)]
+    {
+        let mut perms = metadata.permissions();
+        perms.set_readonly(true);
+
+        std::fs::set_permissions(path, perms)
+            .err_tip(|| format!("Failed to set permissions for: {}", path.display()))?;
+    }
+
+    Ok(())
 }
 
-fn set_perms_recursive_impl<'a, F>(
+// Synchronous: see `set_readonly_one_path`.
+fn set_dir_writable_one_path(path: &Path, metadata: &Metadata) -> Result<(), Error> {
+    // Files are intentionally skipped here. They may be hardlinked into
+    // the CAS (FilesystemStore); chmoding them would corrupt the shared
+    // inode's mode for every other in-flight action.
+    if !metadata.is_dir() {
+        return Ok(());
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = metadata.permissions();
+        perms.set_mode(0o755);
+
+        std::fs::set_permissions(path, perms)
+            .err_tip(|| format!("Failed to set permissions for: {}", path.display()))?;
+    }
+
+    #[cfg(windows)]
+    {
+        let mut perms = metadata.permissions();
+        perms.set_readonly(false);
+
+        std::fs::set_permissions(path, perms)
+            .err_tip(|| format!("Failed to set permissions for: {}", path.display()))?;
+    }
+
+    Ok(())
+}
+
+fn set_perms_recursive_impl<F>(
     path: PathBuf,
     perms_fn: F,
-) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>>
+) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>>
 where
-    F: Fn(PathBuf, Metadata) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>>
-        + Send
-        + Copy
-        + 'a,
+    // 'static: perms_fn is moved into a spawn_blocking task. The callers pass
+    // plain fn items, which satisfy it.
+    F: Fn(&Path, &Metadata) -> Result<(), Error> + Send + Sync + Copy + 'static,
 {
     Box::pin(async move {
-        // Use `symlink_metadata` (lstat) rather than `metadata` (stat) so the
-        // walk inspects the entry *itself*, never the target a symlink points
-        // at. This matters for input trees containing symlinks - e.g.
-        // `.venv/bin/python3` created by rules_python / rules_apple venv
-        // tooling. With plain `stat`, a symlink to a directory reports
-        // `is_dir() == true` and the walk would recurse *through* the link
-        // (escaping the tree, or descending into an unrelated directory), and
-        // a symlink to a file would have `chmod` applied to it - and `chmod`
-        // follows symlinks, so it mutates the target. A symlink whose target
-        // does not exist (a dangling link, common when a venv points outside
-        // the action's input set) then fails the whole walk with ENOENT -
-        // the cause of directory-cache actions falling back to the slow
-        // download path.
-        let metadata = fs::symlink_metadata(&path)
-            .await
-            .err_tip(|| format!("Failed to get metadata for: {}", path.display()))?;
+        // Chmod a directory's own entries (files and the directory itself) in a
+        // SINGLE blocking task and return its subdirectories for the async layer
+        // to recurse into. The previous code issued a `tokio::fs` call (each a
+        // spawn_blocking) per entry; on many-core hosts that per-file handoff
+        // dominates. Semantics are unchanged: lstat-based symlink skipping, the
+        // same perms_fn applied to each non-symlink entry. Directories are only
+        // ever made writable (0o755) by perms_fn, so applying it to the current
+        // directory before recursing into its children cannot block that
+        // recursion — the observable end state is identical to the previous
+        // post-order walk.
+        let subdirs = tokio::task::spawn_blocking(move || -> Result<Vec<PathBuf>, Error> {
+            // Use `symlink_metadata` (lstat) rather than `metadata` (stat) so
+            // the walk inspects the entry *itself*, never the target a symlink
+            // points at. This matters for input trees containing symlinks -
+            // e.g. `.venv/bin/python3` created by rules_python / rules_apple
+            // venv tooling. With plain `stat`, a symlink to a directory reports
+            // `is_dir() == true` and the walk would recurse *through* the link
+            // (escaping the tree, or descending into an unrelated directory),
+            // and a symlink to a file would have `chmod` applied to it - and
+            // `chmod` follows symlinks, so it mutates the target. A symlink
+            // whose target does not exist (a dangling link, common when a venv
+            // points outside the action's input set) then fails the whole walk
+            // with ENOENT - the cause of directory-cache actions falling back
+            // to the slow download path.
+            let metadata = std::fs::symlink_metadata(&path)
+                .err_tip(|| format!("Failed to get metadata for: {}", path.display()))?;
 
-        // Symlinks are skipped entirely: their own mode is not meaningful, a
-        // `chmod` on the link path would follow it and touch the target, and
-        // descending into a symlinked directory would walk outside the tree.
-        // The symlink entry itself is left exactly as created.
-        if metadata.is_symlink() {
-            return Ok(());
-        }
-
-        if metadata.is_dir() {
-            let mut entries = fs::read_dir(&path)
-                .await
-                .err_tip(|| format!("Failed to read directory: {}", path.display()))?;
-
-            while let Some(entry) = entries
-                .next_entry()
-                .await
-                .err_tip(|| format!("Failed to get next entry in: {}", path.display()))?
-            {
-                set_perms_recursive_impl(entry.path(), perms_fn).await?;
+            // Symlinks are skipped entirely: their own mode is not meaningful,
+            // a `chmod` on the link path would follow it and touch the target,
+            // and descending into a symlinked directory would walk outside the
+            // tree. The symlink entry itself is left exactly as created.
+            if metadata.is_symlink() {
+                return Ok(Vec::new());
             }
+
+            if !metadata.is_dir() {
+                perms_fn(&path, &metadata)?;
+                return Ok(Vec::new());
+            }
+
+            let mut subdirs = Vec::new();
+            let read_dir = std::fs::read_dir(&path)
+                .err_tip(|| format!("Failed to read directory: {}", path.display()))?;
+            for entry in read_dir {
+                let entry =
+                    entry.err_tip(|| format!("Failed to get next entry in: {}", path.display()))?;
+                let entry_path = entry.path();
+                let entry_metadata = std::fs::symlink_metadata(&entry_path)
+                    .err_tip(|| format!("Failed to get metadata for: {}", entry_path.display()))?;
+                if entry_metadata.is_symlink() {
+                    continue;
+                }
+                if entry_metadata.is_dir() {
+                    subdirs.push(entry_path);
+                } else {
+                    perms_fn(&entry_path, &entry_metadata)?;
+                }
+            }
+            perms_fn(&path, &metadata)?;
+            Ok(subdirs)
+        })
+        .await
+        .map_err(|e| make_err!(Code::Internal, "set_perms blocking task failed: {e:?}"))??;
+
+        for subdir in subdirs {
+            set_perms_recursive_impl(subdir, perms_fn).await?;
         }
-        perms_fn(path, metadata).await
+        Ok(())
     })
 }
 
