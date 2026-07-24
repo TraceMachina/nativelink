@@ -59,7 +59,7 @@ jobs:
           TOOLCHAIN: ${{ matrix.toolchain }}
         run: >
           nix develop --impure --command
-          bash -c "bazel run \
+          bash -c "bazel-retry run \
            --lockfile_mode=error \
            --verbose_failures \
            @local-remote-execution//examples:${TOOLCHAIN}"
