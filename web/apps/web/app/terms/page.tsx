@@ -172,8 +172,8 @@ export default function TermsPage() {
               <p className="mt-3 text-[15px] leading-relaxed text-muted-foreground">
                 You may request access to, correction of, or deletion of personal
                 data we hold about you at any time by emailing{" "}
-                <a href="mailto:privacy@nativelink.com" className="text-brand underline-offset-4 hover:underline">
-                  privacy@nativelink.com
+                <a href="mailto:contact@tracemachina.com" className="text-brand underline-offset-4 hover:underline">
+                  contact@tracemachina.com
                 </a>
                 . If you're an EU/UK resident, this includes the rights granted
                 under GDPR / UK GDPR.
@@ -184,8 +184,8 @@ export default function TermsPage() {
               </h3>
               <p className="mt-3 text-[15px] leading-relaxed text-muted-foreground">
                 Questions about these terms or our privacy practices? Email{" "}
-                <a href="mailto:legal@nativelink.com" className="text-brand underline-offset-4 hover:underline">
-                  legal@nativelink.com
+                <a href="mailto:legal@tracemachina.com" className="text-brand underline-offset-4 hover:underline">
+                  legal@tracemachina.com
                 </a>{" "}
                 or write to Trace Machina, Inc., Attn: Legal, PO Box 60676, 265
                 Cambridge Ave, Palo Alto, CA 94306.
