@@ -17,7 +17,7 @@ const certifications = [
     name: "GDPR",
     status: "Compliant",
     statusTone: "success" as const,
-    body: "Data Processing Addendum available on request. Self-host in the EU for data residency.",
+    body: "Data Processing Addendum available on request. Self-host for data residency.",
   },
   {
     name: "CCPA",
