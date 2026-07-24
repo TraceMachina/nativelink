@@ -23,7 +23,7 @@ const certifications = [
     name: "GDPR",
     status: "Compliant",
     statusTone: "success" as const,
-    body: "Data Processing Addendum available on request. Self-host in the EU for data residency.",
+    body: "Data Processing Addendum available on request. Self-host for data residency.",
   },
   {
     name: "CCPA / CPRA",
@@ -89,7 +89,7 @@ const groups: { eyebrow: string; title: string; controls: Control[] }[] = [
       },
       {
         title: "Data hosting security",
-        body: "Our data is hosted on AWS, GCP, and Convex, located in the United States. See the vendor documentation linked above for more information.",
+        body: "Our data is hosted on AWS, GCP, and Convex, located in the United States. See the vendor documentation referenced under Cloud infrastructure security for more information.",
       },
       {
         title: "Encryption at rest",
@@ -97,7 +97,7 @@ const groups: { eyebrow: string; title: string; controls: Control[] }[] = [
       },
       {
         title: "Encryption in transit",
-        body: "Our applications encrypt data in transit with TLS/SSL only.",
+        body: "Our applications encrypt data in transit with TLS/SSL.",
       },
       {
         title: "Vulnerability scanning",
@@ -105,7 +105,7 @@ const groups: { eyebrow: string; title: string; controls: Control[] }[] = [
       },
       {
         title: "Logging and monitoring",
-        body: "We actively monitor and log various cloud services.",
+        body: "We log activity across our AWS and GCP cloud infrastructure and monitor it for security and operational issues.",
       },
       {
         title: "Business continuity and disaster recovery",
