@@ -16,6 +16,7 @@ const toc = [
   { id: "cookies", label: "Cookies" },
   { id: "rights", label: "Your rights" },
   { id: "contact", label: "Contact" },
+  { id: "changelog", label: "Change history" },
 ];
 
 export default function TermsPage() {
@@ -36,7 +37,7 @@ export default function TermsPage() {
                 handling your data responsibly.
               </p>
               <p className="mt-4 font-mono text-xs uppercase tracking-[0.18em] text-muted">
-                Last updated · April 12, 2026
+                Last updated · July 7, 2026
               </p>
             </div>
           </Reveal>
@@ -171,8 +172,8 @@ export default function TermsPage() {
               <p className="mt-3 text-[15px] leading-relaxed text-muted-foreground">
                 You may request access to, correction of, or deletion of personal
                 data we hold about you at any time by emailing{" "}
-                <a href="mailto:privacy@nativelink.com" className="text-brand underline-offset-4 hover:underline">
-                  privacy@nativelink.com
+                <a href="mailto:contact@tracemachina.com" className="text-brand underline-offset-4 hover:underline">
+                  contact@tracemachina.com
                 </a>
                 . If you're an EU/UK resident, this includes the rights granted
                 under GDPR / UK GDPR.
@@ -183,12 +184,45 @@ export default function TermsPage() {
               </h3>
               <p className="mt-3 text-[15px] leading-relaxed text-muted-foreground">
                 Questions about these terms or our privacy practices? Email{" "}
-                <a href="mailto:legal@nativelink.com" className="text-brand underline-offset-4 hover:underline">
-                  legal@nativelink.com
+                <a href="mailto:legal@tracemachina.com" className="text-brand underline-offset-4 hover:underline">
+                  legal@tracemachina.com
                 </a>{" "}
                 or write to Trace Machina, Inc., Attn: Legal, PO Box 60676, 265
                 Cambridge Ave, Palo Alto, CA 94306.
               </p>
+
+              <div className="my-12 h-px w-full bg-border" />
+
+              <h2 id="changelog" className="scroll-mt-24 text-3xl font-semibold tracking-tight text-foreground">
+                Change history
+              </h2>
+              <p className="mt-4 text-[15px] leading-relaxed text-muted-foreground">
+                Material changes to the Terms of Service and Privacy Policy are
+                recorded here.
+              </p>
+              <ul className="mt-3 space-y-2 pl-6 text-[15px] leading-relaxed text-muted-foreground [&_li]:list-disc">
+                <li>
+                  <span className="font-mono text-[13px] text-foreground">July 24, 2026</span> —
+                  Added this change history section. No changes to the terms or
+                  the policy.
+                </li>
+                <li>
+                  <span className="font-mono text-[13px] text-foreground">July 7, 2026</span> —
+                  Updated the legal contact address to Trace Machina&apos;s Palo
+                  Alto mailing address.
+                </li>
+                <li>
+                  <span className="font-mono text-[13px] text-foreground">May 29, 2026</span> —
+                  Updated the license terms to module-aware licensing
+                  (FSL-1.1-Apache-2.0, with some commercial modules under the
+                  Business Source License) and clarified telemetry wording for
+                  the source-available release.
+                </li>
+                <li>
+                  <span className="font-mono text-[13px] text-foreground">April 12, 2026</span> —
+                  Prior revision of the Terms of Service and Privacy Policy.
+                </li>
+              </ul>
             </Reveal>
           </article>
         </div>

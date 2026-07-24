@@ -7,25 +7,25 @@ export const metadata = {
 
 const channels = [
   {
-    label: "Sales",
-    title: "hello@nativelink.com",
-    body: "Talk to a solutions engineer about your team's build farm.",
-    href: "mailto:hello@nativelink.com",
+    label: "General and sales",
+    title: "contact@tracemachina.com",
+    body: "Questions, comments, or talk to us about your team's build farm.",
+    href: "mailto:contact@tracemachina.com",
     icon: <path d="M4 6 h16 a2 2 0 0 1 2 2 v8 a2 2 0 0 1 -2 2 H4 a2 2 0 0 1 -2 -2 V8 a2 2 0 0 1 2 -2 Z M4 8 l8 6 l8 -6" strokeLinejoin="round" />,
   },
   {
-    label: "General",
-    title: "contact@nativelink.com",
-    body: "Questions, comments, or anything else.",
-    href: "mailto:contact@nativelink.com",
-    icon: <><circle cx="12" cy="12" r="9" /><path d="M9 9 a3 3 0 0 1 6 1 c0 2-3 3-3 4 M12 17 v.01" strokeLinecap="round" /></>,
+    label: "Security",
+    title: "security@tracemachina.com",
+    body: "Responsible-disclosure reports. We triage within 24 h.",
+    href: "mailto:security@tracemachina.com",
+    icon: <path d="M12 2 L4 6 V13 C4 17 8 20 12 22 C16 20 20 17 20 13 V6 L12 2 Z" strokeLinejoin="round" />,
   },
   {
-    label: "Security",
-    title: "security@nativelink.com",
-    body: "Responsible-disclosure reports. We triage within 24 h.",
-    href: "mailto:security@nativelink.com",
-    icon: <path d="M12 2 L4 6 V13 C4 17 8 20 12 22 C16 20 20 17 20 13 V6 L12 2 Z" strokeLinejoin="round" />,
+    label: "Legal",
+    title: "legal@tracemachina.com",
+    body: "Contracts, licensing, and legal enquiries.",
+    href: "mailto:legal@tracemachina.com",
+    icon: <><path d="M12 3 v18 M5 7 h14 M7 7 l-3 7 a3 3 0 0 0 6 0 Z M17 7 l3 7 a3 3 0 0 0 -6 0 Z" strokeLinejoin="round" strokeLinecap="round" /></>,
   },
 ];
 

@@ -4,7 +4,7 @@ module(
     compatibility_level = 0,
 )
 
-bazel_dep(name = "rules_cc", version = "0.2.18")
+bazel_dep(name = "rules_cc", version = "0.2.19")
 bazel_dep(name = "platforms", version = "1.1.0")
 bazel_dep(name = "bazel_skylib", version = "1.9.0")
 bazel_dep(name = "rules_python", version = "2.0.0")
@@ -15,7 +15,7 @@ bazel_dep(name = "rules_shell", version = "0.6.1")
 # via --extra_toolchains, which outranks the MODULE.bazel registration below,
 # so Nix users keep getting LRE-CC unchanged. Outside Nix (no lre.bazelrc),
 # these hermetic toolchains replace the host autodetect path.
-bazel_dep(name = "llvm", version = "0.7.7")
+bazel_dep(name = "llvm", version = "0.8.9")
 
 register_toolchains("@llvm//toolchain:all")
 
@@ -50,9 +50,10 @@ register_toolchains(
     dev_dependency = True,
 )
 
-bazel_dep(name = "rules_rs", version = "0.0.76")
+bazel_dep(name = "rules_rs", version = "0.0.96")
 
-# Pin rules_rust to the hermeticbuild fork (the same commit rules_rs provisions)
+# Pin rules_rust to the hermeticbuild fork
+# (see https://github.com/hermeticbuild/rules_rs/blob/v0.0.96/rs/rules_rust.bzl)
 # so all `@rules_rust//...` references resolve to the patched ruleset. The
 # bazel_dep + archive_override is the form that keeps `@rules_rust` visible to
 # subsequent `use_extension(...)` calls in this MODULE.bazel — the alternative
@@ -62,15 +63,15 @@ bazel_dep(name = "rules_rs", version = "0.0.76")
 # The local musl-platforms patch is still applied because the hermeticbuild
 # fork does not list x86_64/aarch64-unknown-linux-musl as supported triples in
 # rust/platform/triple_mappings.bzl.
-bazel_dep(name = "rules_rust", version = "0.68.1")
+bazel_dep(name = "rules_rust", version = "0.71.3")
 archive_override(
     module_name = "rules_rust",
-    integrity = "sha256-HG4cSGKVIoZTn0zpUNKhJbGvFfD2UVPJqKRqgTqLOQQ=",
+    integrity = "sha256-2Omls/gtvOOdKgmcXazTqrCxf5zegAK6JMSRL/3J51c=",
     patch_strip = 1,
     patches = ["//tools:rules_rust-musl-platforms.diff"],
-    strip_prefix = "rules_rust-cf176d81c12d9c8f6420c7d433b0af0f08d2abb1",
+    strip_prefix = "rules_rust-f19661ba71f77c993ce1eb082053692610fe4313",
     urls = [
-        "https://github.com/hermeticbuild/rules_rust/archive/cf176d81c12d9c8f6420c7d433b0af0f08d2abb1.tar.gz",
+        "https://github.com/hermeticbuild/rules_rust/archive/f19661ba71f77c993ce1eb082053692610fe4313.tar.gz",
     ],
 )
 
