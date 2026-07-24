@@ -57,7 +57,7 @@ use opentelemetry::global;
 use opentelemetry::propagation::Injector;
 use parking_lot::Mutex;
 use prost::Message;
-use tokio::sync::{Semaphore, oneshot};
+use tokio::sync::{Mutex as AsyncMutex, Semaphore, oneshot};
 use tokio::time::sleep;
 use tonic::metadata::{Ascii, MetadataKey, MetadataValue};
 use tonic::{Code, IntoRequest, Request, Response, Status, Streaming};
@@ -1166,7 +1166,7 @@ impl StoreDriver for GrpcStore {
     ) -> Result<u64, Error> {
         struct LocalState {
             resource_name: String,
-            reader: DropCloserReadHalf,
+            reader: tokio::sync::OwnedMutexGuard<DropCloserReadHalf>,
             did_error: bool,
             bytes_received: i64,
         }
@@ -1207,9 +1207,16 @@ impl StoreDriver for GrpcStore {
             digest_size = digest.size_bytes(),
             "GrpcStore::update: starting upload for digest",
         );
+        // The reader is shared so that, when the server completes the write
+        // early (REAPI duplicate-upload contract: another client already
+        // uploaded this digest), the remainder can be drained after the RPC
+        // resolves. Without the drain, an upstream sender coupled to this
+        // reader errors with "receiver disconnected" even though the upload
+        // succeeded.
+        let shared_reader = Arc::new(AsyncMutex::new(reader));
         let local_state = LocalState {
             resource_name,
-            reader,
+            reader: shared_reader.clone().lock_owned().await,
             did_error: false,
             bytes_received: 0,
         };
@@ -1253,6 +1260,18 @@ impl StoreDriver for GrpcStore {
         )
         .await
         .err_tip(|| "in GrpcStore::update()")?;
+
+        // Drain any bytes the server chose not to consume (early-completed
+        // write), but do not make the successful upstream response depend on
+        // the producer reaching EOF. A worker can still be producing data, or
+        // can be cancelled while the upstream has already durably committed.
+        // Keep the reader alive in a detached task so a coupled producer sees
+        // a live receiver; producer cancellation and drain errors are local
+        // to that task and must not turn the committed upload into a failure.
+        let mut reader = shared_reader.lock_owned().await;
+        background_spawn!("grpc_store_update_drain", async move {
+            drop(reader.drain().await);
+        });
 
         Ok(digest.size_bytes())
     }

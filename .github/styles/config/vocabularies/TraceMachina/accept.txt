@@ -89,6 +89,7 @@ API
 APIs
 Backpressure
 Dedup
+Deduplicate
 XCode
 CMake
 Gradle

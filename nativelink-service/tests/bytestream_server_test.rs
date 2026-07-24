@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -23,8 +24,10 @@ use hyper::body::Frame;
 use hyper_util::rt::TokioIo;
 use hyper_util::server::conn::auto;
 use hyper_util::service::TowerToHyperService;
-use nativelink_config::cas_server::{ByteStreamConfig, HttpListener, WithInstanceName};
-use nativelink_config::stores::{MemorySpec, StoreSpec};
+use nativelink_config::cas_server::{
+    ByteStreamConfig, CasStoreConfig, HttpListener, WithInstanceName,
+};
+use nativelink_config::stores::{GrpcEndpoint, GrpcSpec, MemorySpec, Retry, StoreSpec, StoreType};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_proto::google::bytestream::byte_stream_client::ByteStreamClient;
@@ -33,12 +36,14 @@ use nativelink_proto::google::bytestream::{
     QueryWriteStatusRequest, QueryWriteStatusResponse, ReadRequest, WriteRequest, WriteResponse,
 };
 use nativelink_service::bytestream_server::ByteStreamServer;
+use nativelink_service::cas_server::CasServer;
 use nativelink_service::wire_compression::RemoteCacheCompressionInstances;
 use nativelink_store::default_store_factory::store_factory;
+use nativelink_store::grpc_store::GrpcStore;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::channel_body_for_tests::ChannelBody;
 use nativelink_util::common::{DigestInfo, encode_stream_proto};
-use nativelink_util::store_trait::StoreLike;
+use nativelink_util::store_trait::{Store, StoreLike};
 use nativelink_util::task::JoinHandleDropGuard;
 use nativelink_util::{background_spawn, spawn};
 use pretty_assertions::assert_eq;
@@ -50,7 +55,8 @@ use tokio::task::yield_now;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::codec::{Codec, CompressionEncoding};
-use tonic::transport::{Channel, Endpoint};
+use tonic::transport::server::TcpIncoming;
+use tonic::transport::{Channel, Endpoint, Server};
 use tonic::{Request, Response, Streaming};
 use tonic_prost::ProstCodec;
 use tower::service_fn;
@@ -91,6 +97,7 @@ fn make_bytestream_server_with_remote_cache_compression(
                 cas_store: "main_cas".to_string(),
                 persist_stream_on_disconnect_timeout_s: 0,
                 max_bytes_per_stream: 1024,
+                ..Default::default()
             },
         }]
     });
@@ -102,6 +109,46 @@ fn make_bytestream_server_with_remote_cache_compression(
         RemoteCacheCompressionInstances::default()
     };
     ByteStreamServer::new(&config, store_manager, &remote_cache_compression_instances)
+}
+
+async fn make_tcp_proxy_backend(store_manager: &StoreManager) -> Result<u16, Error> {
+    let instance_name = INSTANCE_NAME.to_string();
+    let remote_cache_compression_instances = RemoteCacheCompressionInstances::default();
+    let bytestream = ByteStreamServer::new(
+        &[WithInstanceName {
+            instance_name: instance_name.clone(),
+            config: ByteStreamConfig {
+                cas_store: "main_cas".to_string(),
+                persist_stream_on_disconnect_timeout_s: 0,
+                max_bytes_per_stream: 1024,
+                ..Default::default()
+            },
+        }],
+        store_manager,
+        &remote_cache_compression_instances,
+    )?;
+    let cas = CasServer::new(
+        &[WithInstanceName {
+            instance_name,
+            config: CasStoreConfig {
+                cas_store: "main_cas".to_string(),
+                experimental_chunking: None,
+            },
+        }],
+        store_manager,
+        &remote_cache_compression_instances,
+    )?;
+    let listener = TcpIncoming::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    background_spawn!("bytestream_proxy_backend", async move {
+        Server::builder()
+            .add_service(bytestream.into_service())
+            .add_service(cas.into_service())
+            .serve_with_incoming(listener)
+            .await
+            .expect("proxy backend server failed");
+    });
+    Ok(port)
 }
 
 fn make_stream(
@@ -1891,5 +1938,410 @@ async fn uuid_collision_does_not_deadlock() -> Result<(), Box<dyn core::error::E
 
     join2.await.expect("task panicked")?;
     drop(tx1);
+    Ok(())
+}
+
+fn make_write_dedup_server(
+    store_manager: &StoreManager,
+    remote_cache_compression_enabled: bool,
+) -> Result<ByteStreamServer, Error> {
+    make_bytestream_server_with_remote_cache_compression(
+        store_manager,
+        Some(vec![WithInstanceName {
+            instance_name: INSTANCE_NAME.to_string(),
+            config: ByteStreamConfig {
+                cas_store: "main_cas".to_string(),
+                experimental_write_dedup: true,
+                ..Default::default()
+            },
+        }]),
+        remote_cache_compression_enabled,
+    )
+}
+
+fn make_dedup_resource_name(uuid: &str, data_len: usize) -> String {
+    format!("{INSTANCE_NAME}/uploads/{uuid}/blobs/{HASH1}/{data_len}")
+}
+
+fn make_dedup_resource_name_with_digest_function(
+    uuid: &str,
+    digest_function: &str,
+    data_len: usize,
+) -> String {
+    format!("{INSTANCE_NAME}/uploads/{uuid}/blobs/{digest_function}/{HASH1}/{data_len}")
+}
+
+/// An upload whose digest is already durable must complete immediately with
+/// the full committed size, without the client sending the payload.
+#[nativelink_test]
+pub async fn write_dedup_completes_early_for_existing_blob()
+-> Result<(), Box<dyn core::error::Error>> {
+    const DATA: &[u8] = b"write dedup early complete payload";
+    let store_manager = make_store_manager().await?;
+    let bs_server = Arc::new(
+        make_write_dedup_server(store_manager.as_ref(), false).expect("Failed to make server"),
+    );
+    let store = store_manager.get_store("main_cas").unwrap();
+    let digest = DigestInfo::try_new(HASH1, DATA.len())?;
+    store.update_oneshot(digest, DATA.into()).await?;
+
+    let (tx, join_handle) = make_stream_and_writer_spawn(bs_server, None);
+    // Send only the first partial message; the server must respond without
+    // ever receiving the rest of the payload.
+    tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name: make_dedup_resource_name("11111111-1389-4ab5-b188-4a59f22ceb4b", DATA.len()),
+        write_offset: 0,
+        finish_write: false,
+        data: DATA[..5].into(),
+    })?))
+    .await?;
+
+    let response = join_handle.await.expect("Failed to join")?;
+    assert_eq!(response.into_inner().committed_size, DATA.len() as i64);
+    drop(tx);
+    Ok(())
+}
+
+/// A fresh (non-duplicate) upload with dedup enabled must behave exactly as
+/// before: full multi-chunk transfer, then commit.
+#[nativelink_test]
+pub async fn write_dedup_fresh_upload_unchanged() -> Result<(), Box<dyn core::error::Error>> {
+    const DATA: &[u8] = b"write dedup fresh upload payload";
+    const SPLIT: usize = 7;
+    let store_manager = make_store_manager().await?;
+    let bs_server = Arc::new(
+        make_write_dedup_server(store_manager.as_ref(), false).expect("Failed to make server"),
+    );
+    let store = store_manager.get_store("main_cas").unwrap();
+
+    let (tx, join_handle) = make_stream_and_writer_spawn(bs_server, None);
+    let resource_name =
+        make_dedup_resource_name("22222222-1389-4ab5-b188-4a59f22ceb4b", DATA.len());
+    tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name: resource_name.clone(),
+        write_offset: 0,
+        finish_write: false,
+        data: DATA[..SPLIT].into(),
+    })?))
+    .await?;
+    tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name,
+        write_offset: SPLIT as i64,
+        finish_write: true,
+        data: DATA[SPLIT..].into(),
+    })?))
+    .await?;
+
+    let response = join_handle.await.expect("Failed to join")?;
+    assert_eq!(response.into_inner().committed_size, DATA.len() as i64);
+    let digest = DigestInfo::try_new(HASH1, DATA.len())?;
+    assert_eq!(store.get_part_unchunked(digest, 0, None).await?, DATA);
+    Ok(())
+}
+
+/// A concurrent upload of an in-flight digest must wait for the leading
+/// upload and complete early when it durably commits, without transferring
+/// its own payload.
+#[nativelink_test]
+pub async fn write_dedup_joins_inflight_upload() -> Result<(), Box<dyn core::error::Error>> {
+    const DATA: &[u8] = b"write dedup join the flight payload";
+    const SPLIT: usize = 9;
+    let store_manager = make_store_manager().await?;
+    let bs_server = Arc::new(
+        make_write_dedup_server(store_manager.as_ref(), false).expect("Failed to make server"),
+    );
+    let store = store_manager.get_store("main_cas").unwrap();
+
+    // Leading upload: send the first chunk only, keeping the flight open.
+    let (leader_tx, leader_join) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    let leader_resource =
+        make_dedup_resource_name("33333333-1389-4ab5-b188-4a59f22ceb4b", DATA.len());
+    leader_tx
+        .send(Frame::data(encode_stream_proto(&WriteRequest {
+            resource_name: leader_resource.clone(),
+            write_offset: 0,
+            finish_write: false,
+            data: DATA[..SPLIT].into(),
+        })?))
+        .await?;
+    tokio::time::sleep(core::time::Duration::from_millis(50)).await;
+
+    // Duplicate upload (different UUID, same digest): sends only its first
+    // partial message and then waits on the flight.
+    let (waiter_tx, waiter_join) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    waiter_tx
+        .send(Frame::data(encode_stream_proto(&WriteRequest {
+            resource_name: make_dedup_resource_name(
+                "44444444-1389-4ab5-b188-4a59f22ceb4b",
+                DATA.len(),
+            ),
+            write_offset: 0,
+            finish_write: false,
+            data: DATA[..SPLIT].into(),
+        })?))
+        .await?;
+    tokio::time::sleep(core::time::Duration::from_millis(50)).await;
+
+    // The waiter must not complete before the leading upload commits.
+    let mut waiter_join = waiter_join;
+    assert!(
+        matches!(poll!(&mut waiter_join), Poll::Pending),
+        "Waiter completed before the leading upload committed"
+    );
+
+    // Finish the leading upload.
+    leader_tx
+        .send(Frame::data(encode_stream_proto(&WriteRequest {
+            resource_name: leader_resource,
+            write_offset: SPLIT as i64,
+            finish_write: true,
+            data: DATA[SPLIT..].into(),
+        })?))
+        .await?;
+
+    let leader_response = leader_join.await.expect("Failed to join")?;
+    assert_eq!(
+        leader_response.into_inner().committed_size,
+        DATA.len() as i64
+    );
+    let waiter_response = waiter_join.await.expect("Failed to join")?;
+    assert_eq!(
+        waiter_response.into_inner().committed_size,
+        DATA.len() as i64
+    );
+
+    let digest = DigestInfo::try_new(HASH1, DATA.len())?;
+    assert_eq!(store.get_part_unchunked(digest, 0, None).await?, DATA);
+    drop(waiter_tx);
+    Ok(())
+}
+
+/// When the leading upload fails, waiters must receive a retryable ABORTED
+/// error, and a retrying client must succeed as the new leading upload.
+#[nativelink_test]
+pub async fn write_dedup_waiter_retries_after_leader_failure()
+-> Result<(), Box<dyn core::error::Error>> {
+    const DATA: &[u8] = b"write dedup leader failure payload";
+    const SPLIT: usize = 9;
+    let store_manager = make_store_manager().await?;
+    let bs_server = Arc::new(
+        make_write_dedup_server(store_manager.as_ref(), false).expect("Failed to make server"),
+    );
+    let store = store_manager.get_store("main_cas").unwrap();
+
+    let (leader_tx, leader_join) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    leader_tx
+        .send(Frame::data(encode_stream_proto(&WriteRequest {
+            resource_name: make_dedup_resource_name(
+                "55555555-1389-4ab5-b188-4a59f22ceb4b",
+                DATA.len(),
+            ),
+            write_offset: 0,
+            finish_write: false,
+            data: DATA[..SPLIT].into(),
+        })?))
+        .await?;
+    tokio::time::sleep(core::time::Duration::from_millis(50)).await;
+
+    let (waiter_tx, waiter_join) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    waiter_tx
+        .send(Frame::data(encode_stream_proto(&WriteRequest {
+            resource_name: make_dedup_resource_name(
+                "66666666-1389-4ab5-b188-4a59f22ceb4b",
+                DATA.len(),
+            ),
+            write_offset: 0,
+            finish_write: false,
+            data: DATA[..SPLIT].into(),
+        })?))
+        .await?;
+    tokio::time::sleep(core::time::Duration::from_millis(50)).await;
+
+    // Disconnect the leading upload mid-stream.
+    drop(leader_tx);
+    let leader_result = leader_join.await.expect("Failed to join");
+    assert!(leader_result.is_err(), "Expected leading upload to fail");
+
+    let waiter_status = waiter_join
+        .await
+        .expect("Failed to join")
+        .expect_err("Expected waiter to receive an error");
+    assert_eq!(
+        waiter_status.code(),
+        Code::Aborted,
+        "Waiter error must be retryable: {waiter_status:?}"
+    );
+    drop(waiter_tx);
+
+    // A retry becomes the new leading upload and succeeds.
+    let (retry_tx, retry_join) = make_stream_and_writer_spawn(bs_server, None);
+    retry_tx
+        .send(Frame::data(encode_stream_proto(&WriteRequest {
+            resource_name: make_dedup_resource_name(
+                "77777777-1389-4ab5-b188-4a59f22ceb4b",
+                DATA.len(),
+            ),
+            write_offset: 0,
+            finish_write: true,
+            data: DATA.into(),
+        })?))
+        .await?;
+    let retry_response = retry_join.await.expect("Failed to join")?;
+    assert_eq!(
+        retry_response.into_inner().committed_size,
+        DATA.len() as i64
+    );
+    let digest = DigestInfo::try_new(HASH1, DATA.len())?;
+    assert_eq!(store.get_part_unchunked(digest, 0, None).await?, DATA);
+    Ok(())
+}
+
+/// A compressed upload of an already-durable digest must complete early with
+/// `committed_size` -1 per the REAPI compressed-blobs contract.
+#[nativelink_test]
+pub async fn write_dedup_compressed_early_complete_returns_negative_one()
+-> Result<(), Box<dyn core::error::Error>> {
+    const DATA: &[u8] = b"write dedup compressed payload";
+    let store_manager = make_store_manager().await?;
+    let bs_server = Arc::new(
+        make_write_dedup_server(store_manager.as_ref(), true).expect("Failed to make server"),
+    );
+    let store = store_manager.get_store("main_cas").unwrap();
+    let digest = DigestInfo::try_new(HASH1, DATA.len())?;
+    store.update_oneshot(digest, DATA.into()).await?;
+
+    let (tx, join_handle) = make_stream_and_writer_spawn(bs_server, None);
+    tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name: make_compressed_resource_name(
+            "88888888-1389-4ab5-b188-4a59f22ceb4b",
+            HASH1,
+            DATA.len(),
+        ),
+        write_offset: 0,
+        finish_write: false,
+        data: vec![].into(),
+    })?))
+    .await?;
+
+    let response = join_handle.await.expect("Failed to join")?;
+    assert_eq!(response.into_inner().committed_size, -1);
+    drop(tx);
+    Ok(())
+}
+
+/// A proxy-backed instance must run local write dedup before forwarding a
+/// write. Otherwise an already-present upstream blob would be overwritten by
+/// the forwarded payload despite dedup being enabled locally.
+#[nativelink_test]
+pub async fn write_dedup_works_for_grpc_store_proxy() -> Result<(), Box<dyn core::error::Error>> {
+    const ORIGINAL: &[u8] = b"proxy-original-data";
+    const FORWARDED: &[u8] = b"proxy-forwarded-xxx";
+    assert_eq!(ORIGINAL.len(), FORWARDED.len());
+
+    let upstream_manager = make_store_manager().await?;
+    let upstream_store = upstream_manager.get_store("main_cas").unwrap();
+    let digest = DigestInfo::try_new(HASH1, ORIGINAL.len())?;
+    upstream_store
+        .update_oneshot(digest, ORIGINAL.into())
+        .await?;
+    let port = make_tcp_proxy_backend(upstream_manager.as_ref()).await?;
+
+    let local_manager = Arc::new(StoreManager::new());
+    let grpc_store = GrpcStore::new(&GrpcSpec {
+        instance_name: INSTANCE_NAME.to_string(),
+        endpoints: vec![GrpcEndpoint {
+            address: format!("http://127.0.0.1:{port}"),
+            tls_config: None,
+            concurrency_limit: None,
+            connect_timeout_s: 0,
+            tcp_keepalive_s: 0,
+            http2_keepalive_interval_s: 0,
+            http2_keepalive_timeout_s: 0,
+        }],
+        store_type: StoreType::Cas,
+        retry: Retry::default(),
+        max_concurrent_requests: 0,
+        connections_per_endpoint: 1,
+        rpc_timeout_s: 0,
+        use_legacy_resource_names: false,
+        headers: HashMap::new(),
+        forward_headers: vec![],
+        experimental_read_batching: None,
+    })
+    .await?;
+    local_manager.add_store("main_cas", Store::new(grpc_store))?;
+    let bs_server = Arc::new(
+        make_write_dedup_server(local_manager.as_ref(), false).expect("Failed to make server"),
+    );
+
+    let (tx, join_handle) = make_stream_and_writer_spawn(bs_server, None);
+    tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name: make_dedup_resource_name(
+            "bbbbbbbb-1389-4ab5-b188-4a59f22ceb4b",
+            FORWARDED.len(),
+        ),
+        write_offset: 0,
+        finish_write: true,
+        data: FORWARDED.into(),
+    })?))
+    .await?;
+    let response = join_handle.await.expect("Failed to join")?;
+    assert_eq!(response.into_inner().committed_size, FORWARDED.len() as i64);
+    assert_eq!(
+        upstream_store.get_part_unchunked(digest, 0, None).await?,
+        ORIGINAL
+    );
+    Ok(())
+}
+
+/// The requested digest function is part of a write flight key. A SHA-256
+/// upload must not make a concurrent BLAKE3 upload of the same hash/size wait
+/// for it.
+#[nativelink_test]
+pub async fn write_dedup_does_not_collide_across_digest_functions()
+-> Result<(), Box<dyn core::error::Error>> {
+    const DATA: &[u8] = b"write dedup digest function flight key";
+    let store_manager = make_store_manager().await?;
+    let bs_server = Arc::new(
+        make_write_dedup_server(store_manager.as_ref(), false).expect("Failed to make server"),
+    );
+
+    let (leader_tx, leader_join) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    leader_tx
+        .send(Frame::data(encode_stream_proto(&WriteRequest {
+            resource_name: make_dedup_resource_name_with_digest_function(
+                "99999999-1389-4ab5-b188-4a59f22ceb4b",
+                "sha256",
+                DATA.len(),
+            ),
+            write_offset: 0,
+            finish_write: false,
+            data: DATA[..1].into(),
+        })?))
+        .await?;
+    tokio::time::sleep(core::time::Duration::from_millis(50)).await;
+
+    let (blake3_tx, blake3_join) = make_stream_and_writer_spawn(bs_server, None);
+    blake3_tx
+        .send(Frame::data(encode_stream_proto(&WriteRequest {
+            resource_name: make_dedup_resource_name_with_digest_function(
+                "aaaaaaaa-1389-4ab5-b188-4a59f22ceb4b",
+                "blake3",
+                DATA.len(),
+            ),
+            write_offset: 0,
+            finish_write: true,
+            data: DATA.into(),
+        })?))
+        .await?;
+
+    let response = tokio::time::timeout(core::time::Duration::from_secs(1), blake3_join)
+        .await
+        .expect("BLAKE3 upload incorrectly joined the SHA-256 flight")??;
+    assert_eq!(response.into_inner().committed_size, DATA.len() as i64);
+
+    drop(blake3_tx);
+    drop(leader_tx);
+    assert!(leader_join.await.expect("Failed to join").is_err());
     Ok(())
 }

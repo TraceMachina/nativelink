@@ -245,6 +245,52 @@ async fn write_update_works_with_legacy_resource_names() -> Result<(), Error> {
     write_update_works_core(true, upload_pattern).await
 }
 
+#[nativelink_test]
+async fn early_completed_update_does_not_wait_for_stalled_producer() -> Result<(), Error> {
+    let (_server, port) = make_fake_bytestream_server().await;
+    let spec = test_spec(format!("http://localhost:{port}"), false);
+    let store = GrpcStore::new(&spec).await?;
+    let digest = DigestInfo::try_new(VALID_HASH, 9)?;
+    let (mut tx, rx) = make_buf_channel_pair();
+
+    tx.send("first".into()).await?;
+    let result = timeout(
+        Duration::from_secs(1),
+        store.update(digest, rx, UploadSizeInfo::ExactSize(9)),
+    )
+    .await??;
+    assert_eq!(result, 9);
+
+    // The detached drain keeps the producer coupled to a live receiver after
+    // the upstream has already committed, without making update() wait for
+    // this data or its EOF.
+    tx.send("tail!!!".into()).await?;
+    tx.send_eof()?;
+    Ok(())
+}
+
+#[nativelink_test]
+async fn early_completed_update_succeeds_when_producer_is_cancelled() -> Result<(), Error> {
+    let (_server, port) = make_fake_bytestream_server().await;
+    let spec = test_spec(format!("http://localhost:{port}"), false);
+    let store = GrpcStore::new(&spec).await?;
+    let digest = DigestInfo::try_new(VALID_HASH, 9)?;
+    let (mut tx, rx) = make_buf_channel_pair();
+
+    tx.send("first".into()).await?;
+    let result = timeout(
+        Duration::from_secs(1),
+        store.update(digest, rx, UploadSizeInfo::ExactSize(9)),
+    )
+    .await??;
+    assert_eq!(result, 9);
+
+    // A producer that is cancelled without sending EOF must not turn an
+    // already successful upstream commit into an update failure.
+    drop(tx);
+    Ok(())
+}
+
 async fn read_works_core<F>(
     use_legacy_resource_names: bool,
     upload_pattern: &str,
