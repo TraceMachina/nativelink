@@ -1,4 +1,4 @@
-# Copyright 2022 The NativeLink Authors. All rights reserved.
+# Copyright 2026 The NativeLink Authors. All rights reserved.
 #
 # Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 # you may not use this file except in compliance with the License.
@@ -28,6 +28,7 @@ services:
         target: /root
     environment:
       RUST_LOG: ${RUST_LOG:-warn}
+      NL_LOG: json
     ports: [ "50051:50051/tcp", "127.0.0.1:50061:50061", "50071:50071/tcp", ]
     command: |
       /root/local-storage-cas.json5
@@ -47,11 +48,24 @@ services:
     environment:
       RUST_LOG: ${RUST_LOG:-warn}
       CAS_ENDPOINT: nativelink_local_cas
+      NL_LOG: json
     ports: [ "50052:50052/tcp" ]
     command: |
       /root/scheduler.json5
     depends_on:
       - nativelink_local_cas
+
+  executor-init:
+    image: ${NATIVELINK_WORKER_INIT_IMAGE:-trace_machina/nativelink:latest}
+    build:
+      context: ../..
+      dockerfile: ./deployment-examples/docker-compose/Dockerfile
+      network: host
+      args:
+        - ADDITIONAL_SETUP_WORKER_CMD=${ADDITIONAL_SETUP_WORKER_CMD:-}
+    command: /shared
+    volumes:
+      - exec-shared:/shared
 
   nativelink_executor:
     image: ${NATIVELINK_LRE_IMAGE:-trace_machina/nativelink:latest}
@@ -67,14 +81,22 @@ services:
       - type: bind
         source: .
         target: /root
+      - exec-shared:/shared
     environment:
       RUST_LOG: ${RUST_LOG:-warn}
+      NL_LOG: json
       CAS_ENDPOINT: nativelink_local_cas
       SCHEDULER_ENDPOINT: nativelink_scheduler
+    entrypoint: /shared/nativelink
     command: |
-      /root/worker.json5
+       /root/worker.json5
     depends_on:
       nativelink_local_cas:
         condition: service_started
       nativelink_scheduler:
         condition: service_started
+      executor-init:
+        condition: service_completed_successfully
+
+volumes:
+  exec-shared:

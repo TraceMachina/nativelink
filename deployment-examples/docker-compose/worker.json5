@@ -63,7 +63,7 @@
         work_directory: "/root/.cache/nativelink/work",
         platform_properties: {
           cpu_count: {
-            query_cmd: "nproc",
+            values: [],
           },
           OSFamily: {
             values: [
