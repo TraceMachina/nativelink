@@ -172,6 +172,32 @@ impl StoreDriver for CacheMetricsStore {
         result
     }
 
+    async fn update_many(
+        self: Pin<&Self>,
+        items: Vec<(StoreKey<'static>, Bytes)>,
+    ) -> Result<(), Error> {
+        // Batch metrics are all-or-nothing: a partially successful batch
+        // counts every item as a write error because per-entry outcomes are
+        // not visible at this layer (accepted approximation).
+        let start = Instant::now();
+        let num_items = items.len() as u64;
+        let total_bytes: u64 = items.iter().map(|(_, data)| data.len() as u64).sum();
+        let result = self.backend.update_many(items).await;
+        if result.is_ok() {
+            CACHE_METRICS
+                .cache_operations
+                .add(num_items, self.attrs.write_success());
+            self.record_write_io(Some(total_bytes));
+            self.record_duration(start, self.attrs.write_success());
+        } else {
+            CACHE_METRICS
+                .cache_operations
+                .add(num_items, self.attrs.write_error());
+            self.record_duration(start, self.attrs.write_error());
+        }
+        result
+    }
+
     fn optimized_for(&self, optimization: StoreOptimizations) -> bool {
         self.backend.optimized_for(optimization)
     }

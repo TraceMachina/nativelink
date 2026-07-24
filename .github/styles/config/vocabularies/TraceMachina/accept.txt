@@ -96,6 +96,7 @@ Pantsbuild
 [Ss]andboxing
 [Cc]onfig
 bytestream
+[Bb]atcher
 [Ff]ailover
 proto
 quantiles

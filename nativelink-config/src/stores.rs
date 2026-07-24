@@ -1475,6 +1475,61 @@ pub struct GrpcSpec {
     /// Default: unset (disabled). When unset there is zero behavior change.
     #[serde(default)]
     pub experimental_read_batching: Option<GrpcReadBatchingConfig>,
+
+    /// Experimental: batch small-blob uploads issued through `update_many`
+    /// into `BatchUpdateBlobs` RPCs instead of one `ByteStream` `Write`
+    /// stream per blob. This amortizes the per-stream fixed cost when many
+    /// small objects are published at once (e.g. worker output files).
+    ///
+    /// Only blobs at or below `max_blob_size_bytes` are batched; larger
+    /// blobs and callers using the streaming `update` path are unaffected.
+    /// Unlike `experimental_read_batching` this does not coalesce across
+    /// callers, so it is compatible with `forward_headers`.
+    ///
+    /// Default: unset (disabled). When unset there is zero behavior change.
+    #[serde(default)]
+    pub experimental_write_batching: Option<GrpcWriteBatchingConfig>,
+}
+
+/// Configuration for experimental small-blob upload batching in a gRPC
+/// store. See [`GrpcSpec::experimental_write_batching`].
+#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct GrpcWriteBatchingConfig {
+    /// Only blobs at or below this size (in bytes) are eligible for
+    /// batching. Larger blobs always use the `ByteStream` `Write` path.
+    ///
+    /// Default: 131072 (128 KiB).
+    #[serde(
+        default = "default_write_batching_max_blob_size_bytes",
+        deserialize_with = "convert_data_size_with_shellexpand"
+    )]
+    pub max_blob_size_bytes: u64,
+
+    /// Maximum total payload bytes packed into a single `BatchUpdateBlobs`
+    /// request. This should leave headroom under the 4 MiB default gRPC
+    /// message limit for protobuf framing overhead.
+    ///
+    /// Default: 3145728 (3 MiB).
+    #[serde(
+        default = "default_write_batching_max_batch_bytes",
+        deserialize_with = "convert_data_size_with_shellexpand"
+    )]
+    pub max_batch_bytes: u64,
+}
+
+/// Default value of [`GrpcWriteBatchingConfig::max_blob_size_bytes`].
+/// Exported so call sites that pre-filter blobs for batching (e.g. the
+/// worker's small-output batcher) cannot drift from the config default.
+pub const DEFAULT_WRITE_BATCHING_MAX_BLOB_SIZE_BYTES: u64 = 128 * 1024;
+
+const fn default_write_batching_max_blob_size_bytes() -> u64 {
+    DEFAULT_WRITE_BATCHING_MAX_BLOB_SIZE_BYTES
+}
+
+const fn default_write_batching_max_batch_bytes() -> u64 {
+    3 * 1024 * 1024 // 3 MiB.
 }
 
 /// Configuration for experimental small-blob read coalescing in a gRPC
