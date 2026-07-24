@@ -20,6 +20,14 @@ runs:
           log-lines = 100 # Necessary in CI to get enough failure context
           keep-outputs = true # Don't delete non-root outputs, because might be needed for other builds
 
+    # only doing the cache around attic for now to avoid massive Nix caches overloading
+    # Github cache
+    - uses: >- # https://github.com/nix-community/cache-nix-action/releases/tag/v7
+        nix-community/cache-nix-action/restore@7df957e333c1e5da7721f60227dbba6d06080569
+      id: restore-cache
+      with:
+        primary-key: ${{ runner.os }}-nix-attic-cache
+
     - name: Setup attic cache
       uses: >- # v4
         nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60
@@ -50,3 +58,8 @@ runs:
             ./result/bin/attic push nativelink $(nix eval --raw github:TraceMachina/attic)
           fi
         shell: bash
+
+    - uses: >- # https://github.com/nix-community/cache-nix-action/releases/tag/v7
+        nix-community/cache-nix-action/save@7df957e333c1e5da7721f60227dbba6d06080569
+      with:
+        primary-key: ${{ steps.restore-cache.outputs.primary-key }}
