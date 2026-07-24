@@ -20,6 +20,16 @@ runs:
           log-lines = 100 # Necessary in CI to get enough failure context
           keep-outputs = true # Don't delete non-root outputs, because might be needed for other builds
 
+    - name: Prefetch flake inputs
+      uses: >- # v4
+        nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60
+      with:
+        timeout_minutes: 10
+        max_attempts: 5
+        retry_wait_seconds: 30 # GitHub tarball 503s are usually brief; ride them out
+        command: nix flake archive --json > /dev/null
+        shell: bash
+
     - name: Setup attic cache
       uses: >- # v4
         nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60
