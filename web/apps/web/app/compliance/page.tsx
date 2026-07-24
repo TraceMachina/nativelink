@@ -9,15 +9,15 @@ export const metadata = {
 const certifications = [
   {
     name: "SOC 2 Type II",
-    status: "In progress",
-    statusTone: "brand" as const,
-    body: "Audit underway, expected report Q3 2026. We're tracking against the AICPA Trust Services Criteria today.",
+    status: "Complete",
+    statusTone: "success" as const,
+    body: "Independently audited against the AICPA Trust Services Criteria. Report available under NDA.",
   },
   {
     name: "GDPR",
     status: "Compliant",
     statusTone: "success" as const,
-    body: "Data Processing Addendum available on request. EU data residency for Cloud customers.",
+    body: "Data Processing Addendum available on request. Self-host in the EU for data residency.",
   },
   {
     name: "CCPA",
@@ -27,9 +27,9 @@ const certifications = [
   },
   {
     name: "ISO 27001",
-    status: "Planned",
-    statusTone: "default" as const,
-    body: "Targeting 2027 once our SOC 2 Type II report is published.",
+    status: "Complete",
+    statusTone: "success" as const,
+    body: "Certified against the ISO/IEC 27001 information security management standard.",
   },
 ];
 
@@ -52,8 +52,8 @@ const controls = [
     icon: (
       <><rect x="4" y="6" width="16" height="14" rx="2" /><path d="M8 6V4 a2 2 0 0 1 2-2 h4 a2 2 0 0 1 2 2 v2 M10 13 h4 M10 17 h4" strokeLinecap="round" /></>
     ),
-    title: "Audit logs",
-    body: "Every administrative action and every action result is logged, signed, and exportable to your SIEM via webhook or S3.",
+    title: "Verifiable build records",
+    body: "Every build input and output is content-addressed and immutable — a tamper-evident record, at the hash level, of exactly what ran.",
   },
   {
     icon: (
@@ -67,14 +67,14 @@ const controls = [
       <><path d="M12 2 L2 12 L12 22 L22 12 Z" /><circle cx="12" cy="12" r="3" /></>
     ),
     title: "Data residency",
-    body: "US and EU regions on Cloud. Pin your data to a region by contract. Enterprise customers can run fully air-gapped.",
+    body: "NativeLink is self-hostable: run it in your own cloud, region, or fully air-gapped, so your data never leaves infrastructure you control.",
   },
   {
     icon: (
       <path d="M3 12 L9 6 L21 18 M15 6 L21 6 L21 12" strokeLinecap="round" strokeLinejoin="round" />
     ),
     title: "Vulnerability program",
-    body: "We run continuous SAST/DAST on every PR. Disclose anything at security@nativelink.com — we triage within 24h.",
+    body: "We run continuous SAST/DAST on every PR. Disclose anything at security@tracemachina.com — we triage within 24h.",
   },
 ];
 
@@ -109,7 +109,7 @@ export default function CompliancePage() {
               </p>
               <div className="mt-8 flex flex-wrap justify-center gap-3">
                 <Button size="lg" asChild>
-                  <a href="mailto:security@nativelink.com">Request a report</a>
+                  <a href="mailto:security@tracemachina.com">Request a report</a>
                 </Button>
                 <Button size="lg" variant="outline" asChild>
                   <a href="/contact">Contact security</a>
@@ -204,8 +204,8 @@ export default function CompliancePage() {
               </h2>
               <p className="mt-5 text-base leading-relaxed text-muted-foreground md:text-lg">
                 Email{" "}
-                <a href="mailto:security@nativelink.com" className="text-brand underline-offset-4 hover:underline">
-                  security@nativelink.com
+                <a href="mailto:security@tracemachina.com" className="text-brand underline-offset-4 hover:underline">
+                  security@tracemachina.com
                 </a>{" "}
                 with your NDA — we'll send the relevant report within one business
                 day.
@@ -225,7 +225,7 @@ export default function CompliancePage() {
                   <p className="mt-1 text-sm text-muted-foreground">{p.description}</p>
                 </div>
                 <a
-                  href="mailto:security@nativelink.com"
+                  href="mailto:security@tracemachina.com"
                   className="inline-flex items-center gap-1.5 font-mono text-sm text-brand transition-all hover:gap-2"
                 >
                   Request <span aria-hidden="true">→</span>
@@ -251,7 +251,7 @@ export default function CompliancePage() {
             </p>
             <div className="mt-8 flex justify-center">
               <Button size="lg" asChild>
-                <a href="mailto:security@nativelink.com">security@nativelink.com</a>
+                <a href="mailto:security@tracemachina.com">security@tracemachina.com</a>
               </Button>
             </div>
           </Reveal>

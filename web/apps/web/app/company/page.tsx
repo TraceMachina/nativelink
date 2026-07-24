@@ -41,13 +41,13 @@ const contactCards = [
   {
     title: "General inquiries",
     body: "Have a question or comment? We'd love to hear from you.",
-    cta: { label: "Contact us", href: "mailto:contact@nativelink.com" },
+    cta: { label: "Contact us", href: "mailto:contact@tracemachina.com" },
     variant: "outline" as const,
   },
   {
     title: "Sales inquiries",
     body: "Curious if NativeLink fits your team? Our sales engineers can help.",
-    cta: { label: "Talk to sales", href: "mailto:hello@nativelink.com" },
+    cta: { label: "Talk to sales", href: "mailto:contact@tracemachina.com" },
     variant: "primary" as const,
   },
 ];
