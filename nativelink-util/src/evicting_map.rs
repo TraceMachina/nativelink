@@ -490,6 +490,23 @@ where
         while callbacks.next().await.is_some() {}
     }
 
+    /// Moves the entries for `keys` to the least-recently-used end of the
+    /// eviction order without firing callbacks, changing sizes, or touching
+    /// timestamps. Absent keys are ignored. Intended for reproducible
+    /// derived data (e.g. CDC chunk blobs after a successful `SpliceBlob`)
+    /// that must be first in line for eviction so it can never out-compete
+    /// primary blobs under size pressure.
+    pub fn demote<It, R>(&self, keys: It)
+    where
+        It: IntoIterator<Item = R>,
+        R: Borrow<Q>,
+    {
+        let mut state = self.state.lock();
+        for key in keys {
+            state.lru.demote(key.borrow());
+        }
+    }
+
     /// Fires the registered remove callbacks for `key` without touching the map.
     /// A store uses this to invalidate downstream listeners (e.g. an
     /// `ExistenceCacheStore`) when a write is rejected outright and never
