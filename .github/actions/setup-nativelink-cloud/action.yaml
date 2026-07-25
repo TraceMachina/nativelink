@@ -3,10 +3,11 @@ name: Setup NativeLink Cloud
 description: >-
   Writes a user.bazelrc that opts this job into NativeLink Cloud remote
   cache/BES (and optionally remote execution) via the configs in ci.bazelrc.
-  Endpoints are derived from the claim-base input, which comes from a
-  repository secret, so no claim hostname lives in the repository. No-ops
-  when the API key or claim base is unavailable (fork PRs have no secrets)
-  or when ci-mode is 'off', so builds degrade to plain local execution.
+  Trusted lanes pass secret-fed credentials; fork PRs, which receive neither
+  secrets nor repository variables, fall back to the committed public
+  read-only defaults below (cache reads only — no uploads, no BES, no remote
+  execution). ci-mode 'off' disables trusted lanes; the public path's kill
+  switch is revoking the public key server-side.
 
 inputs:
   api-key:
@@ -32,20 +33,20 @@ inputs:
     default: ''
   public-read-key:
     description: >-
-      World-readable cache_read-only API key, normally passed from
-      vars.NATIVELINK_PUBLIC_CACHE_KEY. Used only when api-key/claim-base are
-      unavailable (fork PRs have no secrets), giving fork contributors
-      read-only cache hits. Deliberately a variable rather than a secret:
-      fork code runs with the value in hand either way, so it is public by
-      definition and must never carry more than cache_read.
+      World-readable cache_read-only API key used when api-key/claim-base are
+      unavailable (fork PRs receive neither secrets nor repository variables,
+      so the value must live here as a committed default to reach them).
+      Deliberately public: fork code runs with the value in hand either way,
+      so it must never carry more than cache_read. Kill switch is revoking
+      the key server-side; rotation is editing this default.
     required: false
-    default: ''
+    default: '66532088547d98bfb5b0b41e8d5cbfea8b5da1bc1e23e776f9cefc12654c6cb6'
   public-claim-base:
     description: >-
-      Claim endpoint base for the public read-only path, normally passed from
-      vars.NATIVELINK_PUBLIC_CLAIM_BASE.
+      Claim endpoint base for the public read-only path. Committed default
+      for the same reason as public-read-key.
     required: false
-    default: ''
+    default: 'marcus-eagan-h6a62e.staging.scdev.nativelink.net'
   ci-mode:
     description: >-
       Kill switch, normally passed as vars.NATIVELINK_CI_MODE. Empty or 'off'
@@ -99,10 +100,18 @@ runs:
         set -euo pipefail
 
         cred_kind=""
-        if [[ -n "$NL_CI_MODE" && "$NL_CI_MODE" != "off" ]]; then
+        if [[ "$NL_CI_MODE" != "off" ]]; then
           if [[ -n "$NL_API_KEY" && -n "$NL_CLAIM_BASE" ]]; then
-            cred_kind="private"
+            # Private credentials also require the kill-switch variable to be
+            # explicitly on; never silently downgrade a trusted lane to the
+            # public path.
+            if [[ -n "$NL_CI_MODE" ]]; then
+              cred_kind="private"
+            fi
           elif [[ -n "$NL_PUBLIC_KEY" && -n "$NL_PUBLIC_CLAIM_BASE" ]]; then
+            # Fork runs receive neither secrets nor repository variables, so
+            # the public read-only path cannot depend on ci-mode; revoking
+            # the public key server-side is its kill switch.
             cred_kind="public"
           fi
         fi
