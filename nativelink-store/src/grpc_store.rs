@@ -1126,6 +1126,11 @@ impl GrpcStore {
         digest: DigestInfo,
         reader: DropCloserReadHalf,
     ) -> Result<u64, Error> {
+        enum UploadCompletion {
+            Write(Result<(), Error>),
+            Encode(Result<(), Error>, Result<(), Error>),
+        }
+
         // Compressed writes are NON-resumable: the server-side protocol
         // rejects replays from a nonzero compressed offset, so a mid-stream
         // failure must surface immediately instead of burning the retry
@@ -1224,10 +1229,6 @@ impl GrpcStore {
             .map(|_| ())
             .err_tip(|| "in GrpcStore::update_compressed()")
         };
-        enum UploadCompletion {
-            Write(Result<(), Error>),
-            Encode(Result<(), Error>, Result<(), Error>),
-        }
         let completion = async {
             let write_fut = Box::pin(write_fut);
             let encode_fut = Box::pin(encode_fut);
@@ -1300,6 +1301,13 @@ impl GrpcStore {
         digest: DigestInfo,
         writer: &mut DropCloserWriteHalf,
     ) -> Result<Option<u64>, Error> {
+        #[derive(Debug)]
+        enum CompressedReadStage {
+            Feed,
+            Decode,
+            Pump,
+        }
+
         let resource_name = if self.use_legacy_resource_names {
             format!(
                 "{}/compressed-blobs/zstd/{}/{}",
@@ -1401,12 +1409,6 @@ impl GrpcStore {
                     .err_tip(|| "in GrpcStore::get_part_compressed()")?;
             }
         };
-        #[derive(Debug)]
-        enum CompressedReadStage {
-            Feed,
-            Decode,
-            Pump,
-        }
 
         let result = tokio::try_join!(
             async {
