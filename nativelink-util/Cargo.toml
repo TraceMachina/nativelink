@@ -104,7 +104,7 @@ opentelemetry-proto = { version = "0.32.0", default-features = false, features =
   "gen-tonic",
   "metrics",
 ] }
-serial_test = { version = "3.2.0", features = [
+serial_test = { version = "4.0.0", features = [
   "async",
 ], default-features = false }
 
