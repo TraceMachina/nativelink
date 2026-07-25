@@ -188,6 +188,7 @@ mod tests {
                 fast_direction: StoreDirection::default(),
                 slow_direction: StoreDirection::default(),
                 bypass_dedup_threshold_bytes: 0,
+                slow_store_write_back: false,
             },
             Store::new(fast_store.clone()),
             Store::new(slow_store.clone()),
