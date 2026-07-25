@@ -57,6 +57,7 @@ fn make_stores_direction(
             fast_direction,
             slow_direction,
             bypass_dedup_threshold_bytes: 0,
+            slow_store_write_back: false,
         },
         fast_store.clone(),
         slow_store.clone(),
@@ -473,6 +474,7 @@ async fn drop_on_eof_completes_store_futures() -> Result<(), Error> {
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            slow_store_write_back: false,
         },
         fast_store,
         slow_store,
@@ -517,6 +519,7 @@ async fn ignore_value_in_fast_store() -> Result<(), Error> {
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            slow_store_write_back: false,
         },
         fast_store.clone(),
         slow_store,
@@ -543,6 +546,7 @@ async fn has_checks_fast_store_when_noop() -> Result<(), Error> {
         fast_direction: StoreDirection::default(),
         slow_direction: StoreDirection::default(),
         bypass_dedup_threshold_bytes: 0,
+        slow_store_write_back: false,
     };
     let fast_slow_store = Arc::new(FastSlowStore::new(
         &fast_slow_store_config,
@@ -784,6 +788,7 @@ fn make_stores_with_lazy_slow() -> (Store, Store, Store) {
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            slow_store_write_back: false,
         },
         fast_store.clone(),
         slow_store.clone(),
@@ -934,6 +939,7 @@ fn make_fast_slow_with_instrumented_slow(
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes,
+            slow_store_write_back: false,
         },
         fast,
         Store::new(slow.clone()),
@@ -1182,6 +1188,7 @@ async fn has_sees_in_flight_slow_writes() -> Result<(), Error> {
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            slow_store_write_back: false,
         },
         fast,
         Store::new(slow.clone()),
@@ -1342,6 +1349,7 @@ async fn has_does_not_consult_fast_store_when_slow_store_hits() -> Result<(), Er
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            slow_store_write_back: false,
         },
         fast,
         slow.clone(),
@@ -1461,6 +1469,7 @@ async fn dropping_update_future_cleans_up_in_flight_entry() -> Result<(), Error>
             fast_direction: StoreDirection::ReadOnly,
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            slow_store_write_back: false,
         },
         fast,
         Store::new(slow.clone()),
@@ -1628,6 +1637,7 @@ async fn has_with_results_handles_mixed_key_sources() -> Result<(), Error> {
             fast_direction: StoreDirection::ReadOnly,
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            slow_store_write_back: false,
         },
         fast.clone(),
         Store::new(slow.clone()),
@@ -1798,6 +1808,7 @@ async fn huge_blob_bypasses_dedup_and_skips_populate() -> Result<(), Error> {
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: THRESHOLD,
+            slow_store_write_back: false,
         },
         fast_store.clone(),
         slow_store,
@@ -1863,6 +1874,7 @@ async fn small_blob_still_dedups_and_populates() -> Result<(), Error> {
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: THRESHOLD,
+            slow_store_write_back: false,
         },
         fast_store.clone(),
         slow_store,
@@ -1926,6 +1938,7 @@ async fn bypass_threshold_is_inclusive_at_exact_size() -> Result<(), Error> {
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: SIZE as u64,
+            slow_store_write_back: false,
         },
         fast_store.clone(),
         slow_store,
@@ -2049,6 +2062,7 @@ fn make_stores_with_stale_fast(
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            slow_store_write_back: false,
         },
         fast_store,
         slow_store.clone(),
@@ -2409,5 +2423,165 @@ async fn incomplete_slow_read_never_populates_memory_or_filesystem() -> Result<(
             assert_eq!(fast.has(digest).await?, None);
         }
     }
+    Ok(())
+}
+
+/// With `slow_store_write_back` enabled, an update must return as soon as the
+/// fast store holds the data — it must not wait for, or be coupled to the
+/// liveness of, the slow store. The slow store is then populated by a
+/// background task. This is the regression test for the CAS write-path stall
+/// where a slow or stalled slow tier (e.g. a remote object store) would
+/// backpressure through the `join!` tee and freeze the client upload.
+#[nativelink_test]
+async fn write_back_decouples_update_from_slow_store() -> Result<(), Error> {
+    #[derive(MetricsComponent)]
+    struct GatedSlowStore {
+        /// Released by the test to let the background slow write complete.
+        gate: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+        /// Signalled once the slow-store `update` has begun.
+        started_tx: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+        /// Bytes drained by the slow store once the gate is released.
+        received_bytes: AtomicU64,
+    }
+
+    #[async_trait]
+    impl StoreDriver for GatedSlowStore {
+        async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+            Ok(())
+        }
+
+        async fn has_with_results(
+            self: Pin<&Self>,
+            _keys: &[StoreKey<'_>],
+            results: &mut [Option<u64>],
+        ) -> Result<(), Error> {
+            for result in results.iter_mut() {
+                *result = None;
+            }
+            Ok(())
+        }
+
+        async fn update(
+            self: Pin<&Self>,
+            _key: StoreKey<'_>,
+            mut reader: DropCloserReadHalf,
+            _size_info: UploadSizeInfo,
+        ) -> Result<u64, Error> {
+            let started_tx = self.started_tx.lock().unwrap().take();
+            if let Some(tx) = started_tx {
+                let _ = tx.send(());
+            }
+            let gate = self.gate.lock().unwrap().take();
+            if let Some(rx) = gate {
+                let _ = rx.await;
+            }
+            let size = reader.drain().await?;
+            self.received_bytes.store(size, Ordering::Release);
+            Ok(size)
+        }
+
+        async fn get_part(
+            self: Pin<&Self>,
+            _key: StoreKey<'_>,
+            writer: &mut DropCloserWriteHalf,
+            _offset: u64,
+            _length: Option<u64>,
+        ) -> Result<(), Error> {
+            writer.send_eof()
+        }
+
+        fn inner_store(&self, _key: Option<StoreKey>) -> &'_ dyn StoreDriver {
+            self
+        }
+
+        fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
+            self
+        }
+
+        fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+            self
+        }
+
+        fn register_remove_callback(
+            self: Arc<Self>,
+            _callback: Arc<dyn RemoveItemCallback>,
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    default_health_status_indicator!(GatedSlowStore);
+
+    let (gate_tx, gate_rx) = tokio::sync::oneshot::channel::<()>();
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel::<()>();
+    let slow = Arc::new(GatedSlowStore {
+        gate: Mutex::new(Some(gate_rx)),
+        started_tx: Mutex::new(Some(started_tx)),
+        received_bytes: AtomicU64::new(0),
+    });
+    let fast = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let store = Store::new(FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
+            slow_store_write_back: true,
+        },
+        fast.clone(),
+        Store::new(slow.clone()),
+    ));
+
+    let data = make_random_data(MEGABYTE_SZ);
+    let digest = DigestInfo::try_new(VALID_HASH, data.len()).unwrap();
+
+    // The slow store is gated (its `update` blocks). With write-back the client
+    // update must still complete promptly — coupled only to the fast store. A
+    // write-through store would hang here until the gate is released.
+    let update_result = tokio::time::timeout(
+        Duration::from_secs(10),
+        store.update_oneshot(digest, data.clone().into()),
+    )
+    .await;
+    assert!(
+        update_result.is_ok(),
+        "write-back update() hung on the gated slow store (write-through behavior)",
+    );
+    update_result.unwrap()?;
+
+    // The fast store has the blob immediately.
+    assert_eq!(
+        fast.has(digest).await?,
+        Some(data.len() as u64),
+        "fast store must hold the blob right after the write-back update returns",
+    );
+
+    // The background copy has begun draining the slow store, but is still gated,
+    // so the slow store has not yet received the data.
+    started_rx
+        .await
+        .map_err(|_| make_err!(Code::Internal, "background write-back copy never started"))?;
+    assert_eq!(
+        slow.received_bytes.load(Ordering::Acquire),
+        0,
+        "slow store must not have the blob while the background copy is gated",
+    );
+
+    // Release the gate; the background copy delivers the full blob to the slow
+    // store, preserving durability.
+    gate_tx
+        .send(())
+        .map_err(|()| make_err!(Code::Internal, "failed to release the slow-store gate"))?;
+    let mut waited = Duration::ZERO;
+    while slow.received_bytes.load(Ordering::Acquire) as usize != data.len() {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        waited += Duration::from_millis(10);
+        assert!(
+            waited < Duration::from_secs(10),
+            "slow store never received the background write-back copy",
+        );
+    }
+
     Ok(())
 }
