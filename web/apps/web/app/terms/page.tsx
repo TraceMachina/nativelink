@@ -15,7 +15,9 @@ const toc = [
   { id: "data", label: "What we collect" },
   { id: "cookies", label: "Cookies" },
   { id: "rights", label: "Your rights" },
+  { id: "consent", label: "Consent & withdrawal" },
   { id: "contact", label: "Contact" },
+  { id: "changelog", label: "Change history" },
 ];
 
 export default function TermsPage() {
@@ -36,7 +38,7 @@ export default function TermsPage() {
                 handling your data responsibly.
               </p>
               <p className="mt-4 font-mono text-xs uppercase tracking-[0.18em] text-muted">
-                Last updated · April 12, 2026
+                Last updated · July 24, 2026
               </p>
             </div>
           </Reveal>
@@ -86,6 +88,17 @@ export default function TermsPage() {
                 By creating an account, deploying NativeLink, or otherwise using our
                 service, you confirm that you have read these terms, agree to them,
                 and have the authority to bind your organization where applicable.
+                By agreeing, you also consent to our collection and processing of
+                personal data as described in the{" "}
+                <a href="#privacy" className="text-brand underline-offset-4 hover:underline">
+                  Privacy Policy
+                </a>{" "}
+                below. Your consent is specific and informed, and you may withdraw
+                it at any time (see{" "}
+                <a href="#consent" className="text-brand underline-offset-4 hover:underline">
+                  Consent &amp; withdrawal
+                </a>
+                ).
               </p>
 
               <h3 id="license" className="mt-10 scroll-mt-24 text-xl font-semibold tracking-tight text-foreground">
@@ -171,11 +184,46 @@ export default function TermsPage() {
               <p className="mt-3 text-[15px] leading-relaxed text-muted-foreground">
                 You may request access to, correction of, or deletion of personal
                 data we hold about you at any time by emailing{" "}
-                <a href="mailto:privacy@nativelink.com" className="text-brand underline-offset-4 hover:underline">
-                  privacy@nativelink.com
+                <a href="mailto:privacy@tracemachina.com" className="text-brand underline-offset-4 hover:underline">
+                  privacy@tracemachina.com
                 </a>
                 . If you're an EU/UK resident, this includes the rights granted
                 under GDPR / UK GDPR.
+              </p>
+
+              <h3 id="consent" className="mt-10 scroll-mt-24 text-xl font-semibold tracking-tight text-foreground">
+                Consent &amp; withdrawal
+              </h3>
+              <p className="mt-3 text-[15px] leading-relaxed text-muted-foreground">
+                Where we rely on your consent to process personal data, that
+                consent is freely given, specific, and informed. You give it when
+                you agree to these terms during sign-up, and the processing it
+                covers is the collection and use of the data described in{" "}
+                <a href="#data" className="text-brand underline-offset-4 hover:underline">
+                  What we collect
+                </a>{" "}
+                for the purposes of providing, securing, and improving the service.
+              </p>
+              <p className="mt-3 text-[15px] leading-relaxed text-muted-foreground">
+                You may withdraw your consent at any time, without affecting the
+                lawfulness of processing carried out before withdrawal. To
+                withdraw, request the Data Subject Consent Withdrawal Form by
+                emailing{" "}
+                <a href="mailto:privacy@tracemachina.com?subject=Data%20Subject%20Consent%20Withdrawal" className="text-brand underline-offset-4 hover:underline">
+                  privacy@tracemachina.com
+                </a>{" "}
+                or write to us at the postal address in{" "}
+                <a href="#contact" className="text-brand underline-offset-4 hover:underline">
+                  Contact
+                </a>
+                . We keep a record of the consents we rely on and honor withdrawal
+                requests promptly.
+              </p>
+              <p className="mt-3 text-[15px] leading-relaxed text-muted-foreground">
+                We do not sell your personal information, and we do not share it
+                for cross-context behavioral advertising. California residents may
+                exercise their rights under the CPRA using the same contact
+                methods above.
               </p>
 
               <h3 id="contact" className="mt-10 scroll-mt-24 text-xl font-semibold tracking-tight text-foreground">
@@ -183,12 +231,51 @@ export default function TermsPage() {
               </h3>
               <p className="mt-3 text-[15px] leading-relaxed text-muted-foreground">
                 Questions about these terms or our privacy practices? Email{" "}
-                <a href="mailto:legal@nativelink.com" className="text-brand underline-offset-4 hover:underline">
-                  legal@nativelink.com
+                <a href="mailto:legal@tracemachina.com" className="text-brand underline-offset-4 hover:underline">
+                  legal@tracemachina.com
                 </a>{" "}
                 or write to Trace Machina, Inc., Attn: Legal, PO Box 60676, 265
                 Cambridge Ave, Palo Alto, CA 94306.
               </p>
+
+              <div className="my-12 h-px w-full bg-border" />
+
+              <h2 id="changelog" className="scroll-mt-24 text-3xl font-semibold tracking-tight text-foreground">
+                Change history
+              </h2>
+              <p className="mt-4 text-[15px] leading-relaxed text-muted-foreground">
+                Material changes to the Terms of Service and Privacy Policy are
+                recorded here.
+              </p>
+              <ul className="mt-3 space-y-2 pl-6 text-[15px] leading-relaxed text-muted-foreground [&_li]:list-disc">
+                <li>
+                  <span className="font-mono text-[13px] text-foreground">July 24, 2026</span>:
+                  Added a data-processing consent clause and a Consent &amp;
+                  withdrawal section covering how consent is given, how it can be
+                  withdrawn, and that we do not sell or share personal data.
+                </li>
+                <li>
+                  <span className="font-mono text-[13px] text-foreground">July 24, 2026</span> —
+                  Added this change history section. No changes to the terms or
+                  the policy.
+                </li>
+                <li>
+                  <span className="font-mono text-[13px] text-foreground">July 7, 2026</span> —
+                  Updated the legal contact address to Trace Machina&apos;s Palo
+                  Alto mailing address.
+                </li>
+                <li>
+                  <span className="font-mono text-[13px] text-foreground">May 29, 2026</span> —
+                  Updated the license terms to module-aware licensing
+                  (FSL-1.1-Apache-2.0, with some commercial modules under the
+                  Business Source License) and clarified telemetry wording for
+                  the source-available release.
+                </li>
+                <li>
+                  <span className="font-mono text-[13px] text-foreground">April 12, 2026</span> —
+                  Prior revision of the Terms of Service and Privacy Policy.
+                </li>
+              </ul>
             </Reveal>
           </article>
         </div>

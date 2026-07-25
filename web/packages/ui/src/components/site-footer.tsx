@@ -26,6 +26,7 @@ const defaultColumns: FooterColumn[] = [
     title: "Company",
     links: [
       { label: "About", href: "/company" },
+      { label: "Careers", href: "/careers" },
       { label: "Community", href: "/community" },
       { label: "Resources", href: "/resources" },
       { label: "Contact", href: "/contact" },
@@ -35,8 +36,7 @@ const defaultColumns: FooterColumn[] = [
     title: "Legal",
     links: [
       { label: "Terms & Privacy", href: "/terms" },
-      { label: "Compliance", href: "/compliance" },
-      { label: "Security", href: "mailto:security@nativelink.com" },
+      { label: "Security", href: "/security" },
     ],
   },
 ];
@@ -66,7 +66,7 @@ const socialLinks = [
   },
   {
     label: "Email",
-    href: "mailto:contact@nativelink.com",
+    href: "mailto:contact@tracemachina.com",
     icon: (
       <path
         d="M3 7 L12 13 L21 7 M3 7 v10 a1 1 0 0 0 1 1 h16 a1 1 0 0 0 1 -1 V7 a1 1 0 0 0 -1 -1 H4 a1 1 0 0 0 -1 1 Z"

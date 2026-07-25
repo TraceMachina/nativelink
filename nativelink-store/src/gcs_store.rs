@@ -440,6 +440,13 @@ where
                     while let Some(next_chunk) = stream.next().await {
                         match next_chunk {
                             Ok(bytes) => {
+                                // HTTP/2 peers may emit zero-length DATA frames
+                                // (e.g. a bare END_STREAM frame), which surface
+                                // here as empty chunks. `send()` rejects empty
+                                // buffers by contract, so skip them.
+                                if bytes.is_empty() {
+                                    continue;
+                                }
                                 offset += bytes.len() as u64;
                                 if let Err(err) = writer.send(bytes).await {
                                     return Some((RetryResult::Err(err), (offset, writer)));

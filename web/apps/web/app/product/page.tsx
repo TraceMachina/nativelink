@@ -144,7 +144,7 @@ export default function ProductPage() {
                   <a href="/docs">Start in 10 minutes</a>
                 </Button>
                 <Button size="lg" variant="outline" asChild>
-                  <a href="mailto:contact@nativelink.com">Talk to us</a>
+                  <a href="mailto:contact@tracemachina.com">Talk to us</a>
                 </Button>
               </div>
             </div>

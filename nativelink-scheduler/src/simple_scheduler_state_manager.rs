@@ -747,6 +747,7 @@ where
                 }
             }
 
+            let mut is_retry = false;
             let stage = match &update {
                 UpdateOperationType::KeepAlive => {
                     awaited_action.worker_keep_alive((self.now_fn)().now());
@@ -795,6 +796,7 @@ where
                             ..ActionResult::default()
                         })
                     } else {
+                        is_retry = true;
                         ActionStage::Queued
                     }
                 }
@@ -826,6 +828,7 @@ where
                             ..ActionResult::default()
                         })
                     } else {
+                        is_retry = true;
                         ActionStage::Queued
                     }
                 }
@@ -920,12 +923,28 @@ where
                     };
                     attrs.push(KeyValue::new(EXECUTION_RESULT, result));
                     EXECUTION_METRICS.execution_completed_count.add(1, &attrs);
+                    nativelink_util::metrics::record_completed_execution_metrics(
+                        action_result,
+                        instance_name,
+                        worker_id.as_deref(),
+                        priority,
+                    );
                 }
                 ActionStage::CompletedFromCache(_) => {
                     attrs.push(KeyValue::new(EXECUTION_RESULT, ExecutionResult::CacheHit));
                     EXECUTION_METRICS.execution_completed_count.add(1, &attrs);
                 }
                 _ => {}
+            }
+
+            // A failed attempt that re-queued the action counts as a retry.
+            if is_retry {
+                let retry_attrs = nativelink_util::metrics::make_execution_attributes(
+                    instance_name,
+                    worker_id.as_deref(),
+                    priority,
+                );
+                EXECUTION_METRICS.execution_retry_count.add(1, &retry_attrs);
             }
 
             debug!(

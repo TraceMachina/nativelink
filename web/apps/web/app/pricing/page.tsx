@@ -307,7 +307,7 @@ export default function PricingPage() {
           </p>
           <div className="mt-8 flex flex-wrap justify-center gap-3">
             <Button size="lg" asChild>
-              <a href="mailto:hello@nativelink.com">Talk to sales</a>
+              <a href="mailto:contact@tracemachina.com">Talk to sales</a>
             </Button>
             <Button size="lg" variant="outline" asChild>
               <a href="/community">Join community</a>
