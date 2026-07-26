@@ -177,7 +177,7 @@ impl ContentAddressableStorage for FakeCasHandle {
                 .ok_or_else(|| Status::not_found(format!("chunk {chunk_digest:?} missing")))?;
             assembled.extend_from_slice(chunk);
         }
-        if assembled.len() as i64 != blob_digest.size_bytes {
+        if assembled.len().try_into().unwrap_or(i64::MAX) != blob_digest.size_bytes {
             return Err(Status::invalid_argument("assembled size mismatch"));
         }
         blobs.insert(digest_key(&blob_digest), assembled.into());
@@ -248,7 +248,7 @@ impl ByteStream for FakeCasHandle {
             .await
             .insert(format!("{hash}-{size}"), Bytes::from(data.clone()));
         Ok(Response::new(WriteResponse {
-            committed_size: data.len() as i64,
+            committed_size: data.len().try_into().unwrap_or(i64::MAX),
         }))
     }
 
