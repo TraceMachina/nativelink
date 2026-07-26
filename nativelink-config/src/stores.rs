@@ -754,6 +754,16 @@ pub struct FilesystemSpec {
     /// Default: unlimited
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_concurrent_writes: usize,
+
+    /// When true, advise the kernel to drop the page cache for each blob after
+    /// it is written or read (`posix_fadvise` with `POSIX_FADV_DONTNEED`). On
+    /// real filesystems this takes a globally serialized, all-CPU kernel path
+    /// that stalls on many-core hosts, and it evicts the page-cache tier that
+    /// fast-disk deployments rely on. Leave off unless you specifically want to
+    /// keep this store's I/O out of the page cache.
+    /// Default: false
+    #[serde(default)]
+    pub evict_page_cache: bool,
 }
 
 // NetApp ONTAP S3 Spec
