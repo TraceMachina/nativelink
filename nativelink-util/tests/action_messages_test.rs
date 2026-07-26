@@ -66,7 +66,7 @@ fn make_missing_blob_error(digest: &DigestInfo) -> Error {
     )
     .with_context(ErrorContext::MissingDigest {
         hash: digest.packed_hash().to_string(),
-        size: digest.size_bytes() as i64,
+        size: digest.size_bytes().try_into().unwrap_or(i64::MAX),
     })
 }
 
