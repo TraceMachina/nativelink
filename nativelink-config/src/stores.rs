@@ -1484,12 +1484,14 @@ pub struct GrpcSpec {
     /// only the changed chunks.
     ///
     /// The backend MUST support the REAPI chunking extension (a `NativeLink`
-    /// CAS with `experimental_chunking` configured, or another server
-    /// advertising `FastCDC` 2020). Its advertised average chunk size must
-    /// match `avg_chunk_size_bytes`; a mismatch is rejected when the local
-    /// CAS proxy has both configurations. Chunked uploads against a backend
-    /// without chunking support fail; there is no runtime capability probe
-    /// yet.
+    /// CAS with `experimental_chunking` configured, or another compatible
+    /// server). During startup, `NativeLink` calls `GetCapabilities` and
+    /// requires the configured upstream instance to advertise `SplitBlob`,
+    /// `SpliceBlob`, and `FastCDC` 2020 with the same average chunk size and
+    /// seed 0. Startup fails with a configuration error when these
+    /// requirements are not met. This check is validation, not negotiation:
+    /// `NativeLink` never changes the configured parameters to match the
+    /// backend.
     ///
     /// If a chunk is evicted from the backend between its upload and the
     /// final `SpliceBlob`, the upload fails with a retryable ABORTED error.

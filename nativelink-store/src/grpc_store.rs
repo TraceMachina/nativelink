@@ -28,13 +28,14 @@ use nativelink_config::stores::{GrpcChunkedUploadsConfig, GrpcReadBatchingConfig
 use nativelink_error::{Error, ResultExt, error_if, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_proto::build::bazel::remote::execution::v2::action_cache_client::ActionCacheClient;
+use nativelink_proto::build::bazel::remote::execution::v2::capabilities_client::CapabilitiesClient;
 use nativelink_proto::build::bazel::remote::execution::v2::content_addressable_storage_client::ContentAddressableStorageClient;
 use nativelink_proto::build::bazel::remote::execution::v2::{
     ActionResult, BatchReadBlobsRequest, BatchReadBlobsResponse, BatchUpdateBlobsRequest,
     BatchUpdateBlobsResponse, Digest, FindMissingBlobsRequest, FindMissingBlobsResponse,
-    GetActionResultRequest, GetTreeRequest, GetTreeResponse, SpliceBlobRequest, SpliceBlobResponse,
-    SplitBlobRequest, SplitBlobResponse, UpdateActionResultRequest, batch_update_blobs_request,
-    chunking_function,
+    GetActionResultRequest, GetCapabilitiesRequest, GetTreeRequest, GetTreeResponse,
+    SpliceBlobRequest, SpliceBlobResponse, SplitBlobRequest, SplitBlobResponse,
+    UpdateActionResultRequest, batch_update_blobs_request, chunking_function,
 };
 use nativelink_proto::google::bytestream::byte_stream_client::ByteStreamClient;
 use nativelink_proto::google::bytestream::{
@@ -66,7 +67,7 @@ use tokio::time::sleep;
 use tokio_util::io::StreamReader;
 use tonic::metadata::{Ascii, MetadataKey, MetadataValue};
 use tonic::{Code, IntoRequest, Request, Response, Status, Streaming};
-use tracing::{error, trace, warn};
+use tracing::{error, info, trace, warn};
 use uuid::Uuid;
 
 struct TonicMetadataInjector<'a>(&'a mut tonic::metadata::MetadataMap);
@@ -409,13 +410,116 @@ impl GrpcStore {
         }))
     }
 
-    /// Returns the FastCDC average used by worker/StoreDriver-only chunked
+    /// Returns the `FastCDC` average used by worker/StoreDriver-only chunked
     /// uploads, when that upload path is enabled.
     #[must_use]
     pub fn chunked_upload_avg_chunk_size_bytes(&self) -> Option<u64> {
         self.chunked_uploader
             .as_ref()
             .map(|uploader| uploader.config.avg_chunk_size_bytes)
+    }
+
+    /// Verifies the configured upstream instance advertises the exact
+    /// chunking behavior this uploader requires. This is validation, not
+    /// negotiation: the local average and seed are never changed to match the
+    /// backend.
+    async fn validate_chunked_upload_capabilities(&self) -> Result<(), Error> {
+        let uploader = self
+            .chunked_uploader
+            .as_ref()
+            .err_tip(|| "Chunked-upload capability validation called while disabled")?;
+        let request = GetCapabilitiesRequest {
+            instance_name: self.instance_name.clone(),
+        };
+        let capabilities = self
+            .perform_request(request, |request| async move {
+                let channel = self
+                    .connection_manager
+                    .connection("validate_chunked_upload_capabilities".into())
+                    .await
+                    .err_tip(|| "Connecting for chunked-upload capability validation")?;
+                CapabilitiesClient::new(channel)
+                    .get_capabilities(enrich_request(
+                        Request::new(request),
+                        &self.headers,
+                        &self.forward_headers,
+                    ))
+                    .await
+                    .err_tip(|| "Calling GetCapabilities for experimental_chunked_uploads")
+            })
+            .await
+            .map_err(|error| {
+                error.append(format!(
+                    "Cannot enable experimental_chunked_uploads for upstream instance '{}': \
+                     the backend capability check failed. Ensure the endpoint serves REAPI \
+                     Capabilities for this instance and advertises SplitBlob, SpliceBlob, and \
+                     FastCDC 2020, or remove experimental_chunked_uploads",
+                    self.instance_name
+                ))
+            })?
+            .into_inner();
+
+        let cache_capabilities = capabilities.cache_capabilities.ok_or_else(|| {
+            make_err!(
+                Code::FailedPrecondition,
+                "Cannot enable experimental_chunked_uploads for upstream instance '{}': \
+                 GetCapabilities returned no cache_capabilities. Configure a chunking-capable CAS \
+                 backend or remove experimental_chunked_uploads",
+                self.instance_name
+            )
+        })?;
+        if !cache_capabilities.split_blob_support || !cache_capabilities.splice_blob_support {
+            return Err(make_err!(
+                Code::FailedPrecondition,
+                "Cannot enable experimental_chunked_uploads for upstream instance '{}': the \
+                 backend must advertise both SplitBlob and SpliceBlob support \
+                 (split_blob_support={}, splice_blob_support={}). Enable experimental_chunking on \
+                 the backend or remove experimental_chunked_uploads",
+                self.instance_name,
+                cache_capabilities.split_blob_support,
+                cache_capabilities.splice_blob_support
+            ));
+        }
+
+        let fast_cdc_params = cache_capabilities.fast_cdc_2020_params.ok_or_else(|| {
+            make_err!(
+                Code::FailedPrecondition,
+                "Cannot enable experimental_chunked_uploads for upstream instance '{}': the \
+                 backend did not advertise FastCDC 2020 parameters. Enable FastCDC 2020 on the \
+                 backend or remove experimental_chunked_uploads",
+                self.instance_name
+            )
+        })?;
+        if fast_cdc_params.avg_chunk_size_bytes != uploader.config.avg_chunk_size_bytes {
+            return Err(make_err!(
+                Code::FailedPrecondition,
+                "Cannot enable experimental_chunked_uploads for upstream instance '{}': \
+                 avg_chunk_size_bytes is {}, but the backend advertises {}. Configure both sides \
+                 with the same FastCDC 2020 average",
+                self.instance_name,
+                uploader.config.avg_chunk_size_bytes,
+                fast_cdc_params.avg_chunk_size_bytes
+            ));
+        }
+        if fast_cdc_params.seed != 0 {
+            return Err(make_err!(
+                Code::FailedPrecondition,
+                "Cannot enable experimental_chunked_uploads for upstream instance '{}': the \
+                 backend advertises FastCDC 2020 seed {}, but NativeLink worker uploads currently \
+                 require seed 0. Configure the backend with seed 0 or remove \
+                 experimental_chunked_uploads",
+                self.instance_name,
+                fast_cdc_params.seed
+            ));
+        }
+
+        info!(
+            instance_name = %self.instance_name,
+            avg_chunk_size_bytes = fast_cdc_params.avg_chunk_size_bytes,
+            seed = fast_cdc_params.seed,
+            "Validated backend support for experimental chunked uploads",
+        );
+        Ok(())
     }
 
     async fn perform_request<F, Fut, R, I>(&self, input: I, mut request: F) -> Result<R, Error>
@@ -1200,7 +1304,7 @@ impl GrpcStore {
             .map(|_| len)
     }
 
-    /// Validates that a BatchUpdateBlobs response covers exactly the request
+    /// Validates that a `BatchUpdateBlobs` response covers exactly the request
     /// entries and returns the entries whose per-entry status failed. REAPI
     /// permits response entries to be returned in a different order, so
     /// coverage is checked by digest rather than by position.
@@ -1276,7 +1380,7 @@ impl GrpcStore {
         Ok(failures)
     }
 
-    /// Retries one failed BatchUpdateBlobs entry using the store's configured
+    /// Retries one failed `BatchUpdateBlobs` entry using the store's configured
     /// retry policy. The first error is yielded to Retrier so its delay and
     /// max-retry semantics apply between the original attempt and retries.
     async fn retry_batch_update_entry(
@@ -1287,7 +1391,7 @@ impl GrpcStore {
     ) -> Result<(), Error> {
         let mut initial_error = Some(initial_error);
         self.retrier
-            .retry(unfold((), move |_| {
+            .retry(unfold((), move |()| {
                 let request = request.clone();
                 let initial_error = initial_error.take();
                 async move {
@@ -1562,30 +1666,66 @@ impl GrpcStore {
             "Chunked upload of {digest} received {total_bytes} bytes, expected {expected_size}"
         );
 
-        self.splice_blob(Request::new(SpliceBlobRequest {
-            instance_name: self.instance_name.clone(),
-            blob_digest: Some(digest.into()),
-            chunk_digests: all_chunk_digests,
-            digest_function,
-            chunking_function: chunking_function::Value::FastCdc2020.into(),
-        }))
-        .await
-        .map_err(|err| {
-            if err.code == Code::NotFound {
+        let response = match self
+            .splice_blob(Request::new(SpliceBlobRequest {
+                instance_name: self.instance_name.clone(),
+                blob_digest: Some(digest.into()),
+                chunk_digests: all_chunk_digests,
+                digest_function,
+                chunking_function: chunking_function::Value::FastCdc2020.into(),
+            }))
+            .await
+        {
+            Ok(response) => Some(response),
+            Err(err) if err.code == Code::AlreadyExists => {
+                // REAPI permits this when the assembled blob already exists
+                // and the server keeps a different chunk layout. The
+                // StoreDriver update has still achieved its contract.
+                trace!(
+                    %digest,
+                    "SpliceBlob reported that the target blob already exists",
+                );
+                None
+            }
+            Err(err) if err.code == Code::NotFound => {
                 // A chunk was evicted between its upload and the splice. The
                 // stream is consumed, so this upload cannot be re-run here:
-                // external ByteStream clients retry the whole Write (and
-                // re-enter chunking); internal callers (e.g. worker output
-                // upload) surface this to their action-level retry.
-                make_err!(
+                // worker output uploads surface this to their action-level
+                // retry.
+                return Err(make_err!(
                     Code::Aborted,
                     "Chunk evicted before SpliceBlob completed; re-running the upload may succeed: {err}"
-                )
-            } else {
-                err
+                ))
+                .err_tip(|| "In GrpcStore::chunked_update");
             }
-        })
-        .err_tip(|| "In GrpcStore::chunked_update")?;
+            Err(err) => return Err(err).err_tip(|| "In GrpcStore::chunked_update"),
+        };
+        let Some(response) = response else {
+            return Ok(expected_size);
+        };
+        let response_digest = response
+            .into_inner()
+            .blob_digest
+            .ok_or_else(|| {
+                make_err!(
+                    Code::Internal,
+                    "SpliceBlob response omitted blob_digest for {digest}"
+                )
+            })
+            .and_then(|response_digest| {
+                DigestInfo::try_from(response_digest).map_err(|error| {
+                    make_err!(
+                        Code::Internal,
+                        "SpliceBlob returned an invalid blob_digest for {digest}: {error}"
+                    )
+                })
+            })?;
+        if response_digest != digest {
+            return Err(make_err!(
+                Code::Internal,
+                "SpliceBlob returned blob_digest {response_digest}, expected {digest}"
+            ));
+        }
         Ok(expected_size)
     }
 }
@@ -1593,6 +1733,9 @@ impl GrpcStore {
 #[async_trait]
 impl StoreDriver for GrpcStore {
     async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        if self.chunked_uploader.is_some() {
+            self.validate_chunked_upload_capabilities().await?;
+        }
         Ok(())
     }
 

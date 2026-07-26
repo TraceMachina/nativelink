@@ -19,6 +19,17 @@ chunking blobs on demand with FastCDC 2020 when they were uploaded whole,
 which is what makes chunked downloads work for outputs produced by remote
 execution workers.
 
+CDC supports two independent upload paths:
+
+- External clients such as Bazel opt in with their own chunking flag and use
+  the CAS `SplitBlob` and `SpliceBlob` services.
+- NativeLink workers opt in on their upstream `grpc` CAS store. Their
+  `StoreDriver` uploads are chunked before crossing the worker-to-CAS link.
+
+Enabling worker uploads does not rewrite incoming `ByteStream.Write`
+requests. Ordinary external ByteStream uploads through a NativeLink proxy
+remain streaming writes.
+
 ## Requirements
 
 - **Bazel 9.1.1+ or 8.7.0+** on the client, with
@@ -29,54 +40,145 @@ execution workers.
   below, NativeLink behaves exactly as before and does not advertise
   chunking support, so clients fall back to regular transfers.
 
-## Enabling it
+## Supported configurations
+
+| Data path | Where to enable it | Required backend behavior |
+| --- | --- | --- |
+| Bazel or another CDC-aware client to a NativeLink CAS | CAS service `experimental_chunking`, a chunk index store, and a capabilities service | NativeLink serves `SplitBlob` and `SpliceBlob` locally |
+| NativeLink worker to a remote NativeLink CAS | Worker-side `grpc.experimental_chunked_uploads`; backend CAS `experimental_chunking` and capabilities for the same instance | Backend advertises `SplitBlob`, `SpliceBlob`, FastCDC 2020, the configured average, and seed 0 |
+| NativeLink gRPC proxy serving CDC-aware external clients | Frontend CAS `experimental_chunking` without `index_store`; backend chunking and capabilities enabled | Frontend forwards `SplitBlob` and `SpliceBlob`; backend owns chunk layouts |
+| Ordinary external ByteStream upload | No CDC setting changes this path | Upload remains an ordinary streaming `ByteStream.Write` |
+
+Worker-side chunking only applies to CAS `grpc` stores and to
+`StoreDriver` uploads that provide an exact size. Blobs below
+`min_blob_size_bytes`, blobs whose worst-case chunk count exceeds
+`max_chunk_count`, unknown-size uploads, and AC stores do not take the
+chunked path. A local filesystem, object, or memory store cannot use the
+worker-side option directly.
+
+NativeLink does not negotiate parameters. At startup, it validates the
+support advertised by the backend and fails with a message naming the
+missing or mismatched capability. The operator must still configure both
+ends with the same average and ensure the worker's `max_chunk_count` does
+not exceed the backend limit, because that limit is not advertised by REAPI.
+
+## Enable client-to-CAS chunking
 
 Add an `experimental_chunking` block to the CAS service and give it a small
 store for chunk layouts. The index store must not verify content digests
 and must not be the CAS store itself:
 
 ```json5
-stores: [
-  {
-    name: "CAS_MAIN_STORE",
-    // ... your existing CAS store ...
-  },
-  {
-    // Blob-to-chunks layouts: roughly 80-140 bytes per chunk.
-    name: "CHUNK_INDEX_STORE",
-    filesystem: {
-      content_path: "/tmp/nativelink/data/content_path-chunk-index",
-      temp_path: "/tmp/nativelink/data/tmp_path-chunk-index",
-      eviction_policy: { max_bytes: 100000000 },
+// Demonstrates REAPI content-defined chunking: the SplitBlob/SpliceBlob
+// RPCs used by Bazel's --experimental_remote_cache_chunking flag
+// (available in Bazel 8.7.0+ / 9.1.0+).
+//
+// Chunking is entirely optional and disabled by default: without the
+// `experimental_chunking` block below, NativeLink behaves exactly as
+// before and does not advertise chunking support. When enabled, clients
+// upload and download large blobs as content-defined chunks, so small
+// changes to large outputs only transfer the chunks that changed.
+//
+// This example configures the CAS service for CDC-aware external clients.
+// NativeLink worker/StoreDriver uploads use a separate opt-in:
+// `experimental_chunked_uploads` on the worker's upstream grpc CAS store.
+// Ordinary external ByteStream uploads remain unchanged.
+{
+  stores: [
+    {
+      name: "CAS_MAIN_STORE",
+      filesystem: {
+        content_path: "/tmp/nativelink/data/content_path-cas",
+        temp_path: "/tmp/nativelink/data/tmp_path-cas",
+        eviction_policy: {
+          // 10gb.
+          max_bytes: 10000000000,
+        },
+      },
     },
-  },
-],
-servers: [
-  {
-    // ...
-    services: {
-      cas: [
-        {
-          cas_store: "CAS_MAIN_STORE",
-          experimental_chunking: {
-            index_store: "CHUNK_INDEX_STORE",
-            // Optional; the REAPI-recommended default. Must be between
-            // 1 KiB and 1 MiB. Blobs smaller than 4x this value are
-            // never chunked.
-            avg_chunk_size_bytes: 524288,
-            // Optional; blobs producing more chunks than this are served
-            // without chunking (~25 GiB at the default average).
-            max_chunk_count: 50000,
+    {
+      // Holds the blob-to-chunks layouts registered via SpliceBlob or
+      // created by on-demand chunking in SplitBlob. Layout entries are
+      // small (roughly 80-140 bytes per chunk). This store must not verify
+      // content digests and must not be the same store as the CAS itself.
+      name: "CHUNK_INDEX_STORE",
+      filesystem: {
+        content_path: "/tmp/nativelink/data/content_path-chunk-index",
+        temp_path: "/tmp/nativelink/data/tmp_path-chunk-index",
+        eviction_policy: {
+          // 100mb.
+          max_bytes: 100000000,
+        },
+      },
+    },
+    {
+      name: "AC_MAIN_STORE",
+      filesystem: {
+        content_path: "/tmp/nativelink/data/content_path-ac",
+        temp_path: "/tmp/nativelink/data/tmp_path-ac",
+        eviction_policy: {
+          // 500mb.
+          max_bytes: 500000000,
+        },
+      },
+    },
+  ],
+  servers: [
+    {
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50051",
+        },
+      },
+      services: {
+        cas: [
+          {
+            instance_name: "main",
+            cas_store: "CAS_MAIN_STORE",
+
+            // Optional: omit this block to disable chunking entirely.
+            experimental_chunking: {
+              // Required, unless `cas_store` is a grpc store — in that
+              // case the chunking RPCs are forwarded to the backend and
+              // `index_store` must be omitted.
+              index_store: "CHUNK_INDEX_STORE",
+
+              // Optional: the average chunk size in bytes advertised to
+              // clients and used for server-side chunking. Must be between
+              // 1 KiB and 1 MiB.
+              // Default: 524288 (512 KiB).
+              avg_chunk_size_bytes: 524288,
+
+              // Optional: blobs that would produce more chunks than this
+              // are served without chunking.
+              // Default: 50000.
+              max_chunk_count: 50000,
+            },
+          },
+        ],
+        ac: [
+          {
+            instance_name: "main",
+            ac_store: "AC_MAIN_STORE",
+          },
+        ],
+
+        // The capabilities service advertises chunking support; Bazel only
+        // issues SplitBlob/SpliceBlob when it is advertised.
+        capabilities: [
+          {
+            instance_name: "main",
+          },
+        ],
+        bytestream: {
+          cas_stores: {
+            main: "CAS_MAIN_STORE",
           },
         },
-      ],
-      // The capabilities service advertises chunking support; clients
-      // only use it when advertised.
-      capabilities: [{}],
-      // ...
+      },
     },
-  },
-],
+  ],
+}
 ```
 
 A complete runnable example lives at
@@ -92,6 +194,78 @@ bazel build //... \
   --experimental_remote_cache_chunking
 ```
 
+## Enable NativeLink worker uploads
+
+When a worker's `cas_fast_slow_store` ultimately uploads to a remote
+`grpc` CAS store, add `experimental_chunked_uploads` to that `grpc` store.
+If the deployment has opted into CDC but this block is omitted, worker
+outputs continue to use full-blob ByteStream uploads:
+
+```json5
+{
+  stores: [
+    {
+      name: "WORKER_FAST_SLOW_STORE",
+      fast_slow: {
+        // Keep the worker's normal local filesystem store here.
+        fast: {
+          filesystem: {
+            content_path: "/var/lib/nativelink/worker-cas",
+            temp_path: "/var/lib/nativelink/worker-cas-tmp",
+            eviction_policy: { max_bytes: 30000000000 },
+          },
+        },
+        slow: {
+          grpc: {
+            instance_name: "main",
+            endpoints: [{ address: "grpc://cas.internal:50051" }],
+            store_type: "cas",
+
+            // Use static headers here when the backend requires
+            // authentication. Worker uploads and the startup check do not
+            // inherit credentials from an incoming ByteStream request.
+            headers: {
+              // authorization: "Bearer ${NATIVELINK_CAS_TOKEN}",
+            },
+
+            experimental_chunked_uploads: {
+              // Only exact-size blobs at or above 8 MiB take the CDC path.
+              min_blob_size_bytes: "8MiB",
+
+              // Must exactly match the backend's advertised FastCDC value.
+              avg_chunk_size_bytes: "512KiB",
+
+              // Must not exceed the backend's configured limit.
+              max_chunk_count: 50000,
+            },
+          },
+        },
+      },
+    },
+  ],
+  workers: [
+    {
+      local: {
+        cas_fast_slow_store: "WORKER_FAST_SLOW_STORE",
+        // ...the rest of the worker configuration...
+      },
+    },
+  ],
+}
+```
+
+The backend instance named by `instance_name` must expose the capabilities
+service and advertise both split and splice support, FastCDC 2020 with seed
+0, and the same `avg_chunk_size_bytes`. A missing capabilities service,
+unsupported split or splice operation, nonzero seed, or average mismatch
+stops NativeLink during startup instead of waiting for the first large
+output to fail.
+
+For blobs that take this path,
+`experimental_chunked_uploads` takes precedence over
+`experimental_remote_cache_compression`; chunk batches are sent
+uncompressed.
+
 ## When it helps, and when it doesn't
 
 Chunking pays off when clients reach the cache across a real network (WAN,
@@ -100,8 +274,25 @@ uncompressed archives, linked binaries, and container layers typically save
 80–90% of transfer bytes per change. It does little on same-rack links —
 saved bytes only save time when the wire is the bottleneck — and little for
 compressed artifacts, where everything after the first changed byte
-re-transfers. Small blobs (below 4x the average chunk size) are never
-chunked, so hot small-object traffic is unaffected.
+re-transfers. On the client-to-CAS path, blobs below 4x the average chunk size
+are never chunked. Worker uploads instead use `min_blob_size_bytes`, so hot
+small-object traffic remains on ordinary `ByteStream.Write`.
+
+The worker-upload benchmark from the pull request used a 256 MiB artifact,
+real gRPC over counted TCP, and byte-verified output:
+
+| Upload | Plain wire | CDC wire | Wire saved | Plain wall | CDC wall |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Cold v1 | 269.2 MB | 268.7 MB | 0.2% | 125 ms | 912 ms |
+| v2 with 5% clustered churn | 269.2 MB | 28.3 MB | 89.5% | 112 ms | 737 ms |
+| v3 with a 64 KiB insertion | 269.3 MB | 1.07 MB | 99.6% | 139 ms | 706 ms |
+| Unchanged v3 re-upload | 269.3 MB | 67 KB | 99.97% | 129 ms | 201 ms |
+
+The wall-time columns are intentional: on this fast local link, CDC reduced
+wire bytes but added hashing, boundary detection, and RPC work. It is a
+bandwidth optimization, not an unconditional latency optimization. Clustered
+changes benefit because most chunk boundaries remain stable; uniformly
+scattered changes can touch every chunk and save little or nothing.
 
 The server verifies every spliced blob's digest before committing it and
 materializes the full blob, so non-chunking clients and every existing read

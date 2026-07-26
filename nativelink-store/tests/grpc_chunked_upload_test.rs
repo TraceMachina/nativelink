@@ -24,13 +24,17 @@ use nativelink_config::stores::{
 };
 use nativelink_error::{Code, Error, make_err};
 use nativelink_macro::nativelink_test;
+use nativelink_proto::build::bazel::remote::execution::v2::capabilities_server::{
+    Capabilities, CapabilitiesServer,
+};
 use nativelink_proto::build::bazel::remote::execution::v2::content_addressable_storage_server::{
     ContentAddressableStorage, ContentAddressableStorageServer,
 };
 use nativelink_proto::build::bazel::remote::execution::v2::{
     BatchReadBlobsRequest, BatchReadBlobsResponse, BatchUpdateBlobsRequest,
-    BatchUpdateBlobsResponse, FindMissingBlobsRequest, FindMissingBlobsResponse, GetTreeRequest,
-    GetTreeResponse, SpliceBlobRequest, SpliceBlobResponse, SplitBlobRequest, SplitBlobResponse,
+    BatchUpdateBlobsResponse, CacheCapabilities, FastCdc2020Params, FindMissingBlobsRequest,
+    FindMissingBlobsResponse, GetCapabilitiesRequest, GetTreeRequest, GetTreeResponse,
+    ServerCapabilities, SpliceBlobRequest, SpliceBlobResponse, SplitBlobRequest, SplitBlobResponse,
     batch_update_blobs_response,
 };
 use nativelink_proto::google::bytestream::byte_stream_server::{ByteStream, ByteStreamServer};
@@ -42,7 +46,7 @@ use nativelink_store::grpc_store::GrpcStore;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
-use nativelink_util::store_trait::{StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{StoreDriver, StoreLike, UploadSizeInfo};
 use pretty_assertions::assert_eq;
 use tokio::sync::Mutex;
 use tokio_stream::StreamExt;
@@ -60,6 +64,7 @@ struct FakeCas {
     omit_batch_update_response: AtomicBool,
     bytestream_writes: AtomicU64,
     splice_requests: AtomicU64,
+    fail_splice_already_exists: AtomicBool,
     fail_splice_not_found: AtomicBool,
     duplicate_missing_digests: AtomicBool,
 }
@@ -159,6 +164,9 @@ impl ContentAddressableStorage for FakeCasHandle {
         if self.fail_splice_not_found.load(Ordering::Relaxed) {
             return Err(Status::not_found("chunk evicted (injected)"));
         }
+        if self.fail_splice_already_exists.load(Ordering::Relaxed) {
+            return Err(Status::already_exists("blob already exists (injected)"));
+        }
         let request = request.into_inner();
         let blob_digest = request.blob_digest.expect("blob_digest must be set");
         let mut blobs = self.blobs.lock().await;
@@ -252,7 +260,48 @@ impl ByteStream for FakeCasHandle {
     }
 }
 
-async fn start_fake_cas(cas: Arc<FakeCas>) -> u16 {
+#[derive(Debug, Clone)]
+struct FakeCapabilities {
+    split_blob_support: bool,
+    splice_blob_support: bool,
+    fast_cdc_2020_params: Option<FastCdc2020Params>,
+}
+
+impl Default for FakeCapabilities {
+    fn default() -> Self {
+        Self {
+            split_blob_support: true,
+            splice_blob_support: true,
+            fast_cdc_2020_params: Some(FastCdc2020Params {
+                avg_chunk_size_bytes: 16 * 1024,
+                seed: 0,
+            }),
+        }
+    }
+}
+
+#[tonic::async_trait]
+impl Capabilities for FakeCapabilities {
+    async fn get_capabilities(
+        &self,
+        _request: Request<GetCapabilitiesRequest>,
+    ) -> Result<Response<ServerCapabilities>, Status> {
+        Ok(Response::new(ServerCapabilities {
+            cache_capabilities: Some(CacheCapabilities {
+                split_blob_support: self.split_blob_support,
+                splice_blob_support: self.splice_blob_support,
+                fast_cdc_2020_params: self.fast_cdc_2020_params,
+                ..Default::default()
+            }),
+            ..Default::default()
+        }))
+    }
+}
+
+async fn start_fake_cas_with_capabilities(
+    cas: Arc<FakeCas>,
+    capabilities: FakeCapabilities,
+) -> u16 {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
@@ -262,11 +311,16 @@ async fn start_fake_cas(cas: Arc<FakeCas>) -> u16 {
                 cas.clone(),
             )))
             .add_service(ByteStreamServer::new(FakeCasHandle(cas)))
+            .add_service(CapabilitiesServer::new(capabilities))
             .serve_with_incoming(incoming)
             .await
             .unwrap();
     });
     port
+}
+
+async fn start_fake_cas(cas: Arc<FakeCas>) -> u16 {
+    start_fake_cas_with_capabilities(cas, FakeCapabilities::default()).await
 }
 
 fn chunked_spec(port: u16, config: GrpcChunkedUploadsConfig) -> GrpcSpec {
@@ -300,6 +354,15 @@ const fn test_config() -> GrpcChunkedUploadsConfig {
         avg_chunk_size_bytes: 16 * 1024,
         max_chunk_count: 50_000,
     }
+}
+
+async fn new_chunked_store(
+    port: u16,
+    config: GrpcChunkedUploadsConfig,
+) -> Result<Arc<GrpcStore>, Error> {
+    let store = GrpcStore::new(&chunked_spec(port, config)).await?;
+    store.clone().post_init().await?;
+    Ok(store)
 }
 
 fn make_payload(len: usize, seed: u64) -> Vec<u8> {
@@ -354,7 +417,7 @@ async fn stored_blob(cas: &FakeCas, digest: DigestInfo) -> Option<Bytes> {
 async fn small_blob_uses_plain_path() -> Result<(), Error> {
     let cas = Arc::new(FakeCas::default());
     let port = start_fake_cas(cas.clone()).await;
-    let store = GrpcStore::new(&chunked_spec(port, test_config())).await?;
+    let store = new_chunked_store(port, test_config()).await?;
 
     let data = make_payload(256 * 1024, 1);
     let digest = stream_upload(&store, &data).await?;
@@ -371,7 +434,7 @@ async fn small_blob_uses_plain_path() -> Result<(), Error> {
 async fn large_blob_chunk_uploads_and_splices() -> Result<(), Error> {
     let cas = Arc::new(FakeCas::default());
     let port = start_fake_cas(cas.clone()).await;
-    let store = GrpcStore::new(&chunked_spec(port, test_config())).await?;
+    let store = new_chunked_store(port, test_config()).await?;
 
     let data = make_payload(4 * 1024 * 1024, 2);
     let digest = stream_upload(&store, &data).await?;
@@ -392,6 +455,7 @@ async fn retryable_batch_update_entry_failure_is_retried() -> Result<(), Error> 
     let mut spec = chunked_spec(port, test_config());
     spec.retry.max_retries = 1;
     let store = GrpcStore::new(&spec).await?;
+    store.clone().post_init().await?;
 
     let data = make_payload(2 * 1024 * 1024, 8);
     let digest = stream_upload(&store, &data).await?;
@@ -412,7 +476,7 @@ async fn missing_batch_update_response_is_rejected() -> Result<(), Error> {
     cas.omit_batch_update_response
         .store(true, Ordering::Relaxed);
     let port = start_fake_cas(cas.clone()).await;
-    let store = GrpcStore::new(&chunked_spec(port, test_config())).await?;
+    let store = new_chunked_store(port, test_config()).await?;
 
     let data = make_payload(2 * 1024 * 1024, 9);
     let error = stream_upload(&store, &data)
@@ -428,7 +492,7 @@ async fn missing_batch_update_response_is_rejected() -> Result<(), Error> {
 async fn churned_blob_transfers_only_missing_chunks() -> Result<(), Error> {
     let cas = Arc::new(FakeCas::default());
     let port = start_fake_cas(cas.clone()).await;
-    let store = GrpcStore::new(&chunked_spec(port, test_config())).await?;
+    let store = new_chunked_store(port, test_config()).await?;
 
     let v1 = make_payload(4 * 1024 * 1024, 3);
     stream_upload(&store, &v1).await?;
@@ -457,7 +521,7 @@ async fn churned_blob_transfers_only_missing_chunks() -> Result<(), Error> {
 async fn splice_not_found_maps_to_aborted() -> Result<(), Error> {
     let cas = Arc::new(FakeCas::default());
     let port = start_fake_cas(cas.clone()).await;
-    let store = GrpcStore::new(&chunked_spec(port, test_config())).await?;
+    let store = new_chunked_store(port, test_config()).await?;
 
     cas.fail_splice_not_found.store(true, Ordering::Relaxed);
     let data = make_payload(2 * 1024 * 1024, 5);
@@ -476,7 +540,7 @@ async fn oversized_chunk_count_uses_plain_path() -> Result<(), Error> {
     let port = start_fake_cas(cas.clone()).await;
     let mut config = test_config();
     config.max_chunk_count = 8;
-    let store = GrpcStore::new(&chunked_spec(port, config)).await?;
+    let store = new_chunked_store(port, config).await?;
 
     let data = make_payload(4 * 1024 * 1024, 6);
     let digest = stream_upload(&store, &data).await?;
@@ -529,11 +593,115 @@ async fn duplicate_missing_digests_are_tolerated() -> Result<(), Error> {
     let cas = Arc::new(FakeCas::default());
     cas.duplicate_missing_digests.store(true, Ordering::Relaxed);
     let port = start_fake_cas(cas.clone()).await;
-    let store = GrpcStore::new(&chunked_spec(port, test_config())).await?;
+    let store = new_chunked_store(port, test_config()).await?;
 
     let data = make_payload(12 * 1024 * 1024, 7);
     let digest = stream_upload(&store, &data).await?;
 
+    assert_eq!(cas.splice_requests.load(Ordering::Relaxed), 1);
+    assert_eq!(stored_blob(&cas, digest).await.as_deref(), Some(&data[..]));
+    Ok(())
+}
+
+// Opting in must fail during startup when the configured backend does not
+// advertise both SplitBlob and SpliceBlob support.
+#[nativelink_test]
+async fn backend_without_chunking_is_rejected_at_startup() -> Result<(), Error> {
+    let cas = Arc::new(FakeCas::default());
+    let port = start_fake_cas_with_capabilities(
+        cas,
+        FakeCapabilities {
+            split_blob_support: false,
+            splice_blob_support: false,
+            ..Default::default()
+        },
+    )
+    .await;
+    let store = GrpcStore::new(&chunked_spec(port, test_config())).await?;
+
+    let error = store
+        .post_init()
+        .await
+        .expect_err("a backend without chunking support must fail startup");
+    assert_eq!(error.code, Code::FailedPrecondition);
+    let message = error.to_string();
+    assert!(message.contains("experimental_chunked_uploads"));
+    assert!(message.contains("SplitBlob"));
+    assert!(message.contains("SpliceBlob"));
+    assert!(message.contains("Enable experimental_chunking"));
+    Ok(())
+}
+
+// Startup validation is fail-closed for FastCDC parameters as well: this
+// client does not silently negotiate a different average or seed.
+#[nativelink_test]
+async fn incompatible_fastcdc_parameters_are_rejected_at_startup() -> Result<(), Error> {
+    for capabilities in [
+        FakeCapabilities {
+            fast_cdc_2020_params: Some(FastCdc2020Params {
+                avg_chunk_size_bytes: 32 * 1024,
+                seed: 0,
+            }),
+            ..Default::default()
+        },
+        FakeCapabilities {
+            fast_cdc_2020_params: Some(FastCdc2020Params {
+                avg_chunk_size_bytes: 16 * 1024,
+                seed: 1,
+            }),
+            ..Default::default()
+        },
+    ] {
+        let cas = Arc::new(FakeCas::default());
+        let port = start_fake_cas_with_capabilities(cas, capabilities).await;
+        let store = GrpcStore::new(&chunked_spec(port, test_config())).await?;
+        let error = store
+            .post_init()
+            .await
+            .expect_err("incompatible FastCDC parameters must fail startup");
+        assert_eq!(error.code, Code::FailedPrecondition);
+    }
+    Ok(())
+}
+
+// Stores without the opt-in do not perform a capability check, preserving
+// startup behavior for ordinary gRPC stores.
+#[nativelink_test]
+async fn disabled_chunked_uploads_skip_capability_validation() -> Result<(), Error> {
+    let cas = Arc::new(FakeCas::default());
+    let port = start_fake_cas_with_capabilities(
+        cas,
+        FakeCapabilities {
+            split_blob_support: false,
+            splice_blob_support: false,
+            fast_cdc_2020_params: None,
+        },
+    )
+    .await;
+    let mut spec = chunked_spec(port, test_config());
+    spec.experimental_chunked_uploads = None;
+    GrpcStore::new(&spec).await?.post_init().await
+}
+
+// ALREADY_EXISTS is an allowed SpliceBlob result when the target blob is
+// already present, so it completes the StoreDriver upload successfully.
+#[nativelink_test]
+async fn splice_already_exists_completes_upload() -> Result<(), Error> {
+    let cas = Arc::new(FakeCas::default());
+    cas.fail_splice_already_exists
+        .store(true, Ordering::Relaxed);
+    let port = start_fake_cas(cas.clone()).await;
+    let store = new_chunked_store(port, test_config()).await?;
+    let data = make_payload(2 * 1024 * 1024, 10);
+    let digest = digest_of(&data);
+    cas.blobs
+        .lock()
+        .await
+        .insert(digest_key(&digest.into()), Bytes::copy_from_slice(&data));
+
+    let uploaded_digest = stream_upload(&store, &data).await?;
+
+    assert_eq!(uploaded_digest, digest);
     assert_eq!(cas.splice_requests.load(Ordering::Relaxed), 1);
     assert_eq!(stored_blob(&cas, digest).await.as_deref(), Some(&data[..]));
     Ok(())
