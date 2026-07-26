@@ -151,12 +151,12 @@ impl MockGcsOperations {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
-            .as_secs() as i64;
+            .as_secs();
 
         let metadata = GcsObject {
             name: path.path.clone(),
             bucket: path.bucket.clone(),
-            size: content.len() as i64,
+            size: content.len().try_into().unwrap_or(i64::MAX),
             content_type: DEFAULT_CONTENT_TYPE.to_string(),
             update_time: Some(Timestamp {
                 seconds: now,
@@ -244,14 +244,14 @@ impl MockGcsOperations {
         &self,
         path: &ObjectPath,
         content: Vec<u8>,
-        timestamp: i64,
+        timestamp: u64,
     ) {
         let object_key = self.get_object_key(path);
 
         let metadata = GcsObject {
             name: path.path.clone(),
             bucket: path.bucket.clone(),
-            size: content.len() as i64,
+            size: content.len().try_into().unwrap_or(i64::MAX),
             content_type: DEFAULT_CONTENT_TYPE.to_string(),
             update_time: Some(Timestamp {
                 seconds: timestamp,
@@ -264,11 +264,11 @@ impl MockGcsOperations {
     }
 
     /// Get the current timestamp
-    fn get_current_timestamp(&self) -> i64 {
+    fn get_current_timestamp(&self) -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
-            .as_secs() as i64
+            .as_secs()
     }
 }
 
@@ -450,7 +450,7 @@ impl GcsOperations for MockGcsOperations {
 
         // Update metadata if this is the final chunk
         if total_size.is_some_and(|size| size == end_offset) {
-            mock_object.metadata.size = mock_object.content.len() as i64;
+            mock_object.metadata.size = mock_object.content.len().try_into().unwrap_or(i64::MAX);
             mock_object.metadata.update_time = Some(Timestamp {
                 seconds: self.get_current_timestamp(),
                 nanos: 0,

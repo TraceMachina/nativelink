@@ -286,13 +286,13 @@ pub async fn chunked_stream_receives_all_data() -> Result<(), Box<dyn core::erro
             .await?;
 
         // Write empty set of data (clients are allowed to do this.
-        write_request.write_offset = BYTE_SPLIT_OFFSET as i64;
+        write_request.write_offset = BYTE_SPLIT_OFFSET.try_into().unwrap_or(i64::MAX);
         write_request.data = vec![].into();
         tx.send(Frame::data(encode_stream_proto(&write_request)?))
             .await?;
 
         // Write final bit of data.
-        write_request.write_offset = BYTE_SPLIT_OFFSET as i64;
+        write_request.write_offset = BYTE_SPLIT_OFFSET.try_into().unwrap_or(i64::MAX);
         write_request.data = raw_data[BYTE_SPLIT_OFFSET..].into();
         write_request.finish_write = true;
         tx.send(Frame::data(encode_stream_proto(&write_request)?))
@@ -380,7 +380,7 @@ pub async fn resume_write_success() -> Result<(), Box<dyn core::error::Error>> {
         make_stream_and_writer_spawn(bs_server, Some(CompressionEncoding::Gzip));
     {
         // Write the remainder of our data.
-        write_request.write_offset = BYTE_SPLIT_OFFSET as i64;
+        write_request.write_offset = BYTE_SPLIT_OFFSET.try_into().unwrap_or(i64::MAX);
         write_request.finish_write = true;
         write_request.data = WRITE_DATA[BYTE_SPLIT_OFFSET..].into();
         tx.send(Frame::data(encode_stream_proto(&write_request)?))
@@ -461,7 +461,7 @@ pub async fn restart_write_success() -> Result<(), Box<dyn core::error::Error>> 
     }
     {
         // Write the remainder of our data.
-        write_request.write_offset = BYTE_SPLIT_OFFSET as i64;
+        write_request.write_offset = BYTE_SPLIT_OFFSET.try_into().unwrap_or(i64::MAX);
         write_request.finish_write = true;
         write_request.data = WRITE_DATA[BYTE_SPLIT_OFFSET..].into();
         tx.send(Frame::data(encode_stream_proto(&write_request)?))
@@ -540,7 +540,7 @@ pub async fn restart_mid_stream_write_success() -> Result<(), Box<dyn core::erro
     }
     {
         // Write the remainder of our data.
-        write_request.write_offset = BYTE_SPLIT_OFFSET as i64;
+        write_request.write_offset = BYTE_SPLIT_OFFSET.try_into().unwrap_or(i64::MAX);
         write_request.finish_write = true;
         write_request.data = WRITE_DATA[BYTE_SPLIT_OFFSET..].into();
         tx.send(Frame::data(encode_stream_proto(&write_request)?))
@@ -604,7 +604,7 @@ pub async fn ensure_write_is_not_done_until_write_request_is_set()
     }
     {
         // Write our EOF.
-        write_request.write_offset = WRITE_DATA.len() as i64;
+        write_request.write_offset = WRITE_DATA.len().try_into().unwrap_or(i64::MAX);
         write_request.finish_write = true;
         write_request.data.clear();
         tx.send(Frame::data(encode_stream_proto(&write_request)?))
@@ -625,7 +625,7 @@ pub async fn ensure_write_is_not_done_until_write_request_is_set()
                 .err_tip(|| "bs_server.write returned an error")?
                 .into_inner(),
             WriteResponse {
-                committed_size: WRITE_DATA.len() as i64
+                committed_size: WRITE_DATA.len().try_into().unwrap_or(i64::MAX)
             },
             "Expected Responses to match"
         );
@@ -688,7 +688,8 @@ pub async fn zstd_write_committed_size_matches_wire_bytes()
 
     let committed_size = server_result.into_inner().committed_size;
     assert!(
-        committed_size == -1 || committed_size == compressed_data.len() as i64,
+        committed_size == -1
+            || committed_size == compressed_data.len().try_into().unwrap_or(i64::MAX),
         "compressed write committed_size must be -1 or the compressed byte count {}; got {} for uncompressed size {}",
         compressed_data.len(),
         committed_size,
@@ -744,7 +745,7 @@ pub async fn zstd_write_allows_wire_bytes_larger_than_digest_size()
 
     assert_eq!(
         server_result.into_inner().committed_size,
-        compressed_data.len() as i64,
+        compressed_data.len().try_into().unwrap_or(i64::MAX),
         "compressed write should report the compressed wire byte count"
     );
 
@@ -862,7 +863,7 @@ pub async fn compressed_blobs_identity_write_and_read_use_identity_path()
         .expect("Failed write");
     assert_eq!(
         server_result.into_inner().committed_size,
-        raw_data.len() as i64
+        raw_data.len().try_into().unwrap_or(i64::MAX)
     );
 
     let digest = DigestInfo::try_new(&hash, raw_data.len())?;
@@ -882,7 +883,7 @@ pub async fn compressed_blobs_identity_write_and_read_use_identity_path()
                 raw_data.len()
             ),
             read_offset: 0,
-            read_limit: raw_data.len() as i64,
+            read_limit: raw_data.len().try_into().unwrap_or(i64::MAX),
         },
     )
     .await?;
@@ -922,7 +923,7 @@ pub async fn zstd_write_streams_chunked_compressed_upload()
         let end = (write_offset + 7).min(compressed_data.len());
         tx.send(Frame::data(encode_stream_proto(&WriteRequest {
             resource_name: resource_name.clone(),
-            write_offset: write_offset as i64,
+            write_offset: write_offset.try_into().unwrap_or(i64::MAX),
             finish_write: end == compressed_data.len(),
             data: Bytes::copy_from_slice(&compressed_data[write_offset..end]),
         })?))
@@ -936,7 +937,7 @@ pub async fn zstd_write_streams_chunked_compressed_upload()
         .expect("Failed write");
     assert_eq!(
         server_result.into_inner().committed_size,
-        compressed_data.len() as i64
+        compressed_data.len().try_into().unwrap_or(i64::MAX)
     );
 
     let digest = DigestInfo::try_new(&hash, raw_data.len())?;
@@ -1027,7 +1028,7 @@ pub async fn zstd_write_query_status_reports_compressed_wire_bytes()
             }))
             .await?
             .into_inner();
-        if response.committed_size == first_chunk_len as i64 {
+        if response.committed_size == first_chunk_len.try_into().unwrap_or(i64::MAX) {
             status_response = Some(response);
             break;
         }
@@ -1035,14 +1036,14 @@ pub async fn zstd_write_query_status_reports_compressed_wire_bytes()
     assert_eq!(
         status_response.err_tip(|| "compressed write progress was not reported")?,
         QueryWriteStatusResponse {
-            committed_size: first_chunk_len as i64,
+            committed_size: first_chunk_len.try_into().unwrap_or(i64::MAX),
             complete: false,
         }
     );
 
     tx.send(Frame::data(encode_stream_proto(&WriteRequest {
         resource_name,
-        write_offset: first_chunk_len as i64,
+        write_offset: first_chunk_len.try_into().unwrap_or(i64::MAX),
         finish_write: true,
         data: Bytes::copy_from_slice(&compressed_data[first_chunk_len..]),
     })?))
@@ -1054,7 +1055,7 @@ pub async fn zstd_write_query_status_reports_compressed_wire_bytes()
         .expect("Failed write");
     assert_eq!(
         server_result.into_inner().committed_size,
-        compressed_data.len() as i64
+        compressed_data.len().try_into().unwrap_or(i64::MAX)
     );
 
     Ok(())
@@ -1092,7 +1093,7 @@ pub async fn out_of_order_data_fails() -> Result<(), Box<dyn core::error::Error>
     }
     {
         // Write data it already has.
-        write_request.write_offset = (BYTE_SPLIT_OFFSET - 1) as i64;
+        write_request.write_offset = (BYTE_SPLIT_OFFSET - 1).try_into().unwrap_or(i64::MAX);
         write_request.data = WRITE_DATA[(BYTE_SPLIT_OFFSET - 1)..].into();
         tx.send(Frame::data(encode_stream_proto(&write_request)?))
             .await?;
@@ -1103,7 +1104,7 @@ pub async fn out_of_order_data_fails() -> Result<(), Box<dyn core::error::Error>
     );
     {
         // Make sure stream was closed.
-        write_request.write_offset = (BYTE_SPLIT_OFFSET - 1) as i64;
+        write_request.write_offset = (BYTE_SPLIT_OFFSET - 1).try_into().unwrap_or(i64::MAX);
         write_request.data = WRITE_DATA[(BYTE_SPLIT_OFFSET - 1)..].into();
         assert!(
             tx.send(Frame::data(encode_stream_proto(&write_request)?))
@@ -1226,7 +1227,7 @@ pub async fn chunked_stream_reads_small_set_of_data() -> Result<(), Box<dyn core
     let read_request = ReadRequest {
         resource_name: format!("{}/blobs/{}/{}", INSTANCE_NAME, HASH1, VALUE1.len()),
         read_offset: 0,
-        read_limit: VALUE1.len() as i64,
+        read_limit: VALUE1.len().try_into().unwrap_or(i64::MAX),
     };
     let mut read_stream = bs_server
         .read(Request::new(read_request))
@@ -1459,7 +1460,7 @@ pub async fn zstd_read_offset_applies_to_uncompressed_blob()
                 hash,
                 raw_data.len()
             ),
-            read_offset: read_offset as i64,
+            read_offset: read_offset.try_into().unwrap_or(i64::MAX),
             read_limit: 0,
         },
     )
@@ -1545,7 +1546,7 @@ pub async fn chunked_stream_reads_10mb_of_data() -> Result<(), Box<dyn core::err
     let read_request = ReadRequest {
         resource_name: format!("{}/blobs/{}/{}", INSTANCE_NAME, HASH1, raw_data.len()),
         read_offset: 0,
-        read_limit: raw_data.len() as i64,
+        read_limit: raw_data.len().try_into().unwrap_or(i64::MAX),
     };
     let mut read_stream = bs_server
         .read(Request::new(read_request))
@@ -1673,14 +1674,14 @@ pub async fn test_query_write_status_smoke_test() -> Result<(), Box<dyn core::er
         assert_eq!(
             data.into_inner(),
             QueryWriteStatusResponse {
-                committed_size: write_request.data.len() as i64,
+                committed_size: write_request.data.len().try_into().unwrap_or(i64::MAX),
                 complete: false,
             }
         );
     }
 
     // Finish writing our data.
-    write_request.write_offset = BYTE_SPLIT_OFFSET as i64;
+    write_request.write_offset = BYTE_SPLIT_OFFSET.try_into().unwrap_or(i64::MAX);
     write_request.data = raw_data[BYTE_SPLIT_OFFSET..].into();
     write_request.finish_write = true;
     tx.send(Frame::data(encode_stream_proto(&write_request)?))
@@ -1695,7 +1696,7 @@ pub async fn test_query_write_status_smoke_test() -> Result<(), Box<dyn core::er
         assert_eq!(
             data.into_inner(),
             QueryWriteStatusResponse {
-                committed_size: raw_data.len() as i64,
+                committed_size: raw_data.len().try_into().unwrap_or(i64::MAX),
                 complete: true,
             }
         );
