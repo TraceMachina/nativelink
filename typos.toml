@@ -3,6 +3,8 @@
 conly = "conly"
 # in-toto attestation format used by SLSA provenance (`*.intoto.jsonl`)
 intoto = "intoto"
+# mach_timebase_info's numerator field on macOS
+numer = "numer"
 
 [default]
 # Old wrong spelling support
