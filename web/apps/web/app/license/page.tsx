@@ -121,7 +121,7 @@ export default function LicensePage() {
                 file and source headers are the authoritative licensing text. For
                 commercial terms, contact
                 {" "}
-                <a href="mailto:contact@nativelink.com">contact@nativelink.com</a>.
+                <a href="mailto:contact@tracemachina.com">contact@tracemachina.com</a>.
               </p>
             </Reveal>
           </article>

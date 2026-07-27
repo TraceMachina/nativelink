@@ -70,3 +70,22 @@ working examples, a clear path from `setup` to `production`.
 If you find a gap, the docs source lives in
 [`web/apps/docs/content/docs`](https://github.com/TraceMachina/nativelink)
 and PRs are welcome.
+
+## FAQ
+
+<Accordions type="multiple">
+  <Accordion title="Why Rust and not Go or Java?" id="why-rust-and-not-go-or-java">
+    Three operational reasons: no GC pauses (tail latency comes from
+    network and storage, not the runtime), memory safety (a scheduler
+    memory bug could silently serve a wrong artifact org-wide — Rust
+    removes the class at compile time), and throughput (a single instance
+    sustains over a billion requests a month with sub-millisecond `p99`
+    lookups).
+  </Accordion>
+  <Accordion title="What does Rust cost the project?" id="what-does-rust-cost-the-project">
+    Compile times — mitigated by sccache backed by NativeLink itself —
+    and a smaller hiring pool, which has hurt less than expected: the
+    people who write distributed-systems Rust tend to be exactly the
+    people you want writing distributed systems.
+  </Accordion>
+</Accordions>

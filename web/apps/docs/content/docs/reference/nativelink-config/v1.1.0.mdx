@@ -127,8 +127,8 @@ It supports the following backends:
   }
   ```
 
-4. **`NetApp` ONTAP S3**
-   `NetApp` ONTAP S3 store will use ONTAP's S3-compatible storage as a backend
+4. **NetApp ONTAP S3:**
+   NetApp ONTAP S3 store will use ONTAP's S3-compatible storage as a backend
    to store files. This store is specifically configured for ONTAP's S3 requirements
    including custom TLS configuration, credentials management, and proper vserver
    configuration.
@@ -677,7 +677,7 @@ See [`experimental_cloud_object_store`](#experimental_cloud_object_store-1) for 
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `backend` | [StoreSpec](#storespec) | Yes | — | The underlying store wrap around. All content will first flow through self before forwarding to backend. In the event there is an error detected in self, the connection to the backend will be terminated, and early termination should always cause updates to fail on the backend. |
+| `backend` | [NamedStoreConfig](#namedstoreconfig) | Yes | — | The underlying store wrap around. All content will first flow through self before forwarding to backend. In the event there is an error detected in self, the connection to the backend will be terminated, and early termination should always cause updates to fail on the backend. |
 | `verify_size` | boolean | — | `false` | If set the store will verify the size of the data before accepting an upload of data. |
 | `verify_hash` | boolean | — | `false` | If the data should be hashed and verify that the key matches the computed hash. The hash function is automatically determined based request and if not set will use the global default. |
 
@@ -685,22 +685,22 @@ See [`experimental_cloud_object_store`](#experimental_cloud_object_store-1) for 
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `backend` | [StoreSpec](#storespec) | Yes | — | The underlying store that will have it's results validated before sending to client. |
-| `cas_store` | [StoreSpec](#storespec) | Yes | — | When a request is made, the results are decoded and all output digests/files are verified to exist in this CAS store before returning success. |
+| `backend` | [NamedStoreConfig](#namedstoreconfig) | Yes | — | The underlying store that will have it's results validated before sending to client. |
+| `cas_store` | [NamedStoreConfig](#namedstoreconfig) | Yes | — | When a request is made, the results are decoded and all output digests/files are verified to exist in this CAS store before returning success. |
 
 ## CompressionSpec
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `backend` | [StoreSpec](#storespec) | Yes | — | The underlying store wrap around. All content will first flow through self before forwarding to backend. In the event there is an error detected in self, the connection to the backend will be terminated, and early termination should always cause updates to fail on the backend. |
+| `backend` | [NamedStoreConfig](#namedstoreconfig) | Yes | — | The underlying store wrap around. All content will first flow through self before forwarding to backend. In the event there is an error detected in self, the connection to the backend will be terminated, and early termination should always cause updates to fail on the backend. |
 | `compression_algorithm` | [CompressionAlgorithm](#compressionalgorithm) | Yes | — | The compression algorithm to use. |
 
 ## DedupSpec
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `index_store` | [StoreSpec](#storespec) | Yes | — | Store used to store the index of each dedup slice. This store should generally be fast and small. |
-| `content_store` | [StoreSpec](#storespec) | Yes | — | The store where the individual chunks will be uploaded. This store should generally be the slower & larger store. |
+| `index_store` | [NamedStoreConfig](#namedstoreconfig) | Yes | — | Store used to store the index of each dedup slice. This store should generally be fast and small. |
+| `content_store` | [NamedStoreConfig](#namedstoreconfig) | Yes | — | The store where the individual chunks will be uploaded. This store should generally be the slower & larger store. |
 | `min_size` | integer (uint32) | — | 65536 (64k) | Minimum size that a chunk will be when slicing up the content. Note: This setting can be increased to improve performance because it will actually not check this number of bytes when deciding where to partition the data. |
 | `normal_size` | integer (uint32) | — | 262144 (256k) | A best-effort attempt will be made to keep the average size of the chunks to this number. It is not a guarantee, but a slight attempt will be made. |
 | `max_size` | integer (uint32) | — | 524288 (512k) | Maximum size a chunk is allowed to be. |
@@ -710,16 +710,16 @@ See [`experimental_cloud_object_store`](#experimental_cloud_object_store-1) for 
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `backend` | [StoreSpec](#storespec) | Yes | — | The underlying store wrap around. All content will first flow through self before forwarding to backend. In the event there is an error detected in self, the connection to the backend will be terminated, and early termination should always cause updates to fail on the backend. |
+| `backend` | [NamedStoreConfig](#namedstoreconfig) | Yes | — | The underlying store wrap around. All content will first flow through self before forwarding to backend. In the event there is an error detected in self, the connection to the backend will be terminated, and early termination should always cause updates to fail on the backend. |
 | `eviction_policy` | [EvictionPolicy](#evictionpolicy) | — | — | Policy used to evict items out of the store. Failure to set this value will cause items to never be removed from the store causing infinite memory usage. |
 
 ## FastSlowSpec
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `fast` | [StoreSpec](#storespec) | Yes | — | Fast store that will be attempted to be contacted before reaching out to the `slow` store. |
+| `fast` | [NamedStoreConfig](#namedstoreconfig) | Yes | — | Fast store that will be attempted to be contacted before reaching out to the `slow` store. |
 | `fast_direction` | [StoreDirection](#storedirection) | — | `"both"` | How to handle the fast store. This can be useful to set to Get for worker nodes such that results are persisted to the slow store only. |
-| `slow` | [StoreSpec](#storespec) | Yes | — | If the object does not exist in the `fast` store it will try to get it from this store. |
+| `slow` | [NamedStoreConfig](#namedstoreconfig) | Yes | — | If the object does not exist in the `fast` store it will try to get it from this store. |
 | `slow_direction` | [StoreDirection](#storedirection) | — | `"both"` | How to handle the slow store. This can be useful if creating a diode and you wish to have an upstream read only store. |
 
 ## ShardSpec
@@ -750,8 +750,8 @@ See [`experimental_cloud_object_store`](#experimental_cloud_object_store-1) for 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `size` | integer (uint64) | Yes | — | Size to partition the data on. |
-| `lower_store` | [StoreSpec](#storespec) | Yes | — | Store to send data when object is &lt; (less than) size. |
-| `upper_store` | [StoreSpec](#storespec) | Yes | — | Store to send data when object is >= (less than eq) size. |
+| `lower_store` | [NamedStoreConfig](#namedstoreconfig) | Yes | — | Store to send data when object is &lt; (less than) size. |
+| `upper_store` | [NamedStoreConfig](#namedstoreconfig) | Yes | — | Store to send data when object is >= (less than eq) size. |
 
 ## GrpcSpec
 
@@ -986,563 +986,6 @@ The total delay is additive, so this example produces 9.525 to 15.875 s of total
 | `insecure_allow_http` | boolean | — | false | Allow unencrypted HTTP connections. Only use this for local testing. |
 | `disable_http2` | boolean | — | false | Disable HTTP/2 connections and only use HTTP/1.1. Default client configuration will have HTTP/1.1 and HTTP/2 enabled for connection schemes. HTTP/2 should be disabled if environments have poor support or performance related to HTTP/2. Safe to keep default unless underlying network environment, S3, or GCS API servers specify otherwise. |
 
-## StoreSpec
-
-Plus exactly one of the following variants (the key selects the variant):
-
-### `memory`
-
-Memory store will store all data in a hash map in memory.
-
-**Example JSON5 config:**
-```json5
-"memory": {
-  "eviction_policy": {
-    "max_bytes": "10mb",
-  }
-}
-```
-
-**Type:** [MemorySpec](#memoryspec)
-
-### `experimental_cloud_object_store`
-
-A generic blob store that will store files on the cloud
-provider. This configuration will never delete files, so you are
-responsible for purging old files in other ways.
-It supports the following backends:
-
-1. **Amazon S3:**
-   S3 store will use Amazon's S3 service as a backend to store
-   the files. This configuration can be used to share files
-   across multiple instances. Uses system certificates for TLS
-   verification via `rustls-platform-verifier`.
-
-  **Example JSON5 config:**
-  ```json5
-  "experimental_cloud_object_store": {
-    "provider": "aws",
-    "region": "eu-north-1",
-    "bucket": "crossplane-bucket-af79aeca9",
-    "key_prefix": "test-prefix-index/",
-    "retry": {
-      "max_retries": 6,
-      "delay": 0.3,
-      "jitter": 0.5
-    },
-    "multipart_max_concurrent_uploads": 10
-  }
-  ```
-
-2. **Google Cloud Storage:**
-   GCS store uses Google's GCS service as a backend to store
-   the files. This configuration can be used to share files
-   across multiple instances.
-
-  **Example JSON5 config:**
-  ```json5
-  "experimental_cloud_object_store": {
-    "provider": "gcs",
-    "bucket": "test-bucket",
-    "key_prefix": "test-prefix-index/",
-    "retry": {
-      "max_retries": 6,
-      "delay": 0.3,
-      "jitter": 0.5
-    },
-    "multipart_max_concurrent_uploads": 10
-  }
-  ```
-
-3. **Azure Blob Store:**
-   Azure Blob store will use Microsoft's Azure Blob service as a
-   backend to store the files. This configuration can be used to
-   share files across multiple instances.
-
-  **Example JSON5 config:**
-  ```json5
-  "experimental_cloud_object_store": {
-    "provider": "azure",
-    "account_name": "cloudshell1393657559",
-    "container": "simple-test-container",
-    "key_prefix": "folder/",
-    "retry": {
-        "max_retries": 6,
-        "delay": 0.3,
-        "jitter": 0.5
-    },
-    "multipart_max_concurrent_uploads": 10
-  }
-  ```
-
-4. **`NetApp` ONTAP S3**
-   `NetApp` ONTAP S3 store will use ONTAP's S3-compatible storage as a backend
-   to store files. This store is specifically configured for ONTAP's S3 requirements
-   including custom TLS configuration, credentials management, and proper vserver
-   configuration.
-
-   This store uses AWS environment variables for credentials:
-   - `AWS_ACCESS_KEY_ID`
-   - `AWS_SECRET_ACCESS_KEY`
-   - `AWS_DEFAULT_REGION`
-
-   **Example JSON5 config:**
-   ```json5
-   "experimental_cloud_object_store": {
-     "provider": "ontap",
-     "endpoint": "https://ontap-s3-endpoint:443",
-     "vserver_name": "your-vserver",
-     "bucket": "your-bucket",
-     "root_certificates": "/path/to/certs.pem",  // Optional
-     "key_prefix": "test-prefix/",               // Optional
-     "retry": {
-       "max_retries": 6,
-       "delay": 0.3,
-       "jitter": 0.5
-     },
-     "multipart_max_concurrent_uploads": 10
-   }
-   ```
-
-**Type:** [ExperimentalCloudObjectSpec](#experimentalcloudobjectspec)
-
-### `ontap_s3_existence_cache`
-
-ONTAP S3 Existence Cache provides a caching layer on top of the ONTAP S3 store
-to optimize repeated existence checks. It maintains an in-memory cache of object
-digests and periodically syncs this cache to disk for persistence.
-
-The cache helps reduce latency for repeated calls to check object existence,
-while still ensuring eventual consistency with the underlying ONTAP S3 store.
-
-Example JSON5 config:
-```json5
-"ontap_s3_existence_cache": {
-  "index_path": "/path/to/cache/index.json",
-  "sync_interval_seconds": 300,
-  "backend": {
-    "endpoint": "https://ontap-s3-endpoint:443",
-    "vserver_name": "your-vserver",
-    "bucket": "your-bucket",
-    "key_prefix": "test-prefix/"
-  }
-}
-```
-
-**Type:** [OntapS3ExistenceCacheSpec](#ontaps3existencecachespec)
-
-### `verify`
-
-Verify store is used to apply verifications to an underlying
-store implementation. It is strongly encouraged to validate
-as much data as you can before accepting data from a client,
-failing to do so may cause the data in the store to be
-populated with invalid data causing all kinds of problems.
-
-The suggested configuration is to have the CAS validate the
-hash and size and the AC validate nothing.
-
-**Example JSON5 config:**
-```json5
-"verify": {
-  "backend": {
-    "memory": {
-      "eviction_policy": {
-        "max_bytes": "500mb"
-      }
-    },
-  },
-  "verify_size": true,
-  "verify_hash": true
-}
-```
-
-**Type:** [VerifySpec](#verifyspec)
-
-### `completeness_checking`
-
-Completeness checking store verifies if the
-output files & folders exist in the CAS before forwarding
-the request to the underlying store.
-Note: This store should only be used on AC stores.
-
-**Example JSON5 config:**
-```json5
-"completeness_checking": {
-  "backend": {
-    "filesystem": {
-      "content_path": "~/.cache/nativelink/content_path-ac",
-      "temp_path": "~/.cache/nativelink/tmp_path-ac",
-      "eviction_policy": {
-        "max_bytes": "500mb",
-      }
-    }
-  },
-  "cas_store": {
-    "ref_store": {
-      "name": "CAS_MAIN_STORE"
-    }
-  }
-}
-```
-
-**Type:** [CompletenessCheckingSpec](#completenesscheckingspec)
-
-### `compression`
-
-A compression store that will compress the data inbound and
-outbound. There will be a non-trivial cost to compress and
-decompress the data, but in many cases if the final store is
-a store that requires network transport and/or storage space
-is a concern it is often faster and more efficient to use this
-store before those stores.
-
-**Example JSON5 config:**
-```json5
-"compression": {
-  "compression_algorithm": {
-    "lz4": {}
-  },
-  "backend": {
-    "filesystem": {
-      "content_path": "/tmp/nativelink/data/content_path-cas",
-      "temp_path": "/tmp/nativelink/data/tmp_path-cas",
-      "eviction_policy": {
-        "max_bytes": "2gb",
-      }
-    }
-  }
-}
-```
-
-**Type:** [CompressionSpec](#compressionspec)
-
-### `dedup`
-
-A dedup store will take the inputs and run a rolling hash
-algorithm on them to slice the input into smaller parts then
-run a sha256 algorithm on the slice and if the object doesn't
-already exist, upload the slice to the `content_store` using
-a new digest of just the slice. Once all parts exist, an
-Action-Cache-like digest will be built and uploaded to the
-`index_store` which will contain a reference to each
-chunk/digest of the uploaded file. Downloading a request will
-first grab the index from the `index_store`, and forward the
-download content of each chunk as if it were one file.
-
-This store is exceptionally good when the following conditions
-are met:
-* Content is mostly the same (inserts, updates, deletes are ok)
-* Content is not compressed or encrypted
-* Uploading or downloading from `content_store` is the bottleneck.
-
-Note: This store pairs well when used with `CompressionSpec` as
-the `content_store`, but never put `DedupSpec` as the backend of
-`CompressionSpec` as it will negate all the gains.
-
-Note: When running `.has()` on this store, it will only check
-to see if the entry exists in the `index_store` and not check
-if the individual chunks exist in the `content_store`.
-
-**Example JSON5 config:**
-```json5
-"dedup": {
-  "index_store": {
-    "memory": {
-      "eviction_policy": {
-         "max_bytes": "1GB",
-      }
-    }
-  },
-  "content_store": {
-    "compression": {
-      "compression_algorithm": {
-        "lz4": {}
-      },
-      "backend": {
-        "fast_slow": {
-          "fast": {
-            "memory": {
-              "eviction_policy": {
-                "max_bytes": "500MB",
-              }
-            }
-          },
-          "slow": {
-            "filesystem": {
-              "content_path": "/tmp/nativelink/data/content_path-content",
-              "temp_path": "/tmp/nativelink/data/tmp_path-content",
-              "eviction_policy": {
-                "max_bytes": "2gb"
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-}
-```
-
-**Type:** [DedupSpec](#dedupspec)
-
-### `existence_cache`
-
-Existence store will wrap around another store and cache calls
-to has so that subsequent `has_with_results` calls will be
-faster. This is useful for cases when you have a store that
-is slow to respond to has calls.
-Note: This store should only be used on CAS stores.
-
-**Example JSON5 config:**
-```json5
-"existence_cache": {
-  "backend": {
-    "memory": {
-      "eviction_policy": {
-        "max_bytes": "500mb",
-      }
-    }
-  },
-  // Note this is the existence store policy, not the backend policy
-  "eviction_policy": {
-    "max_seconds": 100,
-  }
-}
-```
-
-**Type:** [ExistenceCacheSpec](#existencecachespec)
-
-### `fast_slow`
-
-`FastSlow` store will first try to fetch the data from the `fast`
-store and then if it does not exist try the `slow` store.
-When the object does exist in the `slow` store, it will copy
-the data to the `fast` store while returning the data.
-This store should be thought of as a store that "buffers"
-the data to the `fast` store.
-On uploads it will mirror data to both `fast` and `slow` stores.
-
-WARNING: If you need data to always exist in the `slow` store
-for something like remote execution, be careful because this
-store will never check to see if the objects exist in the
-`slow` store if it exists in the `fast` store (i.e., it assumes
-that if an object exists in the `fast` store it will exist in
-the `slow` store).
-
-***Example JSON5 config:***
-```json5
-"fast_slow": {
-  "fast": {
-    "filesystem": {
-      "content_path": "/tmp/nativelink/data/content_path-index",
-      "temp_path": "/tmp/nativelink/data/tmp_path-index",
-      "eviction_policy": {
-        "max_bytes": "500mb",
-      }
-    }
-  },
-  "slow": {
-    "filesystem": {
-      "content_path": "/tmp/nativelink/data/content_path-index",
-      "temp_path": "/tmp/nativelink/data/tmp_path-index",
-      "eviction_policy": {
-        "max_bytes": "500mb",
-      }
-    }
-  }
-}
-```
-
-**Type:** [FastSlowSpec](#fastslowspec)
-
-### `shard`
-
-Shards the data to multiple stores. This is useful for cases
-when you want to distribute the load across multiple stores.
-The digest hash is used to determine which store to send the
-data to.
-
-**Example JSON5 config:**
-```json5
-"shard": {
-  "stores": [
-   {
-    "store": {
-      "memory": {
-        "eviction_policy": {
-            "max_bytes": "10mb"
-        },
-      },
-    },
-    "weight": 1
-  }]
-}
-```
-
-**Type:** [ShardSpec](#shardspec)
-
-### `filesystem`
-
-Stores the data on the filesystem. This store is designed for
-local persistent storage. Restarts of this program should restore
-the previous state, meaning anything uploaded will be persistent
-as long as the filesystem integrity holds.
-
-**Example JSON5 config:**
-```json5
-"filesystem": {
-  "content_path": "/tmp/nativelink/data-worker-test/content_path-cas",
-  "temp_path": "/tmp/nativelink/data-worker-test/tmp_path-cas",
-  "eviction_policy": {
-    "max_bytes": "10gb",
-  }
-}
-```
-
-**Type:** [FilesystemSpec](#filesystemspec)
-
-### `ref_store`
-
-Store used to reference a store in the root store manager.
-This is useful for cases when you want to share a store in different
-nested stores. Example, you may want to share the same memory store
-used for the action cache, but use a `FastSlowSpec` and have the fast
-store also share the memory store for efficiency.
-
-**Example JSON5 config:**
-```json5
-"ref_store": {
-  "name": "FS_CONTENT_STORE"
-}
-```
-
-**Type:** [RefSpec](#refspec)
-
-### `size_partitioning`
-
-Uses the size field of the digest to separate which store to send the
-data. This is useful for cases when you'd like to put small objects
-in one store and large objects in another store. This should only be
-used if the size field is the real size of the content, in other
-words, don't use on AC (Action Cache) stores. Any store where you can
-safely use `VerifySpec.verify_size = true`, this store should be safe
-to use (i.e., CAS stores).
-
-**Example JSON5 config:**
-```json5
-"size_partitioning": {
-  "size": "128mib",
-  "lower_store": {
-    "memory": {
-      "eviction_policy": {
-        "max_bytes": "${NATIVELINK_CAS_MEMORY_CONTENT_LIMIT:-100mb}"
-      }
-    }
-  },
-  "upper_store": {
-    /// This store discards data larger than 128mib.
-    "noop": {}
-  }
-}
-```
-
-**Type:** [SizePartitioningSpec](#sizepartitioningspec)
-
-### `grpc`
-
-This store will pass-through calls to another GRPC store. This store
-is not designed to be used as a sub-store of another store, but it
-does satisfy the interface and will likely work.
-
-One major GOTCHA is that some stores use a special function on this
-store to get the size of the underlying object, which is only reliable
-when this store is serving the a CAS store, not an AC store. If using
-this store directly without being a child of any store there are no
-side effects and is the most efficient way to use it.
-
-**Example JSON5 config:**
-```json5
-"grpc": {
-  "instance_name": "main",
-  "endpoints": [
-    {"address": "grpc://${CAS_ENDPOINT:-127.0.0.1}:50051"}
-  ],
-  "connections_per_endpoint": "5",
-  "rpc_timeout_s": "5m",
-  "store_type": "ac",
-  // Static headers attached to every outgoing request to the upstream
-  // remote cache. Useful for fixed service-account credentials.
-  "headers": {
-    "authorization": "Bearer my-static-token"
-  },
-  // Header names to copy from the inbound client request and forward to
-  // the upstream remote cache. Use this to pass through dynamic
-  // credentials such as a JWT sent by the build client.
-  "forward_headers": ["authorization", "x-custom-token"]
-}
-```
-
-**Type:** [GrpcSpec](#grpcspec)
-
-### `redis_store`
-
-Stores data in any stores compatible with Redis APIs.
-
-Pairs well with `SizePartitioning` and/or `FastSlow` stores.
-Ideal for accepting small object sizes as most Redis store
-services have a max file upload of between 256Mb-512Mb.
-
-**Example JSON5 config:**
-```json5
-"redis_store": {
-  "addresses": [
-    "redis://127.0.0.1:6379/",
-  ],
-  "max_client_permits": 1000,
-}
-```
-
-**Type:** [RedisSpec](#redisspec)
-
-### `noop`
-
-Noop store is a store that sends streams into the void and all data
-retrieval will return 404 (`NotFound`). This can be useful for cases
-where you may need to partition your data and part of your data needs
-to be discarded.
-
-**Example JSON5 config:**
-```json5
-"noop": {}
-```
-
-**Type:** [NoopSpec](#noopspec)
-
-### `experimental_mongo`
-
-Experimental `MongoDB` store implementation.
-
-This store uses `MongoDB` as a backend for storing data. It supports
-both CAS (Content Addressable Storage) and scheduler data with
-optional change streams for real-time updates.
-
-**Example JSON5 config:**
-```json5
-"experimental_mongo": {
-    "connection_string": "mongodb://localhost:27017",
-    "database": "nativelink",
-    "cas_collection": "cas",
-    "key_prefix": "cas:",
-    "read_chunk_size": 65536,
-    "max_concurrent_uploads": 10,
-    "enable_change_streams": false,
-    "max_requests": "100"
-}
-```
-
-**Type:** [ExperimentalMongoSpec](#experimentalmongospec)
-
 ## CompressionAlgorithm
 
 Plus exactly one of the following variants (the key selects the variant):
@@ -1574,7 +1017,7 @@ Configuration for an individual shard of the store.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `store` | [StoreSpec](#storespec) | Yes | — | Store to shard the data to. |
+| `store` | [NamedStoreConfig](#namedstoreconfig) | Yes | — | Store to shard the data to. |
 | `weight` | integer (uint32) | — | 1 | The weight of the store. This is used to determine how much data should be sent to the store. The actual percentage is the sum of all the store's weights divided by the individual store's weight. |
 
 ## GrpcEndpoint

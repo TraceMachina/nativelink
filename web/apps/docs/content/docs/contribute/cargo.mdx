@@ -81,3 +81,17 @@ A few flags that help:
 
 For the Bazel-based workflow, see
 [Develop with Bazel](/contribute/bazel).
+
+## FAQ
+
+<Accordions type="multiple">
+  <Accordion title="Do I need Bazel installed at all?" id="do-i-need-bazel-installed-at-all">
+    Not for most crates — the whole workspace builds with plain Cargo.
+    You need Bazel for the Bazel-only crates and for a pre-submit
+    `bazel test //...`, since that's what CI runs.
+  </Accordion>
+  <Accordion title="Why is protoc a prerequisite?" id="why-is-protoc-a-prerequisite">
+    The gRPC services are generated from protobuf definitions at build
+    time; without `protoc` 3+ on `$PATH`, those generation steps fail.
+  </Accordion>
+</Accordions>

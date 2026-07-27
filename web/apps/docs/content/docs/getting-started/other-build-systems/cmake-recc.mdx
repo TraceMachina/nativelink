@@ -36,19 +36,16 @@ giving you cross-machine and cross-branch caching.
 ## 1. Start NativeLink
 
 ```sh
-curl -O https://raw.githubusercontent.com/TraceMachina/nativelink/v1.0.0/nativelink-config/examples/basic_cas.json5
+curl -O https://raw.githubusercontent.com/TraceMachina/nativelink/v1.6.1/nativelink-config/examples/basic_cas.json5
 
 docker run -d --name nativelink \
-  --platform linux/amd64 \
   -v $(pwd)/basic_cas.json5:/config \
   -p 50051:50051 -p 50061:50061 \
-  ghcr.io/tracemachina/nativelink:v1.0.0 config
+  ghcr.io/tracemachina/nativelink:v1.6.1 config
 ```
 
-The prebuilt image is x86_64. `--platform linux/amd64` is a no-op on Linux
-x86_64 and triggers fast emulation on Apple Silicon. (Linux arm64 users:
-build NativeLink with `nix run github:TraceMachina/nativelink ./basic_cas.json5`
-instead.)
+The image is multi-arch (x86_64 and ARM64) as of v1.6.0, so it runs
+natively on Linux and Apple Silicon alike.
 
 Confirm it came up:
 
@@ -194,6 +191,27 @@ actions, not link actions, by default.
 ```sh
 docker stop nativelink && docker rm nativelink
 ```
+
+## FAQ
+
+<Accordions type="multiple">
+  <Accordion title="Does recc offload my compiles to remote workers?" id="does-recc-offload-my-compiles-to-remote-workers">
+    Not in this setup — `RECC_CACHE_ONLY=1` means misses compile locally
+    and only the outputs travel through NativeLink. Drop that variable
+    once you have remote workers configured and recc will dispatch
+    compiles to them.
+  </Accordion>
+  <Accordion title="Why doesn't linking get cache hits?" id="why-doesn-t-linking-get-cache-hits">
+    recc ships compile actions only by default; links always run locally.
+    For remote link steps you want a full RBE client — see
+    [Classic RBE examples](/rbe/examples).
+  </Accordion>
+  <Accordion title="How do I share the cache with my team?" id="how-do-i-share-the-cache-with-my-team">
+    Point `RECC_SERVER` at a shared NativeLink deployment and keep
+    `RECC_INSTANCE` identical across machines — mismatched instance names
+    produce a silently empty cache.
+  </Accordion>
+</Accordions>
 
 ## Going further
 

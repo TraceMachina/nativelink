@@ -3,7 +3,7 @@
     {
       name: "GRPC_LOCAL_STORE",
 
-      // Note: This file is used to test GRPC store.
+      // Note: This file is used to test gRPC store.
       grpc: {
         instance_name: "",
         endpoints: [
@@ -17,7 +17,7 @@
     {
       name: "GRPC_LOCAL_AC_STORE",
 
-      // Note: This file is used to test GRPC store.
+      // Note: This file is used to test gRPC store.
       grpc: {
         instance_name: "",
         endpoints: [

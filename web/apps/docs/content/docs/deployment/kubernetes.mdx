@@ -41,7 +41,7 @@ spec:
     spec:
       containers:
         - name: nativelink
-          image: ghcr.io/tracemachina/nativelink:v1.4.0
+          image: ghcr.io/tracemachina/nativelink:v1.6.1
           args: ["/config/cas.json5"]
           ports:
             - containerPort: 50051
@@ -104,7 +104,7 @@ spec:
     spec:
       containers:
         - name: nativelink
-          image: ghcr.io/tracemachina/nativelink:v1.4.0
+          image: ghcr.io/tracemachina/nativelink:v1.6.1
           args: ["/config/worker.json5"]
           resources:
             requests: { cpu: 4, memory: 8Gi }
@@ -171,6 +171,26 @@ directory in the source tree has:
 
 Clone the repo, point at your cluster, `helm install`. Tune from
 there.
+
+## FAQ
+
+<Accordions type="multiple">
+  <Accordion title="Can I start with everything in one pod?" id="can-i-start-with-everything-in-one-pod">
+    Yes — one binary can serve CAS, AC, scheduler, and worker from a
+    single config. Split into the three workloads above once you need to
+    scale or restart them independently.
+  </Accordion>
+  <Accordion title="Why a StatefulSet for the CAS but a Deployment for workers?" id="why-a-statefulset-for-the-cas-but-a-deployment-for-workers">
+    The CAS owns persistent volumes and a stable identity per replica —
+    losing one loses cached blobs. Workers hold no state at all; kill and
+    reschedule them freely, which is exactly what the HPA does.
+  </Accordion>
+  <Accordion title="Does the Ingress really need gRPC end-to-end?" id="does-the-ingress-really-need-grpc-end-to-end">
+    Yes. Every RE-API service is gRPC; an Ingress that downgrades to
+    plain HTTP/1.1 breaks the protocol. NGINX needs `grpc_pass`; any
+    modern Gateway API implementation handles it.
+  </Accordion>
+</Accordions>
 
 ## What's next
 

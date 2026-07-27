@@ -29,7 +29,7 @@ pub struct BatchUpdateBlobsRequestOverride {
 }
 /// Nested message and enum types in `BatchUpdateBlobsRequestOverride`.
 pub mod batch_update_blobs_request_override {
-    #[derive(Clone, PartialEq, ::prost::Message)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct Request {
         #[prost(message, optional, tag = "1")]
         pub digest: ::core::option::Option<
@@ -82,7 +82,7 @@ pub mod batch_read_blobs_response_override {
 }
 /// / Same as google.bytestream.WriteRequest, but without the data field,
 /// / and add a `data_len` field.
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct WriteRequestOverride {
     #[prost(string, tag = "1")]
     pub resource_name: ::prost::alloc::string::String,
@@ -299,7 +299,7 @@ pub struct OriginEvents {
     pub events: ::prost::alloc::vec::Vec<OriginEvent>,
 }
 /// / Bep event that has occurred.
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct BepEvent {
     /// / The version of this message.
     #[prost(uint32, tag = "1")]
@@ -316,7 +316,7 @@ pub struct BepEvent {
 /// Nested message and enum types in `BepEvent`.
 pub mod bep_event {
     /// / The event that occurred.
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Event {
         #[prost(message, tag = "3")]
         LifecycleEvent(

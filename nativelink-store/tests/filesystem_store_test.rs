@@ -51,7 +51,7 @@ use tokio::sync::{Barrier, Semaphore};
 use tokio::time::sleep;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReadDirStream;
-use tracing::{Instrument, debug};
+use tracing::{Instrument, debug, info};
 
 const VALID_HASH: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
 
@@ -270,6 +270,33 @@ const HASH2: &str = "0123456789abcdef000000000000000000020000000000000123456789a
 const VALUE1: &str = "0123456789";
 const VALUE2: &str = "9876543210";
 const STRING_NAME: &str = "String_Filename";
+
+#[nativelink_test]
+async fn evict_page_cache_defaults_off_and_round_trips_when_on() -> Result<(), Error> {
+    assert!(
+        !FilesystemSpec::default().evict_page_cache,
+        "evict_page_cache should default to off"
+    );
+
+    let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
+    let store = Store::new(
+        FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+            content_path: make_temp_path("content_path"),
+            temp_path: make_temp_path("temp_path"),
+            eviction_policy: None,
+            block_size: 1,
+            evict_page_cache: true,
+            ..Default::default()
+        })
+        .await?,
+    );
+    store.update_oneshot(digest, VALUE1.into()).await?;
+    let content = store
+        .get_part_unchunked(StoreKey::Digest(digest), 0, None)
+        .await?;
+    assert_eq!(content, VALUE1.as_bytes());
+    Ok(())
+}
 
 #[nativelink_test]
 async fn valid_results_after_shutdown_test() -> Result<(), Error> {
@@ -1493,7 +1520,7 @@ async fn add_too_early_files() -> Result<(), Error> {
     fs_set_times::set_atime(
         &demo_file_path,
         SystemTime::now()
-            .checked_add(Duration::from_secs(60))
+            .checked_add(Duration::from_mins(1))
             .unwrap()
             .into(),
     )?;
@@ -1663,6 +1690,116 @@ async fn executable_hardlink_source_created_once_and_readonly() -> Result<(), Er
     Ok(())
 }
 
+/// A store whose `.exec` directory cannot be cleared must still start and
+/// serve ordinary CAS reads. It must not, however, trust an executable variant
+/// left behind by an earlier process: that file may be stale or torn after an
+/// unclean shutdown, so the executable hardlink fast path stays disabled until
+/// the directory can be wiped on a later writable startup.
+#[cfg(target_family = "unix")]
+#[nativelink_test]
+async fn read_only_executable_dir_preserves_cas_reads_without_reusing_variants() -> Result<(), Error>
+{
+    use std::os::unix::fs::PermissionsExt;
+
+    struct RestoreWritable(String);
+
+    impl Drop for RestoreWritable {
+        fn drop(&mut self) {
+            use std::os::unix::fs::PermissionsExt;
+
+            std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755))
+                .expect("restore executable digest directory permissions");
+        }
+    }
+
+    let content_path = make_temp_path("content_path_read_only_exec");
+    let temp_path = make_temp_path("temp_path_read_only_exec");
+    let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
+    let spec = FilesystemSpec {
+        content_path: content_path.clone(),
+        temp_path,
+        ..Default::default()
+    };
+
+    {
+        let store = FilesystemStore::<FileEntryImpl>::new(&spec).await?;
+        store.update_oneshot(digest, VALUE1.into()).await?;
+        store.get_executable_hardlink_source(&digest).await?;
+    }
+
+    let executable_digest_dir = format!("{content_path}.exec/{DIGEST_FOLDER}");
+    fs::set_permissions(
+        &executable_digest_dir,
+        std::fs::Permissions::from_mode(0o555),
+    )
+    .await?;
+    let _restore_permissions = RestoreWritable(executable_digest_dir);
+
+    let store = FilesystemStore::<FileEntryImpl>::new(&spec).await?;
+    assert_eq!(
+        store.get_part_unchunked(digest, 0, None).await?,
+        VALUE1.as_bytes(),
+        "read-only executable cleanup must not prevent ordinary CAS reads"
+    );
+    let err = store
+        .get_executable_hardlink_source(&digest)
+        .await
+        .expect_err("a surviving executable variant must not be trusted");
+    assert_eq!(err.code, Code::FailedPrecondition);
+
+    Ok(())
+}
+
+/// Regression test for #2474: the `.exec` variant directory was never
+/// registered in `evicting_map`, so it was invisible to `max_bytes` and only
+/// ever cleared by the startup `remove_dir_all` — growing without bound at
+/// runtime. Evicting a digest from the primary CAS must also delete its
+/// `.exec` sibling, bounding total `.exec` disk use to the primary store's
+/// own eviction policy instead of letting it grow forever.
+#[cfg(target_family = "unix")]
+#[nativelink_test]
+async fn evicting_digest_deletes_its_executable_variant() -> Result<(), Error> {
+    let content_path = make_temp_path("content_path");
+    let temp_path = make_temp_path("temp_path");
+    let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
+    let digest2 = DigestInfo::try_new(HASH2, VALUE2.len())?;
+
+    let store = Box::pin(
+        FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+            content_path: content_path.clone(),
+            temp_path: temp_path.clone(),
+            eviction_policy: Some(EvictionPolicy {
+                max_count: 1,
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .await?,
+    );
+    store.update_oneshot(digest1, VALUE1.into()).await?;
+
+    let variant_path = OsString::from(format!("{content_path}.exec/{DIGEST_FOLDER}/{digest1}"));
+    store.get_executable_hardlink_source(&digest1).await?;
+    fs::metadata(&variant_path)
+        .await
+        .err_tip(|| "Executable variant should exist right after creation")?;
+
+    // max_count: 1 means inserting a second digest evicts the first from the
+    // primary evicting_map, which must also delete digest1's `.exec` sibling.
+    store.update_oneshot(digest2, VALUE2.into()).await?;
+
+    let err = fs::metadata(&variant_path)
+        .await
+        .expect_err("Executable variant must be deleted when its digest is evicted");
+    assert_eq!(
+        err.code,
+        Code::NotFound,
+        "Expected the executable variant to be gone, got: {err:?}"
+    );
+
+    Ok(())
+}
+
 /// This test simulates a full disk without needing one. It writes past the `RLIMIT_FSIZE`
 /// cap, thus failing with `EFBIG`, which tokio defers exactly like `ENOSPC`. The
 /// [`SIGXFSZ`](`libc::SIGXFSZ`) signal must be ignored or the kernel will kill the process
@@ -1765,18 +1902,23 @@ async fn detect_duplicate_upload() -> Result<(), Error> {
 
     let key = &StoreKey::Digest(digest);
     let temp_key = make_temp_key(key);
-    let (mut entry, mut temp_file, _temp_full_path) = store.make_temp_file(temp_key).await?;
+    let (mut entry, mut temp_file, temp_full_path) = store.make_temp_file(temp_key).await?;
+    info!(?temp_full_path, "Temp full path");
     let mut data = Bytes::from_static(VALUE1.as_bytes());
     temp_file.write_all_buf(&mut data).await?;
+    temp_file.flush().await?;
     *entry.data_size_mut() = 10;
 
+    let arc_entry = Arc::new(entry);
     assert!(
-        check_duplicate_files(&store.get_evicting_map(), key, &Arc::new(entry)).await?,
+        check_duplicate_files(&store.get_evicting_map(), key, &arc_entry).await?,
         "Expected duplicate"
     );
     assert!(logs_contain(
         "Identical files, so don't need to edit, skipping emplace"
     ));
+    // Keep it alive until here to avoid early drop and delete, which breaks the test
+    drop(arc_entry);
     Ok(())
 }
 
@@ -1789,6 +1931,7 @@ async fn detect_same_key_different_contents() -> Result<(), Error> {
     let (mut entry, mut temp_file, _temp_full_path) = store.make_temp_file(temp_key).await?;
     let mut data = Bytes::from_static(VALUE2.as_bytes());
     temp_file.write_all_buf(&mut data).await?;
+    temp_file.flush().await?;
     *entry.data_size_mut() = 10;
 
     assert!(
@@ -1924,5 +2067,76 @@ async fn unref_does_not_orphan_content_file_when_temp_dir_missing() -> Result<()
         "content file must remain intact after a failed unref rename"
     );
 
+    Ok(())
+}
+
+// Exercises the macOS flush coalescer's round machinery under a burst of
+// concurrent uploads (on other platforms this is a plain concurrency smoke
+// test). Two hundred small, independently durable blobs are used because each
+// upload would otherwise issue its own multi-millisecond `F_FULLFSYNC` on
+// macOS. The data volume is deliberately small so file I/O does not hide the
+// synchronization behavior: every blob must complete and survive restart,
+// while the device-wide barrier count must remain far below the blob count.
+#[nativelink_test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_upload_burst_round_trip_test() -> Result<(), Error> {
+    const NUM_BLOBS: u64 = 200;
+    let content_path = make_temp_path("content_path_burst");
+    let temp_path = make_temp_path("temp_path_burst");
+    let spec = FilesystemSpec {
+        content_path: content_path.clone(),
+        temp_path: temp_path.clone(),
+        eviction_policy: None,
+        block_size: 1,
+        ..Default::default()
+    };
+    let make_digest = |i: u64| {
+        let mut hash = [0u8; 32];
+        hash[0] = 0xbb;
+        hash[1..9].copy_from_slice(&i.to_le_bytes());
+        DigestInfo::new(hash, 25)
+    };
+    {
+        let filesystem_store = FilesystemStore::<FileEntryImpl>::new(&spec).await?;
+        let store = Store::new(filesystem_store.clone());
+        let mut handles = Vec::new();
+        for i in 0..NUM_BLOBS {
+            let store = store.clone();
+            handles.push(tokio::spawn(async move {
+                let content = format!("burst-content-{i:011}");
+                store
+                    .update_oneshot(make_digest(i), content.into_bytes().into())
+                    .await
+            }));
+        }
+        for handle in handles {
+            handle.await.expect("upload task panicked")?;
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let full_flush_count = filesystem_store
+                .full_flush_count_for_test()
+                .expect("writable test store must have a flush coalescer");
+            assert!(
+                full_flush_count > 0 && full_flush_count < NUM_BLOBS / 2,
+                "{NUM_BLOBS} concurrent uploads should share device-wide barriers; observed {full_flush_count} F_FULLFSYNC rounds"
+            );
+        }
+        for i in 0..NUM_BLOBS {
+            assert_eq!(
+                store.get_part_unchunked(make_digest(i), 0, None).await?,
+                format!("burst-content-{i:011}").as_bytes(),
+                "round trip failed for blob {i}"
+            );
+        }
+    }
+    // A fresh store over the same paths must find every published blob.
+    let store = Store::new(FilesystemStore::<FileEntryImpl>::new(&spec).await?);
+    for i in 0..NUM_BLOBS {
+        assert_eq!(
+            store.has(make_digest(i)).await?,
+            Some(25),
+            "blob {i} missing after restart"
+        );
+    }
     Ok(())
 }

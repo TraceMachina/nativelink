@@ -1,10 +1,15 @@
 import { FinalCTA, SiteFooter, SiteHeader, ThemeProvider, themeInitScript } from "@nativelink/ui";
+import { GoogleTagManager } from "@next/third-parties/google";
 import { GeistMono } from "geist/font/mono";
 import { GeistSans } from "geist/font/sans";
 import type { Metadata } from "next";
+import Script from "next/script";
 import type { ReactNode } from "react";
-import { subscribeNewsletter } from "./newsletter-action";
 import "./globals.css";
+
+// Official Leadfeeder (Dealfront) tracker snippet, verbatim. The site ID is the
+// same one deployed on tracemachina.com.
+const leadfeederScript = `(function(ss,ex){ window.ldfdr=window.ldfdr||function(){(ldfdr._q=ldfdr._q||[]).push([].slice.call(arguments));}; (function(d,s){ fs=d.getElementsByTagName(s)[0]; function ce(src){ var cs=d.createElement(s); cs.src=src; cs.async=1; fs.parentNode.insertBefore(cs,fs); }; ce('https://sc.lfeeder.com/lftracker_v1_'+ss+(ex?'_'+ex:'')+'.js'); })(document,'script'); })('lAxoEaKMQGd7OYGd');`;
 
 export const metadata: Metadata = {
   title: {
@@ -25,9 +30,15 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       className={`${GeistSans.variable} ${GeistMono.variable}`}
     >
       <head>
+        {/* Leadfeeder origins: script host and beacon host. No crossorigin —
+            the tracker loads as a plain script, which can't reuse a CORS-warmed
+            connection. */}
+        <link rel="preconnect" href="https://sc.lfeeder.com" />
+        <link rel="preconnect" href="https://tr.lfeeder.com" />
         {/* biome-ignore lint/security/noDangerouslySetInnerHtml: Inline before hydration so the theme is correct on first paint. */}
         <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
       </head>
+      <GoogleTagManager gtmId="GTM-NNLLRWGB" />
       <body className="flex min-h-screen flex-col bg-background text-foreground antialiased">
         <ThemeProvider>
           <SiteHeader />
@@ -43,8 +54,11 @@ export default function RootLayout({ children }: { children: ReactNode }) {
             secondaryLabel="See pricing"
             secondaryHref="/pricing"
           />
-          <SiteFooter newsletterAction={subscribeNewsletter} />
+          <SiteFooter />
         </ThemeProvider>
+        <Script id="leadfeeder" strategy="afterInteractive">
+          {leadfeederScript}
+        </Script>
       </body>
     </html>
   );

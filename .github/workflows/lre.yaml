@@ -42,11 +42,23 @@ jobs:
         with:
           nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
 
+      - name: Setup NativeLink Cloud
+        uses: ./.github/actions/setup-nativelink-cloud
+        with:
+          ci-mode: ${{ vars.NATIVELINK_CI_MODE }}
+          claim-base: ${{ secrets.NATIVELINK_STAGING_CLAIM_BASE }}
+          bes-results-url: ${{ secrets.NATIVELINK_STAGING_BES_RESULTS_URL }}
+          api-key: >-
+            ${{ github.event_name == 'push'
+                && secrets.NATIVELINK_STAGING_API_KEY_RW
+                || secrets.NATIVELINK_STAGING_API_KEY_RO }}
+          mode: ${{ github.event_name == 'push' && 'write' || 'read' }}
+
       - name: Build example with ${{ matrix.toolchain }} toolchain
         env:
           TOOLCHAIN: ${{ matrix.toolchain }}
         run: >
-          nix develop --impure --fallback --command
+          nix develop --impure --command
           bash -c "bazel run \
            --lockfile_mode=error \
            --verbose_failures \
@@ -88,7 +100,7 @@ jobs:
 #           COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
 #           TOOLCHAIN: ${{ matrix.toolchain }}
 #         run: |
-#           nix develop --fallback --impure --command bash -c 'cat > kustomization.yaml << EOF
+#           nix develop --impure --command bash -c 'cat > kustomization.yaml << EOF
 #           apiVersion: kustomize.config.k8s.io/v1beta1
 #           kind: Kustomization
 #           resources:

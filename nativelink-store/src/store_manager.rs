@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 
-use nativelink_error::Error;
+use nativelink_error::{Code, Error, make_err};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_util::store_trait::Store;
 use parking_lot::RwLock;
@@ -32,9 +32,16 @@ impl StoreManager {
         }
     }
 
-    pub fn add_store(&self, name: &str, store: Store) {
+    pub fn add_store(&self, name: &str, store: Store) -> Result<(), Error> {
         let mut stores = self.stores.write();
+        if stores.contains_key(name) {
+            return Err(make_err!(
+                Code::AlreadyExists,
+                "Store name '{name}' already exists in the store manager"
+            ));
+        }
         stores.insert(name.to_string(), store);
+        Ok(())
     }
 
     pub fn get_store(&self, name: &str) -> Option<Store> {

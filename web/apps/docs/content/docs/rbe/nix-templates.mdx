@@ -1,12 +1,12 @@
 ---
 title: Nix templates
-description: Reproducible NativeLink testbeds in a single flake init command.
+description: The Nix flake template NativeLink ships — Local Remote Execution with Bazel in one flake init command.
 ---
 
-NativeLink ships Nix flake templates that spin up a complete
-remote-execution environment in one command. Useful for
-experimenting with configuration changes, demoing the system, or
-debugging a regression on a known-good baseline.
+NativeLink ships a Nix flake template that wires a Bazel project to
+Local Remote Execution in one command. Useful for experimenting with
+LRE, demoing the system, or debugging a regression on a known-good
+baseline.
 
 ## Prerequisites
 
@@ -21,18 +21,18 @@ debugging a regression on a known-good baseline.
 nix flake show github:TraceMachina/nativelink
 ```
 
-The templates we ship and maintain:
+<Callout type="info" title="This command is the source of truth">
+  Templates get added and removed between releases. Run the command
+  above rather than trusting a hardcoded list — including the one
+  below, which only reflects what's shipping as of this page's last
+  update.
+</Callout>
 
-| Template      | What it gives you                                          |
-| ------------- | ---------------------------------------------------------- |
-| `bazel`       | Bazel monorepo wired to a local NativeLink cluster.        |
-| `cargo`       | Pure Cargo project with sccache pointing at NativeLink.    |
-| `lre`         | Local Remote Execution — hermetic builds, no network.      |
-| `kubernetes`  | `kind` cluster running the NativeLink Helm chart.          |
+| Template | What it gives you |
+| --- | --- |
+| `bazel` | A Bazel `cc_binary` project pre-wired for [Local Remote Execution](/explanations/lre): Nix-pinned toolchain, LRE Bazel module, and a `user.bazelrc` you point at a cache and executor. |
 
 ## The Bazel template
-
-The fastest path to a working RBE setup:
 
 ```bash
 mkdir my-rbe-test && cd my-rbe-test
@@ -40,83 +40,99 @@ nix flake init -t github:TraceMachina/nativelink#bazel
 nix develop
 ```
 
-Inside the dev shell you have:
-
-- A pinned Bazel + Bazelisk.
-- A NativeLink server binary.
-- A `.bazelrc.local` already pointed at `localhost:50051`.
-
-Start the NativeLink server in one terminal:
+`nix develop` downloads the Nix-pinned toolchain and generates
+`lre.bazelrc`, which the template's `.bazelrc` already `try-import`s.
+It does **not** bundle a NativeLink server — you point it at one you
+already have:
 
 ```bash
-nativelink ./config/nativelink.json5
+# In user.bazelrc
+build --remote_cache=grpcs://TODO
+build --bes_backend=grpcs://TODO
+build --remote_timeout=600
+build --remote_executor=grpcs://TODO
 ```
 
-Build the included sample target in another:
+Three ways to fill in `TODO` — [Local Remote Execution → Point
+`user.bazelrc` at a real cache and executor](/rbe/local-remote-execution)
+has a worked, filled-in example of the file below, whichever option
+you pick:
+
+- **[dev.nativelink.com](https://dev.nativelink.com)** — paste your
+  cloud credentials, use `grpcs://`.
+- **A self-hosted cluster** — your own endpoint, `grpcs://` if it
+  terminates TLS.
+- **Nothing but your own machine** — drop the `s`, point both
+  `remote_cache` and `remote_executor` at `grpc://127.0.0.1:50051`.
+  [Local cache and executor](/rbe/local-testing) gets you a
+  from-scratch, credential-free instance in one command — enough to
+  validate `remote_cache`, though the included C++ example's `lre-cc`
+  platform still needs a worker running the matching container image
+  to actually execute (see [Local Remote Execution](/rbe/local-remote-execution)
+  for what that involves).
+
+Then build the included example:
 
 ```bash
-bazel build //hello
+bazel build hello-world
 ```
 
-Re-run; everything should hit the cache.
+Re-run; the cached actions should skip straight to a cache hit.
 
-## The LRE template
+## Not shipped as flake templates today
 
-For [Local Remote Execution](/explanations/lre):
+Earlier drafts of this page also described `cargo`, `lre`, and
+`kubernetes` templates. None exist in `flake.nix` right now — running
+`nix flake init -t github:TraceMachina/nativelink#lre` (or `#cargo`,
+`#kubernetes`) fails with `does not provide attribute 'templates.X'`.
+If you followed a link here looking for one of those:
 
-```bash
-mkdir my-lre-test && cd my-lre-test
-nix flake init -t github:TraceMachina/nativelink#lre
-nix develop
-```
-
-The dev shell provides a fully-hermetic Nix-pinned toolchain.
-NativeLink runs on `localhost`; Bazel is pre-configured to use it.
-
-```bash
-nativelink ./config/lre.json5
-bazel build //hello
-```
-
-The first build of any target is the cost of compilation. Every
-subsequent build is the cost of one network round-trip to
-`localhost`.
-
-## The Kubernetes template
-
-For prototyping a real deployment without leaving your laptop:
-
-```bash
-mkdir my-k8s-test && cd my-k8s-test
-nix flake init -t github:TraceMachina/nativelink#kubernetes
-nix develop
-```
-
-The flake includes `kind`, `kubectl`, `helm`, and the NativeLink
-chart. Bring up a local cluster:
-
-```bash
-kind create cluster
-helm install nativelink ./chart
-kubectl wait --for=condition=Ready pods --all
-```
-
-You now have CAS + scheduler + workers running in a local cluster
-on your laptop. Port-forward `:50051` and point Bazel at it.
+- **A local Bazel cluster with no Nix at all** — [Local cache and
+  executor](/rbe/local-testing) starts CAS, AC, a scheduler, and a
+  worker in one `nativelink` process.
+- **A real Kubernetes deployment** — [Deployment → Kubernetes](/deployment/kubernetes)
+  covers the Helm chart directly; `kind` + that chart gets you the
+  same result a `kubernetes` template would have.
+- **Cargo / sccache** — not currently packaged as a template; the
+  [`bazel` template](#the-bazel-template) above is the maintained path.
 
 ## Customising
 
-Every template is a flake — fork and edit. The most common
+The template is a flake — fork and edit. The most common
 modifications:
 
-- Swap the `nativelink.json5` for a config matching your real
-  environment.
-- Add custom worker platform properties.
-- Pin to a specific NativeLink release (`inputs.nativelink.url`).
+- Point `user.bazelrc` at your real cluster instead of a throwaway one.
+- Add custom worker platform properties in `platforms/BUILD.bazel`.
+- Pin to a specific NativeLink commit (`inputs.nativelink.url` in
+  `flake.nix`, kept in sync with the `local-remote-execution` module
+  override in `MODULE.bazel`).
+
+## FAQ
+
+<Accordions type="multiple">
+  <Accordion title="What is Nix, and why does the template depend on it?" id="what-is-nix-and-why-does-the-template-depend-on-it">
+    A package manager that builds everything in isolation and addresses
+    results by a hash of all inputs — your `clang` lives at
+    `/nix/store/<hash>-clang-.../bin/clang`. That hash-pinned path is
+    exactly what LRE needs to make action hashes identical across
+    machines.
+  </Accordion>
+  <Accordion title="What does adopting Nix cost?" id="what-does-adopting-nix-cost">
+    A learning curve (an unfamiliar language, terse error messages) and
+    the first `nix develop`, which downloads the full toolchain — about
+    5 GB for this template. After that, entering the shell is instant.
+  </Accordion>
+</Accordions>
 
 ## What's next
 
-- [Architecture](/explanations/architecture) — the data flow
-  these templates exercise.
-- [Configuration → Basic](/configuration/basic) — the JSON5
-  the templates ship.
+- [Local Remote Execution](/rbe/local-remote-execution) — this same
+  template, walked through step by step and tested for real.
+- [Local cache and executor](/rbe/local-testing) — the fastest way to
+  get something running on `127.0.0.1` to point this template at.
+- [Explanations → LRE](/explanations/lre) — what the toolchain pinning
+  this template sets up actually buys you.
+- [Architecture](/explanations/architecture) — the data flow this
+  template exercises.
+- [Configuration → Basic](/configuration/basic) — the JSON5 shape a
+  server you point this at should speak.

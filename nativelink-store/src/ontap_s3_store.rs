@@ -47,7 +47,7 @@ use nativelink_util::buf_channel::{
 use nativelink_util::health_utils::{HealthStatus, HealthStatusIndicator};
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::retry::{Retrier, RetryResult};
-use nativelink_util::store_trait::{RemoveItemCallback, StoreDriver, StoreKey, UploadSizeInfo};
+use nativelink_util::store_trait::{RemoveCallback, StoreDriver, StoreKey, UploadSizeInfo};
 use parking_lot::Mutex;
 use rustls::{ClientConfig, RootCertStore};
 use rustls_pki_types::CertificateDer;
@@ -74,8 +74,6 @@ const DEFAULT_MAX_RETRY_BUFFER_PER_REQUEST: usize = 20 * 1024 * 1024; // 20MB
 // Default limit for concurrent part uploads per multipart upload
 const DEFAULT_MULTIPART_MAX_CONCURRENT_UPLOADS: usize = 10;
 
-type RemoveCallback = Arc<dyn RemoveItemCallback>;
-
 #[derive(Debug, MetricsComponent)]
 pub struct OntapS3Store<NowFn> {
     s3_client: Arc<Client>,
@@ -86,7 +84,7 @@ pub struct OntapS3Store<NowFn> {
     key_prefix: String,
     retrier: Retrier,
     #[metric(help = "The number of seconds to consider an object expired")]
-    consider_expired_after_s: i64,
+    consider_expired_after_s: u64,
     #[metric(help = "The number of bytes to buffer for retrying requests")]
     max_retry_buffer_per_request: usize,
     #[metric(help = "The number of concurrent uploads allowed for multipart uploads")]
@@ -207,7 +205,7 @@ where
                 jitter_fn,
                 spec.common.retry.clone(),
             ),
-            consider_expired_after_s: i64::from(spec.common.consider_expired_after_s),
+            consider_expired_after_s: u64::from(spec.common.consider_expired_after_s),
             max_retry_buffer_per_request: spec
                 .common
                 .max_retry_buffer_per_request
@@ -243,8 +241,12 @@ where
                             if self.consider_expired_after_s != 0
                                 && let Some(last_modified) = head_object_output.last_modified
                             {
-                                let now_s = (self.now_fn)().unix_timestamp() as i64;
-                                if last_modified.secs() + self.consider_expired_after_s <= now_s {
+                                let now_s = (self.now_fn)().unix_timestamp();
+                                if TryInto::<u64>::try_into(last_modified.secs())
+                                    .unwrap_or(u64::MAX)
+                                    + self.consider_expired_after_s
+                                    <= now_s
+                                {
                                     let remove_callbacks = self.remove_callbacks.lock().clone();
                                     let mut callbacks: FuturesUnordered<_> = remove_callbacks
                                         .into_iter()
@@ -391,7 +393,7 @@ where
                                         .put_object()
                                         .bucket(&self.bucket)
                                         .key(s3_path.clone())
-                                        .content_length(sz as i64)
+                                        .content_length(sz.try_into().unwrap_or(i64::MAX))
                                         .body(
                                             ByteStream::from(body_bytes)
                                         )
@@ -767,10 +769,7 @@ where
         self
     }
 
-    fn register_remove_callback(
-        self: Arc<Self>,
-        callback: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, callback: RemoveCallback) -> Result<(), Error> {
         self.remove_callbacks.lock().push(callback);
         Ok(())
     }

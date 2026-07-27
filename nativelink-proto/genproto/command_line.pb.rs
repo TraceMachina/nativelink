@@ -54,7 +54,7 @@ pub mod command_line_section {
     }
 }
 /// Wrapper to allow a list of strings in the "oneof" section_type.
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ChunkList {
     #[prost(string, repeated, tag = "1")]
     pub chunk: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
@@ -74,7 +74,7 @@ pub struct OptionList {
 /// represents the canonical form of the command line, with the values as Bazel
 /// understands them, then the expansion flag, which has no value, would not
 /// appear, and the flags it expands to would.
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Option {
     /// How the option looks with the option and its value combined. Depending on
     /// the purpose of this command line report, this could be the canonical

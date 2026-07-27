@@ -76,7 +76,7 @@ fn get_lints_from_key(lints_table: &Map<String, Value>, key: &str) -> BTreeSet<L
                 .expect("Expected small integer for priority"),
             });
         } else {
-            panic!("{}", value);
+            panic!("Odd lint value: {}", value);
         }
     }
     lints

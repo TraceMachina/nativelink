@@ -47,7 +47,7 @@ use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthS
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::store_trait::{
-    RemoveItemCallback, StoreDriver, StoreKey, StoreOptimizations, UploadSizeInfo,
+    RemoveCallback, StoreDriver, StoreKey, StoreOptimizations, UploadSizeInfo,
 };
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
@@ -98,7 +98,7 @@ pub struct S3Store<NowFn> {
     #[metric(help = "The number of concurrent uploads allowed for multipart uploads")]
     multipart_max_concurrent_uploads: usize,
 
-    remove_callbacks: Mutex<Vec<Arc<dyn RemoveItemCallback>>>,
+    remove_callbacks: Mutex<Vec<RemoveCallback>>,
 }
 
 impl<I, NowFn> S3Store<NowFn>
@@ -195,7 +195,10 @@ where
                             if self.consider_expired_after_s != 0
                                 && let Some(last_modified) = head_object_output.last_modified
                             {
-                                let now_s = (self.now_fn)().unix_timestamp() as i64;
+                                let now_s = (self.now_fn)()
+                                    .unix_timestamp()
+                                    .try_into()
+                                    .unwrap_or(i64::MAX);
                                 if last_modified.secs() + self.consider_expired_after_s <= now_s {
                                     let remove_callbacks = self.remove_callbacks.lock().clone();
                                     let mut callbacks: FuturesUnordered<_> = remove_callbacks
@@ -323,7 +326,7 @@ where
                                 .put_object()
                                 .bucket(&self.bucket)
                                 .key(s3_path.clone())
-                                .content_length(sz as i64)
+                                .content_length(sz.try_into().unwrap_or(i64::MAX))
                                 .body(ByteStream::from_body_1_x(BodyWrapper {
                                     reader: rx,
                                     size: sz,
@@ -684,10 +687,7 @@ where
         registry.register_indicator(self);
     }
 
-    fn register_remove_callback(
-        self: Arc<Self>,
-        callback: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, callback: RemoveCallback) -> Result<(), Error> {
         self.remove_callbacks.lock().push(callback);
         Ok(())
     }

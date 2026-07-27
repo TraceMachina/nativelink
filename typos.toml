@@ -1,6 +1,8 @@
 [default.extend-words]
 # `conly_flags` in lre-cc
 conly = "conly"
+# in-toto attestation format used by SLSA provenance (`*.intoto.jsonl`)
+intoto = "intoto"
 
 [default]
 # Old wrong spelling support

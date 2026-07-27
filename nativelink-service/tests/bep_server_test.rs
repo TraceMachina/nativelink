@@ -48,13 +48,14 @@ use nativelink_util::common::encode_stream_proto;
 use nativelink_util::default_health_status_indicator;
 use nativelink_util::health_utils::HealthStatusIndicator;
 use nativelink_util::store_trait::{
-    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+    RemoveCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };
 use pretty_assertions::assert_eq;
 use prost::Message;
 use prost_types::Timestamp;
-use tonic::codec::{Codec, ProstCodec};
+use tonic::codec::Codec;
 use tonic::{Request, Streaming, async_trait};
+use tonic_prost::ProstCodec;
 
 const BEP_STORE_NAME: &str = "main_bep";
 
@@ -69,7 +70,7 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
             None,
         )
         .await?,
-    );
+    )?;
     Ok(store_manager)
 }
 
@@ -153,10 +154,7 @@ impl StoreDriver for FlakyStore {
         self
     }
 
-    fn register_remove_callback(
-        self: Arc<Self>,
-        _callback: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, _callback: RemoveCallback) -> Result<(), Error> {
         todo!();
     }
 }
@@ -173,7 +171,7 @@ async fn publish_lifecycle_event_retries_transient_store_failure()
         attempts: AtomicUsize::new(0),
     });
     let store_manager = Arc::new(StoreManager::new());
-    store_manager.add_store(BEP_STORE_NAME, Store::new(flaky.clone()));
+    store_manager.add_store(BEP_STORE_NAME, Store::new(flaky.clone()))?;
     let bep_server = make_bep_server(&store_manager)?;
 
     let request = PublishLifecycleEventRequest {
@@ -432,7 +430,7 @@ async fn publish_build_tool_event_stream_test() -> Result<(), Box<dyn core::erro
         // Send off the requests and validate the responses.
         for (sequence_number, request) in requests.iter().enumerate().map(|(i, req)| {
             // Sequence numbers are 1-indexed, while `.enumerate()` indexes from 0.
-            (i as i64 + 1, req)
+            (i.try_into().unwrap_or(i64::MAX).saturating_add(1), req)
         }) {
             let encoded_request = encode_stream_proto(request)?;
             request_tx.send(Frame::data(encoded_request)).await?;

@@ -31,29 +31,6 @@ const values = [
   },
 ];
 
-const milestones = [
-  {
-    year: "2023",
-    title: "Trace Machina founded.",
-    body: "Aaron Mondal & team start building NativeLink in Rust, in public, on GitHub.",
-  },
-  {
-    year: "2024",
-    title: "First billion requests served.",
-    body: "Open-source NativeLink hits a billion build requests / month in production.",
-  },
-  {
-    year: "2024",
-    title: "NativeLink Cloud launches.",
-    body: "Managed offering goes GA after a private beta with five infrastructure-scale teams.",
-  },
-  {
-    year: "2025",
-    title: "LLVM picks up NativeLink.",
-    body: "LLVM contributors adopt CMake + recc + NativeLink — clang builds 4× faster on day one.",
-  },
-];
-
 const contactCards = [
   {
     title: "Media kit",
@@ -64,13 +41,13 @@ const contactCards = [
   {
     title: "General inquiries",
     body: "Have a question or comment? We'd love to hear from you.",
-    cta: { label: "Contact us", href: "mailto:contact@nativelink.com" },
+    cta: { label: "Contact us", href: "mailto:contact@tracemachina.com" },
     variant: "outline" as const,
   },
   {
     title: "Sales inquiries",
     body: "Curious if NativeLink fits your team? Our sales engineers can help.",
-    cta: { label: "Talk to sales", href: "mailto:hello@nativelink.com" },
+    cta: { label: "Talk to sales", href: "mailto:contact@tracemachina.com" },
     variant: "primary" as const,
   },
 ];
@@ -150,40 +127,6 @@ export default function CompanyPage() {
         </div>
       </Section>
 
-      {/* TIMELINE */}
-      <Section width="default" className="py-28">
-        <Reveal>
-          <div className="mx-auto mb-14 max-w-[680px] text-center">
-            <Eyebrow className="mb-4">Story</Eyebrow>
-            <h2 className="text-balance text-4xl font-semibold leading-[1.05] tracking-[-0.03em] md:text-5xl">
-              How we got here.
-            </h2>
-          </div>
-        </Reveal>
-        <div className="mx-auto max-w-[820px]">
-          <ol className="relative space-y-10 before:absolute before:left-[7px] before:top-2 before:h-[calc(100%-1rem)] before:w-px before:bg-border md:before:left-[11px]">
-            {milestones.map((m, i) => (
-              <Reveal key={m.year + m.title} delay={i * 0.05}>
-                <li className="relative pl-10 md:pl-14">
-                  <div className="absolute left-0 top-1 flex h-4 w-4 items-center justify-center rounded-full bg-brand shadow-[0_0_0_4px_rgb(var(--nl-color-background))] md:h-6 md:w-6 md:left-0">
-                    <span className="h-1.5 w-1.5 rounded-full bg-brand-foreground md:h-2 md:w-2" />
-                  </div>
-                  <div className="flex items-baseline gap-3">
-                    <span className="font-mono text-xs uppercase tracking-widest text-brand">
-                      {m.year}
-                    </span>
-                  </div>
-                  <h3 className="mt-1 text-xl font-semibold leading-tight tracking-tight text-foreground md:text-2xl">
-                    {m.title}
-                  </h3>
-                  <p className="mt-2 text-[15px] leading-relaxed text-muted-foreground">{m.body}</p>
-                </li>
-              </Reveal>
-            ))}
-          </ol>
-        </div>
-      </Section>
-
       {/* CONTACT */}
       <Section width="default" className="border-t border-border/60 bg-surface-elevated/40 py-24">
         <Reveal>
@@ -209,7 +152,7 @@ export default function CompanyPage() {
                   <CardTitle>{c.title}</CardTitle>
                 </CardHeader>
                 <CardBody>{c.body}</CardBody>
-                <CardFooter className="mt-auto">
+                <CardFooter className="mt-auto pt-8">
                   <Button asChild variant={c.variant} size="md" className="w-full">
                     <a
                       href={c.cta.href}

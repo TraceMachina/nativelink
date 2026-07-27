@@ -23,7 +23,7 @@ use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::store_trait::{
-    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+    RemoveCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };
 use parking_lot::Mutex;
 use tracing::{debug, error};
@@ -48,7 +48,7 @@ pub struct RefStore {
     name: String,
     store_manager: Weak<StoreManager>,
     inner: StoreReference,
-    remove_callbacks: Mutex<Vec<Arc<dyn RemoveItemCallback>>>,
+    remove_callbacks: Mutex<Vec<RemoveCallback>>,
 }
 
 impl RefStore {
@@ -159,10 +159,7 @@ impl StoreDriver for RefStore {
         self
     }
 
-    fn register_remove_callback(
-        self: Arc<Self>,
-        callback: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, callback: RemoveCallback) -> Result<(), Error> {
         self.remove_callbacks.lock().push(callback.clone());
         let ref_store = self.inner.cell.0.get();
         unsafe {

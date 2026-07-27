@@ -37,8 +37,8 @@ use tonic::{
     Streaming,
     codec::Codec, // Needed for .decoder().
     codec::CompressionEncoding,
-    codec::ProstCodec,
 };
+use tonic_prost::ProstCodec;
 use tracing::debug;
 
 use super::mock_running_actions_manager::MockRunningActionsManager;

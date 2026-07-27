@@ -116,7 +116,7 @@ fn make_awaited_action(operation_id: &str) -> AwaitedAction {
     )
 }
 
-// TODO: This test needs to be rewritten to use workers (like test_multiple_clients_subscribe_to_same_action).
+// TODO: This test needs to be rewritten to use workers (like `test_multiple_clients_subscribe_to_same_action`).
 #[nativelink_test]
 #[ignore = "needs rewrite to use workers (like test_multiple_clients_subscribe_to_same_action)"]
 async fn add_action_smoke_test() -> Result<(), Error> {
@@ -288,7 +288,7 @@ async fn test_multiple_clients_subscribe_to_same_action() -> Result<(), Error> {
         .await
         .unwrap();
 
-    // Second client should be able to get the action by its client_operation_id
+    // Second client should be able to get the action by its `client_operation_id`
     let get_subscription = scheduler
         .filter_operations(OperationFilter {
             client_operation_id: Some(OperationId::from(CLIENT_OPERATION_ID_2)),
@@ -471,7 +471,7 @@ async fn test_orphaned_client_operation_id_returns_none() -> Result<(), Error> {
     fake_redis_backend.set_subscription_manager(store.subscription_manager().await.unwrap());
 
     // Manually set up the orphaned state in the fake backend:
-    // 1. Add client_id → operation_id mapping (cid_* key)
+    // 1. Add `client_id` → `operation_id` mapping (cid_* key)
     {
         let mut table = fake_redis_backend.table.lock().unwrap();
         let mut client_fields = HashMap::new();

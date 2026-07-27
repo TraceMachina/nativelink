@@ -55,3 +55,19 @@ and toolchains aligned.
   config. The local examples use `main`.
 - **Connection failures.** Pants expects a `grpc://` URL in
   `remote_store_address`.
+
+## FAQ
+
+<Accordions type="multiple">
+  <Accordion title="Why are read and write separate flags?" id="why-are-read-and-write-separate-flags">
+    To let you split roles: CI can populate the cache
+    (`remote_cache_write = true`) while developer laptops only read from
+    it. For a single shared setup, enable both.
+  </Accordion>
+  <Accordion title="Can Pants run actions remotely on NativeLink?" id="can-pants-run-actions-remotely-on-nativelink">
+    Yes — it's the same Remote Execution API — but the worker environment
+    must match what Pants sends. Get remote caching working first, then
+    align worker platform properties and toolchains before enabling
+    execution.
+  </Accordion>
+</Accordions>

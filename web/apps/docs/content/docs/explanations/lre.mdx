@@ -66,38 +66,62 @@ The recommended flow:
     is the easiest path.
   </li>
   <li>
-    **Pull the NativeLink LRE flake template.**
+    **Pull the NativeLink Bazel flake template.**
 
     ```bash
-    nix flake init -t github:TraceMachina/nativelink#lre
+    nix flake init -t github:TraceMachina/nativelink#bazel
     ```
   </li>
   <li>
-    **Enter the dev shell.** This downloads the pinned toolchain on
-    first run.
+    **Enter the dev shell.** This downloads the Nix-pinned toolchain on
+    first run and generates `lre.bazelrc`, which the template's
+    `.bazelrc` already `try-import`s.
 
     ```bash
     nix develop
     ```
   </li>
   <li>
-    **Start the local worker.** The template ships with a
-    `nativelink-lre.json5` that binds CAS, AC, scheduler, and a single
-    worker to `localhost:50051`.
+    **Point `user.bazelrc` at a NativeLink cache and executor.** The
+    template ships it with placeholders:
 
     ```bash
-    nativelink ./nativelink-lre.json5
+    build --remote_cache=grpcs://TODO
+    build --bes_backend=grpcs://TODO
+    build --remote_timeout=600
+    build --remote_executor=grpcs://TODO
     ```
+
+    Fill these in with either your [dev.nativelink.com](https://dev.nativelink.com)
+    credentials or a self-hosted cluster with a worker capable of the
+    platform the example needs. A plain
+    [local instance](/rbe/local-testing) (drop the `s` in `grpcs://`,
+    point at `127.0.0.1`) is enough to validate `remote_cache`, but
+    the C++ example's `lre-cc` platform still needs a real worker
+    running the matching container image — see
+    [Local Remote Execution](/rbe/local-remote-execution) for the
+    exact commands and what each one actually requires.
   </li>
   <li>
-    **Point your build system at it.** The flake includes a
-    `.bazelrc.lre` that's pre-configured; for non-Bazel clients see
-    [Getting Started → Other build systems](/getting-started/other-build-systems).
+    **Build the example.**
+
+    ```bash
+    bazel build hello-world
+    ```
   </li>
 </Steps>
 
 The first build will be the same wall-time as a normal local build.
 The second one will be near-instant — that's the cache doing its job.
+
+<Callout type="info" title="Adding LRE to an existing flake-parts project">
+  The template above is the fastest way to see LRE working, but it
+  starts a new project. To add the same Nix-pinned toolchains to a
+  project you already have, see the full flake-side and Bazel-side
+  wiring — the `nativelink.flakeModule` import, `lre.installationScript`,
+  and the `local-remote-execution` Bazel module override — in
+  [`local-remote-execution/README.md`](https://github.com/TraceMachina/nativelink/blob/main/local-remote-execution/README.md).
+</Callout>
 
 ## Why Nix, specifically?
 
@@ -111,14 +135,47 @@ filesystem state.
 That's the entire reason. Nix gives us hash-pinned tools; everything
 else follows.
 
-For background, see [What is Nix?](/faq/nix) and
-[How do I make my Bazel setup hermetic?](/faq/hermeticity).
+For background on Nix itself, see
+[Develop with Nix](/contribute/nix); for the hermeticity checklist,
+see the [FAQ](#faq) below.
+
+## FAQ
+
+<Accordions type="multiple">
+  <Accordion title="How do I make my Bazel setup hermetic?" id="hermetic-bazel">
+    Pin the toolchain (Nix or `rules_cc`'s toolchain abstraction —
+    never `/usr/bin/cc`), pin every `http_archive` URL and sha256,
+    add `build --incompatible_strict_action_env` to stop `$PATH`
+    leaks, enable strict include checking
+    (`--features=layering_check`), and compare action hashes across
+    machines with `bazel aquery`. LRE gives you the toolchain-pinning
+    piece for free.
+  </Accordion>
+  <Accordion title="How do I find a hermeticity leak?" id="hermeticity-leak">
+    Build the same target twice on the same machine under LRE and
+    compare outputs — anything that differs is a leak. At the cluster
+    level, non-hermetic actions surface as cache misses where you
+    expected hits, or as nondeterministic action results.
+  </Accordion>
+  <Accordion title="Is LRE a replacement for a remote worker fleet?" id="lre-vs-fleet">
+    No — it solves determinism, not throughput. Fan-out across
+    hundreds of cores, or building for platforms you can't host,
+    still wants remote workers. The point is that action hashes
+    match, so local and remote execution share one cache.
+  </Accordion>
+</Accordions>
 
 ## What's next
 
+- [RBE → Local Remote Execution](/rbe/local-remote-execution) — the
+  Setup steps above, run for real, plus what's actually
+  local-vs-remote once you leave `x86_64-linux`.
+- [Local cache and executor](/rbe/local-testing) — a cache and
+  executor to point the setup above at, no Nix required for the
+  server side.
 - [Architecture](/explanations/architecture) — the full RE-API
   picture LRE plugs into.
 - [Configuration → Basic](/configuration/basic) — the JSON5 the
   local worker reads.
-- [RBE → Nix templates](/rbe/nix-templates) — runnable LRE
-  reference setups.
+- [RBE → Nix templates](/rbe/nix-templates) — the `bazel` flake
+  template this page walks through.

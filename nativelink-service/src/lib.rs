@@ -22,4 +22,5 @@ pub mod fetch_server;
 pub mod health_server;
 pub mod push_server;
 pub mod remote_asset_proto;
+pub mod wire_compression;
 pub mod worker_api_server;

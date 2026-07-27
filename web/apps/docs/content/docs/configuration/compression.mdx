@@ -1,0 +1,107 @@
+---
+title: Remote cache compression
+description: Cut remote cache transfer bytes for compressible artifacts with REAPI zstd wire compression and Bazel's --remote_cache_compression.
+---
+
+Build artifacts are often highly compressible — object files, archives,
+test logs — but a conventional remote cache transfers them byte-for-byte.
+With wire compression, clients and server exchange blobs as zstd-compressed
+streams and only the wire bytes shrink: NativeLink decompresses on upload
+and compresses on download at the gRPC boundary, so stores keep raw,
+uncompressed bytes and every existing read path sees ordinary blobs.
+
+NativeLink implements the server side of the REAPI
+[`compressed-blobs`](https://github.com/bazelbuild/remote-apis/blob/main/build/bazel/remote/execution/v2/remote_execution.proto)
+extension with `zstd` as the only supported non-identity compressor,
+matching what Bazel's `--remote_cache_compression` flag speaks: ByteStream
+reads and writes use `compressed-blobs/zstd/...` resource names, and the
+CAS batch RPCs accept and serve zstd-compressed payloads.
+
+## Requirements
+
+- A Bazel client with `--remote_cache_compression` (available since
+  Bazel 5).
+- Wire compression is **optional and off by default**. Without the
+  configuration below, NativeLink does not advertise zstd and rejects
+  `compressed-blobs/zstd` requests, so clients fall back to identity
+  transfers.
+
+## Enabling it
+
+Set `remote_cache_compression: true` on the capabilities service for the
+instance. The capabilities service advertises zstd to clients, and the
+ByteStream and CAS services accept and serve compressed payloads for that
+instance:
+
+```json5
+servers: [
+  {
+    // ...
+    services: {
+      cas: [{ instance_name: "main", cas_store: "CAS_MAIN_STORE" }],
+      bytestream: [{ instance_name: "main", cas_store: "CAS_MAIN_STORE" }],
+      capabilities: [
+        {
+          instance_name: "main",
+          remote_cache_compression: true,
+        },
+      ],
+      // ...
+    },
+  },
+],
+```
+
+Then build with:
+
+```sh
+bazel build //... \
+  --remote_cache=grpc://your-nativelink:50051 \
+  --remote_cache_compression
+```
+
+Clients only compress when the server advertises it, so enabling the
+option is safe with a mixed fleet of clients: anything that doesn't request
+`compressed-blobs/zstd` keeps using identity transfers.
+
+## Semantics worth knowing
+
+- Resource names and digests always refer to the **uncompressed** blob;
+  only the bytes on the wire are compressed. ByteStream compressed writes
+  report `committed_size` in compressed wire bytes, as the REAPI extension
+  specifies.
+- Uploads are verified: NativeLink hashes the *decoded* bytes and rejects
+  a blob whose decompressed content doesn't match the digest or size it
+  was addressed with, bounding decompression by the expected size.
+- Batch reads fall back to identity when the zstd encoding would not be
+  smaller, so incompressible blobs don't pay the CPU and size overhead.
+
+## When it helps, and when it doesn't
+
+Compression pays off when clients reach the cache across a real network
+and the artifacts are compressible: uncompressed archives, binaries with
+debug info, and text-heavy outputs commonly shrink 2-10x on the wire. It
+does little on same-rack links — the zstd CPU cost buys nothing when the
+wire isn't the bottleneck — and nothing for already-compressed artifacts.
+
+Wire compression doesn't change what's stored: the CAS holds raw bytes.
+To also shrink bytes at rest, wrap the backing store in a
+[`compression` store](/reference/nativelink-config/main#compressionspec);
+the two compose, since one covers the wire and the other covers storage.
+
+## FAQ
+
+<Accordions type="multiple">
+  <Accordion title="Is it safe to enable with a mixed client fleet?" id="is-it-safe-to-enable-with-a-mixed-client-fleet">
+    Yes. Clients only compress when the server advertises support, so
+    anything that doesn't request `compressed-blobs/zstd` keeps using
+    identity transfers against the same instance.
+  </Accordion>
+  <Accordion title="Can I combine this with the dedup store?" id="can-i-combine-this-with-the-dedup-store">
+    Yes, but order matters at the store level: deduplication must operate
+    on raw content — identical chunks stop being identical after
+    compression, so a `dedup` store fed compressed bytes finds no
+    duplicates. Wire compression is fine either way; it's undone at the
+    gRPC boundary before any store sees the bytes.
+  </Accordion>
+</Accordions>

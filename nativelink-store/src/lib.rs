@@ -31,6 +31,7 @@ pub mod grpc_store;
 pub mod memory_store;
 pub mod mongo_store;
 pub mod noop_store;
+pub mod oci_store;
 pub mod ontap_s3_existence_cache_store;
 pub mod ontap_s3_store;
 pub mod r2_store;

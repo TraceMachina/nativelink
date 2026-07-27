@@ -1,0 +1,106 @@
+---
+name: NativeLink Cloud Canary
+
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - ci.bazelrc
+      - .github/actions/setup-nativelink-cloud/**
+      - .github/workflows/nativelink-cloud-canary.yaml
+
+permissions: read-all
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  cache-canary:
+    name: Remote cache canary
+    runs-on: ubuntu-24.04
+    # Also the queue-forever tripwire once an RBE leg is added.
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: >- # v6.0.2
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Setup Bazel
+        uses: >- # v0.19.0
+          bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86
+        with:
+          bazelisk-cache: true
+          repository-cache: true
+          # No disk-cache: remote hits must be the only cache signal here.
+
+      - name: Setup NativeLink Cloud
+        id: nl
+        uses: ./.github/actions/setup-nativelink-cloud
+        with:
+          # The canary ignores vars.NATIVELINK_CI_MODE on purpose: it must
+          # prove the cloud path is healthy while regular lanes are still
+          # dark. With no secrets configured (or on fork PRs) it no-ops.
+          ci-mode: cache
+          claim-base: ${{ secrets.NATIVELINK_STAGING_CLAIM_BASE }}
+          bes-results-url: ${{ secrets.NATIVELINK_STAGING_BES_RESULTS_URL }}
+          api-key: >-
+            ${{ github.event_name == 'pull_request'
+                && secrets.NATIVELINK_STAGING_API_KEY_RO
+                || secrets.NATIVELINK_STAGING_API_KEY_RW }}
+          mode: ${{ github.event_name == 'pull_request' && 'read' || 'write' }}
+
+      - name: Build (populate cache)
+        if: steps.nl.outputs.enabled == 'true'
+        run: |
+          bazel build //nativelink-config/... \
+            --lockfile_mode=error \
+            --verbose_failures \
+            --bes_upload_mode=wait_for_upload_complete
+
+      # The hit-rate assertion needs the populate step to have uploaded, so it
+      # only runs with the write key (schedule/dispatch/push — never PRs).
+      - name: Drop local build state
+        if: steps.nl.outputs.enabled == 'true' && github.event_name != 'pull_request'
+        run: |
+          bazel clean
+          bazel shutdown
+
+      - name: Rebuild and assert remote cache hits
+        if: steps.nl.outputs.enabled == 'true' && github.event_name != 'pull_request'
+        run: |
+          bazel build //nativelink-config/... \
+            --lockfile_mode=error \
+            --verbose_failures \
+            --bes_upload_mode=wait_for_upload_complete \
+            --build_event_json_file="$RUNNER_TEMP/bep.json"
+
+          hits=$(jq -s '[.[] | .buildMetrics.actionSummary.runnerCount[]?
+            | select(.name == "remote cache hit") | .count] | add // 0' \
+            "$RUNNER_TEMP/bep.json")
+          # runnerCount includes an aggregate "total" entry alongside the
+          # per-runner entries; count only real runners or the rate is halved.
+          total=$(jq -s '[.[] | .buildMetrics.actionSummary.runnerCount[]?
+            | select(.name != "internal" and .name != "total") | .count] | add // 0' \
+            "$RUNNER_TEMP/bep.json")
+          invocation=$(jq -rs '[.[] | select(.id.started != null)
+            | .started.uuid][0] // empty' "$RUNNER_TEMP/bep.json")
+
+          echo "Remote cache hits on rebuild: ${hits}/${total} (invocation ${invocation})"
+          {
+            echo "### NativeLink Cloud canary"
+            echo "- Remote cache hits on rebuild: **${hits}/${total}**"
+            echo "- Invocation: \`${invocation}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ "$total" -eq 0 ]]; then
+            echo "FAIL: no actions were measured; the assertion is vacuous" >&2
+            exit 1
+          fi
+          if (( hits * 100 < total * 90 )); then
+            echo "FAIL: remote cache hit rate below 90% on an unchanged rebuild" >&2
+            exit 1
+          fi

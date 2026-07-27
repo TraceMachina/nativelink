@@ -33,7 +33,7 @@ use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use nativelink_util::spawn;
 use nativelink_util::store_trait::{
-    BoolValue, RemoveItemCallback, SchedulerCurrentVersionProvider, SchedulerIndexProvider,
+    BoolValue, RemoveCallback, SchedulerCurrentVersionProvider, SchedulerIndexProvider,
     SchedulerStore, SchedulerStoreDataProvider, SchedulerStoreDecodeTo, SchedulerStoreKeyProvider,
     SchedulerSubscription, SchedulerSubscriptionManager, StoreDriver, StoreKey, UploadSizeInfo,
 };
@@ -493,7 +493,7 @@ impl StoreDriver for ExperimentalMongoStore {
             data.extend_from_slice(&chunk);
         }
 
-        let size = data.len() as i64;
+        let size = data.len().try_into().unwrap_or(i64::MAX);
 
         // Create document
         let doc = doc! {
@@ -627,10 +627,7 @@ impl StoreDriver for ExperimentalMongoStore {
         registry.register_indicator(self);
     }
 
-    fn register_remove_callback(
-        self: Arc<Self>,
-        _callback: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, _callback: RemoveCallback) -> Result<(), Error> {
         // drop because we don't remove anything from Mongo
         Ok(())
     }

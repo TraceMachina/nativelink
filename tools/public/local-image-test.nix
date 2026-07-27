@@ -41,5 +41,6 @@ writeShellScriptBin "local-image-test" ''
   #                    https://github.com/aquasecurity/trivy-action/issues/389
   ${trivy}/bin/trivy image \
     ''${IMAGE_TARGET} \
+    --timeout 15m \
     --db-repository public.ecr.aws/aquasecurity/trivy-db:2
 ''

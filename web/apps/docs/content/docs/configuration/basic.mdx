@@ -193,6 +193,27 @@ Every client targeting a given cache must use the same
 `instance_name`. Mismatches don't produce errors; they produce
 silently-empty caches.
 
+## FAQ
+
+<Accordions type="multiple">
+  <Accordion title="What happens when the cache fills up?" id="what-happens-when-the-cache-fills-up">
+    Each store's `eviction_policy.max_bytes` caps it; once full, the
+    least-recently-used entries are evicted to make room. An evicted
+    entry is just a future cache miss — clients rebuild and re-upload.
+  </Accordion>
+  <Accordion title="My actions sit queued forever — why?" id="my-actions-sit-queued-forever-why">
+    The scheduler's `supported_platform_properties` must be satisfiable
+    by at least one worker's `platform_properties`, or matching actions
+    queue indefinitely with no error surfaced. Compare those two blocks
+    first.
+  </Accordion>
+  <Accordion title="When have I outgrown these configs?" id="when-have-i-outgrown-these-configs">
+    When more than one node needs the same cache, or when a restart
+    wiping state starts to hurt. That's the cue for the durable, sharded
+    shapes in [Production configurations](/configuration/production).
+  </Accordion>
+</Accordions>
+
 ## What's next
 
 - [Production configurations](/configuration/production) — the

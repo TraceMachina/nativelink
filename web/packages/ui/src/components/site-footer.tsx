@@ -1,7 +1,5 @@
 import { cn } from "../lib/cn";
 import { Logo } from "./logo";
-import type { NewsletterState } from "./newsletter-form";
-import { NewsletterForm } from "./newsletter-form";
 
 interface FooterColumn {
   title: string;
@@ -12,10 +10,6 @@ interface SiteFooterProps {
   columns?: FooterColumn[];
   tagline?: string;
   className?: string;
-  newsletterAction?: (
-    prev: NewsletterState | null,
-    formData: FormData,
-  ) => Promise<NewsletterState> | NewsletterState;
 }
 
 const defaultColumns: FooterColumn[] = [
@@ -26,13 +20,13 @@ const defaultColumns: FooterColumn[] = [
       { label: "Pricing", href: "/pricing" },
       { label: "Docs", href: "/docs" },
       { label: "Enterprise", href: "https://enterprise.nativelink.com" },
-      { label: "Status", href: "/status" },
     ],
   },
   {
     title: "Company",
     links: [
       { label: "About", href: "/company" },
+      { label: "Careers", href: "/careers" },
       { label: "Community", href: "/community" },
       { label: "Resources", href: "/resources" },
       { label: "Contact", href: "/contact" },
@@ -42,8 +36,7 @@ const defaultColumns: FooterColumn[] = [
     title: "Legal",
     links: [
       { label: "Terms & Privacy", href: "/terms" },
-      { label: "Compliance", href: "/compliance" },
-      { label: "Security", href: "mailto:security@nativelink.com" },
+      { label: "Security", href: "/security" },
     ],
   },
 ];
@@ -73,7 +66,7 @@ const socialLinks = [
   },
   {
     label: "Email",
-    href: "mailto:contact@nativelink.com",
+    href: "mailto:contact@tracemachina.com",
     icon: (
       <path
         d="M3 7 L12 13 L21 7 M3 7 v10 a1 1 0 0 0 1 1 h16 a1 1 0 0 0 1 -1 V7 a1 1 0 0 0 -1 -1 H4 a1 1 0 0 0 -1 1 Z"
@@ -88,12 +81,11 @@ export function SiteFooter({
   columns = defaultColumns,
   tagline = "High-performance remote build cache and execution. Open source. Self-host or run on our cloud.",
   className,
-  newsletterAction,
 }: SiteFooterProps) {
   const year = new Date().getFullYear();
   return (
     <footer className={cn("border-t border-border/60 bg-background", className)}>
-      <div className="mx-auto grid w-full max-w-[1200px] grid-cols-2 gap-x-8 gap-y-12 px-6 py-16 sm:grid-cols-3 lg:grid-cols-[1.5fr_repeat(3,1fr)_1.4fr]">
+      <div className="mx-auto grid w-full max-w-[1200px] grid-cols-2 gap-x-8 gap-y-12 px-6 py-16 sm:grid-cols-3 lg:grid-cols-[1.5fr_repeat(3,1fr)]">
         <div className="col-span-2 flex flex-col gap-4 sm:col-span-3 lg:col-span-1">
           <a href="/" aria-label="NativeLink — home" className="inline-flex">
             <Logo size="md" />
@@ -125,17 +117,6 @@ export function SiteFooter({
           </nav>
         ))}
 
-        {newsletterAction ? (
-          <div className="col-span-2 sm:col-span-3 lg:col-span-1">
-            <p className="mb-4 font-mono text-[11px] uppercase tracking-[0.18em] text-muted">
-              Newsletter
-            </p>
-            <p className="mb-4 text-sm leading-relaxed text-muted-foreground">
-              Build performance, deep-tech write-ups. Occasionally.
-            </p>
-            <NewsletterForm action={newsletterAction} />
-          </div>
-        ) : null}
       </div>
 
       <div className="border-t border-border/60">
@@ -167,16 +148,6 @@ export function SiteFooter({
             ))}
           </div>
 
-          <a
-            href="/status"
-            className="flex items-center gap-1.5 font-mono text-xs text-muted transition-colors hover:text-foreground"
-          >
-            <span className="relative flex h-2 w-2">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-60" />
-              <span className="relative inline-flex h-2 w-2 rounded-full bg-success" />
-            </span>
-            All systems operational
-          </a>
         </div>
       </div>
     </footer>

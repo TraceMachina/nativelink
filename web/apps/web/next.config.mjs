@@ -1,11 +1,18 @@
+import createMDX from "@next/mdx";
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
   transpilePackages: ["@nativelink/ui"],
+  pageExtensions: ["ts", "tsx", "js", "jsx", "md", "mdx"],
   images: {
     remotePatterns: [
       { protocol: "https", hostname: "avatars.githubusercontent.com" },
       { protocol: "https", hostname: "github.com" },
+      {
+        protocol: "https",
+        hostname: "nativelink-cdn.s3.us-east-1.amazonaws.com",
+      },
     ],
   },
   // Marketing serves the apex; the docs app lives on docs.nativelink.com.
@@ -30,4 +37,6 @@ const nextConfig = {
   },
 };
 
-export default nextConfig;
+const withMDX = createMDX();
+
+export default withMDX(nextConfig);

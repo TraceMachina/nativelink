@@ -56,7 +56,7 @@ pub struct MnemonicPolicy {
     pub strategy_allowlist: ::prost::alloc::vec::Vec<StrategiesForMnemonic>,
 }
 /// Per-mnemonic allowlist settings.
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StrategiesForMnemonic {
     #[prost(string, optional, tag = "1")]
     pub mnemonic: ::core::option::Option<::prost::alloc::string::String>,

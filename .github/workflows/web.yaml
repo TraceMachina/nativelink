@@ -51,7 +51,7 @@ jobs:
         if: github.event_name == 'pull_request'
         working-directory: web
         run: |
-          nix develop --fallback --impure --command bash -c "
+          nix develop --impure --command bash -c "
             bun install && bun run build
           "
 

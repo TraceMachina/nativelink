@@ -14,25 +14,24 @@
 
 use core::borrow::Borrow;
 use core::pin::Pin;
-use std::sync::Arc;
 
 use nativelink_util::evicting_map;
-use nativelink_util::store_trait::{RemoveItemCallback, StoreKey};
+use nativelink_util::store_trait::{RemoveCallback, StoreKey};
 
-// Generic struct to hold a RemoveItemCallback ref for the purposes
+// Generic struct to hold a RemoveCallback ref for the purposes
 // of a RemoveStateCallback call
 #[derive(Debug)]
-pub struct RemoveItemCallbackHolder {
-    callback: Arc<dyn RemoveItemCallback>,
+pub struct RemoveCallbackHolder {
+    callback: RemoveCallback,
 }
 
-impl RemoveItemCallbackHolder {
-    pub fn new(callback: Arc<dyn RemoveItemCallback>) -> Self {
+impl RemoveCallbackHolder {
+    pub fn new(callback: RemoveCallback) -> Self {
         Self { callback }
     }
 }
 
-impl<'a, Q> evicting_map::RemoveItemCallback<Q> for RemoveItemCallbackHolder
+impl<'a, Q> evicting_map::RemoveItemCallback<Q> for RemoveCallbackHolder
 where
     Q: Borrow<StoreKey<'a>>,
 {

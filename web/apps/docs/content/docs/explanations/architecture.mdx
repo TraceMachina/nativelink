@@ -11,7 +11,7 @@ real clusters run them together.
 ## The four roles
 
 <Mermaid>{`sequenceDiagram
-    participant client as Client (Bazel / Buck2 / Reclient)
+    participant client as Client (Bazel / Buck2 / Siso)
     participant sched as Scheduler
     participant worker as Worker
     participant cas as CAS + AC
@@ -139,6 +139,28 @@ Three operational properties drove the design:
 
 The same simplicity at the protocol level is why NativeLink can
 sustain over a billion build requests a month on modest hardware.
+
+## FAQ
+
+<Accordions type="multiple">
+  <Accordion title="Which piece do I have to persist?" id="which-piece-do-i-have-to-persist">
+    Only the CAS — losing it loses every cached artifact. The AC is a
+    lookup table you can lose harmlessly: clients re-execute and refill
+    it. Schedulers and workers hold no durable state at all.
+  </Accordion>
+  <Accordion title="Can one binary really run all four?" id="can-one-binary-really-run-all-four">
+    Yes — the same executable serves any subset, chosen by config.
+    Single-developer setups run everything in one process; teams split
+    the services so each scales independently.
+  </Accordion>
+  <Accordion title="What's an instance name?" id="what-s-an-instance-name">
+    A namespace within one cluster: action hashes from different instance
+    names never collide, so one deployment can serve isolated teams.
+    Every client and server must agree on it — a mismatch looks like a
+    permanently empty cache. More vocabulary in the
+    [glossary](/reference/glossary).
+  </Accordion>
+</Accordions>
 
 ## What's next
 

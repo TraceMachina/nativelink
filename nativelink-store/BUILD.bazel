@@ -33,6 +33,7 @@ rust_library(
         "src/memory_store.rs",
         "src/mongo_store.rs",
         "src/noop_store.rs",
+        "src/oci_store.rs",
         "src/ontap_s3_existence_cache_store.rs",
         "src/ontap_s3_store.rs",
         "src/r2_store.rs",
@@ -66,8 +67,8 @@ rust_library(
         "@crates//:aws-smithy-runtime-api",
         "@crates//:aws-smithy-types",
         "@crates//:azure_core",
-        "@crates//:azure_storage",
-        "@crates//:azure_storage_blobs",
+        "@crates//:azure_identity",
+        "@crates//:azure_storage_blob",
         "@crates//:base64",
         "@crates//:blake3",
         "@crates//:byteorder",
@@ -108,13 +109,20 @@ rust_library(
         "@crates//:tracing",
         "@crates//:url",
         "@crates//:uuid",
+        "@crates//:webpki-roots",
         "@crates//:wincode",
-    ],
+    ] + select({
+        "@platforms//os:macos": ["@crates//:libc"],
+        "//conditions:default": [],
+    }),
 )
 
 rust_test_suite(
     name = "integration",
-    timeout = "short",
+    # "moderate" (300s) rather than "short" (60s): the mongo store test spawns
+    # a real mongod per test and downloads the MongoDB archive on a cold cache
+    # (always cold under Bazel's sandboxed $HOME), which straddled the 60s cap.
+    timeout = "moderate",
     srcs = [
         "tests/ac_utils_test.rs",
         "tests/azure_blob_store_test.rs",
@@ -127,9 +135,11 @@ rust_test_suite(
         "tests/filesystem_store_test.rs",
         "tests/gcs_client_test.rs",
         "tests/gcs_store_test.rs",
+        "tests/grpc_read_batching_test.rs",
         "tests/grpc_store_test.rs",
         "tests/memory_store_test.rs",
         "tests/mongo_store_test.rs",
+        "tests/oci_store_test.rs",
         "tests/ontap_s3_existence_cache_store_test.rs",
         "tests/ontap_s3_store_test.rs",
         "tests/r2_store_test.rs",
@@ -138,6 +148,7 @@ rust_test_suite(
         "tests/s3_store_test.rs",
         "tests/shard_store_test.rs",
         "tests/size_partitioning_store_test.rs",
+        "tests/store_manager_test.rs",
         "tests/verify_store_test.rs",
     ],
     compile_data = [
@@ -164,8 +175,7 @@ rust_test_suite(
         "@crates//:aws-smithy-runtime-api",
         "@crates//:aws-smithy-types",
         "@crates//:azure_core",
-        "@crates//:azure_storage",
-        "@crates//:azure_storage_blobs",
+        "@crates//:azure_storage_blob",
         "@crates//:bytes",
         "@crates//:dirs",
         "@crates//:flate2",
@@ -187,6 +197,7 @@ rust_test_suite(
         "@crates//:regex",
         "@crates//:reqwest",
         "@crates//:rlimit",
+        "@crates//:rustls",
         "@crates//:serde_json",
         "@crates//:serial_test",
         "@crates//:sha2",

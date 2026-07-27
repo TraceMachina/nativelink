@@ -31,7 +31,7 @@ use nativelink_util::fs;
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatusIndicator};
 use nativelink_util::metrics::{CACHE_METRICS, CACHE_TYPE, CacheMetricAttrs};
 use nativelink_util::store_trait::{
-    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, StoreOptimizations, UploadSizeInfo,
+    RemoveCallback, Store, StoreDriver, StoreKey, StoreLike, StoreOptimizations, UploadSizeInfo,
 };
 use opentelemetry::KeyValue;
 
@@ -275,10 +275,7 @@ impl StoreDriver for CacheMetricsStore {
         self.backend.clone().register_health(registry);
     }
 
-    fn register_remove_callback(
-        self: Arc<Self>,
-        callback: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, callback: RemoveCallback) -> Result<(), Error> {
         self.backend.register_remove_callback(callback)
     }
 }

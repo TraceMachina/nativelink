@@ -7,6 +7,9 @@ load(
     "rust_test_suite",
 )
 
+# Shared with the FastCDC conformance test in nativelink-service.
+exports_files(["tests/data/SekienAkashita.jpg"])
+
 rust_library(
     name = "nativelink-util",
     srcs = [
@@ -155,6 +158,7 @@ rust_test_suite(
         "@crates//:tokio-stream",
         "@crates//:tokio-util",
         "@crates//:tonic",
+        "@crates//:tonic-prost",
         "@crates//:tower",
         "@crates//:tracing",
         "@crates//:tracing-test",

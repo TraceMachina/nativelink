@@ -1,0 +1,153 @@
+---
+title: Oracle Cloud (OCI) Object Storage
+description: Back NativeLink's CAS and Action Cache with Oracle Cloud Infrastructure Object Storage via its S3 Compatibility API.
+---
+
+NativeLink can use [Oracle Cloud Infrastructure (OCI) Object
+Storage](https://www.oracle.com/cloud/storage/object-storage/) as the backing
+store for the CAS and Action Cache. It is configured through the
+`experimental_cloud_object_store` store with `provider: "oci"`, alongside the
+`aws`, `gcs`, `azure`, and `r2` providers.
+
+## How it works
+
+OCI Object Storage exposes an [S3 Compatibility
+API](https://docs.oracle.com/en-us/iaas/Content/Object/Tasks/s3compatibleapi.htm).
+The OCI store is a thin adapter that points NativeLink's S3 store
+at OCI's S3-compatible endpoint, so it reuses the same multipart upload, retry,
+and streaming code paths as the AWS backend. Two OCI-specific adjustments are
+applied automatically:
+
+- **Path-style addressing** - OCI requires `endpoint/bucket/key` rather than
+  virtual-hosted (`bucket.endpoint/key`) URLs.
+- **Checksums downgraded to "when required"** - the AWS SDK otherwise adds a
+  default trailing checksum that forces `Content-Encoding: aws-chunked`, which
+  OCI rejects with `501 NotImplemented: AWS chunked encoding not supported`.
+  Without this, small single-`PUT` objects (notably Action Cache entries) fail.
+
+You do not need to configure either of these; they are handled by the store.
+
+## Prerequisites
+
+1. **A bucket.** Create one in the OCI Console under *Storage → Buckets*, or
+   with `oci os bucket create`. Note the bucket's **region** (e.g.
+   `ap-mumbai-1`).
+2. **Your Object Storage namespace.** A tenancy-wide identifier shown under
+   *Tenancy details*, or via `oci os ns get`. The endpoint is derived as
+   `https://{namespace}.compat.objectstorage.{region}.oci.customer-oci.com`.
+3. **A Customer Secret Key** (see [Authentication](#authentication)).
+
+## Authentication
+
+OCI's S3 Compatibility API authenticates with **Customer Secret Keys** - a
+static access-key / secret-key pair, used as the S3 `access_key_id` and
+`secret_access_key`.
+
+Generate one in the Console under *Profile → Customer Secret Keys → Generate
+Secret Key*:
+
+- The **Secret Key** is shown **only once** at generation time - copy it
+  immediately.
+- The **Access Key** is listed permanently in the Customer Secret Keys table and
+  can be copied at any time.
+
+Grant the associated user read/write on the bucket with a least-privilege
+policy:
+
+```
+Allow group <your-group> to manage object-family in compartment <compartment> where target.bucket.name='<bucket>'
+```
+
+We recommend supplying the keys via environment variables and referencing them
+with shellexpand.
+
+<Callout type="warn">
+  The S3 Compatibility API supports **only** Customer Secret Keys. OCI-native
+  authentication - API signing keys, and instance/resource principals - is **not**
+  available through this store. If you run NativeLink on OCI compute and want
+  keyless workload-identity auth, that is not currently supported; you must use
+  static Customer Secret Keys and rotate them yourself.
+</Callout>
+
+## Configuration
+
+A minimal CAS + Action Cache setup (see also
+[`oci_backend.json5`](https://github.com/TraceMachina/nativelink/blob/main/nativelink-config/examples/oci_backend.json5)):
+
+```json5
+{
+  stores: [
+    {
+      name: "CAS_MAIN_STORE",
+      experimental_cloud_object_store: {
+        provider: "oci",
+        namespace: "storagenamespace",
+        region: "ap-mumbai-1",
+        bucket: "nativelink-cas",
+        access_key_id: "${OCI_ACCESS_KEY_ID}",
+        secret_access_key: "${OCI_SECRET_ACCESS_KEY}",
+        key_prefix: "cas/",
+        retry: { max_retries: 6, delay: 0.3, jitter: 0.5 },
+      },
+    },
+    {
+      name: "AC_MAIN_STORE",
+      experimental_cloud_object_store: {
+        provider: "oci",
+        namespace: "storagenamespace",
+        region: "ap-mumbai-1",
+        bucket: "nativelink-cas",
+        access_key_id: "${OCI_ACCESS_KEY_ID}",
+        secret_access_key: "${OCI_SECRET_ACCESS_KEY}",
+        key_prefix: "ac/",
+        retry: { max_retries: 6, delay: 0.3, jitter: 0.5 },
+      },
+    },
+  ],
+  // ...servers omitted; see oci_backend.json5
+}
+```
+
+In production, wrap the CAS store in `verify` (for integrity) and front it with
+a `fast_slow` filesystem/memory layer to cut round-trips to OCI, exactly as you
+would for the AWS backend.
+
+### Fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `namespace` | yes | Object Storage namespace; used to derive the endpoint. |
+| `region` | yes | OCI region id (e.g. `ap-mumbai-1`); also the SigV4 signing region. |
+| `bucket` | yes | Target bucket. |
+| `access_key_id` | no | Customer Secret Key access key. Falls back to the AWS default credential chain if unset. |
+| `secret_access_key` | no | Customer Secret Key secret. |
+| `key_prefix`, `retry`, ... | no | Shared `experimental_cloud_object_store` options. |
+
+## Operational notes
+
+- **Reap incomplete multipart uploads.** When a multipart upload fails
+  mid-flight the store issues `AbortMultipartUpload` to clean up (verified that
+  OCI honors both `ListMultipartUploads` and `AbortMultipartUpload`). A process
+  killed *before* it can abort still leaves orphaned parts, so add a bucket
+  lifecycle rule to abort incomplete multipart uploads after a few days as a
+  backstop.
+- **Status.** This backend lives under `experimental_cloud_object_store`. Its
+  core paths - read, write, existence checks, ranged reads, multipart, and
+  integrity - are verified against live OCI, including an end-to-end Bazel remote
+  cache round-trip, a 2 GiB multipart upload (~400 parts) with full byte
+  verification, multipart abort/cleanup, and 200-way concurrent load. It has not
+  been benchmarked at sustained production scale or duration.
+
+## FAQ
+
+<Accordions type="multiple">
+  <Accordion title="Can the CAS and Action Cache share one bucket?" id="can-the-cas-and-action-cache-share-one-bucket">
+    Yes — segment them with `key_prefix` (`cas/` and `ac/` in the example
+    above) rather than provisioning two buckets.
+  </Accordion>
+  <Accordion title="Which other providers does experimental_cloud_object_store support?" id="which-other-providers-does-experimental-cloud-object-store-support">
+    `aws`, `gcs`, `azure`, `ontap`, and `r2`, alongside `oci` — one store
+    type, six providers, sharing the same multipart, retry, and streaming
+    code paths.
+  </Accordion>
+</Accordions>

@@ -2,6 +2,7 @@ import { Callout } from "@/components/callout";
 import { ConfigVersionSwitcher } from "@/components/config-version-switcher";
 import { Mermaid } from "@/components/mermaid";
 import { Steps } from "@/components/steps";
+import { Accordion, Accordions } from "fumadocs-ui/components/accordion";
 import { Callout as FumadocsCallout } from "fumadocs-ui/components/callout";
 import { Tab, Tabs } from "fumadocs-ui/components/tabs";
 import defaultMdxComponents from "fumadocs-ui/mdx";
@@ -20,6 +21,8 @@ export function getMDXComponents(components?: MDXComponents): MDXComponents {
     Tabs,
     Tab,
     Mermaid,
+    Accordions,
+    Accordion,
     ...components,
   };
 }

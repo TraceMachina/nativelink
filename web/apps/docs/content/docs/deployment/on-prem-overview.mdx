@@ -107,7 +107,7 @@ contracts; truly global teams.
 Numbers we've seen in production. Yours will vary — these are the
 order-of-magnitude starting points:
 
-| Resource              | Per active developer / week     |
+| Resource              | Per active developer            |
 | --------------------- | ------------------------------- |
 | CAS storage (C++)     | 15-20 GB                        |
 | CAS storage (Go/Rust) | 5-10 GB                         |
@@ -117,6 +117,29 @@ order-of-magnitude starting points:
 
 When the cluster is healthy, the scheduler is the cheapest piece and
 CAS storage is the dominant cost. Plan accordingly.
+
+## FAQ
+
+<Accordions type="multiple">
+  <Accordion title="What's the only piece I have to persist?" id="what-s-the-only-piece-i-have-to-persist">
+    The CAS. Schedulers and workers are stateless, and the Action Cache
+    can be wiped harmlessly — losing it just forces re-execution until it
+    warms back up. That asymmetry drives backup policy: snapshot the CAS
+    backend, treat everything else as disposable.
+  </Accordion>
+  <Accordion title="How should workers scale?" id="how-should-workers-scale">
+    On scheduler queue depth, not CPU — workers spend most of their time
+    blocked on I/O, so CPU-based scaling reacts too late. The
+    [Kubernetes guide](/deployment/kubernetes) has a working HPA
+    targeting `nativelink_scheduler_queue_depth`.
+  </Accordion>
+  <Accordion title="What about backups?" id="what-about-backups">
+    Filesystem CAS: `rsync` or ZFS/Btrfs snapshots. S3-compatible:
+    versioning, lifecycle policies, and cross-region replication for DR.
+    Redis: ephemeral by design — loss is a cache miss. The procedure is
+    in [NativeLink on-prem](/getting-started/on-prem).
+  </Accordion>
+</Accordions>
 
 ## What's next
 

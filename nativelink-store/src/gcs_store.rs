@@ -30,7 +30,7 @@ use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthS
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::store_trait::{
-    RemoveItemCallback, StoreDriver, StoreKey, StoreOptimizations, UploadSizeInfo,
+    RemoveCallback, StoreDriver, StoreKey, StoreOptimizations, UploadSizeInfo,
 };
 use rand::Rng;
 use tokio::time::{sleep, timeout};
@@ -53,7 +53,7 @@ pub struct GcsStore<Client: GcsOperations, NowFn> {
     key_prefix: String,
     retrier: Retrier,
     #[metric(help = "The number of seconds to consider an object expired")]
-    consider_expired_after_s: i64,
+    consider_expired_after_s: u64,
     #[metric(help = "The number of bytes to buffer for retrying requests")]
     max_retry_buffer_size: usize,
     #[metric(help = "The size of chunks for resumable uploads")]
@@ -137,7 +137,7 @@ where
                 jitter_fn,
                 spec.common.retry.clone(),
             ),
-            consider_expired_after_s: i64::from(spec.common.consider_expired_after_s),
+            consider_expired_after_s: u64::from(spec.common.consider_expired_after_s),
             max_retry_buffer_size,
             max_chunk_size,
             max_concurrent_uploads: max_connections,
@@ -162,7 +162,7 @@ where
                         if consider_expired_after_s != 0
                             && let Some(update_time) = &metadata.update_time
                         {
-                            let now_s = now_fn().unix_timestamp() as i64;
+                            let now_s = now_fn().unix_timestamp();
                             if update_time.seconds + consider_expired_after_s <= now_s {
                                 return Some((RetryResult::Ok(None), object_path));
                             }
@@ -429,15 +429,24 @@ where
                         .await
                     {
                         Ok(stream) => stream,
-                        Err(e) if e.code == Code::NotFound => {
-                            return Some((RetryResult::Err(e), (offset, writer)));
-                        }
+                        // NotFound is intentionally not special-cased here:
+                        // the retrier doesn't retry NotFound by default, but
+                        // emitting `Retry` lets `retry.retry_on_errors` opt
+                        // reads into retrying read-after-write races where
+                        // an object is still finalizing or being repopulated.
                         Err(e) => return Some((RetryResult::Retry(e), (offset, writer))),
                     };
 
                     while let Some(next_chunk) = stream.next().await {
                         match next_chunk {
                             Ok(bytes) => {
+                                // HTTP/2 peers may emit zero-length DATA frames
+                                // (e.g. a bare END_STREAM frame), which surface
+                                // here as empty chunks. `send()` rejects empty
+                                // buffers by contract, so skip them.
+                                if bytes.is_empty() {
+                                    continue;
+                                }
                                 offset += bytes.len() as u64;
                                 if let Err(err) = writer.send(bytes).await {
                                     return Some((RetryResult::Err(err), (offset, writer)));
@@ -473,10 +482,7 @@ where
         registry.register_indicator(self);
     }
 
-    fn register_remove_callback(
-        self: Arc<Self>,
-        _callback: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, _callback: RemoveCallback) -> Result<(), Error> {
         // As we're backed by GCS, this store doesn't actually drop stuff
         // so we can actually just ignore this
         Ok(())

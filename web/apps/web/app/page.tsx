@@ -1,4 +1,3 @@
-import { AnimatedTerminal } from "@/components/animated-terminal";
 import { ArchitectureDiagram } from "@/components/architecture-diagram";
 import {
   CitrixLogo,
@@ -8,6 +7,7 @@ import {
   TeslaLogo,
   ThirdWaveLogo,
 } from "@/components/customer-logos";
+import { McpDemo } from "@/components/mcp-demo";
 import { Badge, Button, Eyebrow, HeroVisual, Marquee, Reveal, Section } from "@nativelink/ui";
 
 export const metadata = {
@@ -17,11 +17,10 @@ export const metadata = {
 const integrations = [
   "Bazel",
   "Buck2",
-  "Reclient",
+  "Siso",
   "Buildstream",
   "recc",
   "GN",
-  "Siso",
   "Pants",
   "Goma",
   "CMake",
@@ -87,7 +86,7 @@ const stats = [
   {
     value: "0",
     label: "build-system rewrites",
-    body: "required for Bazel, Buck2, Reclient, Goma, or CMake via recc or BuildStream.",
+    body: "required for Bazel, Buck2, Siso, Goma, or CMake via recc or BuildStream.",
   },
 ];
 
@@ -110,15 +109,15 @@ const securityFeature = {
 const benefits = [
   {
     title: "Written in Rust. Built for scale.",
-    body: "Memory-safe, race-free, and no garbage collector to stall your hot path. Over a billion build requests a month, in production.",
+    body: "Memory-safe, race-free, and no garbage collector to stall your hot path. Over ten billion build requests a month, in production.",
   },
   {
     title: "Ten minutes to your first cache hit.",
-    body: "One Docker command. Drops into your existing Bazel, Buck2, Reclient, or CMake setup with zero rewrites.",
+    body: "One Docker command. Drops into your existing Bazel, Buck2, Siso, or CMake setup with zero rewrites.",
   },
   {
     title: "Works with what you've got.",
-    body: "C++, Rust, Python, Go, and more. Bazel, Buck2, Reclient, CMake. AWS, GCP, Azure, or your own hardware. No lock-in.",
+    body: "C++, Rust, Python, Go, and more. Bazel, Buck2, Siso, CMake. AWS, GCP, Azure, or your own hardware. No lock-in.",
   },
 ];
 
@@ -145,7 +144,7 @@ const industries = [
   },
   {
     title: "Browsers & Web Platforms",
-    body: "Chromium and its descendants are some of the largest C++ codebases on the open web. NativeLink speaks reclient natively.",
+    body: "Chromium and its descendants are some of the largest C++ codebases on the open web. NativeLink speaks Siso natively.",
   },
 ];
 
@@ -226,25 +225,27 @@ export default function HomePage() {
         </div>
       </section>
 
-      <section className="relative overflow-hidden border-b border-border/60 bg-[#0f0f23] px-6 py-24">
-        <div className="absolute inset-0 bg-gradient-to-br from-[#1a1a2e] via-[#16213e] to-[#0f0f23]" />
-        <div className="relative z-10 mx-auto grid max-w-[1200px] gap-12 lg:grid-cols-[1.05fr_0.95fr] lg:items-center">
-          <Reveal className="min-w-0">
-            <AnimatedTerminal />
-          </Reveal>
-          <Reveal delay={0.1} className="text-white">
-            <Eyebrow className="mb-4 text-gray-300">Quick start</Eyebrow>
+      <Section width="default" className="border-b border-border/60 py-28">
+        <Reveal>
+          <div className="mx-auto mb-12 max-w-[760px] text-center">
+            <Eyebrow className="mb-4">Built for AI-assisted development</Eyebrow>
             <h2 className="text-balance text-4xl font-semibold leading-[1.05] tracking-[-0.03em] md:text-[56px]">
-              Built for AI-assisted development.
+              Wire NativeLink into your AI coding agent.
             </h2>
-            <p className="mt-5 text-base leading-relaxed text-gray-300 md:text-lg">
-              Start in 10 minutes with Docker. Develop with Claude Code, Cursor or Codex skills that
-              guide storage changes, config updates, debugging, and multi-worker test clusters, the
-              same workflows NativeLink engineers use in production.
+            <p className="mx-auto mt-6 max-w-[640px] text-base leading-relaxed text-muted-foreground md:text-lg">
+              The NativeLink MCP server gives Claude Code, Cursor, and Codex five real tools, so
+              your agent can configure remote caching, pull docs, and tune builds without leaving
+              the editor.
             </p>
-          </Reveal>
-        </div>
-      </section>
+          </div>
+        </Reveal>
+
+        <Reveal delay={0.08}>
+          <div className="mx-auto max-w-[820px]">
+            <McpDemo />
+          </div>
+        </Reveal>
+      </Section>
 
       <Section width="default" className="border-b border-border/60 py-20">
         <Reveal>

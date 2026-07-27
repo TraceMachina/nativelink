@@ -15,10 +15,11 @@
 // limitations under the License.
 
 use std::sync::LazyLock;
+use std::time::SystemTime;
 
 use opentelemetry::{InstrumentationScope, KeyValue, Value, global, metrics};
 
-use crate::action_messages::ActionStage;
+use crate::action_messages::{ActionResult, ActionStage};
 
 // Metric attribute keys for cache operations.
 pub const CACHE_TYPE: &str = "cache.type";
@@ -566,39 +567,6 @@ pub static EXECUTION_METRICS: LazyLock<ExecutionMetrics> = LazyLock::new(|| {
             ])
             .build(),
 
-        execution_cpu_time: meter
-            .f64_histogram("execution.cpu.time")
-            .with_description("CPU time consumed by action execution in seconds")
-            .with_unit("s")
-            .with_boundaries(vec![
-                0.01,   // 10ms
-                0.1,    // 100ms
-                1.0,    // 1s
-                10.0,   // 10s
-                60.0,   // 1 minute
-                300.0,  // 5 minutes
-                600.0,  // 10 minutes
-                1800.0, // 30 minutes
-                3600.0, // 1 hour
-            ])
-            .build(),
-
-        execution_memory_usage: meter
-            .u64_histogram("execution.memory.usage")
-            .with_description("Peak memory usage during execution in bytes")
-            .with_unit("By")
-            .with_boundaries(vec![
-                1_048_576.0,      // 1MB
-                10_485_760.0,     // 10MB
-                104_857_600.0,    // 100MB
-                524_288_000.0,    // 500MB
-                1_073_741_824.0,  // 1GB
-                5_368_709_120.0,  // 5GB
-                10_737_418_240.0, // 10GB
-                53_687_091_200.0, // 50GB
-            ])
-            .build(),
-
         execution_retry_count: meter
             .u64_counter("execution.retry.count")
             .with_description("Number of execution retries")
@@ -624,10 +592,6 @@ pub struct ExecutionMetrics {
     pub execution_stage_transitions: metrics::Counter<u64>,
     /// Histogram of output sizes in bytes
     pub execution_output_size: metrics::Histogram<u64>,
-    /// Histogram of CPU time in seconds
-    pub execution_cpu_time: metrics::Histogram<f64>,
-    /// Histogram of peak memory usage in bytes
-    pub execution_memory_usage: metrics::Histogram<u64>,
     /// Counter for execution retries
     pub execution_retry_count: metrics::Counter<u64>,
 }
@@ -650,4 +614,79 @@ pub fn make_execution_attributes(
     }
 
     attrs
+}
+
+/// Records the histogram metrics derivable from a completed action's result.
+pub fn record_completed_execution_metrics(
+    action_result: &ActionResult,
+    instance_name: &str,
+    worker_id: Option<&str>,
+    priority: Option<i32>,
+) {
+    let m = &*EXECUTION_METRICS;
+    let md = &action_result.execution_metadata;
+    let base = make_execution_attributes(instance_name, worker_id, priority);
+
+    let record_secs =
+        |hist: &metrics::Histogram<f64>, start: SystemTime, end: SystemTime, attrs: &[KeyValue]| {
+            if start > SystemTime::UNIX_EPOCH
+                && let Ok(d) = end.duration_since(start)
+            {
+                hist.record(d.as_secs_f64(), attrs);
+            }
+        };
+
+    // Queue wait (queued -> worker picked it up) and end-to-end duration.
+    record_secs(
+        &m.execution_queue_time,
+        md.queued_timestamp,
+        md.worker_start_timestamp,
+        &base,
+    );
+    record_secs(
+        &m.execution_total_duration,
+        md.queued_timestamp,
+        md.worker_completed_timestamp,
+        &base,
+    );
+
+    // Per-phase stage durations, labeled by phase on the stage attribute.
+    for (phase, start, end) in [
+        (
+            "input_fetch",
+            md.input_fetch_start_timestamp,
+            md.input_fetch_completed_timestamp,
+        ),
+        (
+            "execution",
+            md.execution_start_timestamp,
+            md.execution_completed_timestamp,
+        ),
+        (
+            "output_upload",
+            md.output_upload_start_timestamp,
+            md.output_upload_completed_timestamp,
+        ),
+    ] {
+        let mut attrs = base.clone();
+        attrs.push(KeyValue::new(EXECUTION_STAGE, phase));
+        record_secs(&m.execution_stage_duration, start, end, &attrs);
+    }
+
+    // Total bytes produced: output files plus stdout/stderr.
+    m.execution_output_size
+        .record(execution_output_bytes(action_result), &base);
+}
+
+/// Total output bytes produced by an action: the output file digests plus the
+/// stdout and stderr digests.
+#[must_use]
+pub fn execution_output_bytes(action_result: &ActionResult) -> u64 {
+    action_result
+        .output_files
+        .iter()
+        .map(|f| f.digest.size_bytes())
+        .sum::<u64>()
+        + action_result.stdout_digest.size_bytes()
+        + action_result.stderr_digest.size_bytes()
 }

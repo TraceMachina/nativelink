@@ -66,7 +66,7 @@ each independently.
   </li>
   <li>
     **Plan capacity.** Heuristics from production clusters:
-    - CAS storage: 5–20 GB per active developer per week, depending on
+    - CAS storage: 5–20 GB per active developer, depending on
       language. C++ skews high; Go skews low.
     - Worker CPU: 1 vCPU per concurrent action. Headroom matters more
       than peak.
@@ -92,7 +92,7 @@ specific version your config references — `latest` works but pinning
 avoids surprises.
 
 ```bash
-docker pull ghcr.io/tracemachina/nativelink:v1.4.0
+docker pull ghcr.io/tracemachina/nativelink:v1.6.1
 ```
 
 The [`/pkgs/container/nativelink`](https://github.com/TraceMachina/nativelink/pkgs/container/nativelink)
@@ -112,6 +112,36 @@ clients. Snapshot strategy depends on the backend:
 
 The Action Cache can be wiped without data loss; you'll re-execute
 everything until it warms back up.
+
+## FAQ
+
+<Accordions type="multiple">
+  <Accordion title="Is self-hosting free?" id="is-self-hosting-free">
+    Yes, for permitted use. Most of the monorepo is
+    `FSL-1.1-Apache-2.0` — internal use, modification, and redistribution
+    for non-competing purposes are allowed. Metrics and remote persistent
+    workers are Business Source License modules: fine for an individual
+    developer's cache, but shared, production, or commercial use of those
+    modules needs NativeLink Cloud, Enterprise, or an intentionally
+    inexpensive commercial license. Meaningful contributors may be
+    eligible for waivers — contact the maintainers before relying on one.
+    The practical summary is on the
+    [license page](https://nativelink.com/license).
+  </Accordion>
+  <Accordion title="What am I actually paying for when I self-host?" id="what-am-i-actually-paying-for-when-i-self-host">
+    Compute for the control plane (a few small VMs), CAS storage — the
+    dominant cost in a healthy cluster — worker compute, and the engineer
+    hours to run it all. For most teams under ~30 engineers, self-hosting
+    is cheaper; past that, [Cloud](https://nativelink.com/pricing)
+    usually wins on engineer time alone.
+  </Accordion>
+  <Accordion title="Does the free version limit cache or team size?" id="does-the-free-version-limit-cache-or-team-size">
+    No. Nothing artificially limits cache size, action count,
+    worker count, or team size — the self-hosted build is the same
+    codebase run in production, subject to each module's license, minus
+    the operational tooling and support the paid tiers add.
+  </Accordion>
+</Accordions>
 
 ## What's next
 

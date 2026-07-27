@@ -281,6 +281,63 @@ If `access_key_id` and `secret_access_key` are omitted, NativeLink falls
 back to the standard AWS credential chain (`AWS_*` env vars,
 `~/.aws/credentials`, IMDS).
 
+### OCI Store
+
+[Oracle Cloud Infrastructure Object Storage](https://docs.oracle.com/en-us/iaas/Content/Object/Tasks/s3compatibleapi.htm)
+exposes an S3-compatible API, so NativeLink can use it as a CAS/AC backend. The
+path-style endpoint is derived from your Object Storage `namespace` and
+`region` as
+`https://{namespace}.compat.objectstorage.{region}.oci.customer-oci.com`.
+Authenticate with a Customer Secret Key (an Access Key/Secret Key pair created
+under **User Settings → Customer secret keys** in the OCI console); the secret
+cannot be retrieved after generation, so read it from an env var via
+`shellexpand`.
+
+```js
+{
+  "stores": [
+    {
+      "name": "CAS_MAIN_STORE",
+      "experimental_cloud_object_store": {
+        "provider": "oci",
+        "namespace": "your-object-storage-namespace",
+        "region": "us-phoenix-1",
+        "bucket": "nativelink-cas",
+        "access_key_id": "${OCI_ACCESS_KEY_ID}",
+        "secret_access_key": "${OCI_SECRET_ACCESS_KEY}",
+        "key_prefix": "cas/",
+        "retry": {
+          "max_retries": 6,
+          "delay": 0.3,
+          "jitter": 0.5,
+        }
+      }
+    },
+    {
+      "name": "AC_MAIN_STORE",
+      "experimental_cloud_object_store": {
+        "provider": "oci",
+        "namespace": "your-object-storage-namespace",
+        "region": "us-phoenix-1",
+        "bucket": "nativelink-cas",
+        "access_key_id": "${OCI_ACCESS_KEY_ID}",
+        "secret_access_key": "${OCI_SECRET_ACCESS_KEY}",
+        "key_prefix": "ac/",
+      }
+    }
+  ],
+  // Place rest of configuration here ...
+}
+```
+
+A complete runnable example with CAS and AC is at
+[`nativelink-config/examples/oci_backend.json5`](https://github.com/TraceMachina/nativelink/blob/main/nativelink-config/examples/oci_backend.json5).
+The `region` is used both to build the endpoint host and as the AWS `SigV4`
+signing region; if your tooling cannot set an OCI region identifier, OCI also
+accepts `us-east-1` to target your tenancy home region. As with the other
+S3-compatible stores, omitting `access_key_id` and `secret_access_key` falls
+back to the standard AWS credential chain (`AWS_*` env vars).
+
 ### Fast Slow Store
 
 This store will first attempt to read from the `fast` store when reading and if

@@ -57,3 +57,70 @@
   background-size: 22px 22px;
   background-position: 0 0;
 }
+
+/* Readable long-form article styling. Uses :where() so specificity stays 0 —
+   pages that set explicit utility classes per element keep overriding it. */
+@layer components {
+  :where(.prose-styles) {
+    color: var(--color-foreground);
+    line-height: 1.7;
+    font-size: 1rem;
+  }
+  :where(.prose-styles) h1 {
+    font-size: 2.25rem;
+    font-weight: 600;
+    letter-spacing: -0.025em;
+    margin-block: 0 1.5rem;
+  }
+  :where(.prose-styles) h2 {
+    font-size: 1.6rem;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    margin-block: 2.5rem 1rem;
+  }
+  :where(.prose-styles) h3,
+  :where(.prose-styles) h4 {
+    font-size: 1.25rem;
+    font-weight: 600;
+    margin-block: 2rem 0.75rem;
+  }
+  :where(.prose-styles) p {
+    color: rgb(var(--nl-color-muted-foreground));
+    margin-block: 1.1rem;
+  }
+  :where(.prose-styles) ul,
+  :where(.prose-styles) ol {
+    color: rgb(var(--nl-color-muted-foreground));
+    margin-block: 1.1rem;
+    padding-left: 1.5rem;
+  }
+  :where(.prose-styles) ul {
+    list-style: disc;
+  }
+  :where(.prose-styles) ol {
+    list-style: decimal;
+  }
+  :where(.prose-styles) li {
+    margin-block: 0.4rem;
+  }
+  :where(.prose-styles) a {
+    color: var(--color-brand);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  :where(.prose-styles) strong {
+    color: var(--color-foreground);
+    font-weight: 600;
+  }
+  :where(.prose-styles) img {
+    border-radius: 0.75rem;
+    margin-block: 2rem;
+  }
+  :where(.prose-styles) blockquote {
+    border-left: 3px solid rgb(var(--nl-color-brand) / 0.5);
+    padding-left: 1.25rem;
+    font-style: italic;
+    margin-block: 1.5rem;
+    color: var(--color-foreground);
+  }
+}

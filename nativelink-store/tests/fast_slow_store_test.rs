@@ -33,7 +33,7 @@ use nativelink_util::buf_channel::{
 use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::store_trait::{
-    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+    RemoveCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };
 use pretty_assertions::assert_eq;
 use rand::rngs::SmallRng;
@@ -323,7 +323,7 @@ async fn drop_on_eof_completes_store_futures() -> Result<(), Error> {
 
         fn register_remove_callback(
             self: Arc<Self>,
-            _callback: Arc<dyn RemoveItemCallback>,
+            _callback: RemoveCallback,
         ) -> Result<(), Error> {
             Ok(())
         }
@@ -654,7 +654,7 @@ fn make_stores_with_lazy_slow() -> (Store, Store, Store) {
 
         fn register_remove_callback(
             self: Arc<Self>,
-            _callback: Arc<dyn RemoveItemCallback>,
+            _callback: RemoveCallback,
         ) -> Result<(), Error> {
             Ok(())
         }
@@ -794,10 +794,7 @@ impl StoreDriver for InstrumentedSlowStore {
         self
     }
 
-    fn register_remove_callback(
-        self: Arc<Self>,
-        _callback: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, _callback: RemoveCallback) -> Result<(), Error> {
         Ok(())
     }
 }
@@ -1050,7 +1047,7 @@ async fn has_sees_in_flight_slow_writes() -> Result<(), Error> {
 
         fn register_remove_callback(
             self: Arc<Self>,
-            _callback: Arc<dyn RemoveItemCallback>,
+            _callback: RemoveCallback,
         ) -> Result<(), Error> {
             Ok(())
         }
@@ -1210,7 +1207,7 @@ async fn has_does_not_consult_fast_store_when_slow_store_hits() -> Result<(), Er
 
         fn register_remove_callback(
             self: Arc<Self>,
-            _callback: Arc<dyn RemoveItemCallback>,
+            _callback: RemoveCallback,
         ) -> Result<(), Error> {
             Ok(())
         }
@@ -1316,10 +1313,7 @@ impl StoreDriver for GatedSlowStore2 {
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
     }
-    fn register_remove_callback(
-        self: Arc<Self>,
-        _callback: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, _callback: RemoveCallback) -> Result<(), Error> {
         Ok(())
     }
 }
@@ -1476,10 +1470,7 @@ impl StoreDriver for MapBackedSlow {
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
     }
-    fn register_remove_callback(
-        self: Arc<Self>,
-        _cb: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, _cb: RemoveCallback) -> Result<(), Error> {
         Ok(())
     }
 }
@@ -1658,10 +1649,7 @@ impl StoreDriver for CountingSlowStore {
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
     }
-    fn register_remove_callback(
-        self: Arc<Self>,
-        _callback: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, _callback: RemoveCallback) -> Result<(), Error> {
         Ok(())
     }
 }
@@ -1922,10 +1910,7 @@ impl StoreDriver for StaleFastStore {
         self
     }
 
-    fn register_remove_callback(
-        self: Arc<Self>,
-        _callback: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, _callback: RemoveCallback) -> Result<(), Error> {
         Ok(())
     }
 }

@@ -113,6 +113,30 @@ Start with cache-only. Move to full RE when the team feels the local
 build CPU bottleneck. Move to hybrid only when you have telemetry
 showing where time goes.
 
+## FAQ
+
+<Accordions type="multiple">
+  <Accordion title="What exactly ships to a worker?" id="what-exactly-ships-to-a-worker">
+    The action: input digests, the command line, and the platform
+    requirements. The worker fetches inputs from the CAS by hash, runs
+    the command, and uploads outputs the same way — nothing else crosses
+    the wire.
+  </Accordion>
+  <Accordion title="Why move work off developer machines at all?" id="why-move-work-off-developer-machines-at-all">
+    Throughput (a fleet has more cores than any laptop), hermeticity (one
+    job, one environment, no stale state), and cost — build hardware goes
+    from the 5-10% utilization of idle CI runners to 60-80% on a shared
+    fleet.
+  </Accordion>
+  <Accordion title="How do I provide the toolchain workers run?" id="how-do-i-provide-the-toolchain-workers-run">
+    Three levels of rigor: a Nix flake (fully hermetic — the
+    [LRE](/explanations/lre) path), Bazel's `rules_cc` / `rules_rust`
+    pinned in `MODULE.bazel` (mostly hermetic), or whatever's on `$PATH`
+    (quick, no guarantees). Either way, the scheduler routes actions to
+    matching workers via `platform_properties`.
+  </Accordion>
+</Accordions>
+
 ## What's next
 
 - [Nix templates](/rbe/nix-templates) — runnable testbeds for

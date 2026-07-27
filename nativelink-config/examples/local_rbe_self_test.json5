@@ -1,0 +1,172 @@
+// A complete NativeLink cluster — CAS, AC, scheduler, and one worker — in a
+// single process on localhost. Everything a Bazel client needs (cache AND
+// execution) is on one port; nothing here talks to any external service.
+//
+// Use this to prove your Bazel setup can do remote caching and remote
+// execution before you ever point it at a real cluster. See
+// docs/rbe/local-remote-execution for the full walkthrough.
+//
+// Run it:
+//   nativelink ./nativelink-config/examples/local_rbe_self_test.json5
+//
+// Then, from a Bazel workspace:
+//   bazel test --remote_cache=grpc://127.0.0.1:50051 \
+//               --remote_executor=grpc://127.0.0.1:50051 \
+//               --remote_default_exec_properties=cpu_count=1 \
+//               //some:target
+{
+  stores: [
+    {
+      name: "CAS_MAIN_STORE",
+      filesystem: {
+        content_path: "/tmp/nativelink-local-rbe-test/data/content_path-cas",
+        temp_path: "/tmp/nativelink-local-rbe-test/data/tmp_path-cas",
+        eviction_policy: {
+          max_bytes: 2000000000,
+        },
+      },
+    },
+    {
+      name: "AC_MAIN_STORE",
+      filesystem: {
+        content_path: "/tmp/nativelink-local-rbe-test/data/content_path-ac",
+        temp_path: "/tmp/nativelink-local-rbe-test/data/tmp_path-ac",
+        eviction_policy: {
+          max_bytes: 200000000,
+        },
+      },
+    },
+    {
+      name: "WORKER_FAST_SLOW_STORE",
+      fast_slow: {
+        // "fast" must be a filesystem store — the worker hardlinks out of it
+        // to build each action's sandbox.
+        fast: {
+          filesystem: {
+            content_path: "/tmp/nativelink-local-rbe-test/data/content_path-worker",
+            temp_path: "/tmp/nativelink-local-rbe-test/data/tmp_path-worker",
+            eviction_policy: {
+              max_bytes: 2000000000,
+            },
+          },
+        },
+
+        // The worker and the client-facing CAS share one store instance, so
+        // whatever the worker produces is immediately visible to Bazel.
+        slow: {
+          ref_store: {
+            name: "CAS_MAIN_STORE",
+          },
+        },
+      },
+    },
+  ],
+  schedulers: [
+    {
+      name: "MAIN_SCHEDULER",
+      simple: {
+        supported_platform_properties: {
+          cpu_count: "minimum",
+          OSFamily: "priority",
+          "container-image": "priority",
+        },
+      },
+    },
+  ],
+  workers: [
+    {
+      local: {
+        worker_api_endpoint: {
+          uri: "grpc://127.0.0.1:50061",
+        },
+        cas_fast_slow_store: "WORKER_FAST_SLOW_STORE",
+        upload_action_result: {
+          ac_store: "AC_MAIN_STORE",
+        },
+        work_directory: "/tmp/nativelink-local-rbe-test/work",
+        platform_properties: {
+          cpu_count: {
+            values: [
+              "1",
+            ],
+          },
+          OSFamily: {
+            values: [
+              "",
+            ],
+          },
+          "container-image": {
+            values: [
+              "",
+            ],
+          },
+        },
+
+        // use_namespaces / use_mount_namespace default to false, which is
+        // required here — they're Linux-only and this config is meant to
+        // also run on macOS.
+      },
+    },
+  ],
+  servers: [
+    {
+      // Everything a Bazel client needs — cache AND execution — on one
+      // local endpoint. No separate/remote cache service involved.
+      name: "local",
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50051",
+        },
+      },
+      services: {
+        cas: [
+          {
+            cas_store: "CAS_MAIN_STORE",
+          },
+        ],
+        ac: [
+          {
+            ac_store: "AC_MAIN_STORE",
+          },
+        ],
+        bytestream: [
+          {
+            cas_store: "CAS_MAIN_STORE",
+          },
+        ],
+        execution: [
+          {
+            cas_store: "CAS_MAIN_STORE",
+            scheduler: "MAIN_SCHEDULER",
+          },
+        ],
+        capabilities: [
+          {
+            remote_execution: {
+              scheduler: "MAIN_SCHEDULER",
+            },
+          },
+        ],
+      },
+    },
+    {
+      // Workers talk to this port, clients never do — keep it off the
+      // client-facing listener (see nativelink-config/examples/README.md).
+      name: "worker_api",
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50061",
+        },
+      },
+      services: {
+        worker_api: {
+          scheduler: "MAIN_SCHEDULER",
+        },
+        health: {},
+      },
+    },
+  ],
+  global: {
+    max_open_files: 24576,
+  },
+}

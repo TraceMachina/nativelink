@@ -118,7 +118,7 @@ pub async fn init_tracing() -> Result<(), nativelink_error::Error> {
 
     // We currently use a UUIDv4 for "service.instance.id" as per:
     // https://opentelemetry.io/docs/specs/semconv/attributes-registry/service/
-    // This might change as we get a better understanding of its usecases in the
+    // This might change as we get a better understanding of its use cases in the
     // context of broader observability infrastructure.
     let resource = Resource::builder()
         .with_service_name(NATIVELINK_SERVICE_NAME)
@@ -246,8 +246,7 @@ pub async fn maybe_load_balanced_channel() -> Option<LoadBalancedChannel> {
     }
 }
 /// This is the header that bazel sends when using the `--remote_header` flag.
-/// TODO(palfrey): There are various other headers that bazel supports.
-///                    Optimize their usage.
+/// TODO(palfrey): Bazel supports other headers, and we should optimize their usage.
 const BAZEL_REQUESTMETADATA_HEADER: &str = "build.bazel.remote.execution.v2.requestmetadata-bin";
 
 use opentelemetry::baggage::BaggageExt;
@@ -297,7 +296,7 @@ where
 
     fn call(&mut self, req: hyper::http::Request<ReqBody>) -> Self::Future {
         // We must take the current `inner` and not the clone.
-        // See: https://docs.rs/tower/latest/tower/trait.Service.html#be-careful-when-cloning-inner-services
+        // See: <https://docs.rs/tower/latest/tower/trait.Service.html#be-careful-when-cloning-inner-services>
         let clone = self.inner.clone();
         let mut inner = core::mem::replace(&mut self.inner, clone);
 

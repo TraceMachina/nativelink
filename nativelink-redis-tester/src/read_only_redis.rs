@@ -22,6 +22,7 @@ use redis::Value;
 use redis_protocol::resp2::decode::decode;
 use redis_protocol::resp2::types::OwnedFrame;
 use tokio::net::TcpListener;
+use tokio::sync::oneshot::{self, Sender};
 use tracing::info;
 
 use crate::fake_redis::{arg_as_string, fake_redis_internal};
@@ -47,7 +48,7 @@ impl ReadOnlyRedis {
         }
     }
 
-    async fn dynamic_fake_redis(self, listener: TcpListener) {
+    async fn dynamic_fake_redis(self, listener: TcpListener, listener_ready_tx: Sender<()>) {
         let readonly_err_str = "READONLY You can't write against a read only replica.";
         let readonly_err = format!("!{}\r\n{readonly_err_str}\r\n", readonly_err_str.len());
 
@@ -149,7 +150,7 @@ impl ReadOnlyRedis {
             }
             output
         };
-        fake_redis_internal(listener, vec![inner]).await;
+        fake_redis_internal(listener, listener_ready_tx, vec![inner]).await;
     }
 
     pub async fn run(self) -> u16 {
@@ -157,9 +158,15 @@ impl ReadOnlyRedis {
         let port = listener.local_addr().unwrap().port();
         info!("Using port {port}");
 
+        let (listener_ready_tx, listener_ready_rx) = oneshot::channel::<()>();
+
         background_spawn!("listener", async move {
-            self.dynamic_fake_redis(listener).await;
+            self.dynamic_fake_redis(listener, listener_ready_tx).await;
         });
+
+        listener_ready_rx
+            .await
+            .expect("Expected successful listener boot");
 
         port
     }

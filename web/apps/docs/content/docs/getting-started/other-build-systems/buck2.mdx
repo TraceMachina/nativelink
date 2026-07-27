@@ -91,3 +91,19 @@ download paths are working.
   sets `remote_enabled = True`.
 - **Instance-name errors.** Make sure Buck2's `instance_name` matches the
   NativeLink config. The integration test uses `main`.
+
+## FAQ
+
+<Accordions type="multiple">
+  <Accordion title="Why do all three addresses point at the same listener?" id="why-do-all-three-addresses-point-at-the-same-listener">
+    `engine_address`, `action_cache_address`, and `cas_address` are
+    separate settings because Buck2 lets you split those services across
+    hosts. NativeLink serves them all from one listener, so all three
+    point at the same `host:port`.
+  </Accordion>
+  <Accordion title="Does NativeLink support Buck2 remote execution, or only caching?" id="does-nativelink-support-buck2-remote-execution-or-only-caching">
+    Both. Execution needs an execution platform registered with
+    `remote_enabled = True` (above) plus a NativeLink scheduler and
+    worker — the integration test config runs one of each.
+  </Accordion>
+</Accordions>
