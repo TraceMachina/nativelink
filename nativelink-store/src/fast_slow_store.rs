@@ -274,7 +274,7 @@ impl FastSlowStore {
                         if let StoreKey::Digest(d) = key.borrow() {
                             err.with_context(ErrorContext::MissingDigest {
                                 hash: d.packed_hash().to_string(),
-                                size: d.size_bytes() as i64,
+                                size: d.size_bytes().try_into().unwrap_or(i64::MAX),
                             })
                         } else {
                             err

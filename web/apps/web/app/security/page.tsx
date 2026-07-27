@@ -1,14 +1,40 @@
 import { Badge, Button, Eyebrow, Reveal, Section } from "@nativelink/ui";
 
+const SCORECARD_URL =
+  "https://securityscorecards.dev/viewer/?uri=github.com/TraceMachina/nativelink";
+const SCORECARD_API_URL =
+  "https://api.securityscorecards.dev/projects/github.com/TraceMachina/nativelink";
+
 export const metadata = {
   title: "Security",
   description:
     "NativeLink's security program: organizational, cloud, access, and vendor controls, aligned to SOC 2.",
 };
 
+async function getScorecardScore(): Promise<number | null> {
+  try {
+    const response = await fetch(SCORECARD_API_URL, {
+      headers: { Accept: "application/json" },
+      next: { revalidate: 60 * 60 * 6 },
+    });
+
+    if (!response.ok) return null;
+
+    const data = (await response.json()) as { score?: unknown };
+    return typeof data.score === "number" &&
+      Number.isFinite(data.score) &&
+      data.score >= 0 &&
+      data.score <= 10
+      ? data.score
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 const certifications = [
   {
-    name: "SOC 2 Type II",
+    name: "SOC 2",
     status: "Complete",
     statusTone: "success" as const,
     body: "Independently audited against the AICPA Trust Services Criteria. Report available under NDA.",
@@ -159,7 +185,9 @@ const groups: { eyebrow: string; title: string; controls: Control[] }[] = [
   },
 ];
 
-export default function SecurityPage() {
+export default async function SecurityPage() {
+  const scorecardScore = await getScorecardScore();
+
   return (
     <>
       {/* HERO */}
@@ -194,8 +222,72 @@ export default function SecurityPage() {
         </Section>
       </section>
 
-      {/* CERTIFICATIONS */}
+      {/* OPENSSF SCORECARD */}
       <Section width="default" className="border-y border-border/60 bg-surface-elevated/40 py-24">
+        <Reveal>
+          <div className="mb-12 max-w-[760px]">
+            <Eyebrow className="mb-4">OpenSSF framework</Eyebrow>
+            <h2 className="text-balance text-4xl font-semibold leading-[1.05] tracking-[-0.03em] md:text-5xl">
+              Open source security, measured in public.
+            </h2>
+          </div>
+        </Reveal>
+        <div className="grid gap-5 lg:grid-cols-[0.8fr_1.2fr]">
+          <Reveal>
+            <a
+              href={SCORECARD_URL}
+              target="_blank"
+              rel="noreferrer"
+              className="group flex h-full flex-col justify-between rounded-2xl border border-border bg-surface p-7 transition-colors hover:border-brand/50"
+              aria-label="View NativeLink's OpenSSF Scorecard"
+            >
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-sm font-medium text-muted-foreground">
+                    Current OpenSSF Scorecard
+                  </p>
+                  <p className="mt-3 text-6xl font-semibold tracking-[-0.05em] text-foreground md:text-7xl">
+                    {scorecardScore === null ? "Live" : scorecardScore.toFixed(1)}
+                    {scorecardScore !== null && (
+                      <span className="ml-1 text-2xl tracking-normal text-muted-foreground">
+                        /10
+                      </span>
+                    )}
+                  </p>
+                </div>
+                <Badge variant="success">Strong</Badge>
+              </div>
+              <p className="mt-8 text-sm font-medium text-brand underline-offset-4 group-hover:underline">
+                View our public scorecard ↗
+              </p>
+            </a>
+          </Reveal>
+          <Reveal delay={0.05}>
+            <div className="h-full rounded-2xl border border-border bg-surface p-7">
+              <h3 className="text-xl font-semibold tracking-tight text-foreground">
+                OpenSSF Scorecard
+              </h3>
+              <p className="mt-3 text-[15px] leading-relaxed text-muted-foreground">
+                <a
+                  href={SCORECARD_URL}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="font-medium text-brand underline-offset-4 hover:underline"
+                >
+                  OpenSSF Scorecard
+                </a>{" "}
+                automatically checks open source projects for software supply chain risks and
+                publishes a score out of 10. We maintain our strong result through code review, CI,
+                automated security testing, pinned dependencies, least-privilege workflows, and
+                signed releases.
+              </p>
+            </div>
+          </Reveal>
+        </div>
+      </Section>
+
+      {/* CERTIFICATIONS */}
+      <Section width="default" className="border-b border-border/60 py-24">
         <Reveal>
           <div className="mb-12 max-w-[680px]">
             <Eyebrow className="mb-4">Certifications</Eyebrow>
