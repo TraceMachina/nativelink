@@ -4088,13 +4088,15 @@ exit 1
 count=0
 while IFS= read -r request; do
   if ! pwd -P >/dev/null 2>&1; then
-    printf '{"exitCode":1,"output":"worker cwd was removed"}\n'
+    printf '{"exitCode":1,"output":"worker cwd was removed"}
+'
     continue
   fi
   count=$((count + 1))
   sandbox_dir=$(printf '%s' "$request" | sed -n 's/.*"sandboxDir":"\([^"]*\)".*/\1/p')
   printf '%s' "$count" > "$sandbox_dir/count.txt"
-  printf '{"exitCode":0,"output":"count=%s"}\n' "$count"
+  printf '{"exitCode":0,"output":"count=%s"}
+' "$count"
 done
 "#;
         let worker_script_bytes = Bytes::from(worker_script);
@@ -5119,5 +5121,248 @@ done
         assert_eq!(parse_pgid_from_stat("no parenthesis here"), None);
         assert_eq!(parse_pgid_from_stat("123 (only) S"), None); // too few fields
         assert_eq!(parse_pgid_from_stat(""), None);
+    }
+
+    /// A killed action must not leave helper processes behind: the kill path
+    /// signals the entire process group, so a grandchild that would survive a
+    /// leader-only `SIGKILL` (it reparents to init but keeps its pgid) must
+    /// also die.
+    #[cfg(target_os = "macos")]
+    #[nativelink_test]
+    async fn kill_reaps_entire_process_group() -> Result<(), Box<dyn core::error::Error>> {
+        const WORKER_ID: &str = "foo_worker_id";
+
+        let (_, _, cas_store, ac_store) = setup_stores().await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory: root_action_directory.clone(),
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                directory_cache: None,
+            })?);
+
+        // A unique sleep duration doubles as a pgrep-able marker for the
+        // grandchild process.
+        let marker_seconds = format!("9{}.271828", std::process::id() % 1000);
+        let process_started_file = {
+            let tmp_dir = make_temp_path("process_started_dir");
+            fs::create_dir_all(&tmp_dir).await.unwrap();
+            format!("{tmp_dir}/process_started")
+        };
+        let command = Command {
+            arguments: vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                format!("sleep {marker_seconds} & touch {process_started_file} && sleep 24h"),
+            ],
+            output_paths: vec![],
+            working_directory: ".".to_string(),
+            environment_variables: vec![EnvironmentVariable {
+                name: "PATH".to_string(),
+                value: env::var("PATH").unwrap(),
+            }],
+            ..Default::default()
+        };
+        let command_digest = serialize_and_upload_message(
+            &command,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let input_root_digest = serialize_and_upload_message(
+            &Directory::default(),
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let action = Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(input_root_digest.into()),
+            ..Default::default()
+        };
+        let action_digest = serialize_and_upload_message(
+            &action,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+
+        let running_action_impl = running_actions_manager
+            .clone()
+            .create_and_add_action(
+                WORKER_ID.to_string(),
+                StartExecute {
+                    execute_request: Some(ExecuteRequest {
+                        action_digest: Some(action_digest.into()),
+                        ..Default::default()
+                    }),
+                    operation_id: OperationId::default().to_string(),
+                    queued_timestamp: Some(make_system_time(1000).into()),
+                    platform: action.platform.clone(),
+                    worker_id: WORKER_ID.to_string(),
+                },
+            )
+            .await?;
+
+        let run_action_fut = run_action(running_action_impl);
+        tokio::pin!(run_action_fut);
+
+        // Wait until the leader has spawned its children.
+        loop {
+            assert_eq!(futures::poll!(&mut run_action_fut), Poll::Pending);
+            tokio::task::yield_now().await;
+            match fs::metadata(&process_started_file).await {
+                Ok(_) => break,
+                Err(err) => {
+                    assert_eq!(err.code, Code::NotFound, "Unknown error {err:?}");
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            }
+        }
+
+        drop(futures::join!(run_action_fut, running_actions_manager.kill_all()).0);
+
+        // The grandchild must be reaped by the group kill; poll briefly since
+        // signal delivery is asynchronous.
+        let marker = format!("sleep {marker_seconds}");
+        let mut grandchild_alive = true;
+        for _ in 0..300 {
+            let output = tokio::process::Command::new("pgrep")
+                .args(["-f", &marker])
+                .output()
+                .await?;
+            if !output.status.success() {
+                grandchild_alive = false;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            !grandchild_alive,
+            "Expected the grandchild '{marker}' to be killed with the process group"
+        );
+        Ok(())
+    }
+
+    /// The macOS resource-usage sampler must report both peak memory and CPU
+    /// time for an action that burns CPU in a helper process.
+    #[cfg(target_os = "macos")]
+    #[nativelink_test]
+    async fn resource_usage_reports_cpu_and_memory() -> Result<(), Box<dyn core::error::Error>> {
+        const WORKER_ID: &str = "foo_worker_id";
+
+        let (_, _, cas_store, ac_store) = setup_stores().await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory: root_action_directory.clone(),
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                directory_cache: None,
+            })?);
+
+        // Burn CPU in a helper for ~0.7s so the 250ms sampler observes it.
+        let command = Command {
+            arguments: vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "yes > /dev/null & Y=$!; sleep 0.7; kill $Y 2>/dev/null; true".to_string(),
+            ],
+            output_paths: vec![],
+            working_directory: ".".to_string(),
+            environment_variables: vec![EnvironmentVariable {
+                name: "PATH".to_string(),
+                value: env::var("PATH").unwrap(),
+            }],
+            ..Default::default()
+        };
+        let command_digest = serialize_and_upload_message(
+            &command,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let input_root_digest = serialize_and_upload_message(
+            &Directory::default(),
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let action = Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(input_root_digest.into()),
+            ..Default::default()
+        };
+        let action_digest = serialize_and_upload_message(
+            &action,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+
+        let running_action = running_actions_manager
+            .clone()
+            .create_and_add_action(
+                WORKER_ID.to_string(),
+                StartExecute {
+                    execute_request: Some(ExecuteRequest {
+                        action_digest: Some(action_digest.into()),
+                        ..Default::default()
+                    }),
+                    operation_id: OperationId::default().to_string(),
+                    queued_timestamp: Some(make_system_time(1000).into()),
+                    platform: action.platform.clone(),
+                    worker_id: WORKER_ID.to_string(),
+                },
+            )
+            .await?
+            .prepare_action()
+            .and_then(RunningAction::execute)
+            .and_then(RunningAction::upload_results)
+            .await?;
+
+        let resource_usage = running_action
+            .resource_usage()
+            .expect("expected sampled resource usage on macOS");
+        running_action.cleanup().await?;
+
+        assert!(resource_usage.sampled, "usage must be marked sampled");
+        assert!(
+            resource_usage.peak_memory_kb > 0,
+            "expected nonzero peak memory, got {resource_usage:?}"
+        );
+        let total_cpu_ns = resource_usage.cpu_user_ns + resource_usage.cpu_system_ns;
+        assert!(
+            (10_000_000..120_000_000_000).contains(&total_cpu_ns),
+            "expected plausible CPU time (10ms..120s), got {total_cpu_ns}ns ({resource_usage:?})"
+        );
+        Ok(())
     }
 }
