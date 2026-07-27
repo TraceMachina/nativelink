@@ -52,31 +52,10 @@ jobs:
 
       - name: Invoke Bazel build in Nix shell
         run: |
-          set -o pipefail
-
-          # Bazel's downloader retry only covers truncated downloads, not HTTP 5xx/403 failures,
-          # so a flaky GitHub fetch aborts the build with no retry. We retry the download in this case.
-          delay=5
-          for attempt in 1 2 3; do
-            if nix develop --impure --command \
-                bazel test //... \
-                  --verbose_failures \
-                  --lockfile_mode=error \
-                2>&1 | tee bazel.log; then
-              exit 0
-            fi
-            grep -E '^ERROR:' bazel.log \
-              | grep -Eq 'GET returned (403|429|5[0-9][0-9])|Bad Gateway|Connection (reset|timed out)|read timed out|Could not resolve host' || {
-              echo "::error::Bazel failed (non-transient); not retrying."
-              exit 1
-            }
-            [ "$attempt" -lt 3 ] || break
-            echo "::warning::Transient fetch error (attempt $attempt); retrying in ${delay}s..."
-            sleep "$delay"
-            delay=$((delay * 2))
-          done
-          echo "::error::Bazel still failing after 3 attempts."
-          exit 1
+          nix develop --impure --command \
+            bazel-retry test //... \
+              --verbose_failures \
+              --lockfile_mode=error \
 
       - name: Teardown Worker
         uses: ./.github/actions/end-nix
