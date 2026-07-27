@@ -87,6 +87,7 @@ services:
       NL_LOG: json
       CAS_ENDPOINT: nativelink_local_cas
       SCHEDULER_ENDPOINT: nativelink_scheduler
+      NATIVELINK_DONT_CLEANUP: 1 # so we have have worker data left over to debug
     entrypoint: /shared/nativelink
     command: |
        /root/worker.json5

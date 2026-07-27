@@ -957,7 +957,15 @@ async fn do_cleanup(
         return Ok(());
     };
 
-    debug!("Worker cleaning up");
+    // Debug-only hack to not cleanup workers when we need to debug something
+    if !env::var("NATIVELINK_DONT_CLEANUP")
+        .unwrap_or_default()
+        .is_empty()
+    {
+        return Ok(());
+    }
+
+    debug!(?action_directory, "Worker cleaning up");
     // Note: We need to be careful to keep trying to cleanup even if one of the steps fails.
     let remove_dir_result = fs::remove_dir_all(action_directory)
         .await
