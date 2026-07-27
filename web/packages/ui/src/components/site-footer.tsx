@@ -36,8 +36,7 @@ const defaultColumns: FooterColumn[] = [
     title: "Legal",
     links: [
       { label: "Terms & Privacy", href: "/terms" },
-      { label: "Compliance", href: "/compliance" },
-      { label: "Security", href: "mailto:security@tracemachina.com" },
+      { label: "Security", href: "/security" },
     ],
   },
 ];

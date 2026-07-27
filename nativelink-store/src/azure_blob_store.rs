@@ -242,7 +242,10 @@ where
                             if self.consider_expired_after_s > 0
                                 && let Some(last_modified) = props.last_modified().ok().flatten()
                             {
-                                let now = (self.now_fn)().unix_timestamp() as i64;
+                                let now = (self.now_fn)()
+                                    .unix_timestamp()
+                                    .try_into()
+                                    .unwrap_or(i64::MAX);
                                 if last_modified.unix_timestamp() + self.consider_expired_after_s
                                     <= now
                                 {
