@@ -1204,7 +1204,7 @@ impl GrpcStore {
                 }
             };
             let write_offset = local_state.bytes_received;
-            local_state.bytes_received += data.len() as i64;
+            local_state.bytes_received += data.len().try_into().unwrap_or(i64::MAX);
             Some((
                 Ok(WriteRequest {
                     resource_name: local_state.resource_name.clone(),
