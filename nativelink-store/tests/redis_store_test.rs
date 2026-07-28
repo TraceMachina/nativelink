@@ -151,7 +151,7 @@ async fn upload_and_get_data() -> Result<(), Error> {
         ),
         MockCmd::new(
             redis::cmd("STRLEN").arg(&temp_key),
-            Ok(Value::Int(data.len() as i64)),
+            Ok(Value::Int(data.len().try_into().unwrap_or(i64::MAX))),
         ),
         // Move the data from the fake key to the real key.
         MockCmd::new(
@@ -224,7 +224,7 @@ async fn update_retries_after_transient_zero_length() -> Result<(), Error> {
         // After re-resolving the master, the retry sees the real length.
         MockCmd::new(
             redis::cmd("STRLEN").arg(temp_key.clone()),
-            Ok(Value::Int(data.len() as i64)),
+            Ok(Value::Int(data.len().try_into().unwrap_or(i64::MAX))),
         ),
         MockCmd::new(
             redis::cmd("RENAME").arg(temp_key).arg(real_key),
@@ -348,7 +348,7 @@ async fn update_retries_after_transient_write_error() -> Result<(), Error> {
         ),
         MockCmd::new(
             redis::cmd("STRLEN").arg(temp_key.clone()),
-            Ok(Value::Int(data.len() as i64)),
+            Ok(Value::Int(data.len().try_into().unwrap_or(i64::MAX))),
         ),
         MockCmd::new(
             redis::cmd("RENAME").arg(temp_key).arg(real_key),
@@ -384,7 +384,7 @@ async fn upload_and_get_data_with_prefix() -> Result<(), Error> {
         ),
         MockCmd::new(
             redis::cmd("STRLEN").arg(temp_key.clone()),
-            Ok(Value::Int(data.len() as i64)),
+            Ok(Value::Int(data.len().try_into().unwrap_or(i64::MAX))),
         ),
         MockCmd::new(
             redis::cmd("RENAME").arg(temp_key).arg(real_key.clone()),
@@ -482,7 +482,7 @@ async fn test_large_downloads_are_chunked() -> Result<(), Error> {
         ),
         MockCmd::new(
             redis::cmd("STRLEN").arg(temp_key.clone()),
-            Ok(Value::Int(data.len() as i64)),
+            Ok(Value::Int(data.len().try_into().unwrap_or(i64::MAX))),
         ),
         MockCmd::new(
             redis::cmd("RENAME").arg(temp_key).arg(real_key.clone()),
@@ -505,15 +505,15 @@ async fn test_large_downloads_are_chunked() -> Result<(), Error> {
             redis::cmd("GETRANGE")
                 .arg(real_key.clone())
                 .arg(0)
-                .arg(READ_CHUNK_SIZE as i64 - 1),
+                .arg(READ_CHUNK_SIZE.try_into().unwrap_or(i64::MAX) - 1),
             Ok(Value::BulkString(data.slice(..READ_CHUNK_SIZE).into())),
         ),
         MockCmd::new(
             // Similar GETRANGE index shenanigans here.
             redis::cmd("GETRANGE")
                 .arg(real_key)
-                .arg(READ_CHUNK_SIZE as i64)
-                .arg(data.len() as i64 - 1),
+                .arg(READ_CHUNK_SIZE.try_into().unwrap_or(i64::MAX))
+                .arg(data.len().try_into().unwrap_or(i64::MAX) - 1),
             Ok(Value::BulkString(data.slice(READ_CHUNK_SIZE..).into())),
         ),
     ];
@@ -575,7 +575,7 @@ async fn yield_between_sending_packets_in_update() -> Result<(), Error> {
         ),
         MockCmd::new(
             redis::cmd("STRLEN").arg(temp_key.clone()),
-            Ok(Value::Int(data.len() as i64)),
+            Ok(Value::Int(data.len().try_into().unwrap_or(i64::MAX))),
         ),
         MockCmd::new(
             redis::cmd("RENAME").arg(temp_key).arg(real_key.clone()),
@@ -593,21 +593,29 @@ async fn yield_between_sending_packets_in_update() -> Result<(), Error> {
             redis::cmd("GETRANGE")
                 .arg(real_key.clone())
                 .arg(0)
-                .arg((DEFAULT_READ_CHUNK_SIZE - 1) as i64),
+                .arg((DEFAULT_READ_CHUNK_SIZE - 1).try_into().unwrap_or(i64::MAX)),
             Ok(Value::BulkString(data.clone().to_vec())),
         ),
         MockCmd::new(
             redis::cmd("GETRANGE")
                 .arg(real_key.clone())
-                .arg(DEFAULT_READ_CHUNK_SIZE as i64)
-                .arg((DEFAULT_READ_CHUNK_SIZE * 2 - 1) as i64),
+                .arg(DEFAULT_READ_CHUNK_SIZE.try_into().unwrap_or(i64::MAX))
+                .arg(
+                    (DEFAULT_READ_CHUNK_SIZE * 2 - 1)
+                        .try_into()
+                        .unwrap_or(i64::MAX),
+                ),
             Ok(Value::BulkString(data.clone().to_vec())),
         ),
         MockCmd::new(
             redis::cmd("GETRANGE")
                 .arg(real_key)
-                .arg((DEFAULT_READ_CHUNK_SIZE * 2) as i64)
-                .arg((data_p1.len() + data_p2.len() - 1) as i64),
+                .arg((DEFAULT_READ_CHUNK_SIZE * 2).try_into().unwrap_or(i64::MAX))
+                .arg(
+                    (data_p1.len() + data_p2.len() - 1)
+                        .try_into()
+                        .unwrap_or(i64::MAX),
+                ),
             Ok(Value::BulkString(data.clone().to_vec())),
         ),
     ];
@@ -662,7 +670,7 @@ async fn zero_len_items_exist_check() -> Result<(), Error> {
             redis::cmd("GETRANGE")
                 .arg(real_key.clone())
                 .arg(0)
-                .arg(DEFAULT_READ_CHUNK_SIZE as i64 - 1),
+                .arg(DEFAULT_READ_CHUNK_SIZE.try_into().unwrap_or(i64::MAX) - 1),
             Ok(Value::BulkString(vec![])),
         ),
         MockCmd::new(redis::cmd("EXISTS").arg(real_key), Ok(Value::Int(0))),
@@ -2378,7 +2386,7 @@ where
         ),
         MockCmd::new(
             redis::cmd("STRLEN").arg(&temp_key),
-            Ok(Value::Int(data.len() as i64)),
+            Ok(Value::Int(data.len().try_into().unwrap_or(i64::MAX))),
         ),
         // Move the data from the fake key to the real key.
         MockCmd::new(

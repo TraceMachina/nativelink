@@ -53,7 +53,7 @@ pub struct GcsStore<Client: GcsOperations, NowFn> {
     key_prefix: String,
     retrier: Retrier,
     #[metric(help = "The number of seconds to consider an object expired")]
-    consider_expired_after_s: i64,
+    consider_expired_after_s: u64,
     #[metric(help = "The number of bytes to buffer for retrying requests")]
     max_retry_buffer_size: usize,
     #[metric(help = "The size of chunks for resumable uploads")]
@@ -137,7 +137,7 @@ where
                 jitter_fn,
                 spec.common.retry.clone(),
             ),
-            consider_expired_after_s: i64::from(spec.common.consider_expired_after_s),
+            consider_expired_after_s: u64::from(spec.common.consider_expired_after_s),
             max_retry_buffer_size,
             max_chunk_size,
             max_concurrent_uploads: max_connections,
@@ -162,7 +162,7 @@ where
                         if consider_expired_after_s != 0
                             && let Some(update_time) = &metadata.update_time
                         {
-                            let now_s = now_fn().unix_timestamp() as i64;
+                            let now_s = now_fn().unix_timestamp();
                             if update_time.seconds + consider_expired_after_s <= now_s {
                                 return Some((RetryResult::Ok(None), object_path));
                             }

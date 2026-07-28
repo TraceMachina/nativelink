@@ -612,9 +612,7 @@ async fn test_expired_object() -> Result<(), Error> {
         .await;
 
     // Mock the now function to return a time before expiration
-    MockClock::set_time(Duration::from_secs(
-        base_timestamp as u64 + expiration_seconds as u64 - 1,
-    ));
+    MockClock::set_time(Duration::from_secs(base_timestamp + expiration_seconds - 1));
 
     // Check that the object exists (it's not expired yet)
     let result = store.has(store_key.clone()).await?;
@@ -625,9 +623,7 @@ async fn test_expired_object() -> Result<(), Error> {
     );
 
     // Mock the now function to return a time after expiration
-    MockClock::set_time(Duration::from_secs(
-        base_timestamp as u64 + expiration_seconds as u64 + 1,
-    ));
+    MockClock::set_time(Duration::from_secs(base_timestamp + expiration_seconds + 1));
 
     // Object should now be considered expired
     let result = store.has(store_key).await?;
@@ -732,7 +728,7 @@ async fn test_null_object_metadata() -> Result<(), Error> {
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
-        .as_secs() as i64;
+        .as_secs();
 
     let metadata = nativelink_store::gcs_client::types::GcsObject {
         name: object_path.path.clone(),
@@ -812,7 +808,7 @@ async fn create_test_store_with_retry(
 // Helper function to create a test GCS store with expiration
 async fn create_test_store_with_expiration(
     ops: Arc<MockGcsOperations>,
-    expiration_seconds: i64,
+    expiration_seconds: u64,
 ) -> Result<Arc<GcsStore<MockGcsOperations, fn() -> MockInstantWrapped>>, Error> {
     GcsStore::new_with_ops(
         &ExperimentalGcsSpec {

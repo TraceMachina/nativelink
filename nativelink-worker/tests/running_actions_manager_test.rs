@@ -645,6 +645,7 @@ mod tests {
 
             let execute_request = ExecuteRequest {
                 action_digest: Some(action_digest.into()),
+                digest_function: ProtoDigestFunction::Sha256.into(),
                 ..Default::default()
             };
             let operation_id = OperationId::default().to_string();
@@ -773,6 +774,7 @@ mod tests {
 
             let execute_request = ExecuteRequest {
                 action_digest: Some(action_digest.into()),
+                digest_function: ProtoDigestFunction::Sha256.into(),
                 ..Default::default()
             };
             let operation_id = OperationId::default().to_string();
@@ -1100,6 +1102,7 @@ mod tests {
 
             let execute_request = ExecuteRequest {
                 action_digest: Some(action_digest.into()),
+                digest_function: ProtoDigestFunction::Sha256.into(),
                 ..Default::default()
             };
             let operation_id = OperationId::default().to_string();
@@ -1280,6 +1283,7 @@ mod tests {
 
             let execute_request = ExecuteRequest {
                 action_digest: Some(action_digest.into()),
+                digest_function: ProtoDigestFunction::Sha256.into(),
                 ..Default::default()
             };
             let operation_id = OperationId::default().to_string();
@@ -1514,6 +1518,7 @@ mod tests {
 
             let execute_request = ExecuteRequest {
                 action_digest: Some(action_digest.into()),
+                digest_function: ProtoDigestFunction::Sha256.into(),
                 ..Default::default()
             };
             let operation_id = OperationId::default().to_string();
@@ -1665,6 +1670,7 @@ mod tests {
             .await?;
             let execute_request = ExecuteRequest {
                 action_digest: Some(action_digest.into()),
+                digest_function: ProtoDigestFunction::Sha256.into(),
                 ..Default::default()
             };
             let operation_id = OperationId::default().to_string();
@@ -1811,6 +1817,7 @@ mod tests {
 
             let execute_request = ExecuteRequest {
                 action_digest: Some(action_digest.into()),
+                digest_function: ProtoDigestFunction::Sha256.into(),
                 ..Default::default()
             };
             let operation_id = OperationId::default().to_string();
@@ -1962,6 +1969,7 @@ mod tests {
 
         let execute_request = ExecuteRequest {
             action_digest: Some(action_digest.into()),
+            digest_function: ProtoDigestFunction::Sha256.into(),
             ..Default::default()
         };
         let operation_id = OperationId::default().to_string();
@@ -2145,6 +2153,7 @@ exit 0
 
         let execute_request = ExecuteRequest {
             action_digest: Some(action_digest.into()),
+            digest_function: ProtoDigestFunction::Sha256.into(),
             ..Default::default()
         };
         let operation_id = OperationId::default().to_string();
@@ -2320,7 +2329,7 @@ exit 0
                 }],
             }),
             timeout: Some(prost_types::Duration {
-                seconds: TASK_TIMEOUT.as_secs() as i64,
+                seconds: TASK_TIMEOUT.as_secs().try_into().unwrap_or(i64::MAX),
                 nanos: 0,
             }),
             ..Default::default()
@@ -2334,6 +2343,7 @@ exit 0
 
         let execute_request = ExecuteRequest {
             action_digest: Some(action_digest.into()),
+            digest_function: ProtoDigestFunction::Sha256.into(),
             ..Default::default()
         };
         let operation_id = OperationId::default().to_string();
@@ -2494,6 +2504,7 @@ exit 1
 
         let execute_request = ExecuteRequest {
             action_digest: Some(action_digest.into()),
+            digest_function: ProtoDigestFunction::Sha256.into(),
             ..Default::default()
         };
         let operation_id = OperationId::default().to_string();
@@ -3028,7 +3039,7 @@ exit 1
                 command_digest: Some(command_digest.into()),
                 input_root_digest: Some(input_root_digest.into()),
                 timeout: Some(prost_types::Duration {
-                    seconds: TASK_TIMEOUT.as_secs() as i64,
+                    seconds: TASK_TIMEOUT.as_secs().try_into().unwrap_or(i64::MAX),
                     nanos: 0,
                 }),
                 ..Default::default()
@@ -3074,6 +3085,7 @@ exit 1
 
             let execute_request = ExecuteRequest {
                 action_digest: Some(action_digest.into()),
+                digest_function: ProtoDigestFunction::Sha256.into(),
                 ..Default::default()
             };
             let operation_id = OperationId::default().to_string();
@@ -3118,7 +3130,7 @@ exit 1
                 command_digest: Some(command_digest.into()),
                 input_root_digest: Some(input_root_digest.into()),
                 timeout: Some(prost_types::Duration {
-                    seconds: TASK_TIMEOUT.as_secs() as i64,
+                    seconds: TASK_TIMEOUT.as_secs().try_into().unwrap_or(i64::MAX),
                     nanos: 0,
                 }),
                 ..Default::default()
@@ -3164,6 +3176,7 @@ exit 1
 
             let execute_request = ExecuteRequest {
                 action_digest: Some(action_digest.into()),
+                digest_function: ProtoDigestFunction::Sha256.into(),
                 ..Default::default()
             };
             let operation_id = OperationId::default().to_string();
@@ -3208,7 +3221,7 @@ exit 1
                 command_digest: Some(command_digest.into()),
                 input_root_digest: Some(input_root_digest.into()),
                 timeout: Some(prost_types::Duration {
-                    seconds: TASK_TIMEOUT.as_secs() as i64,
+                    seconds: TASK_TIMEOUT.as_secs().try_into().unwrap_or(i64::MAX),
                     nanos: 0,
                 }),
                 ..Default::default()
@@ -3254,6 +3267,7 @@ exit 1
 
             let execute_request = ExecuteRequest {
                 action_digest: Some(action_digest.into()),
+                digest_function: ProtoDigestFunction::Sha256.into(),
                 ..Default::default()
             };
             let operation_id = OperationId::default().to_string();
@@ -3385,6 +3399,7 @@ exit 1
 
         let execute_request = ExecuteRequest {
             action_digest: Some(action_digest.into()),
+            digest_function: ProtoDigestFunction::Sha256.into(),
             ..Default::default()
         };
         let operation_id = OperationId::default().to_string();
@@ -3531,6 +3546,7 @@ exit 1
 
         let execute_request = ExecuteRequest {
             action_digest: Some(action_digest.into()),
+            digest_function: ProtoDigestFunction::Sha256.into(),
             ..Default::default()
         };
         let operation_id = OperationId::default().to_string();
@@ -3694,6 +3710,7 @@ exit 1
 
             let execute_request = ExecuteRequest {
                 action_digest: Some(action_digest.into()),
+                digest_function: ProtoDigestFunction::Sha256.into(),
                 ..Default::default()
             };
             let operation_id = OperationId::default().to_string();
@@ -3808,6 +3825,7 @@ exit 1
 
         let execute_request = ExecuteRequest {
             action_digest: Some(action_digest.into()),
+            digest_function: ProtoDigestFunction::Sha256.into(),
             ..Default::default()
         };
         let operation_id = OperationId::default().to_string();
@@ -3914,6 +3932,7 @@ exit 1
 
         let execute_request = ExecuteRequest {
             action_digest: Some(action_digest.into()),
+            digest_function: ProtoDigestFunction::Sha256.into(),
             ..Default::default()
         };
         let operation_id = OperationId::default().to_string();
@@ -4032,6 +4051,7 @@ exit 1
                     StartExecute {
                         execute_request: Some(ExecuteRequest {
                             action_digest: Some(action_digest.into()),
+                            digest_function: ProtoDigestFunction::Sha256.into(),
                             ..Default::default()
                         }),
                         operation_id: operation_id.to_string(),
@@ -4240,6 +4260,7 @@ done
 
             let execute_request = ExecuteRequest {
                 action_digest: Some(action_digest.into()),
+                digest_function: ProtoDigestFunction::Sha256.into(),
                 ..Default::default()
             };
             let operation_id = OperationId::default().to_string();
@@ -4424,6 +4445,7 @@ done
 
         let execute_request = ExecuteRequest {
             action_digest: Some(action_digest.into()),
+            digest_function: ProtoDigestFunction::Sha256.into(),
             ..Default::default()
         };
         let operation_id = OperationId::default().to_string();
@@ -4515,6 +4537,7 @@ done
 
         let execute_request = ExecuteRequest {
             action_digest: Some(action_digest.into()),
+            digest_function: ProtoDigestFunction::Sha256.into(),
             ..Default::default()
         };
 
@@ -4659,6 +4682,7 @@ done
 
         let execute_request = ExecuteRequest {
             action_digest: Some(action_digest.into()),
+            digest_function: ProtoDigestFunction::Sha256.into(),
             ..Default::default()
         };
 
@@ -4792,6 +4816,7 @@ done
                 StartExecute {
                     execute_request: Some(ExecuteRequest {
                         action_digest: Some(action_digest.into()),
+                        digest_function: ProtoDigestFunction::Sha256.into(),
                         ..Default::default()
                     }),
                     operation_id,
@@ -4945,6 +4970,7 @@ done
                 StartExecute {
                     execute_request: Some(ExecuteRequest {
                         action_digest: Some(action_digest.into()),
+                        digest_function: ProtoDigestFunction::Sha256.into(),
                         ..Default::default()
                     }),
                     operation_id: OperationId::default().to_string(),
@@ -5061,6 +5087,7 @@ done
 
         let execute_request = ExecuteRequest {
             action_digest: Some(action_digest.into()),
+            digest_function: ProtoDigestFunction::Sha256.into(),
             ..Default::default()
         };
         let operation_id = OperationId::default().to_string();

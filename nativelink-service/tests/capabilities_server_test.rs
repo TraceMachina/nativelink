@@ -22,7 +22,7 @@ use nativelink_config::cas_server::{
 use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::capabilities_server::Capabilities;
 use nativelink_proto::build::bazel::remote::execution::v2::{
-    GetCapabilitiesRequest, ServerCapabilities, compressor,
+    GetCapabilitiesRequest, ServerCapabilities, compressor, digest_function,
 };
 use nativelink_scheduler::known_platform_property_provider::KnownPlatformPropertyProvider;
 use nativelink_scheduler::mock_scheduler::MockActionScheduler;
@@ -82,6 +82,14 @@ async fn compression_only_instance_advertises_zstd_cache_capabilities()
         .cache_capabilities
         .expect("cache capabilities should be set");
 
+    assert_eq!(
+        cache_capabilities.digest_functions,
+        vec![
+            digest_function::Value::Sha256 as i32,
+            digest_function::Value::Blake3 as i32,
+        ],
+        "cache clients must be told that both digest functions are supported"
+    );
     assert_eq!(
         cache_capabilities.supported_compressors,
         vec![compressor::Value::Zstd as i32]
@@ -146,6 +154,19 @@ async fn remote_execution_instance_advertises_execution_capabilities_and_node_pr
         .expect("execution capabilities should be set");
 
     assert!(execution_capabilities.exec_enabled);
+    assert_eq!(
+        execution_capabilities.digest_function,
+        digest_function::Value::Sha256 as i32,
+        "the legacy execution digest field should report the server default"
+    );
+    assert_eq!(
+        execution_capabilities.digest_functions,
+        vec![
+            digest_function::Value::Sha256 as i32,
+            digest_function::Value::Blake3 as i32,
+        ],
+        "execution clients must be told that both digest functions are supported"
+    );
     assert_eq!(
         execution_capabilities.supported_node_properties,
         expected_properties
