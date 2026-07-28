@@ -37,7 +37,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           </main>
           <FinalCTA
             title="Let's build at the speed your code is being written."
-            body="Open source. Free cloud tier. Self-host the moment your team is ready."
+            body="Open source. Self-host the moment your team is ready."
             primaryLabel="Get started"
             primaryHref="/docs"
             primaryNewTab

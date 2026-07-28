@@ -13,18 +13,19 @@ serves your team without 3 AM pages.
 Pick on-prem when one of these is true:
 
 - **Data residency.** Build artifacts can carry source code,
-  toolchains, even credentials. If those have to stay in a specific
-  region (EU GDPR, US FedRAMP boundaries, air-gapped corp networks),
-  managed Cloud isn't an option yet.
+  toolchains, even credentials. Self-hosting keeps them in whatever
+  region or boundary you need (EU GDPR, US FedRAMP boundaries,
+  air-gapped corp networks).
 - **Specialised hardware.** GPU workers, ARM cross-compile fleets,
-  in-house silicon. Cloud supports the common cases; on-prem lets you
-  use anything that can run a Linux binary.
+  in-house silicon. On-prem lets you use anything that can run a
+  Linux binary.
 - **You already operate stateful services.** If your team owns
   Kubernetes, Postgres, S3-compatible storage, adding NativeLink is
   marginal work.
 
-If none of those apply, NativeLink Cloud is cheaper, faster to
-provision, and one fewer pager rotation.
+If you'd rather not run it yourself,
+[Enterprise](https://nativelink.com/pricing) offers a managed
+deployment.
 
 ## What ships in the box
 
@@ -122,7 +123,7 @@ everything until it warms back up.
     for non-competing purposes are allowed. Metrics and remote persistent
     workers are Business Source License modules: fine for an individual
     developer's cache, but shared, production, or commercial use of those
-    modules needs NativeLink Cloud, Enterprise, or an intentionally
+    modules needs NativeLink Enterprise or an intentionally
     inexpensive commercial license. Meaningful contributors may be
     eligible for waivers — contact the maintainers before relying on one.
     The practical summary is on the
@@ -132,7 +133,8 @@ everything until it warms back up.
     Compute for the control plane (a few small VMs), CAS storage — the
     dominant cost in a healthy cluster — worker compute, and the engineer
     hours to run it all. For most teams under ~30 engineers, self-hosting
-    is cheaper; past that, [Cloud](https://nativelink.com/pricing)
+    is cheaper; past that, a managed
+    [Enterprise](https://nativelink.com/pricing) deployment
     usually wins on engineer time alone.
   </Accordion>
   <Accordion title="Does the free version limit cache or team size?" id="does-the-free-version-limit-cache-or-team-size">
