@@ -107,9 +107,8 @@ build --remote_timeout=600
 build --remote_executor=grpcs://TODO
 ```
 
-Replace all three `TODO`s with either your
-[dev.nativelink.com](https://dev.nativelink.com) credentials or your
-own cluster's endpoint. Concretely, filled in for a plain local
+Replace all three `TODO`s with your own cluster's endpoint.
+Concretely, filled in for a plain local
 cluster (no TLS, so `grpc://` instead of `grpcs://`, and no BES
 endpoint to point at) — this is the exact `user.bazelrc` used to
 produce the verified output in step 4 above:
@@ -120,7 +119,7 @@ build --remote_timeout=600
 build --remote_executor=grpc://127.0.0.1:50051
 ```
 
-A [dev.nativelink.com](https://dev.nativelink.com) or self-hosted
+A TLS-terminated self-hosted
 cluster looks the same shape, just with `grpcs://` and your cluster's
 real hostnames in place of `127.0.0.1:50051`, plus a `bes_backend`
 line if you want build results streamed there.

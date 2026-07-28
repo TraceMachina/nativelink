@@ -20,10 +20,10 @@ const tools: Tool[] = [
     name: "Generate optimal Bazel configuration",
     prompt: "use nativelink to generate a bazel config for my Rust project",
     output: [
-      { text: "# Nativelink Cloud Configuration", tone: "comment" },
-      { text: "build --remote_cache=grpcs://cas.<account>.build-faster.nativelink.net" },
+      { text: "# NativeLink Configuration", tone: "comment" },
+      { text: "build --remote_cache=grpcs://cas.nativelink.internal" },
       { text: "build --remote_header=x-nativelink-api-key=<redacted>", tone: "muted" },
-      { text: "build --remote_executor=grpcs://scheduler.<account>.build-faster.nativelink.net" },
+      { text: "build --remote_executor=grpcs://scheduler.nativelink.internal" },
       { text: "build --remote_timeout=600" },
       { text: "build --jobs=200" },
       { text: "build --remote_download_outputs=minimal" },
