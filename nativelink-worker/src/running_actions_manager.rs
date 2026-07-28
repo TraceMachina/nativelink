@@ -35,9 +35,7 @@ use std::time::SystemTime;
 use bytes::{Bytes, BytesMut};
 use filetime::{FileTime, set_file_mtime};
 use formatx::Template;
-use futures::future::{
-    BoxFuture, Future, FutureExt, TryFutureExt, try_join, try_join_all, try_join3,
-};
+use futures::future::{BoxFuture, Future, FutureExt, TryFutureExt, try_join, try_join_all};
 use futures::stream::{FuturesUnordered, StreamExt, TryStreamExt};
 use nativelink_config::cas_server::{
     EnvironmentSource, UploadActionResultConfig, UploadCacheResultsStrategy,
@@ -866,9 +864,11 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
             }
         }
 
-        let (mut file_nodes, dir_entries, mut symlinks) = try_join3(
+        let dir_entries = dir_futures
+            .try_collect::<Vec<(DirectoryNode, VecDeque<Directory>)>>()
+            .await?;
+        let (mut file_nodes, mut symlinks) = try_join(
             file_futures.try_collect::<Vec<FileNode>>(),
-            dir_futures.try_collect::<Vec<(DirectoryNode, VecDeque<Directory>)>>(),
             symlink_futures.try_collect::<Vec<SymlinkNode>>(),
         )
         .await?;
