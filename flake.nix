@@ -418,11 +418,10 @@
 
             default = nativelink;
 
-            nativelink-worker-lre-cc = createWorker pkgs.lre.lre-cc.image;
             lre-java = pkgs.callPackage ./local-remote-execution/lre-java.nix {inherit buildImage;};
             rbe-autogen-lre-java = pkgs.rbe-autogen lre-java;
             nativelink-worker-lre-java = createWorker lre-java;
-            nativelink-worker-lre-rs = createWorker pkgs.lre.lre-rs.image;
+            nativelink-worker-lre-cc = createWorker pkgs.lre.lre-cc.image;
             nativelink-worker-siso-chromium = createWorker siso-chromium;
             nativelink-worker-toolchain-drake = createWorker toolchain-drake;
             nativelink-worker-toolchain-buck2 = createWorker toolchain-buck2;
@@ -475,8 +474,8 @@
         lre = {
           Env = with pkgs.lre;
             if pkgs.stdenv.isDarwin
-            then lre-rs.meta.Env # C++ doesn't support Darwin yet.
-            else (lre-cc.meta.Env ++ lre-rs.meta.Env);
+            then {} # C++ doesn't support Darwin yet.
+            else lre-cc.meta.Env;
           prefix =
             if pkgs.stdenv.isDarwin
             then "macos"
@@ -528,7 +527,6 @@
               # Rust
               bazel
               pkgs.lre.stable-rust
-              pkgs.lre.lre-rs.lre-rs-configs-gen
               pkgs.rust-analyzer
 
               ## Infrastructure

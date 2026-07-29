@@ -37,9 +37,9 @@ use_repo(
 # via lre.bazelrc (`--extra_toolchains`) on the host side; the bootstrap pair
 # only matches when @rules_rust//rust/private:bootstrap_setting is flipped on,
 # which happens transitively when building the rust-built process_wrapper.
-register_toolchains(
-    "//rust:rust-x86_64-linux-bootstrap",
-    "//rust:rust-aarch64-linux-bootstrap",
-    "//rust:rust-x86_64-darwin-bootstrap",
-    "//rust:rust-aarch64-darwin-bootstrap",
-)
+# register_toolchains(
+#     "//rust:rust-x86_64-linux-bootstrap",
+#     "//rust:rust-aarch64-linux-bootstrap",
+#     "//rust:rust-x86_64-darwin-bootstrap",
+#     "//rust:rust-aarch64-darwin-bootstrap",
+# )

@@ -1,7 +1,6 @@
 module(
     name = "nativelink",
     version = "1.6.3",
-    compatibility_level = 0,
 )
 
 bazel_dep(name = "rules_cc", version = "0.2.19")
@@ -102,11 +101,12 @@ crate.from_cargo(
         "x86_64-apple-darwin",
         "x86_64-pc-windows-msvc",
         "x86_64-unknown-linux-gnu",
+        "x86_64-unknown-linux-musl",
     ],
     # The LRE Rust toolchains in //local-remote-execution/rust still register
     # against @rules_rust//rust:toolchain_type, so crate_universe must render
     # selects against legacy @rules_rust//rust/platform:* labels.
-    use_legacy_rules_rust_platforms = True,
+    # use_legacy_rules_rust_platforms = True,
 )
 crate.annotation(
     crate = "zstd-sys",
@@ -114,16 +114,6 @@ crate.annotation(
 )
 use_repo(crate, "crates")
 
-# NativeLink uses Local Remote Execution for Rust by default which automatically
-# handles Rust toolchain configuration via Nix.
-#
-# If you build outside of Nix you'll have to register these toolchains
-# explicitly by passing `--extra_toolchains=@rust_toolchains//:all` to your
-# Bazel invocation.
-#
-# WARNING: This configuration exists entirely as a convenience option and
-#          migration and is not a supported way of building production
-#          grade nativelink executables. It may be removed at any point in time.
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
 rust.toolchain(
     edition = "2024",
@@ -134,24 +124,24 @@ rust.toolchain(
     sha256s = {
         # Update the shas with update-module-hashes
         # BEGIN SHAS
-        "2026-03-24/cargo-nightly-x86_64-unknown-linux-gnu.tar.xz": "952622b3830be1cd0cc06544972d9b9cbea361bb1a155e5aacf88102dfc5b9bf",
-        "2026-03-24/clippy-nightly-x86_64-unknown-linux-gnu.tar.xz": "c7e66ea9a6d6a5b9af6f55b24f7709874e06c43a9cacb5d68d30b960ecbab230",
-        "2026-03-24/llvm-tools-nightly-x86_64-unknown-linux-gnu.tar.xz": "50a82652bad87dcae1b08127e888991d514b018851c3378b862752155e29b3ec",
-        "2026-03-24/rust-std-nightly-x86_64-unknown-linux-gnu.tar.xz": "5c0c15c08c9e727d3544c521aa48168bd32b24ef9eec814bae5786b5194f31bf",
+        "2026-03-24/cargo-nightly-x86_64-unknown-linux-musl.tar.xz": "9fab9d83ccb8c76653bda776cc838f42feba4003a7c3d7d2a610a073c179602a",
+        "2026-03-24/clippy-nightly-x86_64-unknown-linux-musl.tar.xz": "53be2469c18a0ad6df68cc9a7f0cde801e3e295090034ed702be3c5e0f73c817",
+        "2026-03-24/llvm-tools-nightly-x86_64-unknown-linux-musl.tar.xz": "baf11bf996d6d696fad9fbb4b434ae2d9bf354c7709938ecbc3a40ff5dd1880c",
+        "2026-03-24/rust-std-nightly-x86_64-unknown-linux-musl.tar.xz": "e2af41c6200f34b6dfac118856b3df8202e422ad1bfeefdc6c29f2554c896b8d",
         "2026-03-24/rustc-nightly-aarch64-apple-darwin.tar.xz": "9310535abcfe2b1b86e4e8a1e6455e622ad5435a5281a6133aa7e6aa0bd4aa3d",
-        "2026-03-24/rustc-nightly-x86_64-unknown-linux-gnu.tar.xz": "7183776faefeb29ca430ee91f49a157491e82ce5ef158f082b3876648bba0406",
+        "2026-03-24/rustc-nightly-x86_64-unknown-linux-musl.tar.xz": "2b13f1f6bef919ec3a3ee3117220708ef921673f4fcfbb47b1339fe8586eb9fe",
         "2026-03-24/rustfmt-nightly-aarch64-apple-darwin.tar.xz": "3f989cd84234158dfe240571ec18441bfb586d9fcc4c06036a766a705ea6a69b",
-        "2026-03-24/rustfmt-nightly-x86_64-unknown-linux-gnu.tar.xz": "0eeef38fe72a1a718b19256cd1e5f92c96ee9d39eb6b9324f2514a674f1e4308",
+        "2026-03-24/rustfmt-nightly-x86_64-unknown-linux-musl.tar.xz": "bb1a31ca91c86f4fc1a48f6a8253cdf1dab8f070c9851be2d5b68a1733be98b3",
         "cargo-1.93.1-aarch64-apple-darwin.tar.xz": "ecd50b093656061366c5af1184af10d883f21bddb482a9c2142fe860c0f671b2",
-        "cargo-1.93.1-x86_64-unknown-linux-gnu.tar.xz": "dbf12e8fd2a245a6bdd9f6c8df267cb2c25b0c56866ee91d8321337df0a00ddb",
+        "cargo-1.93.1-x86_64-unknown-linux-musl.tar.xz": "2b2e987bee5d83416374b8dbe9e660c05344ed47287eb789877dd43a2ed2e122",
         "clippy-1.93.1-aarch64-apple-darwin.tar.xz": "33d57654b0f19360cc4deecbaf248586f89ce9d345df2d54ee8d5541cf7c9f95",
-        "clippy-1.93.1-x86_64-unknown-linux-gnu.tar.xz": "60c0ce83ecc1700de724404a928c30d096c178a610c6707d4f06cee25284cc02",
+        "clippy-1.93.1-x86_64-unknown-linux-musl.tar.xz": "a97898b7f203e368a2781dc58c0a11356af0ac18345591b660daf87c3a1c13c0",
         "llvm-tools-1.93.1-aarch64-apple-darwin.tar.xz": "d61834568e6e591db13ad235e09c3c65e2f10c099c29bfd8eec018f6c9f55462",
-        "llvm-tools-1.93.1-x86_64-unknown-linux-gnu.tar.xz": "f32c5405d7765ffd18554e01f59eff1db32e22813a529425f4ad8903722b594e",
+        "llvm-tools-1.93.1-x86_64-unknown-linux-musl.tar.xz": "b176b03e1b846d5dabb99df4f619ec2637aee00fb2e3b3d256e219bd3adcb038",
         "rust-std-1.93.1-aarch64-apple-darwin.tar.xz": "dd278e6eb993ddffb190442ca11ed1e118c1edaf04114910e3c8c652f6423f65",
-        "rust-std-1.93.1-x86_64-unknown-linux-gnu.tar.xz": "82c4e41268f1741e4eb68796aeb6ca5042406ae858dd56144155c4ef8d87d8b6",
+        "rust-std-1.93.1-x86_64-unknown-linux-musl.tar.xz": "24a9592c81c3def623f9e33e90f8f5bacefbffdd59d87f52da542fd6f4b252df",
         "rustc-1.93.1-aarch64-apple-darwin.tar.xz": "d103a0ee04c121b30cf061c7ad1456daaebd7ff0a7ea5fdb64acf92d86cb25fd",
-        "rustc-1.93.1-x86_64-unknown-linux-gnu.tar.xz": "b9db2636f5a101c4cdaf46a26f8a0c8e4b5767ecdb02ae9c7ccc3ead577732bc",
+        "rustc-1.93.1-x86_64-unknown-linux-musl.tar.xz": "426193ee15a56d973b910c84a3ba1a1c2a66413f1917feaf9a7d8c0cceb56ebb",
         # END SHAS
     },
     versions = [

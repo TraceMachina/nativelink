@@ -134,7 +134,7 @@ cc_toolchain_config(
         "-Xclang",
         "-fno-cxx-modules",
     ]},
-    host_system_name = "x86_64-unknown-linux-gnu",
+    host_system_name = "x86_64-unknown-linux-musl",
     link_flags = [
         "-fuse-ld=/nix/store/c5z0kxmshkd2j8bflq22ya45f7fssn0l-llvm-binutils-wrapper-22.1.8/bin/ld.mold",
         "-B/nix/store/n4rzbc1y6z5dj0wr884rmn85lz0dfi1l-customClang/bin",

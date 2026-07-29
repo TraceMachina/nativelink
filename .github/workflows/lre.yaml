@@ -25,7 +25,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, macos-26]
-        toolchain: [lre-cc, lre-rs]
+        toolchain: [lre-cc]
         exclude:
           - os: macos-26
             toolchain: lre-cc
@@ -89,7 +89,7 @@ jobs:
     - name: Build Nativelink images
       run: |
         nix run .#image.copyTo docker-daemon:local-nativelink:latest
-        nix run .#nativelink-worker-lre-rs.copyTo docker-daemon:local-worker-rs:latest
+        nix run .#nativelink-worker-lre-cc.copyTo docker-daemon:local-worker-cc:latest
         nix run .#nativelink-worker-init.copyTo docker-daemon:local-worker-init:latest
 
     - name: Compile NativeLink with NativeLink
@@ -111,7 +111,7 @@ jobs:
       env:
           NATIVELINK_IMAGE: local-nativelink:latest
           NATIVELINK_WORKER_INIT_IMAGE: local-worker-init:latest
-          NATIVELINK_LRE_IMAGE: local-worker-rs:latest
+          NATIVELINK_LRE_IMAGE: local-worker-cc:latest
           NATIVELINK_DIR: ${{ github.workspace }}/.cache
           RUST_LOG: debug
 
