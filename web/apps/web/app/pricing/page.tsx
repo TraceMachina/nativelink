@@ -1,4 +1,4 @@
-import { Badge, Button, Eyebrow, Reveal, Section, cn } from "@nativelink/ui";
+import { Button, Eyebrow, Reveal, Section, cn } from "@nativelink/ui";
 import { Fragment } from "react";
 
 export const metadata = { title: "Pricing" };
@@ -17,24 +17,6 @@ const tiers = [
       "All major cloud providers",
     ],
     cta: { label: "Get started", href: "/docs" },
-    variant: "ghost" as const,
-  },
-  {
-    name: "Cloud",
-    price: "$999+",
-    cadence: "/ month",
-    tagline: "Managed NativeLink. We run the infra, you ship.",
-    features: [
-      "Fully managed cluster",
-      "Automatic scaling & failover",
-      "Production SLAs",
-      "Onboarding support",
-      "Dashboard & live build feed",
-      "Multi-region deployment",
-    ],
-    cta: { label: "Start free trial", href: "https://dev.nativelink.com/" },
-    variant: "featured" as const,
-    badge: "Most popular",
   },
   {
     name: "Enterprise",
@@ -50,47 +32,45 @@ const tiers = [
       "Priority feature requests",
     ],
     cta: { label: "Subscribe now", href: "https://enterprise.nativelink.com" },
-    variant: "ghost" as const,
   },
 ];
 
 const comparison: {
   section: string;
-  rows: { label: string; oss: string | boolean; cloud: string | boolean; ent: string | boolean }[];
+  rows: { label: string; oss: string | boolean; ent: string | boolean }[];
 }[] = [
   {
     section: "Platform",
     rows: [
-      { label: "Hosting", oss: "Self-hosted", cloud: "Managed by us", ent: "On-prem or managed" },
-      { label: "Distributed scheduler", oss: true, cloud: true, ent: true },
-      { label: "Remote caching", oss: true, cloud: true, ent: true },
-      { label: "Remote execution", oss: true, cloud: true, ent: true },
-      { label: "Cross-compilation", oss: true, cloud: true, ent: true },
-      { label: "External storage (S3, Redis)", oss: true, cloud: true, ent: true },
-      { label: "Autoscaling", oss: false, cloud: true, ent: true },
-      { label: "Multi-region", oss: "DIY", cloud: true, ent: true },
+      { label: "Hosting", oss: "Self-hosted", ent: "On-prem or managed" },
+      { label: "Distributed scheduler", oss: true, ent: true },
+      { label: "Remote caching", oss: true, ent: true },
+      { label: "Remote execution", oss: true, ent: true },
+      { label: "Cross-compilation", oss: true, ent: true },
+      { label: "External storage (S3, Redis)", oss: true, ent: true },
+      { label: "Autoscaling", oss: false, ent: true },
+      { label: "Multi-region", oss: "DIY", ent: true },
     ],
   },
   {
     section: "Compatibility",
     rows: [
-      { label: "Supported build systems", oss: "All", cloud: "All", ent: "All + custom" },
+      { label: "Supported build systems", oss: "All", ent: "All + custom" },
       {
         label: "Operating systems",
         oss: "Linux, macOS",
-        cloud: "Linux, macOS, Windows",
         ent: "Linux, macOS, Windows",
       },
-      { label: "Org-wide sharing", oss: true, cloud: true, ent: true },
+      { label: "Org-wide sharing", oss: true, ent: true },
     ],
   },
   {
     section: "Operations",
     rows: [
-      { label: "GUI dashboard", oss: false, cloud: true, ent: true },
-      { label: "Build action breakdown", oss: false, cloud: true, ent: true },
-      { label: "Live build updates", oss: false, cloud: true, ent: true },
-      { label: "Audit logs / SSO", oss: false, cloud: true, ent: true },
+      { label: "GUI dashboard", oss: false, ent: true },
+      { label: "Build action breakdown", oss: false, ent: true },
+      { label: "Live build updates", oss: false, ent: true },
+      { label: "Audit logs / SSO", oss: false, ent: true },
     ],
   },
   {
@@ -99,10 +79,9 @@ const comparison: {
       {
         label: "Channel",
         oss: "Community Slack",
-        cloud: "Email + Slack",
         ent: "Dedicated engineer",
       },
-      { label: "Onboarding", oss: false, cloud: true, ent: "White-glove" },
+      { label: "Onboarding", oss: false, ent: "White-glove" },
     ],
   },
 ];
@@ -142,8 +121,8 @@ export default function PricingPage() {
                 .
               </h1>
               <p className="mx-auto mt-6 max-w-[640px] text-[17px] leading-relaxed text-muted-foreground md:text-lg">
-                Start free, self-host, or let us run your build farm. Three tiers that grow with
-                your team — no hidden fees, no per-user pricing.
+                Self-host for free, or let us run your build farm. Two tiers that grow with your
+                team — no hidden fees, no per-user pricing.
               </p>
             </div>
           </Reveal>
@@ -152,24 +131,10 @@ export default function PricingPage() {
 
       {/* TIERS */}
       <Section width="default" className="pb-24">
-        <div className="grid gap-5 md:grid-cols-3">
+        <div className="mx-auto grid max-w-[760px] gap-5 md:grid-cols-2">
           {tiers.map((tier, i) => (
             <Reveal key={tier.name} delay={i * 0.06}>
-              <div
-                className={cn(
-                  "relative flex h-full flex-col rounded-2xl p-8",
-                  tier.variant === "featured"
-                    ? "border-2 border-brand bg-brand-soft/30 shadow-[0_30px_80px_-30px_rgb(var(--nl-color-brand)/0.5)]"
-                    : "border border-border bg-surface",
-                )}
-              >
-                {tier.variant === "featured" && tier.badge && (
-                  <div className="absolute -top-3 left-1/2 -translate-x-1/2">
-                    <Badge variant="solid" className="bg-brand text-brand-foreground border-brand">
-                      {tier.badge}
-                    </Badge>
-                  </div>
-                )}
+              <div className="relative flex h-full flex-col rounded-2xl border border-border bg-surface p-8">
                 <h3 className="font-mono text-xs uppercase tracking-[0.18em] text-muted">
                   {tier.name}
                 </h3>
@@ -187,12 +152,7 @@ export default function PricingPage() {
                     <li key={f} className="flex items-start gap-3">
                       <span
                         aria-hidden="true"
-                        className={cn(
-                          "mt-0.5 inline-flex h-4 w-4 items-center justify-center rounded-full text-[10px]",
-                          tier.variant === "featured"
-                            ? "bg-brand text-brand-foreground"
-                            : "bg-brand-soft text-brand",
-                        )}
+                        className="mt-0.5 inline-flex h-4 w-4 items-center justify-center rounded-full bg-brand-soft text-[10px] text-brand"
                       >
                         ✓
                       </span>
@@ -201,12 +161,7 @@ export default function PricingPage() {
                   ))}
                 </ul>
                 <div className="mt-auto pt-10">
-                  <Button
-                    asChild
-                    size="lg"
-                    variant={tier.variant === "featured" ? "primary" : "outline"}
-                    className="w-full"
-                  >
+                  <Button asChild size="lg" variant="outline" className="w-full">
                     <a
                       href={tier.cta.href}
                       target={tier.cta.label === "Get started" ? "_blank" : undefined}
@@ -244,9 +199,6 @@ export default function PricingPage() {
                   <th className="bg-surface-elevated px-6 py-4 font-mono text-[10px] uppercase tracking-widest text-muted">
                     Open Source
                   </th>
-                  <th className="bg-brand-soft/40 px-6 py-4 font-mono text-[10px] uppercase tracking-widest text-brand">
-                    Cloud
-                  </th>
                   <th className="bg-surface-elevated px-6 py-4 font-mono text-[10px] uppercase tracking-widest text-muted">
                     Enterprise
                   </th>
@@ -257,7 +209,7 @@ export default function PricingPage() {
                   <Fragment key={group.section}>
                     <tr>
                       <td
-                        colSpan={4}
+                        colSpan={3}
                         className="border-t border-border bg-foreground/[0.015] px-6 py-3 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground"
                       >
                         {group.section}
@@ -268,9 +220,6 @@ export default function PricingPage() {
                         <td className="px-6 py-4 text-[15px] text-foreground">{row.label}</td>
                         <td className="px-6 py-4">
                           <Cell value={row.oss} />
-                        </td>
-                        <td className="bg-brand-soft/15 px-6 py-4">
-                          <Cell value={row.cloud} />
                         </td>
                         <td className="px-6 py-4">
                           {row.label === "Hosting" ? (

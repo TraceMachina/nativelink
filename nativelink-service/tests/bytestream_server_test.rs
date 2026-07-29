@@ -24,7 +24,7 @@ use hyper_util::rt::TokioIo;
 use hyper_util::server::conn::auto;
 use hyper_util::service::TowerToHyperService;
 use nativelink_config::cas_server::{ByteStreamConfig, HttpListener, WithInstanceName};
-use nativelink_config::stores::{MemorySpec, StoreSpec};
+use nativelink_config::stores::{MemorySpec, StoreSpec, VerifySpec};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_proto::google::bytestream::byte_stream_client::ByteStreamClient;
@@ -38,6 +38,7 @@ use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::channel_body_for_tests::ChannelBody;
 use nativelink_util::common::{DigestInfo, encode_stream_proto};
+use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
 use nativelink_util::store_trait::StoreLike;
 use nativelink_util::task::JoinHandleDropGuard;
 use nativelink_util::{background_spawn, spawn};
@@ -64,6 +65,24 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
         "main_cas",
         store_factory(
             &StoreSpec::Memory(MemorySpec::default()),
+            &store_manager,
+            None,
+        )
+        .await?,
+    )?;
+    Ok(store_manager)
+}
+
+async fn make_verify_store_manager() -> Result<Arc<StoreManager>, Error> {
+    let store_manager = Arc::new(StoreManager::new());
+    store_manager.add_store(
+        "main_cas",
+        store_factory(
+            &StoreSpec::Verify(Box::new(VerifySpec {
+                verify_size: true,
+                verify_hash: true,
+                backend: StoreSpec::Memory(MemorySpec::default()),
+            })),
             &store_manager,
             None,
         )
@@ -150,13 +169,19 @@ fn make_compressed_resource_name_with_compressor(
     hash: &str,
     data_len: impl core::fmt::Display,
 ) -> String {
-    format!("{INSTANCE_NAME}/uploads/{uuid}/compressed-blobs/{compressor}/{hash}/{data_len}")
+    format!("{INSTANCE_NAME}/uploads/{uuid}/compressed-blobs/{compressor}/sha256/{hash}/{data_len}")
 }
 
 fn sha256_hex(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(data);
     hex::encode(hasher.finalize())
+}
+
+fn blake3_hex(data: &[u8]) -> String {
+    let mut hasher = DigestHasherFunc::Blake3.hasher();
+    hasher.update(data);
+    hasher.finalize_digest().packed_hash().to_string()
 }
 
 async fn read_all_bytes(
@@ -329,6 +354,121 @@ pub async fn chunked_stream_receives_all_data() -> Result<(), Box<dyn core::erro
         );
     }
 
+    Ok(())
+}
+
+#[nativelink_test]
+pub async fn sha256_write_without_digest_segment_populates_cache()
+-> Result<(), Box<dyn core::error::Error>> {
+    const WRITE_DATA: &[u8] = b"sha256 cache entry without a digest segment";
+
+    let hash = sha256_hex(WRITE_DATA);
+    let store_manager = make_verify_store_manager().await?;
+    let bs_server = Arc::new(make_bytestream_server(&store_manager, None)?);
+    let write_resource_name = format!(
+        "{INSTANCE_NAME}/uploads/2dccbdca-8d6f-490c-8748-b3c723cf67a8/blobs/{hash}/{}",
+        WRITE_DATA.len()
+    );
+
+    let (tx, join_handle) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name: write_resource_name,
+        write_offset: 0,
+        finish_write: true,
+        data: WRITE_DATA.to_vec().into(),
+    })?))
+    .await?;
+    drop(tx);
+    join_handle.await??;
+
+    let cached_data = read_all_bytes(
+        &bs_server,
+        ReadRequest {
+            resource_name: format!("{INSTANCE_NAME}/blobs/{hash}/{}", WRITE_DATA.len()),
+            read_offset: 0,
+            read_limit: 0,
+        },
+    )
+    .await?;
+    assert_eq!(cached_data, WRITE_DATA);
+    Ok(())
+}
+
+#[nativelink_test]
+pub async fn explicit_blake3_write_overrides_sha256_default_with_warning()
+-> Result<(), Box<dyn core::error::Error>> {
+    const WRITE_DATA: &[u8] = b"content hashed with blake3";
+
+    let hash = blake3_hex(WRITE_DATA);
+    let digest = DigestInfo::try_new(&hash, WRITE_DATA.len())?;
+    let store_manager = make_verify_store_manager().await?;
+    let bs_server = Arc::new(make_bytestream_server(&store_manager, None)?);
+    let store = store_manager.get_store("main_cas").unwrap();
+    let resource_name = format!(
+        "{INSTANCE_NAME}/uploads/9eb44e87-1320-40e7-9154-bf19f3fdf94a/blobs/blake3/{hash}/{}",
+        WRITE_DATA.len()
+    );
+
+    let (tx, join_handle) = make_stream_and_writer_spawn(bs_server, None);
+    tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name,
+        write_offset: 0,
+        finish_write: true,
+        data: WRITE_DATA.to_vec().into(),
+    })?))
+    .await?;
+    drop(tx);
+
+    join_handle.await??;
+    assert_eq!(store.get_part_unchunked(digest, 0, None).await?, WRITE_DATA);
+    assert!(logs_contain(
+        "clients using different digest functions generate different cache keys and will not share cache hits"
+    ));
+    Ok(())
+}
+
+#[nativelink_test]
+pub async fn resumed_blake3_write_keeps_declared_digest_function()
+-> Result<(), Box<dyn core::error::Error>> {
+    const WRITE_DATA: &[u8] = b"resumed content hashed with blake3";
+    const BYTE_SPLIT_OFFSET: usize = 12;
+
+    let hash = blake3_hex(WRITE_DATA);
+    let digest = DigestInfo::try_new(&hash, WRITE_DATA.len())?;
+    let store_manager = make_verify_store_manager().await?;
+    let bs_server = Arc::new(make_bytestream_server(&store_manager, None)?);
+    let store = store_manager.get_store("main_cas").unwrap();
+    let resource_name = format!(
+        "{INSTANCE_NAME}/uploads/4dcec57e-1389-4ab5-b188-4a59f22ceb4b/blobs/blake3/{hash}/{}",
+        WRITE_DATA.len()
+    );
+
+    let (tx, join_handle) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name: resource_name.clone(),
+        write_offset: 0,
+        finish_write: false,
+        data: WRITE_DATA[..BYTE_SPLIT_OFFSET].to_vec().into(),
+    })?))
+    .await?;
+    drop(tx);
+    assert!(
+        join_handle.await?.is_err(),
+        "the disconnected partial write should remain resumable"
+    );
+
+    let (tx, join_handle) = make_stream_and_writer_spawn(bs_server, None);
+    tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name,
+        write_offset: BYTE_SPLIT_OFFSET.try_into()?,
+        finish_write: true,
+        data: WRITE_DATA[BYTE_SPLIT_OFFSET..].to_vec().into(),
+    })?))
+    .await?;
+    drop(tx);
+
+    join_handle.await??;
+    assert_eq!(store.get_part_unchunked(digest, 0, None).await?, WRITE_DATA);
     Ok(())
 }
 
