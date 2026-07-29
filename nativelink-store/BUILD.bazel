@@ -214,6 +214,7 @@ rust_test_suite(
         "@crates//:uuid",
         "@crates//:wincode",
         "@crates//:zip",
+        "@crates//:zstd",
     ],
 )
 
