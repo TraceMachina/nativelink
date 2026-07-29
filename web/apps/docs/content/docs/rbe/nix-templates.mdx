@@ -53,13 +53,11 @@ build --remote_timeout=600
 build --remote_executor=grpcs://TODO
 ```
 
-Three ways to fill in `TODO` — [Local Remote Execution → Point
+Two ways to fill in `TODO` — [Local Remote Execution → Point
 `user.bazelrc` at a real cache and executor](/rbe/local-remote-execution)
 has a worked, filled-in example of the file below, whichever option
 you pick:
 
-- **[dev.nativelink.com](https://dev.nativelink.com)** — paste your
-  cloud credentials, use `grpcs://`.
 - **A self-hosted cluster** — your own endpoint, `grpcs://` if it
   terminates TLS.
 - **Nothing but your own machine** — drop the `s`, point both

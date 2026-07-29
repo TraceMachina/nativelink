@@ -92,9 +92,8 @@ The recommended flow:
     build --remote_executor=grpcs://TODO
     ```
 
-    Fill these in with either your [dev.nativelink.com](https://dev.nativelink.com)
-    credentials or a self-hosted cluster with a worker capable of the
-    platform the example needs. A plain
+    Fill these in with a self-hosted cluster that has a worker capable
+    of the platform the example needs. A plain
     [local instance](/rbe/local-testing) (drop the `s` in `grpcs://`,
     point at `127.0.0.1`) is enough to validate `remote_cache`, but
     the C++ example's `lre-cc` platform still needs a real worker

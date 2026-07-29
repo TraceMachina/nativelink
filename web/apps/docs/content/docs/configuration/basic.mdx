@@ -176,6 +176,63 @@ actions, add a scheduler and at least one worker:
 
 Now the cluster will execute actions in addition to caching them.
 
+## Aligning digest functions
+
+Every NativeLink server, worker, and build client sharing a cache must
+use the same digest function. SHA-256 and BLAKE3 produce different
+cache keys for the same bytes, so uploads made with one function are
+cache misses for clients using the other.
+
+NativeLink defaults to SHA-256. Keep the default explicit in every
+NativeLink configuration:
+
+```json5
+{
+  global: {
+    max_open_files: 24576,
+    default_digest_hash_function: "sha256",
+  },
+  // ... stores, servers, schedulers, and workers ...
+}
+```
+
+Then configure Bazel clients to match in `.bazelrc`:
+
+```text
+startup --digest_function=sha256
+```
+
+If your clients use BLAKE3 instead, set both values to `blake3`.
+NativeLink accepts an explicitly declared non-default function, but it
+logs a warning because mixed digest functions divide the cache and
+reduce shared cache hits.
+
+### NativeLink build benchmark
+
+We compared both algorithms on an Apple M2 Max with 12 CPU cores and
+32 GB of memory, running macOS 15.6 and Bazel 9.1.1. Each of two
+alternating runs built `//:nativelink` against a fresh local
+NativeLink filesystem cache with hash and size verification enabled.
+Uploads were synchronous, and the Bazel output and NativeLink cache
+directories were isolated by algorithm.
+
+| Phase | SHA-256 runs | SHA-256 mean | BLAKE3 runs | BLAKE3 mean |
+| --- | --- | ---: | --- | ---: |
+| Compile and populate an empty cache | 179.90 s, 180.18 s | 180.04 s | 181.56 s, 185.57 s | 183.57 s |
+| Rebuild from the populated cache | 6.39 s, 5.93 s | 6.16 s | 6.74 s, 6.41 s | 6.58 s |
+
+Both population builds performed 2,620 actions. Each cached rebuild
+reported 1,458 remote cache hits. SHA-256 was 1.9% faster while
+populating the cache and 6.3% faster on the cached rebuild in this
+test, so SHA-256 remains the default.
+
+These are whole-build measurements from one macOS machine, not a
+universal hashing benchmark. Compilation, storage, scheduling, and
+operating-system caching dominate much of the elapsed time. Measure
+your own representative workload before changing algorithms; keeping
+every participant aligned matters more than a small isolated timing
+difference.
+
 ## Choosing instance names
 
 The `instance_name` field appears everywhere. It namespaces every
