@@ -7,6 +7,11 @@
 // before and does not advertise chunking support. When enabled, clients
 // upload and download large blobs as content-defined chunks, so small
 // changes to large outputs only transfer the chunks that changed.
+//
+// This example configures the CAS service for CDC-aware external clients.
+// NativeLink worker/StoreDriver uploads use a separate opt-in:
+// `experimental_chunked_uploads` on the worker's upstream grpc CAS store.
+// Ordinary external ByteStream uploads remain unchanged.
 {
   stores: [
     {

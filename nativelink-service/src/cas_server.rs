@@ -232,6 +232,15 @@ impl CasServer {
                         "'experimental_chunking.index_store' of instance '{}' must not be set when 'cas_store' is a grpc store: SplitBlob/SpliceBlob are forwarded to the backend",
                         config.instance_name
                     );
+                    if let Some(grpc_store) = store.downcast_ref::<GrpcStore>(None)
+                        && let Some(upload_avg) = grpc_store.chunked_upload_avg_chunk_size_bytes()
+                    {
+                        error_if!(
+                            upload_avg != avg_chunk_size_bytes,
+                            "'experimental_chunking.avg_chunk_size_bytes' of instance '{}' ({avg_chunk_size_bytes}) must match the grpc store's 'experimental_chunked_uploads.avg_chunk_size_bytes' ({upload_avg})",
+                            config.instance_name
+                        );
+                    }
                     // No ChunkingInstance: the forwarding shortcut in the
                     // handlers takes over before local chunking is reached.
                     stores.insert(config.instance_name.clone(), store);
