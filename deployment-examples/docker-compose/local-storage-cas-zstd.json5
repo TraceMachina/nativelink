@@ -53,9 +53,11 @@
       compression: {
         compression_algorithm: {
           zstd: {
-            // Staging directory for upload validation and optional
-            // recompression. Kept on the same `/root/.cache/nativelink` tree as
-            // the `filesystem` backend's `content_path` below (note 2 above).
+            // Staging directory for upload validation. MUST be on the same
+            // filesystem as the `filesystem` backend's `content_path` below:
+            // that backend commits a staged upload with rename(2), which fails
+            // with EXDEV across filesystems. Kept on the same
+            // `/root/.cache/nativelink` tree here for exactly that reason.
             temp_path: "/root/.cache/nativelink/tmp_path-cas-zstd-stage",
 
             // Reject a compressed upload over this many wire bytes with
@@ -63,15 +65,24 @@
             max_compressed_upload_size: "512MiB",
 
             // How many uploads may hold a staged file at once. Sizes worst-case
-            // temp disk usage together with the two size limits below:
-            //   max_concurrent_staged_uploads * (max_compressed_upload_size + max_recompression_size)
-            // (the recompression term only applies while a given upload is
-            // actively being re-encoded). Monitor `temp_path` against that bound.
+            // temp disk usage together with max_compressed_upload_size:
+            //   max_concurrent_staged_uploads * max_compressed_upload_size
+            // Recompression adds no staging file (it reuses the same
+            // descriptor), but does hold up to max_recompression_size in memory.
+            // Monitor `temp_path` against the disk bound.
             max_concurrent_staged_uploads: 4,
 
-            // Optional: force re-encoding at this level when it beats the
-            // incoming stream, keeping whichever is smaller. Omit entirely for
-            // pure passthrough (no forced recompression).
+            // How many uncompressed (identity) reads and writes to admit at
+            // once. Identity clients — anything without
+            // --remote_cache_compression — are encoded/decoded on a blocking
+            // thread held for the whole transfer, so this bound keeps a flood of
+            // slow identity clients from starving the process-wide blocking pool
+            // that filesystem I/O also uses.
+            max_concurrent_identity_ops: 256,
+
+            // Level used to encode uploads this store compresses itself, and to
+            // re-encode incoming compressed uploads when
+            // max_recompression_size > 0. Omit for the default of 3.
             //
             // Valid range is 1..=19 — enforced at startup. This is *not* the
             // full zstd range (up to 22): standard levels 1-19 cap the encoded
@@ -82,17 +93,46 @@
             // is what caps the field, not a smaller "safe zstd" limit. Long-
             // distance matching and dictionaries are never enabled by this
             // store.
-            compression_level: 19,
+            //
+            // 9 is a general-purpose default here: it costs a fraction of level
+            // 19's CPU per byte. Raise it toward 19 for an archival cache whose
+            // blobs are read far more often than written.
+            compression_level: 9,
 
             // Recompression is only attempted for uploads whose *decoded* size
-            // is within this bound. 0 disables recompression entirely (an
+            // is within this bound, and the smaller of the original and
+            // re-encoded stream is kept. 0 disables recompression entirely (an
             // incoming compressed stream is always stored as-is), while still
             // letting `compression_level` pick the level used for brand-new,
-            // non-precompressed uploads.
+            // non-precompressed uploads. A positive value requires
+            // `compression_level`; without it, startup fails rather than
+            // silently doing nothing.
             max_recompression_size: "64MiB",
 
             // Concurrent recompressions admitted by this store instance.
+            // Recompression is best-effort: an upload that finds every slot busy
+            // commits its original stream rather than queueing, so a small pool
+            // here throttles recompression without throttling uploads.
             max_concurrent_recompressions: 1,
+
+            // Compressed uploads at or below this size are validated and
+            // committed straight from memory, with no staging file and no
+            // fsync. BatchUpdateBlobs payloads are small and numerous, so a
+            // per-blob disk round trip would dominate their cost.
+            max_inline_commit_size: "4MiB",
+
+            // Total time one upload may spend being validated and staged,
+            // measured from admission to a staging slot. Unlike the ByteStream
+            // per-message idle timeout, continuous slow progress does NOT reset
+            // it, so this is the bound on a client that trickles bytes to hold a
+            // staging slot open. Size it against max_compressed_upload_size and
+            // the slowest upload bandwidth worth serving.
+            stage_timeout_s: 600,
+
+            // Time budget for a staged upload's optional recompression plus the
+            // inner-store commit, after the client stream is done. Bounds a
+            // stalled backend holding a staging slot.
+            commit_timeout_s: 300,
           },
         },
 
@@ -121,6 +161,7 @@
               },
             },
           },
+        },
       },
     },
     {

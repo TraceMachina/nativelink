@@ -25,6 +25,7 @@ use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_proto::build::bazel::remote::execution::v2::compressor;
 
 use crate::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
+use crate::store_trait::WireCompressor;
 use crate::common::DigestInfo;
 use crate::digest_hasher::{DigestHasher, DigestHasherFunc};
 
@@ -346,4 +347,18 @@ pub async fn stream_encode_compressed_download_from_reader(
     tx.send_eof()
         .err_tip(|| "Failed to send compressed download EOF")?;
     Ok(())
+}
+
+/// Translate a negotiated REAPI compressor into the store-level wire
+/// representation, or `None` when no store can serve that compressor's bytes
+/// directly. Keeps the passthrough fast paths from assuming a compressor the
+/// client did not actually negotiate.
+#[must_use]
+pub const fn wire_compressor_capability(
+    compressor_value: compressor::Value,
+) -> Option<WireCompressor> {
+    match compressor_value {
+        compressor::Value::Zstd => Some(WireCompressor::Zstd),
+        _ => None,
+    }
 }

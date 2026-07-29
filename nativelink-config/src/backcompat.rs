@@ -102,6 +102,8 @@ where
                         max_bytes_per_stream: old_config.max_bytes_per_stream,
                         persist_stream_on_disconnect_timeout_s: old_config
                             .persist_stream_on_disconnect_timeout_s,
+                        // Not expressible in the deprecated config; take the default.
+                        compressed_upload_idle_timeout_s: 0,
                     },
                 })
                 .collect();

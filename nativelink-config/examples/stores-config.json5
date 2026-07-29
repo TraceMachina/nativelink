@@ -186,9 +186,12 @@
            "temp_path": "/var/tmp/nativelink-zstd",
            "max_compressed_upload_size": "512MiB",
            "max_concurrent_staged_uploads": 4,
-           "compression_level": 19,
+           "max_concurrent_identity_ops": 256,
+           "compression_level": 9,
            "max_recompression_size": "64MiB",
            "max_concurrent_recompressions": 1,
+           "max_inline_commit_size": "4MiB",
+           "stage_timeout_s": 600,
            "commit_timeout_s": 300
          }
        },

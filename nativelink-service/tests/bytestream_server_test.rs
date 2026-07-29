@@ -106,11 +106,7 @@ async fn make_zstd_store_manager() -> Result<Arc<StoreManager>, Error> {
         compression_algorithm: CompressionAlgorithm::Zstd(ZstdConfig {
             temp_path,
             max_compressed_upload_size: 512 * 1024 * 1024,
-            max_concurrent_staged_uploads: 0,
-            compression_level: None,
-            max_recompression_size: 0,
-            max_concurrent_recompressions: 0,
-            commit_timeout_s: 0,
+            ..ZstdConfig::default()
         }),
     }));
     store_manager.add_store(
@@ -148,6 +144,7 @@ fn make_bytestream_server_with_remote_cache_compression(
             config: ByteStreamConfig {
                 cas_store: "main_cas".to_string(),
                 persist_stream_on_disconnect_timeout_s: 0,
+                compressed_upload_idle_timeout_s: 0,
                 max_bytes_per_stream: 1024,
             },
         }]
@@ -2176,7 +2173,7 @@ pub async fn zstd_store_compressed_write_round_trip() -> Result<(), Box<dyn core
         .expect("Failed write");
     assert_eq!(
         server_result.into_inner().committed_size,
-        compressed.len() as i64,
+        i64::try_from(compressed.len()).unwrap(),
         "compressed write to a ZstdStore must report the compressed wire byte count"
     );
 
@@ -2226,7 +2223,7 @@ pub async fn zstd_store_compressed_write_round_trip() -> Result<(), Box<dyn core
         .into_inner()
         .committed_size;
     assert!(
-        committed_size == -1 || committed_size == compressed.len() as i64,
+        committed_size == -1 || committed_size == i64::try_from(compressed.len()).unwrap(),
         "re-upload committed_size must be -1 or the compressed byte count {}; got {committed_size}",
         compressed.len()
     );
@@ -2275,7 +2272,7 @@ pub async fn zstd_store_compressed_read_offset_uses_fallback()
                 hash,
                 raw_data.len()
             ),
-            read_offset: read_offset as i64,
+            read_offset: i64::try_from(read_offset).unwrap(),
             read_limit: 0,
         },
     )
@@ -2324,7 +2321,7 @@ pub async fn zstd_store_identity_write_and_read_round_trip()
         .expect("Failed write");
     assert_eq!(
         server_result.into_inner().committed_size,
-        raw_data.len() as i64
+        i64::try_from(raw_data.len()).unwrap()
     );
 
     let read_data = read_all_bytes(
@@ -2332,7 +2329,7 @@ pub async fn zstd_store_identity_write_and_read_round_trip()
         ReadRequest {
             resource_name: format!("{}/blobs/{}/{}", INSTANCE_NAME, hash, raw_data.len()),
             read_offset: 0,
-            read_limit: raw_data.len() as i64,
+            read_limit: i64::try_from(raw_data.len()).unwrap(),
         },
     )
     .await?;
@@ -2412,10 +2409,7 @@ async fn make_zstd_store_manager_with_staging(
             temp_path,
             max_compressed_upload_size: 512 * 1024 * 1024,
             max_concurrent_staged_uploads,
-            compression_level: None,
-            max_recompression_size: 0,
-            max_concurrent_recompressions: 0,
-            commit_timeout_s: 0,
+            ..ZstdConfig::default()
         }),
     }));
     store_manager.add_store(
@@ -2444,6 +2438,9 @@ async fn zstd_compressed_upload_idle_timeout_frees_staging_slot()
         config: ByteStreamConfig {
             cas_store: "main_cas".to_string(),
             persist_stream_on_disconnect_timeout_s: 1,
+            // The knob under test: how long to wait for the next WriteRequest
+            // of a compressed upload.
+            compressed_upload_idle_timeout_s: 1,
             max_bytes_per_stream: 1024,
         },
     }];
@@ -2522,6 +2519,9 @@ async fn zstd_compressed_upload_making_progress_is_not_idle_timed_out()
         config: ByteStreamConfig {
             cas_store: "main_cas".to_string(),
             persist_stream_on_disconnect_timeout_s: 1,
+            // The knob under test: how long to wait for the next WriteRequest
+            // of a compressed upload.
+            compressed_upload_idle_timeout_s: 1,
             max_bytes_per_stream: 1024,
         },
     }];
@@ -2548,7 +2548,7 @@ async fn zstd_compressed_upload_making_progress_is_not_idle_timed_out()
         let end = (offset + chunk_len).min(compressed.len());
         tx.send(Frame::data(encode_stream_proto(&WriteRequest {
             resource_name: resource_name.clone(),
-            write_offset: offset as i64,
+            write_offset: i64::try_from(offset).unwrap(),
             finish_write: end == compressed.len(),
             data: Bytes::copy_from_slice(&compressed[offset..end]),
         })?))

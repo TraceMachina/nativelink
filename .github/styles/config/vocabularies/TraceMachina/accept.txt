@@ -327,3 +327,13 @@ windowLog
 [Ii]nterop
 [Dd]esynchronization
 max_recompression_size
+EXDEV
+[Oo]bservability
+[Uu]nguessable
+fsync
+max_concurrent_staged_uploads
+max_concurrent_identity_ops
+max_inline_commit_size
+stage_timeout_s
+commit_timeout_s
+compressed_upload_idle_timeout_s

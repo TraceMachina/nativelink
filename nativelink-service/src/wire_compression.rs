@@ -16,7 +16,14 @@
 //!
 //! This module handles compression/decompression of blob data on the gRPC wire
 //! between client and server, per the REAPI compressed-blobs specification.
-//! This is orthogonal to at-rest compression (`CompressionStore` with LZ4).
+//!
+//! Wire compression is independent of at-rest compression, but not always
+//! disjoint from it: a store whose physical representation already matches the
+//! negotiated wire representation can serve and accept those bytes directly.
+//! Such a store advertises itself through
+//! [`WireCompressionStore`](nativelink_util::store_trait::WireCompressionStore),
+//! and the `ByteStream`/CAS services use that capability to skip the codecs
+//! here. See [`wire_compressor_capability`].
 
 use std::collections::HashSet;
 
@@ -29,7 +36,7 @@ use nativelink_util::spawn_blocking;
 // existing service callers keep their import paths.
 pub use nativelink_util::wire_compression::{
     ZSTD_COMPRESSION_LEVEL, compress, decompress, stream_decode_compressed_upload,
-    stream_encode_compressed_download,
+    stream_encode_compressed_download, wire_compressor_capability,
 };
 use tracing::warn;
 

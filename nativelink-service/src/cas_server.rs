@@ -55,7 +55,7 @@ use tokio_util::io::StreamReader;
 use tonic::{Request, Response, Status};
 use tracing::{Instrument, Level, debug, error_span, instrument, warn};
 
-use crate::wire_compression::RemoteCacheCompressionInstances;
+use crate::wire_compression::{RemoteCacheCompressionInstances, wire_compressor_capability};
 
 /// Metrics for the experimental `SplitBlob`/`SpliceBlob` chunking RPCs.
 /// The split hit rate (`split_hits` / `split_requests_total`) indicates how
@@ -385,7 +385,9 @@ impl CasServer {
                         .err_tip(|| "Digest not found in request")?;
                     let digest_info = DigestInfo::try_from(digest.clone())?;
 
-                    let request_compressor = compressor::Value::try_from(request.compressor).ok();
+                    let request_capability = compressor::Value::try_from(request.compressor)
+                        .ok()
+                        .and_then(wire_compressor_capability);
                     // Apply a per-blob deadline so one slow upload does not
                     // make the whole batch hit the client's overall deadline.
                     // The fast path is only taken when remote cache
@@ -394,8 +396,8 @@ impl CasServer {
                     // `decompress_batch_update` below, which rejects it the
                     // same way it would without a wire-compression capability.
                     let result = if remote_cache_compression_enabled
-                        && let (Some(wire_store), Some(compressor::Value::Zstd)) =
-                            (maybe_wire_store.clone(), request_compressor)
+                        && let (Some(wire_store), Some(capability)) =
+                            (maybe_wire_store.clone(), request_capability)
                     {
                         // Fast path: hand the compressed bytes straight to the
                         // wire-capable store, which validates them against the
@@ -409,12 +411,11 @@ impl CasServer {
                             wire_store.update_compressed_oneshot(
                                 digest_info,
                                 digest_function,
-                                WireCompressor::Zstd,
+                                capability,
                                 request.data,
                             ),
                         )
                         .await
-                        .map(|_| ())
                     } else {
                         let size_bytes = usize::try_from(digest_info.size_bytes())
                             .err_tip(|| "Digest size_bytes was not convertible to usize")?;
@@ -491,51 +492,39 @@ impl CasServer {
                     // TODO(palfrey) There is a security risk here of someone taking all the memory on the instance.
                     // Apply a per-blob deadline so one slow read does not
                     // make the whole batch hit the client's overall deadline.
-                    let (status, data, response_compressor) = if let Some(wire_store) =
-                        maybe_wire_store.clone()
-                    {
-                        let acceptable_compressors =
-                            client_accepts_zstd.then_some(WireCompressor::Zstd);
-                        // Fast path: the wire-capable store chooses between its stored
-                        // zstd bytes (when the client accepts zstd and they are
-                        // smaller than the raw size) and the decoded raw bytes,
-                        // avoiding a decompress-then-recompress round trip.
-                        let result = run_batch_blob_with_timeout(
-                            "BatchReadBlobs",
-                            digest_copy,
-                            "Error reading from store",
-                            wire_store.get_for_batch(
+                    let outcome: Result<(Bytes, compressor::Value), Error> =
+                        if let Some(wire_store) = maybe_wire_store.clone() {
+                            // Fast path: the wire-capable store chooses between its
+                            // stored zstd bytes (when the client accepts zstd and they
+                            // are smaller than the raw size) and the decoded raw bytes,
+                            // avoiding a decompress-then-recompress round trip.
+                            let acceptable_compressors =
+                                client_accepts_zstd.then_some(WireCompressor::Zstd);
+                            run_batch_blob_with_timeout(
+                                "BatchReadBlobs",
                                 digest_copy,
-                                acceptable_compressors.as_slice(),
-                            ),
-                        )
-                        .await;
-                        match result {
-                            Ok((data, maybe_compressor)) => {
-                                let compressor = match maybe_compressor {
+                                "Error reading from store",
+                                wire_store
+                                    .get_for_batch(digest_copy, acceptable_compressors.as_slice()),
+                            )
+                            .await
+                            .map(|(data, maybe_compressor)| {
+                                let chosen = match maybe_compressor {
                                     Some(WireCompressor::Zstd) => compressor::Value::Zstd,
                                     None => compressor::Value::Identity,
                                 };
-                                (GrpcStatus::default(), data, compressor)
-                            }
-                            Err(mut e) => {
-                                if e.code == Code::NotFound {
-                                    e.messages.resize_with(1, String::new);
-                                }
-                                (e.into(), Bytes::new(), compressor::Value::Identity)
-                            }
-                        }
-                    } else {
-                        let result = run_batch_blob_with_timeout(
-                            "BatchReadBlobs",
-                            digest_copy,
-                            "Error reading from store",
-                            store_ref.get_part_unchunked(digest_copy, 0, None),
-                        )
-                        .await;
-                        match result {
-                            Ok(raw_data) => {
-                                let (output_data, chosen_compressor) = if client_accepts_zstd {
+                                (data, chosen)
+                            })
+                        } else {
+                            let raw = run_batch_blob_with_timeout(
+                                "BatchReadBlobs",
+                                digest_copy,
+                                "Error reading from store",
+                                store_ref.get_part_unchunked(digest_copy, 0, None),
+                            )
+                            .await;
+                            match raw {
+                                Ok(raw_data) if client_accepts_zstd => {
                                     let data_for_compression = raw_data.clone();
                                     match spawn_blocking!("cas_encode_compressed_download", move || {
                                         crate::wire_compression::compress_for_batch_read(
@@ -544,27 +533,30 @@ impl CasServer {
                                     })
                                     .await
                                     {
-                                        Ok(compressed_result) => compressed_result,
+                                        Ok(compressed_result) => Ok(compressed_result),
                                         Err(e) => {
                                             warn!("Wire compression task failed for digest {:?}, falling back to identity: {}", digest, e);
-                                            (raw_data, compressor::Value::Identity)
+                                            Ok((raw_data, compressor::Value::Identity))
                                         }
                                     }
-                                } else {
-                                    (raw_data, compressor::Value::Identity)
-                                };
-
-                                (GrpcStatus::default(), output_data, chosen_compressor)
-                            }
-                            Err(mut e) => {
-                                if e.code == Code::NotFound {
-                                    // Trim the error code. Not Found is quite common and we don't want to send a large
-                                    // error (debug) message for something that is common. We resize to just the last
-                                    // message as it will be the most relevant.
-                                    e.messages.resize_with(1, String::new);
                                 }
-                                (e.into(), Bytes::new(), compressor::Value::Identity)
+                                Ok(raw_data) => Ok((raw_data, compressor::Value::Identity)),
+                                Err(e) => Err(e),
                             }
+                        };
+                    let (status, data, response_compressor) = match outcome {
+                        Ok((data, chosen_compressor)) => {
+                            (GrpcStatus::default(), data, chosen_compressor)
+                        }
+                        Err(mut e) => {
+                            if e.code == Code::NotFound {
+                                // Trim the message chain. Not Found is quite common and
+                                // we don't want to send a large error (debug) message
+                                // for something that is common. We resize to just the
+                                // last message as it will be the most relevant.
+                                e.messages.resize_with(1, String::new);
+                            }
+                            (e.into(), Bytes::new(), compressor::Value::Identity)
                         }
                     };
                     Ok::<_, Error>(batch_read_blobs_response::Response {

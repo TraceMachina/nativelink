@@ -22,8 +22,8 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use nativelink_config::stores::{
     CacheMetricsSpec, CompressionAlgorithm, CompressionSpec, DedupSpec, ExistenceCacheSpec,
-    FastSlowSpec, MemorySpec, NoopSpec, RefSpec, ShardConfig, ShardSpec, SizePartitioningSpec,
-    StoreDirection, StoreSpec, ZstdConfig,
+    FastSlowSpec, FilesystemSpec, MemorySpec, NoopSpec, RefSpec, ShardConfig, ShardSpec,
+    SizePartitioningSpec, StoreDirection, StoreSpec, ZstdConfig,
 };
 use nativelink_error::{Code, Error, make_err};
 use nativelink_macro::nativelink_test;
@@ -34,6 +34,7 @@ use nativelink_store::dedup_store::DedupStore;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::existence_cache_store::ExistenceCacheStore;
 use nativelink_store::fast_slow_store::FastSlowStore;
+use nativelink_store::filesystem_store::{FileEntryImpl, FilesystemStore};
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_store::ref_store::RefStore;
 use nativelink_store::shard_store::ShardStore;
@@ -115,10 +116,7 @@ impl StoreDriver for RecordingStore {
         self
     }
 
-    fn register_remove_callback(
-        self: Arc<Self>,
-        _callback: RemoveCallback,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, _callback: RemoveCallback) -> Result<(), Error> {
         Ok(())
     }
 }
@@ -192,10 +190,7 @@ impl StoreDriver for ChunkingStore {
         self
     }
 
-    fn register_remove_callback(
-        self: Arc<Self>,
-        _callback: RemoveCallback,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, _callback: RemoveCallback) -> Result<(), Error> {
         Ok(())
     }
 }
@@ -208,11 +203,9 @@ fn spec() -> ZstdConfig {
     ZstdConfig {
         temp_path: TEMP_PATH.to_string(),
         max_compressed_upload_size: 512 * 1024 * 1024,
-        max_concurrent_staged_uploads: 0,
-        compression_level: None,
-        max_recompression_size: 0,
-        max_concurrent_recompressions: 0,
-        commit_timeout_s: 0,
+        // Exercise the staging path; the inline path has dedicated tests.
+        max_inline_commit_size: 1,
+        ..ZstdConfig::default()
     }
 }
 
@@ -565,15 +558,26 @@ async fn factory_selects_zstd_wire_capability() -> Result<(), Error> {
 
 /// A spec pointing at a specific temp dir (for tests that assert temp-dir
 /// emptiness and therefore must not share the global staging directory).
-const fn spec_for(temp_path: String) -> ZstdConfig {
+///
+/// `max_inline_commit_size: 1` forces even tiny oneshot payloads through the
+/// staging path, which is what most tests below are actually asserting about.
+/// The inline path has its own tests; see [`spec_for_inline`].
+fn spec_for(temp_path: String) -> ZstdConfig {
     ZstdConfig {
         temp_path,
         max_compressed_upload_size: 512 * 1024 * 1024,
-        max_concurrent_staged_uploads: 0,
-        compression_level: None,
-        max_recompression_size: 0,
-        max_concurrent_recompressions: 0,
-        commit_timeout_s: 0,
+        max_inline_commit_size: 1,
+        ..ZstdConfig::default()
+    }
+}
+
+/// Like [`spec_for`], but leaves `max_inline_commit_size` at its default so
+/// small compressed oneshot payloads take the in-memory commit path.
+fn spec_for_inline(temp_path: String) -> ZstdConfig {
+    ZstdConfig {
+        temp_path,
+        max_compressed_upload_size: 512 * 1024 * 1024,
+        ..ZstdConfig::default()
     }
 }
 
@@ -1752,10 +1756,7 @@ impl StoreDriver for ClobberingStore {
         self
     }
 
-    fn register_remove_callback(
-        self: Arc<Self>,
-        _callback: RemoveCallback,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, _callback: RemoveCallback) -> Result<(), Error> {
         Ok(())
     }
 }
@@ -1827,10 +1828,7 @@ impl StoreDriver for StallStore {
         self
     }
 
-    fn register_remove_callback(
-        self: Arc<Self>,
-        _callback: RemoveCallback,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, _callback: RemoveCallback) -> Result<(), Error> {
         Ok(())
     }
 }
@@ -2021,6 +2019,285 @@ async fn stalled_commit_times_out_and_releases_staging_slot() -> Result<(), Erro
         dir_entry_count(&temp),
         0,
         "the second timed-out commit must also clean up"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Inline commit path (small compressed oneshot payloads)
+// ---------------------------------------------------------------------------
+
+/// A compressed oneshot payload at or below `max_inline_commit_size` is
+/// validated and committed straight from memory: it round-trips correctly and
+/// never creates a staging file.
+#[nativelink_test]
+async fn inline_commit_skips_the_staging_file() -> Result<(), Error> {
+    const DATA: &[u8] = b"batch-sized payload committed without touching disk aaaaaaaa";
+
+    let temp = make_temp_path("zstd-inline");
+    let spec = spec_for_inline(temp.clone());
+    let (zstd, store, inner) = build(&spec).await?;
+    let compressed = zstd::bulk::compress(DATA, 3).unwrap();
+    let digest = digest_for(DATA);
+    assert!(
+        (compressed.len() as u64) <= 4 * 1024 * 1024,
+        "the payload must be inline-eligible for this test to mean anything"
+    );
+
+    zstd.update_zstd_oneshot(
+        digest,
+        DigestHasherFunc::Sha256,
+        Bytes::from(compressed.clone()),
+    )
+    .await?;
+
+    assert_eq!(
+        &inner.get_part_unchunked(digest, 0, None).await?[..],
+        &compressed[..],
+        "the inline commit must store the client's bytes verbatim"
+    );
+    assert_eq!(
+        &store.get_part_unchunked(digest, 0, None).await?[..],
+        DATA,
+        "the inline-committed blob must still decode through the identity view"
+    );
+    assert_eq!(
+        dir_entry_count(&temp),
+        0,
+        "an inline commit must never create a staging file"
+    );
+    Ok(())
+}
+
+/// The inline path validates against the declared digest just like staging does,
+/// and rejects a mismatch with `InvalidArgument` without storing anything.
+#[nativelink_test]
+async fn inline_commit_rejects_hash_mismatch() -> Result<(), Error> {
+    let temp = make_temp_path("zstd-inline-mismatch");
+    let (zstd, _store, inner) = build(&spec_for_inline(temp.clone())).await?;
+
+    let compressed = zstd::bulk::compress(b"inline payload", 3).unwrap();
+    let wrong_digest = digest_for(b"a completely different payload");
+
+    let err = zstd
+        .update_zstd_oneshot(
+            wrong_digest,
+            DigestHasherFunc::Sha256,
+            Bytes::from(compressed),
+        )
+        .await
+        .expect_err("an inline upload whose digest does not match must be rejected");
+    assert_eq!(err.code, Code::InvalidArgument, "got: {err}");
+    assert!(
+        inner
+            .get_part_unchunked(wrong_digest, 0, None)
+            .await
+            .is_err(),
+        "a rejected inline upload must not be committed"
+    );
+    assert_eq!(dir_entry_count(&temp), 0);
+    Ok(())
+}
+
+/// A oneshot payload larger than `max_inline_commit_size` is fed through the
+/// streaming staging path. When staging rejects it, the reported error must be
+/// staging's own `InvalidArgument` — not the `Internal` "failed to feed" error
+/// the feeder task produces as a *consequence* of the reader being dropped.
+#[nativelink_test]
+async fn large_oneshot_reports_the_validation_error_not_the_feed_error() -> Result<(), Error> {
+    let temp = make_temp_path("zstd-oneshot-error-order");
+    let mut spec = spec_for_inline(temp.clone());
+    spec.max_inline_commit_size = 1; // Force the streaming staging path.
+    let (zstd, _store, inner) = build(&spec).await?;
+
+    // Large enough that the feeder cannot hand the whole payload off before
+    // staging notices the mismatch and drops the reader.
+    let data = compressible_data(2 * 1024 * 1024);
+    let compressed = zstd::bulk::compress(&data, 3).unwrap();
+    let wrong_digest = digest_for(b"not the uploaded content");
+
+    let err = zstd
+        .update_zstd_oneshot(
+            wrong_digest,
+            DigestHasherFunc::Sha256,
+            Bytes::from(compressed),
+        )
+        .await
+        .expect_err("a digest mismatch must be rejected");
+    assert_eq!(
+        err.code,
+        Code::InvalidArgument,
+        "the staging error must win over the feeder's channel error, got: {err}"
+    );
+    assert!(
+        inner
+            .get_part_unchunked(wrong_digest, 0, None)
+            .await
+            .is_err(),
+        "a rejected upload must not be committed"
+    );
+    assert_eq!(dir_entry_count(&temp), 0);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Admission, deadlines, and config validation
+// ---------------------------------------------------------------------------
+
+/// `max_recompression_size` re-encodes at `compression_level`, so a positive
+/// ceiling with no level configured would silently do nothing. It is rejected at
+/// construction instead.
+#[nativelink_test]
+async fn new_rejects_recompression_size_without_a_level() -> Result<(), Error> {
+    let mut spec = spec_for(make_temp_path("zstd-recompress-no-level"));
+    spec.max_recompression_size = 1024 * 1024;
+    spec.compression_level = None;
+    let inner = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let err = ZstdStore::new(&spec, inner.clone())
+        .expect_err("max_recompression_size without compression_level must be rejected");
+    assert_eq!(err.code, Code::InvalidArgument, "got: {err}");
+
+    // With a level it constructs fine.
+    spec.compression_level = Some(9);
+    ZstdStore::new(&spec, inner)?;
+    Ok(())
+}
+
+/// A client that trickles bytes forever resets any per-message idle timeout, so
+/// the store applies a *total* validate-and-stage deadline. On expiry the upload
+/// fails with `DeadlineExceeded`, the staged file is removed, and the staging
+/// slot is released — proven by a second upload behind a bound of 1 completing.
+#[nativelink_test]
+async fn stage_timeout_bounds_a_trickling_client_and_frees_the_slot() -> Result<(), Error> {
+    const DATA: &[u8] = b"payload delivered one byte at a time aaaaaaaaaaaaaaaaaaaa";
+
+    let temp = make_temp_path("zstd-stage-timeout");
+    let mut spec = spec_for(temp.clone());
+    spec.max_concurrent_staged_uploads = 1;
+    spec.stage_timeout_s = 1;
+    let (zstd, _store, _inner) = build(&spec).await?;
+
+    let compressed = zstd::bulk::compress(DATA, 3).unwrap();
+    let digest = digest_for(DATA);
+
+    // A reader that hands over one byte every 100ms and never reaches EOF: every
+    // individual wait is short, but the upload never finishes.
+    let (mut tx, rx) = make_buf_channel_pair();
+    let stop = Arc::new(AtomicBool::new(false));
+    let trickle_stop = stop.clone();
+    let trickle = Bytes::from(compressed.clone());
+    background_spawn!("zstd_test_trickle", async move {
+        let mut index = 0usize;
+        while !trickle_stop.load(Ordering::Relaxed) {
+            let byte = trickle.slice(index % trickle.len()..).slice(..1);
+            if tx.send(byte).await.is_err() {
+                return;
+            }
+            index += 1;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    });
+
+    let err = zstd
+        .update_zstd(digest, DigestHasherFunc::Sha256, rx)
+        .await
+        .expect_err("a trickling upload must be bounded by the staging deadline");
+    assert_eq!(
+        err.code,
+        Code::DeadlineExceeded,
+        "a trickling upload must surface DeadlineExceeded, got: {err}"
+    );
+    // Stop trickling so the abandoned blocking task's reader errors and it can
+    // run its cleanup guard.
+    stop.store(true, Ordering::Relaxed);
+
+    // The staging permit must have been released with the deadline: with a bound
+    // of 1, a blocked permit would hang this second upload forever.
+    zstd.update_zstd_oneshot(
+        digest,
+        DigestHasherFunc::Sha256,
+        Bytes::from(compressed.clone()),
+    )
+    .await?;
+    // The abandoned blocking task cleans up once its reader errors, which happens
+    // asynchronously after the deadline fires.
+    while dir_entry_count(&temp) != 0 {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Commit against a `filesystem` backend (path-based commit, not descriptor)
+// ---------------------------------------------------------------------------
+
+/// A `filesystem` backend drops the staged descriptor and commits by
+/// `rename(2)` on the pathname, so the descriptor-pinning property that holds
+/// for streaming backends does *not* apply to it. What must still hold: the
+/// validated bytes land in the CAS, the staging directory is left empty, and the
+/// blob reads back correctly through both the physical and identity views.
+///
+/// `temp_path` deliberately sits next to the backend's `content_path` on one
+/// filesystem: a cross-device staging directory would make the commit fail with
+/// `EXDEV`.
+#[nativelink_test]
+async fn commit_to_filesystem_backend_round_trips() -> Result<(), Error> {
+    let data = compressible_data(96 * 1024);
+    let digest = digest_for(&data);
+
+    let root = make_temp_path("zstd-fs-backend");
+    let stage_path = format!("{root}/stage");
+    let content_path = format!("{root}/content");
+    let fs_temp_path = format!("{root}/fs-temp");
+    for path in [&stage_path, &content_path, &fs_temp_path] {
+        std::fs::create_dir_all(path)
+            .map_err(|e| make_err!(Code::Internal, "Failed to create {path}: {e}"))?;
+    }
+
+    let inner = Store::new(
+        FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+            content_path: content_path.clone(),
+            temp_path: fs_temp_path,
+            eviction_policy: None,
+            read_buffer_size: 0,
+            block_size: 0,
+            max_concurrent_writes: 0,
+            evict_page_cache: false,
+        })
+        .await?,
+    );
+    let mut spec = spec_for(stage_path.clone());
+    spec.max_inline_commit_size = 1; // Force the staging + commit path.
+    let zstd = ZstdStore::new(&spec, inner.clone())?;
+    let store = Store::new(zstd.clone());
+
+    let compressed = zstd::bulk::compress(&data, 3).unwrap();
+    zstd.update_zstd_oneshot(
+        digest,
+        DigestHasherFunc::Sha256,
+        Bytes::from(compressed.clone()),
+    )
+    .await?;
+
+    assert_eq!(
+        &inner.get_part_unchunked(digest, 0, None).await?[..],
+        &compressed[..],
+        "the filesystem backend must hold the validated zstd stream"
+    );
+    assert_eq!(
+        &store.get_part_unchunked(digest, 0, None).await?[..],
+        &data[..],
+        "the committed blob must decode to the original content"
+    );
+    assert_eq!(
+        collect_zstd(&zstd, digest).await?,
+        &compressed[..],
+        "passthrough reads must serve the stored stream byte-for-byte"
+    );
+    assert_eq!(
+        dir_entry_count(&stage_path),
+        0,
+        "a committed upload must leave the staging directory empty"
     );
     Ok(())
 }

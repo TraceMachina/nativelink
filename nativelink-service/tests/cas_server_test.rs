@@ -1035,15 +1035,11 @@ async fn batch_read_blobs_zstd_falls_back_to_identity_when_not_smaller()
 
 /// A passthrough zstd configuration over an in-memory backend with no
 /// recompression.
-const fn zstd_instance_spec(temp_path: String) -> ZstdConfig {
+fn zstd_instance_spec(temp_path: String) -> ZstdConfig {
     ZstdConfig {
         temp_path,
         max_compressed_upload_size: 512 * 1024 * 1024,
-        max_concurrent_staged_uploads: 0,
-        compression_level: None,
-        max_recompression_size: 0,
-        max_concurrent_recompressions: 0,
-        commit_timeout_s: 0,
+        ..ZstdConfig::default()
     }
 }
 
@@ -1216,7 +1212,7 @@ async fn batch_update_zstd_instance_roundtrip_and_corrupt_isolation()
     let bad_compressed = zstd::bulk::compress(&bad_raw, 3)?;
     let bad_digest = Digest {
         hash: HASH1.to_string(),
-        size_bytes: bad_raw.len() as i64,
+        size_bytes: i64::try_from(bad_raw.len()).unwrap(),
     };
 
     let response = cas_server
@@ -1341,7 +1337,7 @@ async fn batch_update_zstd_instance_rejected_when_remote_cache_compression_disab
     let compressed_data = zstd::bulk::compress(raw_data, 3)?;
     let digest = Digest {
         hash: HASH1.to_string(),
-        size_bytes: raw_data.len() as i64,
+        size_bytes: i64::try_from(raw_data.len()).unwrap(),
     };
 
     let Err(status) = cas_server
@@ -2212,10 +2208,7 @@ impl StoreDriver for SelectiveStallStore {
         self
     }
 
-    fn register_remove_callback(
-        self: Arc<Self>,
-        _callback: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, _callback: RemoveCallback) -> Result<(), Error> {
         Ok(())
     }
 }

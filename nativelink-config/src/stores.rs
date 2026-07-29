@@ -341,9 +341,10 @@ pub enum StoreSpec {
     ///       "temp_path": "/var/tmp/nativelink-zstd",
     ///       "max_compressed_upload_size": "512MiB",
     ///       "max_concurrent_staged_uploads": 4,
-    ///       "compression_level": 19,
+    ///       "compression_level": 9,
     ///       "max_recompression_size": "64MiB",
     ///       "max_concurrent_recompressions": 1,
+    ///       "stage_timeout_s": 600,
     ///       "commit_timeout_s": 300
     ///     }
     ///   },
@@ -1139,11 +1140,13 @@ pub struct CompressionSpec {
     pub compression_algorithm: CompressionAlgorithm,
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone)]
+#[derive(Serialize, Deserialize, Debug, Default, PartialEq, Eq, Clone)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ZstdConfig {
-    /// Operator-controlled staging directory for validation/recompression.
+    /// Operator-controlled staging directory for validation. Put it on the same
+    /// filesystem as a `filesystem` backend's `content_path`: that backend
+    /// commits by `rename(2)`, which fails with `EXDEV` across filesystems.
     #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
     pub temp_path: String,
 
@@ -1158,19 +1161,46 @@ pub struct ZstdConfig {
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_concurrent_staged_uploads: usize,
 
-    /// None (omitted) = pure passthrough. When set, validated 1..=19 at startup.
+    /// Max concurrent uncompressed (identity) reads and writes this store will
+    /// admit. Each one occupies a blocking thread for the whole transfer, so
+    /// this bound keeps a flood of slow identity clients from starving the
+    /// process-wide blocking pool that filesystem I/O also uses. `0` means "use
+    /// default 256" at construction time.
+    /// Default: 0
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub max_concurrent_identity_ops: usize,
+
+    /// Level used to encode uploads this store compresses itself (identity
+    /// uploads) and, when `max_recompression_size > 0`, to re-encode incoming
+    /// compressed uploads. Omitted uses level 3. Validated `1..=19` at startup.
     pub compression_level: Option<i32>,
 
-    /// Max uncompressed blob size eligible for optional recompression. `0` disables
-    /// recompression (still allows `compression_level` to pick the identity-upload level).
+    /// Max uncompressed blob size eligible for optional recompression of an
+    /// already-compressed upload. `0` disables recompression. Requires
+    /// `compression_level` to be set; a positive value without it is rejected
+    /// at startup rather than silently doing nothing.
     #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub max_recompression_size: u64,
 
-    /// Concurrent recompressions admitted by this store. `0` means "use default 1"
-    /// at construction time.
+    /// Concurrent recompressions admitted by this store. Recompression is
+    /// best-effort: an upload that finds every slot busy commits the client's
+    /// original stream instead of queueing behind them, so this never blocks a
+    /// staging slot. `0` means "use default 1" at construction time.
     /// Default: 0
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_concurrent_recompressions: usize,
+
+    /// Maximum time, in seconds, one upload may spend being validated and
+    /// staged, measured from the moment it is admitted to a staging slot. This
+    /// is the bound on a client that trickles bytes to hold a slot open: unlike
+    /// a per-message idle timeout, continuous slow progress does not reset it.
+    /// On expiry it fails with `DEADLINE_EXCEEDED`, removes the staged file, and
+    /// releases its slot. Size it against `max_compressed_upload_size` and the
+    /// slowest upload bandwidth worth serving.
+    /// `0` means "use default 600" at construction time.
+    /// Default: 0
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub stage_timeout_s: u64,
 
     /// Maximum time, in seconds, for a staged upload's optional recompression
     /// and inner-store commit. The timer starts after the client stream has
@@ -1181,6 +1211,15 @@ pub struct ZstdConfig {
     /// Default: 0
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub commit_timeout_s: u64,
+
+    /// Compressed uploads at or below this many bytes are validated and
+    /// committed straight from memory, with no staging file and no `fsync`.
+    /// `BatchUpdateBlobs` payloads are small and numerous, so writing each one
+    /// to disk would dominate their cost. Larger uploads always stage to
+    /// `temp_path`. `0` means "use default 4MiB" at construction time.
+    /// Default: 0
+    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
+    pub max_inline_commit_size: u64,
 }
 
 /// Eviction policy always works on LRU (Least Recently Used). Any time an entry
@@ -2008,5 +2047,28 @@ mod tests {
         assert_eq!(spec.max_recompression_size, 64 * 1024 * 1024);
         assert_eq!(spec.max_concurrent_staged_uploads, 0); // 0 = "use default 4" at construction
         assert_eq!(spec.max_concurrent_recompressions, 0); // 0 = "use default 1"
+        assert_eq!(spec.max_concurrent_identity_ops, 0); // 0 = "use default 256"
+        assert_eq!(spec.stage_timeout_s, 0); // 0 = "use default 600"
+        assert_eq!(spec.max_inline_commit_size, 0); // 0 = "use default 4MiB"
+    }
+
+    #[test]
+    fn zstd_compression_level_may_be_omitted() {
+        // `compression_level` has no `#[serde(default)]`; confirm the documented
+        // "omitted means the default level" spelling actually deserializes.
+        let cfg: StoreSpec = serde_json5::from_str(
+            r#"{ compression: { compression_algorithm: { zstd: {
+                 temp_path: "/var/tmp/nl-zstd", max_compressed_upload_size: "512MiB" } },
+                 backend: { memory: {} } } }"#,
+        )
+        .unwrap();
+        let StoreSpec::Compression(spec) = cfg else {
+            panic!("wrong variant")
+        };
+        let CompressionAlgorithm::Zstd(spec) = spec.compression_algorithm else {
+            panic!("wrong compression algorithm")
+        };
+        assert_eq!(spec.compression_level, None);
+        assert_eq!(spec.max_recompression_size, 0);
     }
 }

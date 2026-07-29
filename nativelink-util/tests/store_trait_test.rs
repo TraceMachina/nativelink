@@ -11,8 +11,8 @@ use nativelink_util::default_health_status_indicator;
 use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::health_utils::HealthStatusIndicator;
 use nativelink_util::store_trait::{
-    RemoveCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
-    WireCompressionStore, WireCompressor,
+    RemoveCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo, WireCompressionStore,
+    WireCompressor,
 };
 use tonic::async_trait;
 
@@ -171,10 +171,7 @@ impl StoreDriver for ForwardingWrapperStore {
         self
     }
 
-    fn register_remove_callback(
-        self: Arc<Self>,
-        _callback: RemoveCallback,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, _callback: RemoveCallback) -> Result<(), Error> {
         todo!();
     }
 }
