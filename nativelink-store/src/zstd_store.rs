@@ -27,7 +27,8 @@ use nativelink_config::stores::ZstdStoreSpec;
 use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{
-    DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
+    BufChannelReader, BufChannelWriter, DropCloserReadHalf, DropCloserWriteHalf,
+    make_buf_channel_pair,
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::{
@@ -80,87 +81,6 @@ const fn zstd_compress_bound(src_size: u64) -> u64 {
         .saturating_add(src_size >> 8)
         .saturating_add(low_bound_slack)
         .saturating_add(64)
-}
-
-/// A `std::io::Read` adapter over a [`DropCloserReadHalf`] that blocks the
-/// current (blocking) thread while waiting for the next chunk. Only safe to use
-/// from within `spawn_blocking!`.
-struct BufChannelReader {
-    rx: DropCloserReadHalf,
-    chunk: Bytes,
-    chunk_offset: usize,
-}
-
-impl BufChannelReader {
-    const fn new(rx: DropCloserReadHalf) -> Self {
-        Self {
-            rx,
-            chunk: Bytes::new(),
-            chunk_offset: 0,
-        }
-    }
-
-    fn refill_chunk(&mut self) -> std::io::Result<bool> {
-        while self.chunk_offset == self.chunk.len() {
-            self.chunk = self.rx.blocking_recv().map_err(Error::to_std_err)?;
-            self.chunk_offset = 0;
-            if self.chunk.is_empty() {
-                return Ok(false);
-            }
-        }
-        Ok(true)
-    }
-}
-
-impl Read for BufChannelReader {
-    fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
-        if output.is_empty() {
-            return Ok(0);
-        }
-        if !self.refill_chunk()? {
-            return Ok(0);
-        }
-        let chunk_remaining = &self.chunk[self.chunk_offset..];
-        let bytes_to_copy = output.len().min(chunk_remaining.len());
-        output[..bytes_to_copy].copy_from_slice(&chunk_remaining[..bytes_to_copy]);
-        self.chunk_offset += bytes_to_copy;
-        Ok(bytes_to_copy)
-    }
-}
-
-/// A `std::io::Write` adapter over a [`DropCloserWriteHalf`] that blocks the
-/// current (blocking) thread while forwarding chunks. Only safe to use from
-/// within `spawn_blocking!`. EOF is intentionally NOT sent on drop; the caller
-/// must call [`BufChannelWriter::send_eof`] explicitly once the upload is
-/// validated so a failed upload never commits to the inner store.
-struct BufChannelWriter {
-    tx: DropCloserWriteHalf,
-}
-
-impl BufChannelWriter {
-    const fn new(tx: DropCloserWriteHalf) -> Self {
-        Self { tx }
-    }
-
-    fn send_eof(&mut self) -> Result<(), Error> {
-        self.tx.send_eof()
-    }
-}
-
-impl Write for BufChannelWriter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        if buf.is_empty() {
-            return Ok(0);
-        }
-        self.tx
-            .blocking_send(Bytes::copy_from_slice(buf))
-            .map_err(Error::to_std_err)?;
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
 }
 
 /// Streaming zstd encode of an identity (raw) upload.
