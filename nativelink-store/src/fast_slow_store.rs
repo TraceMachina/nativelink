@@ -23,6 +23,7 @@ use std::ffi::OsString;
 use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use futures::stream::{FuturesUnordered, StreamExt};
 use futures::{FutureExt, join, try_join};
 use nativelink_config::stores::{FastSlowSpec, StoreDirection};
@@ -153,6 +154,9 @@ impl Drop for LoaderGuard<'_> {
         }
     }
 }
+
+/// Maximum concurrent fast-tier writes for one `update_many` batch.
+const FAST_TIER_UPDATE_CONCURRENCY: usize = 16;
 
 impl FastSlowStore {
     pub fn new(spec: &FastSlowSpec, fast_store: Store, slow_store: Store) -> Arc<Self> {
@@ -634,9 +638,108 @@ impl StoreDriver for FastSlowStore {
         data_stream_res.merge(fast_res).merge(slow_res)
     }
 
-    /// `FastSlowStore` has optimizations for dealing with files.
+    /// `FastSlowStore` has optimizations for dealing with files, and
+    /// advertises batched uploads when its slow tier can batch them.
     fn optimized_for(&self, optimization: StoreOptimizations) -> bool {
-        optimization == StoreOptimizations::FileUpdates
+        match optimization {
+            StoreOptimizations::FileUpdates => true,
+            StoreOptimizations::SubscribesToUpdateMany => {
+                self.slow_store
+                    .optimized_for(StoreOptimizations::SubscribesToUpdateMany)
+                    && self.slow_direction != StoreDirection::ReadOnly
+                    && self.slow_direction != StoreDirection::Get
+            }
+            _ => false,
+        }
+    }
+
+    /// Batched variant of `update()`: publishes every item to both tiers,
+    /// letting the slow tier amortize per-object wire costs via its own
+    /// `update_many` implementation. Only used on the batched path when the
+    /// slow tier subscribes to it; otherwise the default per-item loop
+    /// preserves `update()` semantics exactly.
+    ///
+    /// Note: in-flight slow-write guards are held until the entire batch
+    /// settles, so concurrent `has()` calls on any batch member block until
+    /// the whole batch completes (coarser than `update()`'s per-key window).
+    async fn update_many(
+        self: Pin<&Self>,
+        items: Vec<(StoreKey<'static>, Bytes)>,
+    ) -> Result<(), Error> {
+        let ignore_slow = self
+            .slow_store
+            .inner_store(None::<StoreKey>)
+            .optimized_for(StoreOptimizations::NoopUpdates)
+            || self.slow_direction == StoreDirection::ReadOnly
+            || self.slow_direction == StoreDirection::Get;
+        let ignore_fast = self
+            .fast_store
+            .inner_store(None::<StoreKey>)
+            .optimized_for(StoreOptimizations::NoopUpdates)
+            || self.fast_direction == StoreDirection::ReadOnly
+            || self.fast_direction == StoreDirection::Get;
+        let slow_can_batch = !ignore_slow
+            && self
+                .slow_store
+                .optimized_for(StoreOptimizations::SubscribesToUpdateMany);
+        if !slow_can_batch {
+            // Per-item updates through `update()` keep every existing
+            // semantic (noop/direction handling, in-flight registration).
+            for (key, data) in items {
+                self.as_store_driver_pin()
+                    .update_oneshot(key, data)
+                    .await
+                    .err_tip(|| "In FastSlowStore::update_many fallback")?;
+            }
+            return Ok(());
+        }
+
+        // Make the in-flight slow writes visible to concurrent has() calls,
+        // exactly like update() does per key.
+        let guards: Vec<(InFlightSlowWriteGuard, u64)> = items
+            .iter()
+            .map(|(key, data)| {
+                (
+                    self.register_in_flight_slow_write(key.borrow()),
+                    data.len() as u64,
+                )
+            })
+            .collect();
+
+        let slow_items: Vec<(StoreKey<'static>, Bytes)> = items
+            .iter()
+            .map(|(key, data)| (key.clone(), data.clone()))
+            .collect();
+        let slow_fut = self.slow_store.update_many(slow_items);
+        let fast_fut = async {
+            if ignore_fast {
+                return Ok(());
+            }
+            // The fast tier has no batched implementation; write with
+            // bounded concurrency instead of the serial default loop.
+            // Plain loop instead of an iterator closure: async closures
+            // over borrowed keys hit HRTB inference errors.
+            let fast_store = &self.fast_store;
+            let mut write_futures = Vec::with_capacity(items.len());
+            for (key, data) in items {
+                write_futures.push(async move { fast_store.update_oneshot(key, data).await });
+            }
+            let mut writes =
+                futures::stream::iter(write_futures).buffer_unordered(FAST_TIER_UPDATE_CONCURRENCY);
+            while let Some(result) = writes.next().await {
+                result.err_tip(|| "In FastSlowStore::update_many fast store item")?;
+            }
+            Ok::<(), Error>(())
+        };
+        let (slow_res, fast_res) = tokio::join!(slow_fut, fast_fut);
+        if slow_res.is_ok() {
+            for (guard, size) in guards {
+                guard.complete(Some(size));
+            }
+        }
+        slow_res
+            .err_tip(|| "In FastSlowStore::update_many slow store")
+            .merge(fast_res.err_tip(|| "In FastSlowStore::update_many fast store"))
     }
 
     /// Optimized variation to consume the file if one of the stores is a

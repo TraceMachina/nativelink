@@ -148,6 +148,17 @@ pub enum StoreOptimizations {
     /// channel overhead for direct Bytes writes. Stores with this optimization can
     /// accept complete data directly without going through the MPSC channel.
     SubscribesToUpdateOneshot,
+
+    /// The store provides an `update_many` implementation that amortizes
+    /// per-object fixed costs (e.g. one RPC per batch instead of one stream
+    /// per object). Callers with many small, fully-in-memory objects should
+    /// prefer `update_many` when this optimization is present.
+    ///
+    /// Contract for wrapper stores: a wrapper that forwards this
+    /// optimization MUST also forward `update_many`, otherwise call sites
+    /// pay batching overhead for a dispatch that dissolves into the serial
+    /// default implementation.
+    SubscribesToUpdateMany,
 }
 
 /// A wrapper struct for [`StoreKey`] to work around
@@ -560,6 +571,20 @@ pub trait StoreLike: Send + Sync + Sized + Unpin + 'static {
             .update_oneshot(digest.into(), data)
     }
 
+    /// Uploads many small, fully-in-memory objects in one operation. Stores
+    /// with [`StoreOptimizations::SubscribesToUpdateMany`] amortize
+    /// per-object fixed costs (e.g. one RPC per batch instead of one stream
+    /// per object); the default behavior is a loop of `update_oneshot`
+    /// calls. Callers should route large blobs through the streaming
+    /// `update` path and keep the total bytes of one call bounded.
+    #[inline]
+    fn update_many<'a>(
+        &'a self,
+        items: Vec<(StoreKey<'static>, Bytes)>,
+    ) -> impl Future<Output = Result<(), Error>> + Send + 'a {
+        self.as_store_driver_pin().update_many(items)
+    }
+
     /// Retrieves part of the data from the store and writes it to the given writer.
     #[inline]
     fn get_part<'a>(
@@ -723,6 +748,19 @@ pub trait StoreDriver:
             send_fut,
             self.update(key, rx, UploadSizeInfo::ExactSize(data_len))
         )?;
+        Ok(())
+    }
+
+    /// See: [`StoreLike::update_many`] for details.
+    async fn update_many(
+        self: Pin<&Self>,
+        items: Vec<(StoreKey<'static>, Bytes)>,
+    ) -> Result<(), Error> {
+        for (key, data) in items {
+            self.update_oneshot(key, data)
+                .await
+                .err_tip(|| "In default update_many implementation")?;
+        }
         Ok(())
     }
 
