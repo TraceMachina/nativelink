@@ -28,3 +28,5 @@ buck-out/
 nativelink_config.schema.json
 .gstack/
 .worktrees/
+
+# CI smoke test — safe to remove
