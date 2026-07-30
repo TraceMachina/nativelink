@@ -24,7 +24,7 @@ use nativelink_error::{Code, Error};
 use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::compressor;
 use nativelink_service::wire_compression::{
-    compress, decompress, decompress_batch_update, resolve_wire_compressor,
+    ZSTD_COMPRESSION_LEVEL, compress, decompress, decompress_batch_update, resolve_wire_compressor,
     stream_encode_compressed_download,
 };
 use nativelink_util::buf_channel::make_buf_channel_pair;
@@ -240,6 +240,7 @@ fn held_compressed_download_streams_must_not_starve_blocking_pool() {
                     stream_encode_compressed_download(
                         raw_rx,
                         compressor::Value::Zstd,
+                        ZSTD_COMPRESSION_LEVEL,
                         compressed_tx,
                     )
                 );

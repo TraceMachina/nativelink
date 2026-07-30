@@ -41,6 +41,7 @@ rust_library(
         "src/task.rs",
         "src/telemetry.rs",
         "src/tls_utils.rs",
+        "src/wire_compression.rs",
     ],
     proc_macro_deps = [
         "@crates//:async-trait",
@@ -90,6 +91,7 @@ rust_library(
         "@crates//:uuid",
         "@crates//:walkdir",
         "@crates//:wincode",
+        "@crates//:zstd",
     ],
 )
 
@@ -115,6 +117,7 @@ rust_test_suite(
         "tests/store_trait_test.rs",
         "tests/telemetry_test.rs",
         "tests/tls_utils_test.rs",
+        "tests/wire_compression_test.rs",
     ],
     compile_data = [
         "tests/data/SekienAkashita.jpg",
@@ -163,6 +166,7 @@ rust_test_suite(
         "@crates//:tracing",
         "@crates//:tracing-test",
         "@crates//:uuid",
+        "@crates//:zstd",
     ],
 )
 

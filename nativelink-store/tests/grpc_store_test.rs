@@ -62,6 +62,7 @@ fn test_spec<T: Into<String>>(endpoint: T, use_legacy_resource_names: bool) -> G
         headers: HashMap::new(),
         forward_headers: vec![],
         experimental_read_batching: None,
+        experimental_remote_cache_compression: false,
     }
 }
 
