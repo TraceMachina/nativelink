@@ -125,7 +125,17 @@ message ActionResourceUsage {
     /// The worker ID that observed the resource usage.
     string worker_id = 4;
 
-    reserved 5; // NextId.
+    /// Total user-mode CPU time consumed by the action's process group in
+    /// nanoseconds, when the platform sampler collects it. Zero when
+    /// unavailable.
+    uint64 cpu_user_ns = 5;
+
+    /// Total kernel-mode CPU time consumed by the action's process group in
+    /// nanoseconds, when the platform sampler collects it. Zero when
+    /// unavailable.
+    uint64 cpu_system_ns = 6;
+
+    reserved 7; // NextId.
 }
 
 /// Result sent back from the server when a node connects.

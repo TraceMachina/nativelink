@@ -104,6 +104,16 @@ pub struct ActionResourceUsage {
     /// / The worker ID that observed the resource usage.
     #[prost(string, tag = "4")]
     pub worker_id: ::prost::alloc::string::String,
+    /// / Total user-mode CPU time consumed by the action's process group in
+    /// / nanoseconds, when the platform sampler collects it. Zero when
+    /// / unavailable.
+    #[prost(uint64, tag = "5")]
+    pub cpu_user_ns: u64,
+    /// / Total kernel-mode CPU time consumed by the action's process group in
+    /// / nanoseconds, when the platform sampler collects it. Zero when
+    /// / unavailable.
+    #[prost(uint64, tag = "6")]
+    pub cpu_system_ns: u64,
 }
 /// / Result sent back from the server when a node connects.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

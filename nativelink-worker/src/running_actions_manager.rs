@@ -99,37 +99,53 @@ const REQUIRES_WORKER_PROTOCOL_PROPERTY: &str = "requires-worker-protocol";
 const DEFAULT_HISTORICAL_RESULTS_STRATEGY: UploadCacheResultsStrategy =
     UploadCacheResultsStrategy::FailuresOnly;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 const RESOURCE_USAGE_SAMPLE_INTERVAL: Duration = Duration::from_millis(250);
 
-#[cfg(target_os = "linux")]
-struct ActionResourceUsageSampler {
-    stop_tx: watch::Sender<bool>,
-    handle: tokio::task::JoinHandle<u64>,
+/// Resource usage aggregated by the platform sampler over one action's
+/// process group. CPU totals are collected on macOS only today; Linux
+/// reports memory only.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[derive(Clone, Copy, Default)]
+struct SampledResourceUsage {
+    peak_memory_kb: u64,
+    cpu_user_ns: u64,
+    cpu_system_ns: u64,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+struct ActionResourceUsageSampler {
+    stop_tx: watch::Sender<bool>,
+    handle: tokio::task::JoinHandle<SampledResourceUsage>,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn start_action_resource_usage_sampler(pgid: u32) -> ActionResourceUsageSampler {
     let (stop_tx, stop_rx) = watch::channel(false);
     let handle = background_spawn!(
         "action_resource_usage_sampler",
-        sample_action_peak_memory_kb(pgid, stop_rx)
+        sample_action_resource_usage(pgid, stop_rx)
     );
     ActionResourceUsageSampler { stop_tx, handle }
 }
 
-#[cfg(target_os = "linux")]
-async fn finish_action_resource_usage_sampler(sampler: ActionResourceUsageSampler) -> Option<u64> {
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+async fn finish_action_resource_usage_sampler(
+    sampler: ActionResourceUsageSampler,
+) -> Option<SampledResourceUsage> {
     let _ = sampler.stop_tx.send(true);
     sampler.handle.await.ok()
 }
 
 #[cfg(target_os = "linux")]
-async fn sample_action_peak_memory_kb(pgid: u32, mut stop_rx: watch::Receiver<bool>) -> u64 {
-    let mut peak_memory_kb = 0;
+async fn sample_action_resource_usage(
+    pgid: u32,
+    mut stop_rx: watch::Receiver<bool>,
+) -> SampledResourceUsage {
+    let mut usage = SampledResourceUsage::default();
     loop {
         if let Some(memory_kb) = sample_process_group_memory_kb(pgid) {
-            peak_memory_kb = peak_memory_kb.max(memory_kb);
+            usage.peak_memory_kb = usage.peak_memory_kb.max(memory_kb);
         } else if !Path::new(&format!("/proc/{pgid}")).exists() {
             // The group leader has been reaped and no member process remains,
             // so the action is finished.
@@ -144,7 +160,7 @@ async fn sample_action_peak_memory_kb(pgid: u32, mut stop_rx: watch::Receiver<bo
             changed = stop_rx.changed() => {
                 if changed.is_ok() && *stop_rx.borrow() {
                     if let Some(memory_kb) = sample_process_group_memory_kb(pgid) {
-                        peak_memory_kb = peak_memory_kb.max(memory_kb);
+                        usage.peak_memory_kb = usage.peak_memory_kb.max(memory_kb);
                     }
                     break;
                 }
@@ -152,7 +168,136 @@ async fn sample_action_peak_memory_kb(pgid: u32, mut stop_rx: watch::Receiver<bo
             () = tokio::time::sleep(RESOURCE_USAGE_SAMPLE_INTERVAL) => {}
         }
     }
-    peak_memory_kb
+    usage
+}
+
+/// Samples the action's process group via `proc_listpids` and
+/// `proc_pid_rusage`, mirroring the Linux `/proc` sampler: peak resident
+/// memory is the maximum over per-tick sums, and CPU totals are the sum of
+/// the last-seen cumulative user/system time per member pid (cumulative per
+/// process, so members that exit between ticks retain their last observation;
+/// up to one sample interval of final CPU per process can be missed).
+#[cfg(target_os = "macos")]
+async fn sample_action_resource_usage(
+    pgid: u32,
+    mut stop_rx: watch::Receiver<bool>,
+) -> SampledResourceUsage {
+    let mut usage = SampledResourceUsage::default();
+    let mut cpu_ns_by_pid: HashMap<i32, (u64, u64)> = HashMap::new();
+    loop {
+        let members = sample_process_group_usage(pgid, &mut usage, &mut cpu_ns_by_pid);
+        if members == 0 {
+            // No member process remains, so the action is finished.
+            break;
+        }
+
+        if *stop_rx.borrow() {
+            break;
+        }
+
+        tokio::select! {
+            changed = stop_rx.changed() => {
+                if changed.is_ok() && *stop_rx.borrow() {
+                    sample_process_group_usage(pgid, &mut usage, &mut cpu_ns_by_pid);
+                    break;
+                }
+            }
+            () = tokio::time::sleep(RESOURCE_USAGE_SAMPLE_INTERVAL) => {}
+        }
+    }
+    usage.cpu_user_ns = cpu_ns_by_pid.values().map(|&(user_ns, _)| user_ns).sum();
+    usage.cpu_system_ns = cpu_ns_by_pid
+        .values()
+        .map(|&(_, system_ns)| system_ns)
+        .sum();
+    usage
+}
+
+/// Converts mach absolute time units (the unit of `rusage_info` time fields
+/// on Apple Silicon; 1:1 with nanoseconds on Intel) to nanoseconds.
+#[cfg(target_os = "macos")]
+fn mach_ticks_to_ns(ticks: u64) -> u64 {
+    static TIMEBASE: std::sync::OnceLock<(u32, u32)> = std::sync::OnceLock::new();
+    let &(numer, denom) = TIMEBASE.get_or_init(|| {
+        let mut info = libc::mach_timebase_info { numer: 0, denom: 0 };
+        // SAFETY: `mach_timebase_info` fills the passed struct.
+        if unsafe { libc::mach_timebase_info(&raw mut info) } != 0 || info.denom == 0 {
+            return (1, 1);
+        }
+        (info.numer, info.denom)
+    });
+    u64::try_from(u128::from(ticks) * u128::from(numer) / u128::from(denom)).unwrap_or(u64::MAX)
+}
+
+/// Sums resident memory and records cumulative CPU time for every process in
+/// the action's process group. Returns the number of member processes seen.
+#[cfg(target_os = "macos")]
+fn sample_process_group_usage(
+    pgid: u32,
+    usage: &mut SampledResourceUsage,
+    cpu_ns_by_pid: &mut HashMap<i32, (u64, u64)>,
+) -> usize {
+    /// From `libproc.h` (stable public API); not exposed by the libc crate.
+    const PROC_PGRP_ONLY: u32 = 2;
+    const MAX_GROUP_PIDS: usize = 4096;
+
+    let mut pids = [0i32; MAX_GROUP_PIDS];
+    let buffer_size_bytes = i32::try_from(size_of_val(&pids)).unwrap_or(i32::MAX);
+    // SAFETY: `proc_listpids` writes at most `buffer_size_bytes` bytes of
+    // pids into the buffer and returns the number of bytes written.
+    let bytes_written = unsafe {
+        libc::proc_listpids(
+            PROC_PGRP_ONLY,
+            pgid,
+            pids.as_mut_ptr().cast::<libc::c_void>(),
+            buffer_size_bytes,
+        )
+    };
+    let Ok(bytes_written) = usize::try_from(bytes_written) else {
+        return 0;
+    };
+    let pid_count = (bytes_written / size_of::<i32>()).min(MAX_GROUP_PIDS);
+
+    let mut total_rss_bytes: u64 = 0;
+    let mut members = 0;
+    for &member_pid in &pids[..pid_count] {
+        if member_pid <= 0 {
+            continue;
+        }
+        let mut info = core::mem::MaybeUninit::<libc::rusage_info_v2>::zeroed();
+        // SAFETY: the `RUSAGE_INFO_V2` flavor fills exactly a
+        // `rusage_info_v2`.
+        let result = unsafe {
+            libc::proc_pid_rusage(
+                member_pid,
+                libc::RUSAGE_INFO_V2,
+                info.as_mut_ptr().cast::<libc::rusage_info_t>(),
+            )
+        };
+        if result != 0 {
+            // The process exited between listing and sampling.
+            continue;
+        }
+        // SAFETY: `proc_pid_rusage` returned success, so `info` is
+        // initialized.
+        let info = unsafe { info.assume_init() };
+        total_rss_bytes = total_rss_bytes.saturating_add(info.ri_resident_size);
+        // Times are cumulative mach absolute time units; keep the latest
+        // observation per pid so CPU of already-exited members is retained
+        // in the totals.
+        cpu_ns_by_pid.insert(
+            member_pid,
+            (
+                mach_ticks_to_ns(info.ri_user_time),
+                mach_ticks_to_ns(info.ri_system_time),
+            ),
+        );
+        members += 1;
+    }
+    if members > 0 {
+        usage.peak_memory_kb = usage.peak_memory_kb.max(total_rss_bytes / 1024);
+    }
+    members
 }
 
 /// Sums the resident memory of every process in the action's process group.
@@ -216,6 +361,18 @@ pub fn parse_pgid_from_stat(stat: &str) -> Option<u32> {
     let after_comm = stat.rsplit_once(')')?.1;
     // Fields after the final ')': state(0) ppid(1) pgrp(2) ...
     after_comm.split_whitespace().nth(2)?.parse().ok()
+}
+
+/// Sends `SIGKILL` to every process in the action's process group so helper
+/// processes spawned by the action cannot outlive it on timeout or kill.
+/// `ESRCH` (the group is already gone) is expected and ignored.
+#[cfg(target_os = "macos")]
+fn kill_process_group(pgid: u32) {
+    let Ok(pgid) = i32::try_from(pgid) else {
+        return;
+    };
+    // SAFETY: `kill(2)` with a negated pgid signals the whole process group.
+    let _ = unsafe { libc::kill(-pgid, libc::SIGKILL) };
 }
 
 /// Valid string reasons for a failure.
@@ -1480,14 +1637,19 @@ impl RunningActionImpl {
                     });
                 }
             }
-
-            // Run the action as its own process-group leader (pgid == child
-            // pid). The resource-usage sampler attributes memory by process
-            // group, so this keeps the whole action together — including
-            // processes reparented to the worker when an intermediate shell
-            // exits — and never conflates it with the worker's own group.
-            command_builder.process_group(0);
         }
+
+        // Run the action as its own process-group leader (pgid == child
+        // pid). The resource-usage sampler attributes usage by process
+        // group, so this keeps the whole action together — including
+        // processes reparented to the worker when an intermediate shell
+        // exits — and never conflates it with the worker's own group, and
+        // kill paths can signal the entire tree via `kill(-pgid)`. On macOS
+        // this maps to posix_spawn's `POSIX_SPAWN_SETPGROUP` attribute (the
+        // standard library only falls back to fork/exec for uid/gid/
+        // `pre_exec`/groups/chroot), so the fast spawn path is preserved.
+        #[cfg(unix)]
+        command_builder.process_group(0);
 
         let mut child_process = command_builder
             .spawn()
@@ -1512,9 +1674,13 @@ impl RunningActionImpl {
             child_process,
         );
 
-        #[cfg(target_os = "linux")]
-        let mut maybe_resource_usage_sampler =
-            child_process.id().map(start_action_resource_usage_sampler);
+        // The spawned child is its own process-group leader, so its pid is
+        // the pgid of the whole action tree.
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let maybe_pgid = child_process.id();
+
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let mut maybe_resource_usage_sampler = maybe_pgid.map(start_action_resource_usage_sampler);
 
         let mut child_process_guard = guard(child_process, |mut child_process| {
             let result: Result<Option<std::process::ExitStatus>, std::io::Error> =
@@ -1530,6 +1696,10 @@ impl RunningActionImpl {
                     );
                     background_spawn!("running_actions_manager_kill_child_process", async move {
                         drop(child_process.kill().await);
+                        #[cfg(target_os = "macos")]
+                        if let Some(pgid) = maybe_pgid {
+                            kill_process_group(pgid);
+                        }
                     });
                 }
             }
@@ -1575,6 +1745,10 @@ impl RunningActionImpl {
                             ?err,
                             "Could not kill process in RunningActionsManager for action timeout",
                         );
+                    }
+                    #[cfg(target_os = "macos")]
+                    if let Some(pgid) = maybe_pgid {
+                        kill_process_group(pgid);
                     }
                     {
                         let joined_command = args.join(OsStr::new(" "));
@@ -1639,21 +1813,26 @@ impl RunningActionImpl {
                         exit_code
                     });
 
-                    #[cfg(target_os = "linux")]
+                    #[cfg(any(target_os = "linux", target_os = "macos"))]
                     let resource_usage = match maybe_resource_usage_sampler.take() {
                         Some(sampler) => finish_action_resource_usage_sampler(sampler)
                             .await
-                            .and_then(|peak_memory_kb| {
-                                (peak_memory_kb > 0).then_some(ActionResourceUsage {
-                                    peak_memory_kb,
-                                    sampled: true,
-                                    operation_id: String::new(),
-                                    worker_id: String::new(),
-                                })
+                            .and_then(|usage| {
+                                (usage.peak_memory_kb > 0
+                                    || usage.cpu_user_ns > 0
+                                    || usage.cpu_system_ns > 0)
+                                    .then_some(ActionResourceUsage {
+                                        peak_memory_kb: usage.peak_memory_kb,
+                                        sampled: true,
+                                        operation_id: String::new(),
+                                        worker_id: String::new(),
+                                        cpu_user_ns: usage.cpu_user_ns,
+                                        cpu_system_ns: usage.cpu_system_ns,
+                                    })
                             }),
                         None => None,
                     };
-                    #[cfg(not(target_os = "linux"))]
+                    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
                     let resource_usage = None;
 
                     info!(?args, "Command complete");
@@ -1687,6 +1866,10 @@ impl RunningActionImpl {
                             ?err,
                             "Could not kill process",
                         );
+                    }
+                    #[cfg(target_os = "macos")]
+                    if let Some(pgid) = maybe_pgid {
+                        kill_process_group(pgid);
                     }
                     {
                         let mut state = self.state.lock();
