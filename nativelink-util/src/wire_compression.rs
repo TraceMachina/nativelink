@@ -25,9 +25,9 @@ use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_proto::build::bazel::remote::execution::v2::compressor;
 
 use crate::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
-use crate::store_trait::WireCompressor;
 use crate::common::DigestInfo;
 use crate::digest_hasher::{DigestHasher, DigestHasherFunc};
+use crate::store_trait::WireCompressor;
 
 /// Zstd compression level for wire compression.
 /// Level 0 in the zstd crate means "use default" (currently 3).

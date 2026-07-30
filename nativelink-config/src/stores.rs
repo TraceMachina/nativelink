@@ -341,9 +341,11 @@ pub enum StoreSpec {
     ///       "temp_path": "/var/tmp/nativelink-zstd",
     ///       "max_compressed_upload_size": "512MiB",
     ///       "max_concurrent_staged_uploads": 4,
+    ///       "max_concurrent_identity_ops": 256,
     ///       "compression_level": 9,
     ///       "max_recompression_size": "64MiB",
     ///       "max_concurrent_recompressions": 1,
+    ///       "max_inline_commit_size": "4MiB",
     ///       "stage_timeout_s": 600,
     ///       "commit_timeout_s": 300
     ///     }
@@ -1145,7 +1147,7 @@ pub struct CompressionSpec {
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ZstdConfig {
     /// Operator-controlled staging directory for validation. Put it on the same
-    /// filesystem as a `filesystem` backend's `content_path`: that backend
+    /// filesystem as the `content_path` of a `filesystem` backend: that backend
     /// commits by `rename(2)`, which fails with `EXDEV` across filesystems.
     #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
     pub temp_path: String,
@@ -1202,11 +1204,11 @@ pub struct ZstdConfig {
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub stage_timeout_s: u64,
 
-    /// Maximum time, in seconds, for a staged upload's optional recompression
-    /// and inner-store commit. The timer starts after the client stream has
-    /// finished validation/staging, so it does not reject a steadily progressing
-    /// large upload. On expiry it fails with `DEADLINE_EXCEEDED`, removes the
-    /// staged file, and releases its slot.
+    /// Maximum time, in seconds, allowed for the optional recompression of a
+    /// staged upload plus its inner-store commit. The timer starts after the
+    /// client stream has finished validation and staging, so it does not reject
+    /// a steadily progressing large upload. On expiry it fails with
+    /// `DEADLINE_EXCEEDED`, removes the staged file, and releases its slot.
     /// `0` means "use default 300" at construction time.
     /// Default: 0
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]

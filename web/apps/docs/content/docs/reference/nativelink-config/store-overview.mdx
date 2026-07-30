@@ -256,7 +256,7 @@ the same validated descriptor only when the result is smaller, so it never adds 
 second staging file.
 
 `temp_path` must be a private directory owned by the operator and **not** writable
-by untrusted local users. At startup the store verifies it is a directory, rejects
+by local users you do not trust. At startup the store verifies it is a directory, rejects
 a world-writable directory that lacks the sticky bit, and probes that it is
 writable. Each staging file is created exclusively (`O_EXCL` / `create_new`) under
 an unguessable name, with `0o600` applied atomically at creation rather than by a
@@ -276,7 +276,7 @@ later `chmod`. Every staged file is removed on success, error, and cancellation.
   `max_recompression_size`, rather than an additional staging file. Size and
   monitor `temp_path` against the disk bound, not just steady-state usage.
 - **Put `temp_path` on the same filesystem as the `content_path` of a
-  `filesystem` backend.** That backend's commit is the `rename(2)` above, and a
+  `filesystem` backend.** That backend commits with the `rename(2)` above, and a
   cross-filesystem rename fails with `EXDEV` — the upload fails, the blob is
   never stored, and the temp file is still cleaned up — instead of silently
   falling back to a copy.
@@ -317,7 +317,7 @@ measurements rather than guesses:
 | `inline_commits`, `staged_commits` | How much of the upload mix stays in memory vs. hits `temp_path`. Tune `max_inline_commit_size` from this. |
 | `staged_uploads_inflight`, `identity_ops_inflight` | Live occupancy against `max_concurrent_staged_uploads` / `max_concurrent_identity_ops`. Sustained saturation means requests are queuing. |
 | `recompressions_applied`, `recompressions_rejected`, `recompressions_skipped_busy` | Whether recompression is earning its CPU, and whether its pool is too small. |
-| `stage_timeouts`, `commit_timeouts` | Deadline expirations. A nonzero `stage_timeouts` is either a trickling client or a `stage_timeout_s` set below real upload times. |
+| `stage_timeouts`, `commit_timeouts` | Deadlines that fired. A nonzero `stage_timeouts` is either a trickling client or a `stage_timeout_s` set below real upload times. |
 
 ## Choosing a terminal backend
 

@@ -40,8 +40,8 @@ use nativelink_util::digest_hasher::{
 use nativelink_util::fs::{self, FileSlot};
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::store_trait::{
-    RemoveCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
-    WireCompressionStore, WireCompressor,
+    RemoveCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo, WireCompressionStore,
+    WireCompressor,
 };
 use nativelink_util::{spawn, spawn_blocking};
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
@@ -1590,10 +1590,7 @@ impl StoreDriver for ZstdStore {
         self
     }
 
-    fn register_remove_callback(
-        self: Arc<Self>,
-        callback: RemoveCallback,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, callback: RemoveCallback) -> Result<(), Error> {
         self.inner_store.register_remove_callback(callback)
     }
 }
