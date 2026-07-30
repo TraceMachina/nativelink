@@ -227,6 +227,12 @@ where
     resume_queue: [Option<WriteRequest>; 2],
     // An optimisation to avoid having to manage resume_queue when it's empty.
     is_resumed: bool,
+    // When false, a partially-consumed stream never reports `can_resume()`:
+    // uploads whose server-side protocol cannot accept a replay from a
+    // nonzero offset (REAPI compressed-blobs writes) must fail fast instead
+    // of burning retries on guaranteed-rejected resumes. A stream that has
+    // not yet been consumed can always be retried from the start.
+    resumable: bool,
 }
 
 impl<T, E> WriteState<T, E>
@@ -242,7 +248,21 @@ where
             cached_messages: [None, None],
             resume_queue: [None, None],
             is_resumed: false,
+            resumable: true,
         }
+    }
+
+    /// Marks this write as non-resumable: once the stream has been partially
+    /// consumed, `can_resume()` reports false so the caller fails fast with
+    /// the original error instead of replaying messages the server-side
+    /// protocol is guaranteed to reject. Retrying an unconsumed stream from
+    /// the start remains allowed.
+    pub const fn set_non_resumable(&mut self) {
+        self.resumable = false;
+    }
+
+    pub(crate) const fn is_resumable(&self) -> bool {
+        self.resumable
     }
 
     fn push_message(&mut self, message: WriteRequest) {
@@ -267,7 +287,8 @@ where
 
     pub const fn can_resume(&self) -> bool {
         self.read_stream_error.is_none()
-            && (self.cached_messages[0].is_some() || self.read_stream.is_first_msg())
+            && ((self.resumable && self.cached_messages[0].is_some())
+                || self.read_stream.is_first_msg())
     }
 
     pub fn resume(&mut self) {
@@ -345,8 +366,11 @@ where
                     }
                 }
                 // Cache the last request in case there is an error to allow
-                // the upload to be resumed.
-                local_state.push_message(message.clone());
+                // the upload to be resumed. Non-resumable writes skip the
+                // clone: cached messages would never be replayed.
+                if local_state.is_resumable() {
+                    local_state.push_message(message.clone());
+                }
                 Some(message)
             }
             Some(Err(err)) => {
