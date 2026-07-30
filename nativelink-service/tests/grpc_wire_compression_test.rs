@@ -16,7 +16,7 @@
 //! (`GrpcSpec.experimental_remote_cache_compression`) against a real
 //! compression-enabled `ByteStream`/CAS server.
 
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -171,6 +171,30 @@ fn make_content(tag: u8, len: usize) -> (Bytes, DigestInfo) {
     (Bytes::from(data), digest)
 }
 
+/// Deterministic content that compresses at roughly 4:1 — one pseudo-random
+/// byte in every four, constants elsewhere. `make_content` is compressible
+/// enough that even multi-megabyte blobs fit in a single 64KiB wire chunk once
+/// encoded, which is useless for tests that must interrupt a compressed stream
+/// part-way through.
+fn make_mixed_content(seed: u64, len: usize) -> (Bytes, DigestInfo) {
+    let mut state = seed | 1;
+    let mut data = vec![0u8; len];
+    for (i, b) in data.iter_mut().enumerate() {
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        *b = if i % 4 == 0 {
+            u8::try_from((state >> 33) & 0xff).expect("masked to a single byte")
+        } else {
+            0x5a
+        };
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(&data);
+    let digest = DigestInfo::try_new(&hex::encode(hasher.finalize()), len).unwrap();
+    (Bytes::from(data), digest)
+}
+
 // A blob above the compression threshold uploads via compressed-blobs and
 // must land byte-identical (the server decodes and digest-verifies).
 #[nativelink_test]
@@ -283,15 +307,21 @@ struct FakeByteStream {
     early_complete_write: bool,
     /// Read behavior: payload served for compressed-blobs reads.
     compressed_read_payload: Option<Bytes>,
-    /// Pause the compressed read stream after this many chunks (forces the
-    /// client feed to lag the decoder, exercising the cascade race).
-    pause_compressed_read_after_chunks: Option<usize>,
     /// Hold the compressed read stream open forever after this many chunks.
     /// This ensures a decoder error must cancel the feed rather than waiting
     /// for the upstream stream to finish.
     hold_compressed_read_after_chunks: Option<usize>,
-    /// Payload served for identity reads (fallback detector).
+    /// Fail the compressed read stream with UNAVAILABLE after this many
+    /// chunks, after letting the decoded prefix settle into the client's
+    /// writer. Exercises the retryable-interruption resume path.
+    abort_compressed_read_after_chunks: Option<usize>,
+    /// Payload served for identity reads (fallback detector). Served honoring
+    /// `read_offset`/`read_limit` so a resume can be checked byte-exactly.
     identity_read_payload: Option<Bytes>,
+    /// `read_offset`/`read_limit` of the last identity read. Tests that care
+    /// initialize these to -1 so "never read" is distinguishable from 0.
+    identity_read_offset: Arc<AtomicI64>,
+    identity_read_limit: Arc<AtomicI64>,
 }
 
 type ReadStreamT =
@@ -305,8 +335,8 @@ impl nativelink_proto::google::bytestream::byte_stream_server::ByteStream for Fa
         &self,
         request: tonic::Request<ReadRequest>,
     ) -> Result<tonic::Response<Self::ReadStream>, tonic::Status> {
-        let resource_name = request.into_inner().resource_name;
-        if resource_name.contains("compressed-blobs") {
+        let request = request.into_inner();
+        if request.resource_name.contains("compressed-blobs") {
             let payload = self
                 .compressed_read_payload
                 .clone()
@@ -315,8 +345,8 @@ impl nativelink_proto::google::bytestream::byte_stream_server::ByteStream for Fa
                 .chunks(64 * 1024)
                 .map(Bytes::copy_from_slice)
                 .collect();
-            let pause_after = self.pause_compressed_read_after_chunks;
             let hold_after = self.hold_compressed_read_after_chunks;
+            let abort_after = self.abort_compressed_read_after_chunks;
             let stream =
                 futures::stream::unfold((chunks, 0usize), move |(chunks, index)| async move {
                     if index >= chunks.len() {
@@ -325,10 +355,17 @@ impl nativelink_proto::google::bytestream::byte_stream_server::ByteStream for Fa
                     if Some(index) == hold_after {
                         futures::future::pending::<()>().await;
                     }
-                    if Some(index) == pause_after {
-                        // Hold the wire open long enough that the client
-                        // decoder settles first.
-                        tokio::time::sleep(core::time::Duration::from_millis(500)).await;
+                    if Some(index) == abort_after {
+                        // Let the already-sent prefix finish decoding and
+                        // reach the client's writer, so the resume offset
+                        // reflects real forwarded progress.
+                        tokio::time::sleep(core::time::Duration::from_millis(250)).await;
+                        return Some((
+                            Err(tonic::Status::unavailable(
+                                "injected mid-stream read failure",
+                            )),
+                            (chunks, index),
+                        ));
                     }
                     let data = chunks[index].clone();
                     Some((Ok(ReadResponse { data }), (chunks, index + 1)))
@@ -337,10 +374,27 @@ impl nativelink_proto::google::bytestream::byte_stream_server::ByteStream for Fa
             return Ok(tonic::Response::new(boxed));
         }
         self.identity_reads.fetch_add(1, Ordering::Relaxed);
+        self.identity_read_offset
+            .store(request.read_offset, Ordering::Relaxed);
+        self.identity_read_limit
+            .store(request.read_limit, Ordering::Relaxed);
         let payload = self
             .identity_read_payload
             .clone()
             .ok_or_else(|| tonic::Status::not_found("no identity payload configured"))?;
+        // Honor the requested range like a real server so a resumed read can
+        // be checked byte-exactly. `read_limit` of zero means "to the end".
+        let start = usize::try_from(request.read_offset)
+            .map_err(|_| tonic::Status::invalid_argument("negative read_offset"))?
+            .min(payload.len());
+        let end = if request.read_limit == 0 {
+            payload.len()
+        } else {
+            let limit = usize::try_from(request.read_limit)
+                .map_err(|_| tonic::Status::invalid_argument("negative read_limit"))?;
+            start.saturating_add(limit).min(payload.len())
+        };
+        let payload = payload.slice(start..end);
         let chunks: Vec<Result<ReadResponse, tonic::Status>> = payload
             .chunks(64 * 1024)
             .map(|c| {
@@ -548,5 +602,130 @@ async fn compressed_upload_returns_after_early_completion()
         .expect("early-completed compressed upload must not hang the producer");
     result?;
     producer_result?;
+    Ok(())
+}
+
+// W4: the resume path. A retryable mid-stream failure of a compressed
+// download must keep the already-decoded prefix and ask the identity path for
+// exactly the undelivered tail — not re-fetch from zero, and not request a
+// range that runs past the end of the blob.
+//
+// `requested_length` is the caller's `length` argument. Both accepted forms
+// matter: `None` (read to end) and an explicit limit that covers the blob,
+// which is the form that made the resumed request over-request past the end
+// and rely on the server clamping it.
+async fn assert_interrupted_download_resumes(
+    requested_length: Option<u64>,
+) -> Result<(), Box<dyn core::error::Error>> {
+    use nativelink_proto::build::bazel::remote::execution::v2::compressor;
+
+    let (content, digest) = make_mixed_content(0x44, 8 * 1024 * 1024);
+    let frame =
+        nativelink_util::wire_compression::compress(content.clone(), compressor::Value::Zstd)?;
+    // The failure has to land mid-frame for this to test anything.
+    let frame_chunks = frame.len().div_ceil(64 * 1024);
+    assert!(
+        frame_chunks >= 4,
+        "test payload must span several wire chunks, got {frame_chunks}"
+    );
+    let identity_reads = Arc::new(AtomicU64::new(0));
+    let identity_read_offset = Arc::new(AtomicI64::new(-1));
+    let identity_read_limit = Arc::new(AtomicI64::new(-1));
+    let port = start_fake_bytestream_server(FakeByteStream {
+        identity_reads: identity_reads.clone(),
+        identity_read_offset: identity_read_offset.clone(),
+        identity_read_limit: identity_read_limit.clone(),
+        compressed_read_payload: Some(frame),
+        // Two 64KiB compressed chunks decode to several full zstd blocks, so
+        // the prefix forwarded before the failure is always non-empty.
+        abort_compressed_read_after_chunks: Some(2),
+        identity_read_payload: Some(content.clone()),
+        ..Default::default()
+    })
+    .await?;
+    let grpc_store = GrpcStore::new(&grpc_spec(port, true)).await?;
+
+    let fetched = tokio::time::timeout(
+        core::time::Duration::from_secs(10),
+        grpc_store.get_part_unchunked(digest, 0, requested_length),
+    )
+    .await
+    .expect("interrupted compressed read must not hang")?;
+
+    assert_eq!(
+        fetched, content,
+        "resumed read must reproduce the blob byte-for-byte"
+    );
+    assert_eq!(
+        identity_reads.load(Ordering::Relaxed),
+        1,
+        "the interrupted compressed read must fall back exactly once"
+    );
+    let resume_offset = identity_read_offset.load(Ordering::Relaxed);
+    let resume_limit = identity_read_limit.load(Ordering::Relaxed);
+    assert!(
+        resume_offset > 0,
+        "the decoded prefix must be kept, not re-fetched: read_offset was {resume_offset}"
+    );
+    assert_eq!(
+        resume_offset + resume_limit,
+        i64::try_from(content.len())?,
+        "the resume range must cover exactly the undelivered tail",
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn interrupted_compressed_download_resumes_via_identity()
+-> Result<(), Box<dyn core::error::Error>> {
+    assert_interrupted_download_resumes(None).await
+}
+
+#[nativelink_test]
+async fn interrupted_compressed_download_resumes_with_explicit_length()
+-> Result<(), Box<dyn core::error::Error>> {
+    assert_interrupted_download_resumes(Some(8 * 1024 * 1024)).await
+}
+
+// W5: a download whose consumer goes away must fail, not trigger a pointless
+// identity re-read of the remainder into a channel nobody is reading.
+#[nativelink_test]
+async fn compressed_download_consumer_hangup_does_not_refetch()
+-> Result<(), Box<dyn core::error::Error>> {
+    use nativelink_proto::build::bazel::remote::execution::v2::compressor;
+    use nativelink_util::buf_channel::make_buf_channel_pair;
+
+    let (content, digest) = make_content(0x55, 8 * 1024 * 1024);
+    let frame =
+        nativelink_util::wire_compression::compress(content.clone(), compressor::Value::Zstd)?;
+    let identity_reads = Arc::new(AtomicU64::new(0));
+    let port = start_fake_bytestream_server(FakeByteStream {
+        identity_reads: identity_reads.clone(),
+        compressed_read_payload: Some(frame),
+        identity_read_payload: Some(content),
+        ..Default::default()
+    })
+    .await?;
+    let grpc_store = GrpcStore::new(&grpc_spec(port, true)).await?;
+
+    let (mut writer, reader) = make_buf_channel_pair();
+    // Hang up on the read before it can complete.
+    drop(reader);
+    let result = tokio::time::timeout(
+        core::time::Duration::from_secs(10),
+        grpc_store.get_part(digest, &mut writer, 0, None),
+    )
+    .await
+    .expect("a hung-up consumer must not hang the read");
+
+    assert!(
+        result.is_err(),
+        "a broken writer must surface as an error, not a silent success"
+    );
+    assert_eq!(
+        identity_reads.load(Ordering::Relaxed),
+        0,
+        "a writer-side failure must not be retried as an identity read"
+    );
     Ok(())
 }
