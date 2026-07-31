@@ -32,6 +32,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use bytes::Bytes;
+    use futures::future::join_all;
     use futures::prelude::*;
     use nativelink_config::cas_server::{
         EnvironmentSource, UploadActionResultConfig, UploadCacheResultsStrategy,
@@ -67,6 +68,7 @@ mod tests {
     };
     use nativelink_util::common::{DigestInfo, fs, make_temp_path};
     use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
+    use nativelink_util::spawn;
     use nativelink_util::store_trait::{Store, StoreLike};
     #[cfg(target_os = "linux")]
     use nativelink_worker::namespace_utils;
@@ -5424,6 +5426,497 @@ done
             "retry working directory was deleted by the previous attempt's cleanup"
         );
         retry_action.cleanup().await?;
+        Ok(())
+    }
+
+    /// #2001: many *identical* actions running at once on one worker locked it
+    /// up. "Identical" there means the same action/command digest and the same
+    /// input root, arriving as distinct operations — not the same operation
+    /// twice — so all of them legitimately run side by side, sharing the input
+    /// files they hardlink out of the `FilesystemStore`.
+    ///
+    /// This drives the whole lifecycle for each of them concurrently, the way
+    /// `local_worker` does (one spawned task per `StartAction`), and fails on a
+    /// timeout rather than hanging so a deadlock is a test failure.
+    #[nativelink_test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_identical_actions_all_complete_test()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const WORKER_ID: &str = "foo_worker_id";
+        const CONCURRENT_ACTIONS: usize = 24;
+        const INPUT_FILES: usize = 8;
+
+        let (_, _, cas_store, ac_store) = setup_stores().await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory: root_action_directory.clone(),
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            })?);
+
+        // One input root shared by every action, so they all contend for the
+        // same `FilesystemStore` entries when hardlinking their inputs in.
+        let mut input_files = Vec::with_capacity(INPUT_FILES);
+        for i in 0..INPUT_FILES {
+            let content = Bytes::from(format!("shared input {i}"));
+            let digest = compute_buf_digest(&content, &mut DigestHasherFunc::Sha256.hasher());
+            cas_store.update_oneshot(digest, content).await?;
+            input_files.push(FileNode {
+                name: format!("input_{i}.txt"),
+                digest: Some(digest.into()),
+                is_executable: false,
+                node_properties: None,
+            });
+        }
+        let input_root_digest = serialize_and_upload_message(
+            &Directory {
+                files: input_files,
+                ..Default::default()
+            },
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+
+        #[cfg(target_family = "unix")]
+        let arguments = vec!["true".to_string()];
+        #[cfg(target_family = "windows")]
+        let arguments = vec!["cmd".to_string(), "/C".to_string(), "exit 0".to_string()];
+        let command_digest = serialize_and_upload_message(
+            &Command {
+                arguments,
+                ..Default::default()
+            },
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let action_digest = serialize_and_upload_message(
+            &Action {
+                command_digest: Some(command_digest.into()),
+                input_root_digest: Some(input_root_digest.into()),
+                ..Default::default()
+            },
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+
+        // Distinct operations, identical work.
+        let handles: Vec<_> = (0..CONCURRENT_ACTIONS)
+            .map(|i| {
+                let running_actions_manager = running_actions_manager.clone();
+                let start_execute = StartExecute {
+                    execute_request: Some(ExecuteRequest {
+                        action_digest: Some(action_digest.into()),
+                        digest_function: ProtoDigestFunction::Sha256.into(),
+                        ..Default::default()
+                    }),
+                    operation_id: format!("concurrent-identical-{i}"),
+                    queued_timestamp: None,
+                    platform: None,
+                    worker_id: WORKER_ID.to_string(),
+                };
+                spawn!("concurrent_identical_action", async move {
+                    let action = running_actions_manager
+                        .create_and_add_action(WORKER_ID.to_string(), start_execute)
+                        .await?;
+                    run_action(action).await
+                })
+            })
+            .collect();
+
+        let results = tokio::time::timeout(Duration::from_secs(60), join_all(handles))
+            .await
+            .expect("worker locked up running concurrent identical actions");
+
+        for (i, result) in results.into_iter().enumerate() {
+            let action_result = result
+                .unwrap_or_else(|e| panic!("action {i} task panicked: {e}"))
+                .unwrap_or_else(|e| panic!("action {i} failed: {e}"));
+            assert_eq!(action_result.exit_code, 0, "action {i} exit code");
+        }
+
+        // Every attempt cleaned up after itself; nothing is left behind.
+        let mut remaining = tokio::fs::read_dir(&root_action_directory).await?;
+        let mut leftovers = Vec::new();
+        while let Some(entry) = remaining.next_entry().await? {
+            leftovers.push(entry.file_name().to_string_lossy().into_owned());
+        }
+        assert!(
+            leftovers.is_empty(),
+            "action directories left behind: {leftovers:?}"
+        );
+        Ok(())
+    }
+
+    /// The same operation arriving twice at once must be rejected exactly once,
+    /// not raced. `local_worker` handles each `Update::StartAction` in its own
+    /// `spawn!`, so duplicates really can be in `create_and_add_action`
+    /// simultaneously; the sequential
+    /// `duplicate_start_does_not_disturb_live_action_test` does not cover that.
+    #[nativelink_test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_duplicate_starts_admit_exactly_one_test()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const WORKER_ID: &str = "foo_worker_id";
+        const DUPLICATES: usize = 8;
+
+        let (_, _, cas_store, ac_store) = setup_stores().await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory: root_action_directory.clone(),
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            })?);
+
+        let command_digest = serialize_and_upload_message(
+            &Command {
+                arguments: vec!["true".to_string()],
+                ..Default::default()
+            },
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let input_root_digest = serialize_and_upload_message(
+            &Directory::default(),
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let action_digest = serialize_and_upload_message(
+            &Action {
+                command_digest: Some(command_digest.into()),
+                input_root_digest: Some(input_root_digest.into()),
+                ..Default::default()
+            },
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+
+        let operation_id = "concurrent-duplicate-operation-id".to_string();
+        let handles: Vec<_> = (0..DUPLICATES)
+            .map(|_| {
+                let running_actions_manager = running_actions_manager.clone();
+                let start_execute = StartExecute {
+                    execute_request: Some(ExecuteRequest {
+                        action_digest: Some(action_digest.into()),
+                        digest_function: ProtoDigestFunction::Sha256.into(),
+                        ..Default::default()
+                    }),
+                    operation_id: operation_id.clone(),
+                    queued_timestamp: None,
+                    platform: None,
+                    worker_id: WORKER_ID.to_string(),
+                };
+                spawn!("concurrent_duplicate_start", async move {
+                    running_actions_manager
+                        .create_and_add_action(WORKER_ID.to_string(), start_execute)
+                        .await
+                })
+            })
+            .collect();
+
+        let results = tokio::time::timeout(Duration::from_secs(60), join_all(handles))
+            .await
+            .expect("worker locked up running concurrent duplicate starts");
+
+        // Every admitted action is still held here, so the winner's claim was
+        // live for the whole window: a loser cannot have been admitted just
+        // because the winner already finished.
+        let mut admitted = Vec::new();
+        for result in results {
+            match result.expect("task panicked") {
+                Ok(action) => admitted.push(action),
+                Err(err) => assert_eq!(
+                    err.code,
+                    Code::AlreadyExists,
+                    "duplicate should be rejected with AlreadyExists, got: {err}"
+                ),
+            }
+        }
+        assert_eq!(
+            admitted.len(),
+            1,
+            "exactly one of {DUPLICATES} duplicate starts should have been admitted"
+        );
+        admitted.pop().unwrap().cleanup().await?;
+        Ok(())
+    }
+
+    /// Rejecting a duplicate `StartAction` must not deregister the action that
+    /// won. This is what lets a worker end up running one operation twice
+    /// (#2001), and it needs no concurrency to reproduce:
+    ///
+    /// The duplicate check is the last thing `create_and_add_action` does, so a
+    /// duplicate has already built a `RunningActionImpl` by the time it is
+    /// rejected. Returning `AlreadyExists` drops that action, and `Drop` — with
+    /// nothing to clean up and `has_manager_entry` still set — calls
+    /// `cleanup_action()`, which removes the *winner's* entry. The operation is
+    /// then unregistered while still running, so the next `StartAction` for it
+    /// is admitted and the worker prepares the same operation a second time.
+    #[nativelink_test]
+    async fn rejected_duplicate_does_not_unregister_live_action_test()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const WORKER_ID: &str = "foo_worker_id";
+
+        let (_, _, cas_store, ac_store) = setup_stores().await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory: root_action_directory.clone(),
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            })?);
+
+        let command_digest = serialize_and_upload_message(
+            &Command {
+                arguments: vec!["true".to_string()],
+                ..Default::default()
+            },
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let input_root_digest = serialize_and_upload_message(
+            &Directory::default(),
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let action_digest = serialize_and_upload_message(
+            &Action {
+                command_digest: Some(command_digest.into()),
+                input_root_digest: Some(input_root_digest.into()),
+                ..Default::default()
+            },
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+
+        let operation_id: OperationId = "rejected-duplicate-operation-id".into();
+        let start_execute = StartExecute {
+            execute_request: Some(ExecuteRequest {
+                action_digest: Some(action_digest.into()),
+                digest_function: ProtoDigestFunction::Sha256.into(),
+                ..Default::default()
+            }),
+            operation_id: operation_id.to_string(),
+            queued_timestamp: Some(SystemTime::now().into()),
+            platform: None,
+            worker_id: WORKER_ID.to_string(),
+        };
+
+        let running_action = running_actions_manager
+            .create_and_add_action(WORKER_ID.to_string(), start_execute.clone())
+            .await?;
+
+        let err = running_actions_manager
+            .create_and_add_action(WORKER_ID.to_string(), start_execute.clone())
+            .await
+            .map(|_| ())
+            .expect_err("duplicate StartAction should be rejected");
+        assert_eq!(err.code, Code::AlreadyExists, "{err}");
+
+        // The rejection above must have left the winner registered. If it
+        // deregistered it, this third `StartAction` is admitted and the worker
+        // is now running the same operation twice.
+        let err = running_actions_manager
+            .create_and_add_action(WORKER_ID.to_string(), start_execute)
+            .await
+            .map(|_| ())
+            .expect_err(
+                "operation was deregistered by a rejected duplicate and is now running twice",
+            );
+        assert_eq!(err.code, Code::AlreadyExists, "{err}");
+
+        // Still reachable by operation id, so a disconnect or cancellation can
+        // still kill it.
+        running_actions_manager
+            .kill_operation(&operation_id)
+            .await
+            .err_tip(|| "operation was deregistered and can no longer be killed")?;
+
+        // And it can still retire itself.
+        running_action
+            .cleanup()
+            .await
+            .err_tip(|| "operation was deregistered and could not clean up")?;
+        Ok(())
+    }
+
+    /// The flip side of the same defect: an operation deregistered by a
+    /// rejected duplicate is invisible to `kill_all()`, which is what a
+    /// scheduler disconnect runs. `kill_all` reports every action drained while
+    /// one is still executing, so the worker reconnects with an orphaned
+    /// process still holding its resources.
+    #[nativelink_test]
+    async fn kill_all_still_sees_action_after_rejected_duplicate_test()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const WORKER_ID: &str = "foo_worker_id";
+
+        let (_, _, cas_store, ac_store) = setup_stores().await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory: root_action_directory.clone(),
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            })?);
+
+        #[cfg(target_family = "unix")]
+        let arguments = vec!["sh".to_string(), "-c".to_string(), "sleep 24h".to_string()];
+        #[cfg(target_family = "windows")]
+        let arguments = vec![
+            "cmd".to_string(),
+            "/C".to_string(),
+            "ping -n 99999 127.0.0.1".to_string(),
+        ];
+        let command_digest = serialize_and_upload_message(
+            &Command {
+                arguments,
+                ..Default::default()
+            },
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let input_root_digest = serialize_and_upload_message(
+            &Directory::default(),
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let action_digest = serialize_and_upload_message(
+            &Action {
+                command_digest: Some(command_digest.into()),
+                input_root_digest: Some(input_root_digest.into()),
+                ..Default::default()
+            },
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+
+        let operation_id = "kill-all-after-duplicate-operation-id".to_string();
+        let start_execute = StartExecute {
+            execute_request: Some(ExecuteRequest {
+                action_digest: Some(action_digest.into()),
+                digest_function: ProtoDigestFunction::Sha256.into(),
+                ..Default::default()
+            }),
+            operation_id: operation_id.clone(),
+            queued_timestamp: Some(SystemTime::now().into()),
+            platform: None,
+            worker_id: WORKER_ID.to_string(),
+        };
+
+        let running_action = running_actions_manager
+            .create_and_add_action(WORKER_ID.to_string(), start_execute.clone())
+            .await?
+            .prepare_action()
+            .await?;
+
+        // Run the action the way the worker does: execute to completion, then
+        // retire it. `kill_all` only returns once every action it knows about
+        // has retired, so this has to be in flight alongside it.
+        let action_task = spawn!("kill_all_after_duplicate", {
+            let running_action = running_action.clone();
+            async move {
+                let running_action = running_action.execute().await?;
+                running_action.cleanup().await?;
+                Ok::<_, Error>(())
+            }
+        });
+        // Let the child process actually start.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let err = running_actions_manager
+            .create_and_add_action(WORKER_ID.to_string(), start_execute)
+            .await
+            .map(|_| ())
+            .expect_err("duplicate StartAction should be rejected");
+        assert_eq!(err.code, Code::AlreadyExists, "{err}");
+        drop(running_action);
+
+        // The disconnect path.
+        tokio::time::timeout(Duration::from_secs(30), running_actions_manager.kill_all())
+            .await
+            .expect("kill_all hung");
+
+        // `kill_all` claims every action has drained. If the rejected duplicate
+        // deregistered this one, it saw an empty set, killed nothing and
+        // returned anyway -- and the action is still running.
+        tokio::time::timeout(Duration::from_secs(10), action_task)
+            .await
+            .expect("kill_all reported all actions drained while one was still running")??;
         Ok(())
     }
 }
