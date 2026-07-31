@@ -82,8 +82,6 @@ mod tests {
     use tracing::info;
 
     const DEFAULT_MAX_UPLOAD_TIMEOUT: u64 = 600;
-    const DEFAULT_MAX_CLEANUP_WAIT: u64 = 30;
-    const DEFAULT_MAX_CLEANUP_BACKOFF: u64 = 500;
 
     #[cfg(target_os = "linux")]
     fn use_namespaces() -> nativelink_worker::running_actions_manager::UseNamespaces {
@@ -141,6 +139,19 @@ mod tests {
                 result
             })
             .await
+    }
+
+    /// Waits for a background cleanup to remove `path`. The removal happens on
+    /// the blocking pool, so yielding to the scheduler does not order against
+    /// it and the wait has to be a real one.
+    async fn wait_for_removal(path: &str) {
+        for _ in 0..1000 {
+            if tokio::fs::metadata(path).await.is_err() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("{path} was never removed");
     }
 
     const NOW_TIME: u64 = 10000;
@@ -585,8 +596,6 @@ mod tests {
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
-                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
-                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
@@ -712,8 +721,6 @@ mod tests {
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
-                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
-                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
@@ -841,8 +848,6 @@ mod tests {
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
-                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
-                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
@@ -1025,8 +1030,6 @@ mod tests {
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
-                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
-                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
@@ -1211,8 +1214,6 @@ mod tests {
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
-                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
-                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
@@ -1466,8 +1467,6 @@ mod tests {
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
-                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
-                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
@@ -1619,8 +1618,6 @@ mod tests {
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
-                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
-                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
@@ -1763,8 +1760,6 @@ mod tests {
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
-                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
-                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
@@ -1902,8 +1897,6 @@ mod tests {
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
-                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
-                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
@@ -2109,8 +2102,6 @@ exit 0
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
-                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
-                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
@@ -2289,8 +2280,6 @@ exit 0
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
-                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
-                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
@@ -2463,8 +2452,6 @@ exit 1
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
-                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
-                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
@@ -2554,8 +2541,6 @@ exit 1
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
-                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
-                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
@@ -2632,8 +2617,6 @@ exit 1
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
-                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
-                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
@@ -2717,8 +2700,6 @@ exit 1
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
-                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
-                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
@@ -2823,8 +2804,6 @@ exit 1
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
-                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
-                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
@@ -2873,8 +2852,6 @@ exit 1
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
-                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
-                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
@@ -2944,8 +2921,6 @@ exit 1
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
-                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
-                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
@@ -3066,8 +3041,6 @@ exit 1
                     },
                     max_action_timeout: MAX_TIMEOUT_DURATION,
                     max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
-                    max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
-                    max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                     timeout_handled_externally: false,
                     directory_cache: None,
                     #[cfg(target_os = "linux")]
@@ -3157,8 +3130,6 @@ exit 1
                     },
                     max_action_timeout: MAX_TIMEOUT_DURATION,
                     max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
-                    max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
-                    max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                     timeout_handled_externally: false,
                     directory_cache: None,
                     #[cfg(target_os = "linux")]
@@ -3248,8 +3219,6 @@ exit 1
                     },
                     max_action_timeout: MAX_TIMEOUT_DURATION,
                     max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
-                    max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
-                    max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                     timeout_handled_externally: false,
                     directory_cache: None,
                     #[cfg(target_os = "linux")]
@@ -3336,8 +3305,6 @@ exit 1
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
-                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
-                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
@@ -3488,8 +3455,6 @@ exit 1
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
-                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
-                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
@@ -3657,8 +3622,6 @@ exit 1
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
-                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
-                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
@@ -3770,8 +3733,6 @@ exit 1
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
-                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
-                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 directory_cache: None,
                 // Pin namespaces off so this exercises the no-pre_exec/posix_spawn
@@ -3884,8 +3845,6 @@ exit 1
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
-                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
-                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
@@ -4093,8 +4052,6 @@ exit 1
                 },
                 max_action_timeout: Duration::from_secs(30),
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
-                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
-                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
@@ -4192,8 +4149,6 @@ done
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
-                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
-                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
@@ -4376,8 +4331,6 @@ done
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
-                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
-                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
@@ -4476,7 +4429,7 @@ done
     }
 
     #[nativelink_test]
-    async fn test_handles_stale_directory_on_retry() -> Result<(), Error> {
+    async fn leftover_directory_does_not_collide_with_retry_test() -> Result<(), Error> {
         const WORKER_ID: &str = "foo_worker_id";
         let (_, ac_store, cas_store, _) = setup_stores().await?;
         let root_action_directory = make_temp_path("retry_work_directory");
@@ -4500,8 +4453,6 @@ done
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
-                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
-                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
@@ -4543,40 +4494,19 @@ done
             ..Default::default()
         };
 
-        // Use a fixed operation ID to simulate retry with same ID
         let operation_id = "test-retry-operation-fixed-id".to_string();
 
-        // Create the directory manually to simulate a previous failed action
-        let action_directory = format!("{root_action_directory}/{operation_id}");
-        eprintln!("Creating directory: {action_directory}");
-        fs::create_dir_all(&action_directory).await?;
-
-        // Also create the work subdirectory to ensure conflict
-        let work_directory = format!("{action_directory}/work");
-        fs::create_dir_all(&work_directory).await?;
-
-        // Add a marker file to detect if directory is deleted and recreated
-        let marker_file = format!("{action_directory}/marker.txt");
+        // A directory left behind by a previous attempt of this operation,
+        // named the way older versions named it (the bare operation id).
+        let leftover_directory = format!("{root_action_directory}/{operation_id}");
+        fs::create_dir_all(format!("{leftover_directory}/work")).await?;
+        let marker_file = format!("{leftover_directory}/marker.txt");
         tokio::fs::write(&marker_file, "test").await?;
 
-        // Verify the directory was created
-        assert!(
-            tokio::fs::metadata(&action_directory).await.is_ok(),
-            "Directory should exist"
-        );
-        assert!(
-            tokio::fs::metadata(&work_directory).await.is_ok(),
-            "Work directory should exist"
-        );
-        assert!(
-            tokio::fs::metadata(&marker_file).await.is_ok(),
-            "Marker file should exist"
-        );
-
-        // Now try to create an action with the same operation ID
-        // This should fail with "File exists" error
-        eprintln!("Attempting to create action with existing directory...");
-        let result = running_actions_manager
+        // The attempt gets a directory of its own, so a leftover directory is
+        // not a collision to resolve: nothing has to be removed to make room,
+        // and nothing the previous attempt may still be using gets touched.
+        let running_action = running_actions_manager
             .create_and_add_action(
                 WORKER_ID.to_string(),
                 StartExecute {
@@ -4587,35 +4517,134 @@ done
                     worker_id: WORKER_ID.to_string(),
                 },
             )
-            .await;
+            .await?;
 
-        // Verify the behavior - with the fix, it should succeed after removing stale directory
-        match result {
-            Ok(_) => {
-                // Check if the directory still exists and if marker file is gone
-                let dir_exists = tokio::fs::metadata(&action_directory).await.is_ok();
-                let marker_exists = tokio::fs::metadata(&marker_file).await.is_ok();
-                eprintln!(
-                    "SUCCESS: Directory collision handled gracefully. Directory exists: {dir_exists}, Marker exists: {marker_exists}"
-                );
-                assert!(
-                    dir_exists,
-                    "Directory should exist after successful creation"
-                );
-                assert!(
-                    !marker_exists,
-                    "Marker file should be gone - stale directory was cleaned up"
-                );
-                eprintln!(
-                    "PASSED: The fix is working - stale directory was removed and action proceeded"
-                );
-            }
-            Err(err) => {
-                panic!("Expected success after fix, but got error: {err}");
-            }
-        }
+        let action_directory = running_action
+            .get_work_directory()
+            .strip_suffix("/work")
+            .expect("work directory should sit under the action directory")
+            .to_string();
+        assert_ne!(
+            action_directory, leftover_directory,
+            "attempt must not reuse a leftover attempt's directory"
+        );
+        assert!(
+            tokio::fs::metadata(&action_directory).await.is_ok(),
+            "action directory should exist after successful creation"
+        );
+        assert!(
+            tokio::fs::metadata(&marker_file).await.is_ok(),
+            "leftover directory should be left alone, not deleted out from under its owner"
+        );
 
-        // Clean up
+        running_action.cleanup().await?;
+        assert!(
+            tokio::fs::metadata(&action_directory).await.is_err(),
+            "cleanup should remove this attempt's directory"
+        );
+        assert!(
+            tokio::fs::metadata(&marker_file).await.is_ok(),
+            "cleanup must not reach outside this attempt's directory"
+        );
+
+        fs::remove_dir_all(&root_action_directory).await?;
+        Ok(())
+    }
+
+    /// A duplicate `StartAction` for an operation already running here must be
+    /// rejected before it touches the filesystem. It used to be rejected only
+    /// after `create_and_add_action` had already decided the live attempt's
+    /// directory was stale and removed it, which deleted the running action's
+    /// files out from under it.
+    #[nativelink_test]
+    async fn duplicate_start_does_not_disturb_live_action_test() -> Result<(), Error> {
+        const WORKER_ID: &str = "foo_worker_id";
+        let (_, ac_store, cas_store, _) = setup_stores().await?;
+        let root_action_directory = make_temp_path("duplicate_start_work_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory: root_action_directory.clone(),
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                timeout_handled_externally: false,
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            })?);
+
+        let command = Command {
+            arguments: vec!["true".to_string()],
+            ..Default::default()
+        };
+        let command_digest = serialize_and_upload_message(
+            &command,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let input_root_digest = serialize_and_upload_message(
+            &Directory::default(),
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let action = Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(input_root_digest.into()),
+            ..Default::default()
+        };
+        let action_digest = serialize_and_upload_message(
+            &action,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+
+        let operation_id = "duplicate-start-operation-id".to_string();
+        let start_execute = StartExecute {
+            execute_request: Some(ExecuteRequest {
+                action_digest: Some(action_digest.into()),
+                digest_function: ProtoDigestFunction::Sha256.into(),
+                ..Default::default()
+            }),
+            operation_id: operation_id.clone(),
+            queued_timestamp: Some(SystemTime::now().into()),
+            platform: None,
+            worker_id: WORKER_ID.to_string(),
+        };
+
+        // A live attempt, mid-run, with files it is relying on.
+        let running_action = running_actions_manager
+            .create_and_add_action(WORKER_ID.to_string(), start_execute.clone())
+            .await?
+            .prepare_action()
+            .await?;
+        let work_directory = running_action.get_work_directory().clone();
+        let in_use_file = format!("{work_directory}/in_use.txt");
+        tokio::fs::write(&in_use_file, "in use").await?;
+
+        let err = running_actions_manager
+            .create_and_add_action(WORKER_ID.to_string(), start_execute)
+            .await
+            .expect_err("duplicate StartAction should be rejected");
+        assert_eq!(err.code, Code::AlreadyExists, "{err}");
+
+        assert!(
+            tokio::fs::metadata(&in_use_file).await.is_ok(),
+            "duplicate StartAction deleted the live action's files"
+        );
+
+        running_action.cleanup().await?;
         fs::remove_dir_all(&root_action_directory).await?;
         Ok(())
     }
@@ -4645,8 +4674,6 @@ done
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
-                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
-                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
@@ -4689,6 +4716,7 @@ done
         };
 
         let operation_id = "test-retry-after-cleanup-fixed-id".to_string();
+        let execute_request2 = execute_request.clone();
 
         // First, create and execute an action
         let action1 = running_actions_manager
@@ -4735,6 +4763,33 @@ done
         if let Ok(action2) = result {
             action2.cleanup().await?;
         }
+
+        // An action abandoned before `prepare_action` still has a directory,
+        // and nothing else ever sweeps action directories up, so dropping it
+        // must clean up after itself.
+        let action3 = running_actions_manager
+            .create_and_add_action(
+                WORKER_ID.to_string(),
+                StartExecute {
+                    execute_request: Some(execute_request2),
+                    operation_id: operation_id.clone(),
+                    queued_timestamp: Some(SystemTime::now().into()),
+                    platform: None,
+                    worker_id: WORKER_ID.to_string(),
+                },
+            )
+            .await?;
+        let action3_directory = action3
+            .get_work_directory()
+            .strip_suffix("/work")
+            .expect("work directory should sit under the action directory")
+            .to_string();
+        assert!(tokio::fs::metadata(&action3_directory).await.is_ok());
+        drop(action3);
+        // Panics if it is never removed: abandoning an action before
+        // `prepare_action` must not leak its directory.
+        wait_for_removal(&action3_directory).await;
+
         fs::remove_dir_all(&root_action_directory).await?;
         Ok(())
     }
@@ -4757,8 +4812,6 @@ done
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
-                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
-                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
@@ -4900,8 +4953,6 @@ done
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
-                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
-                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
@@ -5074,8 +5125,6 @@ done
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::MAX,
-                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
-                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
@@ -5190,8 +5239,6 @@ done
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
-                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
-                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
@@ -5301,11 +5348,12 @@ done
         Ok(())
     }
 
-    /// Regression test: dropping an uncleaned action must register its
-    /// working-directory cleanup *before* returning, not when the spawned
-    /// background task first runs. Otherwise a retry of the same operation
-    /// slips past wait_for_cleanup_if_needed, recreates the directory, and
-    /// the late background cleanup deletes the retry's files mid-run.
+    /// Regression test for #1859 / #1868: an aborted action's cleanup runs in
+    /// the background, concurrently with a retry of the same operation. The
+    /// retry's files must survive it. Each attempt therefore gets its own
+    /// directory, which is what makes the two independent — no coordination
+    /// between the cleanup and the retry is involved, and none should be
+    /// needed.
     #[nativelink_test]
     async fn dropped_action_registers_cleanup_before_yielding_test()
     -> Result<(), Box<dyn core::error::Error>> {
@@ -5333,8 +5381,6 @@ done
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
-                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
-                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
@@ -5396,35 +5442,40 @@ done
             .await?;
         let work_directory = running_action.get_work_directory().clone();
         assert!(fs::metadata(&work_directory).await.is_ok());
-        assert!(!running_actions_manager.is_cleaning_up(&operation_id));
 
+        // Dropping without cleanup spawns the cleanup in the background; it has
+        // not run yet, so the directory is still there when the retry starts.
         drop(running_action);
-
-        // The cleanup must be registered synchronously by the drop: a retry
-        // of the same operation checks this registration, and anything later
-        // (e.g. when the background task first runs) lets the retry recreate
-        // the directory only to have this cleanup delete it mid-run.
         assert!(
-            running_actions_manager.is_cleaning_up(&operation_id),
-            "drop must register the working-directory cleanup before yielding"
+            fs::metadata(&work_directory).await.is_ok(),
+            "background cleanup should not have run yet"
         );
 
-        // Retry of the same operation: must wait out the cleanup and end up
-        // with an intact working directory.
+        // Retry of the same operation, started while that cleanup is still
+        // pending. It must get a directory of its own.
         let retry_action = running_actions_manager
             .create_and_add_action(WORKER_ID.to_string(), start_execute)
             .await?
             .prepare_action()
             .await?;
-        for _ in 0..20 {
-            tokio::task::yield_now().await;
-        }
+        let retry_work_directory = retry_action.get_work_directory().clone();
+        assert_ne!(
+            retry_work_directory, work_directory,
+            "retry must not share the aborted attempt's directory"
+        );
+
+        // Let the aborted attempt's cleanup run to completion.
+        wait_for_removal(&work_directory).await;
         assert!(
-            fs::metadata(retry_action.get_work_directory())
-                .await
-                .is_ok(),
+            fs::metadata(&retry_work_directory).await.is_ok(),
             "retry working directory was deleted by the previous attempt's cleanup"
         );
+
+        // The retry still owns the operation: the late cleanup must not have
+        // evicted its manager entry, or this fails.
+        running_actions_manager
+            .kill_operation(&operation_id)
+            .await?;
         retry_action.cleanup().await?;
         Ok(())
     }
@@ -5462,8 +5513,6 @@ done
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
-                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
-                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
@@ -5594,8 +5643,6 @@ done
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
-                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
-                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
@@ -5711,8 +5758,6 @@ done
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
-                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
-                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
@@ -5823,8 +5868,6 @@ done
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
-                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
-                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
