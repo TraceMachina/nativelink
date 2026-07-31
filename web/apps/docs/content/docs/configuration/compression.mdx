@@ -21,10 +21,11 @@ CAS batch RPCs accept and serve zstd-compressed payloads.
 
 - A Bazel client with `--remote_cache_compression` (available since
   Bazel 5).
-- Wire compression is **optional and off by default**. Without the
-  configuration below, NativeLink does not advertise zstd and rejects
-  `compressed-blobs/zstd` requests, so clients fall back to identity
-  transfers.
+- Wire compression is **optional and off until it is enabled somewhere in
+  the NativeLink process**. Without the configuration below or an explicitly
+  enabled CAS gRPC store, NativeLink does not advertise zstd, rejects
+  `compressed-blobs/zstd` requests, and keeps outgoing transfers on the
+  identity path.
 
 ## Enabling it
 
@@ -63,6 +64,35 @@ bazel build //... \
 Clients only compress when the server advertises it, so enabling the
 option is safe with a mixed fleet of clients: anything that doesn't request
 `compressed-blobs/zstd` keeps using identity transfers.
+
+### NativeLink-to-NativeLink transfers
+
+Enabling zstd on any capabilities instance or CAS `grpc` store expresses
+process-wide zstd intent. NativeLink then automatically enables every CAS
+`grpc` store whose `experimental_remote_cache_compression` setting is
+omitted. This makes worker-to-CAS and proxy-to-upstream blob transfers use
+zstd without requiring the same setting to be repeated on every eligible
+store.
+
+The upstream instance must accept zstd. When it does not, or when compression
+is undesirable for a particular link, opt that store out explicitly:
+
+```json5
+stores: [
+  {
+    name: "UNCOMPRESSED_UPSTREAM",
+    grpc: {
+      // ...
+      store_type: "cas",
+      experimental_remote_cache_compression: false,
+    },
+  },
+],
+```
+
+NativeLink logs a startup warning for an eligible CAS gRPC store that opts
+out while zstd is enabled elsewhere. Action-cache gRPC stores are not
+eligible for REAPI blob wire compression and are left unchanged.
 
 ## Semantics worth knowing
 

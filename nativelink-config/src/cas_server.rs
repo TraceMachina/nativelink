@@ -18,6 +18,7 @@ use nativelink_error::{Code, Error, ResultExt, make_err};
 #[cfg(feature = "dev-schema")]
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 use crate::schedulers::SchedulerSpec;
 use crate::serde_utils::{
@@ -26,7 +27,9 @@ use crate::serde_utils::{
     convert_optional_numeric_with_shellexpand, convert_optional_string_with_shellexpand,
     convert_string_with_shellexpand, convert_vec_string_with_shellexpand,
 };
-use crate::stores::{ClientTlsConfig, ConfigDigestHashFunction, StoreRefName, StoreSpec};
+use crate::stores::{
+    ClientTlsConfig, ConfigDigestHashFunction, StoreRefName, StoreSpec, StoreType,
+};
 
 /// Name of the scheduler. This type will be used when referencing a
 /// scheduler in the `CasConfig::schedulers`'s map key.
@@ -1196,19 +1199,78 @@ pub struct CasConfig {
 }
 
 impl CasConfig {
+    const ZSTD_GRPC_TRANSFERS_PR_URL: &'static str =
+        "https://github.com/TraceMachina/nativelink/pull/2596";
+
     /// # Errors
     ///
     /// Will return `Err` if we can't load the file.
     pub fn try_from_json5_file(config_file: &str) -> Result<Self, Error> {
         let json_contents = std::fs::read_to_string(config_file)
             .err_tip(|| format!("Could not open config file {config_file}"))?;
-        let config: Self = serde_json5::from_str(&json_contents)?;
+        Self::try_from_json5_str(&json_contents)
+    }
+
+    fn try_from_json5_str(json_contents: &str) -> Result<Self, Error> {
+        let mut config: Self = serde_json5::from_str(json_contents)?;
         for server in &config.servers {
             if let Some(services) = &server.services {
                 Self::check_store_conflict(services)?;
             }
         }
+        config.apply_zstd_grpc_store_defaults();
         Ok(config)
+    }
+
+    fn zstd_wire_compression_enabled_anywhere(&self) -> bool {
+        if self
+            .servers
+            .iter()
+            .filter_map(|server| server.services.as_ref())
+            .filter_map(|services| services.capabilities.as_deref())
+            .flatten()
+            .any(|capabilities| capabilities.remote_cache_compression)
+        {
+            return true;
+        }
+
+        self.stores.iter().any(|store| {
+            let mut enabled = false;
+            store.spec.visit_grpc_specs(&mut |grpc| {
+                enabled |= matches!(grpc.store_type, StoreType::Cas)
+                    && grpc.experimental_remote_cache_compression == Some(true);
+            });
+            enabled
+        })
+    }
+
+    fn apply_zstd_grpc_store_defaults(&mut self) {
+        if !self.zstd_wire_compression_enabled_anywhere() {
+            return;
+        }
+
+        for store in &mut self.stores {
+            let store_name = store.name.as_str();
+            store.spec.visit_grpc_specs_mut(&mut |grpc| {
+                if !matches!(grpc.store_type, StoreType::Cas) {
+                    return;
+                }
+
+                match grpc.experimental_remote_cache_compression {
+                    None => grpc.experimental_remote_cache_compression = Some(true),
+                    Some(false) => warn!(
+                        store = store_name,
+                        instance_name = grpc.instance_name,
+                        "Zstd wire compression is enabled elsewhere, but this eligible CAS gRPC \
+                         store explicitly disables it. Unless this upstream cannot use zstd, \
+                         enable 'experimental_remote_cache_compression' for substantially faster \
+                         transfers of compressible artifacts. See {}",
+                        Self::ZSTD_GRPC_TRANSFERS_PR_URL,
+                    ),
+                    Some(true) => {}
+                }
+            });
+        }
     }
 
     fn check_store_conflict(services: &ServicesConfig) -> Result<(), Error> {
@@ -1244,7 +1306,22 @@ impl CasConfig {
 
 #[cfg(test)]
 mod tests {
+    use tracing_test::traced_test;
+
     use super::*;
+
+    fn grpc_compression_configs(config: &CasConfig) -> Vec<(bool, Option<bool>)> {
+        let mut configs = Vec::new();
+        for store in &config.stores {
+            store.spec.visit_grpc_specs(&mut |grpc| {
+                configs.push((
+                    matches!(grpc.store_type, StoreType::Cas),
+                    grpc.experimental_remote_cache_compression,
+                ));
+            });
+        }
+        configs
+    }
 
     #[test]
     fn capabilities_config_remote_cache_compression_deserializes_true() {
@@ -1259,5 +1336,128 @@ mod tests {
         let config: CapabilitiesConfig = serde_json5::from_str("{}").unwrap();
 
         assert!(!config.remote_cache_compression);
+    }
+
+    #[test]
+    fn omitted_grpc_compression_stays_disabled_without_zstd_intent() {
+        let config = CasConfig::try_from_json5_str(
+            r#"{
+                stores: [{
+                    name: "upstream",
+                    grpc: {
+                        endpoints: [{ address: "http://localhost:1234" }],
+                        store_type: "cas",
+                    },
+                }],
+                servers: [],
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(grpc_compression_configs(&config), vec![(true, None)]);
+    }
+
+    #[test]
+    fn explicit_grpc_zstd_intent_enables_other_eligible_grpc_stores() {
+        let config = CasConfig::try_from_json5_str(
+            r#"{
+                stores: [
+                    {
+                        name: "enabled",
+                        grpc: {
+                            endpoints: [{ address: "http://localhost:1234" }],
+                            store_type: "cas",
+                            experimental_remote_cache_compression: true,
+                        },
+                    },
+                    {
+                        name: "inherited",
+                        grpc: {
+                            endpoints: [{ address: "http://localhost:5678" }],
+                            store_type: "cas",
+                        },
+                    },
+                ],
+                servers: [],
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            grpc_compression_configs(&config),
+            vec![(true, Some(true)), (true, Some(true))]
+        );
+    }
+
+    #[test]
+    #[traced_test]
+    fn capabilities_zstd_intent_defaults_nested_cas_grpc_and_warns_on_opt_out() {
+        let config = CasConfig::try_from_json5_str(
+            r#"{
+                stores: [{
+                    name: "nested-upstreams",
+                    fast_slow: {
+                        fast: {
+                            grpc: {
+                                instance_name: "auto",
+                                endpoints: [{ address: "http://localhost:1234" }],
+                                store_type: "cas",
+                            },
+                        },
+                        slow: {
+                            shard: {
+                                stores: [
+                                    {
+                                        store: {
+                                            grpc: {
+                                                instance_name: "opt-out",
+                                                endpoints: [{
+                                                    address: "http://localhost:5678",
+                                                }],
+                                                store_type: "cas",
+                                                experimental_remote_cache_compression: false,
+                                            },
+                                        },
+                                        weight: 1,
+                                    },
+                                    {
+                                        store: {
+                                            grpc: {
+                                                instance_name: "action-cache",
+                                                endpoints: [{
+                                                    address: "http://localhost:9012",
+                                                }],
+                                                store_type: "ac",
+                                            },
+                                        },
+                                        weight: 1,
+                                    },
+                                ],
+                            },
+                        },
+                    },
+                }],
+                servers: [{
+                    listener: {
+                        http: { socket_address: "127.0.0.1:50051" },
+                    },
+                    services: {
+                        capabilities: [{
+                            instance_name: "main",
+                            remote_cache_compression: true,
+                        }],
+                    },
+                }],
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            grpc_compression_configs(&config),
+            vec![(true, Some(true)), (true, Some(false)), (false, None),]
+        );
+        assert!(logs_contain("store=\"nested-upstreams\""));
+        assert!(logs_contain("instance_name=\"opt-out\""));
+        assert!(logs_contain(CasConfig::ZSTD_GRPC_TRANSFERS_PR_URL));
     }
 }
