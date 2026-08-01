@@ -127,6 +127,7 @@ rust_test_suite(
         "tests/ac_utils_test.rs",
         "tests/azure_blob_store_test.rs",
         "tests/cache_metrics_store_test.rs",
+        "tests/common_s3_utils_test.rs",
         "tests/completeness_checking_store_test.rs",
         "tests/compression_store_test.rs",
         "tests/dedup_store_test.rs",
