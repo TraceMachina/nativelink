@@ -356,6 +356,32 @@ impl GrpcStore {
         }))
     }
 
+    /// Bounds `fut` by the configured per-RPC deadline (`rpc_timeout_s`).
+    /// A timeout maps to `DeadlineExceeded`, which is retryable, so the
+    /// existing retry machinery can route around a peer that accepted the
+    /// request but will never answer (e.g. a restarting shard).
+    async fn with_rpc_timeout<R>(
+        &self,
+        context: &'static str,
+        fut: impl Future<Output = Result<R, Error>> + Send,
+    ) -> Result<R, Error> {
+        // Boxed so this wrapper adds a pointer to the caller's future, not a
+        // second inline copy of `fut` — the RPC futures it wraps are large,
+        // and embedding them twice measurably deepens poll stacks.
+        let mut fut = Box::pin(fut);
+        if self.rpc_timeout.is_zero() {
+            return fut.as_mut().await;
+        }
+        match tokio::time::timeout(self.rpc_timeout, fut.as_mut()).await {
+            Ok(result) => result,
+            Err(_elapsed) => Err(make_err!(
+                Code::DeadlineExceeded,
+                "{context} timed out after {}s",
+                self.rpc_timeout.as_secs()
+            )),
+        }
+    }
+
     async fn perform_request<F, Fut, R, I>(&self, input: I, mut request: F) -> Result<R, Error>
     where
         F: FnMut(I) -> Fut + Send + Copy,
@@ -367,7 +393,7 @@ impl GrpcStore {
             .retry(unfold(input, move |input| async move {
                 let input_clone = input.clone();
                 Some((
-                    request(input_clone)
+                    self.with_rpc_timeout("GrpcStore RPC", request(input_clone))
                         .await
                         .map_or_else(RetryResult::Retry, RetryResult::Ok),
                     input,
@@ -1389,11 +1415,14 @@ impl GrpcStore {
         };
 
         let mut stream = match self
-            .read_internal(ReadRequest {
-                resource_name,
-                read_offset: 0,
-                read_limit: 0,
-            })
+            .with_rpc_timeout(
+                "GrpcStore::get_part_compressed read",
+                self.read_internal(ReadRequest {
+                    resource_name,
+                    read_offset: 0,
+                    read_limit: 0,
+                }),
+            )
             .await
         {
             Ok(stream) => stream,
@@ -1887,7 +1916,7 @@ impl StoreDriver for GrpcStore {
                     read_limit: local_state.read_limit,
                 };
                 let mut stream = match self
-                    .read_internal(request)
+                    .with_rpc_timeout("GrpcStore::get_part read", self.read_internal(request))
                     .await
                     .err_tip(|| "in GrpcStore::get_part()")
                 {

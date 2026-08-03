@@ -1514,12 +1514,18 @@ pub struct GrpcSpec {
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub connections_per_endpoint: usize,
 
-    /// Maximum time (seconds) allowed for a single RPC request (e.g. a
-    /// `ByteStream.Write` call) before it is cancelled.
+    /// Maximum time (seconds) allowed for a single RPC request before it
+    /// is cancelled with `DeadlineExceeded` (retryable). This applies to
+    /// every RPC this store makes: unary calls (e.g. `FindMissingBlobs`,
+    /// `BatchReadBlobs`), `ByteStream.Write` calls, and the establishment
+    /// of read streams through their first response chunk. The body of an
+    /// established read stream is not bounded by this deadline.
     ///
     /// A value of 0 (the default) disables the per-RPC timeout. Dead
     /// connections are still detected by the HTTP/2 and TCP keepalive
-    /// mechanisms configured on each endpoint.
+    /// mechanisms configured on each endpoint, and endpoints that cannot
+    /// be connected to at all fail fast with `Unavailable` rather than
+    /// queuing requests indefinitely.
     ///
     /// For large uploads (multi-GB), either leave this at 0 or set it
     /// large enough to accommodate the full transfer time.

@@ -164,6 +164,7 @@ rust_test_suite(
         "tests/redis_store_test.rs",
         "tests/ref_store_test.rs",
         "tests/s3_store_test.rs",
+        "tests/shard_ring_dead_peer_test.rs",
         "tests/shard_store_test.rs",
         "tests/size_partitioning_store_test.rs",
         "tests/store_manager_test.rs",
