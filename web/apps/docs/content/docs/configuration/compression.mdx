@@ -74,8 +74,81 @@ omitted. This makes worker-to-CAS and proxy-to-upstream blob transfers use
 zstd without requiring the same setting to be repeated on every eligible
 store.
 
-The upstream instance must accept zstd. When it does not, or when compression
-is undesirable for a particular link, opt that store out explicitly:
+#### Keeping compression consistent
+
+Don't enable zstd on some CAS `grpc` stores while explicitly disabling it
+on others. Inconsistent settings mean the disabled legs keep moving
+identity bytes — often on exactly the links that carry the most data — so
+blobs that cross both legs are compressed on one hop only to travel
+uncompressed on the next:
+
+```json5
+// Avoid: inconsistent compression across CAS stores.
+stores: [
+  {
+    name: "CAS_PRIMARY",
+    grpc: {
+      endpoints: [{ address: "grpc://cas-primary:50051" }],
+      store_type: "cas",
+      experimental_remote_cache_compression: true,
+    },
+  },
+  {
+    name: "CAS_MIRROR",
+    grpc: {
+      endpoints: [{ address: "grpc://cas-mirror:50051" }],
+      store_type: "cas",
+      // This leg stays on identity transfers while zstd is enabled
+      // elsewhere in the process; NativeLink logs a startup warning
+      // suggesting you enable zstd throughout.
+      experimental_remote_cache_compression: false,
+    },
+  },
+],
+```
+
+Instead, declare the intent once and let the inheritance policy carry it:
+enable zstd on the capabilities service (or any one CAS `grpc` store) and
+omit the setting everywhere else, so every eligible store inherits it:
+
+```json5
+// Prefer: declare zstd intent once; eligible stores inherit it.
+servers: [
+  {
+    // ...
+    services: {
+      capabilities: [
+        { instance_name: "main", remote_cache_compression: true },
+      ],
+    },
+  },
+],
+stores: [
+  {
+    name: "CAS_PRIMARY",
+    grpc: {
+      endpoints: [{ address: "grpc://cas-primary:50051" }],
+      store_type: "cas",
+      // Inherits zstd from the process-wide intent.
+    },
+  },
+  {
+    name: "CAS_MIRROR",
+    grpc: {
+      endpoints: [{ address: "grpc://cas-mirror:50051" }],
+      store_type: "cas",
+      // Inherits zstd from the process-wide intent.
+    },
+  },
+],
+```
+
+#### Opting a store out
+
+The upstream instance must accept zstd. When it does not — an older
+NativeLink or a third-party cache without `compressed-blobs` support — or
+when compression is undesirable for a particular link, opt that store out
+explicitly:
 
 ```json5
 stores: [
@@ -91,8 +164,10 @@ stores: [
 ```
 
 NativeLink logs a startup warning for an eligible CAS gRPC store that opts
-out while zstd is enabled elsewhere. Action-cache gRPC stores are not
-eligible for REAPI blob wire compression and are left unchanged.
+out while zstd is enabled elsewhere. Action-cache gRPC stores are never
+eligible for REAPI blob wire compression: they're left out of inheritance,
+and setting `experimental_remote_cache_compression: true` on one logs a
+warning because the setting has no effect there.
 
 ## Semantics worth knowing
 

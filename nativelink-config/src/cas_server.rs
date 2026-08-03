@@ -1199,8 +1199,8 @@ pub struct CasConfig {
 }
 
 impl CasConfig {
-    const ZSTD_GRPC_TRANSFERS_PR_URL: &'static str =
-        "https://github.com/TraceMachina/nativelink/pull/2596";
+    const ZSTD_COMPRESSION_DOCS_URL: &'static str =
+        "https://docs.nativelink.com/configuration/compression";
 
     /// # Errors
     ///
@@ -1245,14 +1245,27 @@ impl CasConfig {
     }
 
     fn apply_zstd_grpc_store_defaults(&mut self) {
-        if !self.zstd_wire_compression_enabled_anywhere() {
-            return;
-        }
+        let zstd_enabled_anywhere = self.zstd_wire_compression_enabled_anywhere();
 
         for store in &mut self.stores {
             let store_name = store.name.as_str();
             store.spec.visit_grpc_specs_mut(&mut |grpc| {
                 if !matches!(grpc.store_type, StoreType::Cas) {
+                    if grpc.experimental_remote_cache_compression == Some(true) {
+                        warn!(
+                            store = store_name,
+                            instance_name = grpc.instance_name,
+                            "'experimental_remote_cache_compression' is enabled on a non-CAS \
+                             gRPC store, where it has no effect: REAPI zstd wire compression \
+                             only applies to CAS blob transfers. Enable it on the CAS gRPC \
+                             stores or a capabilities instance instead. See {}",
+                            Self::ZSTD_COMPRESSION_DOCS_URL,
+                        );
+                    }
+                    return;
+                }
+
+                if !zstd_enabled_anywhere {
                     return;
                 }
 
@@ -1265,7 +1278,7 @@ impl CasConfig {
                          store explicitly disables it. Unless this upstream cannot use zstd, \
                          enable 'experimental_remote_cache_compression' for substantially faster \
                          transfers of compressible artifacts. See {}",
-                        Self::ZSTD_GRPC_TRANSFERS_PR_URL,
+                        Self::ZSTD_COMPRESSION_DOCS_URL,
                     ),
                     Some(true) => {}
                 }
@@ -1391,6 +1404,44 @@ mod tests {
 
     #[test]
     #[traced_test]
+    fn ac_grpc_compression_warns_and_expresses_no_cas_intent() {
+        let config = CasConfig::try_from_json5_str(
+            r#"{
+                stores: [
+                    {
+                        name: "action-cache",
+                        grpc: {
+                            instance_name: "ac",
+                            endpoints: [{ address: "http://localhost:1234" }],
+                            store_type: "ac",
+                            experimental_remote_cache_compression: true,
+                        },
+                    },
+                    {
+                        name: "cas",
+                        grpc: {
+                            endpoints: [{ address: "http://localhost:5678" }],
+                            store_type: "cas",
+                        },
+                    },
+                ],
+                servers: [],
+            }"#,
+        )
+        .unwrap();
+
+        // The AC-store setting is inert: it neither compresses AC RPCs nor
+        // expresses process-wide zstd intent, so the CAS store stays unset.
+        assert_eq!(
+            grpc_compression_configs(&config),
+            vec![(false, Some(true)), (true, None)]
+        );
+        assert!(logs_contain("store=\"action-cache\""));
+        assert!(logs_contain("no effect"));
+    }
+
+    #[test]
+    #[traced_test]
     fn capabilities_zstd_intent_defaults_nested_cas_grpc_and_warns_on_opt_out() {
         let config = CasConfig::try_from_json5_str(
             r#"{
@@ -1458,6 +1509,6 @@ mod tests {
         );
         assert!(logs_contain("store=\"nested-upstreams\""));
         assert!(logs_contain("instance_name=\"opt-out\""));
-        assert!(logs_contain(CasConfig::ZSTD_GRPC_TRANSFERS_PR_URL));
+        assert!(logs_contain(CasConfig::ZSTD_COMPRESSION_DOCS_URL));
     }
 }
