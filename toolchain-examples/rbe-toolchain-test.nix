@@ -1,7 +1,6 @@
 {
   nativelink,
   writeShellScriptBin,
-  bazelisk,
   jo,
 }:
 writeShellScriptBin "rbe-toolchain-test" ''
@@ -63,7 +62,7 @@ writeShellScriptBin "rbe-toolchain-test" ''
 
   run_cmd() {
     cmd=$1
-    FULL_CMD="${bazelisk}/bin/bazelisk $cmd $CORE_BAZEL_ARGS"
+    FULL_CMD="bazel-retry $cmd $CORE_BAZEL_ARGS"
     echo $FULL_CMD
     echo -e \\n$FULL_CMD\\n >> toolchain-examples/cmd.log
     cmd_output=$(cd toolchain-examples && eval "$FULL_CMD" 2>&1 | tee -ai cmd.log)
