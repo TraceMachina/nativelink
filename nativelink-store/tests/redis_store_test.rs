@@ -1072,7 +1072,13 @@ async fn test_sentinel_connect_with_url_specified_master() {
             "redis+sentinel://127.0.0.1:{port}/?sentinelServiceName=specific_master"
         )],
         mode: RedisMode::Sentinel,
-        connection_timeout_ms: 100,
+        // This test asserts that the sentinelServiceName URL parameter
+        // resolves, not that it resolves quickly. 100ms — copied from the
+        // fail-fast bad-master test above, where a tight budget is the point —
+        // has to cover two TCP connects and two handshakes plus SENTINEL
+        // MASTERS in between, which a loaded macOS CI runner does not manage.
+        // Every other success-path test here allows 1s or more.
+        connection_timeout_ms: 5_000,
         ..Default::default()
     };
     RedisStore::new_standard(spec).await.expect("Working spec");
