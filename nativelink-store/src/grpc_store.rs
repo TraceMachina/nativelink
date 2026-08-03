@@ -1142,7 +1142,18 @@ impl GrpcStore {
             compressed_rx: DropCloserReadHalf,
             did_error: bool,
             bytes_received: i64,
+            // Residue of an encoder chunk larger than `MAX_WRITE_CHUNK`, emitted
+            // across successive requests before the encoder is polled again.
+            pending: Bytes,
         }
+
+        // A ByteStream WriteRequest must stay under the gRPC max message size
+        // (tonic's 4 MiB decoding default on the receiving side). A reader chunk
+        // can be larger than that — `update_oneshot` delivers a whole blob as one
+        // chunk — so it would otherwise become a single oversized message the
+        // peer rejects with "message length too large". Cap each request and
+        // split any larger chunk across successive requests.
+        const MAX_WRITE_CHUNK: usize = 2 * 1024 * 1024;
 
         let mut buf = Uuid::encode_buffer();
         let uuid = Uuid::new_v4().hyphenated().encode_lower(&mut buf);
@@ -1185,24 +1196,31 @@ impl GrpcStore {
             compressed_rx,
             did_error: false,
             bytes_received: 0,
+            pending: Bytes::new(),
         };
         let stream = Box::pin(unfold(local_state, |mut local_state| async move {
             if local_state.did_error {
                 error!("GrpcStore::update_compressed() polled stream after error was returned");
                 return None;
             }
-            let data = match local_state
-                .compressed_rx
-                .recv()
-                .await
-                .err_tip(|| "In GrpcStore::update_compressed()")
-            {
-                Ok(data) => data,
-                Err(err) => {
-                    local_state.did_error = true;
-                    return Some((Err(err), local_state));
+            // Refill from the encoder only once the pending buffer is drained, so
+            // a large encoder chunk is emitted across several capped requests.
+            if local_state.pending.is_empty() {
+                match local_state
+                    .compressed_rx
+                    .recv()
+                    .await
+                    .err_tip(|| "In GrpcStore::update_compressed()")
+                {
+                    Ok(data) => local_state.pending = data,
+                    Err(err) => {
+                        local_state.did_error = true;
+                        return Some((Err(err), local_state));
+                    }
                 }
-            };
+            }
+            let take = local_state.pending.len().min(MAX_WRITE_CHUNK);
+            let data = local_state.pending.split_to(take);
             let write_offset = local_state.bytes_received;
             local_state.bytes_received += data.len().try_into().unwrap_or(i64::MAX);
             Some((
@@ -1534,7 +1552,18 @@ impl StoreDriver for GrpcStore {
             reader: DropCloserReadHalf,
             did_error: bool,
             bytes_received: i64,
+            // Residue of a reader chunk larger than `MAX_WRITE_CHUNK`, emitted
+            // across successive requests before the reader is polled again.
+            pending: Bytes,
         }
+
+        // A ByteStream WriteRequest must stay under the gRPC max message size
+        // (tonic's 4 MiB decoding default on the receiving side). A reader chunk
+        // can be larger than that — `update_oneshot` delivers a whole blob as one
+        // chunk — so it would otherwise become a single oversized message the
+        // peer rejects with "message length too large". Cap each request and
+        // split any larger chunk across successive requests.
+        const MAX_WRITE_CHUNK: usize = 2 * 1024 * 1024;
 
         let digest = key.into_digest();
         if matches!(self.store_type, nativelink_config::stores::StoreType::Ac) {
@@ -1583,6 +1612,7 @@ impl StoreDriver for GrpcStore {
             reader,
             did_error: false,
             bytes_received: 0,
+            pending: Bytes::new(),
         };
 
         let stream = Box::pin(unfold(local_state, |mut local_state| async move {
@@ -1590,18 +1620,24 @@ impl StoreDriver for GrpcStore {
                 error!("GrpcStore::update() polled stream after error was returned");
                 return None;
             }
-            let data = match local_state
-                .reader
-                .recv()
-                .await
-                .err_tip(|| "In GrpcStore::update()")
-            {
-                Ok(data) => data,
-                Err(err) => {
-                    local_state.did_error = true;
-                    return Some((Err(err), local_state));
+            // Refill from the reader only once the pending buffer is drained, so
+            // a large reader chunk is emitted across several capped requests.
+            if local_state.pending.is_empty() {
+                match local_state
+                    .reader
+                    .recv()
+                    .await
+                    .err_tip(|| "In GrpcStore::update()")
+                {
+                    Ok(data) => local_state.pending = data,
+                    Err(err) => {
+                        local_state.did_error = true;
+                        return Some((Err(err), local_state));
+                    }
                 }
-            };
+            }
+            let take = local_state.pending.len().min(MAX_WRITE_CHUNK);
+            let data = local_state.pending.split_to(take);
 
             let write_offset = local_state.bytes_received;
             local_state.bytes_received += data.len().try_into().unwrap_or(i64::MAX);

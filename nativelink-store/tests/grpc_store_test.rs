@@ -234,6 +234,164 @@ async fn write_update_works_core(
     Ok(())
 }
 
+/// A `ByteStream` server that, unlike `FakeStreamServer`, drains the whole
+/// request stream before responding — the way a real server behaves. This is
+/// what exposes a client that never terminates its request stream: the drain
+/// loop below only ends when the client's stream ends.
+#[derive(Debug, Clone)]
+struct DrainingStreamServer {
+    write_requests: Arc<Mutex<Vec<WriteRequest>>>,
+}
+
+#[tonic::async_trait]
+impl ByteStream for DrainingStreamServer {
+    type ReadStream = ReadStream;
+
+    #[allow(clippy::unimplemented)]
+    async fn read(
+        &self,
+        _grpc_request: Request<ReadRequest>,
+    ) -> Result<Response<Self::ReadStream>, Status> {
+        unimplemented!();
+    }
+
+    async fn write(
+        &self,
+        grpc_request: Request<Streaming<WriteRequest>>,
+    ) -> Result<Response<WriteResponse>, Status> {
+        let mut stream = grpc_request.into_inner();
+        let mut committed_size: i64 = 0;
+        while let Some(request) = stream.next().await {
+            let request = request?;
+            committed_size += i64::try_from(request.data.len()).unwrap_or(i64::MAX);
+            self.write_requests.lock().await.push(request);
+        }
+        Ok(Response::new(WriteResponse { committed_size }))
+    }
+
+    #[allow(clippy::unimplemented)]
+    async fn query_write_status(
+        &self,
+        _grpc_request: Request<QueryWriteStatusRequest>,
+    ) -> Result<Response<QueryWriteStatusResponse>, Status> {
+        unimplemented!();
+    }
+}
+
+async fn make_draining_server() -> (Arc<Mutex<Vec<WriteRequest>>>, u16) {
+    let write_requests = Arc::new(Mutex::new(vec![]));
+    let server = DrainingStreamServer {
+        write_requests: write_requests.clone(),
+    };
+    let listener = TcpIncoming::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    background_spawn!("draining_server", async move {
+        Server::builder()
+            .add_service(ByteStreamServer::new(server))
+            .serve_with_incoming(listener)
+            .await
+            .unwrap();
+    });
+    (write_requests, port)
+}
+
+/// The request stream must end after the finishing (`finish_write: true`)
+/// request — `WriteRequestStreamWrapper` guards this with `write_finished`,
+/// and against a server that drains the stream (unlike `FakeStreamServer`,
+/// which responds after the first message) losing that guard means the RPC
+/// never completes. Locks the invariant with a real drain.
+#[nativelink_test]
+async fn write_stream_terminates_after_finish_write() -> Result<(), Error> {
+    let (write_requests, port) = make_draining_server().await;
+    let spec = test_spec(format!("http://localhost:{port}"), false);
+    let store = GrpcStore::new(&spec).await?;
+    let digest = DigestInfo::try_new(VALID_HASH, RAW_INPUT.len()).unwrap();
+
+    let (mut tx, rx) = make_buf_channel_pair();
+    let send_fut = async move {
+        tx.send(RAW_INPUT.into()).await?;
+        tx.send_eof()
+    };
+    let (send_res, update_res) = timeout(Duration::from_secs(5), async {
+        futures::join!(
+            send_fut,
+            store.update(
+                digest,
+                rx,
+                UploadSizeInfo::ExactSize(RAW_INPUT.len().try_into().unwrap())
+            )
+        )
+    })
+    .await
+    .err_tip(|| "update() hung: request stream not terminated after finish_write")?;
+    send_res.merge(update_res)?;
+
+    let requests = write_requests.lock().await;
+    assert!(
+        requests.last().is_some_and(|r| r.finish_write),
+        "last request must carry finish_write"
+    );
+    let received: Vec<u8> = requests.iter().flat_map(|r| r.data.clone()).collect();
+    assert_eq!(received, RAW_INPUT.as_bytes());
+    Ok(())
+}
+
+/// Regression test: a reader chunk larger than the gRPC maximum message size
+/// (tonic's 4 MiB decoding default) must be split across several `WriteRequest`s.
+/// Unsplit, the oversized request is rejected by the receiving server — this
+/// server runs tonic's defaults, so the test fails against an uncapped client.
+/// `update_oneshot` delivers a whole blob as one reader chunk, so any blob
+/// over 4 MiB took this path.
+#[nativelink_test]
+async fn write_update_splits_chunks_over_grpc_message_limit() -> Result<(), Error> {
+    const BLOB_SIZE: usize = 6 * 1024 * 1024;
+    let (write_requests, port) = make_draining_server().await;
+    let spec = test_spec(format!("http://localhost:{port}"), false);
+    let store = GrpcStore::new(&spec).await?;
+    let digest = DigestInfo::try_new(VALID_HASH, BLOB_SIZE).unwrap();
+
+    let blob: bytes::Bytes = (0..BLOB_SIZE)
+        .map(|i| u8::try_from(i % 251).unwrap())
+        .collect();
+    let expected = blob.clone();
+    let (mut tx, rx) = make_buf_channel_pair();
+    let send_fut = async move {
+        tx.send(blob).await?;
+        tx.send_eof()
+    };
+    let (send_res, update_res) = timeout(Duration::from_secs(15), async {
+        futures::join!(
+            send_fut,
+            store.update(
+                digest,
+                rx,
+                UploadSizeInfo::ExactSize(BLOB_SIZE.try_into().unwrap())
+            )
+        )
+    })
+    .await
+    .err_tip(|| "update() did not complete")?;
+    send_res.merge(update_res)?;
+
+    let requests = write_requests.lock().await;
+    assert!(requests.len() > 1, "oversized chunk must be split");
+    let grpc_max_message_size = 4 * 1024 * 1024;
+    for request in requests.iter() {
+        assert!(
+            request.data.len() < grpc_max_message_size,
+            "each request must fit the gRPC message limit (got {})",
+            request.data.len()
+        );
+    }
+    assert!(
+        requests.last().is_some_and(|r| r.finish_write),
+        "last request must carry finish_write"
+    );
+    let received: Vec<u8> = requests.iter().flat_map(|r| r.data.clone()).collect();
+    assert_eq!(received, expected);
+    Ok(())
+}
+
 #[nativelink_test]
 async fn write_update_works() -> Result<(), Error> {
     let upload_pattern = Regex::new("/uploads/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/blobs/sha256/0123456789abcdef000000000000000000010000000000000123456789abcdef/3").unwrap();
