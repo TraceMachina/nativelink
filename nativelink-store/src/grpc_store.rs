@@ -1295,10 +1295,10 @@ impl GrpcStore {
     /// Reads all of `digest` as a REAPI `compressed-blobs/zstd` read,
     /// streaming decode into `writer` with size and digest verification at
     /// EOF. Returns `Ok(None)` on success. On a retryable transport failure
-    /// it returns `Ok(Some(n))` where `n` is the count of decoded bytes
-    /// already forwarded, so the caller can resume via the identity path at
-    /// uncompressed offset `n`. Terminal errors (including decode/digest
-    /// mismatches) propagate as `Err`.
+    /// before any decoded bytes were forwarded, it returns `Ok(Some(0))` so
+    /// the caller can restart through the identity path. Failures after any
+    /// output, and other terminal errors (including decode/digest mismatches),
+    /// propagate as `Err`.
     async fn get_part_compressed(
         self: Pin<&Self>,
         digest: DigestInfo,
@@ -1413,11 +1413,14 @@ impl GrpcStore {
                     download_complete.store(true, Ordering::Relaxed);
                     return Ok(());
                 }
-                forwarded.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+                let chunk_len = chunk.len() as u64;
                 writer
                     .send(chunk)
                     .await
                     .err_tip(|| "in GrpcStore::get_part_compressed()")?;
+                // Only bytes accepted by the downstream writer are eligible
+                // to influence retry policy.
+                forwarded.fetch_add(chunk_len, Ordering::Relaxed);
             }
         };
 
@@ -1456,27 +1459,40 @@ impl GrpcStore {
             Err((CompressedReadStage::Decode, err)) if err.code == Code::InvalidArgument => {
                 Err(err.append("in GrpcStore::get_part_compressed()"))
             }
-            // Pump failures are failures of our own writer: either the
-            // downstream consumer went away, or the decoder aborted and
-            // dropped its sender (in which case the decoder's verdict is
-            // reported by the arm above, since `try_join!` polls it first).
-            // An identity re-read helps in neither case, so never fall back —
-            // `buf_channel` reports a broken receiver as `Internal`, which
-            // `is_retryable_code` would otherwise classify as retryable.
+            // Pump failures are local delivery failures: either the
+            // downstream consumer went away or the decoded channel closed
+            // without EOF. An identity re-read helps in neither case, so
+            // never fall back — `buf_channel` reports a broken receiver as
+            // `Internal`, which `is_retryable_code` would otherwise classify
+            // as retryable.
             Err((CompressedReadStage::Pump, err)) => {
                 Err(err.append("in GrpcStore::get_part_compressed()"))
             }
             Err((CompressedReadStage::Feed, err)) if !is_retryable_code(err.code) => {
                 Err(err.append("in GrpcStore::get_part_compressed()"))
             }
-            Err((stage, err)) => {
-                debug!(?stage, ?err, "Compressed read interrupted");
+            // A clean identity restart is only safe before unverified decoded
+            // bytes have been exposed to the downstream consumer.
+            Err((stage, err)) if forwarded.load(Ordering::Relaxed) == 0 => {
                 warn!(
+                    ?stage,
+                    ?err,
+                    "Compressed read interrupted before forwarding data, falling back to \
+                     identity read"
+                );
+                Ok(Some(0))
+            }
+            Err((stage, err)) => {
+                debug!(
+                    ?stage,
                     ?err,
                     forwarded = forwarded.load(Ordering::Relaxed),
-                    "Compressed read interrupted, falling back to identity read"
+                    "Compressed read interrupted after forwarding unverified data"
                 );
-                Ok(Some(forwarded.load(Ordering::Relaxed)))
+                Err(err.append(
+                    "in GrpcStore::get_part_compressed(): refusing identity fallback after \
+                     forwarding unverified decoded data",
+                ))
             }
         }
     }
@@ -1732,7 +1748,6 @@ impl StoreDriver for GrpcStore {
             }
         }
 
-        let mut offset = offset;
         let mut length = length;
         if self.remote_cache_compression_enabled
             && is_digest_key
@@ -1742,22 +1757,18 @@ impl StoreDriver for GrpcStore {
         {
             match self.get_part_compressed(digest, writer).await? {
                 None => return Ok(()),
-                // Resume via the identity path from where the compressed
-                // read left off.
+                // Retryable failures before any compressed output restart
+                // through identity. Partial compressed reads are terminal and
+                // must never reach this branch with a nonzero offset.
+                Some(0) => {
+                    length = Some(digest.size_bytes());
+                }
                 Some(forwarded) => {
-                    // Ask only for what the compressed read did not deliver.
-                    // The guard above means the caller's range covers the
-                    // whole blob, so the remainder is exactly
-                    // `size - forwarded`; keeping the caller's `length` would
-                    // request a range that runs past the end of the blob.
-                    let remaining = digest.size_bytes().saturating_sub(forwarded);
-                    if remaining == 0 {
-                        return writer
-                            .send_eof()
-                            .err_tip(|| "Failed to send EOF in GrpcStore::get_part()");
-                    }
-                    offset = forwarded;
-                    length = Some(remaining);
+                    return Err(make_err!(
+                        Code::Internal,
+                        "Compressed identity fallback returned unsafe nonzero offset {}",
+                        forwarded
+                    ));
                 }
             }
         }

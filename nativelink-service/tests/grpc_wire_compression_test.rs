@@ -292,9 +292,8 @@ async fn flag_off_plain_round_trip() -> Result<(), Box<dyn core::error::Error>> 
 }
 
 // ---------------------------------------------------------------------------
-// Review-round regression tests: W1 (no resume storm), W2 (corruption is
-// terminal), W3 (no hang on early completion). These need a controllable
-// fake ByteStream server rather than the real one.
+// Review-round regression tests need a controllable fake ByteStream server
+// rather than the real one.
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Default)]
@@ -313,10 +312,10 @@ struct FakeByteStream {
     hold_compressed_read_after_chunks: Option<usize>,
     /// Fail the compressed read stream with UNAVAILABLE after this many
     /// chunks, after letting the decoded prefix settle into the client's
-    /// writer. Exercises the retryable-interruption resume path.
+    /// writer. Exercises retryable-interruption policy.
     abort_compressed_read_after_chunks: Option<usize>,
     /// Payload served for identity reads (fallback detector). Served honoring
-    /// `read_offset`/`read_limit` so a resume can be checked byte-exactly.
+    /// `read_offset`/`read_limit` so fallback ranges can be checked exactly.
     identity_read_payload: Option<Bytes>,
     /// `read_offset`/`read_limit` of the last identity read. Tests that care
     /// initialize these to -1 so "never read" is distinguishable from 0.
@@ -349,11 +348,14 @@ impl nativelink_proto::google::bytestream::byte_stream_server::ByteStream for Fa
             let abort_after = self.abort_compressed_read_after_chunks;
             let stream =
                 futures::stream::unfold((chunks, 0usize), move |(chunks, index)| async move {
-                    if index >= chunks.len() {
-                        return None;
-                    }
+                    // Check the hold point before EOF so `hold_after ==
+                    // chunks.len()` sends every configured chunk but keeps
+                    // the gRPC stream open instead of reporting EOF.
                     if Some(index) == hold_after {
                         futures::future::pending::<()>().await;
+                    }
+                    if index >= chunks.len() {
+                        return None;
                     }
                     if Some(index) == abort_after {
                         // Let the already-sent prefix finish decoding and
@@ -531,16 +533,16 @@ async fn corrupt_compressed_download_is_terminal() -> Result<(), Box<dyn core::e
     let (extra, _) = make_content(0x99, 8 * 1024 * 1024);
     let overflow_frame =
         nativelink_util::wire_compression::compress(extra, compressor::Value::Zstd)?;
-    let valid_frame_chunks = valid_frame.len().div_ceil(64 * 1024);
     let mut corrupt = valid_frame.to_vec();
     corrupt.extend_from_slice(&overflow_frame);
+    let corrupt_chunks = corrupt.len().div_ceil(64 * 1024);
     let identity_reads = Arc::new(AtomicU64::new(0));
     let port = start_fake_bytestream_server(FakeByteStream {
         identity_reads: identity_reads.clone(),
-        // Pause just after the first frame ends: the decoder hits the
-        // size overshoot while the feed is still blocked on the wire, so
-        // the feed's next send hits the dropped receiver.
-        hold_compressed_read_after_chunks: Some(valid_frame_chunks + 1),
+        // Send the complete corrupt payload, but withhold wire EOF. The
+        // decoder receives enough data to reject the size overshoot while
+        // the feed remains blocked on the open gRPC stream.
+        hold_compressed_read_after_chunks: Some(corrupt_chunks),
         compressed_read_payload: Some(Bytes::from(corrupt)),
         identity_read_payload: Some(content),
         ..Default::default()
@@ -549,7 +551,9 @@ async fn corrupt_compressed_download_is_terminal() -> Result<(), Box<dyn core::e
     let grpc_store = GrpcStore::new(&grpc_spec(port, true)).await?;
 
     let result = tokio::time::timeout(
-        core::time::Duration::from_secs(2),
+        // This only guards against a cancellation deadlock; the decoder's
+        // size check, rather than this deadline, determines the result.
+        core::time::Duration::from_secs(10),
         grpc_store.get_part_unchunked(digest, 0, None),
     )
     .await
@@ -605,29 +609,16 @@ async fn compressed_upload_returns_after_early_completion()
     Ok(())
 }
 
-// W4: the resume path. A retryable mid-stream failure of a compressed
-// download must keep the already-decoded prefix and ask the identity path for
-// exactly the undelivered tail — not re-fetch from zero, and not request a
-// range that runs past the end of the blob.
-//
-// `requested_length` is the caller's `length` argument. Both accepted forms
-// matter: `None` (read to end) and an explicit limit that covers the blob,
-// which is the form that made the resumed request over-request past the end
-// and rely on the server clamping it.
-async fn assert_interrupted_download_resumes(
-    requested_length: Option<u64>,
-) -> Result<(), Box<dyn core::error::Error>> {
+// W4: a retryable compressed-read failure before any output may restart from
+// zero through identity.
+#[nativelink_test]
+async fn compressed_download_failure_before_progress_falls_back_to_identity()
+-> Result<(), Box<dyn core::error::Error>> {
     use nativelink_proto::build::bazel::remote::execution::v2::compressor;
 
-    let (content, digest) = make_mixed_content(0x44, 8 * 1024 * 1024);
+    let (content, digest) = make_content(0x44, 1024 * 1024);
     let frame =
         nativelink_util::wire_compression::compress(content.clone(), compressor::Value::Zstd)?;
-    // The failure has to land mid-frame for this to test anything.
-    let frame_chunks = frame.len().div_ceil(64 * 1024);
-    assert!(
-        frame_chunks >= 4,
-        "test payload must span several wire chunks, got {frame_chunks}"
-    );
     let identity_reads = Arc::new(AtomicU64::new(0));
     let identity_read_offset = Arc::new(AtomicI64::new(-1));
     let identity_read_limit = Arc::new(AtomicI64::new(-1));
@@ -636,9 +627,7 @@ async fn assert_interrupted_download_resumes(
         identity_read_offset: identity_read_offset.clone(),
         identity_read_limit: identity_read_limit.clone(),
         compressed_read_payload: Some(frame),
-        // Two 64KiB compressed chunks decode to several full zstd blocks, so
-        // the prefix forwarded before the failure is always non-empty.
-        abort_compressed_read_after_chunks: Some(2),
+        abort_compressed_read_after_chunks: Some(0),
         identity_read_payload: Some(content.clone()),
         ..Default::default()
     })
@@ -647,44 +636,81 @@ async fn assert_interrupted_download_resumes(
 
     let fetched = tokio::time::timeout(
         core::time::Duration::from_secs(10),
-        grpc_store.get_part_unchunked(digest, 0, requested_length),
+        grpc_store.get_part_unchunked(digest, 0, None),
     )
     .await
-    .expect("interrupted compressed read must not hang")?;
+    .expect("zero-progress compressed failure must not hang")?;
 
     assert_eq!(
         fetched, content,
-        "resumed read must reproduce the blob byte-for-byte"
+        "identity fallback must reproduce the blob byte-for-byte"
     );
     assert_eq!(
         identity_reads.load(Ordering::Relaxed),
         1,
-        "the interrupted compressed read must fall back exactly once"
-    );
-    let resume_offset = identity_read_offset.load(Ordering::Relaxed);
-    let resume_limit = identity_read_limit.load(Ordering::Relaxed);
-    assert!(
-        resume_offset > 0,
-        "the decoded prefix must be kept, not re-fetched: read_offset was {resume_offset}"
+        "the zero-progress failure must fall back exactly once"
     );
     assert_eq!(
-        resume_offset + resume_limit,
+        identity_read_offset.load(Ordering::Relaxed),
+        0,
+        "identity fallback must restart from zero"
+    );
+    assert_eq!(
+        identity_read_limit.load(Ordering::Relaxed),
         i64::try_from(content.len())?,
-        "the resume range must cover exactly the undelivered tail",
+        "identity fallback must request exactly the full blob",
     );
     Ok(())
 }
 
+// Once decoded bytes have been forwarded, their digest is still unverified.
+// A later transport error must therefore be terminal rather than combining
+// that prefix with an identity tail and reporting success.
 #[nativelink_test]
-async fn interrupted_compressed_download_resumes_via_identity()
+async fn corrupt_interrupted_compressed_download_after_progress_is_terminal()
 -> Result<(), Box<dyn core::error::Error>> {
-    assert_interrupted_download_resumes(None).await
-}
+    use nativelink_proto::build::bazel::remote::execution::v2::compressor;
 
-#[nativelink_test]
-async fn interrupted_compressed_download_resumes_with_explicit_length()
--> Result<(), Box<dyn core::error::Error>> {
-    assert_interrupted_download_resumes(Some(8 * 1024 * 1024)).await
+    let (content, digest) = make_mixed_content(0x45, 4 * 1024 * 1024);
+    let (corrupt_content, _) = make_mixed_content(0x46, content.len());
+    let frame =
+        nativelink_util::wire_compression::compress(corrupt_content, compressor::Value::Zstd)?;
+    let frame_chunks = frame.len().div_ceil(64 * 1024);
+    assert!(
+        frame_chunks >= 4,
+        "test payload must span several wire chunks, got {frame_chunks}"
+    );
+    let identity_reads = Arc::new(AtomicU64::new(0));
+    let port = start_fake_bytestream_server(FakeByteStream {
+        identity_reads: identity_reads.clone(),
+        compressed_read_payload: Some(frame),
+        // Two compressed chunks decode to several full zstd blocks. The fake
+        // waits before failing so that prefix reaches the downstream writer.
+        abort_compressed_read_after_chunks: Some(2),
+        identity_read_payload: Some(content),
+        ..Default::default()
+    })
+    .await?;
+    let grpc_store = GrpcStore::new(&grpc_spec(port, true)).await?;
+
+    let result = tokio::time::timeout(
+        core::time::Duration::from_secs(10),
+        grpc_store.get_part_unchunked(digest, 0, None),
+    )
+    .await
+    .expect("partial compressed failure must not hang");
+    let err = result.expect_err("partial compressed failure must be terminal");
+    assert_eq!(
+        err.code,
+        Code::Unavailable,
+        "the original transport error must be preserved: {err:?}"
+    );
+    assert_eq!(
+        identity_reads.load(Ordering::Relaxed),
+        0,
+        "unverified partial data must never be combined with an identity tail"
+    );
+    Ok(())
 }
 
 // W5: a download whose consumer goes away must fail, not trigger a pointless
