@@ -527,7 +527,7 @@
                   exit 0
                 fi
                 grep -E '^ERROR:' ''${BAZEL_LOG} \
-                  | grep -Eq 'GET returned (403|429|5[0-9][0-9])|Bad Gateway|Connection (reset|timed out)|read timed out|Could not resolve host' || {
+                  | grep -Eq 'GET returned (403|429|5[0-9][0-9])|Bad Gateway|Connection (reset|timed out)|read timed out|Could not resolve host|Error downloading' || {
                   echo "Bazel failed (non-transient); not retrying"
                   exit 1
                 }
