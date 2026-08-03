@@ -110,12 +110,13 @@ where
         let jitter_fn = spec.common.retry.make_jitter_fn();
         let s3_client = {
             let http_client = TlsClient::new(&spec.common.clone());
+            let credential_http_client = TlsClient::new_for_credentials(&spec.common);
 
             let credential_provider = credentials::DefaultCredentialsChain::builder()
                 .configure(
                     ProviderConfig::without_region()
                         .with_region(Some(Region::new(Cow::Owned(spec.region.clone()))))
-                        .with_http_client(http_client.clone()),
+                        .with_http_client(credential_http_client),
                 )
                 .build()
                 .await;
