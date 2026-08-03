@@ -1,4 +1,4 @@
-bazel-*
+/bazel-*
 target/
 nativelink-test/fuzz/target/
 .vscode/
