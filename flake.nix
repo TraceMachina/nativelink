@@ -205,6 +205,12 @@
 
         docs = pkgs.callPackage ./tools/docs.nix {rust = pkgs.lre.stable-rust;};
 
+        bazel = pkgs.writeShellScriptBin "bazel" ''
+          unset TMPDIR TMP
+          exec ${pkgs.bazelisk}/bin/bazelisk "$@"
+        '';
+        bazel-retry = pkgs.writeScriptBin "bazel-retry" (builtins.readFile ./tools/bazel-retry.sh);
+
         inherit (nix2container.packages.${system}.nix2container) pullImage;
         inherit (nix2container.packages.${system}.nix2container) buildImage;
 
@@ -437,7 +443,7 @@
               inherit nativelink mongodb wait4x bazelisk;
             };
             rbe-toolchain-with-nativelink-test = pkgs.callPackage toolchain-examples/rbe-toolchain-test.nix {
-              inherit nativelink;
+              inherit nativelink bazel-retry bazel;
             };
             buck2-with-nativelink-test = pkgs.callPackage integration_tests/buck2/buck2-with-nativelink-test.nix {
               inherit nativelink buck2;
@@ -510,13 +516,7 @@
           "${gnused}/bin"
         ];
         devShells.default = pkgs.mkShell {
-          packages = let
-            bazel = pkgs.writeShellScriptBin "bazel" ''
-              unset TMPDIR TMP
-              exec ${pkgs.bazelisk}/bin/bazelisk "$@"
-            '';
-            bazel-retry = pkgs.writeScriptBin "bazel-retry" (builtins.readFile ./tools/bazel-retry.sh);
-          in
+          packages =
             [
               # Development tooling
               pkgs.git

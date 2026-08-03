@@ -1,4 +1,5 @@
-/bazel-*
+bazel-*
+!tools/bazel-retry.sh
 target/
 nativelink-test/fuzz/target/
 .vscode/
