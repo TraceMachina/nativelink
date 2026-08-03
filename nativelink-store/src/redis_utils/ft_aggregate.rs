@@ -264,12 +264,25 @@ fn resp3_data_parse(
                         };
                         match map_key.as_str() {
                             "extra_attributes" => {
-                                let Value::Map(extra_attributes_values) = raw_map_value else {
-                                    return Err(RedisError::from((
-                                        ErrorKind::Parse,
-                                        "Expected Map for extra_attributes",
-                                        format!("{raw_map_value:?}"),
-                                    )));
+                                let extra_attributes_values = match raw_map_value {
+                                    Value::Map(extra_attributes_values) => extra_attributes_values,
+                                    // A document that expired or was deleted between
+                                    // the search phase and the load phase comes back
+                                    // as a row with Nil attributes. Under load this is
+                                    // routine — completed awaited-action records expire
+                                    // constantly — so drop the row instead of failing
+                                    // the whole aggregate. Failing here surfaced to
+                                    // clients as INVALID_ARGUMENT, which Bazel treats
+                                    // as permanent, so a single expiry race killed the
+                                    // build.
+                                    Value::Nil => continue,
+                                    other => {
+                                        return Err(RedisError::from((
+                                            ErrorKind::Parse,
+                                            "Expected Map for extra_attributes",
+                                            format!("{other:?}"),
+                                        )));
+                                    }
                                 };
                                 let mut output_array = vec![];
                                 for (e_key, e_value) in extra_attributes_values {
@@ -384,5 +397,115 @@ impl TryFrom<Value> for RedisCursorData {
         };
         output.cursor = cursor as u64;
         Ok(output)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use redis::{ErrorKind, Value};
+
+    use crate::redis_utils::aggregate_types::RedisCursorData;
+
+    /// One RESP3 result row: a doc whose LOAD'ed fields came back populated.
+    fn loaded_row(key: &str, val: &str) -> Value {
+        Value::Map(vec![
+            (
+                Value::SimpleString("extra_attributes".into()),
+                Value::Map(vec![(
+                    Value::SimpleString(key.into()),
+                    Value::SimpleString(val.into()),
+                )]),
+            ),
+            (Value::SimpleString("values".into()), Value::Array(vec![])),
+        ])
+    }
+
+    /// One RESP3 result row for a doc that no longer exists by the time
+    /// `RediSearch` loads its fields: matched during the search phase, gone
+    /// during the load phase, so the attributes come back Nil.
+    fn expired_row() -> Value {
+        Value::Map(vec![
+            (Value::SimpleString("extra_attributes".into()), Value::Nil),
+            (Value::SimpleString("values".into()), Value::Array(vec![])),
+        ])
+    }
+
+    fn resp3_reply(rows: Vec<Value>, cursor: i64) -> Value {
+        Value::Array(vec![
+            Value::Map(vec![
+                (
+                    Value::SimpleString("attributes".into()),
+                    Value::Array(vec![]),
+                ),
+                (
+                    Value::SimpleString("format".into()),
+                    Value::SimpleString("STRING".into()),
+                ),
+                (Value::SimpleString("results".into()), Value::Array(rows)),
+            ]),
+            Value::Int(cursor),
+        ])
+    }
+
+    /// A doc that expires between the search and load phases must drop out of
+    /// the results, not fail the aggregate. Completed awaited-action records
+    /// expire constantly, so any busy scheduler hits this race; failing the
+    /// whole call surfaced to Bazel as a non-retryable INVALID_ARGUMENT and
+    /// killed the build.
+    #[test]
+    fn nil_extra_attributes_row_is_skipped() {
+        let reply = resp3_reply(
+            vec![
+                loaded_row("unique_qualifier", "abc"),
+                expired_row(),
+                loaded_row("unique_qualifier", "def"),
+            ],
+            0,
+        );
+
+        let parsed = RedisCursorData::try_from(reply).expect("expired row must not fail the parse");
+
+        // Only the two surviving docs produce output; the expired one
+        // contributes nothing at all.
+        assert_eq!(parsed.data.len(), 2);
+        assert_eq!(
+            parsed.data[0],
+            Value::Array(vec![
+                Value::SimpleString("unique_qualifier".into()),
+                Value::SimpleString("abc".into()),
+            ])
+        );
+        assert_eq!(
+            parsed.data[1],
+            Value::Array(vec![
+                Value::SimpleString("unique_qualifier".into()),
+                Value::SimpleString("def".into()),
+            ])
+        );
+    }
+
+    /// Every row expiring is still a success, just an empty page.
+    #[test]
+    fn all_rows_nil_parses_to_empty() {
+        let parsed = RedisCursorData::try_from(resp3_reply(vec![expired_row(), expired_row()], 0))
+            .expect("all-expired page must not fail the parse");
+        assert!(parsed.data.is_empty());
+    }
+
+    /// The Nil case is narrow: any other unexpected shape for the attributes
+    /// is still a parse error, so real protocol breakage stays loud.
+    #[test]
+    fn non_map_non_nil_extra_attributes_still_errors() {
+        let bad_row = Value::Map(vec![
+            (
+                Value::SimpleString("extra_attributes".into()),
+                Value::SimpleString("not a map".into()),
+            ),
+            (Value::SimpleString("values".into()), Value::Array(vec![])),
+        ]);
+
+        let err = RedisCursorData::try_from(resp3_reply(vec![bad_row], 0))
+            .expect_err("a non-map, non-nil attributes value must still be rejected");
+        assert_eq!(err.kind(), ErrorKind::Parse);
     }
 }
