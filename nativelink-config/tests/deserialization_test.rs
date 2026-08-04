@@ -417,7 +417,10 @@ mod boolean_tests {
             }"#,
         )
         .expect("string boolean should deserialize");
-        assert!(string_spec.experimental_remote_cache_compression);
+        assert_eq!(
+            string_spec.experimental_remote_cache_compression,
+            Some(true)
+        );
 
         // Safety: this test uses a unique variable and does not run code that
         // reads mutable environment state concurrently.
@@ -430,7 +433,10 @@ mod boolean_tests {
             }"#,
         )
         .expect("environment boolean should deserialize");
-        assert!(!environment_spec.experimental_remote_cache_compression);
+        assert_eq!(
+            environment_spec.experimental_remote_cache_compression,
+            Some(false)
+        );
     }
 }
 
