@@ -20,17 +20,20 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::future::join_all;
-use nativelink_config::stores::{FastSlowSpec, MemorySpec, NoopSpec, StoreDirection, StoreSpec};
+use nativelink_config::stores::{
+    FastSlowSpec, FilesystemSpec, MemorySpec, NoopSpec, StoreDirection, StoreSpec,
+};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_metric::MetricsComponent;
 use nativelink_store::fast_slow_store::FastSlowStore;
+use nativelink_store::filesystem_store::{FileEntry, FileEntryImpl, FilesystemStore};
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_store::noop_store::NoopStore;
 use nativelink_util::buf_channel::{
     DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
 };
-use nativelink_util::common::DigestInfo;
+use nativelink_util::common::{DigestInfo, fs, make_temp_path};
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::store_trait::{
     RemoveCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
@@ -1998,5 +2001,93 @@ async fn get_part_propagates_not_found_after_partial_fast_read() -> Result<(), E
         "fast store get_part must be attempted exactly once"
     );
 
+    Ok(())
+}
+
+/// `populate_fast_store` short-circuits on `fast_store.has()`, an in-memory index.
+/// If anybody detects this and calls `remove_entry_if_file_missing` we need to recover
+/// i.e. the next populate repairs the divergence.
+#[nativelink_test]
+async fn healed_divergence_is_repaired_by_next_populate() -> Result<(), Error> {
+    const VALUE: &str = "0123456789";
+
+    let fast_spec = FilesystemSpec {
+        content_path: make_temp_path("content_path"),
+        temp_path: make_temp_path("temp_path"),
+        eviction_policy: None,
+        ..Default::default()
+    };
+    let slow_spec = MemorySpec::default();
+    let fast_store = FilesystemStore::<FileEntryImpl>::new(&fast_spec).await?;
+    let slow_store = MemoryStore::new(&slow_spec);
+    let fast_slow = FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Filesystem(fast_spec),
+            slow: StoreSpec::Memory(slow_spec),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
+        },
+        Store::new(fast_store.clone()),
+        Store::new(slow_store.clone()),
+    );
+
+    let digest = DigestInfo::try_new(VALID_HASH, VALUE.len())?;
+    slow_store
+        .as_ref()
+        .update_oneshot(digest, VALUE.into())
+        .await?;
+
+    // Diverge the fast tier: delete the content file, leave the map entry.
+    fast_slow.populate_fast_store(digest.into()).await?;
+    let content_file = fast_store
+        .get_file_entry_for_digest(&digest)
+        .await?
+        .get_file_path_locked(|path| async move { Ok(path) })
+        .await?;
+    fs::remove_file(&content_file).await?;
+
+    assert!(
+        fast_store.as_ref().has(digest).await?.is_some(),
+        "precondition: the index still advertises the blob it no longer has",
+    );
+
+    // The heal the worker invokes at its hardlink ENOENT.
+    assert!(
+        fast_store.remove_entry_if_file_missing(&digest).await,
+        "a diverged entry (map says present, file gone) must be removed",
+    );
+
+    // With the stale entry gone, populate must miss and repair.
+    fast_slow
+        .populate_fast_store(digest.into())
+        .await
+        .err_tip(|| "Populate after healing must repair the fast tier")?;
+    assert!(
+        fs::metadata(&content_file).await.is_ok(),
+        "populate_fast_store after healing must put the content file back; \
+         the worker's retry hardlinks this exact path"
+    );
+
+    let data = fast_store
+        .as_ref()
+        .get_part_unchunked(digest, 0, None)
+        .await
+        .err_tip(|| "Fast tier must serve the blob after populate")?;
+    assert_eq!(
+        data.as_ref(),
+        VALUE.as_bytes(),
+        "fast tier must hold the blob"
+    );
+
+    // That ENOENT can have other causes, so healing must spare a healthy entry.
+    assert!(
+        !fast_store.remove_entry_if_file_missing(&digest).await,
+        "a healthy entry must survive the heal",
+    );
+    assert!(
+        fast_store.as_ref().has(digest).await?.is_some(),
+        "the healthy entry must still be indexed after a no-op heal",
+    );
     Ok(())
 }

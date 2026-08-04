@@ -1477,6 +1477,40 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             .ok_or_else(|| make_err!(Code::NotFound, "{digest} not found in filesystem store. This may indicate the file was evicted due to cache pressure. Consider increasing 'max_bytes' in your filesystem store's eviction_policy configuration."))
     }
 
+    /// Heal an entry incorrectly reported as present
+    ///
+    /// When the worker hardlinks a file entry we returned, but the hardlink fails
+    /// due to the file not actually being present on disk, the worker can call
+    /// this to correct the record and prevent subsequent attempts failing in the
+    /// same way.
+    ///
+    /// Returns whether a stale entry was removed. We re-run an existence check
+    /// under the entry's path lock. An entry that a concurrent populate has
+    /// already re-emplaced with a fresh file is left alone.
+    pub async fn remove_entry_if_file_missing(&self, digest: &DigestInfo) -> bool {
+        let key: StoreKey<'static> = (*digest).into();
+        let Some(entry) = self.evicting_map.get(&key).await else {
+            return false;
+        };
+        let stat_result = entry
+            .get_file_path_locked(|path| async move { fs::metadata(&path).await })
+            .await;
+        let Err(err) = stat_result else {
+            return false;
+        };
+        // An unreadable-but-present file (e.g. EACCES) is not a divergence;
+        // leave the entry for a human to notice.
+        if err.code != Code::NotFound {
+            return false;
+        }
+        warn!(
+            ?key,
+            "Filesystem store map/disk divergence: removing entry; next populate will repair it from the slow store",
+        );
+        self.evicting_map.remove(&key).await;
+        true
+    }
+
     async fn update_file(
         self: Pin<&Self>,
         mut entry: Fe,
