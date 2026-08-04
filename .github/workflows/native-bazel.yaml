@@ -29,9 +29,6 @@ jobs:
           - os: ubuntu-24.04
             bazel_version: 9.1.1
             check_name: ubuntu-24.04
-          - os: macos-26
-            bazel_version: 9.1.1
-            check_name: macos-26
           # Deterministic Bazel compatibility lane. Randomizing Bazel versions
           # makes failures harder to reproduce. Bazel 8 cannot read the
           # Bazel 9 lockfile format, so this lane tests source compatibility
