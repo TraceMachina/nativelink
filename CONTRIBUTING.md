@@ -397,11 +397,18 @@ most automatically generated changelogs provide.
 
    - `MODULE.bazel`
    - `Cargo.toml`
-   - `nativelink-*/Cargo.toml`
+   - The `Cargo.toml` of every `nativelink-*` crate (that is, all
+     `nativelink-*/Cargo.toml` files, not just a select few)
 
 2. Run `git cliff --tag=0.x.y > CHANGELOG.md` to update the changelog. You might
    need to make manual adjustments to `cliff.toml` if `git-cliff` doesn't put a
    commit in the right subsection.
+
+   > [!WARNING]
+   > This command rewrites `CHANGELOG.md` from scratch and may unexpectedly
+   > drop entries for previous releases. Diff the regenerated changelog
+   > against the previous version and manually restore any earlier release
+   > entries that went missing.
 
 3. Create the commit and PR. Call it `Release NativeLink v0.x.y`.
 
