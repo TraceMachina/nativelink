@@ -1,5 +1,5 @@
 {
   "ABI_LIBC_VERSION": "glibc_2.38",
-  "BAZEL_HOST_SYSTEM": "x86_64-unknown-linux-gnu",
+  "BAZEL_HOST_SYSTEM": "x86_64-unknown-linux-musl",
   "BAZEL_TARGET_LIBC": "glibc_2.38"
 }

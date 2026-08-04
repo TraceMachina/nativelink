@@ -5,7 +5,6 @@
     nix2container,
     coreutils,
     gnused,
-    lib,
     runCommand,
     runtimeShell,
     self,
@@ -31,25 +30,13 @@
       ln -s /bin/env $out/usr/bin/env
     '';
 
-    user = "nativelink";
-    group = "nativelink";
-    uid = "1000";
-    gid = "1000";
-
     mkUser = runCommand "mkUser" {} ''
       mkdir -p $out/etc/pam.d
 
       echo "root:x:0:0::/root:${runtimeShell}" > $out/etc/passwd
-      echo "${user}:x:${uid}:${gid}:::" >> $out/etc/passwd
-
       echo "root:!x:::::::" > $out/etc/shadow
-      echo "${user}:!x:::::::" >> $out/etc/shadow
-
       echo "root:x:0:" > $out/etc/group
-      echo "${group}:x:${gid}:" >> $out/etc/group
-
       echo "root:x::" > $out/etc/gshadow
-      echo "${group}:x::" >> $out/etc/gshadow
 
       cat > $out/etc/pam.d/other <<EOF
       account sufficient pam_unix.so
@@ -59,19 +46,7 @@
       EOF
 
       touch $out/etc/login.defs
-      mkdir -p $out/home/${user}
     '';
-
-    # Set permissions for the user's home directory.
-    mkUserPerms = {
-      path = mkUser;
-      regex = "/home/${user}";
-      mode = "0755";
-      uid = lib.toInt uid;
-      gid = lib.toInt gid;
-      uname = user;
-      gname = group;
-    };
   in
     # Create a container image from a base image with the nativelink executable
     # added and set as entrypoint. This allows arbitrary base images to be
@@ -93,7 +68,6 @@
         ];
 
         perms = [
-          mkUserPerms
           mkTmpPerms
         ];
 
@@ -103,8 +77,9 @@
         tag = image.imageTag;
 
         config = {
-          User = user;
-          WorkingDir = "/home/${user}";
+          # Need root so we can use namespaces
+          User = "root";
+          WorkingDir = "/root";
           Labels = {
             "org.opencontainers.image.description" = "NativeLink worker generated from ${image.imageName}.";
             "org.opencontainers.image.documentation" = "https://github.com/TraceMachina/nativelink";

@@ -68,4 +68,4 @@ RUN apt-get update \
     && mkdir -p /root/.cache/nativelink
 
 EXPOSE 50051/tcp 50052/tcp
-CMD ["nativelink"]
+ENTRYPOINT ["nativelink"]

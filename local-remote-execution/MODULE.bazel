@@ -15,7 +15,7 @@ bazel_dep(name = "rules_cc", version = "0.2.19")
 # Use the starlark implementation of Java rules instead of the builtin ones.
 bazel_dep(name = "rules_java", version = "8.11.0")
 bazel_dep(name = "rules_rs", version = "0.0.96")
-bazel_dep(name = "rules_rust", version = "0.68.1")
+bazel_dep(name = "rules_rust", version = "0.71.3")
 bazel_dep(name = "bazel_skylib", version = "1.9.0")
 # rules_rust is pinned to the hermeticbuild fork in the parent MODULE.bazel via
 # archive_override; this submodule resolves to the same archive automatically.
@@ -37,9 +37,9 @@ use_repo(
 # via lre.bazelrc (`--extra_toolchains`) on the host side; the bootstrap pair
 # only matches when @rules_rust//rust/private:bootstrap_setting is flipped on,
 # which happens transitively when building the rust-built process_wrapper.
-register_toolchains(
-    "//rust:rust-x86_64-linux-bootstrap",
-    "//rust:rust-aarch64-linux-bootstrap",
-    "//rust:rust-x86_64-darwin-bootstrap",
-    "//rust:rust-aarch64-darwin-bootstrap",
-)
+# register_toolchains(
+#     "//rust:rust-x86_64-linux-bootstrap",
+#     "//rust:rust-aarch64-linux-bootstrap",
+#     "//rust:rust-x86_64-darwin-bootstrap",
+#     "//rust:rust-aarch64-darwin-bootstrap",
+# )

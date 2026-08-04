@@ -95,30 +95,6 @@
             ${lib.concatLines maybePrefixedConfig}
           '';
 
-          nixExecToRustExec = p: let
-            inherit (p.stdenv.buildPlatform) system;
-          in
-            {
-              "aarch64-darwin" = "aarch64-apple-darwin";
-              "aarch64-linux" = "aarch64-unknown-linux-gnu";
-              "x86_64-darwin" = "x86_64-apple-darwin";
-              "x86_64-linux" = "x86_64-unknown-linux-gnu";
-            }.${
-              system
-            } or (throw "Unsupported Nix exec platform: ${system}");
-
-          nixExecToDefaultRustTarget = p: let
-            inherit (p.stdenv.targetPlatform) system;
-          in
-            {
-              "aarch64-darwin" = "aarch64-apple-darwin";
-              "aarch64-linux" = "aarch64-unknown-linux-musl";
-              "x86_64-darwin" = "x86_64-apple-darwin";
-              "x86_64-linux" = "x86_64-unknown-linux-musl";
-            }.${
-              system
-            } or (throw "Unsupported Nix target platform: ${system}");
-
           # These flags cause a Bazel build to use LRE toolchains regardless of whether
           # the build is running in local or remote configuration.
           #
@@ -147,17 +123,11 @@
               # When using remote executors that differ from the host this needs to
               # be manually extended via the `--extra_execution_platforms` flag.
               "--extra_execution_platforms=${
-                lib.concatStringsSep "," ([
-                    # Explicitly duplicate the host as an execution platform. This way
-                    # local execution is treated the same as remote execution.
-                    "@local-remote-execution//rust/platforms:${nixExecToRustExec pkgs}"
-                    "@local-remote-execution//rust/platforms:${nixExecToDefaultRustTarget pkgs}"
-                  ]
-                  ++ lib.optionals pkgs.stdenv.isLinux [
-                    # TODO(palfrey): Reimplement rbe-configs-gen for C++ so that we
-                    #                    can support more execution and target platforms.
-                    "@local-remote-execution//generated-cc/config:platform"
-                  ])
+                lib.concatStringsSep "," (lib.optionals pkgs.stdenv.isLinux [
+                  # TODO(palfrey): Reimplement rbe-configs-gen for C++ so that we
+                  #                    can support more execution and target platforms.
+                  "@local-remote-execution//generated-cc/config:platform"
+                ])
               }"
             ]
             # C++.
@@ -172,22 +142,6 @@
 
               # TODO(palfrey): Support different target platforms in lre-cc and add
               #                    `--platforms` settings here.
-            ]
-            # Rust.
-            ++ [
-              # The rust toolchains executing on the execution platform. We default to the
-              # platforms corresponding to the host. When using remote executors that
-              # differ from the platform corresponding to the host this should be extended
-              # via manual `--extra_toolchains` arguments.
-              "--extra_toolchains=@local-remote-execution//rust:rust-${pkgs.stdenv.hostPlatform.system}"
-              "--extra_toolchains=@local-remote-execution//rust:rustfmt-${pkgs.stdenv.hostPlatform.system}"
-
-              # Defaults for rust target platforms. This is a convenience setting that
-              # may be overridden by manual `--platforms` arguments.
-              #
-              # TODO(palfrey): At the moment these platforms are "rust-specific".
-              #                    Generalize this to all languages.
-              "--platforms=@local-remote-execution//rust/platforms:${nixExecToDefaultRustTarget pkgs}"
             ];
 
           maybeEnv =
