@@ -124,6 +124,26 @@ const WIRE_COMPRESSION_MIN_SIZE_BYTES: u64 = 64 * 1024;
 /// while encoding slower, and internal hops are throughput-sensitive.
 const WIRE_COMPRESSION_ZSTD_LEVEL: i32 = 1;
 
+/// A ByteStream `WriteRequest` must stay under the receiving gRPC server's
+/// maximum message size (4 MiB by default in tonic). Reader chunks can be much
+/// larger, so use a conservative cap that leaves room for protobuf framing and
+/// the resource name.
+const MAX_WRITE_CHUNK_SIZE_BYTES: usize = 2 * 1024 * 1024;
+
+/// Returns the next capped `WriteRequest` payload, retaining any unused bytes
+/// from an oversized reader chunk for the next call.
+async fn next_write_request_data(
+    reader: &mut DropCloserReadHalf,
+    pending: &mut Bytes,
+    error_context: &'static str,
+) -> Result<Bytes, Error> {
+    if pending.is_empty() {
+        *pending = reader.recv().await.err_tip(|| error_context)?;
+    }
+    let take = pending.len().min(MAX_WRITE_CHUNK_SIZE_BYTES);
+    Ok(pending.split_to(take))
+}
+
 /// Estimated per-entry protobuf and framing overhead charged against
 /// `max_batch_bytes`, so that batches of many tiny blobs cannot push a
 /// `BatchReadBlobs` response over the gRPC message size limit.
@@ -1142,18 +1162,9 @@ impl GrpcStore {
             compressed_rx: DropCloserReadHalf,
             did_error: bool,
             bytes_received: i64,
-            // Residue of an encoder chunk larger than `MAX_WRITE_CHUNK`, emitted
-            // across successive requests before the encoder is polled again.
+            // Residue of an encoder chunk larger than the write-request cap.
             pending: Bytes,
         }
-
-        // A ByteStream WriteRequest must stay under the gRPC max message size
-        // (tonic's 4 MiB decoding default on the receiving side). A reader chunk
-        // can be larger than that — `update_oneshot` delivers a whole blob as one
-        // chunk — so it would otherwise become a single oversized message the
-        // peer rejects with "message length too large". Cap each request and
-        // split any larger chunk across successive requests.
-        const MAX_WRITE_CHUNK: usize = 2 * 1024 * 1024;
 
         let mut buf = Uuid::encode_buffer();
         let uuid = Uuid::new_v4().hyphenated().encode_lower(&mut buf);
@@ -1203,24 +1214,19 @@ impl GrpcStore {
                 error!("GrpcStore::update_compressed() polled stream after error was returned");
                 return None;
             }
-            // Refill from the encoder only once the pending buffer is drained, so
-            // a large encoder chunk is emitted across several capped requests.
-            if local_state.pending.is_empty() {
-                match local_state
-                    .compressed_rx
-                    .recv()
-                    .await
-                    .err_tip(|| "In GrpcStore::update_compressed()")
-                {
-                    Ok(data) => local_state.pending = data,
-                    Err(err) => {
-                        local_state.did_error = true;
-                        return Some((Err(err), local_state));
-                    }
+            let data = match next_write_request_data(
+                &mut local_state.compressed_rx,
+                &mut local_state.pending,
+                "In GrpcStore::update_compressed()",
+            )
+            .await
+            {
+                Ok(data) => data,
+                Err(err) => {
+                    local_state.did_error = true;
+                    return Some((Err(err), local_state));
                 }
-            }
-            let take = local_state.pending.len().min(MAX_WRITE_CHUNK);
-            let data = local_state.pending.split_to(take);
+            };
             let write_offset = local_state.bytes_received;
             local_state.bytes_received += data.len().try_into().unwrap_or(i64::MAX);
             Some((
@@ -1552,18 +1558,9 @@ impl StoreDriver for GrpcStore {
             reader: DropCloserReadHalf,
             did_error: bool,
             bytes_received: i64,
-            // Residue of a reader chunk larger than `MAX_WRITE_CHUNK`, emitted
-            // across successive requests before the reader is polled again.
+            // Residue of a reader chunk larger than the write-request cap.
             pending: Bytes,
         }
-
-        // A ByteStream WriteRequest must stay under the gRPC max message size
-        // (tonic's 4 MiB decoding default on the receiving side). A reader chunk
-        // can be larger than that — `update_oneshot` delivers a whole blob as one
-        // chunk — so it would otherwise become a single oversized message the
-        // peer rejects with "message length too large". Cap each request and
-        // split any larger chunk across successive requests.
-        const MAX_WRITE_CHUNK: usize = 2 * 1024 * 1024;
 
         let digest = key.into_digest();
         if matches!(self.store_type, nativelink_config::stores::StoreType::Ac) {
@@ -1620,24 +1617,19 @@ impl StoreDriver for GrpcStore {
                 error!("GrpcStore::update() polled stream after error was returned");
                 return None;
             }
-            // Refill from the reader only once the pending buffer is drained, so
-            // a large reader chunk is emitted across several capped requests.
-            if local_state.pending.is_empty() {
-                match local_state
-                    .reader
-                    .recv()
-                    .await
-                    .err_tip(|| "In GrpcStore::update()")
-                {
-                    Ok(data) => local_state.pending = data,
-                    Err(err) => {
-                        local_state.did_error = true;
-                        return Some((Err(err), local_state));
-                    }
+            let data = match next_write_request_data(
+                &mut local_state.reader,
+                &mut local_state.pending,
+                "In GrpcStore::update()",
+            )
+            .await
+            {
+                Ok(data) => data,
+                Err(err) => {
+                    local_state.did_error = true;
+                    return Some((Err(err), local_state));
                 }
-            }
-            let take = local_state.pending.len().min(MAX_WRITE_CHUNK);
-            let data = local_state.pending.split_to(take);
+            };
 
             let write_offset = local_state.bytes_received;
             local_state.bytes_received += data.len().try_into().unwrap_or(i64::MAX);

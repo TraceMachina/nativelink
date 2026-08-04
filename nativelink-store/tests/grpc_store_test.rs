@@ -303,7 +303,9 @@ async fn make_draining_server() -> (Arc<Mutex<Vec<WriteRequest>>>, u16) {
 #[nativelink_test]
 async fn write_stream_terminates_after_finish_write() -> Result<(), Error> {
     let (write_requests, port) = make_draining_server().await;
-    let spec = test_spec(format!("http://localhost:{port}"), false);
+    let mut spec = test_spec(format!("http://127.0.0.1:{port}"), false);
+    // Let the outer timeout below be the sole hang guard for this test.
+    spec.rpc_timeout_s = 0;
     let store = GrpcStore::new(&spec).await?;
     let digest = DigestInfo::try_new(VALID_HASH, RAW_INPUT.len()).unwrap();
 
@@ -346,7 +348,10 @@ async fn write_stream_terminates_after_finish_write() -> Result<(), Error> {
 async fn write_update_splits_chunks_over_grpc_message_limit() -> Result<(), Error> {
     const BLOB_SIZE: usize = 6 * 1024 * 1024;
     let (write_requests, port) = make_draining_server().await;
-    let spec = test_spec(format!("http://localhost:{port}"), false);
+    let mut spec = test_spec(format!("http://127.0.0.1:{port}"), false);
+    // Sanitizers can take more than the helper's usual one-second RPC timeout
+    // to transfer this payload. The outer timeout below remains the hang guard.
+    spec.rpc_timeout_s = 0;
     let store = GrpcStore::new(&spec).await?;
     let digest = DigestInfo::try_new(VALID_HASH, BLOB_SIZE).unwrap();
 
@@ -376,16 +381,28 @@ async fn write_update_splits_chunks_over_grpc_message_limit() -> Result<(), Erro
     let requests = write_requests.lock().await;
     assert!(requests.len() > 1, "oversized chunk must be split");
     let grpc_max_message_size = 4 * 1024 * 1024;
-    for request in requests.iter() {
+    let mut expected_offset = 0;
+    for (index, request) in requests.iter().enumerate() {
         assert!(
             request.data.len() < grpc_max_message_size,
             "each request must fit the gRPC message limit (got {})",
             request.data.len()
         );
+        assert_eq!(
+            request.write_offset, expected_offset,
+            "request {index} must start after all preceding data"
+        );
+        assert_eq!(
+            request.finish_write,
+            index + 1 == requests.len(),
+            "only the final request may carry finish_write"
+        );
+        expected_offset += i64::try_from(request.data.len()).unwrap();
     }
-    assert!(
-        requests.last().is_some_and(|r| r.finish_write),
-        "last request must carry finish_write"
+    assert_eq!(
+        expected_offset,
+        i64::try_from(BLOB_SIZE).unwrap(),
+        "write offsets must cover the full blob"
     );
     let received: Vec<u8> = requests.iter().flat_map(|r| r.data.clone()).collect();
     assert_eq!(received, expected);
