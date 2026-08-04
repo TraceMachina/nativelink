@@ -435,11 +435,40 @@ most automatically generated changelogs provide.
 
    - `MODULE.bazel`
    - `Cargo.toml`
-   - `nativelink-*/Cargo.toml`
+   - The `Cargo.toml` of every `nativelink-*` crate — including nested ones
+     like `nativelink-metric/nativelink-metric-macro-derive/Cargo.toml` —
+     and the regenerated lock files (`Cargo.lock`,
+     `nativelink-test/fuzz/Cargo.lock`)
 
-2. Run `git cliff --tag=0.x.y > CHANGELOG.md` to update the changelog. You might
-   need to make manual adjustments to `cliff.toml` if `git-cliff` doesn't put a
-   commit in the right subsection.
+   As a sanity check, a standard release touches 17 files.
+
+2. Update the changelog by prepending the new release section to the existing
+   `CHANGELOG.md`. Don't regenerate the whole file — that rewrites previous
+   release entries and drops manual curation.
+
+   First make sure your local tags match upstream, since `--unreleased` means
+   "commits not contained in any tag":
+
+   ```bash
+   git fetch upstream --tags
+   ```
+
+   Sanity check which commits will form the new release section:
+
+   ```bash
+   git log --oneline "$(git describe --tags --abbrev=0)"..HEAD
+   ```
+
+   Then prepend the new section:
+
+   ```bash
+   git cliff --unreleased --tag=v0.x.y --prepend CHANGELOG.md
+   ```
+
+   Verify with `git diff CHANGELOG.md` that the change is purely additive:
+   only added lines, with all previous release entries untouched. You might
+   need to make manual adjustments to `cliff.toml` if `git-cliff` doesn't put
+   a commit in the right subsection.
 
 3. Create the commit and PR. Call it `Release NativeLink v0.x.y`.
 
