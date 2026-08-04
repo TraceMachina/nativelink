@@ -1,4 +1,5 @@
 import { source } from "@/lib/source";
+import { GoogleTagManager } from "@next/third-parties/google";
 import { DocsLayout } from "fumadocs-ui/layouts/docs";
 import { RootProvider } from "fumadocs-ui/provider/next";
 import { GeistMono } from "geist/font/mono";
@@ -24,6 +25,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       suppressHydrationWarning
       className={`${GeistSans.variable} ${GeistMono.variable}`}
     >
+      <GoogleTagManager gtmId="GTM-NNLLRWGB" />
       <body className="flex min-h-screen flex-col bg-background text-foreground antialiased">
         {/* RootProvider configures the theme via next-themes. Setting BOTH
          * "class" and "data-theme" attributes is intentional:

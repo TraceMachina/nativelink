@@ -353,26 +353,27 @@ impl ApiWorkerSchedulerImpl {
         };
 
         // Update the operation in the worker state manager.
-        {
-            let update_operation_res = self
-                .worker_state_manager
-                .update_operation(operation_id, worker_id, update)
-                .await
-                .err_tip(|| "in update_operation on SimpleScheduler::update_action");
-            if let Err(err) = update_operation_res {
-                error!(
-                    %operation_id,
-                    ?worker_id,
-                    ?err,
-                    "Failed to update_operation on update_action"
-                );
-                return Err(err);
-            }
+        let update_operation_res = self
+            .worker_state_manager
+            .update_operation(operation_id, worker_id, update)
+            .await
+            .err_tip(|| "in update_operation on SimpleScheduler::update_action");
+        if let Err(err) = &update_operation_res {
+            error!(
+                %operation_id,
+                ?worker_id,
+                ?err,
+                "Failed to update_operation on update_action"
+            );
         }
 
         if !is_finished {
-            return Ok(());
+            return update_operation_res;
         }
+        // The worker is done with this action even if the state-manager update
+        // failed (e.g. the operation was already torn down after its clients
+        // timed out). The worker bookkeeping below must still run, or the
+        // worker's platform properties leak until it can never match again.
 
         // Clear this action from the current worker if finished.
         let complete_action_res = {
@@ -387,7 +388,7 @@ impl ApiWorkerSchedulerImpl {
 
         self.worker_change_notify.notify_one();
 
-        complete_action_res
+        update_operation_res.merge(complete_action_res)
     }
 
     /// Notifies the specified worker to run the given action and handles errors by evicting
