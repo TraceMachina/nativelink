@@ -470,7 +470,7 @@ most automatically generated changelogs provide.
    need to make manual adjustments to `cliff.toml` if `git-cliff` doesn't put
    a commit in the right subsection.
 
-3. Create the commit and PR. Call it `Release NativeLink v0.x.y`.
+3. Create the commit and PR. Call it `Release NativeLink v1.x.y`.
 
 4. Once the PR is merged, update your local repository and origin:
 
@@ -485,15 +485,15 @@ most automatically generated changelogs provide.
    `v` prefix:
 
    ```bash
-   git tag -s v0.x.y
+   git tag -s v1.x.y
 
-   # tag message should be: v0.x.y
+   # tag message should be: v1.x.y
    ```
 
 6. Push the signed tag to the origin repository:
 
    ```bash
-   git push origin v0.x.y
+   git push origin v1.x.y
    ```
 
 7. Pushing the tag triggers an additional GHA workflow which should create the
@@ -501,7 +501,7 @@ most automatically generated changelogs provide.
    the CI job in your fork passes, push the tag to upstream:
 
    ```bash
-   git push upstream v0.x.y
+   git push upstream v1.x.y
    ```
 
 8. Regenerate the latest config reference docs now that the upstream tag exists.
@@ -521,14 +521,14 @@ most automatically generated changelogs provide.
    ```bash
    git fetch --tags upstream
    cd web
-   bun --filter @nativelink/docs gen:config-reference v0.x.y
+   bun --filter @nativelink/docs gen:config-reference v1.x.y
    cd ..
    ```
 
-   Confirm that `web/apps/docs/lib/config-versions.ts` marks `v0.x.y` as the
+   Confirm that `web/apps/docs/lib/config-versions.ts` marks `v1.x.y` as the
    latest release and that
    `web/apps/docs/content/docs/reference/nativelink-config/index.mdx` says it was
-   sourced from `nativelink-config @ v0.x.y`. Then run the docs lint and commit
+   sourced from `nativelink-config @ v1.x.y`. Then run the docs lint and commit
    the generated docs update:
 
    ```bash
@@ -549,7 +549,7 @@ most automatically generated changelogs provide.
 
    ```bash
    gh api -X POST repos/TraceMachina/nativelink/releases/generate-notes \
-     -f tag_name=v0.x.y -f previous_tag_name=v0.x.z
+     -f tag_name=v1.x.y -f previous_tag_name=v1.x.z
    ```
 
    Fold that output into the categorized notes rather than pasting it verbatim,
@@ -580,7 +580,7 @@ most automatically generated changelogs provide.
     slsa-verifier verify-artifact nativelink-0.x.y-x86_64-unknown-linux-musl.tar.gz \
       --provenance-path nativelink-0.x.y.intoto.jsonl \
       --source-uri github.com/TraceMachina/nativelink \
-      --source-tag v0.x.y
+      --source-tag v1.x.y
 
     # Verify the cosign signature.
     cosign verify-blob nativelink-0.x.y-x86_64-unknown-linux-musl.tar.gz \
@@ -593,7 +593,7 @@ most automatically generated changelogs provide.
     If a release ever ships without signed assets (for example a release created
     before this workflow existed), re-run the workflow manually against the tag:
     `Actions → Signed release artifacts → Run workflow`, entering the tag (e.g.
-    `v0.x.y`). It will rebuild, re-sign, and attach the assets to that existing
+    `v1.x.y`). It will rebuild, re-sign, and attach the assets to that existing
     release.
 
 ## Conduct
