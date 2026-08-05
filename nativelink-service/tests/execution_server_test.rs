@@ -258,9 +258,10 @@ async fn operations_get_operation_not_found() -> Result<(), Box<dyn core::error:
     assert_eq!(err.code(), Code::NotFound);
     assert_eq!(
         err.message(),
-        "Failed to find existing task. If this instance uses a gRPC scheduler, its default retry \
-         policy sets max_retries to 0 (one request and no retries). Consider increasing \
-         schedulers[].grpc.retry.max_retries to tolerate transient NOT_FOUND responses."
+        "Failed to find existing task. If this instance uses a gRPC scheduler, its retry settings \
+         max_retries, delay, and jitter default to 0 (one request and no retries). Consider \
+         configuring the shared schedulers[].grpc.retry policy with max_retries greater than 0 and \
+         a non-zero delay; jitter is recommended to avoid synchronized retries."
     );
 
     Ok(())
@@ -287,9 +288,11 @@ async fn wait_execution_not_found_includes_retry_policy_hint()
     assert_eq!(err.code(), Code::NotFound);
     assert!(
         err.message().contains(
-            "Failed to find existing task. If this instance uses a gRPC scheduler, its default \
-             retry policy sets max_retries to 0 (one request and no retries). Consider increasing \
-             schedulers[].grpc.retry.max_retries to tolerate transient NOT_FOUND responses."
+            "Failed to find existing task. If this instance uses a gRPC scheduler, its retry \
+             settings max_retries, delay, and jitter default to 0 (one request and no retries). \
+             Consider configuring the shared schedulers[].grpc.retry policy with max_retries \
+             greater than 0 and a non-zero delay; jitter is recommended to avoid synchronized \
+             retries."
         ),
         "status should contain the retry policy hint: {err}"
     );

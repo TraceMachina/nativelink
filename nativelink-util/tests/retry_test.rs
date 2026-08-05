@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use futures::future::ready;
 use futures::stream::repeat_with;
-use nativelink_config::stores::Retry;
+use nativelink_config::stores::{ErrorCode, Retry};
 use nativelink_error::{Code, Error, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_util::retry::{Retrier, RetryResult};
@@ -147,6 +147,75 @@ async fn retry_with_additional_codes_retries_not_found() -> Result<(), Error> {
         run_count.load(Ordering::Relaxed),
         2,
         "Expected the NotFound result to be retried once"
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn additional_codes_respect_explicit_retry_allowlist() -> Result<(), Error> {
+    let retrier = Retrier::new(
+        Arc::new(|_duration| Box::pin(ready(()))),
+        Arc::new(move |_delay| Duration::from_millis(1)),
+        Retry {
+            max_retries: 2,
+            retry_on_errors: Some(vec![ErrorCode::Unavailable]),
+            ..Default::default()
+        },
+    );
+    let run_count = Arc::new(AtomicI32::new(0));
+
+    let result = Pin::new(&retrier)
+        .retry_with_additional_codes(
+            repeat_with(|| {
+                run_count.fetch_add(1, Ordering::Relaxed);
+                RetryResult::<bool>::Retry(make_err!(Code::NotFound, "Dummy failure"))
+            }),
+            &[Code::NotFound],
+        )
+        .await;
+
+    assert_eq!(
+        run_count.load(Ordering::Relaxed),
+        1,
+        "Expected the explicit allowlist to suppress the additional retry code"
+    );
+    assert_eq!(result.unwrap_err().code, Code::NotFound);
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn explicit_retry_allowlist_can_include_additional_code() -> Result<(), Error> {
+    let retrier = Retrier::new(
+        Arc::new(|_duration| Box::pin(ready(()))),
+        Arc::new(move |_delay| Duration::from_millis(1)),
+        Retry {
+            max_retries: 2,
+            retry_on_errors: Some(vec![ErrorCode::NotFound]),
+            ..Default::default()
+        },
+    );
+    let run_count = Arc::new(AtomicI32::new(0));
+
+    let result = Pin::new(&retrier)
+        .retry_with_additional_codes(
+            repeat_with(|| {
+                if run_count.fetch_add(1, Ordering::Relaxed) == 0 {
+                    RetryResult::Retry(make_err!(Code::NotFound, "Dummy failure"))
+                } else {
+                    RetryResult::Ok(true)
+                }
+            }),
+            &[Code::NotFound],
+        )
+        .await?;
+
+    assert_eq!(result, true, "Expected result to succeed");
+    assert_eq!(
+        run_count.load(Ordering::Relaxed),
+        2,
+        "Expected the explicitly allowed NotFound result to be retried once"
     );
 
     Ok(())
