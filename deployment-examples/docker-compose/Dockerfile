@@ -31,6 +31,7 @@ FROM ubuntu:noble-20250925@sha256:728785b59223d755e3e5c5af178fab1be7031f3522c5cc
 ARG BAZELISK_URL
 ARG BAZELISK_SHA256
 ARG TARGETARCH
+COPY ./tools/bazel-retry.sh /usr/local/bin/bazel-retry
 RUN ARCH_SUFFIX=amd64 \
     && if [ "$TARGETARCH" = "arm64" ]; then ARCH_SUFFIX=arm64; fi \
     && BAZELISK_URL="${BAZELISK_URL:-https://github.com/bazelbuild/bazelisk/releases/download/v1.25.0/bazelisk-linux-${ARCH_SUFFIX}}" \
@@ -51,7 +52,8 @@ RUN ARCH_SUFFIX=amd64 \
         ca-certificates=20240203 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
-    && python3 -c 'import hashlib, pathlib, stat, sys, urllib.request; data = urllib.request.urlopen(sys.argv[1], timeout=60).read(); digest = hashlib.sha256(data).hexdigest(); assert digest == sys.argv[2], f"sha256 mismatch: {digest}"; path = pathlib.Path("/usr/local/bin/bazel"); path.write_bytes(data); path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)' "$BAZELISK_URL" "$BAZELISK_SHA256"
+    && python3 -c 'import hashlib, pathlib, stat, sys, urllib.request; data = urllib.request.urlopen(sys.argv[1], timeout=60).read(); digest = hashlib.sha256(data).hexdigest(); assert digest == sys.argv[2], f"sha256 mismatch: {digest}"; path = pathlib.Path("/usr/local/bin/bazel"); path.write_bytes(data); path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)' "$BAZELISK_URL" "$BAZELISK_SHA256" \
+    && chmod +x /usr/local/bin/bazel-retry
 
 # Build the binary.
 FROM dependencies AS builder
@@ -60,7 +62,7 @@ COPY . .
 ARG OPT_LEVEL
 ARG ADDITIONAL_BAZEL_FLAGS
 # Add startup options to prevent Bazel server issues on ARM64
-RUN bazel \
+RUN bazel-retry \
     --batch \
     --output_base=/tmp/bazel_output \
     build -c ${OPT_LEVEL} ${ADDITIONAL_BAZEL_FLAGS} nativelink && \

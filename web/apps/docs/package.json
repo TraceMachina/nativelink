@@ -4,6 +4,7 @@
   "dependencies": {
     "@nativelink/tokens": "workspace:*",
     "@nativelink/ui": "workspace:*",
+    "@next/third-parties": "^16.2.11",
     "fumadocs-core": "^16",
     "fumadocs-mdx": "^15",
     "fumadocs-ui": "^16",
