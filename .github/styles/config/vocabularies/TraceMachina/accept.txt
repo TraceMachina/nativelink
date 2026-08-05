@@ -154,6 +154,8 @@ kubectl
 [Mm]inikube
 [Mm]itigations
 [Pp]recompute
+[Pp]repend
+[Pp]repending
 attrs
 Bzlmod
 [Dd]eps
