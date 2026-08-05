@@ -958,9 +958,14 @@ async fn test_sentinel_connect_with_bad_master() {
         connection_timeout_ms: 100,
         ..Default::default()
     };
+    // Unavailable, not InvalidArgument: an unknown master name is
+    // indistinguishable from a sentinel failover in progress, and the two
+    // must not be told apart by guessing. A genuinely wrong name keeps
+    // failing and stays visible; a failover recovers on retry. Classifying
+    // this as permanent meant a routine failover killed in-flight builds.
     assert_eq!(
         Error {
-            code: Code::InvalidArgument,
+            code: Code::Unavailable,
             messages: vec![
                 "MasterNameNotFoundBySentinel: Master with given name not found in sentinel - MasterNameNotFoundBySentinel".into(),
                 format!("While connecting to redis with url: redis+sentinel://127.0.0.1:{port}/")
@@ -1067,7 +1072,13 @@ async fn test_sentinel_connect_with_url_specified_master() {
             "redis+sentinel://127.0.0.1:{port}/?sentinelServiceName=specific_master"
         )],
         mode: RedisMode::Sentinel,
-        connection_timeout_ms: 100,
+        // This test asserts that the sentinelServiceName URL parameter
+        // resolves, not that it resolves quickly. 100ms — copied from the
+        // fail-fast bad-master test above, where a tight budget is the point —
+        // has to cover two TCP connects and two handshakes plus SENTINEL
+        // MASTERS in between, which a loaded macOS CI runner does not manage.
+        // Every other success-path test here allows 1s or more.
+        connection_timeout_ms: 5_000,
         ..Default::default()
     };
     RedisStore::new_standard(spec).await.expect("Working spec");
@@ -1405,6 +1416,126 @@ fn test_search_by_index_retries_on_failover() -> Result<(), Error> {
         "Should find the entry after retrying on the re-resolved master",
     );
     assert_eq!(search_results[0].content, "1234");
+
+    Ok(())
+}
+
+/// `RediSearch` matches documents in the search phase and reads their fields
+/// in the load phase. A document that expires or is deleted between the two
+/// comes back as a RESP3 row whose `extra_attributes` is Nil. That is routine
+/// on a busy scheduler — completed awaited-action records expire constantly —
+/// so the row must drop out of the results rather than fail the whole
+/// aggregate. Failing it reached clients as `INVALID_ARGUMENT`, which Bazel
+/// treats as permanent, so one expiry race ended the build.
+#[nativelink_test]
+fn test_search_by_index_skips_docs_that_expired_mid_query() -> Result<(), Error> {
+    fn loaded_row(content: &str) -> Value {
+        Value::Map(vec![
+            (
+                Value::SimpleString("extra_attributes".into()),
+                Value::Map(vec![
+                    (
+                        Value::BulkString(b"data".to_vec()),
+                        Value::BulkString(content.as_bytes().to_vec()),
+                    ),
+                    (
+                        Value::BulkString(b"version".to_vec()),
+                        Value::BulkString(b"1".to_vec()),
+                    ),
+                ]),
+            ),
+            (Value::SimpleString("values".into()), Value::Array(vec![])),
+        ])
+    }
+
+    fn expired_row() -> Value {
+        Value::Map(vec![
+            (Value::SimpleString("extra_attributes".into()), Value::Nil),
+            (Value::SimpleString("values".into()), Value::Array(vec![])),
+        ])
+    }
+
+    fn make_ft_aggregate() -> MockCmd {
+        MockCmd::new(
+            redis::cmd("FT.AGGREGATE")
+                .arg("test:_content_prefix_sort_key_3e762c15")
+                .arg("@content_prefix:{ Searchable }")
+                .arg("TIMEOUT")
+                .arg(10000_u64)
+                .arg("LOAD")
+                .arg(2)
+                .arg("data")
+                .arg("version")
+                .arg("WITHCURSOR")
+                .arg("COUNT")
+                .arg(1500)
+                .arg("MAXIDLE")
+                .arg(30000)
+                .arg("SORTBY")
+                .arg(2usize)
+                .arg("@sort_key")
+                .arg("ASC"),
+            // A page whose middle document expired between match and load.
+            Ok(Value::Array(vec![
+                Value::Map(vec![
+                    (
+                        Value::SimpleString("attributes".into()),
+                        Value::Array(vec![]),
+                    ),
+                    (
+                        Value::SimpleString("format".into()),
+                        Value::SimpleString("STRING".into()),
+                    ),
+                    (
+                        Value::SimpleString("results".into()),
+                        Value::Array(vec![loaded_row("1234"), expired_row(), loaded_row("5678")]),
+                    ),
+                ]),
+                Value::Int(0),
+            ])),
+        )
+    }
+
+    let commands = vec![
+        make_ft_aggregate(),
+        MockCmd::new(
+            redis::cmd("FT.CREATE")
+                .arg("test:_content_prefix__3e762c15")
+                .arg("ON")
+                .arg("HASH")
+                .arg("NOHL")
+                .arg("NOFIELDS")
+                .arg("NOFREQS")
+                .arg("NOOFFSETS")
+                .arg("TEMPORARY")
+                .arg(86400)
+                .arg("PREFIX")
+                .arg(1)
+                .arg("test:")
+                .arg("SCHEMA")
+                .arg("content_prefix")
+                .arg("TAG"),
+            Ok(Value::Nil),
+        ),
+        make_ft_aggregate(),
+    ];
+    let store = make_mock_store(commands).await;
+    let search_provider = SearchByContentPrefix {
+        prefix: "Searchable".to_string(),
+    };
+
+    let search_results: Vec<TestSchedulerDataUnversioned> = store
+        .search_by_index_prefix(search_provider)
+        .await
+        .err_tip(|| "The expired row must not fail the aggregate")?
+        .try_collect()
+        .await?;
+
+    // Only the two surviving documents come back; the expired one contributes
+    // nothing rather than taking the other two down with it.
+    assert_eq!(search_results.len(), 2, "Should skip only the expired row");
+    assert_eq!(search_results[0].content, "1234");
+    assert_eq!(search_results[1].content, "5678");
 
     Ok(())
 }

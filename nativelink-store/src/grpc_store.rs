@@ -309,7 +309,7 @@ impl GrpcStore {
             rpc_timeout,
             use_legacy_resource_names: spec.use_legacy_resource_names,
             read_batcher,
-            remote_cache_compression_enabled: spec.experimental_remote_cache_compression,
+            remote_cache_compression_enabled: spec.remote_cache_compression_enabled(),
             headers,
             // We lowercase keys as HTTP headers are case-insensitive so we should match all cases
             forward_headers: spec

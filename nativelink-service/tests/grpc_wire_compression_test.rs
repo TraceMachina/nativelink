@@ -150,7 +150,7 @@ fn grpc_spec(port: u16, compression: bool) -> GrpcSpec {
         headers: HashMap::new(),
         forward_headers: vec![],
         experimental_read_batching: None,
-        experimental_remote_cache_compression: compression,
+        experimental_remote_cache_compression: Some(compression),
     }
 }
 

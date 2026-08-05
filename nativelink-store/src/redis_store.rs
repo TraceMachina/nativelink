@@ -757,12 +757,12 @@ impl RedisStore<ConnectionManager, StandardRedisManager<ConnectionManager>> {
                     .await?
                     .map_err(Into::<Error>::into),
                 }
-                .err_tip_with_code(|_e| {
-                    (
-                        Code::InvalidArgument,
-                        format!("While connecting to redis with url: {local_addr}"),
-                    )
-                })
+                // Keep the underlying error's code rather than forcing
+                // InvalidArgument. Not every connect failure is a bad URL: a
+                // sentinel failover in progress reports the master as missing,
+                // which is transient and retryable, and overriding it to a
+                // permanent status made clients give up on a recoverable blip.
+                .err_tip(|| format!("While connecting to redis with url: {local_addr}"))
             }),
         )
         .await

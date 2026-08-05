@@ -353,26 +353,27 @@ impl ApiWorkerSchedulerImpl {
         };
 
         // Update the operation in the worker state manager.
-        {
-            let update_operation_res = self
-                .worker_state_manager
-                .update_operation(operation_id, worker_id, update)
-                .await
-                .err_tip(|| "in update_operation on SimpleScheduler::update_action");
-            if let Err(err) = update_operation_res {
-                error!(
-                    %operation_id,
-                    ?worker_id,
-                    ?err,
-                    "Failed to update_operation on update_action"
-                );
-                return Err(err);
-            }
+        let update_operation_res = self
+            .worker_state_manager
+            .update_operation(operation_id, worker_id, update)
+            .await
+            .err_tip(|| "in update_operation on SimpleScheduler::update_action");
+        if let Err(err) = &update_operation_res {
+            error!(
+                %operation_id,
+                ?worker_id,
+                ?err,
+                "Failed to update_operation on update_action"
+            );
         }
 
         if !is_finished {
-            return Ok(());
+            return update_operation_res;
         }
+        // The worker is done with this action even if the state-manager update
+        // failed (e.g. the operation was already torn down after its clients
+        // timed out). The worker bookkeeping below must still run, or the
+        // worker's platform properties leak until it can never match again.
 
         // Clear this action from the current worker if finished.
         let complete_action_res = {
@@ -387,7 +388,7 @@ impl ApiWorkerSchedulerImpl {
 
         self.worker_change_notify.notify_one();
 
-        complete_action_res
+        update_operation_res.merge(complete_action_res)
     }
 
     /// Notifies the specified worker to run the given action and handles errors by evicting
@@ -459,6 +460,18 @@ impl ApiWorkerSchedulerImpl {
     ) -> Result<(), Error> {
         let mut result = Ok(());
         if let Some(mut worker) = self.remove_worker(worker_id) {
+            // Log every eviction here rather than in each caller, so a worker
+            // can never leave the pool unexplained. Without this, a worker that
+            // vanished mid-build left nothing on the scheduler side to
+            // attribute it to, and the only visible symptom was the worker
+            // reconnecting with a fresh id.
+            info!(
+                ?worker_id,
+                is_disconnect,
+                running_actions = worker.running_action_infos.len(),
+                reason = %err.message_string(),
+                "Evicting worker from pool"
+            );
             // We don't care if we fail to send message to worker, this is only a best attempt.
             drop(worker.notify_update(WorkerUpdate::Disconnect).await);
             let update = if is_disconnect {
