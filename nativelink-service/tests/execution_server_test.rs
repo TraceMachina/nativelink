@@ -24,7 +24,7 @@ use nativelink_error::{Code, Error, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::execution_server::Execution;
 use nativelink_proto::build::bazel::remote::execution::v2::{
-    Action, ExecuteRequest, digest_function,
+    Action, ExecuteRequest, WaitExecutionRequest, digest_function,
 };
 use nativelink_proto::google::longrunning::operations_server::Operations;
 use nativelink_proto::google::longrunning::{
@@ -256,7 +256,48 @@ async fn operations_get_operation_not_found() -> Result<(), Box<dyn core::error:
 
     let err = request_res.unwrap_err();
     assert_eq!(err.code(), Code::NotFound);
-    assert_eq!(err.message(), "Failed to find existing task");
+    assert_eq!(
+        err.message(),
+        "Failed to find existing task. If this instance uses a gRPC scheduler, its default retry \
+         policy sets max_retries to 0 (one request and no retries). Consider increasing \
+         schedulers[].grpc.retry.max_retries to tolerate transient NOT_FOUND responses."
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn wait_execution_not_found_includes_retry_policy_hint()
+-> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let (execution_server, mock_scheduler) = make_execution_server(&store_manager)?;
+
+    let request_fut = execution_server.wait_execution(Request::new(WaitExecutionRequest {
+        name: format!("{INSTANCE_NAME}/some_operation_id"),
+    }));
+
+    let (request_res, _) = tokio::join!(
+        request_fut,
+        mock_scheduler.expect_filter_operations(Ok(Box::pin(stream::empty()))),
+    );
+
+    let Err(err) = request_res else {
+        panic!("WaitExecution should return NotFound");
+    };
+    assert_eq!(err.code(), Code::NotFound);
+    assert!(
+        err.message().contains(
+            "Failed to find existing task. If this instance uses a gRPC scheduler, its default \
+             retry policy sets max_retries to 0 (one request and no retries). Consider increasing \
+             schedulers[].grpc.retry.max_retries to tolerate transient NOT_FOUND responses."
+        ),
+        "status should contain the retry policy hint: {err}"
+    );
+    assert!(
+        err.message()
+            .ends_with("Failed on wait_execution() command"),
+        "status should retain the WaitExecution command context: {err}"
+    );
 
     Ok(())
 }

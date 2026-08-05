@@ -118,6 +118,41 @@ async fn dont_retry_for_not_found() -> Result<(), Error> {
 }
 
 #[nativelink_test]
+async fn retry_with_additional_codes_retries_not_found() -> Result<(), Error> {
+    let retrier = Retrier::new(
+        Arc::new(|_duration| Box::pin(ready(()))),
+        Arc::new(move |_delay| Duration::from_millis(1)),
+        Retry {
+            max_retries: 2,
+            ..Default::default()
+        },
+    );
+    let run_count = Arc::new(AtomicI32::new(0));
+
+    let result = Pin::new(&retrier)
+        .retry_with_additional_codes(
+            repeat_with(|| {
+                if run_count.fetch_add(1, Ordering::Relaxed) == 0 {
+                    RetryResult::Retry(make_err!(Code::NotFound, "Dummy failure"))
+                } else {
+                    RetryResult::Ok(true)
+                }
+            }),
+            &[Code::NotFound],
+        )
+        .await?;
+
+    assert_eq!(result, true, "Expected result to succeed");
+    assert_eq!(
+        run_count.load(Ordering::Relaxed),
+        2,
+        "Expected the NotFound result to be retried once"
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
 async fn retry_success_after_2_runs() -> Result<(), Error> {
     let retrier = Retrier::new(
         Arc::new(|_duration| Box::pin(ready(()))),
