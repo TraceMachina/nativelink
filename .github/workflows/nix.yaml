@@ -24,92 +24,181 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-15]
+        os: [ubuntu-24.04]
     name: Bazel Dev / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 180
     steps:
       - name: Checkout
-        uses: >- # v4.2.2
-          actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: >- # v6.0.2
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Prepare Worker
         uses: ./.github/actions/prepare-nix
+        with:
+          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
+
+      - name: Setup NativeLink Cloud
+        uses: ./.github/actions/setup-nativelink-cloud
+        with:
+          ci-mode: ${{ vars.NATIVELINK_CI_MODE }}
+          claim-base: ${{ secrets.NATIVELINK_STAGING_CLAIM_BASE }}
+          bes-results-url: ${{ secrets.NATIVELINK_STAGING_BES_RESULTS_URL }}
+          api-key: >-
+            ${{ github.event_name == 'push'
+                && secrets.NATIVELINK_STAGING_API_KEY_RW
+                || secrets.NATIVELINK_STAGING_API_KEY_RO }}
+          mode: ${{ github.event_name == 'push' && 'write' || 'read' }}
 
       - name: Invoke Bazel build in Nix shell
         run: |
-          if [ "$RUNNER_OS" == "Linux" ]; then
-            nix develop --impure --command \
-            bash -c "bazel test ... --verbose_failures"
-          elif [ "$RUNNER_OS" == "macOS" ]; then
-            nix develop --impure --command \
-            bash -c "bazel test //... --verbose_failures"
-          else
-            echo "Unsupported runner OS: $RUNNER_OS"
-            exit 1
-          fi
-        shell: bash
+          nix develop --impure --command \
+            bazel-retry test //... \
+              --verbose_failures \
+              --lockfile_mode=error \
+
+      - name: Teardown Worker
+        uses: ./.github/actions/end-nix
+        if: always()
+        with:
+          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
 
   nix-cargo:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-15]
+        os: [ubuntu-24.04]
     name: Cargo Dev / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 180
     steps:
       - name: Checkout
-        uses: >- # v4.2.2
-          actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: >- # v6.0.2
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Prepare Worker
         uses: ./.github/actions/prepare-nix
+        with:
+          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
+
+      - name: Rust cache
+        uses: >- # v2.9.1
+          Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
 
       - name: Invoke Cargo build in Nix shell
         run: >
           nix develop --impure --command
           bash -c "cargo test --all --profile=smol"
 
+      - name: Teardown Worker
+        uses: ./.github/actions/end-nix
+        if: always()
+        with:
+          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
+
   installation:
     strategy:
       fail-fast: false
       matrix:
         os:
-          - ubuntu-22.04
           - ubuntu-24.04
-          - macos-14
-          - macos-15
     name: Installation / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 180
     steps:
       - name: Checkout
-        uses: >- # v4.2.2
-          actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: >- # v6.0.2
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Prepare Worker
         uses: ./.github/actions/prepare-nix
+        with:
+          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
 
       - name: Test nix run
         run: |
           nix run -L .#nativelink-is-executable-test
 
+      - name: Teardown Worker
+        uses: ./.github/actions/end-nix
+        if: always()
+        with:
+          nix_name: .#nativelink-is-executable-test
+          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
+
   integration:
     name: ${{ matrix.test-name }}
     strategy:
       matrix:
-          test-name: [buildstream, mongo]
+          test-name: [buildstream, buck2, mongo]
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - name: Checkout
-        uses: >- # v4.2.2
-          actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: >- # v6.0.2
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Prepare Worker
         uses: ./.github/actions/prepare-nix
+        with:
+          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
 
       - name: Test ${{ matrix.test-name }} run
         run: |
           nix run -L .#${{ matrix.test-name }}-with-nativelink-test
+
+      - name: Teardown Worker
+        uses: ./.github/actions/end-nix
+        if: always()
+        with:
+          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
+          nix_name: .#${{ matrix.test-name }}-with-nativelink-test
+
+  # rbe-toolchain is slow because it has many subcommands, so split it out
+  generate-rbe-commands:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Checkout
+        uses: >- # v6.0.2
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Prepare Worker
+        uses: ./.github/actions/prepare-nix
+        with:
+          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
+
+      - name: Get commands list
+        run: |
+          COMMANDS=$(nix run .#rbe-toolchain-with-nativelink-test list)
+          echo "matrix={\"command\":${COMMANDS}}" >> $GITHUB_OUTPUT
+        id: set-matrix
+
+  rbe-toolchain:
+    name: rbe ${{ matrix.command}}
+    needs: [generate-rbe-commands]
+    strategy:
+        matrix: ${{fromJson(needs.generate-rbe-commands.outputs.matrix)}}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: >- # v6.0.2
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Prepare Worker
+        uses: ./.github/actions/prepare-nix
+        with:
+          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
+
+      - name: Test ${{ matrix.command }} with rbe
+        run: |
+          nix run -L .#rbe-toolchain-with-nativelink-test ${{ matrix.command }}
+
+      - name: Teardown Worker
+        uses: ./.github/actions/end-nix
+        if: always()
+        with:
+          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
+          nix_name: .#rbe-toolchain-with-nativelink-test

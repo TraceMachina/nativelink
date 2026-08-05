@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -19,9 +19,10 @@ use async_lock::Mutex;
 use bytes::Bytes;
 use hyper::body::Frame;
 use nativelink_config::cas_server::{EndpointConfig, LocalWorkerConfig, WorkerProperty};
-use nativelink_error::Error;
+use nativelink_error::{Error, make_err};
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    ConnectWorkerRequest, ExecuteResult, GoingAwayRequest, KeepAliveRequest, UpdateForWorker,
+    ConnectWorkerRequest, ExecuteComplete, ExecuteResult, GoingAwayRequest, KeepAliveRequest,
+    UpdateForWorker,
 };
 use nativelink_util::channel_body_for_tests::ChannelBody;
 use nativelink_util::shutdown_guard::ShutdownGuard;
@@ -30,14 +31,15 @@ use nativelink_util::task::JoinHandleDropGuard;
 use nativelink_worker::local_worker::LocalWorker;
 use nativelink_worker::worker_api_client_wrapper::WorkerApiClientTrait;
 use tokio::sync::{broadcast, mpsc};
-use tonic::Status;
+use tonic::{Code, Status};
 use tonic::{
     Response,
     Streaming,
     codec::Codec, // Needed for .decoder().
     codec::CompressionEncoding,
-    codec::ProstCodec,
 };
+use tonic_prost::ProstCodec;
+use tracing::debug;
 
 use super::mock_running_actions_manager::MockRunningActionsManager;
 
@@ -62,7 +64,7 @@ enum WorkerClientApiCalls {
 )]
 enum WorkerClientApiReturns {
     ConnectWorker(Result<Response<Streaming<UpdateForWorker>>, Status>),
-    ExecutionResponse(Result<Response<()>, Status>),
+    ExecutionResponse(Result<(), Error>),
 }
 
 #[derive(Clone)]
@@ -71,6 +73,7 @@ pub(crate) struct MockWorkerApiClient {
     tx_call: mpsc::UnboundedSender<WorkerClientApiCalls>,
     rx_resp: Arc<Mutex<mpsc::UnboundedReceiver<WorkerClientApiReturns>>>,
     tx_resp: mpsc::UnboundedSender<WorkerClientApiReturns>,
+    keep_alives_count: u8,
 }
 
 impl MockWorkerApiClient {
@@ -82,6 +85,7 @@ impl MockWorkerApiClient {
             tx_call,
             rx_resp: Arc::new(Mutex::new(rx_resp)),
             tx_resp,
+            keep_alives_count: 0,
         }
     }
 }
@@ -116,7 +120,7 @@ impl MockWorkerApiClient {
 
     pub(crate) async fn expect_execution_response(
         &self,
-        result: Result<Response<()>, Status>,
+        result: Result<(), Error>,
     ) -> ExecuteResult {
         let mut rx_call_lock = self.rx_call.lock().await;
         let req = match rx_call_lock
@@ -157,15 +161,21 @@ impl WorkerApiClientTrait for MockWorkerApiClient {
         }
     }
 
-    async fn keep_alive(&mut self, _request: KeepAliveRequest) -> Result<Response<()>, Status> {
+    async fn keep_alive(&mut self, _request: KeepAliveRequest) -> Result<(), Error> {
+        debug!("Got KeepAlive");
+        if self.keep_alives_count == 0 {
+            self.keep_alives_count += 1;
+            Ok(())
+        } else {
+            Err(make_err!(Code::Internal, "KeepAlive fail"))
+        }
+    }
+
+    async fn going_away(&mut self, _request: GoingAwayRequest) -> Result<(), Error> {
         unreachable!();
     }
 
-    async fn going_away(&mut self, _request: GoingAwayRequest) -> Result<Response<()>, Status> {
-        unreachable!();
-    }
-
-    async fn execution_response(&mut self, request: ExecuteResult) -> Result<Response<()>, Status> {
+    async fn execution_response(&mut self, request: ExecuteResult) -> Result<(), Error> {
         self.tx_call
             .send(WorkerClientApiCalls::ExecutionResponse(request))
             .expect("Could not send request to mpsc");
@@ -180,6 +190,10 @@ impl WorkerApiClientTrait for MockWorkerApiClient {
                 panic!("execution_response expected ExecutionResponse response, received {resp:?}")
             }
         }
+    }
+
+    async fn execution_complete(&mut self, _request: ExecuteComplete) -> Result<(), Error> {
+        Ok(())
     }
 }
 

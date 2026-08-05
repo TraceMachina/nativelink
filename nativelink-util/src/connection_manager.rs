@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -22,7 +22,7 @@ use futures::Future;
 use futures::stream::{FuturesUnordered, StreamExt, unfold};
 use nativelink_config::stores::Retry;
 use nativelink_error::{Code, Error, make_err};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 use tonic::transport::{Channel, Endpoint, channel};
 use tracing::{debug, error, info, warn};
 
@@ -34,7 +34,7 @@ use crate::retry::{self, Retrier, RetryResult};
 #[derive(Debug)]
 pub struct ConnectionManager {
     // The channel to request connections from the worker.
-    worker_tx: mpsc::Sender<oneshot::Sender<Connection>>,
+    worker_tx: mpsc::Sender<(String, oneshot::Sender<Connection>)>,
 }
 
 /// The index into `ConnectionManagerWorker::endpoints`.
@@ -95,14 +95,19 @@ struct ConnectionManagerWorker {
     endpoints: Vec<(ConnectionIndex, Endpoint)>,
     /// The channel used to communicate between a Connection and the worker.
     connection_tx: mpsc::UnboundedSender<ConnectionRequest>,
-    /// The number of connections that are currently allowed to be made.
-    available_connections: usize,
+    /// Gates the maximum number of in-flight `Connection` objects.
+    /// Was an explicit `usize` counter; now an `Arc<Semaphore>` so the
+    /// `OwnedSemaphorePermit` held by each `Connection` releases on
+    /// drop (RAII), instead of relying on a `ConnectionRequest::Dropped`
+    /// round-trip that could be lost on tonic transport errors or task
+    /// aborts.
+    available_connections: Arc<Semaphore>,
     /// Channels that are currently being connected.
     connecting_channels: FuturesUnordered<Pin<Box<dyn Future<Output = IndexedChannel> + Send>>>,
     /// Connected channels that are available for use.
     available_channels: VecDeque<EstablishedChannel>,
-    /// Requests for a Channel when available.
-    waiting_connections: VecDeque<oneshot::Sender<Connection>>,
+    /// Requests for a Channel when available - (reason, request)
+    waiting_connections: VecDeque<(String, oneshot::Sender<Connection>)>,
     /// The retry configuration for connecting to an Endpoint, on failure will
     /// restart the retrier after a 1 second delay.
     retrier: Retrier,
@@ -136,14 +141,16 @@ impl ConnectionManager {
             .collect();
 
         if max_concurrent_requests == 0 {
-            max_concurrent_requests = usize::MAX;
+            max_concurrent_requests = Semaphore::MAX_PERMITS;
+        } else {
+            max_concurrent_requests = max_concurrent_requests.min(Semaphore::MAX_PERMITS);
         }
         if connections_per_endpoint == 0 {
             connections_per_endpoint = 1;
         }
         let worker = ConnectionManagerWorker {
             endpoints,
-            available_connections: max_concurrent_requests,
+            available_connections: Arc::new(Semaphore::new(max_concurrent_requests)),
             connection_tx,
             connecting_channels: FuturesUnordered::new(),
             available_channels: VecDeque::new(),
@@ -165,10 +172,10 @@ impl ConnectionManager {
     /// Get a Connection that can be used as a `tonic::Channel`, except it
     /// performs some additional counting to reconnect on error and restrict
     /// the number of concurrent connections.
-    pub async fn connection(&self) -> Result<Connection, Error> {
+    pub async fn connection(&self, reason: String) -> Result<Connection, Error> {
         let (tx, rx) = oneshot::channel();
         self.worker_tx
-            .send(tx)
+            .send((reason, tx))
             .await
             .map_err(|err| make_err!(Code::Unavailable, "Requesting a new connection: {err:?}"))?;
         rx.await
@@ -180,7 +187,7 @@ impl ConnectionManagerWorker {
     async fn service_requests(
         mut self,
         connections_per_endpoint: usize,
-        mut worker_rx: mpsc::Receiver<oneshot::Sender<Connection>>,
+        mut worker_rx: mpsc::Receiver<(String, oneshot::Sender<Connection>)>,
         mut connection_rx: mpsc::UnboundedReceiver<ConnectionRequest>,
     ) {
         // Make the initial set of connections, connection failures will be
@@ -199,12 +206,12 @@ impl ConnectionManagerWorker {
         loop {
             tokio::select! {
                 request = worker_rx.recv() => {
-                    let Some(request) = request else {
+                    let Some((reason, request)) = request else {
                         // The ConnectionManager was dropped, shut down the
                         // worker.
                         break;
                     };
-                    self.handle_worker(request);
+                    self.handle_worker(reason, request);
                 }
                 maybe_request = connection_rx.recv() => {
                     if let Some(request) = maybe_request {
@@ -308,41 +315,55 @@ impl ConnectionManagerWorker {
     }
 
     // This must never be made async otherwise the select may cancel it.
-    fn handle_worker(&mut self, tx: oneshot::Sender<Connection>) {
-        if let Some(channel) = (self.available_connections > 0)
-            .then_some(())
-            .and_then(|()| self.available_channels.pop_front())
+    fn handle_worker(&mut self, reason: String, tx: oneshot::Sender<Connection>) {
+        let maybe_permit = self.available_connections.clone().try_acquire_owned().ok();
+        if let Some(permit) = maybe_permit
+            && let Some(channel) = self.available_channels.pop_front()
         {
-            self.provide_channel(channel, tx);
+            debug!(reason, "ConnectionManager: request running");
+            self.provide_channel(channel, tx, permit);
         } else {
-            self.waiting_connections.push_back(tx);
+            debug!(
+                available_permits = self.available_connections.available_permits(),
+                available_channels = self.available_channels.len(),
+                waiting_connections = self.waiting_connections.len(),
+                reason,
+                "ConnectionManager: no connection available, request queued",
+            );
+            self.waiting_connections.push_back((reason, tx));
         }
     }
 
-    fn provide_channel(&mut self, channel: EstablishedChannel, tx: oneshot::Sender<Connection>) {
-        // We decrement here because we create Connection, this will signal when
-        // it is Dropped and therefore increment this again.
-        self.available_connections -= 1;
+    fn provide_channel(
+        &self,
+        channel: EstablishedChannel,
+        tx: oneshot::Sender<Connection>,
+        permit: OwnedSemaphorePermit,
+    ) {
         drop(tx.send(Connection {
             tx: self.connection_tx.clone(),
             pending_channel: Some(channel.channel.clone()),
             channel,
+            _permit: permit,
         }));
     }
 
     fn maybe_available_connection(&mut self) {
-        while self.available_connections > 0
-            && !self.waiting_connections.is_empty()
-            && !self.available_channels.is_empty()
-        {
-            if let Some(channel) = self.available_channels.pop_front() {
-                if let Some(tx) = self.waiting_connections.pop_front() {
-                    self.provide_channel(channel, tx);
-                } else {
-                    // This should never happen, but better than an unwrap.
-                    self.available_channels.push_front(channel);
-                }
-            }
+        while !self.waiting_connections.is_empty() && !self.available_channels.is_empty() {
+            let Some(permit) = self.available_connections.clone().try_acquire_owned().ok() else {
+                break;
+            };
+            let Some(channel) = self.available_channels.pop_front() else {
+                drop(permit);
+                break;
+            };
+            let Some((reason, tx)) = self.waiting_connections.pop_front() else {
+                self.available_channels.push_front(channel);
+                drop(permit);
+                break;
+            };
+            debug!(reason, "ConnectionManager: channel available, running");
+            self.provide_channel(channel, tx, permit);
         }
     }
 
@@ -353,7 +374,6 @@ impl ConnectionManagerWorker {
                 if let Some(channel) = maybe_channel {
                     self.available_channels.push_back(channel);
                 }
-                self.available_connections += 1;
                 self.maybe_available_connection();
             }
             ConnectionRequest::Connected(channel) => {
@@ -385,7 +405,8 @@ impl ConnectionManagerWorker {
 /// re-connecting the underlying channel on error.  It depends on users
 /// reporting all errors.
 /// NOTE: This should never be cloneable because its lifetime is linked to the
-///       `ConnectionManagerWorker::available_connections`.
+///       semaphore permit it carries — `_permit` is released exactly once,
+///       when the `Connection` drops.
 #[derive(Debug)]
 pub struct Connection {
     /// Communication with `ConnectionManagerWorker` to inform about transport
@@ -397,6 +418,7 @@ pub struct Connection {
     pending_channel: Option<Channel>,
     /// The identifier to send to `tx`.
     channel: EstablishedChannel,
+    _permit: OwnedSemaphorePermit,
 }
 
 impl Drop for Connection {

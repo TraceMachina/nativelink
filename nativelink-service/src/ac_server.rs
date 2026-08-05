@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -63,7 +63,7 @@ impl AcServer {
                 make_input_err!("'ac_store': '{}' does not exist", config.ac_store)
             })?;
             stores.insert(
-                config.instance_name.to_string(),
+                config.instance_name.clone(),
                 AcStoreInfo {
                     store,
                     read_only: config.read_only,
@@ -89,7 +89,7 @@ impl AcServer {
             .get(instance_name)
             .err_tip(|| format!("'instance_name' not configured for '{instance_name}'"))?;
 
-        // TODO(aaronmondal) We should write a test for these errors.
+        // TODO(palfrey) We should write a test for these errors.
         let digest: DigestInfo = request
             .action_digest
             .clone()
@@ -190,10 +190,10 @@ impl ActionCache for AcServer {
             )
             .await;
 
-        if let Err(ref err) = result {
-            if err.code != Code::NotFound {
-                error!(error = ?err, "Error in get_action_result");
-            }
+        if let Err(ref err) = result
+            && err.code != Code::NotFound
+        {
+            error!(error = ?err, "Error in get_action_result");
         }
 
         result.map_err(Into::into)
@@ -201,7 +201,7 @@ impl ActionCache for AcServer {
 
     #[instrument(
         err,
-        ret(level = Level::INFO),
+        ret(level = Level::TRACE),
         level = Level::ERROR,
         skip_all,
         fields(request = ?grpc_request.get_ref())

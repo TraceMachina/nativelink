@@ -1,0 +1,16 @@
+{
+  "pages": [
+    "index",
+    "---Get started---",
+    "getting-started",
+    "rbe",
+    "configuration",
+    "deployment",
+    "---Learn---",
+    "explanations",
+    "---Develop---",
+    "contribute",
+    "reference"
+  ],
+  "title": "Docs"
+}

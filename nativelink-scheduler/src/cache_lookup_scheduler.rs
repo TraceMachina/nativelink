@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,6 +14,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use async_trait::async_trait;
 use nativelink_error::{Code, Error, ResultExt, make_err};
@@ -29,11 +30,12 @@ use nativelink_util::action_messages::{
 use nativelink_util::background_spawn;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
-use nativelink_util::known_platform_property_provider::KnownPlatformPropertyProvider;
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, OperationFilter,
 };
-use nativelink_util::origin_event::OriginMetadata;
+use nativelink_util::origin_event::{
+    BAZEL_METADATA_KEY, OriginMetadata, request_metadata_from_baggage,
+};
 use nativelink_util::store_trait::Store;
 use opentelemetry::baggage::BaggageExt;
 use opentelemetry::context::Context;
@@ -43,6 +45,8 @@ use scopeguard::guard;
 use tokio::sync::oneshot;
 use tonic::{Request, Response};
 use tracing::error;
+
+use crate::known_platform_property_provider::KnownPlatformPropertyProvider;
 
 /// Actions that are having their cache checked or failed cache lookup and are
 /// being forwarded upstream.  Missing the `skip_cache_check` actions which are
@@ -64,7 +68,7 @@ pub struct CacheLookupScheduler {
     /// The "real" scheduler to use to perform actions if they were not found
     /// in the action cache.
     #[metric(group = "action_scheduler")]
-    action_scheduler: Arc<dyn ClientStateManager>,
+    action_scheduler: Arc<dyn KnownPlatformPropertyProvider>,
     /// Actions that are currently performing a `CacheCheck`.
     inflight_cache_checks: Arc<Mutex<CheckActions>>,
 }
@@ -149,7 +153,7 @@ impl ActionStateResult for CacheLookupActionStateResult {
     }
 
     async fn as_action_info(&self) -> Result<(Arc<ActionInfo>, Option<OriginMetadata>), Error> {
-        // TODO(aaronmondal) We should probably remove as_action_info()
+        // TODO(palfrey) We should probably remove as_action_info()
         // or implement it properly.
         return Err(make_err!(
             Code::Unimplemented,
@@ -161,7 +165,7 @@ impl ActionStateResult for CacheLookupActionStateResult {
 impl CacheLookupScheduler {
     pub fn new(
         ac_store: Store,
-        action_scheduler: Arc<dyn ClientStateManager>,
+        action_scheduler: Arc<dyn KnownPlatformPropertyProvider>,
     ) -> Result<Self, Error> {
         Ok(Self {
             ac_store,
@@ -213,11 +217,9 @@ impl CacheLookupScheduler {
         };
         let (action_listener_rx, scope_guard) = match cache_check_result {
             Ok(action_listener_fut) => {
-                let action_listener = action_listener_fut.await.map_err(|_| {
-                    make_err!(
-                        Code::Internal,
-                        "ActionStateResult tx hung up in CacheLookupScheduler::add_action"
-                    )
+                let action_listener = action_listener_fut.await.map_err(|err| {
+                    Error::from_std_err(Code::Internal, &err)
+                        .append("ActionStateResult tx hung up in CacheLookupScheduler::add_action")
                 })?;
                 return action_listener;
             }
@@ -267,6 +269,7 @@ impl CacheLookupScheduler {
                         client_operation_id: OperationId::default(),
                         stage: ActionStage::CompletedFromCache(action_result),
                         action_digest: action_info.unique_qualifier.digest(),
+                        last_transition_timestamp: SystemTime::now(),
                     };
 
                     let ctx = Context::current();
@@ -275,12 +278,15 @@ impl CacheLookupScheduler {
                     let maybe_origin_metadata = if baggage.is_empty() {
                         None
                     } else {
+                        let bazel_metadata = baggage
+                            .get(BAZEL_METADATA_KEY)
+                            .and_then(|value| request_metadata_from_baggage(value.as_str()).ok());
                         Some(OriginMetadata {
                             identity: baggage
                                 .get(ENDUSER_ID)
                                 .map(|v| v.as_str().to_string())
                                 .unwrap_or_default(),
-                            bazel_metadata: None, // TODO(aaronmondal): Implement conversion.
+                            bazel_metadata,
                         })
                     };
 
@@ -338,11 +344,9 @@ impl CacheLookupScheduler {
         });
         action_listener_rx
             .await
-            .map_err(|_| {
-                make_err!(
-                    Code::Internal,
-                    "ActionStateResult tx hung up in CacheLookupScheduler::add_action"
-                )
+            .map_err(|err| {
+                Error::from_std_err(Code::Internal, &err)
+                    .append("ActionStateResult tx hung up in CacheLookupScheduler::add_action")
             })?
             .err_tip(|| "In CacheLookupScheduler::add_action")
     }
@@ -350,7 +354,7 @@ impl CacheLookupScheduler {
     async fn inner_filter_operations(
         &self,
         filter: OperationFilter,
-    ) -> Result<ActionStateResultStream, Error> {
+    ) -> Result<ActionStateResultStream<'_>, Error> {
         self.action_scheduler
             .filter_operations(filter)
             .await
@@ -375,9 +379,14 @@ impl ClientStateManager for CacheLookupScheduler {
     ) -> Result<ActionStateResultStream, Error> {
         self.inner_filter_operations(filter).await
     }
+}
 
-    fn as_known_platform_property_provider(&self) -> Option<&dyn KnownPlatformPropertyProvider> {
-        self.action_scheduler.as_known_platform_property_provider()
+#[async_trait]
+impl KnownPlatformPropertyProvider for CacheLookupScheduler {
+    async fn get_known_properties(&self, instance_name: &str) -> Result<Vec<String>, Error> {
+        self.action_scheduler
+            .get_known_properties(instance_name)
+            .await
     }
 }
 

@@ -1,11 +1,11 @@
 #!/bin/bash
 # Copyright 2024 The NativeLink Authors. All rights reserved.
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
+# Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#    http://www.apache.org/licenses/LICENSE-2.0
+#    See LICENSE file for details
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -40,8 +40,9 @@ Usage:
   run_integration_tests.sh [TEST_PATTERNS...]
 
 TEST_PATTERNS: Name of test you wish to execute. Wildcard (*) supported.
-               Default: '*'
+               Default: '*.sh'
 EOT
+        exit 1
         ;;
     -*)
         echo "Unknown option $1"
@@ -60,7 +61,7 @@ if ! docker --version; then
 fi
 
 if [[ ${#TEST_PATTERNS[@]} -eq 0 ]]; then
-    TEST_PATTERNS=("*")
+    TEST_PATTERNS=("*.sh")
 fi
 
 SELF_DIR=$(realpath "$(dirname "$0")")
@@ -95,8 +96,25 @@ echo "" # New line.
 export NATIVELINK_DIR="$CACHE_DIR/nativelink"
 mkdir -p "$NATIVELINK_DIR"
 
+wait_for_tcp() {
+    local host="$1"
+    local port="$2"
+    local deadline=$((SECONDS + 30))
+
+    until (true > "/dev/tcp/$host/$port") 2> /dev/null; do
+        if ((SECONDS >= deadline)); then
+            echo "TCP endpoint $host:$port did not become ready within 30 seconds."
+            sudo docker compose logs
+            exit 1
+        fi
+        sleep 1
+    done
+
+    echo "TCP endpoint $host:$port is ready."
+}
+
 for pattern in "${TEST_PATTERNS[@]}"; do
-    find "$SELF_DIR/integration_tests/" -name "$pattern" -type f -print0 | grep -v buildstream | while IFS= read -r -d $'\0' fullpath; do
+    find "$SELF_DIR/integration_tests/" -name "$pattern" -type f -print0 | while IFS= read -r -d $'\0' fullpath; do
         # Cleanup.
         echo "Cleaning up cache directories NATIVELINK_DIR: $NATIVELINK_DIR"
         echo "Checking for existence of the NATIVELINK_DIR"
@@ -109,12 +127,20 @@ for pattern in "${TEST_PATTERNS[@]}"; do
         bazel --output_base="$BAZEL_CACHE_DIR" clean
         FILENAME=$(basename "$fullpath")
         echo "Running test $FILENAME"
-        sudo docker compose up -d
+        # sudo resets the environment, so NATIVELINK_DIR must be passed
+        # through explicitly or docker compose falls back to mounting
+        # root's ~/.cache/nativelink instead of the per-run cache dir.
+        sudo env RUST_LOG=info NATIVELINK_DIR="$NATIVELINK_DIR" docker compose up -d
         if perl -e 'alarm shift; exec @ARGV' 30 bash -c 'until sudo docker compose logs | grep -q "Ready, listening on"; do sleep 1; done'; then
             echo "String 'Ready, listening on' found in the logs."
         else
             echo "String 'Ready, listening on' not found in the logs within the given time."
+            sudo docker compose logs
+            exit 1
         fi
+        wait_for_tcp 127.0.0.1 50051
+        wait_for_tcp 127.0.0.1 50052
+        wait_for_tcp 127.0.0.1 50071
         set +e
         bash -euo pipefail "$fullpath"
         EXIT_CODE="$?"

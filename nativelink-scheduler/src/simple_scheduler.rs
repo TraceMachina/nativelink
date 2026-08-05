@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,23 +12,27 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 
 use async_trait::async_trait;
-use futures::Future;
+use futures::{Future, StreamExt, future};
 use nativelink_config::schedulers::SimpleSpec;
 use nativelink_error::{Code, Error, ResultExt};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
-use nativelink_proto::com::github::trace_machina::nativelink::events::OriginEvent;
+use nativelink_proto::com::github::trace_machina::nativelink::events::{
+    Event, OriginEvent, RequestEvent, event, request_event,
+};
+use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::StartExecute;
 use nativelink_util::action_messages::{ActionInfo, ActionState, OperationId, WorkerId};
 use nativelink_util::instant_wrapper::InstantWrapper;
-use nativelink_util::known_platform_property_provider::KnownPlatformPropertyProvider;
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager,
     OperationFilter, OperationStageFlags, OrderDirection, UpdateOperationType,
 };
-use nativelink_util::origin_event::OriginMetadata;
+use nativelink_util::origin_event::{OriginMetadata, get_node_id};
+use nativelink_util::shutdown_guard::ShutdownGuard;
 use nativelink_util::spawn;
 use nativelink_util::task::JoinHandleDropGuard;
 use opentelemetry::KeyValue;
@@ -37,14 +41,16 @@ use opentelemetry::context::{Context, FutureExt as OtelFutureExt};
 use opentelemetry_semantic_conventions::attribute::ENDUSER_ID;
 use tokio::sync::{Notify, mpsc};
 use tokio::time::Duration;
-use tokio_stream::StreamExt;
-use tracing::{error, info_span};
+use tracing::{debug, error, info, info_span, warn};
+use uuid::Uuid;
 
 use crate::api_worker_scheduler::ApiWorkerScheduler;
 use crate::awaited_action_db::{AwaitedActionDb, CLIENT_KEEPALIVE_DURATION};
+use crate::known_platform_property_provider::KnownPlatformPropertyProvider;
 use crate::platform_property_manager::PlatformPropertyManager;
 use crate::simple_scheduler_state_manager::SimpleSchedulerStateManager;
 use crate::worker::{ActionInfoWithProps, Worker, WorkerTimestamp};
+use crate::worker_registry::WorkerRegistry;
 use crate::worker_scheduler::WorkerScheduler;
 
 /// Default timeout for workers in seconds.
@@ -139,6 +145,11 @@ pub struct SimpleScheduler {
     /// Background task that tries to match actions to workers. If this struct
     /// is dropped the spawn will be cancelled as well.
     task_worker_matching_spawn: JoinHandleDropGuard<()>,
+
+    /// Every duration, do logging of worker matching
+    /// e.g. "worker busy", "can't find any worker"
+    /// Set to None to disable. This is quite noisy, so we limit it
+    worker_match_logging_interval: Option<Duration>,
 }
 
 impl core::fmt::Debug for SimpleScheduler {
@@ -156,6 +167,61 @@ impl core::fmt::Debug for SimpleScheduler {
 }
 
 impl SimpleScheduler {
+    fn origin_event_id(event: &Event) -> String {
+        Uuid::now_v6(&get_node_id(Some(event)))
+            .hyphenated()
+            .to_string()
+    }
+
+    fn scheduler_start_execute_event(
+        worker_id: &WorkerId,
+        operation_id: &OperationId,
+        action_info: &ActionInfoWithProps,
+    ) -> Event {
+        let start_execute = StartExecute {
+            execute_request: Some(action_info.inner.as_ref().into()),
+            operation_id: operation_id.to_string(),
+            queued_timestamp: Some(action_info.inner.insert_timestamp.into()),
+            platform: Some((&action_info.platform_properties).into()),
+            worker_id: worker_id.to_string(),
+        };
+        Event {
+            event: Some(event::Event::Request(RequestEvent {
+                event: Some(request_event::Event::SchedulerStartExecute(start_execute)),
+            })),
+        }
+    }
+
+    async fn publish_scheduler_start_execute(
+        maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
+        origin_metadata: &OriginMetadata,
+        event_id: String,
+        event: Event,
+    ) {
+        let Some(origin_event_tx) = maybe_origin_event_tx else {
+            return;
+        };
+
+        let origin_event = OriginEvent {
+            version: 0,
+            event_id,
+            parent_event_id: String::new(),
+            bazel_request_metadata: origin_metadata.bazel_metadata.clone(),
+            identity: origin_metadata.identity.clone(),
+            event: Some(event),
+        };
+
+        // Awaited send (not try_send): backpressure rather than drop, so the
+        // start-execute event that later resource-usage events reference as
+        // their parent isn't silently lost when the queue is full.
+        if let Err(err) = origin_event_tx.send(origin_event).await {
+            warn!(
+                ?err,
+                "Failed to publish scheduler start execute origin event"
+            );
+        }
+    }
+
     /// Attempts to find a worker to execute an action and begins executing it.
     /// If an action is already running that is cacheable it may merge this
     /// action with the results and state changes of the already running
@@ -182,14 +248,14 @@ impl SimpleScheduler {
     async fn inner_filter_operations(
         &self,
         filter: OperationFilter,
-    ) -> Result<ActionStateResultStream, Error> {
+    ) -> Result<ActionStateResultStream<'_>, Error> {
         self.client_state_manager
             .filter_operations(filter)
             .await
             .err_tip(|| "In SimpleScheduler::find_by_client_operation_id getting filter result")
     }
 
-    async fn get_queued_operations(&self) -> Result<ActionStateResultStream, Error> {
+    async fn get_queued_operations(&self) -> Result<ActionStateResultStream<'_>, Error> {
         let filter = OperationFilter {
             stages: OperationStageFlags::Queued,
             order_by_priority_direction: Some(OrderDirection::Desc),
@@ -202,18 +268,20 @@ impl SimpleScheduler {
     }
 
     pub async fn do_try_match_for_test(&self) -> Result<(), Error> {
-        self.do_try_match().await
+        self.do_try_match(true).await
     }
 
-    // TODO(aaronmondal) This is an O(n*m) (aka n^2) algorithm. In theory we
+    // TODO(palfrey) This is an O(n*m) (aka n^2) algorithm. In theory we
     // can create a map of capabilities of each worker and then try and match
     // the actions to the worker using the map lookup (ie. map reduce).
-    async fn do_try_match(&self) -> Result<(), Error> {
+    async fn do_try_match(&self, full_worker_logging: bool) -> Result<(), Error> {
         async fn match_action_to_worker(
             action_state_result: &dyn ActionStateResult,
             workers: &ApiWorkerScheduler,
             matching_engine_state_manager: &dyn MatchingEngineStateManager,
             platform_property_manager: &PlatformPropertyManager,
+            maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
+            full_worker_logging: bool,
         ) -> Result<(), Error> {
             let (action_info, maybe_origin_metadata) =
                 action_state_result
@@ -221,7 +289,7 @@ impl SimpleScheduler {
                     .await
                     .err_tip(|| "Failed to get action_info from as_action_info_result stream")?;
 
-            // TODO(aaronmondal) We should not compute this every time and instead store
+            // TODO(palfrey) We should not compute this every time and instead store
             // it with the ActionInfo when we receive it.
             let platform_properties = platform_property_manager
                 .make_platform_properties(action_info.platform_properties.clone())
@@ -229,15 +297,18 @@ impl SimpleScheduler {
                     || "Failed to make platform properties in SimpleScheduler::do_try_match",
                 )?;
 
+            let origin_metadata = maybe_origin_metadata.unwrap_or_default();
             let action_info = ActionInfoWithProps {
                 inner: action_info,
                 platform_properties,
+                origin_metadata: origin_metadata.clone(),
+                scheduler_start_execute_event_id: None,
             };
 
             // Try to find a worker for the action.
             let worker_id = {
                 match workers
-                    .find_worker_for_action(&action_info.platform_properties)
+                    .find_worker_for_action(&action_info.platform_properties, full_worker_logging)
                     .await
                 {
                     Some(worker_id) => worker_id,
@@ -247,6 +318,7 @@ impl SimpleScheduler {
                 }
             };
 
+            let event_origin_metadata = origin_metadata.clone();
             let attach_operation_fut = async move {
                 // Extract the operation_id from the action_state.
                 let operation_id = {
@@ -272,16 +344,39 @@ impl SimpleScheduler {
                     return Err(err);
                 }
 
+                let mut action_info = action_info;
+                let scheduler_start_execute_event = maybe_origin_event_tx.map(|_| {
+                    let event = SimpleScheduler::scheduler_start_execute_event(
+                        &worker_id,
+                        &operation_id,
+                        &action_info,
+                    );
+                    let event_id = SimpleScheduler::origin_event_id(&event);
+                    action_info.scheduler_start_execute_event_id = Some(event_id.clone());
+                    (event_id, event)
+                });
+
+                debug!(%worker_id, %operation_id, ?action_info, "Notifying worker of operation");
                 workers
                     .worker_notify_run_action(worker_id, operation_id, action_info)
                     .await
                     .err_tip(|| {
                         "Failed to run worker_notify_run_action in SimpleScheduler::do_try_match"
-                    })
+                    })?;
+
+                if let Some((event_id, event)) = scheduler_start_execute_event {
+                    SimpleScheduler::publish_scheduler_start_execute(
+                        maybe_origin_event_tx,
+                        &event_origin_metadata,
+                        event_id,
+                        event,
+                    )
+                    .await;
+                }
+
+                Ok(())
             };
             tokio::pin!(attach_operation_fut);
-
-            let origin_metadata = maybe_origin_metadata.unwrap_or_default();
 
             let ctx = Context::current_with_baggage(vec![KeyValue::new(
                 ENDUSER_ID,
@@ -296,10 +391,20 @@ impl SimpleScheduler {
 
         let mut result = Ok(());
 
+        let start = Instant::now();
+
         let mut stream = self
             .get_queued_operations()
             .await
             .err_tip(|| "Failed to get queued operations in do_try_match")?;
+
+        let query_elapsed = start.elapsed();
+        if query_elapsed > Duration::from_secs(1) {
+            warn!(
+                elapsed_ms = query_elapsed.as_millis(),
+                "Slow get_queued_operations query"
+            );
+        }
 
         while let Some(action_state_result) = stream.next().await {
             result = result.merge(
@@ -308,10 +413,22 @@ impl SimpleScheduler {
                     self.worker_scheduler.as_ref(),
                     self.matching_engine_state_manager.as_ref(),
                     self.platform_property_manager.as_ref(),
+                    self.maybe_origin_event_tx.as_ref(),
+                    full_worker_logging,
                 )
                 .await,
             );
         }
+
+        let total_elapsed = start.elapsed();
+        if total_elapsed > Duration::from_secs(5) {
+            warn!(
+                total_ms = total_elapsed.as_millis(),
+                query_ms = query_elapsed.as_millis(),
+                "Slow do_try_match cycle"
+            );
+        }
+
         result
     }
 }
@@ -389,12 +506,18 @@ impl SimpleScheduler {
         }
 
         let worker_change_notify = Arc::new(Notify::new());
+
+        // Create shared worker registry for single heartbeat per worker.
+        let worker_registry = Arc::new(WorkerRegistry::new());
+
         let state_manager = SimpleSchedulerStateManager::new(
             max_job_retries,
             Duration::from_secs(worker_timeout_s),
             Duration::from_secs(client_action_timeout_s),
+            Duration::from_secs(spec.max_action_executing_timeout_s),
             awaited_action_db,
             now_fn,
+            Some(worker_registry.clone()),
         );
 
         let worker_scheduler = ApiWorkerScheduler::new(
@@ -403,14 +526,24 @@ impl SimpleScheduler {
             spec.allocation_strategy,
             worker_change_notify.clone(),
             worker_timeout_s,
+            worker_registry,
+            maybe_origin_event_tx.clone(),
         );
 
         let worker_scheduler_clone = worker_scheduler.clone();
+
+        let fallback_match_interval = match spec.fallback_match_interval_s {
+            // Zero or any negative value means disabled.
+            ..=0 => None,
+            secs => Some(Duration::from_secs(secs.unsigned_abs())),
+        };
 
         let action_scheduler = Arc::new_cyclic(move |weak_self| -> Self {
             let weak_inner = weak_self.clone();
             let task_worker_matching_spawn =
                 spawn!("simple_scheduler_task_worker_matching", async move {
+                    let mut last_match_successful = true;
+                    let mut worker_match_logging_last: Option<Instant> = None;
                     // Break out of the loop only when the inner is dropped.
                     loop {
                         let task_change_fut = task_change_notify.notified();
@@ -418,13 +551,115 @@ impl SimpleScheduler {
                         tokio::pin!(task_change_fut);
                         tokio::pin!(worker_change_fut);
                         // Wait for either of these futures to be ready.
-                        let _ = futures::future::select(task_change_fut, worker_change_fut).await;
+                        let state_changed = future::select(task_change_fut, worker_change_fut);
+                        let max_wait = if last_match_successful {
+                            // Even on success, periodically re-run the match as a
+                            // fallback for missed notifications and eventually
+                            // consistent backends (e.g. a re-queued operation that
+                            // was not yet visible to the search triggered by its
+                            // own notification). Without this, such an operation
+                            // can stay queued until an unrelated event triggers
+                            // another matching pass.
+                            fallback_match_interval
+                        } else {
+                            // If the last match failed, then run again after a short sleep.
+                            // This resolves issues where we tried to re-schedule a job to
+                            // a disconnected worker.  The sleep ensures we don't enter a
+                            // hard loop if there's something wrong inside do_try_match.
+                            Some(Duration::from_millis(100))
+                        };
+                        if let Some(max_wait) = max_wait {
+                            let sleep_fut = tokio::time::sleep(max_wait);
+                            tokio::pin!(sleep_fut);
+                            let _ = future::select(state_changed, sleep_fut).await;
+                        } else {
+                            let _ = state_changed.await;
+                        }
+
                         let result = match weak_inner.upgrade() {
-                            Some(scheduler) => scheduler.do_try_match().await,
+                            Some(scheduler) => {
+                                let now = Instant::now();
+                                let full_worker_logging = {
+                                    match scheduler.worker_match_logging_interval {
+                                        None => false,
+                                        Some(duration) => match worker_match_logging_last {
+                                            None => true,
+                                            Some(when) => now.duration_since(when) >= duration,
+                                        },
+                                    }
+                                };
+
+                                let res = scheduler.do_try_match(full_worker_logging).await;
+                                if full_worker_logging {
+                                    let operations_stream = scheduler
+                                        .matching_engine_state_manager
+                                        .filter_operations(OperationFilter::default())
+                                        .await
+                                        .err_tip(|| "In action_scheduler getting filter result");
+
+                                    let mut oldest_actions_in_state: HashMap<
+                                        String,
+                                        BTreeSet<Arc<ActionState>>,
+                                    > = HashMap::new();
+                                    let max_items = 5;
+
+                                    match operations_stream {
+                                        Ok(stream) => {
+                                            let actions = stream
+                                                .filter_map(|item| async move {
+                                                    match item.as_ref().as_state().await {
+                                                        Ok((action_state, _origin_metadata)) => {
+                                                            Some(action_state)
+                                                        }
+                                                        Err(e) => {
+                                                            error!(
+                                                                ?e,
+                                                                "Failed to get action state!"
+                                                            );
+                                                            None
+                                                        }
+                                                    }
+                                                })
+                                                .collect::<Vec<_>>()
+                                                .await;
+                                            for action_state in &actions {
+                                                let name = action_state.stage.name();
+                                                if let Some(values) =
+                                                    oldest_actions_in_state.get_mut(&name)
+                                                {
+                                                    values.insert(action_state.clone());
+                                                    if values.len() > max_items {
+                                                        values.pop_first();
+                                                    }
+                                                } else {
+                                                    let mut values = BTreeSet::new();
+                                                    values.insert(action_state.clone());
+                                                    oldest_actions_in_state.insert(name, values);
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            error!(?e, "Failed to get operations list!");
+                                        }
+                                    }
+
+                                    for value in oldest_actions_in_state.values() {
+                                        let mut items = vec![];
+                                        for item in value {
+                                            items.push(item.to_string());
+                                        }
+                                        info!(?items, "Oldest actions in state");
+                                    }
+
+                                    worker_match_logging_last.replace(now);
+                                }
+                                res
+                            }
                             // If the inner went away it means the scheduler is shutting
                             // down, so we need to resolve our future.
                             None => return,
                         };
+                        last_match_successful = result.is_ok();
                         if let Err(err) = result {
                             error!(?err, "Error while running do_try_match");
                         }
@@ -433,6 +668,22 @@ impl SimpleScheduler {
                     }
                     // Unreachable.
                 });
+
+            let worker_match_logging_interval = match spec.worker_match_logging_interval_s {
+                // -1 or 0 means disabled (0 used to cause expensive logging on every call)
+                -1 | 0 => None,
+                signed_secs => {
+                    if let Ok(secs) = TryInto::<u64>::try_into(signed_secs) {
+                        Some(Duration::from_secs(secs))
+                    } else {
+                        error!(
+                            worker_match_logging_interval_s = spec.worker_match_logging_interval_s,
+                            "Valid values for worker_match_logging_interval_s are -1, 0, or a positive integer, setting to disabled",
+                        );
+                        None
+                    }
+                }
+            };
             Self {
                 matching_engine_state_manager: state_manager.clone(),
                 client_state_manager: state_manager.clone(),
@@ -440,6 +691,7 @@ impl SimpleScheduler {
                 platform_property_manager,
                 maybe_origin_event_tx,
                 task_worker_matching_spawn,
+                worker_match_logging_interval,
             }
         });
         (action_scheduler, worker_scheduler_clone)
@@ -462,10 +714,6 @@ impl ClientStateManager for SimpleScheduler {
         filter: OperationFilter,
     ) -> Result<ActionStateResultStream<'a>, Error> {
         self.inner_filter_operations(filter).await
-    }
-
-    fn as_known_platform_property_provider(&self) -> Option<&dyn KnownPlatformPropertyProvider> {
-        Some(self)
     }
 }
 
@@ -515,6 +763,10 @@ impl WorkerScheduler for SimpleScheduler {
 
     async fn remove_worker(&self, worker_id: &WorkerId) -> Result<(), Error> {
         self.worker_scheduler.remove_worker(worker_id).await
+    }
+
+    async fn shutdown(&self, shutdown_guard: ShutdownGuard) {
+        self.worker_scheduler.shutdown(shutdown_guard).await;
     }
 
     async fn remove_timedout_workers(&self, now_timestamp: WorkerTimestamp) -> Result<(), Error> {

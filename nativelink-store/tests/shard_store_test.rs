@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -81,7 +81,7 @@ async fn verify_weights(
     }
 
     for (index, (store, expected_hit)) in stores.iter().zip(expected_hits.iter()).enumerate() {
-        let total_hits = store.len_for_test().await;
+        let total_hits = store.len_for_test();
         #[expect(clippy::print_stdout, reason = "improves debugging")]
         if print_results {
             println!("expected_hit: {expected_hit} - total_hits: {total_hits}");

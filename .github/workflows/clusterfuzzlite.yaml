@@ -1,0 +1,57 @@
+---
+name: ClusterFuzzLite
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".clusterfuzzlite/**"
+      - "nativelink-test/fuzz/**"
+      - "nativelink-config/**"
+      - "nativelink-error/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  push:
+    branches:
+      - main
+    paths:
+      - ".clusterfuzzlite/**"
+      - "nativelink-test/fuzz/**"
+      - "nativelink-config/**"
+      - "nativelink-error/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+
+permissions: read-all
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: >- # v6.0.2
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - name: Build fuzzers
+        id: build
+        uses: >- # v1
+          google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1
+        with:
+          language: rust
+          sanitizer: address
+
+      - name: Run fuzzers
+        uses: >- # v1
+          google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          fuzz-seconds: 600
+          mode: code-change
+          sanitizer: address

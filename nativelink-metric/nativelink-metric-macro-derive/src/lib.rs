@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -93,7 +93,6 @@ impl ToTokens for MetricKind {
 }
 
 /// Holds general information about a specific field that is to be published.
-#[derive(Debug)]
 struct MetricFieldMetaData<'a> {
     field_name: &'a Ident,
     metric_kind: MetricKind,
@@ -133,7 +132,6 @@ impl<'a> MetricFieldMetaData<'a> {
 
 /// Holds the template information about the struct. This is needed
 /// to create the `MetricsComponent` impl.
-#[derive(Debug)]
 struct Generics<'a> {
     implementation: ImplGenerics<'a>,
     ty: TypeGenerics<'a>,
@@ -142,7 +140,6 @@ struct Generics<'a> {
 
 /// Holds metadata about the struct that is having `MetricsComponent`
 /// implemented.
-#[derive(Debug)]
 struct MetricStruct<'a> {
     name: &'a Ident,
     metric_fields: Vec<MetricFieldMetaData<'a>>,

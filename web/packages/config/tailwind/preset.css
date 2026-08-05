@@ -1,0 +1,88 @@
+/* Tailwind v4 shared preset.
+ *
+ * Pulls raw RGB triplets from @nativelink/tokens and exposes them through
+ * @theme as full rgb() values so utilities + opacity modifiers work
+ * end-to-end (color-mix needs a valid color argument).
+ */
+
+@import "@nativelink/tokens/src/index.css";
+
+/* Dark variant follows our explicit data-theme attribute, not the media query.
+ * The ThemeProvider toggles this on <html>. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+@theme {
+  /* Surface */
+  --color-background: rgb(var(--nl-color-background));
+  --color-surface: rgb(var(--nl-color-surface));
+  --color-surface-elevated: rgb(var(--nl-color-surface-elevated));
+
+  /* Text */
+  --color-foreground: rgb(var(--nl-color-foreground));
+  --color-muted: rgb(var(--nl-color-muted));
+  --color-muted-foreground: rgb(var(--nl-color-muted-foreground));
+
+  /* Border */
+  --color-border: rgb(var(--nl-color-border));
+  --color-border-strong: rgb(var(--nl-color-border-strong));
+  --color-accent-line: rgb(var(--nl-color-accent-line));
+
+  /* Brand */
+  --color-brand: rgb(var(--nl-color-brand));
+  --color-brand-strong: rgb(var(--nl-color-brand-strong));
+  --color-brand-soft: rgb(var(--nl-color-brand-soft));
+  --color-brand-foreground: rgb(var(--nl-color-brand-foreground));
+
+  /* Success */
+  --color-success: rgb(var(--nl-color-success));
+  --color-success-soft: rgb(var(--nl-color-success-soft));
+
+  /* Neutral accent (CTA fill) */
+  --color-accent: rgb(var(--nl-color-accent));
+  --color-accent-hover: rgb(var(--nl-color-accent-hover));
+
+  /* Typography */
+  --font-sans: var(--nl-font-sans);
+  --font-mono: var(--nl-font-mono);
+
+  /* Type scale */
+  --text-xs: var(--nl-text-xs);
+  --text-sm: var(--nl-text-sm);
+  --text-base: var(--nl-text-base);
+  --text-lg: var(--nl-text-lg);
+  --text-xl: var(--nl-text-xl);
+  --text-2xl: var(--nl-text-2xl);
+  --text-3xl: var(--nl-text-3xl);
+  --text-4xl: var(--nl-text-4xl);
+  --text-5xl: var(--nl-text-5xl);
+  --text-6xl: var(--nl-text-6xl);
+
+  /* Radii */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 20px;
+
+  /* Animations */
+  --animate-fade-in: fadeIn 0.6s ease-out forwards;
+  --animate-fade-in-up: fadeInUp 0.6s ease-out forwards;
+
+  @keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  @keyframes fadeInUp {
+    from { opacity: 0; transform: translateY(12px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -1,0 +1,171 @@
+// Simple all-in-one config for testing multi-worker
+{
+  stores: [
+    {
+      name: "CAS_FS",
+      filesystem: {
+        content_path: "/tmp/nativelink-multi-test/cas/content",
+        temp_path: "/tmp/nativelink-multi-test/cas/temp",
+        eviction_policy: {
+          max_bytes: 10000000000,
+        },
+      },
+    },
+    {
+      name: "CAS",
+      fast_slow: {
+        fast: {
+          filesystem: {
+            content_path: "/tmp/nativelink-multi-test/cas/content",
+            temp_path: "/tmp/nativelink-multi-test/cas/temp",
+            eviction_policy: {
+              max_bytes: 1000000000,
+            },
+          },
+        },
+        slow: {
+          filesystem: {
+            content_path: "/tmp/nativelink-multi-test/cas/content",
+            temp_path: "/tmp/nativelink-multi-test/cas/temp",
+            eviction_policy: {
+              max_bytes: 10000000000,
+            },
+          },
+        },
+      },
+    },
+    {
+      name: "AC",
+      filesystem: {
+        content_path: "/tmp/nativelink-multi-test/ac/content",
+        temp_path: "/tmp/nativelink-multi-test/ac/temp",
+        eviction_policy: {
+          max_bytes: 1000000000,
+        },
+      },
+    },
+  ],
+  schedulers: [
+    {
+      name: "SIMPLE",
+      simple: {
+        supported_platform_properties: {
+          cpu_count: "minimum",
+        },
+      },
+    },
+  ],
+  workers: [
+    {
+      local: {
+        name: "worker-1",
+        worker_api_endpoint: {
+          uri: "grpc://127.0.0.1:50061",
+        },
+        cas_fast_slow_store: "CAS",
+        upload_action_result: {
+          ac_store: "AC",
+        },
+        work_directory: "/tmp/nativelink-multi-test/worker1/work",
+        platform_properties: {
+          cpu_count: {
+            values: [
+              "1",
+            ],
+          },
+        },
+      },
+    },
+    {
+      local: {
+        name: "worker-2",
+        worker_api_endpoint: {
+          uri: "grpc://127.0.0.1:50061",
+        },
+        cas_fast_slow_store: "CAS",
+        upload_action_result: {
+          ac_store: "AC",
+        },
+        work_directory: "/tmp/nativelink-multi-test/worker2/work",
+        platform_properties: {
+          cpu_count: {
+            values: [
+              "1",
+            ],
+          },
+        },
+      },
+    },
+    {
+      local: {
+        name: "worker-3",
+        worker_api_endpoint: {
+          uri: "grpc://127.0.0.1:50061",
+        },
+        cas_fast_slow_store: "CAS",
+        upload_action_result: {
+          ac_store: "AC",
+        },
+        work_directory: "/tmp/nativelink-multi-test/worker3/work",
+        platform_properties: {
+          cpu_count: {
+            values: [
+              "1",
+            ],
+          },
+        },
+      },
+    },
+  ],
+  servers: [
+    {
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50051",
+        },
+      },
+      services: {
+        cas: [
+          {
+            cas_store: "CAS",
+          },
+        ],
+        ac: [
+          {
+            ac_store: "AC",
+          },
+        ],
+        execution: [
+          {
+            cas_store: "CAS",
+            scheduler: "SIMPLE",
+          },
+        ],
+        bytestream: {
+          cas_stores: {
+            "": "CAS",
+          },
+        },
+        capabilities: [
+          {
+            remote_execution: {
+              scheduler: "SIMPLE",
+            },
+          },
+        ],
+      },
+    },
+    {
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50061",
+        },
+      },
+      services: {
+        worker_api: {
+          scheduler: "SIMPLE",
+        },
+      },
+    },
+  ],
+}

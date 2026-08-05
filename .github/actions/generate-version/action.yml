@@ -1,0 +1,13 @@
+name: 'Version generator'
+description: 'Generate a date-prefixed image version string.'
+outputs:
+  version-string:
+    description: "Version string"
+    value: ${{ steps.generate-version.outputs.version }}
+runs:
+  using: "composite"
+  steps:
+    - name: Generate version
+      run: echo "version=$(date +%Y-%m-%d)-${{ github.sha }}" >> $GITHUB_OUTPUT
+      id: generate-version
+      shell: bash -euo pipefail {0}

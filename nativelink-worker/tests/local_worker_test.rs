@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,6 +14,7 @@
 
 use core::time::Duration;
 use std::collections::HashMap;
+#[cfg(target_family = "unix")]
 use std::env;
 use std::ffi::OsString;
 use std::io::Write;
@@ -29,8 +30,10 @@ mod utils {
 }
 
 use hyper::body::Frame;
-use nativelink_config::cas_server::{LocalWorkerConfig, WorkerProperty};
-use nativelink_config::stores::{FastSlowSpec, FilesystemSpec, MemorySpec, StoreSpec};
+use nativelink_config::cas_server::{EndpointConfig, LocalWorkerConfig, WorkerProperty};
+use nativelink_config::stores::{
+    FastSlowSpec, FilesystemSpec, MemorySpec, StoreDirection, StoreSpec,
+};
 use nativelink_error::{Code, Error, make_err, make_input_err};
 use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::Platform;
@@ -47,32 +50,22 @@ use nativelink_util::action_messages::{
     ActionInfo, ActionResult, ActionStage, ActionUniqueKey, ActionUniqueQualifier,
     ExecutionMetadata, OperationId,
 };
-use nativelink_util::common::{DigestInfo, encode_stream_proto, fs};
+use nativelink_util::common::{DigestInfo, encode_stream_proto, fs, make_temp_path};
 use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::store_trait::Store;
 use nativelink_worker::local_worker::new_local_worker;
+#[cfg(target_family = "unix")]
+use nativelink_worker::local_worker::preconditions_met;
 use pretty_assertions::assert_eq;
 use prost::Message;
-use rand::Rng;
 use tokio::io::AsyncWriteExt;
-use tonic::Response;
+use tokio::time::sleep;
 use utils::local_worker_test_utils::{
     setup_grpc_stream, setup_local_worker, setup_local_worker_with_config,
 };
 use utils::mock_running_actions_manager::MockRunningAction;
 
 const INSTANCE_NAME: &str = "foo";
-
-/// Get temporary path from either `TEST_TMPDIR` or best effort temp directory if
-/// not set.
-fn make_temp_path(data: &str) -> String {
-    format!(
-        "{}/{}/{}",
-        env::var("TEST_TMPDIR").unwrap_or_else(|_| env::temp_dir().to_str().unwrap().to_string()),
-        rand::rng().random::<u64>(),
-        data
-    )
-}
 
 #[nativelink_test]
 #[cfg_attr(feature = "nix", ignore)]
@@ -123,7 +116,8 @@ async fn platform_properties_smoke_test() -> Result<(), Error> {
                     name: "foo".to_string(),
                     value: "bar2".to_string(),
                 }
-            ]
+            ],
+            max_inflight_tasks: 0,
         }
     );
 
@@ -195,6 +189,84 @@ async fn kill_all_called_on_disconnect() -> Result<(), Error> {
 
     // Check that kill_all is called.
     test_context.actions_manager.expect_kill_all().await;
+
+    Ok(())
+}
+
+/// A disconnect that catches an action mid-handoff must still reconnect.
+/// Returning from the worker's main loop here aborts the process, so a
+/// scheduler blip that happened to land while an action was in transit took
+/// the whole worker down and every action it held had to run again elsewhere.
+#[nativelink_test]
+async fn reconnects_when_action_stuck_in_transit_on_disconnect() -> Result<(), Error> {
+    let mut test_context = setup_local_worker(HashMap::new()).await;
+    let streaming_response = test_context.maybe_streaming_response.take().unwrap();
+
+    test_context
+        .client
+        .expect_connect_worker(Ok(streaming_response))
+        .await;
+
+    let expected_worker_id = "foobar".to_string();
+    let tx_stream = test_context.maybe_tx_stream.take().unwrap();
+    tx_stream
+        .send(Frame::data(
+            encode_stream_proto(&UpdateForWorker {
+                update: Some(Update::ConnectionResult(ConnectionResult {
+                    worker_id: expected_worker_id.clone(),
+                })),
+            })
+            .unwrap(),
+        ))
+        .await
+        .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+
+    let action_info = ActionInfo {
+        command_digest: DigestInfo::new([1u8; 32], 10),
+        input_root_digest: DigestInfo::new([2u8; 32], 10),
+        timeout: Duration::from_secs(1),
+        platform_properties: HashMap::new(),
+        priority: 0,
+        load_timestamp: SystemTime::UNIX_EPOCH,
+        insert_timestamp: SystemTime::UNIX_EPOCH,
+        unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+            instance_name: INSTANCE_NAME.to_string(),
+            digest_function: DigestHasherFunc::Sha256,
+            digest: DigestInfo::new([3u8; 32], 10),
+        }),
+    };
+
+    // Start an action, but deliberately never answer create_and_add_action.
+    // The action stays counted as in transit, so the drain wait on disconnect
+    // runs to its limit instead of settling.
+    tx_stream
+        .send(Frame::data(
+            encode_stream_proto(&UpdateForWorker {
+                update: Some(Update::StartAction(StartExecute {
+                    execute_request: Some((&action_info).into()),
+                    operation_id: String::new(),
+                    queued_timestamp: None,
+                    platform: Some(Platform::default()),
+                    worker_id: expected_worker_id,
+                })),
+            })
+            .unwrap(),
+        ))
+        .await
+        .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+
+    // Disconnect while that action is still in transit.
+    drop(tx_stream);
+
+    test_context.actions_manager.expect_kill_all().await;
+
+    // The worker must come back rather than exiting.
+    let (_, streaming_response) = setup_grpc_stream();
+    let props = test_context
+        .client
+        .expect_connect_worker(Ok(streaming_response))
+        .await;
+    assert_eq!(props, ConnectWorkerRequest::default());
 
     Ok(())
 }
@@ -403,21 +475,18 @@ async fn simple_worker_start_action_test() -> Result<(), Error> {
     assert_eq!(digest_hasher, DigestHasherFunc::Sha256);
 
     // Now our client should be notified that our runner finished.
-    let execution_response = test_context
-        .client
-        .expect_execution_response(Ok(Response::new(())))
-        .await;
+    let execution_response = test_context.client.expect_execution_response(Ok(())).await;
 
     // Now ensure the final results match our expectations.
     assert_eq!(
         execution_response,
         ExecuteResult {
-            worker_id: expected_worker_id,
             instance_name: INSTANCE_NAME.to_string(),
             operation_id: String::new(),
             result: Some(execute_result::Result::ExecuteResponse(
                 ActionStage::Completed(action_result).into()
             )),
+            resource_usage: None,
         }
     );
 
@@ -431,6 +500,9 @@ async fn new_local_worker_creates_work_directory_test() -> Result<(), Error> {
             // Note: These are not needed for this test, so we put dummy memory stores here.
             fast: StoreSpec::Memory(MemorySpec::default()),
             slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
         },
         Store::new(
             <FilesystemStore>::new(&FilesystemSpec {
@@ -470,6 +542,9 @@ async fn new_local_worker_removes_work_directory_before_start_test() -> Result<(
             // Note: These are not needed for this test, so we put dummy memory stores here.
             fast: StoreSpec::Memory(MemorySpec::default()),
             slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
         },
         Store::new(
             <FilesystemStore>::new(&FilesystemSpec {
@@ -547,6 +622,9 @@ async fn experimental_precondition_script_fails() -> Result<(), Error> {
             std::process::Command::new("sync").output().unwrap();
         }
         std::fs::rename(&precondition_script_tmp, &precondition_script).unwrap();
+        // Add a small delay to ensure the file system has fully released the file
+        // This helps avoid "Text file busy" errors on some Linux environments
+        sleep(Duration::from_millis(100)).await;
         precondition_script
     };
     #[cfg(target_family = "windows")]
@@ -629,21 +707,18 @@ async fn experimental_precondition_script_fails() -> Result<(), Error> {
     }
 
     // Now our client should be notified that our runner finished.
-    let execution_response = test_context
-        .client
-        .expect_execution_response(Ok(Response::new(())))
-        .await;
+    let execution_response = test_context.client.expect_execution_response(Ok(())).await;
 
     // Now ensure the final results match our expectations.
     assert_eq!(
         execution_response,
         ExecuteResult {
-            worker_id: expected_worker_id,
             instance_name: INSTANCE_NAME.to_string(),
             operation_id: String::new(),
             result: Some(execute_result::Result::InternalError(
                 make_err!(Code::ResourceExhausted, "{}", EXPECTED_MSG,).into()
             )),
+            resource_usage: None,
         }
     );
 
@@ -747,4 +822,281 @@ async fn kill_action_request_kills_action() -> Result<(), Error> {
     assert_eq!(killed_operation_id, operation_id);
 
     Ok(())
+}
+
+#[nativelink_test]
+async fn cas_not_found_returns_failed_precondition_test() -> Result<(), Error> {
+    let mut test_context = setup_local_worker(HashMap::new()).await;
+    let streaming_response = test_context.maybe_streaming_response.take().unwrap();
+
+    {
+        let props = test_context
+            .client
+            .expect_connect_worker(Ok(streaming_response))
+            .await;
+        assert_eq!(props, ConnectWorkerRequest::default());
+    }
+
+    let expected_worker_id = "foobar".to_string();
+
+    let tx_stream = test_context.maybe_tx_stream.take().unwrap();
+    {
+        tx_stream
+            .send(Frame::data(
+                encode_stream_proto(&UpdateForWorker {
+                    update: Some(Update::ConnectionResult(ConnectionResult {
+                        worker_id: expected_worker_id.clone(),
+                    })),
+                })
+                .unwrap(),
+            ))
+            .await
+            .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+    }
+
+    let action_digest = DigestInfo::new([3u8; 32], 10);
+    let action_info = ActionInfo {
+        command_digest: DigestInfo::new([1u8; 32], 10),
+        input_root_digest: DigestInfo::new([2u8; 32], 10),
+        timeout: Duration::from_secs(1),
+        platform_properties: HashMap::new(),
+        priority: 0,
+        load_timestamp: SystemTime::UNIX_EPOCH,
+        insert_timestamp: SystemTime::UNIX_EPOCH,
+        unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+            instance_name: INSTANCE_NAME.to_string(),
+            digest_function: DigestHasherFunc::Sha256,
+            digest: action_digest,
+        }),
+    };
+
+    {
+        tx_stream
+            .send(Frame::data(
+                encode_stream_proto(&UpdateForWorker {
+                    update: Some(Update::StartAction(StartExecute {
+                        execute_request: Some((&action_info).into()),
+                        operation_id: String::new(),
+                        queued_timestamp: None,
+                        platform: Some(Platform::default()),
+                        worker_id: expected_worker_id.clone(),
+                    })),
+                })
+                .unwrap(),
+            ))
+            .await
+            .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+    }
+
+    let running_action = Arc::new(MockRunningAction::new());
+
+    // Send and wait for response from create_and_add_action.
+    test_context
+        .actions_manager
+        .expect_create_and_add_action(Ok(running_action.clone()))
+        .await;
+
+    // Simulate prepare_action failing with a CAS NotFound error containing the
+    // specific "not found in either fast or slow store" message. This is the exact
+    // condition that the code checks to decide whether to return FailedPrecondition.
+    running_action
+        .expect_prepare_action(Err(make_err!(
+            Code::NotFound,
+            "Hash 0123456789abcdef not found in either fast or slow store"
+        )))
+        .await?;
+
+    // Cleanup is still called even when prepare_action fails.
+    running_action.cleanup(Ok(())).await?;
+
+    // The worker should respond with FailedPrecondition wrapped in an ExecuteResponse,
+    // NOT an InternalError. This allows Bazel to re-upload the missing artifacts.
+    let execution_response = test_context.client.expect_execution_response(Ok(())).await;
+
+    let expected_action_result = ActionResult {
+        error: Some(make_err!(
+            Code::FailedPrecondition,
+            "Hash 0123456789abcdef not found in either fast or slow store"
+        )),
+        ..ActionResult::default()
+    };
+    assert_eq!(
+        execution_response,
+        ExecuteResult {
+            instance_name: INSTANCE_NAME.to_string(),
+            operation_id: String::new(),
+            result: Some(execute_result::Result::ExecuteResponse(
+                ActionStage::Completed(expected_action_result).into()
+            )),
+            resource_usage: None,
+        }
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn non_cas_not_found_returns_internal_error_test() -> Result<(), Error> {
+    let mut test_context = setup_local_worker(HashMap::new()).await;
+    let streaming_response = test_context.maybe_streaming_response.take().unwrap();
+
+    {
+        let props = test_context
+            .client
+            .expect_connect_worker(Ok(streaming_response))
+            .await;
+        assert_eq!(props, ConnectWorkerRequest::default());
+    }
+
+    let expected_worker_id = "foobar".to_string();
+
+    let tx_stream = test_context.maybe_tx_stream.take().unwrap();
+    {
+        tx_stream
+            .send(Frame::data(
+                encode_stream_proto(&UpdateForWorker {
+                    update: Some(Update::ConnectionResult(ConnectionResult {
+                        worker_id: expected_worker_id.clone(),
+                    })),
+                })
+                .unwrap(),
+            ))
+            .await
+            .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+    }
+
+    let action_digest = DigestInfo::new([3u8; 32], 10);
+    let action_info = ActionInfo {
+        command_digest: DigestInfo::new([1u8; 32], 10),
+        input_root_digest: DigestInfo::new([2u8; 32], 10),
+        timeout: Duration::from_secs(1),
+        platform_properties: HashMap::new(),
+        priority: 0,
+        load_timestamp: SystemTime::UNIX_EPOCH,
+        insert_timestamp: SystemTime::UNIX_EPOCH,
+        unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+            instance_name: INSTANCE_NAME.to_string(),
+            digest_function: DigestHasherFunc::Sha256,
+            digest: action_digest,
+        }),
+    };
+
+    {
+        tx_stream
+            .send(Frame::data(
+                encode_stream_proto(&UpdateForWorker {
+                    update: Some(Update::StartAction(StartExecute {
+                        execute_request: Some((&action_info).into()),
+                        operation_id: String::new(),
+                        queued_timestamp: None,
+                        platform: Some(Platform::default()),
+                        worker_id: expected_worker_id.clone(),
+                    })),
+                })
+                .unwrap(),
+            ))
+            .await
+            .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+    }
+
+    let running_action = Arc::new(MockRunningAction::new());
+
+    test_context
+        .actions_manager
+        .expect_create_and_add_action(Ok(running_action.clone()))
+        .await;
+
+    // Simulate prepare_action failing with a NotFound error that does NOT contain
+    // the CAS-specific message. This should result in an InternalError, not
+    // FailedPrecondition.
+    let other_not_found_error = make_err!(Code::NotFound, "Some other resource was not found");
+    running_action
+        .expect_prepare_action(Err(other_not_found_error.clone()))
+        .await?;
+
+    // Cleanup is still called even when prepare_action fails.
+    running_action.cleanup(Ok(())).await?;
+
+    // The worker should respond with InternalError since this is not a CAS blob miss.
+    let execution_response = test_context.client.expect_execution_response(Ok(())).await;
+
+    assert_eq!(
+        execution_response,
+        ExecuteResult {
+            instance_name: INSTANCE_NAME.to_string(),
+            operation_id: String::new(),
+            result: Some(execute_result::Result::InternalError(
+                other_not_found_error.into()
+            )),
+            resource_usage: None,
+        }
+    );
+
+    Ok(())
+}
+
+#[cfg(target_family = "unix")]
+#[nativelink_test]
+async fn preconditions_met_extra_envs() -> Result<(), Error> {
+    let mut extra_envs = HashMap::new();
+    extra_envs.insert("DEMO_ENV".into(), "test_value_for_demo_env".into());
+
+    // So we have bash for nix cases, because the PATH gets reset
+    extra_envs.insert("PATH".into(), env::var("PATH").unwrap());
+
+    preconditions_met(Some("bash -c \"echo $DEMO_ENV\"".to_string()), &extra_envs).await?;
+    assert!(logs_contain("test_value_for_demo_env"));
+    Ok(())
+}
+
+#[nativelink_test]
+async fn keep_alive_fail_logs() -> Result<(), Error> {
+    let local_worker_config = LocalWorkerConfig {
+        platform_properties: HashMap::new(),
+        worker_api_endpoint: EndpointConfig {
+            timeout: Some(0.01),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let mut test_context = setup_local_worker_with_config(local_worker_config).await;
+    let streaming_response = test_context.maybe_streaming_response.take().unwrap();
+
+    // Ensure our worker connects and properties were sent.
+    let props = test_context
+        .client
+        .expect_connect_worker(Ok(streaming_response))
+        .await;
+    assert_eq!(props, ConnectWorkerRequest::default());
+
+    // handle connection result to scheduler
+    let tx_stream = test_context.maybe_tx_stream.take().unwrap();
+    tx_stream
+        .send(Frame::data(
+            encode_stream_proto(&UpdateForWorker {
+                update: Some(Update::ConnectionResult(ConnectionResult {
+                    worker_id: "foobar".to_string(),
+                })),
+            })
+            .unwrap(),
+        ))
+        .await
+        .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+
+    for _ in 0..30 {
+        if logs_contain("Started KeepAlive timeout=0.0") // plus some extra digits, because floating point fun
+            && logs_contain("nativelink_worker::local_worker: Sent KeepAlive") // first one succeeds
+            && logs_contain(
+                "Failed to send KeepAlive in LocalWorker e=Error { code: Internal, messages: [\"KeepAlive fail\"] }", // second should fail
+            )
+        {
+            return Ok(());
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
+    Err(make_err!(
+        Code::DeadlineExceeded,
+        "Timed out looking for KeepAlive logs"
+    ))
 }

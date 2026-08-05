@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -152,6 +152,43 @@ pub fn convert_string_with_shellexpand<'de, D: Deserializer<'de>>(
     Ok((*(shellexpand::env(&value).map_err(de::Error::custom)?)).to_string())
 }
 
+pub fn convert_boolean_with_shellexpand<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: TryFrom<bool>,
+    <T as TryFrom<bool>>::Error: fmt::Display,
+{
+    struct BooleanExpandVisitor<T: TryFrom<bool>>(PhantomData<T>);
+
+    impl<T> Visitor<'_> for BooleanExpandVisitor<T>
+    where
+        T: TryFrom<bool>,
+        <T as TryFrom<bool>>::Error: fmt::Display,
+    {
+        type Value = T;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a boolean or a shell-expandable string that is a boolean")
+        }
+
+        fn visit_bool<E: de::Error>(self, v: bool) -> Result<Self::Value, E> {
+            T::try_from(v).map_err(de::Error::custom)
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            if v.is_empty() {
+                return Err(de::Error::custom("empty string is not a valid number"));
+            }
+            let expanded = shellexpand::env(v).map_err(de::Error::custom)?;
+            let s = expanded.as_ref().trim().to_lowercase();
+            let parsed = s.parse::<bool>().map_err(de::Error::custom)?;
+            T::try_from(parsed).map_err(de::Error::custom)
+        }
+    }
+
+    deserializer.deserialize_any(BooleanExpandVisitor::<T>(PhantomData))
+}
+
 /// Same as `convert_string_with_shellexpand`, but supports `Vec<String>`.
 ///
 /// # Errors
@@ -237,6 +274,9 @@ where
         fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
             let expanded = shellexpand::env(v).map_err(de::Error::custom)?;
             let s = expanded.as_ref().trim();
+            if v.is_empty() {
+                return Err(de::Error::custom("Missing value in a size field"));
+            }
             let byte_size = Byte::parse_str(s, true).map_err(de::Error::custom)?;
             let bytes = byte_size.as_u128();
             T::try_from(bytes).map_err(de::Error::custom)
@@ -244,6 +284,86 @@ where
     }
 
     deserializer.deserialize_any(DataSizeVisitor::<T>(PhantomData))
+}
+
+/// # Errors
+///
+/// Will return `Err` if deserialization fails.
+pub fn convert_optional_data_size_with_shellexpand<'de, D, T>(
+    deserializer: D,
+) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: TryFrom<u128>,
+    <T as TryFrom<u128>>::Error: fmt::Display,
+{
+    struct DataSizeVisitor<T: TryFrom<u128>>(PhantomData<T>);
+
+    impl<'de, T> Visitor<'de> for DataSizeVisitor<T>
+    where
+        T: TryFrom<u128>,
+        <T as TryFrom<u128>>::Error: fmt::Display,
+    {
+        type Value = Option<T>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("an optional number of bytes as an integer, or a string with a data size format (e.g., \"1GB\", \"500MB\", \"1.5TB\")")
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_some<D2: Deserializer<'de>>(
+            self,
+            deserializer: D2,
+        ) -> Result<Self::Value, D2::Error> {
+            deserializer.deserialize_any(self)
+        }
+
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> {
+            T::try_from(u128::from(v))
+                .map(Some)
+                .map_err(de::Error::custom)
+        }
+
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> {
+            if v < 0 {
+                return Err(de::Error::custom("Negative data size is not allowed"));
+            }
+            let v_u128 = u128::try_from(v).map_err(de::Error::custom)?;
+            T::try_from(v_u128).map(Some).map_err(de::Error::custom)
+        }
+
+        fn visit_u128<E: de::Error>(self, v: u128) -> Result<Self::Value, E> {
+            T::try_from(v).map(Some).map_err(de::Error::custom)
+        }
+
+        fn visit_i128<E: de::Error>(self, v: i128) -> Result<Self::Value, E> {
+            if v < 0 {
+                return Err(de::Error::custom("Negative data size is not allowed"));
+            }
+            let v_u128 = u128::try_from(v).map_err(de::Error::custom)?;
+            T::try_from(v_u128).map(Some).map_err(de::Error::custom)
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            let expanded = shellexpand::env(v).map_err(de::Error::custom)?;
+            let s = expanded.as_ref().trim();
+            if v.is_empty() {
+                return Err(de::Error::custom("Missing value in a size field"));
+            }
+            let byte_size = Byte::parse_str(s, true).map_err(de::Error::custom)?;
+            let bytes = byte_size.as_u128();
+            T::try_from(bytes).map(Some).map_err(de::Error::custom)
+        }
+    }
+
+    deserializer.deserialize_option(DataSizeVisitor::<T>(PhantomData))
 }
 
 /// # Errors
@@ -277,12 +397,12 @@ where
                 return Err(de::Error::custom("Negative duration is not allowed"));
             }
             let v_u64 = u64::try_from(v).map_err(de::Error::custom)?;
-            T::try_from(v_u64).map_err(de::Error::custom)
+            self.visit_u64(v_u64)
         }
 
         fn visit_u128<E: de::Error>(self, v: u128) -> Result<Self::Value, E> {
             let v_u64 = u64::try_from(v).map_err(de::Error::custom)?;
-            T::try_from(v_u64).map_err(de::Error::custom)
+            self.visit_u64(v_u64)
         }
 
         fn visit_i128<E: de::Error>(self, v: i128) -> Result<Self::Value, E> {
@@ -290,7 +410,7 @@ where
                 return Err(de::Error::custom("Negative duration is not allowed"));
             }
             let v_u64 = u64::try_from(v).map_err(de::Error::custom)?;
-            T::try_from(v_u64).map_err(de::Error::custom)
+            self.visit_u64(v_u64)
         }
 
         fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
@@ -298,7 +418,62 @@ where
             let expanded = expanded.as_ref().trim();
             let duration = parse_duration(expanded).map_err(de::Error::custom)?;
             let secs = duration.as_secs();
-            T::try_from(secs).map_err(de::Error::custom)
+            self.visit_u64(secs)
+        }
+    }
+
+    deserializer.deserialize_any(DurationVisitor::<T>(PhantomData))
+}
+
+/// # Errors
+///
+/// Will return `Err` if deserialization fails.
+pub fn convert_duration_with_shellexpand_and_negative<'de, D, T>(
+    deserializer: D,
+) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: TryFrom<i64>,
+    <T as TryFrom<i64>>::Error: fmt::Display,
+{
+    struct DurationVisitor<T: TryFrom<i64>>(PhantomData<T>);
+
+    impl<T> Visitor<'_> for DurationVisitor<T>
+    where
+        T: TryFrom<i64>,
+        <T as TryFrom<i64>>::Error: fmt::Display,
+    {
+        type Value = T;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("either a number of seconds as an integer, or a string with a duration format (e.g., \"1h2m3s\", \"30m\", \"1d\")")
+        }
+
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> {
+            let v_i64 = i64::try_from(v).map_err(de::Error::custom)?;
+            self.visit_i64(v_i64)
+        }
+
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> {
+            T::try_from(v).map_err(de::Error::custom)
+        }
+
+        fn visit_u128<E: de::Error>(self, v: u128) -> Result<Self::Value, E> {
+            let v_i64 = i64::try_from(v).map_err(de::Error::custom)?;
+            self.visit_i64(v_i64)
+        }
+
+        fn visit_i128<E: de::Error>(self, v: i128) -> Result<Self::Value, E> {
+            let v_i64 = i64::try_from(v).map_err(de::Error::custom)?;
+            self.visit_i64(v_i64)
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            let expanded = shellexpand::env(v).map_err(de::Error::custom)?;
+            let expanded = expanded.as_ref().trim();
+            let duration = parse_duration(expanded).map_err(de::Error::custom)?;
+            let secs = duration.as_secs();
+            self.visit_u64(secs)
         }
     }
 

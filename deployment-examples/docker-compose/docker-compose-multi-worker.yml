@@ -1,0 +1,159 @@
+version: '3.8'
+
+services:
+  # CAS/AC server
+  cas-server:
+    image: nativelink:latest
+    build:
+      context: ../..
+      dockerfile: deployment-examples/docker-compose/Dockerfile
+    volumes:
+      - cas-data:/data/cas
+      - ./cas-server-multi-worker.json5:/nativelink-config.json5
+    ports:
+      - "50051:50051"
+    environment:
+      - RUST_LOG=info
+    command: nativelink /nativelink-config.json5
+    networks:
+      - nativelink-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:50051/status"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Scheduler
+  scheduler:
+    image: nativelink:latest
+    volumes:
+      - ./scheduler-multi-worker.json5:/nativelink-config.json5
+    ports:
+      - "50052:50052"
+      - "50061:50061"
+    environment:
+      - RUST_LOG=info
+      - CAS_ENDPOINT=cas-server
+    command: nativelink /nativelink-config.json5
+    depends_on:
+      cas-server:
+        condition: service_started
+    networks:
+      - nativelink-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:50052/status"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Worker 1 - Uses shared CAS volume
+  worker-1:
+    image: nativelink:latest
+    volumes:
+      - cas-data:/data/cas  # Shared CAS volume
+      - worker1-data:/data/worker1
+      - ./worker-shared-cas.json5:/nativelink-config.json5
+    environment:
+      - RUST_LOG=info
+      - SCHEDULER_ENDPOINT=scheduler
+      - CAS_ENDPOINT=cas-server
+      - WORKER_NAME=worker-1
+      - WORKER_ID=worker-1
+    command: nativelink /nativelink-config.json5
+    depends_on:
+      scheduler:
+        condition: service_started
+    networks:
+      - nativelink-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+
+  # Worker 2 - Uses shared CAS volume
+  worker-2:
+    image: nativelink:latest
+    volumes:
+      - cas-data:/data/cas  # Shared CAS volume
+      - worker2-data:/data/worker2
+      - ./worker-shared-cas.json5:/nativelink-config.json5
+    environment:
+      - RUST_LOG=info
+      - SCHEDULER_ENDPOINT=scheduler
+      - CAS_ENDPOINT=cas-server
+      - WORKER_NAME=worker-2
+      - WORKER_ID=worker-2
+    command: nativelink /nativelink-config.json5
+    depends_on:
+      scheduler:
+        condition: service_started
+    networks:
+      - nativelink-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+
+  # Worker 3 - Uses shared CAS volume
+  worker-3:
+    image: nativelink:latest
+    volumes:
+      - cas-data:/data/cas  # Shared CAS volume
+      - worker3-data:/data/worker3
+      - ./worker-shared-cas.json5:/nativelink-config.json5
+    environment:
+      - RUST_LOG=info
+      - SCHEDULER_ENDPOINT=scheduler
+      - CAS_ENDPOINT=cas-server
+      - WORKER_NAME=worker-3
+      - WORKER_ID=worker-3
+    command: nativelink /nativelink-config.json5
+    depends_on:
+      scheduler:
+        condition: service_started
+    networks:
+      - nativelink-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+
+  # Test client to submit jobs - commented out as gcr.io/bazel-public/bazel doesn't support ARM64
+  # test-client:
+  #   image: gcr.io/bazel-public/bazel:latest
+  #   volumes:
+  #     - ./test-workspace:/workspace
+  #     - ./test-bazelrc:/workspace/.bazelrc
+  #   working_dir: /workspace
+  #   environment:
+  #     - REMOTE_EXECUTOR=grpc://scheduler:50052
+  #   command: |
+  #     sh -c "
+  #       echo 'Waiting for services to be ready...'
+  #       sleep 10
+  #       echo 'Running multi-worker test build...'
+  #       bazel build --remote_executor=grpc://scheduler:50052 //test:all
+  #     "
+  #   depends_on:
+  #     - worker-1
+  #     - worker-2
+  #     - worker-3
+  #   networks:
+  #     - nativelink-network
+
+networks:
+  nativelink-network:
+    driver: bridge
+
+volumes:
+  cas-data:
+    driver: local
+  worker1-data:
+    driver: local
+  worker2-data:
+    driver: local
+  worker3-data:
+    driver: local

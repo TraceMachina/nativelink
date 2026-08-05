@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -153,7 +153,7 @@ async fn verify_size_true_succeeds_on_multi_chunk_stream_update() -> Result<(), 
     tx.send("bar".into()).await?;
     tx.send_eof()?;
     let result = future.await.err_tip(|| "Failed to join spawn future")?;
-    assert_eq!(result, Ok(()), "Expected success, got: {:?}", result);
+    assert_eq!(result, Ok(6), "Expected success, got: {:?}", result);
     assert_eq!(
         inner_store.has(digest).await,
         Ok(Some(6)),
@@ -179,7 +179,11 @@ async fn verify_sha256_hash_true_succeeds_on_update() -> Result<(), Error> {
     );
 
     let digest = DigestInfo::try_new(HASH, 3).unwrap();
-    let result = store.update_oneshot(digest, VALUE.into()).await;
+    let result = store
+        .update_oneshot(digest, VALUE.into())
+        .instrument(info_span!("update_oneshot"))
+        .with_context(make_ctx_for_hash_func(DigestHasherFunc::Sha256)?)
+        .await;
     assert_eq!(result, Ok(()), "Expected success, got: {:?}", result);
     assert_eq!(
         inner_store.has(digest).await,
@@ -207,10 +211,15 @@ async fn verify_sha256_hash_true_fails_on_update() -> Result<(), Error> {
     );
 
     let digest = DigestInfo::try_new(HASH, 3).unwrap();
-    let result = store.update_oneshot(digest, VALUE.into()).await;
+    let result = store
+        .update_oneshot(digest, VALUE.into())
+        .instrument(info_span!("update_oneshot"))
+        .with_context(make_ctx_for_hash_func(DigestHasherFunc::Sha256)?)
+        .await;
     let err = result.unwrap_err().to_string();
-    let expected_err =
-        format!("Hashes do not match, got: {HASH} but digest hash was {ACTUAL_HASH}");
+    let expected_err = format!(
+        "Hash verification using SHA256 failed: client declared SHA256:{HASH}, but the server computed SHA256:{ACTUAL_HASH}"
+    );
     assert!(
         err.contains(&expected_err),
         "Error should contain '{expected_err}', got: {err:?}"
@@ -283,8 +292,9 @@ async fn verify_blake3_hash_true_fails_on_update() -> Result<(), Error> {
 
     // let result = store.update_oneshot(digest, VALUE.into()).await;
     let err = result.unwrap_err().to_string();
-    let expected_err =
-        format!("Hashes do not match, got: {HASH} but digest hash was {ACTUAL_HASH}");
+    let expected_err = format!(
+        "Hash verification using BLAKE3 failed: client declared BLAKE3:{HASH}, but the server computed BLAKE3:{ACTUAL_HASH}"
+    );
     assert!(
         err.contains(&expected_err),
         "Error should contain '{expected_err}', got: {err:?}"
@@ -360,7 +370,11 @@ async fn verify_size_and_hash_succeeds_on_small_data() -> Result<(), Error> {
     );
 
     let digest = DigestInfo::try_new(HASH, 3).unwrap();
-    let result = store.update_oneshot(digest, VALUE.into()).await;
+    let result = store
+        .update_oneshot(digest, VALUE.into())
+        .instrument(info_span!("update_oneshot"))
+        .with_context(make_ctx_for_hash_func(DigestHasherFunc::Sha256)?)
+        .await;
     assert_eq!(result, Ok(()), "Expected success, got: {:?}", result);
     assert_eq!(
         inner_store.has(digest).await,

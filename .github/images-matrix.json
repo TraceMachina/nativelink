@@ -1,0 +1,22 @@
+{
+  "include": [
+    {
+      "components": "nativelink-image-for-x64 nativelink-image-for-aarch64",
+      "image": "nativelink",
+      "multi-arch": true
+    },
+    {
+      "components": "nativelink-init-for-x64 nativelink-init-for-aarch64",
+      "image": "nativelink-worker-init",
+      "multi-arch": true
+    },
+    {
+      "image": "nativelink-worker-lre-cc",
+      "multi-arch": false
+    },
+    {
+      "image": "nativelink-worker-lre-rs",
+      "multi-arch": false
+    }
+  ]
+}

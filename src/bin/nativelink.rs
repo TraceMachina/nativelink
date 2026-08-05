@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -15,6 +15,7 @@
 use core::net::SocketAddr;
 use core::time::Duration;
 use std::collections::{HashMap, HashSet};
+use std::io::ErrorKind;
 use std::sync::Arc;
 
 use async_lock::Mutex as AsyncMutex;
@@ -24,13 +25,14 @@ use clap::Parser;
 use futures::FutureExt;
 use futures::future::{BoxFuture, Either, OptionFuture, TryFutureExt, try_join_all};
 use hyper::StatusCode;
+use hyper_util::rt::TokioTimer;
 use hyper_util::rt::tokio::TokioIo;
 use hyper_util::server::conn::auto;
 use hyper_util::service::TowerToHyperService;
 use mimalloc::MiMalloc;
 use nativelink_config::cas_server::{
-    CasConfig, GlobalConfig, HttpCompressionAlgorithm, ListenerConfig, SchedulerConfig,
-    ServerConfig, StoreConfig, WorkerConfig,
+    CasConfig, CasStoreConfig, GlobalConfig, HttpCompressionAlgorithm, ListenerConfig,
+    SchedulerConfig, ServerConfig, StoreConfig, WithInstanceName, WorkerConfig,
 };
 use nativelink_config::stores::ConfigDigestHashFunction;
 use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
@@ -44,6 +46,7 @@ use nativelink_service::execution_server::ExecutionServer;
 use nativelink_service::fetch_server::FetchServer;
 use nativelink_service::health_server::HealthServer;
 use nativelink_service::push_server::PushServer;
+use nativelink_service::wire_compression::RemoteCacheCompressionInstances;
 use nativelink_service::worker_api_server::WorkerApiServer;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
@@ -61,12 +64,14 @@ use nativelink_util::task::TaskExecutor;
 use nativelink_util::telemetry::init_tracing;
 use nativelink_util::{background_spawn, fs, spawn};
 use nativelink_worker::local_worker::new_local_worker;
-use rustls_pemfile::{certs as extract_certs, crls as extract_crls};
-use tokio::net::TcpListener;
+use rustls_pki_types::pem::PemObject;
+use rustls_pki_types::{CertificateRevocationListDer, PrivateKeyDer};
+use tokio::net::{TcpListener, TcpSocket};
 use tokio::select;
 #[cfg(target_family = "unix")]
 use tokio::signal::unix::{SignalKind, signal};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::oneshot::Sender;
+use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_rustls::TlsAcceptor;
 use tokio_rustls::rustls::pki_types::CertificateDer;
 use tokio_rustls::rustls::server::WebPkiClientVerifier;
@@ -91,6 +96,21 @@ const DEFAULT_MAX_QUEUE_EVENTS: usize = 0x0001_0000;
 /// Broadcast Channel Capacity
 /// Note: The actual capacity may be greater than the provided capacity.
 const BROADCAST_CAPACITY: usize = 1;
+
+fn install_default_rustls_crypto_provider() {
+    drop(tokio_rustls::rustls::crypto::ring::default_provider().install_default());
+}
+
+/// Bind a [`TcpListener`] with `IP_FREEBIND` set.
+fn bind_freebind(socket_addr: SocketAddr) -> Result<TcpListener, std::io::Error> {
+    let socket = match socket_addr {
+        SocketAddr::V4(_) => TcpSocket::new_v4(),
+        SocketAddr::V6(_) => TcpSocket::new_v6(),
+    }?;
+    fs::set_freebind(&socket)?;
+    socket.bind(socket_addr)?;
+    socket.listen(1024)
+}
 
 /// Backend for bazel remote execution / cache API.
 #[derive(Parser, Debug)]
@@ -142,9 +162,39 @@ impl RoutesExt for Routes {
     }
 }
 
+/// If this value changes update the documentation in the config definition.
+const DEFAULT_MAX_DECODING_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
+
+macro_rules! service_setup {
+    ($service: expr, $http_config: ident) => {{
+        let mut service = $service;
+        let max_decoding_message_size = if $http_config.max_decoding_message_size == 0 {
+            DEFAULT_MAX_DECODING_MESSAGE_SIZE
+        } else {
+            $http_config.max_decoding_message_size
+        };
+        service = service.max_decoding_message_size(max_decoding_message_size);
+        let send_algo = &$http_config.compression.send_compression_algorithm;
+        if let Some(encoding) = into_encoding(send_algo.unwrap_or(HttpCompressionAlgorithm::None)) {
+            service = service.send_compressed(encoding);
+        }
+        for encoding in $http_config
+            .compression
+            .accepted_compression_algorithms
+            .iter()
+            // Filter None values.
+            .filter_map(|from: &HttpCompressionAlgorithm| into_encoding(*from))
+        {
+            service = service.accept_compressed(encoding);
+        }
+        service
+    }};
+}
+
 async fn inner_main(
     cfg: CasConfig,
     shutdown_tx: broadcast::Sender<ShutdownGuard>,
+    scheduler_shutdown_tx: Sender<()>,
 ) -> Result<(), Error> {
     const fn into_encoding(from: HttpCompressionAlgorithm) -> Option<CompressionEncoding> {
         match from {
@@ -167,8 +217,11 @@ async fn inner_main(
             let store = store_factory(&spec, &store_manager, Some(&mut health_register_store))
                 .await
                 .err_tip(|| format!("Failed to create store '{name}'"))?;
-            store_manager.add_store(&name, store);
+            store_manager
+                .add_store(&name, store)
+                .err_tip(|| format!("Failed to add store '{name}'"))?;
         }
+        store_manager.run_post_init().await?;
     }
 
     let mut root_futures: Vec<BoxFuture<Result<(), Error>>> = Vec::new();
@@ -202,6 +255,7 @@ async fn inner_main(
     for SchedulerConfig { name, spec } in cfg.schedulers.iter().flatten() {
         let (maybe_action_scheduler, maybe_worker_scheduler) =
             scheduler_factory(spec, &store_manager, maybe_origin_event_tx.as_ref())
+                .await
                 .err_tip(|| format!("Failed to create scheduler '{name}'"))?;
         if let Some(action_scheduler) = maybe_action_scheduler {
             action_schedulers.insert(name.clone(), action_scheduler.clone());
@@ -213,6 +267,17 @@ async fn inner_main(
 
     let server_cfgs: Vec<ServerConfig> = cfg.servers.into_iter().collect();
 
+    // The capabilities service advertises chunking support for CAS instances
+    // that may be served from a different server block (e.g. behind an L7
+    // router), so collect the CAS configs across all blocks.
+    let all_cas_configs: Vec<WithInstanceName<CasStoreConfig>> = server_cfgs
+        .iter()
+        .filter_map(|server_cfg| server_cfg.services.as_ref())
+        .filter_map(|services| services.cas.as_deref())
+        .flatten()
+        .cloned()
+        .collect();
+
     for server_cfg in server_cfgs {
         let services = server_cfg
             .services
@@ -221,109 +286,52 @@ async fn inner_main(
         // Currently we only support http as our socket type.
         let ListenerConfig::Http(http_config) = server_cfg.listener;
 
+        let execution_server = services
+            .execution
+            .as_ref()
+            .map(|cfg| ExecutionServer::new(cfg, &action_schedulers, &store_manager))
+            .transpose()
+            .err_tip(|| "Could not create Execution service")?;
+
+        let capabilities_configs = services.capabilities.as_deref().unwrap_or_default();
+        let remote_cache_compression_instances =
+            RemoteCacheCompressionInstances::from_capabilities_configs(capabilities_configs);
+
         let tonic_services = Routes::builder()
             .routes()
             .add_optional_service(
                 services
                     .ac
                     .map_or(Ok(None), |cfg| {
-                        AcServer::new(&cfg, &store_manager).map(|v| {
-                            let mut service = v.into_service();
-                            let send_algo = &http_config.compression.send_compression_algorithm;
-                            if let Some(encoding) =
-                                into_encoding(send_algo.unwrap_or(HttpCompressionAlgorithm::None))
-                            {
-                                service = service.send_compressed(encoding);
-                            }
-                            for encoding in http_config
-                                .compression
-                                .accepted_compression_algorithms
-                                .iter()
-                                // Filter None values.
-                                .filter_map(|from: &HttpCompressionAlgorithm| into_encoding(*from))
-                            {
-                                service = service.accept_compressed(encoding);
-                            }
-                            Some(service)
-                        })
+                        AcServer::new(&cfg, &store_manager)
+                            .map(|v| Some(service_setup!(v.into_service(), http_config)))
                     })
                     .err_tip(|| "Could not create AC service")?,
             )
             .add_optional_service(
                 services
                     .cas
+                    .as_deref()
                     .map_or(Ok(None), |cfg| {
-                        CasServer::new(&cfg, &store_manager).map(|v| {
-                            let mut service = v.into_service();
-                            let send_algo = &http_config.compression.send_compression_algorithm;
-                            if let Some(encoding) =
-                                into_encoding(send_algo.unwrap_or(HttpCompressionAlgorithm::None))
-                            {
-                                service = service.send_compressed(encoding);
-                            }
-                            for encoding in http_config
-                                .compression
-                                .accepted_compression_algorithms
-                                .iter()
-                                // Filter None values.
-                                .filter_map(|from: &HttpCompressionAlgorithm| into_encoding(*from))
-                            {
-                                service = service.accept_compressed(encoding);
-                            }
-                            Some(service)
-                        })
+                        CasServer::new(cfg, &store_manager, &remote_cache_compression_instances)
+                            .map(|v| Some(service_setup!(v.into_service(), http_config)))
                     })
                     .err_tip(|| "Could not create CAS service")?,
             )
             .add_optional_service(
-                services
-                    .execution
-                    .map_or(Ok(None), |cfg| {
-                        ExecutionServer::new(&cfg, &action_schedulers, &store_manager).map(|v| {
-                            let mut service = v.into_service();
-                            let send_algo = &http_config.compression.send_compression_algorithm;
-                            if let Some(encoding) =
-                                into_encoding(send_algo.unwrap_or(HttpCompressionAlgorithm::None))
-                            {
-                                service = service.send_compressed(encoding);
-                            }
-                            for encoding in http_config
-                                .compression
-                                .accepted_compression_algorithms
-                                .iter()
-                                // Filter None values.
-                                .filter_map(|from: &HttpCompressionAlgorithm| into_encoding(*from))
-                            {
-                                service = service.accept_compressed(encoding);
-                            }
-                            Some(service)
-                        })
-                    })
-                    .err_tip(|| "Could not create Execution service")?,
+                execution_server
+                    .clone()
+                    .map(|v| service_setup!(v.into_service(), http_config)),
+            )
+            .add_optional_service(
+                execution_server.map(|v| service_setup!(v.into_operations_service(), http_config)),
             )
             .add_optional_service(
                 services
                     .fetch
                     .map_or(Ok(None), |cfg| {
-                        FetchServer::new(&cfg, &store_manager).map(|v| {
-                            let mut service = v.into_service();
-                            let send_algo = &http_config.compression.send_compression_algorithm;
-                            if let Some(encoding) =
-                                into_encoding(send_algo.unwrap_or(HttpCompressionAlgorithm::None))
-                            {
-                                service = service.send_compressed(encoding);
-                            }
-                            for encoding in http_config
-                                .compression
-                                .accepted_compression_algorithms
-                                .iter()
-                                // Filter None values.
-                                .filter_map(|from: &HttpCompressionAlgorithm| into_encoding(*from))
-                            {
-                                service = service.accept_compressed(encoding);
-                            }
-                            Some(service)
-                        })
+                        FetchServer::new(&cfg, &store_manager)
+                            .map(|v| Some(service_setup!(v.into_service(), http_config)))
                     })
                     .err_tip(|| "Could not create Fetch service")?,
             )
@@ -331,25 +339,8 @@ async fn inner_main(
                 services
                     .push
                     .map_or(Ok(None), |cfg| {
-                        PushServer::new(&cfg, &store_manager).map(|v| {
-                            let mut service = v.into_service();
-                            let send_algo = &http_config.compression.send_compression_algorithm;
-                            if let Some(encoding) =
-                                into_encoding(send_algo.unwrap_or(HttpCompressionAlgorithm::None))
-                            {
-                                service = service.send_compressed(encoding);
-                            }
-                            for encoding in http_config
-                                .compression
-                                .accepted_compression_algorithms
-                                .iter()
-                                // Filter None values.
-                                .filter_map(|from: &HttpCompressionAlgorithm| into_encoding(*from))
-                            {
-                                service = service.accept_compressed(encoding);
-                            }
-                            Some(service)
-                        })
+                        PushServer::new(&cfg, &store_manager)
+                            .map(|v| Some(service_setup!(v.into_service(), http_config)))
                     })
                     .err_tip(|| "Could not create Push service")?,
             )
@@ -357,89 +348,37 @@ async fn inner_main(
                 services
                     .bytestream
                     .map_or(Ok(None), |cfg| {
-                        ByteStreamServer::new(&cfg, &store_manager).map(|v| {
-                            let mut service = v.into_service();
-                            let send_algo = &http_config.compression.send_compression_algorithm;
-                            if let Some(encoding) =
-                                into_encoding(send_algo.unwrap_or(HttpCompressionAlgorithm::None))
-                            {
-                                service = service.send_compressed(encoding);
-                            }
-                            for encoding in http_config
-                                .compression
-                                .accepted_compression_algorithms
-                                .iter()
-                                // Filter None values.
-                                .filter_map(|from: &HttpCompressionAlgorithm| into_encoding(*from))
-                            {
-                                service = service.accept_compressed(encoding);
-                            }
-                            Some(service)
-                        })
+                        ByteStreamServer::new(
+                            &cfg,
+                            &store_manager,
+                            &remote_cache_compression_instances,
+                        )
+                        .map(|v| Some(service_setup!(v.into_service(), http_config)))
                     })
                     .err_tip(|| "Could not create ByteStream service")?,
             )
             .add_optional_service(
-                OptionFuture::from(
-                    services
-                        .capabilities
-                        .as_ref()
-                        // Borrow checker fighting here...
-                        .map(|_| {
-                            CapabilitiesServer::new(
-                                services.capabilities.as_ref().unwrap(),
-                                &action_schedulers,
-                            )
-                        }),
-                )
+                OptionFuture::from(services.capabilities.as_ref().map(|cfg| {
+                    CapabilitiesServer::new(
+                        cfg,
+                        &action_schedulers,
+                        &remote_cache_compression_instances,
+                        &all_cas_configs,
+                    )
+                }))
                 .await
                 .map_or(Ok::<Option<CapabilitiesServer>, Error>(None), |server| {
                     Ok(Some(server?))
                 })
                 .err_tip(|| "Could not create Capabilities service")?
-                .map(|v| {
-                    let mut service = v.into_service();
-                    let send_algo = &http_config.compression.send_compression_algorithm;
-                    if let Some(encoding) =
-                        into_encoding(send_algo.unwrap_or(HttpCompressionAlgorithm::None))
-                    {
-                        service = service.send_compressed(encoding);
-                    }
-                    for encoding in http_config
-                        .compression
-                        .accepted_compression_algorithms
-                        .iter()
-                        // Filter None values.
-                        .filter_map(|from: &HttpCompressionAlgorithm| into_encoding(*from))
-                    {
-                        service = service.accept_compressed(encoding);
-                    }
-                    service
-                }),
+                .map(|v| service_setup!(v.into_service(), http_config)),
             )
             .add_optional_service(
                 services
                     .worker_api
                     .map_or(Ok(None), |cfg| {
-                        WorkerApiServer::new(&cfg, &worker_schedulers).map(|v| {
-                            let mut service = v.into_service();
-                            let send_algo = &http_config.compression.send_compression_algorithm;
-                            if let Some(encoding) =
-                                into_encoding(send_algo.unwrap_or(HttpCompressionAlgorithm::None))
-                            {
-                                service = service.send_compressed(encoding);
-                            }
-                            for encoding in http_config
-                                .compression
-                                .accepted_compression_algorithms
-                                .iter()
-                                // Filter None values.
-                                .filter_map(|from: &HttpCompressionAlgorithm| into_encoding(*from))
-                            {
-                                service = service.accept_compressed(encoding);
-                            }
-                            Some(service)
-                        })
+                        WorkerApiServer::new(&cfg, &worker_schedulers)
+                            .map(|v| Some(service_setup!(v.into_service(), http_config)))
                     })
                     .err_tip(|| "Could not create WorkerApi service")?,
             )
@@ -447,25 +386,8 @@ async fn inner_main(
                 services
                     .experimental_bep
                     .map_or(Ok(None), |cfg| {
-                        BepServer::new(&cfg, &store_manager).map(|v| {
-                            let mut service = v.into_service();
-                            let send_algo = &http_config.compression.send_compression_algorithm;
-                            if let Some(encoding) =
-                                into_encoding(send_algo.unwrap_or(HttpCompressionAlgorithm::None))
-                            {
-                                service = service.send_compressed(encoding);
-                            }
-                            for encoding in http_config
-                                .compression
-                                .accepted_compression_algorithms
-                                .iter()
-                                // Filter None values.
-                                .filter_map(|from: &HttpCompressionAlgorithm| into_encoding(*from))
-                            {
-                                service = service.accept_compressed(encoding);
-                            }
-                            Some(service)
-                        })
+                        BepServer::new(&cfg, &store_manager)
+                            .map(|v| Some(service_setup!(v.into_service(), http_config)))
                     })
                     .err_tip(|| "Could not create BEP service")?,
             );
@@ -485,7 +407,7 @@ async fn inner_main(
             } else {
                 &health_cfg.path
             };
-            svc = svc.route_service(path, HealthServer::new(health_registry));
+            svc = svc.route_service(path, HealthServer::new(health_registry, &health_cfg));
         }
 
         if let Some(admin_config) = services.admin {
@@ -553,7 +475,7 @@ async fn inner_main(
                     std::fs::File::open(cert_file)
                         .err_tip(|| format!("Could not open cert file {cert_file}"))?,
                 );
-                let certs = extract_certs(&mut cert_reader)
+                let certs = CertificateDer::pem_reader_iter(&mut cert_reader)
                     .collect::<Result<Vec<CertificateDer<'_>>, _>>()
                     .err_tip(|| format!("Could not extract certs from file {cert_file}"))?;
                 Ok(certs)
@@ -563,12 +485,12 @@ async fn inner_main(
                 std::fs::File::open(&tls_config.key_file)
                     .err_tip(|| format!("Could not open key file {}", tls_config.key_file))?,
             );
-            let key = match rustls_pemfile::read_one(&mut key_reader)
+            let key = match PrivateKeyDer::from_pem_reader(&mut key_reader)
                 .err_tip(|| format!("Could not extract key(s) from file {}", tls_config.key_file))?
             {
-                Some(rustls_pemfile::Item::Pkcs8Key(key)) => key.into(),
-                Some(rustls_pemfile::Item::Sec1Key(key)) => key.into(),
-                Some(rustls_pemfile::Item::Pkcs1Key(key)) => key.into(),
+                PrivateKeyDer::Pkcs8(key) => key.into(),
+                PrivateKeyDer::Sec1(key) => key.into(),
+                PrivateKeyDer::Pkcs1(key) => key.into(),
                 _ => {
                     return Err(make_err!(
                         Code::Internal,
@@ -577,7 +499,7 @@ async fn inner_main(
                     ));
                 }
             };
-            if let Ok(Some(_)) = rustls_pemfile::read_one(&mut key_reader) {
+            if PrivateKeyDer::from_pem_reader(&mut key_reader).is_ok() {
                 return Err(make_err!(
                     Code::InvalidArgument,
                     "Expected 1 key in file {}",
@@ -588,7 +510,7 @@ async fn inner_main(
                 let mut client_auth_roots = RootCertStore::empty();
                 for cert in read_cert(client_ca_file)? {
                     client_auth_roots.add(cert).map_err(|e| {
-                        make_err!(Code::Internal, "Could not read client CA: {e:?}")
+                        Error::from_std_err(Code::Internal, &e).append("Could not read client CA")
                     })?;
                 }
                 let crls = if let Some(client_crl_file) = &tls_config.client_crl_file {
@@ -596,7 +518,7 @@ async fn inner_main(
                         std::fs::File::open(client_crl_file)
                             .err_tip(|| format!("Could not open CRL file {client_crl_file}"))?,
                     );
-                    extract_crls(&mut crl_reader)
+                    CertificateRevocationListDer::pem_reader_iter(&mut crl_reader)
                         .collect::<Result<_, _>>()
                         .err_tip(|| format!("Could not extract CRLs from file {client_crl_file}"))?
                 } else {
@@ -606,10 +528,8 @@ async fn inner_main(
                     .with_crls(crls)
                     .build()
                     .map_err(|e| {
-                        make_err!(
-                            Code::Internal,
-                            "Could not create WebPkiClientVerifier: {e:?}"
-                        )
+                        Error::from_std_err(Code::Internal, &e)
+                            .append("Could not create WebPkiClientVerifier")
                     })?
             } else {
                 WebPkiClientVerifier::no_client_auth()
@@ -618,7 +538,8 @@ async fn inner_main(
                 .with_client_cert_verifier(verifier)
                 .with_single_cert(certs, key)
                 .map_err(|e| {
-                    make_err!(Code::Internal, "Could not create TlsServerConfig : {e:?}")
+                    Error::from_std_err(Code::Internal, &e)
+                        .append("Could not create TlsServerConfig")
                 })?;
 
             config.alpn_protocols.push("h2".into());
@@ -629,10 +550,31 @@ async fn inner_main(
             .socket_address
             .parse::<SocketAddr>()
             .map_err(|e| {
-                make_input_err!("Invalid address '{}' - {e:?}", http_config.socket_address)
+                Error::from_std_err(Code::InvalidArgument, &e)
+                    .append(format!("Invalid address '{}'", http_config.socket_address))
             })?;
-        let tcp_listener = TcpListener::bind(&socket_addr).await?;
+        let tcp_listener = if http_config.freebind {
+            bind_freebind(socket_addr)
+        } else {
+            TcpListener::bind(&socket_addr).await
+        }
+        .map_err(|e| match e.kind() {
+            ErrorKind::AddrInUse => make_err!(
+                Code::AlreadyExists,
+                "Address '{socket_addr}' is already in use by another process.",
+            ),
+            ErrorKind::PermissionDenied => make_err!(
+                Code::PermissionDenied,
+                "Permission denied. You may need root privileges to bind to address '{socket_addr}'.",
+            ),
+            ErrorKind::InvalidInput => {
+                make_input_err!("The provided address '{socket_addr}' is invalid.")
+            }
+            _ => Error::from_std_err(Code::Internal, &e)
+                .append(format!("Failed to bind to socket address '{socket_addr}'")),
+        })?;
         let mut http = auto::Builder::new(TaskExecutor::default());
+        http.http2().timer(TokioTimer::new());
 
         let http_config = &http_config.advanced_http;
         if let Some(value) = http_config.http2_keep_alive_interval {
@@ -661,7 +603,7 @@ async fn inner_main(
         if let Some(value) = http_config.experimental_http2_max_concurrent_streams {
             http.http2().max_concurrent_streams(value);
         }
-        if let Some(value) = http_config.experimental_http2_keep_alive_timeout {
+        if let Some(value) = http_config.experimental_http2_keep_alive_timeout_s {
             http.http2()
                 .keep_alive_timeout(Duration::from_secs(u64::from(value)));
         }
@@ -814,6 +756,18 @@ async fn inner_main(
         }
     }
 
+    // Set up a shutdown handler for the worker schedulers.
+    let mut shutdown_rx = shutdown_tx.subscribe();
+    root_futures.push(Box::pin(async move {
+        if let Ok(shutdown_guard) = shutdown_rx.recv().await {
+            let _ = scheduler_shutdown_tx.send(());
+            for (_name, scheduler) in worker_schedulers {
+                scheduler.shutdown(shutdown_guard.clone()).await;
+            }
+        }
+        Ok(())
+    }));
+
     if let Err(e) = try_join_all(root_futures).await {
         panic!("{e:?}");
     }
@@ -827,6 +781,29 @@ fn get_config() -> Result<CasConfig, Error> {
 }
 
 fn main() -> Result<(), Box<dyn core::error::Error>> {
+    install_default_rustls_crypto_provider();
+
+    // Set QoS to USER_INITIATED on the main thread *before* the tokio
+    // runtime is built so the spawned worker threads inherit P-core
+    // scheduling preference via pthread QoS inheritance on Apple
+    // Silicon. `on_thread_start` below is a belt-and-suspenders hook
+    // for any thread that misses the inherited class (e.g. tokio
+    // blocking pool threads created lazily). No-op on non-macOS.
+    let _ = nativelink_worker::qos::set_user_initiated();
+
+    #[expect(clippy::disallowed_methods, reason = "starting main runtime")]
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .on_thread_start(|| {
+            let _ = nativelink_worker::qos::set_user_initiated();
+        })
+        .enable_all()
+        .build()?;
+
+    // The OTLP exporters need to run in a Tokio context
+    // Do this first so all the other logging works
+    #[expect(clippy::disallowed_methods, reason = "tracing init on main runtime")]
+    runtime.block_on(async { tokio::spawn(async { init_tracing().await }).await? })?;
+
     let mut cfg = get_config()?;
 
     let global_cfg = if let Some(global_cfg) = &mut cfg.global {
@@ -853,15 +830,6 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
     ))?;
     set_default_digest_size_health_check(global_cfg.default_digest_size_health_check)?;
 
-    #[expect(clippy::disallowed_methods, reason = "starting main runtime")]
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?;
-
-    // The OTLP exporters need to run in a Tokio context.
-    #[expect(clippy::disallowed_methods, reason = "tracing init on main runtime")]
-    runtime.block_on(async { tokio::spawn(async { init_tracing() }).await? })?;
-
     // Initiates the shutdown process by broadcasting the shutdown signal via the `oneshot::Sender` to all listeners.
     // Each listener will perform its cleanup and then drop its `oneshot::Sender`, signaling completion.
     // Once all `oneshot::Sender` instances are dropped, the worker knows it can safely terminate.
@@ -880,6 +848,9 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
         std::process::exit(130);
     });
 
+    #[allow(unused_variables)]
+    let (scheduler_shutdown_tx, scheduler_shutdown_rx) = oneshot::channel();
+
     #[cfg(target_family = "unix")]
     #[expect(clippy::disallowed_methods, reason = "signal handler on main runtime")]
     runtime.spawn(async move {
@@ -887,10 +858,13 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
             .expect("Failed to listen to SIGTERM")
             .recv()
             .await;
-        warn!("Process terminated via SIGTERM",);
+        warn!("Process terminated via SIGTERM");
         drop(shutdown_tx_clone.send(shutdown_guard.clone()));
+        scheduler_shutdown_rx
+            .await
+            .expect("Failed to receive scheduler shutdown");
         let () = shutdown_guard.wait_for(Priority::P0).await;
-        warn!("Successfully shut down nativelink.",);
+        warn!("Successfully shut down nativelink.");
         std::process::exit(143);
     });
 
@@ -898,7 +872,7 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
     runtime
         .block_on(async {
             trace_span!("main")
-                .in_scope(|| async { inner_main(cfg, shutdown_tx).await })
+                .in_scope(|| async { inner_main(cfg, shutdown_tx, scheduler_shutdown_tx).await })
                 .await
         })
         .err_tip(|| "main() function failed")?;

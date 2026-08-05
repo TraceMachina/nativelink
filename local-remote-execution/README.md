@@ -196,20 +196,10 @@ Let's use NativeLink's Kubernetes example to verify that the setup worked.
 Start the cluster and set up NativeLink in an LRE configuration. For details on
 this refer to the [Kubernetes example](https://www.nativelink.com/docs/deployment-examples/kubernetes):
 
-> [!TIP]
-> NativeLink's `native` CLI tool is self-contained and can be imported into
-> other nix flakes by adding `inputs.nativelink.packages.${system}.native-cli`
-> to the `nativeBuildInputs` of your `devShell`.
-
 ```bash
 #!/usr/bin/env bash
 
 set -xeuo pipefail
-
-native up
-
-# Wait for gateways to come online.
-sleep 20
 
 EVENTLISTENER=$(kubectl get gtw eventlistener -o=jsonpath='{.status.addresses[0].value}')
 
@@ -403,6 +393,6 @@ might need to implement your own logic to get from the toolchain container to
 some usable RBE configuration files (or write them manually), but this can be
 considered an implementation detail specific to your requirements.
 
-TODO(aaronmondal): Add an example of a custom toolchain extension around lre-cc.
+TODO(palfrey): Add an example of a custom toolchain extension around lre-cc.
 
 <img referrerpolicy="no-referrer-when-downgrade" src="https://nativelink.matomo.cloud/matomo.php?idsite=2&amp;rec=1&amp;action_name=local-remote-execution%20Readme.md" style="border:0" alt="" />

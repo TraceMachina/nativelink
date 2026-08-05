@@ -69,7 +69,7 @@ spec:
           value: "$(params.destTLSverify)"
       securityContext:
         capabilities:
-          # TODO(aaronmondal): This is necessary to allow nix builds which make
+          # TODO(palfrey): This is necessary to allow nix builds which make
           # use of containers. This is a security concern and should not be used
           # in production grade deployments. Find a better solution.
           add: ["SYS_ADMIN"]

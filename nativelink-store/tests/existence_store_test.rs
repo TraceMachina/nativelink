@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -121,7 +121,7 @@ async fn get_part_caches_if_exact_size_set() -> Result<(), Error> {
 
 // Regression test for: https://github.com/TraceMachina/nativelink/issues/1199.
 #[nativelink_test]
-async fn ensure_has_requests_eventually_do_let_evictions_happen() -> Result<(), Error> {
+async fn ensure_has_requests_do_let_evictions_happen() -> Result<(), Error> {
     const VALUE: &str = "123";
     let inner_store = MemoryStore::new(&MemorySpec::default());
     let digest = DigestInfo::try_new(VALID_HASH1, 3).unwrap();
@@ -133,7 +133,7 @@ async fn ensure_has_requests_eventually_do_let_evictions_happen() -> Result<(), 
         &ExistenceCacheSpec {
             backend: StoreSpec::Noop(NoopSpec::default()),
             eviction_policy: Some(EvictionPolicy {
-                max_seconds: 10,
+                max_seconds: 0, // Explicitly set this level to "don't timeout"
                 ..Default::default()
             }),
         },
@@ -148,17 +148,51 @@ async fn ensure_has_requests_eventually_do_let_evictions_happen() -> Result<(), 
     // it from the inner store.
     inner_store.remove_entry(digest.into()).await;
 
-    assert_eq!(store.has(digest).await, Ok(Some(VALUE.len() as u64)));
-    MockClock::advance(Duration::from_secs(3));
-
-    assert_eq!(store.has(digest).await, Ok(Some(VALUE.len() as u64)));
-    MockClock::advance(Duration::from_secs(3));
-
-    assert_eq!(store.has(digest).await, Ok(Some(VALUE.len() as u64)));
-    MockClock::advance(Duration::from_secs(3));
-
-    // It should have been evicted from the existence cache by now.
+    // It should be immediately evicted from the existence cache.
     assert_eq!(store.has(digest).await, Ok(None));
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn copes_with_dropped_items() -> Result<(), Error> {
+    const VALUE: &str = "123";
+    let spec = ExistenceCacheSpec {
+        backend: StoreSpec::Noop(NoopSpec::default()), // Note: Not used.
+        eviction_policy: Option::default(),
+    };
+    let inner_store = Store::new(MemoryStore::new(&MemorySpec {
+        eviction_policy: Some(EvictionPolicy {
+            max_bytes: 1,
+            ..Default::default()
+        }),
+    }));
+    let store = ExistenceCacheStore::new(&spec, inner_store.clone());
+
+    let digest = DigestInfo::try_new(VALID_HASH1, 3).unwrap();
+    store
+        .update_oneshot(digest, VALUE.into())
+        .await
+        .err_tip(|| "Failed to update store")?;
+
+    let inner_store_item = inner_store.has(digest).await;
+    assert!(
+        inner_store_item.is_ok(),
+        "Failed inner item: {inner_store_item:#?}",
+    );
+    let unwrapped_inner = inner_store_item.unwrap();
+    assert!(
+        unwrapped_inner.is_none(),
+        "Failed inner item: {unwrapped_inner:#?}"
+    );
+
+    let store_item = store.has(digest).await;
+    assert!(store_item.is_ok(), "Failed item: {store_item:#?}");
+    let unwrapped_store = store_item.unwrap();
+    assert!(
+        unwrapped_store.is_none(),
+        "Failed item: {unwrapped_store:#?}"
+    );
 
     Ok(())
 }

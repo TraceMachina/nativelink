@@ -5,7 +5,7 @@
 # Bazel expects a single frontend for both C and C++. That works for GCC but
 # not for clang. This wrapper selects `clang` or `clang++` depending on file
 # ending.
-# TODO(aaronmondal): The necessity of this is a bug.
+# TODO(palfrey): The necessity of this is a bug.
 #                    See: https://github.com/NixOS/nixpkgs/issues/216047
 #                    and https://github.com/NixOS/nixpkgs/issues/150655
 writeShellScriptBin "customClang" ''

@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -15,14 +15,16 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use nativelink_error::{Error, make_input_err};
+use nativelink_error::Error;
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_util::action_messages::{ActionInfo, OperationId};
-use nativelink_util::known_platform_property_provider::KnownPlatformPropertyProvider;
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, OperationFilter,
 };
 use tokio::sync::{Mutex, mpsc};
+use tonic::Code;
+
+use crate::known_platform_property_provider::KnownPlatformPropertyProvider;
 
 #[allow(
     clippy::large_enum_variant,
@@ -81,7 +83,10 @@ impl MockActionScheduler {
         };
         self.tx_resp
             .send(ActionSchedulerReturns::GetGetKnownProperties(result))
-            .map_err(|_| make_input_err!("Could not send request to mpsc"))
+            .map_err(|err| {
+                Error::from_std_err(Code::InvalidArgument, &err)
+                    .append("Could not send request to mpsc")
+            })
             .unwrap();
         req
     }
@@ -101,7 +106,10 @@ impl MockActionScheduler {
         };
         self.tx_resp
             .send(ActionSchedulerReturns::AddAction(result))
-            .map_err(|_| make_input_err!("Could not send request to mpsc"))
+            .map_err(|err| {
+                Error::from_std_err(Code::InvalidArgument, &err)
+                    .append("Could not send request to mpsc")
+            })
             .unwrap();
         req
     }
@@ -121,7 +129,10 @@ impl MockActionScheduler {
         };
         self.tx_resp
             .send(ActionSchedulerReturns::FilterOperations(result))
-            .map_err(|_| make_input_err!("Could not send request to mpsc"))
+            .map_err(|err| {
+                Error::from_std_err(Code::InvalidArgument, &err)
+                    .append("Could not send request to mpsc")
+            })
             .unwrap();
         req
     }
@@ -187,10 +198,6 @@ impl ClientStateManager for MockActionScheduler {
             ActionSchedulerReturns::FilterOperations(result) => result,
             _ => panic!("Expected find_by_client_operation_id return value"),
         }
-    }
-
-    fn as_known_platform_property_provider(&self) -> Option<&dyn KnownPlatformPropertyProvider> {
-        Some(self)
     }
 }
 

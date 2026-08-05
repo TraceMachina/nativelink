@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,9 +13,7 @@
 // limitations under the License.
 
 use core::cmp;
-use core::future::Future;
 use core::pin::Pin;
-use core::task::{Context, Poll};
 use core::time::Duration;
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -23,7 +21,6 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use aws_config::default_provider::credentials;
 use aws_config::provider_config::ProviderConfig;
-use aws_config::retry::ErrorKind::TransientError;
 use aws_config::{AppName, BehaviorVersion};
 use aws_sdk_s3::Client;
 use aws_sdk_s3::config::Region;
@@ -32,26 +29,10 @@ use aws_sdk_s3::operation::get_object::GetObjectError;
 use aws_sdk_s3::operation::head_object::HeadObjectError;
 use aws_sdk_s3::primitives::ByteStream; // SdkBody
 use aws_sdk_s3::types::builders::{CompletedMultipartUploadBuilder, CompletedPartBuilder};
-use aws_smithy_runtime_api::client::http::{
-    HttpClient as SmithyHttpClient, HttpConnector as SmithyHttpConnector, HttpConnectorFuture,
-    HttpConnectorSettings, SharedHttpConnector,
-};
-use aws_smithy_runtime_api::client::orchestrator::HttpRequest;
-use aws_smithy_runtime_api::client::result::ConnectorError;
-use aws_smithy_runtime_api::client::runtime_components::RuntimeComponents;
-use aws_smithy_runtime_api::http::Response;
 use aws_smithy_types::body::SdkBody;
-use bytes::{Bytes, BytesMut};
 use futures::future::FusedFuture;
 use futures::stream::{FuturesUnordered, unfold};
-use futures::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt};
-use http_body::{Frame, SizeHint};
-use http_body_util::BodyExt;
-use hyper::{Method, Request};
-use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
-use hyper_util::client::legacy::Client as LegacyClient;
-use hyper_util::client::legacy::connect::HttpConnector as LegacyHttpConnector;
-use hyper_util::rt::TokioExecutor;
+use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt};
 use nativelink_config::stores::ExperimentalAwsSpec;
 // Note: S3 store should be very careful about the error codes it returns
 // when in a retryable wrapper. Always prefer Code::Aborted or another
@@ -62,17 +43,23 @@ use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{
     DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
 };
-use nativelink_util::fs;
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::retry::{Retrier, RetryResult};
-use nativelink_util::store_trait::{StoreDriver, StoreKey, UploadSizeInfo};
-use rand::Rng;
+use nativelink_util::store_trait::{
+    RemoveCallback, StoreDriver, StoreKey, StoreOptimizations, UploadSizeInfo,
+};
+use parking_lot::Mutex;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 use tracing::{error, info};
 
 use crate::cas_utils::is_zero_digest;
+use crate::common_s3_utils::{BodyWrapper, TlsClient};
+
+// S3 object cannot be larger than this number. See:
+// https://docs.aws.amazon.com/AmazonS3/latest/userguide/qfacts.html
+const MAX_UPLOAD_SIZE: u64 = 48 * 1024 * 1024 * 1024 * 1024; // 48TiB (technically should be 48.8 TiB, but close enough)
 
 // S3 parts cannot be smaller than this number. See:
 // https://docs.aws.amazon.com/AmazonS3/latest/userguide/qfacts.html
@@ -84,7 +71,8 @@ const MAX_MULTIPART_SIZE: u64 = 5 * 1024 * 1024 * 1024; // 5GB.
 
 // S3 parts cannot be more than this number. See:
 // https://docs.aws.amazon.com/AmazonS3/latest/userguide/qfacts.html
-const MAX_UPLOAD_PARTS: usize = 10_000;
+// Note: Type 'u64' chosen to simplify calculations
+const MAX_UPLOAD_PARTS: u64 = 10_000;
 
 // Default max buffer size for retrying upload requests.
 // Note: If you change this, adjust the docs in the config.
@@ -93,328 +81,6 @@ const DEFAULT_MAX_RETRY_BUFFER_PER_REQUEST: usize = 5 * 1024 * 1024; // 5MB.
 // Default limit for concurrent part uploads per multipart upload.
 // Note: If you change this, adjust the docs in the config.
 const DEFAULT_MULTIPART_MAX_CONCURRENT_UPLOADS: usize = 10;
-
-#[derive(Clone)]
-pub struct TlsClient {
-    client: LegacyClient<HttpsConnector<LegacyHttpConnector>, SdkBody>,
-    retrier: Retrier,
-}
-
-impl TlsClient {
-    #[must_use]
-    pub fn new(
-        spec: &ExperimentalAwsSpec,
-        jitter_fn: Arc<dyn Fn(Duration) -> Duration + Send + Sync>,
-    ) -> Self {
-        let connector_with_roots = HttpsConnectorBuilder::new().with_platform_verifier();
-
-        let connector_with_schemes = if spec.common.insecure_allow_http {
-            connector_with_roots.https_or_http()
-        } else {
-            connector_with_roots.https_only()
-        };
-
-        let connector = if spec.common.disable_http2 {
-            connector_with_schemes.enable_http1().build()
-        } else {
-            connector_with_schemes.enable_http1().enable_http2().build()
-        };
-
-        let client = LegacyClient::builder(TokioExecutor::new()).build(connector);
-
-        Self {
-            client,
-            retrier: Retrier::new(
-                Arc::new(|duration| Box::pin(sleep(duration))),
-                jitter_fn,
-                spec.common.retry.clone(),
-            ),
-        }
-    }
-}
-
-impl core::fmt::Debug for TlsClient {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> Result<(), core::fmt::Error> {
-        f.debug_struct("TlsClient").finish_non_exhaustive()
-    }
-}
-
-impl SmithyHttpClient for TlsClient {
-    fn http_connector(
-        &self,
-        _settings: &HttpConnectorSettings,
-        _components: &RuntimeComponents,
-    ) -> SharedHttpConnector {
-        SharedHttpConnector::new(self.clone())
-    }
-}
-
-enum BufferedBodyState {
-    Cloneable(SdkBody),
-    Buffered(Bytes),
-    Empty,
-}
-
-mod body_processing {
-    use super::{BodyExt, BufferedBodyState, BytesMut, ConnectorError, SdkBody, TransientError};
-
-    /// Buffer a request body fully into memory.
-    ///
-    /// TODO(aaronmondal): This could lead to OOMs in extremely constrained
-    ///                    environments. Probably better to implement something
-    ///                    like a rewindable stream logic.
-    #[inline]
-    pub(crate) async fn buffer_body(body: SdkBody) -> Result<BufferedBodyState, ConnectorError> {
-        let mut bytes = BytesMut::new();
-        let mut body_stream = body;
-        while let Some(frame) = body_stream.frame().await {
-            match frame {
-                Ok(frame) => {
-                    if let Some(data) = frame.data_ref() {
-                        bytes.extend_from_slice(data);
-                    }
-                }
-                Err(e) => {
-                    return Err(ConnectorError::other(
-                        format!("Failed to read request body: {e}").into(),
-                        Some(TransientError),
-                    ));
-                }
-            }
-        }
-
-        Ok(BufferedBodyState::Buffered(bytes.freeze()))
-    }
-}
-
-struct RequestComponents {
-    method: Method,
-    uri: hyper::Uri,
-    version: hyper::Version,
-    headers: hyper::HeaderMap,
-    body_data: BufferedBodyState,
-}
-
-mod conversions {
-    use super::{
-        BufferedBodyState, ConnectorError, Future, HttpRequest, Method, RequestComponents,
-        Response, SdkBody, TransientError, body_processing,
-    };
-
-    pub(crate) trait RequestExt {
-        fn into_components(self)
-        -> impl Future<Output = Result<RequestComponents, ConnectorError>>;
-    }
-
-    impl RequestExt for HttpRequest {
-        async fn into_components(self) -> Result<RequestComponents, ConnectorError> {
-            // Note: This does *not* refer the the HTTP protocol, but to the
-            //       version of the http crate.
-            let hyper_req = self.try_into_http1x().map_err(|e| {
-                ConnectorError::other(
-                    format!("Failed to convert to HTTP request: {e}").into(),
-                    Some(TransientError),
-                )
-            })?;
-
-            let method = hyper_req.method().clone();
-            let uri = hyper_req.uri().clone();
-            let version = hyper_req.version();
-            let headers = hyper_req.headers().clone();
-
-            let body = hyper_req.into_body();
-
-            // Only buffer bodies for methods likely to have payloads.
-            let needs_buffering = matches!(method, Method::POST | Method::PUT);
-
-            // Preserve the body in case we need to retry.
-            let body_data = if needs_buffering {
-                if let Some(cloneable_body) = body.try_clone() {
-                    BufferedBodyState::Cloneable(cloneable_body)
-                } else {
-                    body_processing::buffer_body(body).await?
-                }
-            } else {
-                BufferedBodyState::Empty
-            };
-
-            Ok(RequestComponents {
-                method,
-                uri,
-                version,
-                headers,
-                body_data,
-            })
-        }
-    }
-
-    pub(crate) trait ResponseExt {
-        fn into_smithy_response(self) -> Response<SdkBody>;
-    }
-
-    impl ResponseExt for hyper::Response<hyper::body::Incoming> {
-        fn into_smithy_response(self) -> Response<SdkBody> {
-            let (parts, body) = self.into_parts();
-            let sdk_body = SdkBody::from_body_1_x(body);
-            let mut smithy_resp = Response::new(parts.status.into(), sdk_body);
-            let header_pairs: Vec<(String, String)> = parts
-                .headers
-                .iter()
-                .filter_map(|(name, value)| {
-                    value
-                        .to_str()
-                        .ok()
-                        .map(|value_str| (name.as_str().to_owned(), value_str.to_owned()))
-                })
-                .collect();
-
-            for (name, value) in header_pairs {
-                smithy_resp.headers_mut().insert(name, value);
-            }
-
-            smithy_resp
-        }
-    }
-}
-
-struct RequestBuilder<'a> {
-    components: &'a RequestComponents,
-}
-
-impl<'a> RequestBuilder<'a> {
-    #[inline]
-    const fn new(components: &'a RequestComponents) -> Self {
-        Self { components }
-    }
-
-    #[inline]
-    #[allow(unused_qualifications, reason = "false positive on hyper::http::Error")]
-    fn build(&self) -> Result<Request<SdkBody>, hyper::http::Error> {
-        let mut req_builder = Request::builder()
-            .method(self.components.method.clone())
-            .uri(self.components.uri.clone())
-            .version(self.components.version);
-
-        let headers_map = req_builder.headers_mut().unwrap();
-        for (name, value) in &self.components.headers {
-            headers_map.insert(name, value.clone());
-        }
-
-        match &self.components.body_data {
-            BufferedBodyState::Cloneable(body) => {
-                let cloned_body = body.try_clone().expect("Body should be cloneable");
-                req_builder.body(cloned_body)
-            }
-            BufferedBodyState::Buffered(bytes) => req_builder.body(SdkBody::from(bytes.clone())),
-            BufferedBodyState::Empty => req_builder.body(SdkBody::empty()),
-        }
-    }
-}
-
-mod execution {
-    use super::conversions::ResponseExt;
-    use super::{
-        Code, HttpsConnector, LegacyClient, LegacyHttpConnector, RequestBuilder, RequestComponents,
-        Response, RetryResult, SdkBody, fs, make_err,
-    };
-
-    #[inline]
-    pub(crate) async fn execute_request(
-        client: LegacyClient<HttpsConnector<LegacyHttpConnector>, SdkBody>,
-        components: &RequestComponents,
-    ) -> RetryResult<Response<SdkBody>> {
-        let _permit = match fs::get_permit().await {
-            Ok(permit) => permit,
-            Err(e) => {
-                return RetryResult::Retry(make_err!(
-                    Code::Unavailable,
-                    "Failed to acquire permit: {e}"
-                ));
-            }
-        };
-
-        let request = match RequestBuilder::new(components).build() {
-            Ok(req) => req,
-            Err(e) => {
-                return RetryResult::Err(make_err!(
-                    Code::Internal,
-                    "Failed to create request: {e}",
-                ));
-            }
-        };
-
-        match client.request(request).await {
-            Ok(resp) => RetryResult::Ok(resp.into_smithy_response()),
-            Err(e) => RetryResult::Retry(make_err!(
-                Code::Unavailable,
-                "Failed request in S3Store: {e}"
-            )),
-        }
-    }
-
-    #[inline]
-    pub(crate) fn create_retry_stream(
-        client: LegacyClient<HttpsConnector<LegacyHttpConnector>, SdkBody>,
-        components: RequestComponents,
-    ) -> impl futures::Stream<Item = RetryResult<Response<SdkBody>>> {
-        futures::stream::unfold(components, move |components| {
-            let client_clone = client.clone();
-            async move {
-                let result = execute_request(client_clone, &components).await;
-
-                Some((result, components))
-            }
-        })
-    }
-}
-
-impl SmithyHttpConnector for TlsClient {
-    fn call(&self, req: HttpRequest) -> HttpConnectorFuture {
-        use conversions::RequestExt;
-
-        let client = self.client.clone();
-        let retrier = self.retrier.clone();
-
-        HttpConnectorFuture::new(Box::pin(async move {
-            let components = req.into_components().await?;
-
-            let retry_stream = execution::create_retry_stream(client, components);
-
-            match retrier.retry(retry_stream).await {
-                Ok(response) => Ok(response),
-                Err(e) => Err(ConnectorError::other(
-                    format!("Connection failed after retries: {e}").into(),
-                    Some(TransientError),
-                )),
-            }
-        }))
-    }
-}
-
-#[derive(Debug)]
-pub struct BodyWrapper {
-    reader: DropCloserReadHalf,
-    size: u64,
-}
-
-impl http_body::Body for BodyWrapper {
-    type Data = Bytes;
-    type Error = std::io::Error;
-
-    fn poll_frame(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        let reader = Pin::new(&mut Pin::get_mut(self).reader);
-        reader
-            .poll_next(cx)
-            .map(|maybe_bytes_res| maybe_bytes_res.map(|res| res.map(Frame::data)))
-    }
-
-    fn size_hint(&self) -> SizeHint {
-        SizeHint::with_exact(self.size)
-    }
-}
 
 #[derive(Debug, MetricsComponent)]
 pub struct S3Store<NowFn> {
@@ -431,6 +97,8 @@ pub struct S3Store<NowFn> {
     max_retry_buffer_per_request: usize,
     #[metric(help = "The number of concurrent uploads allowed for multipart uploads")]
     multipart_max_concurrent_uploads: usize,
+
+    remove_callbacks: Mutex<Vec<RemoveCallback>>,
 }
 
 impl<I, NowFn> S3Store<NowFn>
@@ -439,26 +107,21 @@ where
     NowFn: Fn() -> I + Send + Sync + Unpin + 'static,
 {
     pub async fn new(spec: &ExperimentalAwsSpec, now_fn: NowFn) -> Result<Arc<Self>, Error> {
-        let jitter_amt = spec.common.retry.jitter;
-        let jitter_fn = Arc::new(move |delay: Duration| {
-            if jitter_amt == 0. {
-                return delay;
-            }
-            delay.mul_f32(jitter_amt.mul_add(rand::rng().random::<f32>() - 0.5, 1.))
-        });
+        let jitter_fn = spec.common.retry.make_jitter_fn();
         let s3_client = {
-            let http_client = TlsClient::new(&spec.clone(), jitter_fn.clone());
+            let http_client = TlsClient::new(&spec.common.clone());
+            let credential_http_client = TlsClient::new_for_credentials(&spec.common);
 
             let credential_provider = credentials::DefaultCredentialsChain::builder()
                 .configure(
                     ProviderConfig::without_region()
                         .with_region(Some(Region::new(Cow::Owned(spec.region.clone()))))
-                        .with_http_client(http_client.clone()),
+                        .with_http_client(credential_http_client),
                 )
                 .build()
                 .await;
 
-            let config = aws_config::defaults(BehaviorVersion::v2025_01_17())
+            let config = aws_config::defaults(BehaviorVersion::latest())
                 .credentials_provider(credential_provider)
                 .app_name(AppName::new("nativelink").expect("valid app name"))
                 .timeout_config(
@@ -485,7 +148,7 @@ where
         Ok(Arc::new(Self {
             s3_client: Arc::new(s3_client),
             now_fn,
-            bucket: spec.bucket.to_string(),
+            bucket: spec.bucket.clone(),
             key_prefix: spec
                 .common
                 .key_prefix
@@ -506,58 +169,72 @@ where
                 .common
                 .multipart_max_concurrent_uploads
                 .map_or(DEFAULT_MULTIPART_MAX_CONCURRENT_UPLOADS, |v| v),
+            remove_callbacks: Mutex::new(Vec::new()),
         }))
     }
 
     fn make_s3_path(&self, key: &StoreKey<'_>) -> String {
-        format!("{}{}", self.key_prefix, key.as_str(),)
+        format!("{}{}", self.key_prefix, key.as_str())
     }
 
-    async fn has(self: Pin<&Self>, digest: &StoreKey<'_>) -> Result<Option<u64>, Error> {
+    async fn has(self: Pin<&Self>, digest: StoreKey<'_>) -> Result<Option<u64>, Error> {
+        let digest_clone = digest.into_owned();
         self.retrier
-            .retry(unfold((), move |state| async move {
-                let result = self
-                    .s3_client
-                    .head_object()
-                    .bucket(&self.bucket)
-                    .key(self.make_s3_path(&digest.borrow()))
-                    .send()
-                    .await;
+            .retry(unfold((), move |state| {
+                let local_digest = digest_clone.clone();
+                async move {
+                    let result = self
+                        .s3_client
+                        .head_object()
+                        .bucket(&self.bucket)
+                        .key(self.make_s3_path(&local_digest))
+                        .send()
+                        .await;
 
-                match result {
-                    Ok(head_object_output) => {
-                        if self.consider_expired_after_s != 0 {
-                            if let Some(last_modified) = head_object_output.last_modified {
-                                let now_s = (self.now_fn)().unix_timestamp() as i64;
+                    match result {
+                        Ok(head_object_output) => {
+                            if self.consider_expired_after_s != 0
+                                && let Some(last_modified) = head_object_output.last_modified
+                            {
+                                let now_s = (self.now_fn)()
+                                    .unix_timestamp()
+                                    .try_into()
+                                    .unwrap_or(i64::MAX);
                                 if last_modified.secs() + self.consider_expired_after_s <= now_s {
+                                    let remove_callbacks = self.remove_callbacks.lock().clone();
+                                    let mut callbacks: FuturesUnordered<_> = remove_callbacks
+                                        .iter()
+                                        .map(|callback| callback.callback(local_digest.borrow()))
+                                        .collect();
+                                    while callbacks.next().await.is_some() {}
                                     return Some((RetryResult::Ok(None), state));
                                 }
                             }
+                            let Some(length) = head_object_output.content_length else {
+                                return Some((RetryResult::Ok(None), state));
+                            };
+                            if length >= 0 {
+                                return Some((RetryResult::Ok(Some(length as u64)), state));
+                            }
+                            Some((
+                                RetryResult::Err(make_err!(
+                                    Code::InvalidArgument,
+                                    "Negative content length in S3: {length:?}",
+                                )),
+                                state,
+                            ))
                         }
-                        let Some(length) = head_object_output.content_length else {
-                            return Some((RetryResult::Ok(None), state));
-                        };
-                        if length >= 0 {
-                            return Some((RetryResult::Ok(Some(length as u64)), state));
-                        }
-                        Some((
-                            RetryResult::Err(make_err!(
-                                Code::InvalidArgument,
-                                "Negative content length in S3: {length:?}",
+                        Err(sdk_error) => match sdk_error.into_service_error() {
+                            HeadObjectError::NotFound(_) => Some((RetryResult::Ok(None), state)),
+                            other => Some((
+                                RetryResult::Retry(
+                                    Error::from_std_err(Code::Unavailable, &other)
+                                        .append("Unhandled HeadObjectError in S3"),
+                                ),
+                                state,
                             )),
-                            state,
-                        ))
+                        },
                     }
-                    Err(sdk_error) => match sdk_error.into_service_error() {
-                        HeadObjectError::NotFound(_) => Some((RetryResult::Ok(None), state)),
-                        other => Some((
-                            RetryResult::Retry(make_err!(
-                                Code::Unavailable,
-                                "Unhandled HeadObjectError in S3: {other:?}"
-                            )),
-                            state,
-                        )),
-                    },
                 }
             }))
             .await
@@ -570,6 +247,10 @@ where
     I: InstantWrapper,
     NowFn: Fn() -> I + Send + Sync + Unpin + 'static,
 {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],
@@ -583,7 +264,7 @@ where
                     *result = Some(0);
                     return Ok::<_, Error>(());
                 }
-                *result = self.has(key).await?;
+                *result = self.has(key.borrow()).await?;
                 Ok::<_, Error>(())
             })
             .collect::<FuturesUnordered<_>>()
@@ -591,17 +272,29 @@ where
             .await
     }
 
+    fn optimized_for(&self, optimization: StoreOptimizations) -> bool {
+        matches!(optimization, StoreOptimizations::LazyExistenceOnSync)
+    }
+
     async fn update(
         self: Pin<&Self>,
         digest: StoreKey<'_>,
         mut reader: DropCloserReadHalf,
         upload_size: UploadSizeInfo,
-    ) -> Result<(), Error> {
-        let s3_path = &self.make_s3_path(&digest.borrow());
+    ) -> Result<u64, Error> {
+        let s3_path = &self.make_s3_path(&digest);
 
         let max_size = match upload_size {
             UploadSizeInfo::ExactSize(sz) | UploadSizeInfo::MaxSize(sz) => sz,
         };
+
+        // Sanity check S3 maximum upload size.
+        if max_size > MAX_UPLOAD_SIZE {
+            return Err(make_err!(
+                Code::FailedPrecondition,
+                "File size exceeds max of {MAX_UPLOAD_SIZE}"
+            ));
+        }
 
         // Note(aaronmondal) It might be more optimal to use a different
         // heuristic here, but for simplicity we use a hard coded value.
@@ -634,19 +327,21 @@ where
                                 .put_object()
                                 .bucket(&self.bucket)
                                 .key(s3_path.clone())
-                                .content_length(sz as i64)
+                                .content_length(sz.try_into().unwrap_or(i64::MAX))
                                 .body(ByteStream::from_body_1_x(BodyWrapper {
                                     reader: rx,
                                     size: sz,
                                 }))
                                 .send()
-                                .map_ok_or_else(|e| Err(make_err!(Code::Aborted, "{e:?}")), |_| Ok(())),
+                                .map_ok_or_else(|e| Err(Error::from_std_err(Code::Aborted, &e)), |_| Ok(sz)),
                             // Stream all data from the reader channel to the writer channel.
                             tx.bind_buffered(reader_ref)
                         );
-                        upload_res
-                            .merge(bind_res)
-                            .err_tip(|| "Failed to upload file to s3 in single chunk")
+                        match (upload_res, bind_res) {
+                            (Ok(size), Ok(())) => Ok(size),
+                            (Err(e), _) | (_, Err(e)) => Err(e),
+                        }
+                        .err_tip(|| "Failed to upload file to s3 in single chunk")
                     };
 
                     // If we failed to upload the file, check to see if we can retry.
@@ -671,7 +366,7 @@ where
                             "Retryable S3 error"
                         );
                         RetryResult::Retry(err)
-                    }, |()| RetryResult::Ok(()));
+                    }, RetryResult::Ok);
                     Some((retry_result, reader))
                 }))
                 .await;
@@ -689,10 +384,10 @@ where
                     .await
                     .map_or_else(
                         |e| {
-                            RetryResult::Retry(make_err!(
-                                Code::Aborted,
-                                "Failed to create multipart upload to s3: {e:?}"
-                            ))
+                            RetryResult::Retry(
+                                Error::from_std_err(Code::Aborted, &e)
+                                    .append("Failed to create multipart upload to s3"),
+                            )
                         },
                         |CreateMultipartUploadOutput { upload_id, .. }| {
                             upload_id.map_or_else(
@@ -711,9 +406,24 @@ where
             .await?;
 
         // S3 requires us to upload in parts if the size is greater than 5GB. The part size must be at least
-        // 5mb (except last part) and can have up to 10,000 parts.
+        // 5MB (except last part) and can have up to 10,000 parts.
+
+        // Calculate of number of chunks if we upload in 5MB chucks (min chunk size), clamping to
+        // 10,000 parts and correcting for lossy integer division. This provides the
+        let chunk_count = (max_size / MIN_MULTIPART_SIZE).clamp(0, MAX_UPLOAD_PARTS - 1) + 1;
+
+        // Using clamped first approximation of number of chunks, calculate byte count of each
+        // chunk, excluding last chunk, clamping to min/max upload size 5MB, 5GB.
         let bytes_per_upload_part =
-            (max_size / (MIN_MULTIPART_SIZE - 1)).clamp(MIN_MULTIPART_SIZE, MAX_MULTIPART_SIZE);
+            (max_size / chunk_count).clamp(MIN_MULTIPART_SIZE, MAX_MULTIPART_SIZE);
+
+        // Sanity check before continuing.
+        if !(MIN_MULTIPART_SIZE..MAX_MULTIPART_SIZE).contains(&bytes_per_upload_part) {
+            return Err(make_err!(
+                Code::FailedPrecondition,
+                "Failed to calculate file chuck size (min, max, calc): {MIN_MULTIPART_SIZE}, {MAX_MULTIPART_SIZE}, {bytes_per_upload_part}",
+            ));
+        }
 
         let upload_parts = move || async move {
             // This will ensure we only have `multipart_max_concurrent_uploads` * `bytes_per_upload_part`
@@ -722,6 +432,7 @@ where
 
             let read_stream_fut = async move {
                 let retrier = &Pin::get_ref(self).retrier;
+                let mut total_uploaded = 0;
                 // Note: Our break condition is when we reach EOF.
                 for part_number in 1..i32::MAX {
                     let write_buf = reader
@@ -733,6 +444,8 @@ where
                     if write_buf.is_empty() {
                         break; // Reached EOF.
                     }
+
+                    total_uploaded += write_buf.len() as u64;
 
                     tx.send(retrier.retry(unfold(write_buf, move |write_buf| {
                         async move {
@@ -748,10 +461,11 @@ where
                                 .await
                                 .map_or_else(
                                     |e| {
-                                        RetryResult::Retry(make_err!(
-                                            Code::Aborted,
-                                            "Failed to upload part {part_number} in S3 store: {e:?}"
-                                        ))
+                                        RetryResult::Retry(
+                                            Error::from_std_err(Code::Aborted, &e).append(format!(
+                                                "Failed to upload part {part_number} in S3 store"
+                                            )),
+                                        )
                                     },
                                     |mut response| {
                                         RetryResult::Ok(
@@ -769,22 +483,21 @@ where
                         }
                     })))
                     .await
-                    .map_err(|_| {
-                        make_err!(Code::Internal, "Failed to send part to channel in s3_store")
+                    .map_err(|err| {
+                        Error::from_std_err(Code::Internal, &err)
+                            .append("Failed to send part to channel in s3_store")
                     })?;
                 }
-                Result::<_, Error>::Ok(())
+                Result::<_, Error>::Ok(total_uploaded)
             }
             .fuse();
 
             let mut upload_futures = FuturesUnordered::new();
+            let mut total_uploaded = 0;
 
             let mut completed_parts = Vec::with_capacity(
-                usize::try_from(cmp::min(
-                    MAX_UPLOAD_PARTS as u64,
-                    (max_size / bytes_per_upload_part) + 1,
-                ))
-                .err_tip(|| "Could not convert u64 to usize")?,
+                usize::try_from(cmp::min(MAX_UPLOAD_PARTS, chunk_count))
+                    .err_tip(|| "Could not convert u64 to usize")?,
             );
             tokio::pin!(read_stream_fut);
             loop {
@@ -792,7 +505,9 @@ where
                     break; // No more data to process.
                 }
                 tokio::select! {
-                    result = &mut read_stream_fut => result?, // Return error or wait for other futures.
+                    result = &mut read_stream_fut => {
+                        total_uploaded = result?;
+                    }, // Return error or wait for other futures.
                     Some(upload_result) = upload_futures.next() => completed_parts.push(upload_result?),
                     Some(fut) = rx.recv() => upload_futures.push(fut),
                 }
@@ -819,12 +534,13 @@ where
                             .await
                             .map_or_else(
                                 |e| {
-                                    RetryResult::Retry(make_err!(
-                                        Code::Aborted,
-                                        "Failed to complete multipart upload in S3 store: {e:?}"
-                                    ))
+                                    RetryResult::Retry(
+                                        Error::from_std_err(Code::Aborted, &e).append(
+                                            "Failed to complete multipart upload in S3 store",
+                                        ),
+                                    )
                                 },
-                                |_| RetryResult::Ok(()),
+                                |_| RetryResult::Ok(total_uploaded),
                             ),
                         completed_parts,
                     ))
@@ -834,28 +550,22 @@ where
         // Upload our parts and complete the multipart upload.
         // If we fail attempt to abort the multipart upload (cleanup).
         upload_parts()
-            .or_else(move |e| async move {
-                Result::<(), _>::Err(e).merge(
-                    // Note: We don't retry here because this is just a best attempt.
-                    self.s3_client
-                        .abort_multipart_upload()
-                        .bucket(&self.bucket)
-                        .key(s3_path)
-                        .upload_id(upload_id)
-                        .send()
-                        .await
-                        .map_or_else(
-                            |e| {
-                                let err = make_err!(
-                                    Code::Aborted,
-                                    "Failed to abort multipart upload in S3 store : {e:?}"
-                                );
-                                info!(?err, "Multipart upload error");
-                                Err(err)
-                            },
-                            |_| Ok(()),
-                        ),
-                )
+            .or_else(move |mut e| async move {
+                let abort_res = self
+                    .s3_client
+                    .abort_multipart_upload()
+                    .bucket(&self.bucket)
+                    .key(s3_path)
+                    .upload_id(upload_id)
+                    .send()
+                    .await;
+                if let Err(abort_err) = abort_res {
+                    let err = Error::from_std_err(Code::Aborted, &abort_err)
+                        .append("Failed to abort multipart upload in S3 store");
+                    info!(?err, "Multipart upload error");
+                    e = e.merge(err);
+                }
+                Err(e)
             })
             .await
     }
@@ -899,19 +609,19 @@ where
                     Err(sdk_error) => match sdk_error.into_service_error() {
                         GetObjectError::NoSuchKey(e) => {
                             return Some((
-                                RetryResult::Err(make_err!(
-                                    Code::NotFound,
-                                    "No such key in S3: {e}"
-                                )),
+                                RetryResult::Err(
+                                    Error::from_std_err(Code::NotFound, &e)
+                                        .append("No such key in S3"),
+                                ),
                                 writer,
                             ));
                         }
                         other => {
                             return Some((
-                                RetryResult::Retry(make_err!(
-                                    Code::Unavailable,
-                                    "Unhandled GetObjectError in S3: {other:?}",
-                                )),
+                                RetryResult::Retry(
+                                    Error::from_std_err(Code::Unavailable, &other)
+                                        .append("Unhandled GetObjectError in S3"),
+                                ),
                                 writer,
                             ));
                         }
@@ -929,20 +639,20 @@ where
                             }
                             if let Err(e) = writer.send(bytes).await {
                                 return Some((
-                                    RetryResult::Err(make_err!(
-                                        Code::Aborted,
-                                        "Error sending bytes to consumer in S3: {e}"
-                                    )),
+                                    RetryResult::Err(
+                                        Error::from_std_err(Code::Aborted, &e)
+                                            .append("Error sending bytes to consumer in S3"),
+                                    ),
                                     writer,
                                 ));
                             }
                         }
                         Err(e) => {
                             return Some((
-                                RetryResult::Retry(make_err!(
-                                    Code::Aborted,
-                                    "Bad bytestream element in S3: {e}"
-                                )),
+                                RetryResult::Retry(
+                                    Error::from_std_err(Code::Aborted, &e)
+                                        .append("Bad bytestream element in S3"),
+                                ),
                                 writer,
                             ));
                         }
@@ -950,10 +660,10 @@ where
                 }
                 if let Err(e) = writer.send_eof() {
                     return Some((
-                        RetryResult::Err(make_err!(
-                            Code::Aborted,
-                            "Failed to send EOF to consumer in S3: {e}"
-                        )),
+                        RetryResult::Err(
+                            Error::from_std_err(Code::Aborted, &e)
+                                .append("Failed to send EOF to consumer in S3"),
+                        ),
                         writer,
                     ));
                 }
@@ -976,6 +686,11 @@ where
 
     fn register_health(self: Arc<Self>, registry: &mut HealthRegistryBuilder) {
         registry.register_indicator(self);
+    }
+
+    fn register_remove_callback(self: Arc<Self>, callback: RemoveCallback) -> Result<(), Error> {
+        self.remove_callbacks.lock().push(callback);
+        Ok(())
     }
 }
 

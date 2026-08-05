@@ -2,8 +2,9 @@
   buildImage,
   self,
   lib,
-  pkgsMusl,
+  archPackages,
   nativelink-image,
+  arch,
 }:
 # This image copies a bundled `nativelink` executable to a specified location.
 #
@@ -15,7 +16,7 @@
 # Deployment. Then mount that volume into the toolchain container and set the
 # Deployment's entrypoint to the mounted `nativelink` executable.
 let
-  copyToDestination = pkgsMusl.writeShellScriptBin "copyToDestination" ''
+  copyToDestination = archPackages.writeShellScriptBin "copyToDestination" ''
     cp -Lv /bin/nativelink "$@"
   '';
 in
@@ -26,13 +27,14 @@ in
     # manage multiple tags.
     fromImage = nativelink-image;
     tag = nativelink-image.imageTag;
-    copyToRoot = [pkgsMusl.coreutils];
+    copyToRoot = [archPackages.coreutils];
+    inherit arch;
     config = {
       Entrypoint = [(lib.getExe' copyToDestination "copyToDestination")];
       Labels = {
         "org.opencontainers.image.description" = "Init container to prepare NativeLink workers.";
         "org.opencontainers.image.documentation" = "https://github.com/TraceMachina/nativelink";
-        "org.opencontainers.image.licenses" = "Apache-2.0";
+        "org.opencontainers.image.licenses" = "FSL-1.1-Apache-2.0";
         "org.opencontainers.image.revision" = "${self.rev or self.dirtyRev or "dirty"}";
         "org.opencontainers.image.source" = "https://github.com/TraceMachina/nativelink";
         "org.opencontainers.image.title" = "NativeLink worker init";

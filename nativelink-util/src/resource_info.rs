@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,6 +16,7 @@ use core::convert::AsRef;
 use std::borrow::Cow;
 
 use nativelink_error::{Error, ResultExt, error_if, make_input_err};
+use tonic::Code;
 
 const ERROR_MSG: &str = concat!(
     "Expected resource_name to be of pattern ",
@@ -256,16 +257,15 @@ fn recursive_parse<'a>(
             State::Hash => {
                 output.hash = Cow::Borrowed(part);
                 *bytes_processed += part.len() + SLASH_SIZE;
-                // TODO(aaronmondal) Set the digest_function if it is not set based on the hash size.
+                // TODO(palfrey) Set the digest_function if it is not set based on the hash size.
                 return Ok(State::Size);
             }
             State::Size => {
                 output.size = Cow::Borrowed(part);
-                output.expected_size = part.parse::<usize>().map_err(|_| {
-                    make_input_err!(
-                        "Digest size_bytes was not convertible to usize. Got: {}",
-                        part
-                    )
+                output.expected_size = part.parse::<usize>().map_err(|err| {
+                    Error::from_std_err(Code::InvalidArgument, &err).append(format!(
+                        "Digest size_bytes was not convertible to usize. Got: {part}",
+                    ))
                 })?;
                 *bytes_processed += part.len(); // Special case {size}, so it does not count one slash.
                 return Ok(State::OptionalMetadata);

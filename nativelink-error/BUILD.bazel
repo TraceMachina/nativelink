@@ -4,6 +4,7 @@ load(
     "rust_doc_test",
     "rust_library",
     "rust_test",
+    "rust_test_suite",
 )
 
 rust_library(
@@ -15,13 +16,41 @@ rust_library(
     deps = [
         "//nativelink-metric",
         "//nativelink-proto",
-        "@crates//:fred",
+        "@crates//:base64",
+        "@crates//:mongodb",
         "@crates//:prost",
         "@crates//:prost-types",
+        "@crates//:redis",
+        "@crates//:reqwest",
+        "@crates//:rustls-pki-types",
         "@crates//:serde",
         "@crates//:serde_json5",
         "@crates//:tokio",
         "@crates//:tonic",
+        "@crates//:url",
+        "@crates//:uuid",
+        "@crates//:walkdir",
+        "@crates//:zip",
+    ],
+)
+
+rust_test_suite(
+    name = "integration",
+    timeout = "short",
+    srcs = [
+        "tests/error_tests.rs",
+        "tests/lib_tests.rs",
+    ],
+    deps = [
+        "//nativelink-error",
+        "//nativelink-metric",
+        "//nativelink-proto",
+        "@crates//:prost",
+        "@crates//:redis",
+        "@crates//:tokio",
+        "@crates//:tonic",
+        "@crates//:tracing",
+        "@crates//:walkdir",
     ],
 )
 
@@ -33,10 +62,10 @@ rust_test(
         "//nativelink-metric",
         "//nativelink-proto",
         "@crates//:async-lock",
-        "@crates//:fred",
         "@crates//:hex",
         "@crates//:prost",
         "@crates//:prost-types",
+        "@crates//:redis",
         "@crates//:serde",
         "@crates//:tokio",
         "@crates//:tonic",

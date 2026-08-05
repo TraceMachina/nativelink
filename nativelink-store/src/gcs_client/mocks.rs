@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -17,7 +17,6 @@ use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use async_trait::async_trait;
 use bytes::Bytes;
 use futures::Stream;
 use nativelink_error::{Code, Error, make_err};
@@ -152,12 +151,12 @@ impl MockGcsOperations {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
-            .as_secs() as i64;
+            .as_secs();
 
         let metadata = GcsObject {
             name: path.path.clone(),
             bucket: path.bucket.clone(),
-            size: content.len() as i64,
+            size: content.len().try_into().unwrap_or(i64::MAX),
             content_type: DEFAULT_CONTENT_TYPE.to_string(),
             update_time: Some(Timestamp {
                 seconds: now,
@@ -245,14 +244,14 @@ impl MockGcsOperations {
         &self,
         path: &ObjectPath,
         content: Vec<u8>,
-        timestamp: i64,
+        timestamp: u64,
     ) {
         let object_key = self.get_object_key(path);
 
         let metadata = GcsObject {
             name: path.path.clone(),
             bucket: path.bucket.clone(),
-            size: content.len() as i64,
+            size: content.len().try_into().unwrap_or(i64::MAX),
             content_type: DEFAULT_CONTENT_TYPE.to_string(),
             update_time: Some(Timestamp {
                 seconds: timestamp,
@@ -265,15 +264,14 @@ impl MockGcsOperations {
     }
 
     /// Get the current timestamp
-    fn get_current_timestamp(&self) -> i64 {
+    fn get_current_timestamp(&self) -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
-            .as_secs() as i64
+            .as_secs()
     }
 }
 
-#[async_trait]
 impl GcsOperations for MockGcsOperations {
     async fn read_object_metadata(
         &self,
@@ -336,7 +334,7 @@ impl GcsOperations for MockGcsOperations {
         if let Some(obj) = objects.get(&object_key) {
             let content = &obj.content;
 
-            let start_idx = start as usize;
+            let start_idx = usize::try_from(start).unwrap_or(usize::MAX);
             if start_idx > content.len() {
                 return Err(make_err!(
                     Code::OutOfRange,
@@ -356,7 +354,7 @@ impl GcsOperations for MockGcsOperations {
                         start
                     ));
                 }
-                core::cmp::min(e as usize, content.len())
+                core::cmp::min(usize::try_from(e).unwrap_or(usize::MAX), content.len())
             } else {
                 content.len()
             };
@@ -441,7 +439,7 @@ impl GcsOperations for MockGcsOperations {
             });
 
         // Handle the chunk data
-        let offset_usize = offset as usize;
+        let offset_usize = usize::try_from(offset).unwrap_or(usize::MAX);
         if mock_object.content.len() < offset_usize + data.len() {
             mock_object.content.resize(offset_usize + data.len(), 0);
         }
@@ -451,8 +449,8 @@ impl GcsOperations for MockGcsOperations {
         }
 
         // Update metadata if this is the final chunk
-        if total_size.map(|size| size == end_offset) == Some(true) {
-            mock_object.metadata.size = mock_object.content.len() as i64;
+        if total_size.is_some_and(|size| size == end_offset) {
+            mock_object.metadata.size = mock_object.content.len().try_into().unwrap_or(i64::MAX);
             mock_object.metadata.update_time = Some(Timestamp {
                 seconds: self.get_current_timestamp(),
                 nanos: 0,
@@ -485,7 +483,7 @@ impl GcsOperations for MockGcsOperations {
 
         // Read all data from the reader
         let mut buffer = Vec::new();
-        let max_size = max_size as usize;
+        let max_size = usize::try_from(max_size).unwrap_or(usize::MAX);
         let mut total_read = 0usize;
 
         while total_read < max_size {

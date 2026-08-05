@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,11 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::time::Duration;
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use rand::Rng;
+#[cfg(feature = "dev-schema")]
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::serde_utils::{
-    convert_data_size_with_shellexpand, convert_duration_with_shellexpand,
-    convert_numeric_with_shellexpand, convert_optional_numeric_with_shellexpand,
+    convert_boolean_with_shellexpand, convert_data_size_with_shellexpand,
+    convert_duration_with_shellexpand, convert_numeric_with_shellexpand,
+    convert_optional_data_size_with_shellexpand, convert_optional_numeric_with_shellexpand,
     convert_optional_string_with_shellexpand, convert_string_with_shellexpand,
     convert_vec_string_with_shellexpand,
 };
@@ -27,6 +35,7 @@ pub type StoreRefName = String;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum ConfigDigestHashFunction {
     /// Use the sha256 hash function.
     /// <https://en.wikipedia.org/wiki/SHA-2>
@@ -39,16 +48,37 @@ pub enum ConfigDigestHashFunction {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum StoreSpec {
+    /// Cache metrics store wraps another store and emits low-cardinality
+    /// OpenTelemetry cache operation metrics for the wrapped store.
+    ///
+    /// This wrapper is opt-in. Stores that are not explicitly wrapped by
+    /// `cache_metrics` are constructed exactly as they are without this
+    /// wrapper and do not pay its hot-path timing or recording cost.
+    ///
+    /// **Example JSON Config:**
+    /// ```json
+    /// "cache_metrics": {
+    ///   "cache_type": "cas",
+    ///   "backend": {
+    ///     "filesystem": {
+    ///       "content_path": "~/.cache/nativelink/content_path-cas",
+    ///       "temp_path": "~/.cache/nativelink/tmp_path-cas"
+    ///     }
+    ///   }
+    /// }
+    /// ```
+    ///
+    CacheMetrics(Box<CacheMetricsSpec>),
+
     /// Memory store will store all data in a hashmap in memory.
     ///
     /// **Example JSON Config:**
     /// ```json
     /// "memory": {
-    ///     "eviction_policy": {
-    ///       // 10mb.
-    ///       "max_bytes": 10000000,
-    ///     }
+    ///   "eviction_policy": {
+    ///     "max_bytes": "10mb",
     ///   }
     /// }
     /// ```
@@ -102,7 +132,128 @@ pub enum StoreSpec {
     ///   }
     ///   ```
     ///
+    /// 3. **Azure Blob Store:**
+    ///    Azure Blob store will use Microsoft's Azure Blob service as a
+    ///    backend to store the files. This configuration can be used to
+    ///    share files across multiple instances.
+    ///
+    ///   **Example JSON Config:**
+    ///   ```json
+    ///   "experimental_cloud_object_store": {
+    ///     "provider": "azure",
+    ///     "account_name": "cloudshell1393657559",
+    ///     "container": "simple-test-container",
+    ///     "key_prefix": "folder/",
+    ///     "retry": {
+    ///         "max_retries": 6,
+    ///         "delay": 0.3,
+    ///         "jitter": 0.5
+    ///     },
+    ///     "multipart_max_concurrent_uploads": 10
+    ///   }
+    ///   ```
+    ///
+    /// 4. **NetApp ONTAP S3:**
+    ///    NetApp ONTAP S3 store will use ONTAP's S3-compatible storage as a backend
+    ///    to store files. This store is specifically configured for ONTAP's S3 requirements
+    ///    including custom TLS configuration, credentials management, and proper vserver
+    ///    configuration.
+    ///
+    ///    This store uses AWS environment variables for credentials:
+    ///    - `AWS_ACCESS_KEY_ID`
+    ///    - `AWS_SECRET_ACCESS_KEY`
+    ///    - `AWS_DEFAULT_REGION`
+    ///
+    ///    **Example JSON Config:**
+    ///    ```json
+    ///    "experimental_cloud_object_store": {
+    ///      "provider": "ontap",
+    ///      "endpoint": "https://ontap-s3-endpoint:443",
+    ///      "vserver_name": "your-vserver",
+    ///      "bucket": "your-bucket",
+    ///      "root_certificates": "/path/to/certs.pem",  // Optional
+    ///      "key_prefix": "test-prefix/",               // Optional
+    ///      "retry": {
+    ///        "max_retries": 6,
+    ///        "delay": 0.3,
+    ///        "jitter": 0.5
+    ///      },
+    ///      "multipart_max_concurrent_uploads": 10
+    ///    }
+    ///    ```
+    ///
+    /// 5. **Cloudflare R2:**
+    ///    R2 store uses Cloudflare's R2 service as a backend. R2 speaks the
+    ///    S3 API, so this is a thin wrapper that derives the account-scoped
+    ///    endpoint (`https://{account_id}.r2.cloudflarestorage.com`) for you.
+    ///
+    ///    **Example JSON Config:**
+    ///    ```json
+    ///    "experimental_cloud_object_store": {
+    ///      "provider": "r2",
+    ///      "account_id": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
+    ///      "bucket": "nativelink-cas",
+    ///      "key_prefix": "test-prefix/",
+    ///      "retry": {
+    ///        "max_retries": 6,
+    ///        "delay": 0.3,
+    ///        "jitter": 0.5
+    ///      },
+    ///      "multipart_max_concurrent_uploads": 10
+    ///    }
+    ///    ```
+    ///
+    /// 6. **Oracle Cloud Infrastructure (OCI) Object Storage:**
+    ///    OCI store uses Oracle Cloud Infrastructure's S3-compatible Object
+    ///    Storage API. The path-style endpoint is derived from your Object
+    ///    Storage `namespace` and `region` as
+    ///    `https://{namespace}.compat.objectstorage.{region}.oci.customer-oci.com`.
+    ///    Authenticate with a Customer Secret Key (Access Key/Secret Key pair
+    ///    created under User Settings -> Customer secret keys in the OCI
+    ///    console); the secret cannot be retrieved after generation, so read
+    ///    it from an env var via shellexpand.
+    ///
+    ///    **Example JSON Config:**
+    ///    ```json
+    ///    "experimental_cloud_object_store": {
+    ///      "provider": "oci",
+    ///      "namespace": "your-object-storage-namespace",
+    ///      "region": "us-phoenix-1",
+    ///      "bucket": "nativelink-cas",
+    ///      "access_key_id": "oci_access_key_id",
+    ///      "secret_access_key": "oci_secret_access_key",
+    ///      "key_prefix": "test-prefix/",
+    ///      "retry": {
+    ///        "max_retries": 6,
+    ///        "delay": 0.3,
+    ///        "jitter": 0.5
+    ///      }
+    ///    }
+    ///    ```
     ExperimentalCloudObjectStore(ExperimentalCloudObjectSpec),
+
+    /// ONTAP S3 Existence Cache provides a caching layer on top of the ONTAP S3 store
+    /// to optimize repeated existence checks. It maintains an in-memory cache of object
+    /// digests and periodically syncs this cache to disk for persistence.
+    ///
+    /// The cache helps reduce latency for repeated calls to check object existence,
+    /// while still ensuring eventual consistency with the underlying ONTAP S3 store.
+    ///
+    /// Example JSON Config:
+    /// ```json
+    /// "ontap_s3_existence_cache": {
+    ///   "index_path": "/path/to/cache/index.json",
+    ///   "sync_interval_seconds": 300,
+    ///   "backend": {
+    ///     "endpoint": "https://ontap-s3-endpoint:443",
+    ///     "vserver_name": "your-vserver",
+    ///     "bucket": "your-bucket",
+    ///     "key_prefix": "test-prefix/"
+    ///   }
+    /// }
+    /// ```
+    ///
+    OntapS3ExistenceCache(Box<OntapS3ExistenceCacheSpec>),
 
     /// Verify store is used to apply verifications to an underlying
     /// store implementation. It is strongly encouraged to validate
@@ -116,13 +267,15 @@ pub enum StoreSpec {
     /// **Example JSON Config:**
     /// ```json
     /// "verify": {
-    ///   "memory": {
-    ///     "eviction_policy": {
-    ///       "max_bytes": 500000000 // 500mb.
-    ///     }
+    ///   "backend": {
+    ///     "memory": {
+    ///       "eviction_policy": {
+    ///         "max_bytes": "500mb"
+    ///       }
+    ///     },
     ///   },
     ///   "verify_size": true,
-    ///   "hash_verification_function": "sha256"
+    ///   "verify_hash": true
     /// }
     /// ```
     ///
@@ -136,22 +289,21 @@ pub enum StoreSpec {
     /// **Example JSON Config:**
     /// ```json
     /// "completeness_checking": {
-    ///     "backend": {
-    ///       "filesystem": {
-    ///         "content_path": "~/.cache/nativelink/content_path-ac",
-    ///         "temp_path": "~/.cache/nativelink/tmp_path-ac",
-    ///         "eviction_policy": {
-    ///           // 500mb.
-    ///           "max_bytes": 500000000,
-    ///         }
-    ///       }
-    ///     },
-    ///     "cas_store": {
-    ///       "ref_store": {
-    ///         "name": "CAS_MAIN_STORE"
+    ///   "backend": {
+    ///     "filesystem": {
+    ///       "content_path": "~/.cache/nativelink/content_path-ac",
+    ///       "temp_path": "~/.cache/nativelink/tmp_path-ac",
+    ///       "eviction_policy": {
+    ///         "max_bytes": "500mb",
     ///       }
     ///     }
+    ///   },
+    ///   "cas_store": {
+    ///     "ref_store": {
+    ///       "name": "CAS_MAIN_STORE"
+    ///     }
     ///   }
+    /// }
     /// ```
     ///
     CompletenessChecking(Box<CompletenessCheckingSpec>),
@@ -166,20 +318,19 @@ pub enum StoreSpec {
     /// **Example JSON Config:**
     /// ```json
     /// "compression": {
-    ///     "compression_algorithm": {
-    ///       "lz4": {}
-    ///     },
-    ///     "backend": {
-    ///       "filesystem": {
-    ///         "content_path": "/tmp/nativelink/data/content_path-cas",
-    ///         "temp_path": "/tmp/nativelink/data/tmp_path-cas",
-    ///         "eviction_policy": {
-    ///           // 2gb.
-    ///           "max_bytes": 2000000000,
-    ///         }
+    ///   "compression_algorithm": {
+    ///     "lz4": {}
+    ///   },
+    ///   "backend": {
+    ///     "filesystem": {
+    ///       "content_path": "/tmp/nativelink/data/content_path-cas",
+    ///       "temp_path": "/tmp/nativelink/data/tmp_path-cas",
+    ///       "eviction_policy": {
+    ///         "max_bytes": "2gb",
     ///       }
     ///     }
     ///   }
+    /// }
     /// ```
     ///
     Compression(Box<CompressionSpec>),
@@ -212,32 +363,33 @@ pub enum StoreSpec {
     /// **Example JSON Config:**
     /// ```json
     /// "dedup": {
-    ///     "index_store": {
-    ///       "memory_store": {
-    ///         "max_size": 1000000000, // 1GB
-    ///         "eviction_policy": "LeastRecentlyUsed"
+    ///   "index_store": {
+    ///     "memory": {
+    ///       "eviction_policy": {
+    ///          "max_bytes": "1GB",
     ///       }
-    ///     },
-    ///     "content_store": {
-    ///       "compression": {
-    ///         "compression_algorithm": {
-    ///           "lz4": {}
-    ///         },
-    ///         "backend": {
-    ///           "fast_slow": {
-    ///             "fast": {
-    ///               "memory_store": {
-    ///                 "max_size": 500000000, // 500MB
-    ///                 "eviction_policy": "LeastRecentlyUsed"
+    ///     }
+    ///   },
+    ///   "content_store": {
+    ///     "compression": {
+    ///       "compression_algorithm": {
+    ///         "lz4": {}
+    ///       },
+    ///       "backend": {
+    ///         "fast_slow": {
+    ///           "fast": {
+    ///             "memory": {
+    ///               "eviction_policy": {
+    ///                 "max_bytes": "500MB",
     ///               }
-    ///             },
-    ///             "slow": {
-    ///               "filesystem": {
-    ///                 "content_path": "/tmp/nativelink/data/content_path-content",
-    ///                 "temp_path": "/tmp/nativelink/data/tmp_path-content",
-    ///                 "eviction_policy": {
-    ///                   "max_bytes": 2000000000 // 2gb.
-    ///                 }
+    ///             }
+    ///           },
+    ///           "slow": {
+    ///             "filesystem": {
+    ///               "content_path": "/tmp/nativelink/data/content_path-content",
+    ///               "temp_path": "/tmp/nativelink/data/tmp_path-content",
+    ///               "eviction_policy": {
+    ///                 "max_bytes": "2gb"
     ///               }
     ///             }
     ///           }
@@ -245,6 +397,7 @@ pub enum StoreSpec {
     ///       }
     ///     }
     ///   }
+    /// }
     /// ```
     ///
     Dedup(Box<DedupSpec>),
@@ -258,20 +411,18 @@ pub enum StoreSpec {
     /// **Example JSON Config:**
     /// ```json
     /// "existence_cache": {
-    ///     "backend": {
-    ///       "memory": {
-    ///         "eviction_policy": {
-    ///           // 500mb.
-    ///           "max_bytes": 500000000,
-    ///         }
-    ///       }
-    ///     },
-    ///     "cas_store": {
-    ///       "ref_store": {
-    ///         "name": "CAS_MAIN_STORE"
+    ///   "backend": {
+    ///     "memory": {
+    ///       "eviction_policy": {
+    ///         "max_bytes": "500mb",
     ///       }
     ///     }
+    ///   },
+    ///   // Note this is the existence store policy, not the backend policy
+    ///   "eviction_policy": {
+    ///     "max_seconds": 100,
     ///   }
+    /// }
     /// ```
     ///
     ExistenceCache(Box<ExistenceCacheSpec>),
@@ -287,34 +438,32 @@ pub enum StoreSpec {
     /// WARNING: If you need data to always exist in the `slow` store
     /// for something like remote execution, be careful because this
     /// store will never check to see if the objects exist in the
-    /// `slow` store if it exists in the `fast` store (ie: it assumes
-    /// that if an object exists `fast` store it will exist in `slow`
-    /// store).
+    /// `slow` store if it exists in the `fast` store (i.e. it assumes
+    /// that if an object exists in the `fast` store it will exist in
+    /// the `slow` store).
     ///
     /// ***Example JSON Config:***
     /// ```json
     /// "fast_slow": {
-    ///     "fast": {
-    ///       "filesystem": {
-    ///         "content_path": "/tmp/nativelink/data/content_path-index",
-    ///         "temp_path": "/tmp/nativelink/data/tmp_path-index",
-    ///         "eviction_policy": {
-    ///           // 500mb.
-    ///           "max_bytes": 500000000,
-    ///         }
+    ///   "fast": {
+    ///     "filesystem": {
+    ///       "content_path": "/tmp/nativelink/data/content_path-index",
+    ///       "temp_path": "/tmp/nativelink/data/tmp_path-index",
+    ///       "eviction_policy": {
+    ///         "max_bytes": "500mb",
     ///       }
-    ///     },
-    ///     "slow": {
-    ///       "filesystem": {
-    ///         "content_path": "/tmp/nativelink/data/content_path-index",
-    ///         "temp_path": "/tmp/nativelink/data/tmp_path-index",
-    ///         "eviction_policy": {
-    ///           // 500mb.
-    ///           "max_bytes": 500000000,
-    ///         }
+    ///     }
+    ///   },
+    ///   "slow": {
+    ///     "filesystem": {
+    ///       "content_path": "/tmp/nativelink/data/content_path-index",
+    ///       "temp_path": "/tmp/nativelink/data/tmp_path-index",
+    ///       "eviction_policy": {
+    ///         "max_bytes": "500mb",
     ///       }
     ///     }
     ///   }
+    /// }
     /// ```
     ///
     FastSlow(Box<FastSlowSpec>),
@@ -327,15 +476,17 @@ pub enum StoreSpec {
     /// **Example JSON Config:**
     /// ```json
     /// "shard": {
-    ///     "stores": [
-    ///         "memory": {
-    ///             "eviction_policy": {
-    ///                 // 10mb.
-    ///                 "max_bytes": 10000000
-    ///             },
-    ///             "weight": 1
-    ///         }
-    ///     ]
+    ///   "stores": [
+    ///    {
+    ///     "store": {
+    ///       "memory": {
+    ///         "eviction_policy": {
+    ///             "max_bytes": "10mb"
+    ///         },
+    ///       },
+    ///     },
+    ///     "weight": 1
+    ///   }]
     /// }
     /// ```
     ///
@@ -349,12 +500,11 @@ pub enum StoreSpec {
     /// **Example JSON Config:**
     /// ```json
     /// "filesystem": {
-    ///     "content_path": "/tmp/nativelink/data-worker-test/content_path-cas",
-    ///     "temp_path": "/tmp/nativelink/data-worker-test/tmp_path-cas",
-    ///     "eviction_policy": {
-    ///       // 10gb.
-    ///       "max_bytes": 10000000000,
-    ///     }
+    ///   "content_path": "/tmp/nativelink/data-worker-test/content_path-cas",
+    ///   "temp_path": "/tmp/nativelink/data-worker-test/tmp_path-cas",
+    ///   "eviction_policy": {
+    ///     "max_bytes": "10gb",
+    ///   }
     /// }
     /// ```
     ///
@@ -369,7 +519,7 @@ pub enum StoreSpec {
     /// **Example JSON Config:**
     /// ```json
     /// "ref_store": {
-    ///     "name": "FS_CONTENT_STORE"
+    ///   "name": "FS_CONTENT_STORE"
     /// }
     /// ```
     ///
@@ -381,29 +531,29 @@ pub enum StoreSpec {
     /// used if the size field is the real size of the content, in other
     /// words, don't use on AC (Action Cache) stores. Any store where you can
     /// safely use `VerifySpec.verify_size = true`, this store should be safe
-    /// to use (ie: CAS stores).
+    /// to use (i.e. CAS stores).
     ///
     /// **Example JSON Config:**
     /// ```json
     /// "size_partitioning": {
-    ///     "size": 134217728, // 128mib.
-    ///     "lower_store": {
-    ///       "memory": {
-    ///         "eviction_policy": {
-    ///           "max_bytes": "${NATIVELINK_CAS_MEMORY_CONTENT_LIMIT:-100000000}"
-    ///         }
+    ///   "size": "128mib",
+    ///   "lower_store": {
+    ///     "memory": {
+    ///       "eviction_policy": {
+    ///         "max_bytes": "${NATIVELINK_CAS_MEMORY_CONTENT_LIMIT:-100mb}"
     ///       }
-    ///     },
-    ///     "upper_store": {
-    ///       /// This store discards data larger than 128mib.
-    ///       "noop": {}
     ///     }
+    ///   },
+    ///   "upper_store": {
+    ///     /// This store discards data larger than 128mib.
+    ///     "noop": {}
     ///   }
+    /// }
     /// ```
     ///
     SizePartitioning(Box<SizePartitioningSpec>),
 
-    /// This store will pass-through calls to another GRPC store. This store
+    /// This store will pass-through calls to another gRPC store. This store
     /// is not designed to be used as a sub-store of another store, but it
     /// does satisfy the interface and will likely work.
     ///
@@ -416,12 +566,23 @@ pub enum StoreSpec {
     /// **Example JSON Config:**
     /// ```json
     /// "grpc": {
-    ///     "instance_name": "main",
-    ///     "endpoints": [
-    ///       {"address": "grpc://${CAS_ENDPOINT:-127.0.0.1}:50051"}
-    ///     ],
-    ///     "store_type": "ac"
-    ///   }
+    ///   "instance_name": "main",
+    ///   "endpoints": [
+    ///     {"address": "grpc://${CAS_ENDPOINT:-127.0.0.1}:50051"}
+    ///   ],
+    ///   "connections_per_endpoint": "5",
+    ///   "rpc_timeout_s": "5m",
+    ///   "store_type": "ac",
+    ///   // Static headers attached to every outgoing request to the upstream
+    ///   // remote cache. Useful for fixed service-account credentials.
+    ///   "headers": {
+    ///     "authorization": "Bearer my-static-token"
+    ///   },
+    ///   // Header names to copy from the inbound client request and forward to
+    ///   // the upstream remote cache. Use this to pass through dynamic
+    ///   // credentials such as a JWT sent by the build client.
+    ///   "forward_headers": ["authorization", "x-custom-token"]
+    /// }
     /// ```
     ///
     Grpc(GrpcSpec),
@@ -432,12 +593,19 @@ pub enum StoreSpec {
     /// Ideal for accepting small object sizes as most redis store
     /// services have a max file upload of between 256Mb-512Mb.
     ///
+    /// If you are using Redis together with any stores above it
+    /// e.g. existence cache, you will need to configure `notify-keyspace-events`
+    /// to `KA` as per <https://redis.io/docs/latest/develop/pubsub/keyspace-notifications/#configuration>
+    /// in order for us to get eviction events. Failing to do so will get you
+    /// log messages complaining about it, as well as errors like <https://github.com/TraceMachina/nativelink/issues/2436>
+    ///
     /// **Example JSON Config:**
     /// ```json
     /// "redis_store": {
-    ///     "addresses": [
-    ///         "redis://127.0.0.1:6379/",
-    ///     ]
+    ///   "addresses": [
+    ///     "redis://127.0.0.1:6379/",
+    ///   ],
+    ///   "max_client_permits": 1000,
     /// }
     /// ```
     ///
@@ -470,16 +638,98 @@ pub enum StoreSpec {
     ///     "key_prefix": "cas:",
     ///     "read_chunk_size": 65536,
     ///     "max_concurrent_uploads": 10,
-    ///     "enable_change_streams": false
+    ///     "enable_change_streams": false,
+    ///     "max_requests": "100"
     /// }
     /// ```
     ///
     ExperimentalMongo(ExperimentalMongoSpec),
 }
 
+impl StoreSpec {
+    pub(crate) fn visit_grpc_specs(&self, visitor: &mut dyn FnMut(&GrpcSpec)) {
+        match self {
+            Self::CacheMetrics(spec) => spec.backend.visit_grpc_specs(visitor),
+            Self::Verify(spec) => spec.backend.visit_grpc_specs(visitor),
+            Self::Compression(spec) => spec.backend.visit_grpc_specs(visitor),
+            Self::Dedup(spec) => {
+                spec.index_store.visit_grpc_specs(visitor);
+                spec.content_store.visit_grpc_specs(visitor);
+            }
+            Self::ExistenceCache(spec) => spec.backend.visit_grpc_specs(visitor),
+            Self::CompletenessChecking(spec) => {
+                spec.backend.visit_grpc_specs(visitor);
+                spec.cas_store.visit_grpc_specs(visitor);
+            }
+            Self::FastSlow(spec) => {
+                spec.fast.visit_grpc_specs(visitor);
+                spec.slow.visit_grpc_specs(visitor);
+            }
+            Self::Shard(spec) => {
+                for shard in &spec.stores {
+                    shard.store.visit_grpc_specs(visitor);
+                }
+            }
+            Self::SizePartitioning(spec) => {
+                spec.lower_store.visit_grpc_specs(visitor);
+                spec.upper_store.visit_grpc_specs(visitor);
+            }
+            Self::Grpc(spec) => visitor(spec),
+            Self::Memory(_)
+            | Self::ExperimentalCloudObjectStore(_)
+            | Self::OntapS3ExistenceCache(_)
+            | Self::Filesystem(_)
+            | Self::RefStore(_)
+            | Self::RedisStore(_)
+            | Self::Noop(_)
+            | Self::ExperimentalMongo(_) => {}
+        }
+    }
+
+    pub(crate) fn visit_grpc_specs_mut(&mut self, visitor: &mut dyn FnMut(&mut GrpcSpec)) {
+        match self {
+            Self::CacheMetrics(spec) => spec.backend.visit_grpc_specs_mut(visitor),
+            Self::Verify(spec) => spec.backend.visit_grpc_specs_mut(visitor),
+            Self::Compression(spec) => spec.backend.visit_grpc_specs_mut(visitor),
+            Self::Dedup(spec) => {
+                spec.index_store.visit_grpc_specs_mut(visitor);
+                spec.content_store.visit_grpc_specs_mut(visitor);
+            }
+            Self::ExistenceCache(spec) => spec.backend.visit_grpc_specs_mut(visitor),
+            Self::CompletenessChecking(spec) => {
+                spec.backend.visit_grpc_specs_mut(visitor);
+                spec.cas_store.visit_grpc_specs_mut(visitor);
+            }
+            Self::FastSlow(spec) => {
+                spec.fast.visit_grpc_specs_mut(visitor);
+                spec.slow.visit_grpc_specs_mut(visitor);
+            }
+            Self::Shard(spec) => {
+                for shard in &mut spec.stores {
+                    shard.store.visit_grpc_specs_mut(visitor);
+                }
+            }
+            Self::SizePartitioning(spec) => {
+                spec.lower_store.visit_grpc_specs_mut(visitor);
+                spec.upper_store.visit_grpc_specs_mut(visitor);
+            }
+            Self::Grpc(spec) => visitor(spec),
+            Self::Memory(_)
+            | Self::ExperimentalCloudObjectStore(_)
+            | Self::OntapS3ExistenceCache(_)
+            | Self::Filesystem(_)
+            | Self::RefStore(_)
+            | Self::RedisStore(_)
+            | Self::Noop(_)
+            | Self::ExperimentalMongo(_) => {}
+        }
+    }
+}
+
 /// Configuration for an individual shard of the store.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ShardConfig {
     /// Store to shard the data to.
     pub store: StoreSpec,
@@ -489,11 +739,13 @@ pub struct ShardConfig {
     /// all the store's weights divided by the individual store's weight.
     ///
     /// Default: 1
+    #[serde(deserialize_with = "convert_optional_numeric_with_shellexpand")]
     pub weight: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ShardSpec {
     /// Stores to shard the data to.
     pub stores: Vec<ShardConfig>,
@@ -501,6 +753,19 @@ pub struct ShardSpec {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct CacheMetricsSpec {
+    /// Low-cardinality cache type label for metrics, for example `cas` or `ac`.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub cache_type: String,
+
+    /// Store to wrap with cache operation metrics.
+    pub backend: StoreSpec,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct SizePartitioningSpec {
     /// Size to partition the data on.
     #[serde(deserialize_with = "convert_data_size_with_shellexpand")]
@@ -515,6 +780,7 @@ pub struct SizePartitioningSpec {
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct RefSpec {
     /// Name of the store under the root "stores" config object.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
@@ -523,10 +789,11 @@ pub struct RefSpec {
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct FilesystemSpec {
     /// Path on the system where to store the actual content. This is where
     /// the bulk of the data will be placed.
-    /// On service bootup this folder will be scanned and all files will be
+    /// On service boot this folder will be scanned and all files will be
     /// added to the cache. In the event one of the files doesn't match the
     /// criteria, the file will be deleted.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
@@ -535,7 +802,7 @@ pub struct FilesystemSpec {
     /// A temporary location of where files that are being uploaded or
     /// deleted will be placed while the content cannot be guaranteed to be
     /// accurate. This location must be on the same block device as
-    /// `content_path` so atomic moves can happen (ie: move without copy).
+    /// `content_path` so atomic moves can happen (i.e. move without copy).
     /// All files in this folder will be deleted on every startup.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub temp_path: String,
@@ -554,25 +821,193 @@ pub struct FilesystemSpec {
     /// The block size of the filesystem for the running machine
     /// value is used to determine an entry's actual size on disk consumed
     /// For a 4KB block size filesystem, a 1B file actually consumes 4KB
-    /// Default: 4096
+    /// Default: 4kb
     #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub block_size: u64,
+
+    /// Maximum number of concurrent write operations allowed.
+    /// Each write involves streaming data to a temp file and calling `sync_all()`,
+    /// which can saturate disk I/O when many writes happen simultaneously.
+    /// Limiting concurrency prevents disk saturation from blocking the async
+    /// runtime.
+    /// A value of 0 means unlimited (no concurrency limit).
+    /// Default: unlimited
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub max_concurrent_writes: usize,
+
+    /// When true, advise the kernel to drop the page cache for each blob after
+    /// it is written or read (`posix_fadvise` with `POSIX_FADV_DONTNEED`). On
+    /// real filesystems this takes a globally serialized, all-CPU kernel path
+    /// that stalls on many-core hosts, and it evicts the page-cache tier that
+    /// fast-disk deployments rely on. Leave off unless you specifically want to
+    /// keep this store's I/O out of the page cache.
+    /// Default: false
+    #[serde(default)]
+    pub evict_page_cache: bool,
+}
+
+// NetApp ONTAP S3 Spec
+#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct ExperimentalOntapS3Spec {
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub endpoint: String,
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub vserver_name: String,
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub bucket: String,
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub root_certificates: Option<String>,
+
+    /// Common retry and upload configuration
+    #[serde(flatten)]
+    pub common: CommonObjectSpec,
+}
+
+// Cloudflare R2 Spec
+#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct ExperimentalR2Spec {
+    /// Cloudflare account ID. Endpoint is derived as
+    /// `https://{account_id}.r2.cloudflarestorage.com`.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub account_id: String,
+
+    /// Bucket name to use as the backend.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub bucket: String,
+
+    /// Explicit R2 access key.
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub access_key_id: Option<String>,
+
+    /// Explicit R2 secret key.
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub secret_access_key: Option<String>,
+
+    /// Retry and upload settings.
+    #[serde(flatten)]
+    pub common: CommonObjectSpec,
+}
+
+// Oracle Cloud Infrastructure (OCI) Object Storage Spec.
+//
+// Uses the OCI Object Storage Amazon S3 Compatibility API. The store talks to
+// the path-style compatibility endpoint, which embeds the Object Storage
+// namespace in the host and the bucket in the request path:
+// `https://{namespace}.compat.objectstorage.{region}.oci.customer-oci.com/{bucket}/{object}`.
+// Authentication uses a Customer Secret Key (an Access Key/Secret Key pair
+// generated under User Settings in the OCI console) signed with AWS SigV4.
+#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct ExperimentalOciSpec {
+    /// OCI Object Storage namespace. This is the immutable, system-generated
+    /// top-level container assigned to the tenancy (the same name in every
+    /// region). It is the host prefix of the derived path-style endpoint:
+    /// `https://{namespace}.compat.objectstorage.{region}.oci.customer-oci.com`.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub namespace: String,
+
+    /// OCI region identifier, for example `us-phoenix-1` or `us-ashburn-1`.
+    /// Used both to build the endpoint host and as the AWS `SigV4` signing
+    /// region. If your tooling cannot set an OCI region identifier, OCI also
+    /// accepts `us-east-1` to target the tenancy home region.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub region: String,
+
+    /// Bucket name to use as the backend. Bucket names must be unique within
+    /// the Object Storage namespace.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub bucket: String,
+
+    /// Customer Secret Key access key. When omitted (along with
+    /// `secret_access_key`), the default AWS credential chain is used instead.
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub access_key_id: Option<String>,
+
+    /// Customer Secret Key secret. OCI does not allow retrieving a secret key
+    /// after generation, so store it securely (for example via `${ENV_VAR}`
+    /// shell expansion).
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub secret_access_key: Option<String>,
+
+    /// Retry and upload settings.
+    #[serde(flatten)]
+    pub common: CommonObjectSpec,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct OntapS3ExistenceCacheSpec {
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub index_path: String,
+    #[serde(deserialize_with = "convert_numeric_with_shellexpand")]
+    pub sync_interval_seconds: u32,
+    pub backend: Box<ExperimentalOntapS3Spec>,
+}
+
+#[derive(Serialize, Deserialize, Default, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub enum StoreDirection {
+    /// The store operates normally and all get and put operations are
+    /// handled by it.
+    #[default]
+    Both,
+    /// Update operations will cause persistence to this store, but Get
+    /// operations will be ignored.
+    /// This only makes sense on the fast store as the slow store will
+    /// never get written to on Get anyway.
+    Update,
+    /// Get operations will cause persistence to this store, but Update
+    /// operations will be ignored.
+    Get,
+    /// Operate as a read only store, only really makes sense if there's
+    /// another way to write to it.
+    ReadOnly,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct FastSlowSpec {
     /// Fast store that will be attempted to be contacted before reaching
     /// out to the `slow` store.
     pub fast: StoreSpec,
 
+    /// How to handle the fast store. This can be useful to set to Get for
+    /// worker nodes such that results are persisted to the slow store only.
+    #[serde(default)]
+    pub fast_direction: StoreDirection,
+
     /// If the object does not exist in the `fast` store it will try to
     /// get it from this store.
     pub slow: StoreSpec,
+
+    /// How to handle the slow store. This can be useful if creating a diode
+    /// and you wish to have an upstream read only store.
+    #[serde(default)]
+    pub slow_direction: StoreDirection,
+
+    /// Reads of blobs at or above this size skip the leader/follower dedup
+    /// map and stream straight from the slow store without populating the
+    /// fast tier. `0` (the default) disables the bypass: every read goes
+    /// through dedup, matching the prior behaviour. Enable it by setting a
+    /// threshold — 256 MiB is a reasonable starting point for backends where
+    /// large-blob dedup is a net loss (followers tend to time out anyway),
+    /// but the right value is workload-dependent.
+    /// Default: disabled (0)
+    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
+    pub bypass_dedup_threshold_bytes: u64,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone, Copy)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct MemorySpec {
     /// Policy used to evict items out of the store. Failure to set this
     /// value will cause items to never be removed from the store causing
@@ -582,6 +1017,7 @@ pub struct MemorySpec {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct DedupSpec {
     /// Store used to store the index of each dedup slice. This store
     /// should generally be fast and small.
@@ -596,7 +1032,7 @@ pub struct DedupSpec {
     /// because it will actually not check this number of bytes when
     /// deciding where to partition the data.
     ///
-    /// Default: 65536 (64k)
+    /// Default: 64k
     #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub min_size: u32,
 
@@ -610,20 +1046,20 @@ pub struct DedupSpec {
     /// value will be about `normal_size * 1.3` due to implementation
     /// details.
     ///
-    /// Default: 262144 (256k)
+    /// Default: 256k
     #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub normal_size: u32,
 
     /// Maximum size a chunk is allowed to be.
     ///
-    /// Default: 524288 (512k)
+    /// Default: 512k
     #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub max_size: u32,
 
     /// Due to implementation detail, we want to prefer to download
     /// the first chunks of the file so we can stream the content
     /// out and free up some of our buffers. This configuration
-    /// will be used to to restrict the number of concurrent chunk
+    /// will be used to restrict the number of concurrent chunk
     /// downloads at a time per `get()` request.
     ///
     /// This setting will also affect how much memory might be used
@@ -637,6 +1073,7 @@ pub struct DedupSpec {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ExistenceCacheSpec {
     /// The underlying store wrap around. All content will first flow
     /// through self before forwarding to backend. In the event there
@@ -653,6 +1090,7 @@ pub struct ExistenceCacheSpec {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct VerifySpec {
     /// The underlying store wrap around. All content will first flow
     /// through self before forwarding to backend. In the event there
@@ -665,20 +1103,21 @@ pub struct VerifySpec {
     /// an upload of data.
     ///
     /// This should be set to false for AC, but true for CAS stores.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "convert_boolean_with_shellexpand")]
     pub verify_size: bool,
 
     /// If the data should be hashed and verify that the key matches the
     /// computed hash. The hash function is automatically determined based
     /// request and if not set will use the global default.
     ///
-    /// This should be set to None for AC, but hashing function like `sha256` for CAS stores.
-    #[serde(default)]
+    /// This should be set to false for AC, but true for CAS stores.
+    #[serde(default, deserialize_with = "convert_boolean_with_shellexpand")]
     pub verify_hash: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct CompletenessCheckingSpec {
     /// The underlying store that will have it's results validated before sending to client.
     pub backend: StoreSpec,
@@ -690,6 +1129,7 @@ pub struct CompletenessCheckingSpec {
 
 #[derive(Serialize, Deserialize, Debug, Default, PartialEq, Eq, Clone, Copy)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct Lz4Config {
     /// Size of the blocks to compress.
     /// Higher values require more ram, but might yield slightly better
@@ -704,7 +1144,7 @@ pub struct Lz4Config {
     /// so if there was a bad actor, they could upload an extremely large
     /// `block_size`'ed entry and we'd allocate a large amount of memory
     /// when retrieving the data. To prevent this from happening, we
-    /// allow you to specify the maximum that we'll attempt deserialize.
+    /// allow you to specify the maximum that we'll attempt to deserialize.
     ///
     /// Default: value in `block_size`.
     #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
@@ -713,6 +1153,7 @@ pub struct Lz4Config {
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum CompressionAlgorithm {
     /// LZ4 compression algorithm is extremely fast for compression and
     /// decompression, however does not perform very well in compression
@@ -726,6 +1167,7 @@ pub enum CompressionAlgorithm {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct CompressionSpec {
     /// The underlying store wrap around. All content will first flow
     /// through self before forwarding to backend. In the event there
@@ -744,6 +1186,7 @@ pub struct CompressionSpec {
 /// until the store size becomes smaller than `max_bytes`.
 #[derive(Serialize, Deserialize, Debug, Default, Clone, Copy)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct EvictionPolicy {
     /// Maximum number of bytes before eviction takes place.
     /// Default: 0. Zero means never evict based on size.
@@ -751,7 +1194,7 @@ pub struct EvictionPolicy {
     pub max_bytes: usize,
 
     /// When eviction starts based on hitting `max_bytes`, continue until
-    /// `max_bytes - evict_bytes` is met to create a low watermark.  This stops
+    /// `max_bytes - evict_bytes` is met to create a low watermark. This stops
     /// operations from thrashing when the store is close to the limit.
     /// Default: 0
     #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
@@ -771,9 +1214,14 @@ pub struct EvictionPolicy {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "provider", rename_all = "snake_case")]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum ExperimentalCloudObjectSpec {
     Aws(ExperimentalAwsSpec),
     Gcs(ExperimentalGcsSpec),
+    Azure(ExperimentalAzureSpec),
+    Ontap(ExperimentalOntapS3Spec),
+    R2(ExperimentalR2Spec),
+    Oci(ExperimentalOciSpec),
 }
 
 impl Default for ExperimentalCloudObjectSpec {
@@ -784,6 +1232,7 @@ impl Default for ExperimentalCloudObjectSpec {
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ExperimentalAwsSpec {
     /// S3 region. Usually us-east-1, us-west-2, af-south-1, exc...
     #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
@@ -800,6 +1249,7 @@ pub struct ExperimentalAwsSpec {
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ExperimentalGcsSpec {
     /// Bucket name to use as the backend.
     #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
@@ -808,14 +1258,67 @@ pub struct ExperimentalGcsSpec {
     /// Chunk size for resumable uploads.
     ///
     /// Default: 2MB
+    #[serde(
+        default,
+        deserialize_with = "convert_optional_data_size_with_shellexpand"
+    )]
     pub resumable_chunk_size: Option<usize>,
 
     /// Common retry and upload configuration
     #[serde(flatten)]
     pub common: CommonObjectSpec,
+
+    /// Error if authentication was not found.
+    #[serde(default, deserialize_with = "convert_boolean_with_shellexpand")]
+    pub authentication_required: bool,
+
+    /// Connection timeout in milliseconds.
+    /// Default: 3000
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub connection_timeout_s: u64,
+
+    /// Read timeout in milliseconds.
+    /// Default: 3000
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub read_timeout_s: u64,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct ExperimentalAzureSpec {
+    /// The Azure Storage account name. Used to build the default container URL
+    /// `https://{account_name}.blob.core.windows.net/{container}` when `sas_url`
+    /// is not provided.
+    #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
+    pub account_name: String,
+
+    /// The container name to use as the backend.
+    #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
+    pub container: String,
+
+    /// Optional blob endpoint host override (for example an Azurite emulator host
+    /// such as `http://127.0.0.1:10000/devstoreaccount1`). When set, this replaces
+    /// the default `https://{account_name}.blob.core.windows.net` endpoint. The
+    /// container is always appended to form the final container URL. Ignored when
+    /// `sas_url` is set.
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub endpoint: Option<String>,
+
+    /// Optional pre-formed SAS URL pointing at the container. When set, the store
+    /// uses it directly as the container URL with no credential (the SAS token is
+    /// expected to already be present in the URL), and `account_name`, `container`,
+    /// and `endpoint` are ignored for URL construction.
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub sas_url: Option<String>,
+
+    /// Common retry and upload configuration.
+    #[serde(flatten)]
+    pub common: CommonObjectSpec,
+}
+
+#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct CommonObjectSpec {
     /// If you wish to prefix the location in the bucket. If None, no prefix will be used.
     #[serde(default)]
@@ -845,32 +1348,42 @@ pub struct CommonObjectSpec {
     /// upload will be aborted and the client will likely receive an error.
     ///
     /// Default: 5MB.
+    #[serde(
+        default,
+        deserialize_with = "convert_optional_data_size_with_shellexpand"
+    )]
     pub max_retry_buffer_per_request: Option<usize>,
 
     /// Maximum number of concurrent `UploadPart` requests per `MultipartUpload`.
     ///
     /// Default: 10.
+    ///
+    #[serde(
+        default,
+        deserialize_with = "convert_optional_numeric_with_shellexpand"
+    )]
     pub multipart_max_concurrent_uploads: Option<usize>,
 
     /// Allow unencrypted HTTP connections. Only use this for local testing.
     ///
     /// Default: false
-    #[serde(default)]
+    #[serde(default, deserialize_with = "convert_boolean_with_shellexpand")]
     pub insecure_allow_http: bool,
 
-    /// Disable http/2 connections and only use http/1.1. Default client
-    /// configuration will have http/1.1 and http/2 enabled for connection
-    /// schemes. Http/2 should be disabled if environments have poor support
-    /// or performance related to http/2. Safe to keep default unless
+    /// Disable HTTP/2 connections and only use HTTP/1.1. Default client
+    /// configuration will have HTTP/1.1 and HTTP/2 enabled for connection
+    /// schemes. HTTP/2 should be disabled if environments have poor support
+    /// or performance related to HTTP/2. Safe to keep default unless
     /// underlying network environment, S3, or GCS API servers specify otherwise.
     ///
     /// Default: false
-    #[serde(default)]
+    #[serde(default, deserialize_with = "convert_boolean_with_shellexpand")]
     pub disable_http2: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum StoreType {
     /// The store is content addressable storage.
     Cas,
@@ -879,6 +1392,7 @@ pub enum StoreType {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ClientTlsConfig {
     /// Path to the certificate authority to use to validate the remote.
     ///
@@ -907,20 +1421,49 @@ pub struct ClientTlsConfig {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct GrpcEndpoint {
-    /// The endpoint address (i.e. grpc(s)://example.com:443).
+    /// The endpoint address (i.e. `grpc(s)://example.com:443`).
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub address: String,
     /// The TLS configuration to use to connect to the endpoint (if grpcs).
     pub tls_config: Option<ClientTlsConfig>,
     /// The maximum concurrency to allow on this endpoint.
+    #[serde(
+        default,
+        deserialize_with = "convert_optional_numeric_with_shellexpand"
+    )]
     pub concurrency_limit: Option<usize>,
+
+    /// Timeout for establishing a TCP connection to the endpoint (seconds).
+    /// If not set or 0, defaults to 30 seconds.
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub connect_timeout_s: u64,
+
+    /// TCP keepalive interval (seconds). Sends TCP keepalive probes at this
+    /// interval to detect dead connections at the OS level.
+    /// If not set or 0, defaults to 30 seconds.
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub tcp_keepalive_s: u64,
+
+    /// HTTP/2 keepalive interval (seconds). Sends HTTP/2 PING frames at this
+    /// interval to detect dead connections at the application level.
+    /// If not set or 0, defaults to 30 seconds.
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub http2_keepalive_interval_s: u64,
+
+    /// HTTP/2 keepalive timeout (seconds). If a PING response is not received
+    /// within this duration, the connection is considered dead.
+    /// If not set or 0, defaults to 20 seconds.
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub http2_keepalive_timeout_s: u64,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct GrpcSpec {
-    /// Instance name for GRPC calls. Proxy calls will have the `instance_name` changed to this.
+    /// Instance name for gRPC calls. Proxy calls will have the `instance_name` changed to this.
     #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
     pub instance_name: String,
 
@@ -934,20 +1477,194 @@ pub struct GrpcSpec {
     #[serde(default)]
     pub retry: Retry,
 
-    /// Limit the number of simultaneous upstream requests to this many.  A
-    /// value of zero is treated as unlimited.  If the limit is reached the
+    /// Limit the number of simultaneous upstream requests to this many. A
+    /// value of zero is treated as unlimited. If the limit is reached the
     /// request is queued.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_concurrent_requests: usize,
 
     /// The number of connections to make to each specified endpoint to balance
-    /// the load over multiple TCP connections.  Default 1.
-    #[serde(default)]
+    /// the load over multiple TCP connections.
+    /// Default: 1.
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub connections_per_endpoint: usize,
+
+    /// Maximum time (seconds) allowed for a single RPC request (e.g. a
+    /// `ByteStream.Write` call) before it is cancelled.
+    ///
+    /// A value of 0 (the default) disables the per-RPC timeout. Dead
+    /// connections are still detected by the HTTP/2 and TCP keepalive
+    /// mechanisms configured on each endpoint.
+    ///
+    /// For large uploads (multi-GB), either leave this at 0 or set it
+    /// large enough to accommodate the full transfer time.
+    ///
+    /// Default: 0 (disabled)
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub rpc_timeout_s: u64,
+
+    /// Use legacy `ByteStream` resource name format, omitting the digest
+    /// function component from the path.
+    ///
+    /// Modern `NativeLink` generates resource names like:
+    ///   `{instance}/blobs/{digest_function}/{hash}/{size}`
+    ///
+    /// Older backends (e.g. Buildbarn pre-v0.3) expect the original format:
+    ///   `{instance}/blobs/{hash}/{size}`
+    ///
+    /// Set this to `true` when connecting to such backends to avoid
+    /// `InvalidArgument: Unsupported digest function` errors.
+    ///
+    /// Default: false
+    #[serde(default, deserialize_with = "convert_boolean_with_shellexpand")]
+    pub use_legacy_resource_names: bool,
+
+    /// Static headers to attach to every outgoing gRPC request sent to this
+    /// store's upstream endpoints. Useful for fixed authentication tokens
+    /// (e.g. `{"authorization": "Bearer <token>"}`) and other static metadata.
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+
+    /// Header names to forward from the incoming client request to every
+    /// outgoing upstream request. The header value is taken from the client
+    /// request that triggered this store operation. Use this to pass through
+    /// dynamic credentials such as JWT tokens sent by build clients.
+    ///
+    /// Example: `["authorization", "x-custom-token"]`
+    ///
+    /// `NativeLink` also automatically injects the current OpenTelemetry trace
+    /// context (`traceparent` / `tracestate`) into every outgoing request.
+    #[serde(default)]
+    pub forward_headers: Vec<String>,
+
+    /// Optional and experimental: coalesce small-blob reads into
+    /// `BatchReadBlobs` RPCs instead of issuing one `ByteStream` `Read`
+    /// stream per blob. Each `ByteStream` read carries a fixed per-RPC cost,
+    /// so batching many small reads into a single `BatchReadBlobs` request
+    /// can dramatically reduce read latency for small blobs.
+    ///
+    /// Only full reads (offset 0, whole blob) of blobs at or below
+    /// `max_blob_size_bytes` are batched; everything else continues to use
+    /// the `ByteStream` `Read` path.
+    ///
+    /// Incompatible with `forward_headers`: batched reads share one upstream
+    /// RPC across many client requests, so per-client forwarded headers
+    /// (e.g. credentials) cannot be attached. Configuring both is rejected
+    /// at startup.
+    ///
+    /// Default: unset (disabled). When unset there is zero behavior change.
+    #[serde(default)]
+    pub experimental_read_batching: Option<GrpcReadBatchingConfig>,
+
+    /// Compress this store's own blob transfers on the wire with REAPI
+    /// `compressed-blobs/zstd`. Uploads and full-blob downloads of blobs at
+    /// or above 64 KiB are zstd-compressed; smaller blobs and ranged reads
+    /// keep the identity path.
+    ///
+    /// The upstream instance must have
+    /// `capabilities.remote_cache_compression` enabled, otherwise compressed
+    /// requests fail with `InvalidArgument`. This setting is what makes
+    /// NativeLink-to-NativeLink hops (for example worker to CAS) benefit
+    /// from wire compression; it is independent of what external clients
+    /// such as Bazel negotiate for themselves.
+    ///
+    /// Compressed uploads do not resume mid-stream (mirroring the REAPI
+    /// server contract): a transport failure part-way through a compressed
+    /// upload surfaces immediately to the caller instead of retrying, and
+    /// outer callers retry the whole upload.
+    ///
+    /// When combined with `experimental_chunked_uploads`, chunked uploads
+    /// take precedence for blobs at or above the chunking threshold.
+    ///
+    /// When zstd wire compression is enabled elsewhere in the process,
+    /// omitting this setting enables it automatically for CAS gRPC stores.
+    /// Set it explicitly to `false` to opt this store out.
+    ///
+    /// Default: inherited from the process-wide zstd wire-compression intent.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "convert_boolean_with_shellexpand"
+    )]
+    pub experimental_remote_cache_compression: Option<bool>,
+}
+
+impl GrpcSpec {
+    /// Whether this store should use REAPI zstd wire compression.
+    #[must_use]
+    pub fn remote_cache_compression_enabled(&self) -> bool {
+        self.experimental_remote_cache_compression.unwrap_or(false)
+    }
+}
+
+/// Configuration for experimental small-blob read coalescing in a gRPC
+/// store. See [`GrpcSpec::experimental_read_batching`].
+#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct GrpcReadBatchingConfig {
+    /// Only blobs at or below this size (in bytes) are eligible for
+    /// batching. Larger blobs always use the `ByteStream` `Read` path.
+    ///
+    /// Default: 131072 (128 KiB).
+    #[serde(
+        default = "default_read_batching_max_blob_size_bytes",
+        deserialize_with = "convert_data_size_with_shellexpand"
+    )]
+    pub max_blob_size_bytes: u64,
+
+    /// Maximum total payload bytes packed into a single `BatchReadBlobs`
+    /// request. This should leave headroom under the 4 MiB default gRPC
+    /// message limit for protobuf framing overhead.
+    ///
+    /// Default: 3145728 (3 MiB).
+    #[serde(
+        default = "default_read_batching_max_batch_bytes",
+        deserialize_with = "convert_data_size_with_shellexpand"
+    )]
+    pub max_batch_bytes: u64,
+
+    /// Maximum number of concurrent `BatchReadBlobs` RPCs dispatched by the
+    /// coalescer. Must be greater than zero.
+    ///
+    /// Default: 4.
+    #[serde(
+        default = "default_read_batching_dispatch_slots",
+        deserialize_with = "convert_numeric_with_shellexpand"
+    )]
+    pub dispatch_slots: usize,
+
+    /// Bound on the number of payload bytes waiting in the coalescer queue.
+    /// When exceeded, new read requests bypass batching and fall back to the
+    /// regular `ByteStream` `Read` path instead of blocking.
+    ///
+    /// Default: 33554432 (32 MiB).
+    #[serde(
+        default = "default_read_batching_max_queued_bytes",
+        deserialize_with = "convert_data_size_with_shellexpand"
+    )]
+    pub max_queued_bytes: u64,
+}
+
+const fn default_read_batching_max_blob_size_bytes() -> u64 {
+    128 * 1024 // 128 KiB.
+}
+
+const fn default_read_batching_max_batch_bytes() -> u64 {
+    3 * 1024 * 1024 // 3 MiB.
+}
+
+const fn default_read_batching_dispatch_slots() -> usize {
+    4
+}
+
+const fn default_read_batching_max_queued_bytes() -> u64 {
+    32 * 1024 * 1024 // 32 MiB.
 }
 
 /// The possible error codes that might occur on an upstream request.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum ErrorCode {
     Cancelled = 1,
     Unknown = 2,
@@ -968,7 +1685,8 @@ pub enum ErrorCode {
     // Note: This list is duplicated from nativelink-error/lib.rs.
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct RedisSpec {
     /// The hostname or IP address of the Redis server.
     /// Ex: `["redis://username:password@redis-server-url:6380/99"]`
@@ -976,12 +1694,15 @@ pub struct RedisSpec {
     #[serde(deserialize_with = "convert_vec_string_with_shellexpand")]
     pub addresses: Vec<String>,
 
+    /// DEPRECATED: use `command_timeout_ms`
     /// The response timeout for the Redis connection in seconds.
     ///
     /// Default: 10
     #[serde(default)]
     pub response_timeout_s: u64,
 
+    /// DEPRECATED: use `connection_timeout_ms`
+    ///
     /// The connection timeout for the Redis connection in seconds.
     ///
     /// Default: 10
@@ -1005,7 +1726,7 @@ pub struct RedisSpec {
     /// organize your data according to the shared prefix.
     ///
     /// Default: (Empty String / No Prefix)
-    #[serde(default)]
+    #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
     pub key_prefix: String,
 
     /// Set the mode Redis is operating in.
@@ -1019,10 +1740,7 @@ pub struct RedisSpec {
     #[serde(default)]
     pub mode: RedisMode,
 
-    /// When using pubsub interface, this is the maximum number of items to keep
-    /// queued up before dropping old items.
-    ///
-    /// Default: 4096
+    /// Deprecated as redis-rs doesn't use it
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub broadcast_channel_capacity: usize,
 
@@ -1042,6 +1760,12 @@ pub struct RedisSpec {
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub connection_timeout_ms: u64,
 
+    /// Per-call ceiling for the `check_health` PING in milliseconds.
+    ///
+    /// Default: 4000 (4 seconds)
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub health_check_timeout_ms: u64,
+
     /// The amount of data to read from the redis server at a time.
     /// This is used to limit the amount of memory used when reading
     /// large objects from the redis server as well as limiting the
@@ -1055,7 +1779,7 @@ pub struct RedisSpec {
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub read_chunk_size: usize,
 
-    /// The number of connections to keep open to the redis server(s).
+    /// The number of connections to keep open to the redis servers.
     ///
     /// Default: 3
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
@@ -1066,7 +1790,7 @@ pub struct RedisSpec {
     /// large objects to the redis server. A good rule of thumb is to
     /// think of the data as:
     /// `AVAIL_MEMORY / (read_chunk_size * max_chunk_uploads_per_update) = THORETICAL_MAX_CONCURRENT_UPLOADS`
-    /// (note: it is a good idea to divide `AVAIL_MAX_MEMORY` by ~10 to account for other memory usage)
+    /// (note: it's a good idea to divide `AVAIL_MAX_MEMORY` by ~10 to account for other memory usage)
     ///
     /// Default: 10
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
@@ -1077,33 +1801,42 @@ pub struct RedisSpec {
     ///
     /// Default: 10000
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
-    pub scan_count: u32,
+    pub scan_count: usize,
 
     /// Retry configuration to use when a network request fails.
-    /// See the `Retry` struct for more information.
-    ///
-    /// ```txt
-    /// Default: Retry {
-    ///   max_retries: 0, /* unlimited */
-    ///   delay: 0.1, /* 100ms */
-    ///   jitter: 0.5, /* 50% */
-    ///   retry_on_errors: None, /* not used in redis store */
-    /// }
-    /// ```
     #[serde(default)]
     pub retry: Retry,
+
+    /// Maximum number of permitted actions to the Redis store at any one time
+    /// This stops problems with timeouts due to many, many inflight actions
+    /// Default: 500
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub max_client_permits: usize,
+
+    /// Maximum number of items returned per cursor for the search indexes
+    /// May reduce thundering herd issues with worker provisioner at higher node counts,
+    /// Default: 1500
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub max_count_per_cursor: u64,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum RedisMode {
+    /// Use Redis Cluster.
     Cluster,
+
+    /// Use Redis Sentinel.
     Sentinel,
+
+    /// Use a standalone Redis server.
     #[default]
     Standard,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct NoopSpec {}
 
 /// Retry configuration. This configuration is exponential and each iteration
@@ -1129,6 +1862,7 @@ pub struct NoopSpec {}
 /// would mean a single request would have a total delay of 9.525s - 15.875s.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct Retry {
     /// Maximum number of retries until retrying stops.
     /// Setting this to zero will always attempt 1 time, but not retry.
@@ -1150,8 +1884,8 @@ pub struct Retry {
     #[serde(default)]
     pub jitter: f32,
 
-    /// A list of error codes to retry on, if this is not set then the default
-    /// error codes to retry on are used.  These default codes are the most
+    /// A list of error codes to retry on, if this isn't set then the default
+    /// error codes to retry on are used. These default codes are the most
     /// likely to be non-permanent.
     ///  - `Unknown`
     ///  - `Cancelled`
@@ -1168,6 +1902,7 @@ pub struct Retry {
 /// Configuration for `ExperimentalMongoDB` store.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ExperimentalMongoSpec {
     /// `ExperimentalMongoDB` connection string.
     /// Example: <mongodb://localhost:27017> or <mongodb+srv://cluster.mongodb.net>
@@ -1199,6 +1934,7 @@ pub struct ExperimentalMongoSpec {
     #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub read_chunk_size: usize,
 
+    /// Deprecated, unused
     /// Maximum number of concurrent uploads allowed.
     /// Default: 10
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
@@ -1217,7 +1953,7 @@ pub struct ExperimentalMongoSpec {
     /// Enable `MongoDB` change streams for real-time updates.
     /// Required for scheduler subscriptions.
     /// Default: false
-    #[serde(default)]
+    #[serde(default, deserialize_with = "convert_boolean_with_shellexpand")]
     pub enable_change_streams: bool,
 
     /// Write concern 'w' parameter.
@@ -1238,4 +1974,25 @@ pub struct ExperimentalMongoSpec {
         deserialize_with = "convert_optional_numeric_with_shellexpand"
     )]
     pub write_concern_timeout_ms: Option<u32>,
+
+    /// Limits the number of requests at any one time
+    /// Default: Unlimited
+    #[serde(
+        default,
+        deserialize_with = "convert_optional_numeric_with_shellexpand"
+    )]
+    pub max_requests: Option<usize>,
+}
+
+impl Retry {
+    pub fn make_jitter_fn(&self) -> Arc<dyn Fn(Duration) -> Duration + Send + Sync> {
+        if self.jitter == 0f32 {
+            Arc::new(move |delay: Duration| delay)
+        } else {
+            let local_jitter = self.jitter;
+            Arc::new(move |delay: Duration| {
+                delay.mul_f32(local_jitter.mul_add(rand::rng().random::<f32>() - 0.5, 1.))
+            })
+        }
+    }
 }

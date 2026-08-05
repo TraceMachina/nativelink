@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -15,8 +15,10 @@
 use core::pin::Pin;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::task::{Context, Poll};
-use std::fs::Metadata;
-use std::io::{IoSlice, Seek};
+use std::fs::{Metadata, Permissions};
+use std::io::{self, IoSlice, Seek};
+#[cfg(target_os = "linux")]
+use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 
 use nativelink_error::{Code, Error, ResultExt, make_err};
@@ -27,7 +29,7 @@ use rlimit::increase_nofile_limit;
 pub use tokio::fs::DirEntry;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncWrite, ReadBuf, SeekFrom, Take};
 use tokio::sync::{Semaphore, SemaphorePermit};
-use tracing::{error, info, warn};
+use tracing::{error, info, trace, warn};
 
 use crate::spawn_blocking;
 
@@ -39,6 +41,57 @@ pub struct FileSlot {
     // We hold the permit because once it is dropped it goes back into the queue.
     _permit: SemaphorePermit<'static>,
     inner: tokio::fs::File,
+}
+
+impl FileSlot {
+    /// Advise the kernel to drop page cache for this file's contents.
+    /// Only available on Linux;
+    #[cfg(target_os = "linux")]
+    pub fn advise_dontneed(&self) {
+        let fd = self.inner.as_raw_fd();
+        let ret = unsafe { libc::posix_fadvise(fd, 0, 0, libc::POSIX_FADV_DONTNEED) };
+        if ret != 0 {
+            tracing::debug!(
+                fd,
+                ret,
+                "posix_fadvise(DONTNEED) returned non-zero (best-effort, ignoring)",
+            );
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub const fn advise_dontneed(&self) {
+        // No-op: posix_fadvise is not available on Mac or Windows.
+    }
+}
+
+/// Enable [`IP_FREEBIND`](`libc::IP_FREEBIND`) before binding a socket.
+#[cfg(target_os = "linux")]
+pub fn set_freebind<F: AsRawFd>(socket: &F) -> Result<(), io::Error> {
+    let enable = 1;
+    let optlen = libc::socklen_t::try_from(size_of::<libc::c_int>())
+        .expect("size of c_int always fits in socklen_t");
+
+    // SAFETY: we pass in a valid fd, initialized optval, and matching optlen.
+    let ret = unsafe {
+        libc::setsockopt(
+            socket.as_raw_fd(),
+            libc::IPPROTO_IP,
+            libc::IP_FREEBIND,
+            core::ptr::addr_of!(enable).cast(),
+            optlen,
+        )
+    };
+    if ret == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub const fn set_freebind<F>(_socket: &F) -> Result<(), io::Error> {
+    Ok(())
 }
 
 impl AsRef<tokio::fs::File> for FileSlot {
@@ -121,6 +174,10 @@ pub static OPEN_FILE_SEMAPHORE: Semaphore = Semaphore::const_new(DEFAULT_OPEN_FI
 /// Try to acquire a permit from the open file semaphore.
 #[inline]
 pub async fn get_permit() -> Result<SemaphorePermit<'static>, Error> {
+    trace!(
+        available_permits = OPEN_FILE_SEMAPHORE.available_permits(),
+        "getting FS permit"
+    );
     OPEN_FILE_SEMAPHORE
         .acquire()
         .await
@@ -136,7 +193,9 @@ where
     let permit = get_permit().await?;
     spawn_blocking!("fs_call_with_permit", move || f(permit))
         .await
-        .unwrap_or_else(|e| Err(make_err!(Code::Internal, "background task failed: {e:?}")))
+        .unwrap_or_else(|e| {
+            Err(Error::from_std_err(Code::Internal, &e).append("background task failed"))
+        })
 }
 
 /// Sets the soft nofile limit to `desired_open_file_limit` and adjusts
@@ -147,6 +206,12 @@ where
 /// If any type conversion fails. This can't happen if `usize` is smaller than
 /// `u64`.
 pub fn set_open_file_limit(desired_open_file_limit: usize) {
+    // Tokio semaphores have a max of 2^61 - 1 permits. On some platforms
+    // (e.g. macOS) the kernel reports an "unlimited" file limit that exceeds
+    // this, causing a panic when we try to add permits. Cap at a generous but
+    // safe value.
+    const MAX_SAFE_LIMIT: usize = 1 << 30; // ~1 billion
+
     let new_open_file_limit = {
         match increase_nofile_limit(
             u64::try_from(desired_open_file_limit)
@@ -156,6 +221,7 @@ pub fn set_open_file_limit(desired_open_file_limit: usize) {
                 info!("set_open_file_limit() assigns new open file limit {open_file_limit}.",);
                 usize::try_from(open_file_limit)
                     .expect("open_file_limit is too large to convert to usize.")
+                    .min(MAX_SAFE_LIMIT)
             }
             Err(e) => {
                 error!(
@@ -255,10 +321,7 @@ pub async fn hard_link(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> Result<(
     call_with_permit(move |_| std::fs::hard_link(src, dst).map_err(Into::<Error>::into)).await
 }
 
-pub async fn set_permissions(
-    src: impl AsRef<Path>,
-    perm: std::fs::Permissions,
-) -> Result<(), Error> {
+pub async fn set_permissions(src: impl AsRef<Path>, perm: Permissions) -> Result<(), Error> {
     let src = src.as_ref().to_owned();
     call_with_permit(move |_| std::fs::set_permissions(src, perm).map_err(Into::<Error>::into))
         .await
@@ -276,14 +339,9 @@ pub async fn create_dir_all(path: impl AsRef<Path>) -> Result<(), Error> {
 
 #[cfg(target_family = "unix")]
 pub async fn symlink(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> Result<(), Error> {
-    let src = src.as_ref().to_owned();
-    let dst = dst.as_ref().to_owned();
-    call_with_permit(move |_| {
-        tokio::runtime::Handle::current()
-            .block_on(tokio::fs::symlink(src, dst))
-            .map_err(Into::<Error>::into)
-    })
-    .await
+    // TODO: add a test for #2051: deadlock with large number of files
+    let _permit = get_permit().await?;
+    tokio::fs::symlink(src, dst).await.map_err(Into::into)
 }
 
 pub async fn read_link(path: impl AsRef<Path>) -> Result<PathBuf, Error> {
@@ -341,6 +399,13 @@ pub async fn remove_file(path: impl AsRef<Path>) -> Result<(), Error> {
     call_with_permit(move |_| std::fs::remove_file(path).map_err(Into::<Error>::into)).await
 }
 
+/// Removes an empty directory. Errors if the directory is not empty; use
+/// [`remove_dir_all`] when the contents should be removed too.
+pub async fn remove_dir(path: impl AsRef<Path>) -> Result<(), Error> {
+    let path = path.as_ref().to_owned();
+    call_with_permit(move |_| std::fs::remove_dir(path).map_err(Into::<Error>::into)).await
+}
+
 pub async fn canonicalize(path: impl AsRef<Path>) -> Result<PathBuf, Error> {
     let path = path.as_ref().to_owned();
     call_with_permit(move |_| std::fs::canonicalize(path).map_err(Into::<Error>::into)).await
@@ -361,7 +426,63 @@ pub async fn symlink_metadata(path: impl AsRef<Path>) -> Result<Metadata, Error>
     call_with_permit(move |_| std::fs::symlink_metadata(path).map_err(Into::<Error>::into)).await
 }
 
+// We can't just use the stock remove_dir_all as it falls over if someone's set readonly
+// permissions. This version walks the directories and fixes the permissions where needed
+// before deleting everything.
+#[cfg(not(target_family = "windows"))]
+fn internal_remove_dir_all(path: impl AsRef<Path>) -> Result<(), Error> {
+    // Because otherwise Windows builds complain about these things not being used
+    use std::io::ErrorKind;
+    use std::os::unix::fs::PermissionsExt;
+
+    use tracing::debug;
+    use walkdir::WalkDir;
+
+    for entry in WalkDir::new(&path) {
+        let Ok(entry) = &entry else {
+            debug!(?entry, "Can't get entry, assuming already deleted");
+            continue;
+        };
+        let metadata = entry.metadata()?;
+        if metadata.is_dir() {
+            match std::fs::remove_dir_all(entry.path()) {
+                Ok(()) => {}
+                Err(e) if e.kind() == ErrorKind::PermissionDenied => {
+                    std::fs::set_permissions(entry.path(), Permissions::from_mode(0o700)).err_tip(
+                        || format!("Setting permissions for {}", entry.path().display()),
+                    )?;
+                }
+                e @ Err(_) => e.err_tip(|| format!("Removing {}", entry.path().display()))?,
+            }
+        } else if metadata.is_file() {
+            std::fs::set_permissions(entry.path(), Permissions::from_mode(0o600))
+                .err_tip(|| format!("Setting permissions for {}", entry.path().display()))?;
+        }
+    }
+
+    // should now be safe to delete after we fixed all the permissions in the walk loop
+    match std::fs::remove_dir_all(&path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == ErrorKind::NotFound => {}
+        e @ Err(_) => e.err_tip(|| {
+            format!(
+                "Removing {} after permissions fixes",
+                path.as_ref().display()
+            )
+        })?,
+    }
+    Ok(())
+}
+
+// We can't set the permissions easily in Windows, so just fallback to
+// the stock Rust remove_dir_all
+#[cfg(target_family = "windows")]
+fn internal_remove_dir_all(path: impl AsRef<Path>) -> Result<(), Error> {
+    std::fs::remove_dir_all(&path)?;
+    Ok(())
+}
+
 pub async fn remove_dir_all(path: impl AsRef<Path>) -> Result<(), Error> {
     let path = path.as_ref().to_owned();
-    call_with_permit(move |_| std::fs::remove_dir_all(path).map_err(Into::<Error>::into)).await
+    call_with_permit(move |_| internal_remove_dir_all(path)).await
 }

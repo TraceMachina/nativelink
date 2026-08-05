@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -80,6 +80,39 @@ async fn retry_fails_after_3_runs() -> Result<(), Error> {
         result.unwrap_err().to_string(),
         "Error { code: Unavailable, messages: [\"Dummy failure\", \"On attempt 3\"] }"
     );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn dont_retry_for_not_found() -> Result<(), Error> {
+    let retrier = Retrier::new(
+        Arc::new(|_duration| Box::pin(ready(()))),
+        Arc::new(move |_delay| Duration::from_millis(1)),
+        Retry {
+            max_retries: 2,
+            ..Default::default()
+        },
+    );
+    let run_count = Arc::new(AtomicI32::new(0));
+    let result = Pin::new(&retrier)
+        .retry(repeat_with(|| {
+            run_count.fetch_add(1, Ordering::Relaxed);
+            RetryResult::<bool>::Retry(make_err!(Code::NotFound, "Dummy failure",))
+        }))
+        .await;
+    assert_eq!(
+        run_count.load(Ordering::Relaxed),
+        1,
+        "Expected function to be called once"
+    );
+    assert_eq!(result.is_err(), true, "Expected result to error");
+    assert_eq!(
+        result.unwrap_err().to_string(),
+        "Error { code: NotFound, messages: [\"Dummy failure\"] }"
+    );
+    assert!(logs_contain("Not found, not retrying"));
+    assert!(!logs_contain("ERROR"));
 
     Ok(())
 }

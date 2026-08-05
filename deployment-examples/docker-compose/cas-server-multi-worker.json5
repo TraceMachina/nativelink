@@ -1,0 +1,67 @@
+// This configuration will place objects in various folders in
+// `~/.cache/nativelink`. It will store all data on disk and
+// allows for restarts of the underlying service. It is optimized
+// so objects are compressed, deduplicated and uses some in-memory
+// optimizations for certain hot paths.
+{
+  stores: [
+    {
+      name: "CAS_MAIN_STORE",
+      compression: {
+        compression_algorithm: {
+          lz4: {},
+        },
+        backend: {
+          filesystem: {
+            content_path: "/data/cas/content",
+            temp_path: "/data/cas/tmp",
+            eviction_policy: {
+              // 10gb.
+              max_bytes: 10000000000,
+            },
+          },
+        },
+      },
+    },
+    {
+      name: "AC_MAIN_STORE",
+      filesystem: {
+        content_path: "/data/cas/ac_content",
+        temp_path: "/data/cas/ac_tmp",
+        eviction_policy: {
+          // 500mb.
+          max_bytes: 500000000,
+        },
+      },
+    },
+  ],
+  servers: [
+    {
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50051",
+        },
+      },
+      services: {
+        cas: [
+          {
+            cas_store: "CAS_MAIN_STORE",
+          },
+        ],
+        ac: [
+          {
+            ac_store: "AC_MAIN_STORE",
+          },
+        ],
+        capabilities: [],
+        bytestream: {
+          cas_stores: {
+            "": "CAS_MAIN_STORE",
+          },
+        },
+        fetch: {},
+        push: {},
+      },
+    },
+  ],
+}

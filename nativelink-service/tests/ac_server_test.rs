@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -61,7 +61,7 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
             None,
         )
         .await?,
-    );
+    )?;
     store_manager.add_store(
         "main_ac",
         store_factory(
@@ -70,7 +70,7 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
             None,
         )
         .await?,
-    );
+    )?;
     Ok(store_manager)
 }
 
@@ -117,6 +117,7 @@ async fn empty_store() -> Result<(), Box<dyn core::error::Error>> {
     let err = raw_response.unwrap_err();
     assert_eq!(err.code(), Code::NotFound);
     assert!(err.message().is_empty());
+
     Ok(())
 }
 
@@ -133,6 +134,8 @@ async fn has_single_item() -> Result<(), Box<dyn core::error::Error>> {
 
     insert_into_store(ac_store.as_pin(), HASH1, HASH1_SIZE, &action_result).await?;
     let raw_response = get_action_result(&ac_server, HASH1, HASH1_SIZE).await;
+
+    assert!(!logs_contain(" output_files: ["));
 
     assert!(
         raw_response.is_ok(),
@@ -195,7 +198,9 @@ async fn one_item_update_test() -> Result<(), Box<dyn core::error::Error>> {
         ..Default::default()
     };
 
-    let size_bytes = get_encoded_proto_size(&action_result)? as i64;
+    let size_bytes = get_encoded_proto_size(&action_result)?
+        .try_into()
+        .unwrap_or(i64::MAX);
 
     let raw_response = update_action_result(
         &ac_server,

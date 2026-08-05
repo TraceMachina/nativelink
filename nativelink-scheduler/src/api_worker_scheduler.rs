@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,7 +13,10 @@
 // limitations under the License.
 
 use core::ops::{Deref, DerefMut};
+use core::sync::atomic::{AtomicU64, Ordering};
+use core::time::Duration;
 use std::sync::Arc;
+use std::time::{Instant, UNIX_EPOCH};
 
 use async_lock::Mutex;
 use lru::LruCache;
@@ -23,18 +26,49 @@ use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
     RootMetricsComponent, group,
 };
+use nativelink_proto::com::github::trace_machina::nativelink::events::{
+    Event, OriginEvent, ResponseEvent, event, response_event,
+};
+use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::ActionResourceUsage;
 use nativelink_util::action_messages::{OperationId, WorkerId};
 use nativelink_util::operation_state_manager::{UpdateOperationType, WorkerStateManager};
+use nativelink_util::origin_event::get_node_id;
 use nativelink_util::platform_properties::PlatformProperties;
-use nativelink_util::spawn;
-use nativelink_util::task::JoinHandleDropGuard;
-use tokio::sync::Notify;
-use tokio::sync::mpsc::{self, UnboundedSender};
+use nativelink_util::shutdown_guard::ShutdownGuard;
+use tokio::sync::{Notify, mpsc};
 use tonic::async_trait;
-use tracing::{error, warn};
+use tracing::{error, info, trace, warn};
+use uuid::Uuid;
+
+/// Metrics for tracking scheduler performance.
+#[derive(Debug, Default)]
+pub struct SchedulerMetrics {
+    /// Total number of worker additions.
+    pub workers_added: AtomicU64,
+    /// Total number of worker removals.
+    pub workers_removed: AtomicU64,
+    /// Total number of `find_worker_for_action` calls.
+    pub find_worker_calls: AtomicU64,
+    /// Total number of successful worker matches.
+    pub find_worker_hits: AtomicU64,
+    /// Total number of failed worker matches (no worker found).
+    pub find_worker_misses: AtomicU64,
+    /// Total time spent in `find_worker_for_action` (nanoseconds).
+    pub find_worker_time_ns: AtomicU64,
+    /// Total number of workers iterated during find operations.
+    pub workers_iterated: AtomicU64,
+    /// Total number of action dispatches.
+    pub actions_dispatched: AtomicU64,
+    /// Total number of keep-alive updates.
+    pub keep_alive_updates: AtomicU64,
+    /// Total number of worker timeouts.
+    pub worker_timeouts: AtomicU64,
+}
 
 use crate::platform_property_manager::PlatformPropertyManager;
 use crate::worker::{ActionInfoWithProps, Worker, WorkerTimestamp, WorkerUpdate};
+use crate::worker_capability_index::WorkerCapabilityIndex;
+use crate::worker_registry::SharedWorkerRegistry;
 use crate::worker_scheduler::WorkerScheduler;
 
 #[derive(Debug)]
@@ -85,8 +119,16 @@ struct ApiWorkerSchedulerImpl {
     allocation_strategy: WorkerAllocationStrategy,
     /// A channel to notify the matching engine that the worker pool has changed.
     worker_change_notify: Arc<Notify>,
-    /// A channel to notify that an operation is still alive.
-    operation_keep_alive_tx: UnboundedSender<(OperationId, WorkerId)>,
+    /// Worker registry for tracking worker liveness.
+    worker_registry: SharedWorkerRegistry,
+
+    /// Whether the worker scheduler is shutting down.
+    shutting_down: bool,
+
+    /// Index for fast worker capability lookup.
+    /// Used to accelerate `find_worker_for_action` by filtering candidates
+    /// based on properties before doing linear scan.
+    capability_index: WorkerCapabilityIndex,
 }
 
 impl core::fmt::Debug for ApiWorkerSchedulerImpl {
@@ -95,13 +137,24 @@ impl core::fmt::Debug for ApiWorkerSchedulerImpl {
             .field("workers", &self.workers)
             .field("allocation_strategy", &self.allocation_strategy)
             .field("worker_change_notify", &self.worker_change_notify)
-            .field("operation_keep_alive_tx", &self.operation_keep_alive_tx)
+            .field(
+                "capability_index_size",
+                &self.capability_index.worker_count(),
+            )
+            .field("worker_registry", &self.worker_registry)
             .finish_non_exhaustive()
     }
 }
 
 impl ApiWorkerSchedulerImpl {
     /// Refreshes the lifetime of the worker with the given timestamp.
+    ///
+    /// Instead of sending N keepalive messages (one per operation),
+    /// we now send a single worker heartbeat. The worker registry tracks worker liveness,
+    /// and timeout detection checks the worker's `last_seen` instead of per-operation timestamps.
+    ///
+    /// Note: This only updates the local worker state. The worker registry is updated
+    /// separately after releasing the inner lock to reduce contention.
     fn refresh_lifetime(
         &mut self,
         worker_id: &WorkerId,
@@ -120,19 +173,13 @@ impl ApiWorkerSchedulerImpl {
             timestamp
         );
         worker.last_update_timestamp = timestamp;
-        for operation_id in worker.running_action_infos.keys() {
-            if self
-                .operation_keep_alive_tx
-                .send((operation_id.clone(), worker_id.clone()))
-                .is_err()
-            {
-                error!(
-                    ?operation_id,
-                    ?worker_id,
-                    "OperationKeepAliveTx stream closed"
-                );
-            }
-        }
+
+        trace!(
+            ?worker_id,
+            running_operations = worker.running_action_infos.len(),
+            "Worker keepalive received"
+        );
+
         Ok(())
     }
 
@@ -140,7 +187,12 @@ impl ApiWorkerSchedulerImpl {
     /// Note: This function will not do any task matching.
     fn add_worker(&mut self, worker: Worker) -> Result<(), Error> {
         let worker_id = worker.id.clone();
+        let platform_properties = worker.platform_properties.clone();
         self.workers.put(worker_id.clone(), worker);
+
+        // Add to capability index for fast matching
+        self.capability_index
+            .add_worker(&worker_id, &platform_properties);
 
         // Worker is not cloneable, and we do not want to send the initial connection results until
         // we have added it to the map, or we might get some strange race conditions due to the way
@@ -164,6 +216,9 @@ impl ApiWorkerSchedulerImpl {
     /// Note: The caller is responsible for any rescheduling of any tasks that might be
     /// running.
     fn remove_worker(&mut self, worker_id: &WorkerId) -> Option<Worker> {
+        // Remove from capability index
+        self.capability_index.remove_worker(worker_id);
+
         let result = self.workers.pop(worker_id);
         self.worker_change_notify.notify_one();
         result
@@ -187,19 +242,77 @@ impl ApiWorkerSchedulerImpl {
     fn inner_find_worker_for_action(
         &self,
         platform_properties: &PlatformProperties,
+        full_worker_logging: bool,
     ) -> Option<WorkerId> {
-        let mut workers_iter = self.workers.iter();
-        let workers_iter = match self.allocation_strategy {
-            // Use rfind to get the least recently used that satisfies the properties.
-            WorkerAllocationStrategy::LeastRecentlyUsed => workers_iter.rfind(|(_, w)| {
-                w.can_accept_work() && platform_properties.is_satisfied_by(&w.platform_properties)
-            }),
-            // Use find to get the most recently used that satisfies the properties.
-            WorkerAllocationStrategy::MostRecentlyUsed => workers_iter.find(|(_, w)| {
-                w.can_accept_work() && platform_properties.is_satisfied_by(&w.platform_properties)
-            }),
+        // Do a fast check to see if any workers are available at all for work allocation
+        if !self.workers.iter().any(|(_, w)| w.can_accept_work()) {
+            if full_worker_logging {
+                info!("All workers are fully allocated");
+            }
+            return None;
+        }
+
+        // Use capability index to get candidate workers that match STATIC properties
+        // (Exact, Unknown) and have the required property keys (Priority, Minimum).
+        // This reduces complexity from O(W × P) to O(P × log(W)) for exact properties.
+        let candidates = self
+            .capability_index
+            .find_matching_workers(platform_properties, full_worker_logging);
+
+        if candidates.is_empty() {
+            if full_worker_logging {
+                info!("No workers in capability index match required properties");
+            }
+            return None;
+        }
+
+        // Check function for availability AND dynamic Minimum property verification.
+        // The index only does presence checks for Minimum properties since their
+        // values change dynamically as jobs are assigned to workers.
+        let worker_matches = |(worker_id, w): &(&WorkerId, &Worker)| -> bool {
+            if !w.can_accept_work() {
+                if full_worker_logging {
+                    info!(
+                        "Worker {worker_id} cannot accept work: is_paused={}, is_draining={}, inflight={}/{}",
+                        w.is_paused,
+                        w.is_draining,
+                        w.running_action_infos.len(),
+                        w.max_inflight_tasks
+                    );
+                }
+                return false;
+            }
+
+            // Verify Minimum properties at runtime (their values are dynamic)
+            if !platform_properties.is_satisfied_by(&w.platform_properties, full_worker_logging) {
+                return false;
+            }
+
+            true
         };
-        workers_iter.map(|(_, w)| w.id.clone())
+
+        // Now check constraints on filtered candidates.
+        // Iterate in LRU order based on allocation strategy.
+        let workers_iter = self.workers.iter();
+
+        let worker_id = match self.allocation_strategy {
+            // Use rfind to get the least recently used that satisfies the properties.
+            WorkerAllocationStrategy::LeastRecentlyUsed => workers_iter
+                .rev()
+                .filter(|(worker_id, _)| candidates.contains(worker_id))
+                .find(&worker_matches)
+                .map(|(_, w)| w.id.clone()),
+
+            // Use find to get the most recently used that satisfies the properties.
+            WorkerAllocationStrategy::MostRecentlyUsed => workers_iter
+                .filter(|(worker_id, _)| candidates.contains(worker_id))
+                .find(&worker_matches)
+                .map(|(_, w)| w.id.clone()),
+        };
+        if full_worker_logging && worker_id.is_none() {
+            warn!("No workers matched!");
+        }
+        worker_id
     }
 
     async fn update_action(
@@ -219,7 +332,7 @@ impl ApiWorkerSchedulerImpl {
                 "Operation {operation_id} should not be running on worker {worker_id} in SimpleScheduler::update_action"
             );
             return Result::<(), _>::Err(err.clone())
-                .merge(self.immediate_evict_worker(worker_id, err).await);
+                .merge(self.immediate_evict_worker(worker_id, err, false).await);
         }
 
         let (is_finished, due_to_backpressure) = match &update {
@@ -230,39 +343,44 @@ impl ApiWorkerSchedulerImpl {
             UpdateOperationType::UpdateWithError(err) => {
                 (true, err.code == Code::ResourceExhausted)
             }
+            UpdateOperationType::UpdateWithDisconnect => (true, false),
+            UpdateOperationType::ExecutionComplete => {
+                // No update here, just restoring platform properties.
+                worker.execution_complete(operation_id);
+                self.worker_change_notify.notify_one();
+                return Ok(());
+            }
         };
 
         // Update the operation in the worker state manager.
-        {
-            let update_operation_res = self
-                .worker_state_manager
-                .update_operation(operation_id, worker_id, update)
-                .await
-                .err_tip(|| "in update_operation on SimpleScheduler::update_action");
-            if let Err(err) = update_operation_res {
-                error!(
-                    ?operation_id,
-                    ?worker_id,
-                    ?err,
-                    "Failed to update_operation on update_action"
-                );
-                return Err(err);
-            }
+        let update_operation_res = self
+            .worker_state_manager
+            .update_operation(operation_id, worker_id, update)
+            .await
+            .err_tip(|| "in update_operation on SimpleScheduler::update_action");
+        if let Err(err) = &update_operation_res {
+            error!(
+                %operation_id,
+                ?worker_id,
+                ?err,
+                "Failed to update_operation on update_action"
+            );
         }
 
         if !is_finished {
-            return Ok(());
+            return update_operation_res;
         }
+        // The worker is done with this action even if the state-manager update
+        // failed (e.g. the operation was already torn down after its clients
+        // timed out). The worker bookkeeping below must still run, or the
+        // worker's platform properties leak until it can never match again.
 
         // Clear this action from the current worker if finished.
         let complete_action_res = {
-            let was_paused = !worker.can_accept_work();
-
             // Note: We need to run this before dealing with backpressure logic.
             let complete_action_res = worker.complete_action(operation_id).await;
 
-            // Only pause if there's an action still waiting that will unpause.
-            if (was_paused || due_to_backpressure) && worker.has_actions() {
+            if (due_to_backpressure || !worker.can_accept_work()) && worker.has_actions() {
                 worker.is_paused = true;
             }
             complete_action_res
@@ -270,7 +388,7 @@ impl ApiWorkerSchedulerImpl {
 
         self.worker_change_notify.notify_one();
 
-        complete_action_res
+        update_operation_res.merge(complete_action_res)
     }
 
     /// Notifies the specified worker to run the given action and handles errors by evicting
@@ -283,10 +401,13 @@ impl ApiWorkerSchedulerImpl {
     ) -> Result<(), Error> {
         if let Some(worker) = self.workers.get_mut(&worker_id) {
             let notify_worker_result = worker
-                .notify_update(WorkerUpdate::RunAction((operation_id, action_info.clone())))
+                .notify_update(WorkerUpdate::RunAction(Box::new((
+                    operation_id,
+                    action_info.clone(),
+                ))))
                 .await;
 
-            if notify_worker_result.is_err() {
+            if let Err(notify_worker_result) = notify_worker_result {
                 warn!(
                     ?worker_id,
                     ?action_info,
@@ -294,23 +415,40 @@ impl ApiWorkerSchedulerImpl {
                     "Worker command failed, removing worker",
                 );
 
+                // A slightly nasty way of figuring out that the worker disconnected
+                // from send_msg_to_worker without introducing complexity to the
+                // code path from here to there.
+                let is_disconnect = notify_worker_result.code == Code::Internal
+                    && notify_worker_result.messages.len() == 1
+                    && notify_worker_result.messages[0] == "Worker Disconnected";
+
                 let err = make_err!(
                     Code::Internal,
                     "Worker command failed, removing worker {worker_id} -- {notify_worker_result:?}",
                 );
 
-                return Result::<(), _>::Err(err.clone())
-                    .merge(self.immediate_evict_worker(&worker_id, err).await);
+                return Result::<(), _>::Err(err.clone()).merge(
+                    self.immediate_evict_worker(&worker_id, err, is_disconnect)
+                        .await,
+                );
             }
+            Ok(())
         } else {
             warn!(
                 ?worker_id,
-                ?operation_id,
+                %operation_id,
                 ?action_info,
                 "Worker not found in worker map in worker_notify_run_action"
             );
+            // Ensure the operation is put back to queued state.
+            self.worker_state_manager
+                .update_operation(
+                    &operation_id,
+                    &worker_id,
+                    UpdateOperationType::UpdateWithDisconnect,
+                )
+                .await
         }
-        Ok(())
     }
 
     /// Evicts the worker from the pool and puts items back into the queue if anything was being executed on it.
@@ -318,25 +456,39 @@ impl ApiWorkerSchedulerImpl {
         &mut self,
         worker_id: &WorkerId,
         err: Error,
+        is_disconnect: bool,
     ) -> Result<(), Error> {
         let mut result = Ok(());
         if let Some(mut worker) = self.remove_worker(worker_id) {
+            // Log every eviction here rather than in each caller, so a worker
+            // can never leave the pool unexplained. Without this, a worker that
+            // vanished mid-build left nothing on the scheduler side to
+            // attribute it to, and the only visible symptom was the worker
+            // reconnecting with a fresh id.
+            info!(
+                ?worker_id,
+                is_disconnect,
+                running_actions = worker.running_action_infos.len(),
+                reason = %err.message_string(),
+                "Evicting worker from pool"
+            );
             // We don't care if we fail to send message to worker, this is only a best attempt.
             drop(worker.notify_update(WorkerUpdate::Disconnect).await);
+            let update = if is_disconnect {
+                UpdateOperationType::UpdateWithDisconnect
+            } else {
+                UpdateOperationType::UpdateWithError(err)
+            };
             for (operation_id, _) in worker.running_action_infos.drain() {
                 result = result.merge(
                     self.worker_state_manager
-                        .update_operation(
-                            &operation_id,
-                            worker_id,
-                            UpdateOperationType::UpdateWithError(err.clone()),
-                        )
+                        .update_operation(&operation_id, worker_id, update.clone())
                         .await,
                 );
             }
         }
         // Note: Calling this many time is very cheap, it'll only trigger `do_try_match` once.
-        // TODO(aaronmondal) This should be moved to inside the Workers struct.
+        // TODO(palfrey) This should be moved to inside the Workers struct.
         self.worker_change_notify.notify_one();
         result
     }
@@ -353,7 +505,15 @@ pub struct ApiWorkerScheduler {
         help = "Timeout of how long to evict workers if no response in this given amount of time in seconds."
     )]
     worker_timeout_s: u64,
-    _operation_keep_alive_spawn: JoinHandleDropGuard<()>,
+    /// Shared worker registry for checking worker liveness.
+    worker_registry: SharedWorkerRegistry,
+
+    /// Performance metrics for observability.
+    metrics: Arc<SchedulerMetrics>,
+
+    /// Channel for publishing origin events such as worker-observed action
+    /// resource usage. `None` when origin events are disabled.
+    maybe_origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
 }
 
 impl ApiWorkerScheduler {
@@ -363,50 +523,30 @@ impl ApiWorkerScheduler {
         allocation_strategy: WorkerAllocationStrategy,
         worker_change_notify: Arc<Notify>,
         worker_timeout_s: u64,
+        worker_registry: SharedWorkerRegistry,
+        maybe_origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
     ) -> Arc<Self> {
-        let (operation_keep_alive_tx, mut operation_keep_alive_rx) = mpsc::unbounded_channel();
         Arc::new(Self {
             inner: Mutex::new(ApiWorkerSchedulerImpl {
                 workers: Workers(LruCache::unbounded()),
-                worker_state_manager: worker_state_manager.clone(),
+                worker_state_manager,
                 allocation_strategy,
                 worker_change_notify,
-                operation_keep_alive_tx,
+                worker_registry: worker_registry.clone(),
+                shutting_down: false,
+                capability_index: WorkerCapabilityIndex::new(),
             }),
             platform_property_manager,
             worker_timeout_s,
-            _operation_keep_alive_spawn: spawn!(
-                "simple_scheduler_operation_keep_alive",
-                async move {
-                    const RECV_MANY_LIMIT: usize = 256;
-                    let mut messages = Vec::with_capacity(RECV_MANY_LIMIT);
-                    loop {
-                        messages.clear();
-                        operation_keep_alive_rx
-                            .recv_many(&mut messages, RECV_MANY_LIMIT)
-                            .await;
-                        if messages.is_empty() {
-                            return; // Looks like our sender has been dropped.
-                        }
-                        for (operation_id, worker_id) in messages.drain(..) {
-                            let update_operation_res = worker_state_manager
-                                .update_operation(
-                                    &operation_id,
-                                    &worker_id,
-                                    UpdateOperationType::KeepAlive,
-                                )
-                                .await;
-                            if let Err(err) = update_operation_res {
-                                warn!(
-                                    ?err,
-                                    "Error while running worker_keep_alive_received, maybe job is done?"
-                                );
-                            }
-                        }
-                    }
-                }
-            ),
+            worker_registry,
+            metrics: Arc::new(SchedulerMetrics::default()),
+            maybe_origin_event_tx,
         })
+    }
+
+    /// Returns a reference to the worker registry.
+    pub const fn worker_registry(&self) -> &SharedWorkerRegistry {
+        &self.worker_registry
     }
 
     pub async fn worker_notify_run_action(
@@ -415,22 +555,72 @@ impl ApiWorkerScheduler {
         operation_id: OperationId,
         action_info: ActionInfoWithProps,
     ) -> Result<(), Error> {
+        self.metrics
+            .actions_dispatched
+            .fetch_add(1, Ordering::Relaxed);
         let mut inner = self.inner.lock().await;
         inner
             .worker_notify_run_action(worker_id, operation_id, action_info)
             .await
     }
 
+    pub async fn running_action_info(
+        &self,
+        worker_id: &WorkerId,
+        operation_id: &OperationId,
+    ) -> Option<ActionInfoWithProps> {
+        let inner = self.inner.lock().await;
+        inner
+            .workers
+            .peek(worker_id)
+            .and_then(|worker| worker.running_action_infos.get(operation_id))
+            .map(|pending_action_info| pending_action_info.action_info.clone())
+    }
+
+    /// Returns the scheduler metrics for observability.
+    #[must_use]
+    pub const fn get_metrics(&self) -> &Arc<SchedulerMetrics> {
+        &self.metrics
+    }
+
     /// Attempts to find a worker that is capable of running this action.
-    // TODO(aaronmondal) This algorithm is not very efficient. Simple testing using a tree-like
+    // TODO(palfrey) This algorithm is not very efficient. Simple testing using a tree-like
     // structure showed worse performance on a 10_000 worker * 7 properties * 1000 queued tasks
     // simulation of worst cases in a single threaded environment.
     pub async fn find_worker_for_action(
         &self,
         platform_properties: &PlatformProperties,
+        full_worker_logging: bool,
     ) -> Option<WorkerId> {
+        let start = Instant::now();
+        self.metrics
+            .find_worker_calls
+            .fetch_add(1, Ordering::Relaxed);
+
         let inner = self.inner.lock().await;
-        inner.inner_find_worker_for_action(platform_properties)
+        let worker_count = inner.workers.len() as u64;
+        let result = inner.inner_find_worker_for_action(platform_properties, full_worker_logging);
+
+        // Track workers iterated (worst case is all workers)
+        self.metrics
+            .workers_iterated
+            .fetch_add(worker_count, Ordering::Relaxed);
+
+        if result.is_some() {
+            self.metrics
+                .find_worker_hits
+                .fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.metrics
+                .find_worker_misses
+                .fetch_add(1, Ordering::Relaxed);
+        }
+
+        #[allow(clippy::cast_possible_truncation)]
+        self.metrics
+            .find_worker_time_ns
+            .fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        result
     }
 
     /// Checks to see if the worker exists in the worker pool. Should only be used in unit tests.
@@ -459,16 +649,82 @@ impl WorkerScheduler for ApiWorkerScheduler {
         self.platform_property_manager.as_ref()
     }
 
+    async fn record_action_resource_usage(
+        &self,
+        worker_id: &WorkerId,
+        operation_id: &OperationId,
+        mut resource_usage: ActionResourceUsage,
+    ) -> Result<(), Error> {
+        // The worker API talks to this `ApiWorkerScheduler` (it is the
+        // `WorkerScheduler` returned by `SimpleScheduler::new`), so the
+        // resource-usage origin event must be published here. Previously the
+        // only override lived on `SimpleScheduler`, which this path never
+        // reaches, so the event was silently dropped by the trait's no-op
+        // default and `observed_worker_peak_memory_mib` was never recorded.
+        let Some(origin_event_tx) = self.maybe_origin_event_tx.as_ref() else {
+            return Ok(());
+        };
+        let Some(action_info) = self.running_action_info(worker_id, operation_id).await else {
+            return Ok(());
+        };
+
+        if resource_usage.operation_id.is_empty() {
+            resource_usage.operation_id = operation_id.to_string();
+        }
+        if resource_usage.worker_id.is_empty() {
+            resource_usage.worker_id = worker_id.to_string();
+        }
+
+        let event = Event {
+            event: Some(event::Event::Response(ResponseEvent {
+                event: Some(response_event::Event::ActionResourceUsage(resource_usage)),
+            })),
+        };
+        let origin_event = OriginEvent {
+            version: 0,
+            event_id: Uuid::now_v6(&get_node_id(Some(&event)))
+                .hyphenated()
+                .to_string(),
+            parent_event_id: action_info
+                .scheduler_start_execute_event_id
+                .clone()
+                .unwrap_or_default(),
+            bazel_request_metadata: action_info.origin_metadata.bazel_metadata.clone(),
+            identity: action_info.origin_metadata.identity,
+            event: Some(event),
+        };
+        // Awaited send (not try_send): apply backpressure when the publisher
+        // queue is full instead of silently dropping the resource-usage event,
+        // which is what drives action-level resource sizing in the UI.
+        if let Err(err) = origin_event_tx.send(origin_event).await {
+            warn!(?err, "Failed to publish action resource usage origin event");
+        }
+        Ok(())
+    }
+
     async fn add_worker(&self, worker: Worker) -> Result<(), Error> {
-        let mut inner = self.inner.lock().await;
         let worker_id = worker.id.clone();
+        let worker_timestamp = worker.last_update_timestamp;
+        let mut inner = self.inner.lock().await;
+        if inner.shutting_down {
+            warn!("Rejected worker add during shutdown: {}", worker_id);
+            return Err(make_err!(
+                Code::Unavailable,
+                "Received request to add worker while shutting down"
+            ));
+        }
         let result = inner
             .add_worker(worker)
             .err_tip(|| "Error while adding worker, removing from pool");
         if let Err(err) = result {
             return Result::<(), _>::Err(err.clone())
-                .merge(inner.immediate_evict_worker(&worker_id, err).await);
+                .merge(inner.immediate_evict_worker(&worker_id, err, false).await);
         }
+
+        let now = UNIX_EPOCH + Duration::from_secs(worker_timestamp);
+        self.worker_registry.register_worker(&worker_id, now).await;
+
+        self.metrics.workers_added.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
@@ -487,40 +743,103 @@ impl WorkerScheduler for ApiWorkerScheduler {
         worker_id: &WorkerId,
         timestamp: WorkerTimestamp,
     ) -> Result<(), Error> {
-        let mut inner = self.inner.lock().await;
-        inner
-            .refresh_lifetime(worker_id, timestamp)
-            .err_tip(|| "Error refreshing lifetime in worker_keep_alive_received()")
+        {
+            let mut inner = self.inner.lock().await;
+            inner
+                .refresh_lifetime(worker_id, timestamp)
+                .err_tip(|| "Error refreshing lifetime in worker_keep_alive_received()")?;
+        }
+        let now = UNIX_EPOCH + Duration::from_secs(timestamp);
+        self.worker_registry
+            .update_worker_heartbeat(worker_id, now)
+            .await;
+        Ok(())
     }
 
     async fn remove_worker(&self, worker_id: &WorkerId) -> Result<(), Error> {
+        self.worker_registry.remove_worker(worker_id).await;
+
         let mut inner = self.inner.lock().await;
         inner
             .immediate_evict_worker(
                 worker_id,
                 make_err!(Code::Internal, "Received request to remove worker"),
+                false,
             )
             .await
     }
 
-    async fn remove_timedout_workers(&self, now_timestamp: WorkerTimestamp) -> Result<(), Error> {
+    async fn shutdown(&self, shutdown_guard: ShutdownGuard) {
         let mut inner = self.inner.lock().await;
-
-        let mut result = Ok(());
-        // Items should be sorted based on last_update_timestamp, so we don't need to iterate the entire
-        // map most of the time.
-        let worker_ids_to_remove: Vec<WorkerId> = inner
+        inner.shutting_down = true; // should reject further worker registration
+        while let Some(worker_id) = inner
             .workers
-            .iter()
-            .rev()
-            .map_while(|(worker_id, worker)| {
-                if worker.last_update_timestamp <= now_timestamp - self.worker_timeout_s {
-                    Some(worker_id.clone())
-                } else {
-                    None
-                }
-            })
-            .collect();
+            .peek_lru()
+            .map(|(worker_id, _worker)| worker_id.clone())
+        {
+            if let Err(err) = inner
+                .immediate_evict_worker(
+                    &worker_id,
+                    make_err!(Code::Internal, "Scheduler shutdown"),
+                    true,
+                )
+                .await
+            {
+                error!(?err, "Error evicting worker on shutdown.");
+            }
+        }
+        drop(shutdown_guard);
+    }
+
+    async fn remove_timedout_workers(&self, now_timestamp: WorkerTimestamp) -> Result<(), Error> {
+        // Check worker liveness using both the local timestamp (from LRU)
+        // and the worker registry. A worker is alive if either source says it's alive.
+        let timeout = Duration::from_secs(self.worker_timeout_s);
+        let now = UNIX_EPOCH + Duration::from_secs(now_timestamp);
+        let timeout_threshold = now_timestamp.saturating_sub(self.worker_timeout_s);
+
+        let workers_to_check: Vec<(WorkerId, bool)> = {
+            let inner = self.inner.lock().await;
+            inner
+                .workers
+                .iter()
+                .map(|(worker_id, worker)| {
+                    let local_alive = worker.last_update_timestamp > timeout_threshold;
+                    (worker_id.clone(), local_alive)
+                })
+                .collect()
+        };
+
+        let mut worker_ids_to_remove = Vec::new();
+        for (worker_id, local_alive) in workers_to_check {
+            if local_alive {
+                continue;
+            }
+
+            let registry_alive = self
+                .worker_registry
+                .is_worker_alive(&worker_id, timeout, now)
+                .await;
+
+            if !registry_alive {
+                trace!(
+                    ?worker_id,
+                    local_alive,
+                    registry_alive,
+                    timeout_threshold,
+                    "Worker timed out - neither local nor registry shows alive"
+                );
+                worker_ids_to_remove.push(worker_id);
+            }
+        }
+
+        if worker_ids_to_remove.is_empty() {
+            return Ok(());
+        }
+
+        let mut inner = self.inner.lock().await;
+        let mut result = Ok(());
+
         for worker_id in &worker_ids_to_remove {
             warn!(?worker_id, "Worker timed out, removing from pool");
             result = result.merge(
@@ -531,6 +850,7 @@ impl WorkerScheduler for ApiWorkerScheduler {
                             Code::Internal,
                             "Worker {worker_id} timed out, removing from pool"
                         ),
+                        false,
                     )
                     .await,
             );

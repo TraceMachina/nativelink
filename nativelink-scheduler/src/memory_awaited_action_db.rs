@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use core::ops::{Bound, RangeBounds};
+use core::time::Duration;
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -28,6 +29,9 @@ use nativelink_util::action_messages::{
 use nativelink_util::chunked_stream::ChunkedStream;
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::instant_wrapper::InstantWrapper;
+use nativelink_util::metrics::{
+    EXECUTION_METRICS, ExecutionResult, ExecutionStage, make_execution_attributes,
+};
 use nativelink_util::spawn;
 use nativelink_util::task::JoinHandleDropGuard;
 use tokio::sync::{Notify, mpsc, watch};
@@ -166,10 +170,8 @@ where
         let client_operation_id = {
             let changed_fut = self.awaited_action_rx.changed().map(|r| {
                 r.map_err(|e| {
-                    make_err!(
-                        Code::Internal,
-                        "Failed to wait for awaited action to change {e:?}"
-                    )
+                    Error::from_std_err(Code::Internal, &e)
+                        .append("Failed to wait for awaited action to change")
                 })
             });
             let Some(client_info) = self.client_info.as_mut() else {
@@ -302,7 +304,8 @@ impl SortedAwaitedActions {
 pub struct AwaitedActionDbImpl<I: InstantWrapper, NowFn: Fn() -> I> {
     /// A lookup table to lookup the state of an action by its client operation id.
     #[metric(group = "client_operation_ids")]
-    client_operation_to_awaited_action: EvictingMap<OperationId, Arc<ClientAwaitedAction>, I>,
+    client_operation_to_awaited_action:
+        EvictingMap<OperationId, OperationId, Arc<ClientAwaitedAction>, I>,
 
     /// A lookup table to lookup the state of an action by its worker operation id.
     #[metric(group = "operation_ids")]
@@ -373,7 +376,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                     // Cleanup operation_id_to_awaited_action.
                     let Some(tx) = self.operation_id_to_awaited_action.remove(&operation_id) else {
                         error!(
-                            ?operation_id,
+                            %operation_id,
                             "operation_id_to_awaited_action does not have operation_id"
                         );
                         continue;
@@ -390,7 +393,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                         }
                         Entry::Vacant(_) => {
                             error!(
-                                ?operation_id,
+                                %operation_id,
                                 "connected_clients_for_operation_id does not have operation_id"
                             );
                             0
@@ -409,19 +412,25 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                             .insert(operation_id, connected_clients);
                         continue;
                     }
-                    debug!(?operation_id, "Clearing operation from state manager");
+                    debug!(%operation_id, "Clearing operation from state manager");
                     let awaited_action = tx.borrow().clone();
                     // Cleanup action_info_hash_key_to_awaited_action if it was marked cached.
                     match &awaited_action.action_info().unique_qualifier {
                         ActionUniqueQualifier::Cacheable(action_key) => {
-                            let maybe_awaited_action = self
+                            // Once this operation finished, a newer operation for the
+                            // same action key may have claimed the entry; removing it
+                            // unconditionally here would orphan that operation's
+                            // deduplication entry.
+                            let owned_by_this_operation = self
                                 .action_info_hash_key_to_awaited_action
-                                .remove(action_key);
-                            if !awaited_action.state().stage.is_finished()
-                                && maybe_awaited_action.is_none()
-                            {
+                                .get(action_key)
+                                .is_some_and(|id| id == &operation_id);
+                            if owned_by_this_operation {
+                                self.action_info_hash_key_to_awaited_action
+                                    .remove(action_key);
+                            } else if !awaited_action.state().stage.is_finished() {
                                 error!(
-                                    ?operation_id,
+                                    %operation_id,
                                     ?awaited_action,
                                     ?action_key,
                                     "action_info_hash_key_to_awaited_action and operation_id_to_awaited_action are out of sync",
@@ -446,7 +455,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                         });
                     if maybe_sorted_awaited_action.is_none() {
                         error!(
-                            ?operation_id,
+                            %operation_id,
                             ?sort_key,
                             "Expected maybe_sorted_awaited_action to have {sort_key:?}",
                         );
@@ -547,18 +556,19 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
         }
         match &new_awaited_action.action_info().unique_qualifier {
             ActionUniqueQualifier::Cacheable(action_key) => {
-                let maybe_awaited_action =
-                    action_info_hash_key_to_awaited_action.remove(action_key);
-                match maybe_awaited_action {
-                    Some(removed_operation_id) => {
-                        if &removed_operation_id != new_awaited_action.operation_id() {
-                            error!(
-                                ?removed_operation_id,
-                                ?new_awaited_action,
-                                ?action_key,
-                                "action_info_hash_key_to_awaited_action and operation_id_to_awaited_action are out of sync",
-                            );
-                        }
+                match action_info_hash_key_to_awaited_action.get(action_key) {
+                    Some(owning_operation_id)
+                        if owning_operation_id == new_awaited_action.operation_id() => {}
+                    Some(owning_operation_id) => {
+                        // The entry belongs to a newer operation for the same
+                        // action key; leave it in place.
+                        error!(
+                            ?owning_operation_id,
+                            ?new_awaited_action,
+                            ?action_key,
+                            "action_info_hash_key_to_awaited_action and operation_id_to_awaited_action are out of sync",
+                        );
+                        return;
                     }
                     None => {
                         error!(
@@ -566,8 +576,10 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                             ?action_key,
                             "action_info_hash_key_to_awaited_action out of sync, it should have had the unique_key",
                         );
+                        return;
                     }
                 }
+                action_info_hash_key_to_awaited_action.remove(action_key);
             }
             ActionUniqueQualifier::Uncacheable(_action_key) => {
                 // If we are not cacheable, the action should not be in the
@@ -629,6 +641,65 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                 .is_same_stage(&new_awaited_action.state().stage);
 
             if !is_same_stage {
+                // Record metrics for stage transitions
+                let metrics = &*EXECUTION_METRICS;
+                let old_stage = &old_awaited_action.state().stage;
+                let new_stage = &new_awaited_action.state().stage;
+
+                // Track stage transitions
+                let base_attrs = make_execution_attributes(
+                    "unknown",
+                    None,
+                    Some(old_awaited_action.action_info().priority),
+                );
+                metrics.execution_stage_transitions.add(1, &base_attrs);
+
+                // Update active count for old stage
+                let old_stage_attrs = vec![opentelemetry::KeyValue::new(
+                    nativelink_util::metrics::EXECUTION_STAGE,
+                    ExecutionStage::from(old_stage),
+                )];
+                metrics.execution_active_count.add(-1, &old_stage_attrs);
+
+                // Update active count for new stage
+                let new_stage_attrs = vec![opentelemetry::KeyValue::new(
+                    nativelink_util::metrics::EXECUTION_STAGE,
+                    ExecutionStage::from(new_stage),
+                )];
+                metrics.execution_active_count.add(1, &new_stage_attrs);
+
+                // Record completion metrics with action digest for failure tracking
+                let action_digest = old_awaited_action.action_info().digest().to_string();
+                if let ActionStage::Completed(action_result) = new_stage {
+                    let result_attrs = vec![
+                        opentelemetry::KeyValue::new(
+                            nativelink_util::metrics::EXECUTION_RESULT,
+                            if action_result.exit_code == 0 {
+                                ExecutionResult::Success
+                            } else {
+                                ExecutionResult::Failure
+                            },
+                        ),
+                        opentelemetry::KeyValue::new(
+                            nativelink_util::metrics::EXECUTION_ACTION_DIGEST,
+                            action_digest,
+                        ),
+                    ];
+                    metrics.execution_completed_count.add(1, &result_attrs);
+                } else if let ActionStage::CompletedFromCache(_) = new_stage {
+                    let result_attrs = vec![
+                        opentelemetry::KeyValue::new(
+                            nativelink_util::metrics::EXECUTION_RESULT,
+                            ExecutionResult::CacheHit,
+                        ),
+                        opentelemetry::KeyValue::new(
+                            nativelink_util::metrics::EXECUTION_ACTION_DIGEST,
+                            action_digest,
+                        ),
+                    ];
+                    metrics.execution_completed_count.add(1, &result_attrs);
+                }
+
                 self.sorted_action_info_hash_keys
                     .process_state_changes(&old_awaited_action, &new_awaited_action)?;
                 Self::process_state_changes_for_hash_key_map(
@@ -694,8 +765,11 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
             ActionUniqueQualifier::Uncacheable(_unique_key) => None,
         };
         let operation_id = OperationId::default();
-        let awaited_action =
-            AwaitedAction::new(operation_id.clone(), action_info, (self.now_fn)().now());
+        let awaited_action = AwaitedAction::new(
+            operation_id.clone(),
+            action_info.clone(),
+            (self.now_fn)().now(),
+        );
         debug_assert!(
             ActionStage::Queued == awaited_action.state().stage,
             "Expected action to be queued"
@@ -706,8 +780,8 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
             self.make_client_awaited_action(&operation_id.clone(), awaited_action);
 
         debug!(
-            ?client_operation_id,
-            ?operation_id,
+            %client_operation_id,
+            %operation_id,
             ?client_awaited_action,
             "Adding action"
         );
@@ -723,12 +797,21 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                 .insert(unique_key, operation_id.clone());
             if let Some(old_value) = old_value {
                 error!(
-                    ?operation_id,
+                    %operation_id,
                     ?old_value,
                     "action_info_hash_key_to_awaited_action already has unique_key"
                 );
             }
         }
+
+        // Record metric for new action entering the queue
+        let metrics = &*EXECUTION_METRICS;
+        let _base_attrs = make_execution_attributes("unknown", None, Some(action_info.priority));
+        let queued_attrs = vec![opentelemetry::KeyValue::new(
+            nativelink_util::metrics::EXECUTION_STAGE,
+            ExecutionStage::Queued,
+        )];
+        metrics.execution_active_count.add(1, &queued_attrs);
 
         self.sorted_action_info_hash_keys
             .insert_sort_map_for_stage(
@@ -752,7 +835,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
         &mut self,
         client_operation_id: &OperationId,
         unique_qualifier: &ActionUniqueQualifier,
-        // TODO(aaronmondal) To simplify the scheduler 2024 refactor, we
+        // TODO(palfrey) To simplify the scheduler 2024 refactor, we
         // removed the ability to upgrade priorities of actions.
         // we should add priority upgrades back in.
         _priority: i32,
@@ -936,7 +1019,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync + 'static> Awaite
                     .get_range_of_actions(state, (start.as_ref(), end.as_ref()))
                     .map(|res| res.err_tip(|| "In AwaitedActionDb::get_range_of_actions"));
 
-                // TODO(aaronmondal) This should probably use the `.left()/right()` pattern,
+                // TODO(palfrey) This should probably use the `.left()/right()` pattern,
                 // but that doesn't exist in the std or any libraries we use.
                 if desc {
                     for result in iterator.rev() {
@@ -976,6 +1059,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync + 'static> Awaite
         &self,
         client_operation_id: OperationId,
         action_info: Arc<ActionInfo>,
+        _no_event_action_timeout: Duration,
     ) -> Result<Self::Subscriber, Error> {
         let subscriber = self
             .inner

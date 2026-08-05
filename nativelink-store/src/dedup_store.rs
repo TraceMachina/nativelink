@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -17,8 +17,8 @@ use core::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use bincode::serde::{decode_from_slice, encode_to_vec};
 use futures::stream::{self, FuturesOrdered, StreamExt, TryStreamExt};
+use futures::try_join;
 use nativelink_config::stores::DedupSpec;
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
@@ -26,13 +26,16 @@ use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::fastcdc::FastCDC;
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
-use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{
+    RemoveCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+};
 use serde::{Deserialize, Serialize};
 use tokio_util::codec::FramedRead;
 use tokio_util::io::StreamReader;
 use tracing::warn;
 
 use crate::cas_utils::is_zero_digest;
+use crate::compression_store::WincodeConfig;
 
 // NOTE: If these change update the comments in `stores.rs` to reflect
 // the new defaults.
@@ -41,16 +44,20 @@ const DEFAULT_NORM_SIZE: u64 = 256 * 1024;
 const DEFAULT_MAX_SIZE: u64 = 512 * 1024;
 const DEFAULT_MAX_CONCURRENT_FETCH_PER_GET: usize = 10;
 
-#[derive(Serialize, Deserialize, PartialEq, Eq, Debug, Default, Clone)]
+#[derive(
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    Debug,
+    Default,
+    Clone,
+    wincode::SchemaRead,
+    wincode::SchemaWrite,
+)]
 pub struct DedupIndex {
     pub entries: Vec<DigestInfo>,
 }
-
-type LegacyBincodeConfig = bincode::config::Configuration<
-    bincode::config::LittleEndian,
-    bincode::config::Fixint,
-    bincode::config::NoLimit,
->;
 
 #[derive(MetricsComponent)]
 pub struct DedupStore {
@@ -61,7 +68,7 @@ pub struct DedupStore {
     fast_cdc_decoder: FastCDC,
     #[metric(help = "Maximum number of concurrent fetches per get")]
     max_concurrent_fetch_per_get: usize,
-    bincode_config: LegacyBincodeConfig,
+    wincode_config: WincodeConfig,
 }
 
 impl core::fmt::Debug for DedupStore {
@@ -114,7 +121,7 @@ impl DedupStore {
                 usize::try_from(max_size).err_tip(|| "Could not convert max_size to usize")?,
             ),
             max_concurrent_fetch_per_get,
-            bincode_config: bincode::config::legacy(),
+            wincode_config: WincodeConfig::new(),
         }))
     }
 
@@ -137,8 +144,11 @@ impl DedupStore {
                 Ok(data) => data,
             };
 
-            match decode_from_slice::<DedupIndex, _>(&data, self.bincode_config) {
-                Ok((dedup_index, _)) => dedup_index,
+            match wincode::config::deserialize::<DedupIndex, WincodeConfig>(
+                &data,
+                self.wincode_config,
+            ) {
+                Ok(dedup_index) => dedup_index,
                 Err(err) => {
                     warn!(?key, ?err, "Failed to deserialize index in dedup store",);
                     // We return the equivalent of NotFound here so the client is happy.
@@ -167,6 +177,14 @@ impl DedupStore {
 
 #[async_trait]
 impl StoreDriver for DedupStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        try_join!(
+            self.index_store.clone().into_inner().post_init(),
+            self.content_store.clone().into_inner().post_init(),
+        )?;
+        Ok(())
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         digests: &[StoreKey<'_>],
@@ -199,10 +217,10 @@ impl StoreDriver for DedupStore {
         key: StoreKey<'_>,
         reader: DropCloserReadHalf,
         _size_info: UploadSizeInfo,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         let mut bytes_reader = StreamReader::new(reader);
         let frame_reader = FramedRead::new(&mut bytes_reader, self.fast_cdc_decoder.clone());
-        let index_entries = frame_reader
+        let index_entries: Vec<_> = frame_reader
             .map(|r| r.err_tip(|| "Failed to decode frame from fast_cdc"))
             .map_ok(|frame| async move {
                 let hash = blake3::hash(&frame[..]).into();
@@ -227,11 +245,13 @@ impl StoreDriver for DedupStore {
             .try_collect()
             .await?;
 
-        let serialized_index = encode_to_vec(
+        let total_size = index_entries.iter().map(DigestInfo::size_bytes).sum();
+
+        let serialized_index = wincode::config::serialize(
             &DedupIndex {
                 entries: index_entries,
             },
-            self.bincode_config,
+            self.wincode_config,
         )
         .map_err(|e| {
             make_err!(
@@ -246,7 +266,7 @@ impl StoreDriver for DedupStore {
             .await
             .err_tip(|| "Failed to insert our index entry to index_store in dedup_store")?;
 
-        Ok(())
+        Ok(total_size)
     }
 
     async fn get_part(
@@ -271,15 +291,14 @@ impl StoreDriver for DedupStore {
                 .get_part_unchunked(key, 0, None)
                 .await
                 .err_tip(|| "Failed to read index store in dedup store")?;
-            let (dedup_index, _) = decode_from_slice::<DedupIndex, _>(&data, self.bincode_config)
+            wincode::config::deserialize::<DedupIndex, WincodeConfig>(&data, self.wincode_config)
                 .map_err(|e| {
-                make_err!(
-                    Code::Internal,
-                    "Failed to deserialize index in dedup_store::get_part : {:?}",
-                    e
-                )
-            })?;
-            dedup_index
+                    make_err!(
+                        Code::Internal,
+                        "Failed to deserialize index in dedup_store::get_part : {:?}",
+                        e
+                    )
+                })?
         };
 
         let mut start_byte_in_stream: u64 = 0;
@@ -299,10 +318,10 @@ impl StoreDriver for DedupStore {
                         continue;
                     }
                     // If we are not going to read any bytes past the length we are done.
-                    if let Some(length) = length {
-                        if first_byte >= offset + length {
-                            break;
-                        }
+                    if let Some(length) = length
+                        && first_byte >= offset + length
+                    {
+                        break;
                     }
                     entries.push(entry);
                 }
@@ -375,6 +394,13 @@ impl StoreDriver for DedupStore {
 
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
+    }
+
+    fn register_remove_callback(self: Arc<Self>, callback: RemoveCallback) -> Result<(), Error> {
+        self.index_store
+            .register_remove_callback(callback.clone())?;
+        self.content_store.register_remove_callback(callback)?;
+        Ok(())
     }
 }
 

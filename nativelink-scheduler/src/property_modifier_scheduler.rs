@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,21 +16,24 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use nativelink_config::schedulers::{PropertyModification, PropertyModifierSpec};
+use nativelink_config::schedulers::{
+    PlatformPropertyReplacement, PropertyModification, PropertyModifierSpec,
+};
 use nativelink_error::{Error, ResultExt};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_util::action_messages::{ActionInfo, OperationId};
-use nativelink_util::known_platform_property_provider::KnownPlatformPropertyProvider;
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, OperationFilter,
 };
 use parking_lot::Mutex;
 
+use crate::known_platform_property_provider::KnownPlatformPropertyProvider;
+
 #[derive(MetricsComponent)]
 pub struct PropertyModifierScheduler {
     modifications: Vec<PropertyModification>,
     #[metric(group = "scheduler")]
-    scheduler: Arc<dyn ClientStateManager>,
+    scheduler: Option<Arc<dyn KnownPlatformPropertyProvider>>,
     #[metric(group = "property_manager")]
     known_properties: Mutex<HashMap<String, Vec<String>>>,
 }
@@ -45,10 +48,13 @@ impl core::fmt::Debug for PropertyModifierScheduler {
 }
 
 impl PropertyModifierScheduler {
-    pub fn new(spec: &PropertyModifierSpec, scheduler: Arc<dyn ClientStateManager>) -> Self {
+    pub fn new(
+        spec: &PropertyModifierSpec,
+        scheduler: Arc<dyn KnownPlatformPropertyProvider>,
+    ) -> Self {
         Self {
             modifications: spec.modifications.clone(),
-            scheduler,
+            scheduler: Some(scheduler),
             known_properties: Mutex::new(HashMap::new()),
         }
     }
@@ -62,7 +68,7 @@ impl PropertyModifierScheduler {
         }
         let known_platform_property_provider = self
             .scheduler
-            .as_known_platform_property_provider()
+            .as_ref()
             .err_tip(|| "Inner scheduler does not implement KnownPlatformPropertyProvider for PropertyModifierScheduler")?;
         let mut known_properties = HashSet::<String>::from_iter(
             known_platform_property_provider
@@ -71,7 +77,8 @@ impl PropertyModifierScheduler {
         );
         for modification in &self.modifications {
             match modification {
-                PropertyModification::Remove(name) => {
+                PropertyModification::Remove(name)
+                | PropertyModification::Replace(PlatformPropertyReplacement { name, .. }) => {
                     known_properties.insert(name.clone());
                 }
                 PropertyModification::Add(_) => (),
@@ -93,15 +100,40 @@ impl PropertyModifierScheduler {
         let action_info_mut = Arc::make_mut(&mut action_info);
         for modification in &self.modifications {
             match modification {
-                PropertyModification::Add(addition) => action_info_mut
-                    .platform_properties
-                    .insert(addition.name.clone(), addition.value.clone()),
-                PropertyModification::Remove(name) => {
-                    action_info_mut.platform_properties.remove(name)
+                PropertyModification::Add(addition) => {
+                    action_info_mut
+                        .platform_properties
+                        .insert(addition.name.clone(), addition.value.clone());
                 }
-            };
+                PropertyModification::Remove(name) => {
+                    action_info_mut.platform_properties.remove(name);
+                }
+                PropertyModification::Replace(replacement) => {
+                    if let Some((existing_name, existing_value)) = action_info_mut
+                        .platform_properties
+                        .remove_entry(&replacement.name)
+                    {
+                        if replacement
+                            .value
+                            .as_ref()
+                            .is_none_or(|value| *value == existing_value)
+                        {
+                            action_info_mut.platform_properties.insert(
+                                replacement.new_name.clone(),
+                                replacement.new_value.clone().unwrap_or(existing_value),
+                            );
+                        } else {
+                            action_info_mut
+                                .platform_properties
+                                .insert(existing_name, existing_value);
+                        }
+                    }
+                }
+            }
         }
         self.scheduler
+            .as_ref()
+            .err_tip(|| "Inner scheduler not available for PropertyModifierScheduler")?
             .add_action(client_operation_id, action_info)
             .await
     }
@@ -109,8 +141,12 @@ impl PropertyModifierScheduler {
     async fn inner_filter_operations(
         &self,
         filter: OperationFilter,
-    ) -> Result<ActionStateResultStream, Error> {
-        self.scheduler.filter_operations(filter).await
+    ) -> Result<ActionStateResultStream<'_>, Error> {
+        self.scheduler
+            .as_ref()
+            .err_tip(|| "Inner scheduler not available for PropertyModifierScheduler")?
+            .filter_operations(filter)
+            .await
     }
 }
 
@@ -137,10 +173,6 @@ impl ClientStateManager for PropertyModifierScheduler {
         filter: OperationFilter,
     ) -> Result<ActionStateResultStream<'a>, Error> {
         self.inner_filter_operations(filter).await
-    }
-
-    fn as_known_platform_property_provider(&self) -> Option<&dyn KnownPlatformPropertyProvider> {
-        Some(self)
     }
 }
 

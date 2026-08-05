@@ -1,10 +1,10 @@
-// Copyright 2022 The NativeLink Authors. All rights reserved.
+// Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -353,7 +353,7 @@ pub mod http_rule {
     /// Determines the URL pattern is matched by this rules. This pattern can be
     /// used with any of the {get|put|post|delete|patch} methods. A custom method
     /// can be defined using the 'custom' field.
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Pattern {
         /// Maps to HTTP GET. Used for listing and getting information about
         /// resources.
@@ -380,7 +380,7 @@ pub mod http_rule {
     }
 }
 /// A custom pattern is used for defining custom HTTP verb.
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CustomHttpPattern {
     /// The name of this custom HTTP verb.
     #[prost(string, tag = "1")]

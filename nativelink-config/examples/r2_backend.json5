@@ -1,0 +1,175 @@
+// Replace the access_key_id / secret_access_key placeholders below with
+// real values, or with shellexpand refs like "${R2_ACCESS_KEY_ID}".
+// You can also choose to omit both placeholders to fall back to the AWS
+// default credential chain (but it only reads AWS_* env var names — your R2 keys would need to live there).
+{
+  stores: [
+    {
+      name: "CAS_MAIN_STORE",
+      verify: {
+        verify_size: true,
+        backend: {
+          dedup: {
+            index_store: {
+              fast_slow: {
+                fast: {
+                  memory: {
+                    eviction_policy: {
+                      max_bytes: "100mb",
+                    },
+                  },
+                },
+                slow: {
+                  experimental_cloud_object_store: {
+                    provider: "r2",
+                    account_id: "636b76d9ace55d0aacba7980073c7ca7",
+                    bucket: "nativelink-cas-test",
+                    access_key_id: "r2_access_key_id",
+                    secret_access_key: "r2_secret_access_key",
+                    key_prefix: "cas-index/",
+                    retry: {
+                      max_retries: 6,
+                      delay: 0.3,
+                      jitter: 0.5,
+                    },
+                  },
+                },
+              },
+            },
+            content_store: {
+              compression: {
+                compression_algorithm: {
+                  lz4: {},
+                },
+                backend: {
+                  fast_slow: {
+                    fast: {
+                      memory: {
+                        eviction_policy: {
+                          max_bytes: "100mb",
+                        },
+                      },
+                    },
+                    slow: {
+                      experimental_cloud_object_store: {
+                        provider: "r2",
+                        account_id: "636b76d9ace55d0aacba7980073c7ca7",
+                        bucket: "nativelink-cas-test",
+                        access_key_id: "r2_access_key_id",
+                        secret_access_key: "r2_secret_access_key",
+                        key_prefix: "cas/",
+                        retry: {
+                          max_retries: 6,
+                          delay: 0.3,
+                          jitter: 0.5,
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    {
+      name: "AC_MAIN_STORE",
+      fast_slow: {
+        fast: {
+          memory: {
+            eviction_policy: {
+              max_bytes: "100mb",
+            },
+          },
+        },
+        slow: {
+          experimental_cloud_object_store: {
+            provider: "r2",
+            account_id: "636b76d9ace55d0aacba7980073c7ca7",
+            bucket: "nativelink-cas-test",
+            access_key_id: "r2_access_key_id",
+            secret_access_key: "r2_secret_access_key",
+            key_prefix: "ac/",
+            retry: {
+              max_retries: 6,
+              delay: 0.3,
+              jitter: 0.5,
+            },
+          },
+        },
+      },
+    },
+  ],
+  schedulers: [
+    {
+      name: "MAIN_SCHEDULER",
+      simple: {
+        supported_platform_properties: {
+          cpu_count: "minimum",
+          memory_kb: "minimum",
+          network_kbps: "minimum",
+          disk_read_iops: "minimum",
+          disk_read_bps: "minimum",
+          disk_write_iops: "minimum",
+          disk_write_bps: "minimum",
+          shm_size: "minimum",
+          gpu_count: "minimum",
+          gpu_model: "exact",
+          cpu_vendor: "exact",
+          cpu_arch: "exact",
+          cpu_model: "exact",
+          kernel_version: "exact",
+          docker_image: "priority",
+          "lre-rs": "priority",
+          ISA: "exact",
+        },
+      },
+    },
+  ],
+  servers: [
+    {
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50051",
+        },
+      },
+      services: {
+        cas: [
+          {
+            instance_name: "main",
+            cas_store: "CAS_MAIN_STORE",
+          },
+        ],
+        ac: [
+          {
+            instance_name: "main",
+            ac_store: "AC_MAIN_STORE",
+          },
+        ],
+        execution: [
+          {
+            instance_name: "main",
+            cas_store: "CAS_MAIN_STORE",
+            scheduler: "MAIN_SCHEDULER",
+          },
+        ],
+        capabilities: [
+          {
+            instance_name: "main",
+            remote_execution: {
+              scheduler: "MAIN_SCHEDULER",
+            },
+          },
+        ],
+        bytestream: [
+          {
+            instance_name: "main",
+            cas_store: "CAS_MAIN_STORE",
+          },
+        ],
+        health: {},
+      },
+    },
+  ],
+}

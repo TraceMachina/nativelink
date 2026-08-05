@@ -4,7 +4,6 @@ load(
     "@rules_rust//rust:defs.bzl",
     "rust_binary",
     "rust_doc",
-    "rust_doc_test",
     "rust_library",
 )
 
@@ -34,12 +33,11 @@ rust_binary(
     srcs = ["gen_protos_tool.rs"],
     deps = [
         "@crates//:clap",
-        "@crates//:prost-build",
-        "@crates//:tonic-build",
+        "@crates//:tonic-prost-build",
     ],
 )
 
-# TODO(aaronmondal): The config settings we create here don't follow good
+# TODO(palfrey): The config settings we create here don't follow good
 #                    practices and are purely created this way to work around a
 #                    suboptimal naming scheme in toolchains_protoc. Don't use
 #                    this outside of getting protoc. Consider upstreaming a
@@ -98,6 +96,7 @@ genrule(
         "google/protobuf/empty.proto",
         "google/protobuf/timestamp.proto",
         "google/protobuf/wrappers.proto",
+        "google/rpc/error_details.proto",
         "google/rpc/status.proto",
         "src/main/java/com/google/devtools/build/lib/buildeventstream/proto/build_event_stream.proto",
         "src/main/java/com/google/devtools/build/lib/packages/metrics/package_load_metrics.proto",
@@ -119,14 +118,14 @@ genrule(
         for file in $(RULEDIR)/*.rs; do
             mv -- "$$file" "$${{file%.rs}}.pb.rs"
         done
-        '''.format(platform)
+        '''.format(platform)  # buildifier: disable=canonical-repository
         for platform in PLATFORM_NAMES
     }),
     tools = [
         ":gen_protos_tool",
     ] + select({
         platform: [
-            "@@toolchains_protoc++protoc+toolchains_protoc_hub.{}//:bin/protoc".format(platform),
+            "@@toolchains_protoc++protoc+toolchains_protoc_hub.{}//:bin/protoc".format(platform),  # buildifier: disable=canonical-repository
         ]
         for platform in PLATFORM_NAMES
     }),
@@ -151,9 +150,11 @@ rust_library(
     tags = ["no-rustfmt"],
     visibility = ["//visibility:public"],
     deps = [
+        "@crates//:derive_more",
         "@crates//:prost",
         "@crates//:prost-types",
         "@crates//:tonic",
+        "@crates//:tonic-prost",
     ],
 )
 
@@ -184,10 +185,4 @@ rust_doc(
     name = "docs",
     crate = ":nativelink-proto",
     visibility = ["//visibility:public"],
-)
-
-rust_doc_test(
-    name = "doc_test",
-    timeout = "short",
-    crate = ":nativelink-proto",
 )

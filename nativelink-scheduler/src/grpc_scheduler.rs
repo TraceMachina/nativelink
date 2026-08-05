@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -33,7 +33,6 @@ use nativelink_util::action_messages::{
     ActionInfo, ActionState, ActionUniqueQualifier, DEFAULT_EXECUTION_PRIORITY, OperationId,
 };
 use nativelink_util::connection_manager::ConnectionManager;
-use nativelink_util::known_platform_property_provider::KnownPlatformPropertyProvider;
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, OperationFilter,
 };
@@ -41,12 +40,13 @@ use nativelink_util::origin_event::OriginMetadata;
 use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::{background_spawn, tls_utils};
 use parking_lot::Mutex;
-use rand::Rng;
 use tokio::select;
 use tokio::sync::watch;
 use tokio::time::sleep;
 use tonic::{Request, Streaming};
 use tracing::{error, info, warn};
+
+use crate::known_platform_property_provider::KnownPlatformPropertyProvider;
 
 struct GrpcActionStateResult {
     client_operation_id: OperationId,
@@ -58,27 +58,25 @@ impl ActionStateResult for GrpcActionStateResult {
     async fn as_state(&self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error> {
         let mut action_state = self.rx.borrow().clone();
         Arc::make_mut(&mut action_state).client_operation_id = self.client_operation_id.clone();
-        // TODO(aaronmondal) We currently don't support OriginMetadata in this implementation, but
+        // TODO(palfrey) We currently don't support OriginMetadata in this implementation, but
         // we should.
         Ok((action_state, None))
     }
 
     async fn changed(&mut self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error> {
-        self.rx.changed().await.map_err(|_| {
-            make_err!(
-                Code::Internal,
-                "Channel closed in GrpcActionStateResult::changed"
-            )
+        self.rx.changed().await.map_err(|e| {
+            Error::from_std_err(Code::Internal, &e)
+                .append("Channel closed in GrpcActionStateResult::changed")
         })?;
         let mut action_state = self.rx.borrow().clone();
         Arc::make_mut(&mut action_state).client_operation_id = self.client_operation_id.clone();
-        // TODO(aaronmondal) We currently don't support OriginMetadata in this implementation, but
+        // TODO(palfrey) We currently don't support OriginMetadata in this implementation, but
         // we should.
         Ok((action_state, None))
     }
 
     async fn as_action_info(&self) -> Result<(Arc<ActionInfo>, Option<OriginMetadata>), Error> {
-        // TODO(aaronmondal) We should probably remove as_action_info()
+        // TODO(palfrey) We should probably remove as_action_info()
         // or implement it properly.
         return Err(make_err!(
             Code::Unimplemented,
@@ -97,26 +95,14 @@ pub struct GrpcScheduler {
 
 impl GrpcScheduler {
     pub fn new(spec: &GrpcSpec) -> Result<Self, Error> {
-        let jitter_amt = spec.retry.jitter;
-        Self::new_with_jitter(
-            spec,
-            Box::new(move |delay: Duration| {
-                if jitter_amt == 0. {
-                    return delay;
-                }
-                let min = 1. - (jitter_amt / 2.);
-                let max = 1. + (jitter_amt / 2.);
-                delay.mul_f32(rand::rng().random_range(min..max))
-            }),
-        )
+        Self::new_with_jitter(spec, spec.retry.make_jitter_fn())
     }
 
     pub fn new_with_jitter(
         spec: &GrpcSpec,
-        jitter_fn: Box<dyn Fn(Duration) -> Duration + Send + Sync>,
+        jitter_fn: Arc<dyn Fn(Duration) -> Duration + Send + Sync>,
     ) -> Result<Self, Error> {
         let endpoint = tls_utils::endpoint(&spec.endpoint)?;
-        let jitter_fn = Arc::new(jitter_fn);
         Ok(Self {
             supported_props: Mutex::new(HashMap::new()),
             retrier: Retrier::new(
@@ -229,7 +215,7 @@ impl GrpcScheduler {
             // Not in the cache, lookup the capabilities with the upstream.
             let channel = self
                 .connection_manager
-                .connection()
+                .connection("get_known_properties".into())
                 .await
                 .err_tip(|| "in get_platform_property_manager()")?;
             let capabilities_result = CapabilitiesClient::new(channel)
@@ -287,7 +273,7 @@ impl GrpcScheduler {
             .perform_request(request, |request| async move {
                 let channel = self
                     .connection_manager
-                    .connection()
+                    .connection(format!("add_action: {:?}", request.action_digest))
                     .await
                     .err_tip(|| "in add_action()")?;
                 ExecutionClient::new(channel)
@@ -303,7 +289,7 @@ impl GrpcScheduler {
     async fn inner_filter_operations(
         &self,
         filter: OperationFilter,
-    ) -> Result<ActionStateResultStream, Error> {
+    ) -> Result<ActionStateResultStream<'_>, Error> {
         error_if!(
             filter
                 != OperationFilter {
@@ -322,7 +308,7 @@ impl GrpcScheduler {
             .perform_request(request, |request| async move {
                 let channel = self
                     .connection_manager
-                    .connection()
+                    .connection(format!("filter_operations: {}", request.name))
                     .await
                     .err_tip(|| "in find_by_client_operation_id()")?;
                 ExecutionClient::new(channel)
@@ -362,10 +348,6 @@ impl ClientStateManager for GrpcScheduler {
         filter: OperationFilter,
     ) -> Result<ActionStateResultStream<'a>, Error> {
         self.inner_filter_operations(filter).await
-    }
-
-    fn as_known_platform_property_provider(&self) -> Option<&dyn KnownPlatformPropertyProvider> {
-        Some(self)
     }
 }
 

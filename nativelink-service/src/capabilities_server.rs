@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -15,7 +15,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use nativelink_config::cas_server::{CapabilitiesConfig, InstanceName, WithInstanceName};
+use nativelink_config::cas_server::{
+    CapabilitiesConfig, CasStoreConfig, InstanceName, WithInstanceName,
+};
 use nativelink_error::{Error, ResultExt};
 use nativelink_proto::build::bazel::remote::execution::v2::capabilities_server::{
     Capabilities, CapabilitiesServer as Server,
@@ -24,30 +26,61 @@ use nativelink_proto::build::bazel::remote::execution::v2::digest_function::Valu
 use nativelink_proto::build::bazel::remote::execution::v2::priority_capabilities::PriorityRange;
 use nativelink_proto::build::bazel::remote::execution::v2::symlink_absolute_path_strategy::Value as SymlinkAbsolutePathStrategy;
 use nativelink_proto::build::bazel::remote::execution::v2::{
-    ActionCacheUpdateCapabilities, CacheCapabilities, ExecutionCapabilities,
-    GetCapabilitiesRequest, PriorityCapabilities, ServerCapabilities,
+    ActionCacheUpdateCapabilities, CacheCapabilities, ExecutionCapabilities, FastCdc2020Params,
+    GetCapabilitiesRequest, PriorityCapabilities, ServerCapabilities, compressor,
 };
 use nativelink_proto::build::bazel::semver::SemVer;
+use nativelink_scheduler::known_platform_property_provider::KnownPlatformPropertyProvider;
 use nativelink_util::digest_hasher::default_digest_hasher_func;
-use nativelink_util::operation_state_manager::ClientStateManager;
 use tonic::{Request, Response, Status};
-use tracing::{Level, instrument, warn};
+use tracing::{Level, instrument};
+
+use crate::wire_compression::RemoteCacheCompressionInstances;
 
 const MAX_BATCH_TOTAL_SIZE: i64 = 64 * 1024;
 
 #[derive(Debug, Default)]
 pub struct CapabilitiesServer {
     supported_node_properties_for_instance: HashMap<InstanceName, Vec<String>>,
+    // Kept separate from `supported_node_properties_for_instance`: that map is sent
+    // verbatim to clients as `ExecutionCapabilities.supported_node_properties` (REAPI
+    // file metadata like mtime/unix mode), while compression is advertised through
+    // `CacheCapabilities.supported_compressors`. Merging them would leak a fake node
+    // property onto the wire.
+    remote_cache_compression_instances: RemoteCacheCompressionInstances,
+    chunking_params_for_instance: HashMap<InstanceName, FastCdc2020Params>,
 }
 
 impl CapabilitiesServer {
     pub async fn new(
         configs: &[WithInstanceName<CapabilitiesConfig>],
-        scheduler_map: &HashMap<String, Arc<dyn ClientStateManager>>,
+        scheduler_map: &HashMap<String, Arc<dyn KnownPlatformPropertyProvider>>,
+        remote_cache_compression_instances: &RemoteCacheCompressionInstances,
+        cas_configs: &[WithInstanceName<CasStoreConfig>],
     ) -> Result<Self, Error> {
+        let mut chunking_params_for_instance = HashMap::new();
+        for cas_config in cas_configs {
+            if let Some(chunking_config) = &cas_config.experimental_chunking {
+                let avg_chunk_size_bytes = chunking_config
+                    .validated_avg_chunk_size_bytes()
+                    .err_tip(|| {
+                        format!(
+                            "In 'experimental_chunking' of instance '{}'",
+                            cas_config.instance_name
+                        )
+                    })?;
+                chunking_params_for_instance.insert(
+                    cas_config.instance_name.clone(),
+                    FastCdc2020Params {
+                        avg_chunk_size_bytes,
+                        seed: 0,
+                    },
+                );
+            }
+        }
+
         let mut supported_node_properties_for_instance = HashMap::new();
         for config in configs {
-            let mut properties = Vec::new();
             if let Some(remote_execution_cfg) = &config.remote_execution {
                 let scheduler =
                     scheduler_map
@@ -58,30 +91,23 @@ impl CapabilitiesServer {
                                 remote_execution_cfg.scheduler
                             )
                         })?;
-                if let Some(props_provider) = scheduler.as_known_platform_property_provider() {
-                    for platform_key in props_provider
-                        .get_known_properties(&config.instance_name)
-                        .await
-                        .err_tip(|| {
-                            format!(
-                                "Failed to get platform properties for {}",
-                                config.instance_name
-                            )
-                        })?
-                    {
-                        properties.push(platform_key.clone());
-                    }
-                } else {
-                    warn!(
-                        "Scheduler '{}' does not implement KnownPlatformPropertyProvider",
-                        remote_execution_cfg.scheduler
-                    );
-                }
+                let properties = scheduler
+                    .get_known_properties(&config.instance_name)
+                    .await
+                    .err_tip(|| {
+                        format!(
+                            "Failed to get platform properties for {}",
+                            config.instance_name
+                        )
+                    })?;
+                supported_node_properties_for_instance
+                    .insert(config.instance_name.clone(), properties);
             }
-            supported_node_properties_for_instance.insert(config.instance_name.clone(), properties);
         }
         Ok(Self {
             supported_node_properties_for_instance,
+            remote_cache_compression_instances: remote_cache_compression_instances.clone(),
+            chunking_params_for_instance,
         })
     }
 
@@ -112,7 +138,7 @@ impl Capabilities for CapabilitiesServer {
         let execution_capabilities =
             maybe_supported_node_properties.map(|props_for_instance| ExecutionCapabilities {
                 digest_function: default_digest_hasher_func().proto_digest_func().into(),
-                exec_enabled: true, // TODO(aaronmondal) Make this configurable.
+                exec_enabled: true, // TODO(palfrey) Make this configurable.
                 execution_priority_capabilities: Some(PriorityCapabilities {
                     priorities: vec![PriorityRange {
                         min_priority: 0,
@@ -126,6 +152,16 @@ impl Capabilities for CapabilitiesServer {
                 ],
             });
 
+        let supported_compressors = if self
+            .remote_cache_compression_instances
+            .enabled_for(&instance_name)
+        {
+            vec![compressor::Value::Zstd.into()]
+        } else {
+            Vec::new()
+        };
+
+        let chunking_params = self.chunking_params_for_instance.get(&instance_name);
         let resp = ServerCapabilities {
             cache_capabilities: Some(CacheCapabilities {
                 digest_functions: vec![
@@ -138,8 +174,13 @@ impl Capabilities for CapabilitiesServer {
                 cache_priority_capabilities: None,
                 max_batch_total_size_bytes: MAX_BATCH_TOTAL_SIZE,
                 symlink_absolute_path_strategy: SymlinkAbsolutePathStrategy::Disallowed.into(),
-                supported_compressors: vec![],
-                supported_batch_update_compressors: vec![],
+                supported_compressors: supported_compressors.clone(),
+                supported_batch_update_compressors: supported_compressors,
+                max_cas_blob_size_bytes: 0,
+                split_blob_support: chunking_params.is_some(),
+                splice_blob_support: chunking_params.is_some(),
+                fast_cdc_2020_params: chunking_params.copied(),
+                rep_max_cdc_params: None,
             }),
             execution_capabilities,
             deprecated_api_version: None,

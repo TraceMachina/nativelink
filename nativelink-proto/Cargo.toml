@@ -1,17 +1,31 @@
+#:schema ../tools/cargo-with-detailed-deps.json
 [package]
-name = "nativelink-proto"
-version = "0.6.0"
 edition = "2024"
+name = "nativelink-proto"
+version = "1.6.4"
 
 [lib]
+doctest = false           # because some of the generated protos have things that look like doctests but break
 name = "nativelink_proto"
 path = "genproto/lib.rs"
 
 [dependencies]
-prost = { version = "0.13.5", default-features = false }
-prost-types = { version = "0.13.5", default-features = false }
-tonic = { version = "0.13.0", features = ["codegen", "prost", "transport", "tls-ring"], default-features = false }
+derive_more = { version = "2.0.1", default-features = false, features = [
+  "debug",
+] }
+prost = { version = "0.14.4", default-features = false }
+prost-types = { version = "0.14.4", default-features = false }
+tonic = { version = "0.14.0", features = [
+  "codegen",
+  "tls-ring",
+  "transport",
+], default-features = false }
+tonic-prost = { version = "0.14.6", default-features = false }
 
 [dev-dependencies]
-prost-build = { version = "0.13.5", default-features = false }
-tonic-build = { version = "0.13.0", features = ["prost"], default-features = false }
+tonic-prost-build = { version = "0.14.0", features = [
+], default-features = false }
+
+[package.metadata.cargo-machete]
+# Used by gen_protos_tool.rs
+ignored = ["tonic-prost-build"]

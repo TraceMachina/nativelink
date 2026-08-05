@@ -1,10 +1,10 @@
-# Copyright 2022-2023 The NativeLink Authors. All rights reserved.
+# Copyright 2022-2025 The NativeLink Authors. All rights reserved.
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
+# Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#    http://www.apache.org/licenses/LICENSE-2.0
+#    See LICENSE file for details
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,8 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Override this if you want to run on a different version of ubuntu.
-ARG OS_VERSION=22.04
+# Current supported Ubuntu version, Noble Numbat aka 24.04 LTS
+# Locked down to a specific revision to avoid issues with package versions
+# Bazelisk (the Bazel launcher). Defaults are picked per build architecture
+# (linux-amd64 vs linux-arm64) in the dependencies stage; override these to
+# pin a specific binary.
+ARG BAZELISK_URL
+ARG BAZELISK_SHA256
 # `--compilation_mode` to pass into bazel (eg: opt, dbg, fastbuild).
 ARG OPT_LEVEL=opt
 # Additional bazel flags.
@@ -22,34 +27,33 @@ ARG ADDITIONAL_BAZEL_FLAGS=
 # needed by the user. Useful if your worker needs specific dependencies installed.
 ARG ADDITIONAL_SETUP_WORKER_CMD=
 
-FROM ubuntu:${OS_VERSION} AS dependencies
-ARG OS_VERSION
-RUN apt-get update \
-    && if [ "${OS_VERSION}" = "24.04" ]; then \
-        DEBIAN_FRONTEND=noninteractive \
-        apt-get install --no-install-recommends -y \
-            npm=9.2.0~ds1-2 \
-            git=1:2.43.0-1ubuntu7.3 \
-            gcc=4:13.2.0-7ubuntu1 \
-            g++=4:13.2.0-7ubuntu1 \
-            python3=3.12.3-0ubuntu2 \
-            ca-certificates=20240203; \
-    elif [ "${OS_VERSION}" = "22.04" ]; then \
-        DEBIAN_FRONTEND=noninteractive \
-        apt-get install --no-install-recommends -y \
-            npm=8.5.1~ds-1 \
-            git=1:2.34.1-1ubuntu1.14 \
-            gcc=4:11.2.0-1ubuntu1 \
-            g++=4:11.2.0-1ubuntu1 \
-            python3=3.10.6-1~22.04.1 \
-            ca-certificates=20240203~22.04.1; \
-    else \
-        echo "Unsupported OS version: ${OS_VERSION}" >&2; \
-        exit 1; \
-    fi \
+FROM ubuntu:noble-20250925@sha256:728785b59223d755e3e5c5af178fab1be7031f3522c5ccd7a0b32b80d8248123 AS dependencies
+ARG BAZELISK_URL
+ARG BAZELISK_SHA256
+ARG TARGETARCH
+COPY ./tools/bazel-retry.sh /usr/local/bin/bazel-retry
+RUN ARCH_SUFFIX=amd64 \
+    && if [ "$TARGETARCH" = "arm64" ]; then ARCH_SUFFIX=arm64; fi \
+    && BAZELISK_URL="${BAZELISK_URL:-https://github.com/bazelbuild/bazelisk/releases/download/v1.25.0/bazelisk-linux-${ARCH_SUFFIX}}" \
+    && if [ -z "$BAZELISK_SHA256" ]; then \
+         if [ "$TARGETARCH" = "arm64" ]; then \
+           BAZELISK_SHA256=4c8d966e40ac2c4efcc7f1a5a5cceef2c0a2f16b957e791fa7a867cce31e8fcb; \
+         else \
+           BAZELISK_SHA256=fd8fdff418a1758887520fa42da7e6ae39aefc788cf5e7f7bb8db6934d279fc4; \
+         fi; \
+       fi \
+    && apt-get update \
+    && DEBIAN_FRONTEND=noninteractive \
+    apt-get install --no-install-recommends -y \
+        git=1:2.43.0-1ubuntu7.3 \
+        gcc=4:13.2.0-7ubuntu1 \
+        g++=4:13.2.0-7ubuntu1 \
+        python3=3.12.3-0ubuntu2.1 \
+        ca-certificates=20240203 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
-    && npm install -g @bazel/bazelisk@1.25.0
+    && python3 -c 'import hashlib, pathlib, stat, sys, urllib.request; data = urllib.request.urlopen(sys.argv[1], timeout=60).read(); digest = hashlib.sha256(data).hexdigest(); assert digest == sys.argv[2], f"sha256 mismatch: {digest}"; path = pathlib.Path("/usr/local/bin/bazel"); path.write_bytes(data); path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)' "$BAZELISK_URL" "$BAZELISK_SHA256" \
+    && chmod +x /usr/local/bin/bazel-retry
 
 # Build the binary.
 FROM dependencies AS builder
@@ -57,17 +61,24 @@ WORKDIR /root/nativelink
 COPY . .
 ARG OPT_LEVEL
 ARG ADDITIONAL_BAZEL_FLAGS
-RUN bazel build -c ${OPT_LEVEL} ${ADDITIONAL_BAZEL_FLAGS} nativelink && \
+# Add startup options to prevent Bazel server issues on ARM64
+RUN bazel-retry \
+    --batch \
+    --output_base=/tmp/bazel_output \
+    build -c ${OPT_LEVEL} ${ADDITIONAL_BAZEL_FLAGS} nativelink && \
     cp ./bazel-bin/nativelink /root/nativelink-bin
 
 # Go back to a fresh ubuntu container and copy only the compiled binary.
-FROM ubuntu:${OS_VERSION} AS final
-ARG OS_VERSION
+FROM ubuntu:noble-20250925@sha256:728785b59223d755e3e5c5af178fab1be7031f3522c5ccd7a0b32b80d8248123 AS final
 COPY --from=builder /root/nativelink-bin /usr/local/bin/nativelink
 
 ARG ADDITIONAL_SETUP_WORKER_CMD
 
-RUN bash -ueo pipefail -c "${ADDITIONAL_SETUP_WORKER_CMD}" \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl=8.5.0-2ubuntu10.11 \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* \
+    && bash -ueo pipefail -c "${ADDITIONAL_SETUP_WORKER_CMD}" \
     && mkdir -p /root/.cache/nativelink
 
 EXPOSE 50051/tcp 50052/tcp

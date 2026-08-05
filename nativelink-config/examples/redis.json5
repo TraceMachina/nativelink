@@ -6,7 +6,7 @@
         addresses: [
           "redis://127.0.0.1:6379/",
         ],
-        mode: "cluster",
+        mode: "standard",
       },
     },
     {
@@ -15,7 +15,7 @@
         addresses: [
           "redis://127.0.0.1:6379/",
         ],
-        mode: "cluster",
+        mode: "standard",
       },
     },
     {

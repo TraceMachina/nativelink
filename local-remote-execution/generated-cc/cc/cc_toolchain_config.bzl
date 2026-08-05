@@ -31,6 +31,7 @@ load(
     "with_feature_set",
 )
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
+load("@rules_cc//cc/toolchains:cc_toolchain_config_info.bzl", "CcToolchainConfigInfo")
 
 def _target_os_version(ctx):
     platform_type = ctx.fragments.apple.single_arch_platform.platform_type
@@ -1608,7 +1609,8 @@ def _impl(ctx):
             ),
         ]
         features = [
-            macos_minimum_os_feature,
+            # FIXME(palfrey): This breaks mimalloc builds
+            # macos_minimum_os_feature,
             macos_default_link_flags_feature,
             runtime_library_search_directories_feature,
             set_install_name_feature,

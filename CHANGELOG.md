@@ -3,6 +3,1054 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.6.4](https://github.com/TraceMachina/nativelink/compare/v1.6.3..1.6.4) - 2026-08-04
+
+### ⛰️  Features
+
+- Add issue templating for more approachable reports ([#2471](https://github.com/TraceMachina/nativelink/issues/2471)) - ([4eb80ad](https://github.com/TraceMachina/nativelink/commit/4eb80ad835753eff8e301d9086afe934930d26b7))
+- Add opt-in zstd wire compression to GrpcStore transfers ([#2596](https://github.com/TraceMachina/nativelink/issues/2596)) - ([64ca974](https://github.com/TraceMachina/nativelink/commit/64ca97402b2ce14fe5fcfe255130bb6b69db827b))
+
+### 🐛 Bug Fixes
+
+- Fix deadlock due to worker resource-tracking leak in scheduler [1.6-patch-1] ([#2642](https://github.com/TraceMachina/nativelink/issues/2642)) - ([7ddf1bd](https://github.com/TraceMachina/nativelink/commit/7ddf1bd1e03b5fff6569bf2e32092f8f6aa65208))
+- Fix duplicate executions of the same action that caused scheduler state to get out of sync [1.6-patch-6] ([#2648](https://github.com/TraceMachina/nativelink/issues/2648)) - ([4278d4b](https://github.com/TraceMachina/nativelink/commit/4278d4b3c15edfc6c269dd240f5bdd884478f1ec))
+- Fix S3 credential discovery over HTTP ([#2651](https://github.com/TraceMachina/nativelink/issues/2651)) - ([58dd792](https://github.com/TraceMachina/nativelink/commit/58dd792e274009b9bf3fc128b2ea3ad9ee8dafe6))
+- *(redis)* skip FT.AGGREGATE rows for docs that expired mid-query ([#2656](https://github.com/TraceMachina/nativelink/issues/2656)) - ([f784549](https://github.com/TraceMachina/nativelink/commit/f784549380576efc3556ad4ec3dd26f244f83e51))
+- *(error)* classify transient Redis failures as retryable ([#2657](https://github.com/TraceMachina/nativelink/issues/2657)) - ([56aa6f7](https://github.com/TraceMachina/nativelink/commit/56aa6f705cb53ebdc7eea2dc5aefc4d5a18e3783))
+- *(worker)* don't abort the worker when a disconnect catches an action in transit ([#2658](https://github.com/TraceMachina/nativelink/issues/2658)) - ([bafafc7](https://github.com/TraceMachina/nativelink/commit/bafafc78f8eddb68201ad76b43641b6bd2f45a35))
+
+### 📚 Documentation
+
+- *(config-reference)* regenerate for NativeLink ([#2652](https://github.com/TraceMachina/nativelink/issues/2652)) - ([4649c50](https://github.com/TraceMachina/nativelink/commit/4649c5034b0e04bce676b9825cb9bd15c52c5c69))
+- Zstd transfers consistency ([#2660](https://github.com/TraceMachina/nativelink/issues/2660)) - ([46a3202](https://github.com/TraceMachina/nativelink/commit/46a32026f2a1a572834f18c8c32108d7dc3496b5))
+- Add GTM to the docs site to improve developer experience ([#2661](https://github.com/TraceMachina/nativelink/issues/2661)) - ([af1bd74](https://github.com/TraceMachina/nativelink/commit/af1bd740f114e768b1a40741ce9b09919026b844))
+- remove NativeLink Cloud product listings and links ([#2637](https://github.com/TraceMachina/nativelink/issues/2637)) - ([d16a1d7](https://github.com/TraceMachina/nativelink/commit/d16a1d70b438f8616c93de96857e2f9a29421d5f))
+
+### 🧪 Testing & CI
+
+- bazel-retry improvements ([#2655](https://github.com/TraceMachina/nativelink/issues/2655)) - ([2c23a86](https://github.com/TraceMachina/nativelink/commit/2c23a867b01b5136af54c0e11baf6b5a2f04909b))
+
+### ⚙️ Miscellaneous
+
+- *(worker)* prevent upload_results deadlock when file count exceeds semaphore permits ([#2636](https://github.com/TraceMachina/nativelink/issues/2636)) ([#2638](https://github.com/TraceMachina/nativelink/issues/2638)) - ([7db3f70](https://github.com/TraceMachina/nativelink/commit/7db3f701323d2bdf1cbb271f499b3d3d2ffdd7f1))
+- Move Github bazel retry into a general command ([#2616](https://github.com/TraceMachina/nativelink/issues/2616)) - ([66055ac](https://github.com/TraceMachina/nativelink/commit/66055ac403391cdeeebcd45204b8b45e1c62171e))
+- Remove the marketing site tracker script ([#2612](https://github.com/TraceMachina/nativelink/issues/2612)) - ([4c2269a](https://github.com/TraceMachina/nativelink/commit/4c2269ac3da9508a07bc2b1b4be9f9c14d8fbdd2))
+
+## [1.6.3](https://github.com/TraceMachina/nativelink/compare/v1.6.2..v1.6.3) - 2026-07-24
+
+### ⛰️  Features
+
+- Add GTM to the corporate site ([#2610](https://github.com/TraceMachina/nativelink/issues/2610)) - ([94f312a](https://github.com/TraceMachina/nativelink/commit/94f312a043847d5dd0f8ca95b676b00d4697c04d))
+- Add the Leadfeeder tracker to the marketing site ([#2606](https://github.com/TraceMachina/nativelink/issues/2606)) - ([9700a4a](https://github.com/TraceMachina/nativelink/commit/9700a4a522de525b9121188f19bd1c74b2d4a10e))
+- Prefetch directory-cache tree protos with one GetTree stream ([#2546](https://github.com/TraceMachina/nativelink/issues/2546)) - ([2cbf21e](https://github.com/TraceMachina/nativelink/commit/2cbf21ef52f78ea95d0eb11f9f4396022619b70d))
+
+### 🐛 Bug Fixes
+
+- Fix #2564, .exec cleanup and coun F_FULLFSYNC operations ([#2602](https://github.com/TraceMachina/nativelink/issues/2602)) - ([b44f31d](https://github.com/TraceMachina/nativelink/commit/b44f31dde49cd89210a9d10fdd5414b56db741d1))
+- Fix custom-image workflow: grant pull-requests: write and fix command parsing ([#2600](https://github.com/TraceMachina/nativelink/issues/2600)) - ([63567c8](https://github.com/TraceMachina/nativelink/commit/63567c85b8fc609e47b990336c55b91133069ac1))
+- Let GCS get_part defer NotFound to the retrier ([#2584](https://github.com/TraceMachina/nativelink/issues/2584)) - ([3947c71](https://github.com/TraceMachina/nativelink/commit/3947c71603b5d3acb39d2f0caf2a22db6b009089))
+- Fix skopeo login on ubuntu-24.04 for all image workflows ([#2577](https://github.com/TraceMachina/nativelink/issues/2577)) - ([9717f2f](https://github.com/TraceMachina/nativelink/commit/9717f2fb432c0b8cdd26b078d4851040be64abdd))
+
+### 📚 Documentation
+
+- *(config-reference)* regenerate for NativeLink v1.6.2 ([#2576](https://github.com/TraceMachina/nativelink/issues/2576)) - ([9daa989](https://github.com/TraceMachina/nativelink/commit/9daa989b24330a09f570c623d13331fd293e5062))
+- Move the FAQ into per-page FAQ sections ([#2590](https://github.com/TraceMachina/nativelink/issues/2590)) - ([82a036c](https://github.com/TraceMachina/nativelink/commit/82a036c4a211d6009a251fd47182686f0a2bd85f))
+- Extend the docs FAQ to cover every documentation area ([#2581](https://github.com/TraceMachina/nativelink/issues/2581)) - ([217276c](https://github.com/TraceMachina/nativelink/commit/217276cef05ba5cc2937676b0c874d223a184dac))
+- Redis eviction events support ([#2521](https://github.com/TraceMachina/nativelink/issues/2521)) - ([45a5652](https://github.com/TraceMachina/nativelink/commit/45a56520751e3266be7427bd61950a40eeb49ff0))
+
+### 🧪 Testing & CI
+
+- Skip empty chunks in GCS get_part read stream ([#2620](https://github.com/TraceMachina/nativelink/issues/2620)) - ([41be332](https://github.com/TraceMachina/nativelink/commit/41be33237322c9a67a5431948945b2f7adde3524))
+- Add trace logging for bytestream read ([#2482](https://github.com/TraceMachina/nativelink/issues/2482)) - ([4e2f554](https://github.com/TraceMachina/nativelink/commit/4e2f554f76789edf1072c97db39b8f84906e6a3e))
+- Bootstrap CI on NativeLink Cloud staging (remote cache + BES, dark) ([#2579](https://github.com/TraceMachina/nativelink/issues/2579)) - ([eed5b31](https://github.com/TraceMachina/nativelink/commit/eed5b31e16d2853c2dffddfa107324cd0d7ba0a7))
+
+### ⚙️ Miscellaneous
+
+- Web/compliance and careers ([#2624](https://github.com/TraceMachina/nativelink/issues/2624)) - ([97916b2](https://github.com/TraceMachina/nativelink/commit/97916b2af9b53f0042e7199ace4dfbc6b5c02b95))
+- Replace determinate with nix-quick-install-action ([#2618](https://github.com/TraceMachina/nativelink/issues/2618)) - ([bf908e5](https://github.com/TraceMachina/nativelink/commit/bf908e529eded52fca0a5006e414bb5e333d3be6))
+- add security and trust responsibilities to careers job description ([#2622](https://github.com/TraceMachina/nativelink/issues/2622)) - ([3d40c91](https://github.com/TraceMachina/nativelink/commit/3d40c91a103cc3fa1095f73c4dca13ca64f91f07))
+- Upgrade to rules_rs 0.0.96 ([#2615](https://github.com/TraceMachina/nativelink/issues/2615)) - ([0e7580f](https://github.com/TraceMachina/nativelink/commit/0e7580fcf10d8833e93938d7a76c524a9577fa4e))
+- Increase timeout on trivy ([#2613](https://github.com/TraceMachina/nativelink/issues/2613)) - ([fbf49d6](https://github.com/TraceMachina/nativelink/commit/fbf49d62a660b9bb6e33a7ceb1f4ddb203bd4216))
+- Record the execution metrics that were declared but never emitted ([#2599](https://github.com/TraceMachina/nativelink/issues/2599)) - ([7bb62d7](https://github.com/TraceMachina/nativelink/commit/7bb62d7f2f5b3c0c980b1939c98061204afaca51))
+- Make filesystem store posix_fadvise(DONTNEED) opt-in ([#2608](https://github.com/TraceMachina/nativelink/issues/2608)) - ([d15b2a9](https://github.com/TraceMachina/nativelink/commit/d15b2a97a2d599da520ac12fd45e832dd4f99147))
+- Commit public read-only cache defaults so fork PRs actually receive them ([#2604](https://github.com/TraceMachina/nativelink/issues/2604)) - ([9fe34de](https://github.com/TraceMachina/nativelink/commit/9fe34de2eb6a28b3414fa2e2016c56e657bda279))
+- Skip pre_exec hook when namespaces are disabled to allow posix_spawn ([#2597](https://github.com/TraceMachina/nativelink/issues/2597)) - ([02e3e76](https://github.com/TraceMachina/nativelink/commit/02e3e7665ef566da7eabb10a8d7622d6f0b9dbf3))
+- Coalesce FilesystemStore durability flushes on macOS ([#2539](https://github.com/TraceMachina/nativelink/issues/2539)) - ([97b961a](https://github.com/TraceMachina/nativelink/commit/97b961aac277dd27e0472930a3b1b4733467b8f3))
+- cmake links; rust headers; sandboxing ([#2586](https://github.com/TraceMachina/nativelink/issues/2586)) - ([ddcb47e](https://github.com/TraceMachina/nativelink/commit/ddcb47e5e2c0baaa9537fe5c4be87499f44cde24))
+- Exclude the aggregate total runner entry from the canary hit-rate math ([#2589](https://github.com/TraceMachina/nativelink/issues/2589)) - ([3b1e179](https://github.com/TraceMachina/nativelink/commit/3b1e179b835b03633ee2b42d4ef4fd6627bb57dd))
+- Give fork PRs read-only remote cache via a public key variable ([#2587](https://github.com/TraceMachina/nativelink/issues/2587)) - ([43c0658](https://github.com/TraceMachina/nativelink/commit/43c0658a65e75c073dddf575c3ef6cb8e9afcfe9))
+- cargo-llvm-cov gets flagged, but doesn't have actual vulnerabilities ([#2585](https://github.com/TraceMachina/nativelink/issues/2585)) - ([d59e50f](https://github.com/TraceMachina/nativelink/commit/d59e50f29cff85de3b6194e0bce2a65911830ca4))
+- Cache cargo runs under nix ([#2570](https://github.com/TraceMachina/nativelink/issues/2570)) - ([5ee0afc](https://github.com/TraceMachina/nativelink/commit/5ee0afcfbff2a2393ea3a31b5298e0f38ead1448))
+
+### ⬆️ Bumps & Version Updates
+
+- fix compliance claims, normalize contact emails, add careers pages ([#2621](https://github.com/TraceMachina/nativelink/issues/2621)) - ([b3659b7](https://github.com/TraceMachina/nativelink/commit/b3659b7ee82ad4ffb7bfba6561c3bd10b093e22b))
+- add change history to Terms & Privacy page ([#2619](https://github.com/TraceMachina/nativelink/issues/2619)) - ([c3ffa86](https://github.com/TraceMachina/nativelink/commit/c3ffa86c2ecefeff2cc1afdc2d8bb69230008743))
+- anyhow to 1.0.104 ([#2580](https://github.com/TraceMachina/nativelink/issues/2580)) - ([d1e49ac](https://github.com/TraceMachina/nativelink/commit/d1e49ac5f547006c3ecba9e6a94b16ab82897dce))
+- Update Rust crate syn to v3 ([#2578](https://github.com/TraceMachina/nativelink/issues/2578)) - ([abd0258](https://github.com/TraceMachina/nativelink/commit/abd025888d9b553380ac169f73f802005987749b))
+
+## [1.6.2](https://github.com/TraceMachina/nativelink/compare/v1.6.1..v1.6.2) - 2026-07-17
+
+### ⛰️  Features
+
+- Add fallback match interval to simple scheduler ([#2557](https://github.com/TraceMachina/nativelink/issues/2557)) - ([7a4279b](https://github.com/TraceMachina/nativelink/commit/7a4279b4e51cfb6064937b50f763e3c13733db0a))
+- Add opt-in small-blob read coalescing to GrpcStore ([#2540](https://github.com/TraceMachina/nativelink/issues/2540)) - ([4be35e6](https://github.com/TraceMachina/nativelink/commit/4be35e6dccb7fbc08d414ca029c592e9e7853cbf))
+
+### 🐛 Bug Fixes
+
+- Remove quoting around NetApp ([#2556](https://github.com/TraceMachina/nativelink/issues/2556)) - ([65e2ec2](https://github.com/TraceMachina/nativelink/commit/65e2ec2004ca28e3d9273959c7a809f9b0dcb0e0))
+- Fix skopeo login issues on image publish ([#2549](https://github.com/TraceMachina/nativelink/issues/2549)) - ([e72490c](https://github.com/TraceMachina/nativelink/commit/e72490cc3e388a944f177ce47bca46ecbb027180))
+- Handle zero digests in CompressionStore ([#2548](https://github.com/TraceMachina/nativelink/issues/2548)) - ([b08995d](https://github.com/TraceMachina/nativelink/commit/b08995de0447d92fc5a47f71af1d83d4c4da142c))
+
+### 📚 Documentation
+
+- *(config-reference)* regenerate for NativeLink v1.6.0 ([#2553](https://github.com/TraceMachina/nativelink/issues/2553)) - ([f871377](https://github.com/TraceMachina/nativelink/commit/f871377c09ed6fea7538d372e3a3cd2240c231e2))
+- Adds weekly and "everything" docs regen ([#2551](https://github.com/TraceMachina/nativelink/issues/2551)) - ([2a061ba](https://github.com/TraceMachina/nativelink/commit/2a061ba865d2509decc762f11fbdbcf2871d04f9))
+- Remove StoreSpec docs ([#2545](https://github.com/TraceMachina/nativelink/issues/2545)) - ([fb37e86](https://github.com/TraceMachina/nativelink/commit/fb37e86317de19e757ff4e276f2021f9ae0b79cc))
+- Add opt-in subtree-keyed caching to the worker DirectoryCache ([#2541](https://github.com/TraceMachina/nativelink/issues/2541)) - ([9f9451e](https://github.com/TraceMachina/nativelink/commit/9f9451e02cfc1adf0c7830fa4003ab328f894d56))
+
+### 🧪 Testing & CI
+
+- Fix AsyncFixedBuffer with zstd compression, remove unused BufChannelReader adapter ([#2574](https://github.com/TraceMachina/nativelink/issues/2574)) - ([b01cb0d](https://github.com/TraceMachina/nativelink/commit/b01cb0db985a8c5356b58751460981c97bfffd6f))
+- Reject duplicate store names in StoreManager ([#2533](https://github.com/TraceMachina/nativelink/issues/2533)) - ([2106b1a](https://github.com/TraceMachina/nativelink/commit/2106b1a8481c502e7069b2635f39d83a54b37268))
+- Add free-disk to Redis store tester ([#2543](https://github.com/TraceMachina/nativelink/issues/2543)) - ([4b1de2c](https://github.com/TraceMachina/nativelink/commit/4b1de2cf24a86429480235d4641668531ede4e72))
+- Fix flakey MongoDB test ([#2535](https://github.com/TraceMachina/nativelink/issues/2535)) - ([b8e8171](https://github.com/TraceMachina/nativelink/commit/b8e81711a8a5d3048884ef94667415d4afe52a2a))
+
+### ⚙️ Miscellaneous
+
+- Remove more unused items ([#2561](https://github.com/TraceMachina/nativelink/issues/2561)) - ([8a8be18](https://github.com/TraceMachina/nativelink/commit/8a8be1879d70eceff4caf1b73d6ae63c61fddc5d))
+- Don't update config reference without changes ([#2562](https://github.com/TraceMachina/nativelink/issues/2562)) - ([48d9b96](https://github.com/TraceMachina/nativelink/commit/48d9b961e5403a904708e3394eead2a26df30d81))
+- Tag config regen builds to our bot account ([#2554](https://github.com/TraceMachina/nativelink/issues/2554)) - ([5003676](https://github.com/TraceMachina/nativelink/commit/50036764f6e87fe0518f62eb2ee6b2924f7fadd7))
+- Enforce Vale settings for config as well as markdown ([#2552](https://github.com/TraceMachina/nativelink/issues/2552)) - ([27fb8ad](https://github.com/TraceMachina/nativelink/commit/27fb8adde6554de68d452ef87535822ad4330680))
+- curl 8.5.0-2ubuntu10.11 security update ([#2544](https://github.com/TraceMachina/nativelink/issues/2544)) - ([a8e383a](https://github.com/TraceMachina/nativelink/commit/a8e383ae5e8bd78c8b50fdbad17e7376428a3b3e))
+
+### ⬆️ Bumps & Version Updates
+
+- Upgrade anyhow to 1.0.103 for RUSTSEC-2026-0190 ([#2569](https://github.com/TraceMachina/nativelink/issues/2569)) - ([6675acb](https://github.com/TraceMachina/nativelink/commit/6675acb9ed130ee11f174772a0677500944c8049))
+- Upgrade quick-xml to 0.41 for RUSTSEC-2026-0194 ([#2566](https://github.com/TraceMachina/nativelink/issues/2566)) - ([b173e4b](https://github.com/TraceMachina/nativelink/commit/b173e4be5a65abf56e2c0d620aa7ea23b9107900))
+- Upgrade serde_with to 3.21 for GHSA-7gcf-g7xr-8hxj ([#2559](https://github.com/TraceMachina/nativelink/issues/2559)) - ([b18311f](https://github.com/TraceMachina/nativelink/commit/b18311f46f341bf30e4067a04b9ed93866b9bd46))
+- Update nixpkgs so we can drop our patched renovate ([#2537](https://github.com/TraceMachina/nativelink/issues/2537)) - ([ad0d83d](https://github.com/TraceMachina/nativelink/commit/ad0d83dd80d4f1c88f40468722cfb950bd7e87af))
+
+## [1.6.1](https://github.com/TraceMachina/nativelink/compare/v1.6.0..v1.6.1) - 2026-07-08
+
+### ⛰️  Features
+
+- Materialize directory-cache nodes concurrently on cold misses ([#2526](https://github.com/TraceMachina/nativelink/issues/2526)) - ([065be46](https://github.com/TraceMachina/nativelink/commit/065be46241cac3509489cadf07a1d33d173e5be5))
+- Marcussorealheis extend zstd ([#2527](https://github.com/TraceMachina/nativelink/issues/2527)) - ([e4b6ca6](https://github.com/TraceMachina/nativelink/commit/e4b6ca6e23ed1e2f460c31cc6f6641fde7016842))
+- Adds timer to hyper ([#2523](https://github.com/TraceMachina/nativelink/issues/2523)) - ([63f3454](https://github.com/TraceMachina/nativelink/commit/63f345431b75b7d16800af1e7676161f4e902b4c))
+- Add REAPI content-defined chunking (SplitBlob/SpliceBlob) support ([#2497](https://github.com/TraceMachina/nativelink/issues/2497)) - ([9d86aaf](https://github.com/TraceMachina/nativelink/commit/9d86aaf97a75c64b8a9c664ab0be0242f2c5a71b))
+
+### 🐛 Bug Fixes
+
+- Flush in detect_duplicate_upload ([#2528](https://github.com/TraceMachina/nativelink/issues/2528)) - ([338abe3](https://github.com/TraceMachina/nativelink/commit/338abe33d1c5b7f15b1a1d9f3dd9dee078cc782b))
+
+### 📚 Documentation
+
+- Fix duplicate phrase in CONTRIBUTING.md ([#2522](https://github.com/TraceMachina/nativelink/issues/2522)) - ([7eaf209](https://github.com/TraceMachina/nativelink/commit/7eaf2090942ee50158dd02fd592bc93958b1ad06))
+
+### 🧪 Testing & CI
+
+- Increase the attic retry time ([#2524](https://github.com/TraceMachina/nativelink/issues/2524)) - ([21dadec](https://github.com/TraceMachina/nativelink/commit/21dadec3357f13ce8e6e9c1a64da6facc5eed7dd))
+- Disable Bazel lockfile in 8.7 compatibility lane ([#2517](https://github.com/TraceMachina/nativelink/issues/2517)) - ([8162a93](https://github.com/TraceMachina/nativelink/commit/8162a935284d770626351c37d531f50b27fb223c))
+
+### ⚙️ Miscellaneous
+
+- *(release)* cross-compile the aarch64 Linux binary on x86 ([#2529](https://github.com/TraceMachina/nativelink/issues/2529)) - ([32e4952](https://github.com/TraceMachina/nativelink/commit/32e4952e82dcdc97cf3b9c1a324ca23c646efcf5))
+- add MCP AI widget, MDX support, and design updates ([#2488](https://github.com/TraceMachina/nativelink/issues/2488)) - ([7909e32](https://github.com/TraceMachina/nativelink/commit/7909e32c4a9bd3ea3f402c397572dd14d5dafbff))
+- Attach the tag to images pushed on a tag build ([#2515](https://github.com/TraceMachina/nativelink/issues/2515)) - ([05c5fac](https://github.com/TraceMachina/nativelink/commit/05c5fac5efdf843b8962bae79a8457c51eb62bd7))
+
+### ⬆️ Bumps & Version Updates
+
+- Upgrade crossbeam-epoch and serial_test ([#2519](https://github.com/TraceMachina/nativelink/issues/2519)) - ([0ac1434](https://github.com/TraceMachina/nativelink/commit/0ac1434f1965bc53d0b28d1cbbfe15f2c4b81acc))
+- Upgrade to Bazel 9.1.1 and 8.7.0 ([#2514](https://github.com/TraceMachina/nativelink/issues/2514)) - ([1f94866](https://github.com/TraceMachina/nativelink/commit/1f9486699a2699d017fa6452619ab79e432702f5))
+
+## [1.6.0](https://github.com/TraceMachina/nativelink/compare/v1.5.2..v1.6.0) - 2026-07-06
+
+### ⛰️  Features
+
+- Add troubleshooting tips for macOS Nix setup ([#2505](https://github.com/TraceMachina/nativelink/issues/2505)) - ([5e72a32](https://github.com/TraceMachina/nativelink/commit/5e72a32f2b07f5ce5c6b03eded08c7380999cafe))
+- Regenerate Changelog on New Release ([#2500](https://github.com/TraceMachina/nativelink/issues/2500)) - ([503056f](https://github.com/TraceMachina/nativelink/commit/503056f16ddb13d5aabc76cc54b1af2032f4c384))
+- Add Oracle store ([#2492](https://github.com/TraceMachina/nativelink/issues/2492)) - ([8b74394](https://github.com/TraceMachina/nativelink/commit/8b7439435577a9465ced7229f16664438b607cd3))
+- Improve logging for detect_duplicate_upload and fake redis sync ([#2481](https://github.com/TraceMachina/nativelink/issues/2481)) - ([66f7159](https://github.com/TraceMachina/nativelink/commit/66f7159365cb5009e935d50920d0a5125bc336a8))
+- Add multi-arch images for worker-init ([#2459](https://github.com/TraceMachina/nativelink/issues/2459)) - ([a5b6f65](https://github.com/TraceMachina/nativelink/commit/a5b6f65f45e7c404dfc9233d249aca10eaae587b))
+
+### 📚 Documentation
+
+- *(config-reference)* regenerate for NativeLink v1.5.2 ([#2447](https://github.com/TraceMachina/nativelink/issues/2447)) - ([9ec713c](https://github.com/TraceMachina/nativelink/commit/9ec713c8120b34ea46756a55a42c7079319ecd25))
+- Update the OCI store with the tests and docs ([#2506](https://github.com/TraceMachina/nativelink/issues/2506)) - ([d624f6a](https://github.com/TraceMachina/nativelink/commit/d624f6a483a7b5530506c3ca76d8890bae269239))
+- [web] restore blog posts deleted by the site redesign ([#2501](https://github.com/TraceMachina/nativelink/issues/2501)) - ([6dca947](https://github.com/TraceMachina/nativelink/commit/6dca947a135bea52585ebaa4a627510656e02b62))
+- Update LRE/store docs to fix #2406 ([#2498](https://github.com/TraceMachina/nativelink/issues/2498)) - ([5516d8b](https://github.com/TraceMachina/nativelink/commit/5516d8be1db4045e1d97bede230beab626f0f4e7))
+- Make cleanup wait timeout configurable in LocalWorkerConfig ([#2456](https://github.com/TraceMachina/nativelink/issues/2456)) - ([f25f68d](https://github.com/TraceMachina/nativelink/commit/f25f68d30eab57796a6bf03ef53f28fe04345384))
+- Improve other build systems docs ([#2448](https://github.com/TraceMachina/nativelink/issues/2448)) - ([bc1a294](https://github.com/TraceMachina/nativelink/commit/bc1a29413820c0b402d6f12a1ccfcc66601d3279))
+
+### 🧪 Testing & CI
+
+- Fix custom image building ([#2477](https://github.com/TraceMachina/nativelink/issues/2477)) - ([452a720](https://github.com/TraceMachina/nativelink/commit/452a72035630a08bdd350c2584f210fe8f1cf476))
+- skip writes larger than max_bytes instead of buffering them ([#2473](https://github.com/TraceMachina/nativelink/issues/2473)) - ([1a10e3f](https://github.com/TraceMachina/nativelink/commit/1a10e3fa90c4dd769a3802b7e386b3a0c94fab98))
+- Fix various OCI image upload issues ([#2457](https://github.com/TraceMachina/nativelink/issues/2457)) - ([5f6be36](https://github.com/TraceMachina/nativelink/commit/5f6be36843380e61f6794587557bc5ff25fa3cbc))
+- Improve security scorecard ([#2452](https://github.com/TraceMachina/nativelink/issues/2452)) - ([babdfd9](https://github.com/TraceMachina/nativelink/commit/babdfd9412c45f2018de67f30b0811330c0f2874))
+
+### ⚙️ Miscellaneous
+
+- *(release)* build aarch64 Linux binary on a native arm64 runner ([#2483](https://github.com/TraceMachina/nativelink/issues/2483)) - ([d55e0e5](https://github.com/TraceMachina/nativelink/commit/d55e0e5dc6a4b81e35afc9aa3886f412e28a8702))
+- *(release)* pin cosign to v2.5.3 for legacy .sig/.pem output ([#2480](https://github.com/TraceMachina/nativelink/issues/2480)) - ([1829fa4](https://github.com/TraceMachina/nativelink/commit/1829fa462e6e766b7ac1e5faf74e862925359d8d))
+- *(release)* keep legacy cosign signature/cert outputs ([#2478](https://github.com/TraceMachina/nativelink/issues/2478)) - ([2cd0507](https://github.com/TraceMachina/nativelink/commit/2cd0507b85efd6663bb574f49654e489a9175ea7))
+- *(release)* add signed release artifacts with SLSA provenance ([#2470](https://github.com/TraceMachina/nativelink/issues/2470)) - ([c72bce8](https://github.com/TraceMachina/nativelink/commit/c72bce8533913c70d121c0798f4c6d07ce78537a))
+- Migrate Azure Blob store to use the Azure v1.0 crates ([#2472](https://github.com/TraceMachina/nativelink/issues/2472)) - ([884ffde](https://github.com/TraceMachina/nativelink/commit/884ffdea523ad4ecb00e01c94a7d73cd86edf09a))
+- Remove reclient in favor of Siso ([#2510](https://github.com/TraceMachina/nativelink/issues/2510)) - ([d9325f8](https://github.com/TraceMachina/nativelink/commit/d9325f8cd3d80bb5f22bce03eda5ba3d83693dc6))
+- Strip stray item from changelog ([#2507](https://github.com/TraceMachina/nativelink/issues/2507)) - ([87d16c6](https://github.com/TraceMachina/nativelink/commit/87d16c6a33c4a75add5db499d8a2aa4a84750de1))
+- evict .exec variant when its digest is evicted ([#2474](https://github.com/TraceMachina/nativelink/issues/2474)) ([#2503](https://github.com/TraceMachina/nativelink/issues/2503)) - ([6a162e3](https://github.com/TraceMachina/nativelink/commit/6a162e37cf6315ad76638114129a31521e29356a))
+- Default --fallback for nix rather than having to set it everywhere ([#2475](https://github.com/TraceMachina/nativelink/issues/2475)) - ([f170cdf](https://github.com/TraceMachina/nativelink/commit/f170cdf41326ae9b24e5c0d1b2b344fdd165b4b6))
+- Rename time-based config values to have appropriate postfixes ([#2462](https://github.com/TraceMachina/nativelink/issues/2462)) - ([ccc01eb](https://github.com/TraceMachina/nativelink/commit/ccc01eb6c82584b0564a373d2405df30d389f316))
+- Disable various things we don't want renovate to upgrade ([#2469](https://github.com/TraceMachina/nativelink/issues/2469)) - ([414246b](https://github.com/TraceMachina/nativelink/commit/414246b160c8facf629797b9a95cac4e5a74d8d7))
+- == not != for multi-arch upload ([#2455](https://github.com/TraceMachina/nativelink/issues/2455)) - ([d74ba31](https://github.com/TraceMachina/nativelink/commit/d74ba31dd7a4a6e2c4d50f5594cb558f54f9b077))
+- Multi arch image publish with date-versioning ([#2454](https://github.com/TraceMachina/nativelink/issues/2454)) - ([65d43ed](https://github.com/TraceMachina/nativelink/commit/65d43ede9156caecb704ffb08eea9f6c93bb962f))
+- ref_store now resolves on boot, not first query ([#2451](https://github.com/TraceMachina/nativelink/issues/2451)) - ([0952bb6](https://github.com/TraceMachina/nativelink/commit/0952bb644202b05e82533bbe95eefd2841f4cffc))
+
+### ⬆️ Bumps & Version Updates
+
+- *(web)* Replace hero visual with YouTube video embed ([#2443](https://github.com/TraceMachina/nativelink/issues/2443)) - ([d1863ca](https://github.com/TraceMachina/nativelink/commit/d1863ca3e34e6619b43ee2a55fd6dbf3093253aa))
+- Update dependency marked to v18 ([#2502](https://github.com/TraceMachina/nativelink/issues/2502)) - ([0d516b9](https://github.com/TraceMachina/nativelink/commit/0d516b903054f6fe320767a8c88203137c374c31))
+- Update Rust crate anyhow to v1.0.103 [SECURITY] ([#2494](https://github.com/TraceMachina/nativelink/issues/2494)) - ([d459bd9](https://github.com/TraceMachina/nativelink/commit/d459bd908b96f7cb09d971aeeb7406180a08de58))
+- Update Rust crate opentelemetry_sdk to 0.32.0 [SECURITY] ([#2487](https://github.com/TraceMachina/nativelink/issues/2487)) - ([ce3a919](https://github.com/TraceMachina/nativelink/commit/ce3a919ecce0e6f4ac3ebede5e90813b16f888f8))
+- Update website components ([#2486](https://github.com/TraceMachina/nativelink/issues/2486)) - ([3bfe408](https://github.com/TraceMachina/nativelink/commit/3bfe40897a02853635ba00107d6c193885799eea))
+- bump quinn-proto to 0.11.15 and memmap2 to 0.9.11 (RustSec) ([#2479](https://github.com/TraceMachina/nativelink/issues/2479)) - ([ae5762e](https://github.com/TraceMachina/nativelink/commit/ae5762e5412cede276c37e1f33f6f92788e68dfd))
+- Update dependency @types/node to v26 ([#2453](https://github.com/TraceMachina/nativelink/issues/2453)) - ([a9f5ce1](https://github.com/TraceMachina/nativelink/commit/a9f5ce104f6f0252806884d0608b7f34c27be0f4))
+- Update logo ([#2450](https://github.com/TraceMachina/nativelink/issues/2450)) - ([1989e8d](https://github.com/TraceMachina/nativelink/commit/1989e8d3b0ca274e7e3687c7edab3638c3f90849))
+
+## [1.5.2](https://github.com/TraceMachina/nativelink/compare/v1.5.1..v1.5.2) - 2026-06-17
+
+### 🐛 Bug Fixes
+
+- *(redis)* ride out a Sentinel failover on the write paths ([#2445](https://github.com/TraceMachina/nativelink/issues/2445)) by @amankrx - ([a776234](https://github.com/TraceMachina/nativelink/commit/a77623428757dc8d228aa4932edcfd4dac81cea8))
+- *(origin-events)* don't drop resource-usage events on transient failure ([#2442](https://github.com/TraceMachina/nativelink/issues/2442)) by @amankrx - ([78af03a](https://github.com/TraceMachina/nativelink/commit/78af03a7e5c96fb8553b903d87fe6943e34932ee))
+
+### 📚 Documentation
+
+- Makes various docs improvements ([#2444](https://github.com/TraceMachina/nativelink/issues/2444)) by @palfrey - ([2d7d6b3](https://github.com/TraceMachina/nativelink/commit/2d7d6b325008f5e1a15657eb2bee8f1a8da0e0db))
+
+### ⚙️ Miscellaneous
+
+- Adds latest tag with bun ([#2440](https://github.com/TraceMachina/nativelink/issues/2440)) by @MarcusSorealheis - ([3bca6f7](https://github.com/TraceMachina/nativelink/commit/3bca6f7ec75af659dd015e7c9df08a85cc163365))
+
+## [1.5.1](https://github.com/TraceMachina/nativelink/compare/v1.5.0..v1.5.1) - 2026-06-16
+
+### ⛰️  Features
+
+- Introduce load-balanced channel for OpenTelemetry exporters ([#2175](https://github.com/TraceMachina/nativelink/issues/2175)) - ([82fe6e4](https://github.com/TraceMachina/nativelink/commit/82fe6e4864ac303766d97565542b6a0bc44338c2))
+
+### 🐛 Bug Fixes
+
+- *(redis_store)* recover connections through a Sentinel master failover ([#2438](https://github.com/TraceMachina/nativelink/issues/2438)) - ([06e0caf](https://github.com/TraceMachina/nativelink/commit/06e0caff19bd827ba63080a6f1663356393e1850))
+- *(redis_store)* retry has/get_part/list on failover too ([#2437](https://github.com/TraceMachina/nativelink/issues/2437)) - ([d4565e6](https://github.com/TraceMachina/nativelink/commit/d4565e655a844a0983b39d0831d999ee9df78246))
+- *(redis_store)* re-resolve master on update verify/rename for failover safety ([#2435](https://github.com/TraceMachina/nativelink/issues/2435)) - ([54918b6](https://github.com/TraceMachina/nativelink/commit/54918b629f5394fa2eac6b68278869e1671aa3bc))
+
+### 📚 Documentation
+
+- Autogenerate docs again ([#2433](https://github.com/TraceMachina/nativelink/issues/2433)) - ([dc3702c](https://github.com/TraceMachina/nativelink/commit/dc3702c25e229fc5a20146d4b9c8e6d6f4c0a499))
+
+### 🧪 Testing & CI
+
+- Dump coverage in text form during CI ([#2432](https://github.com/TraceMachina/nativelink/issues/2432)) - ([04c2f49](https://github.com/TraceMachina/nativelink/commit/04c2f4976e8aadec587f64bb9fe65cfcb90973ad))
+- Make bash shell scripts actually fall over ([#2428](https://github.com/TraceMachina/nativelink/issues/2428)) - ([d537003](https://github.com/TraceMachina/nativelink/commit/d537003b2eb7ccae69bd126fbec4ea4a9e73aa03))
+- worker_utils test coverage to 100% ([#2427](https://github.com/TraceMachina/nativelink/issues/2427)) - ([729c88d](https://github.com/TraceMachina/nativelink/commit/729c88dcf65dd40da4736ddf328fb6a2dbbecd63))
+
+## [1.5.0](https://github.com/TraceMachina/nativelink/compare/v1.4.0..v1.5.0) - 2026-06-12
+
+### ⛰️  Features
+
+- opt-in bypass of leader/follower dedup for huge blobs ([#2415](https://github.com/TraceMachina/nativelink/issues/2415)) - ([b4ee17c](https://github.com/TraceMachina/nativelink/commit/b4ee17c657c6fc246cede512b213ad8f9fe71168))
+- *(scheduler)* publish resource-usage origin event from ApiWorkerScheduler ([#2413](https://github.com/TraceMachina/nativelink/issues/2413)) - ([08a2f24](https://github.com/TraceMachina/nativelink/commit/08a2f24d59e53b4aeb1627f23eb9102bf274c2be))
+- *(worker)* sample action peak memory by process group ([#2409](https://github.com/TraceMachina/nativelink/issues/2409)) - ([5a9259e](https://github.com/TraceMachina/nativelink/commit/5a9259e7eb07a0026a74df1140418d94625d0130))
+
+### 🐛 Bug Fixes
+
+- ⚠️ **Breaking:** Prevent CAS and AC from using the same store ([#1177](https://github.com/TraceMachina/nativelink/issues/1177)) - ([9a5843b](https://github.com/TraceMachina/nativelink/commit/9a5843b61cf8531d84432a4a12828b9b5744d3be))
+  Configs that point an instance's `cas_store` and `ac_store` at the same store now fail at startup with `InvalidArgument`. Give the AC its own store before upgrading.
+- make unref ENOENT idempotent and demote map/disk divergence to warn ([#2424](https://github.com/TraceMachina/nativelink/issues/2424)) - ([f200e10](https://github.com/TraceMachina/nativelink/commit/f200e10776d593aef7d0c0476cc2856421438ddd))
+- single-acquire active_uploads in create_or_join_upload_stream ([#2429](https://github.com/TraceMachina/nativelink/issues/2429)) - ([f1032f8](https://github.com/TraceMachina/nativelink/commit/f1032f86059e402b77bf9dd89b578e29af056875))
+- fall through to slow on stale fast-tier map entries ([#2414](https://github.com/TraceMachina/nativelink/issues/2414)) - ([5186a3b](https://github.com/TraceMachina/nativelink/commit/5186a3b79ac3b4cefd6048d13328cdd3fca374dc))
+- bound cid_* lifetime to stop orphan accumulation ([#2417](https://github.com/TraceMachina/nativelink/issues/2417)) - ([d9403b0](https://github.com/TraceMachina/nativelink/commit/d9403b0a554d549477a68d97f04e2cc52899afab))
+- pass explicit TIMEOUT to absorb RediSearch slow scans ([#2393](https://github.com/TraceMachina/nativelink/issues/2393)) - ([081a2c4](https://github.com/TraceMachina/nativelink/commit/081a2c42351b5338717db6f45a4ea4da9c0c6706))
+- Fix calculation of multipart S3 upload chunk size ([#1648](https://github.com/TraceMachina/nativelink/issues/1648)) ([#2091](https://github.com/TraceMachina/nativelink/issues/2091)) - ([1ca2373](https://github.com/TraceMachina/nativelink/commit/1ca23736598cfc3a0c4f5707d010aeffe944fc3a))
+- Fix println/debug warnings ([#2423](https://github.com/TraceMachina/nativelink/issues/2423)) - ([c9a63e7](https://github.com/TraceMachina/nativelink/commit/c9a63e7dd6f5d46df64fe0f3032d069bdb032b53))
+
+### 📚 Documentation
+
+- Add cmake and recc tutorial blog ([#2297](https://github.com/TraceMachina/nativelink/issues/2297)) - ([9760b94](https://github.com/TraceMachina/nativelink/commit/9760b94b8c71ac2769e08cc6b02584afd7eb77ef))
+- Fix broken reid link at the bottom of cmake-recc ([#2426](https://github.com/TraceMachina/nativelink/issues/2426)) - ([b15745d](https://github.com/TraceMachina/nativelink/commit/b15745ddb2a3f0ba22843077a17cd8839b62833d))
+- link to enterprise.nativelink.com for self-serve Helm licensing ([#2407](https://github.com/TraceMachina/nativelink/issues/2407)) - ([1a4953e](https://github.com/TraceMachina/nativelink/commit/1a4953e50af349467331870b5b2b666332a2af95))
+
+### ⚙️ Miscellaneous
+
+- De-duplicate filesystem emplace ([#2396](https://github.com/TraceMachina/nativelink/issues/2396)) - ([73029bb](https://github.com/TraceMachina/nativelink/commit/73029bb1acff31b74ba6693a37d2e88658d4e2a4))
+- Drop as_know_platform_property_provider ([#2410](https://github.com/TraceMachina/nativelink/issues/2410)) - ([1794d85](https://github.com/TraceMachina/nativelink/commit/1794d85f816be0fd1bb92bdfb95af9f70ee71924))
+- Drop vercel.json ([#2425](https://github.com/TraceMachina/nativelink/issues/2425)) - ([6422b0e](https://github.com/TraceMachina/nativelink/commit/6422b0e507b9670af59a1cc81db785329fe11c98))
+- use Duration::from_mins() for timeout constants ([#2411](https://github.com/TraceMachina/nativelink/issues/2411)) - ([ab0f881](https://github.com/TraceMachina/nativelink/commit/ab0f881a898ee05d0449b59913ecfad0eee7350c))
+
+### 📦 Bumps & Version Updates
+
+- *(deps)* update rust crate zip to v8 ([#2422](https://github.com/TraceMachina/nativelink/issues/2422)) - ([bc6c7db](https://github.com/TraceMachina/nativelink/commit/bc6c7dbfad0eb4686e3b2645674eb8d84975b94d))
+
+## [1.4.0](https://github.com/TraceMachina/nativelink/compare/v1.3.2..v1.4.0) - 2026-06-06
+
+
+
+### ⛰️  Features
+
+- Add worker action memory telemetry ([#2398](https://github.com/TraceMachina/nativelink/issues/2398)) - ([0d2fcf4](https://github.com/TraceMachina/nativelink/commit/0d2fcf494fea4b58f2d0d29f8b7d6a300439f6e4))
+
+### 🐛 Bug Fixes
+
+- surface deferred write errors before emplacing files ([#2402](https://github.com/TraceMachina/nativelink/issues/2402)) - ([76b1924](https://github.com/TraceMachina/nativelink/commit/76b1924182de582baba205bc057b03b2ab1fae83))
+- Fix a pile of lints that clippy complains about ([#2389](https://github.com/TraceMachina/nativelink/issues/2389)) - ([6e29b93](https://github.com/TraceMachina/nativelink/commit/6e29b93f8d9d37096fd12bfbecfef38761b94d56))
+
+### 📚 Documentation
+
+- Clarify NativeLink licensing docs ([#2380](https://github.com/TraceMachina/nativelink/issues/2380)) - ([6b16a50](https://github.com/TraceMachina/nativelink/commit/6b16a50736486094018831f91f2aa9ec8bf0e157))
+
+### 🧪 Testing & CI
+
+- Fix infinite loop when using --help flag on the integration test script ([#2395](https://github.com/TraceMachina/nativelink/issues/2395)) - ([9b275a3](https://github.com/TraceMachina/nativelink/commit/9b275a34cd9b6ec58e44cc58ae1198f9ecc5aa20))
+- run indicator checks in parallel, not serially ([#2390](https://github.com/TraceMachina/nativelink/issues/2390)) - ([43b2eb2](https://github.com/TraceMachina/nativelink/commit/43b2eb2c1e13492b3a84007aff1fcbb18d4342d0))
+- Coverage update nativelink-error and nativelink-config(serde_unnti) ([#1479](https://github.com/TraceMachina/nativelink/issues/1479)) - ([bf7c177](https://github.com/TraceMachina/nativelink/commit/bf7c17761a588a7af250cd5aa5bf0d347050ef5d))
+
+### ⚙️ Miscellaneous
+
+- *(nix)* retry transient Bazel external-fetch failures ([#2397](https://github.com/TraceMachina/nativelink/issues/2397)) - ([776fa53](https://github.com/TraceMachina/nativelink/commit/776fa534ce01f5bf38489cce0aa24fe7ff2598db))
+- support `IP_FREEBIND` to bind not-yet-assigned addresses ([#2399](https://github.com/TraceMachina/nativelink/issues/2399)) - ([3a9a8bc](https://github.com/TraceMachina/nativelink/commit/3a9a8bcfb6232031f4fbc72e8c94b29cb3deddb6))
+- Drop unnecessary checks section ([#2388](https://github.com/TraceMachina/nativelink/issues/2388)) - ([fce7ba0](https://github.com/TraceMachina/nativelink/commit/fce7ba0953295ec7eac42ce4bfc4c2d45d777ecf))
+- replace deprecated `pkgs.system` with `stdenv.hostPlatform.system` ([#2381](https://github.com/TraceMachina/nativelink/issues/2381)) - ([6081fa7](https://github.com/TraceMachina/nativelink/commit/6081fa7069f08ff02887556fc8ba6156ec1c2f2a))
+- Clarify error when TCP Listener binding fails ([#2394](https://github.com/TraceMachina/nativelink/issues/2394)) - ([f4b57b9](https://github.com/TraceMachina/nativelink/commit/f4b57b97f359b3407c4996ea83055308f23775f7))
+- Remove extra Github icon ([#2387](https://github.com/TraceMachina/nativelink/issues/2387)) - ([4711eb3](https://github.com/TraceMachina/nativelink/commit/4711eb309ca648e60beffcc30c42203942a66bcc))
+- gcs_store, filesystem_store: lightweight check_health probes ([#2361](https://github.com/TraceMachina/nativelink/issues/2361)) - ([c5d5691](https://github.com/TraceMachina/nativelink/commit/c5d5691c06ca8487c6d3c549274a19859d989234))
+- migrate off deprecated crane `stdenv` arg to `stdenvSelector` ([#2379](https://github.com/TraceMachina/nativelink/issues/2379)) - ([f4429b6](https://github.com/TraceMachina/nativelink/commit/f4429b605b36abd61bf7e7f6553be930b063132e))
+
+### ⬆️ Bumps & Version Updates
+
+- *(deps)* update dependency typescript to v6 ([#2364](https://github.com/TraceMachina/nativelink/issues/2364)) - ([48bf9cb](https://github.com/TraceMachina/nativelink/commit/48bf9cb451460d0f32b51a48f22f6360164d6f67))
+- Update hoverkraft-tech/compose-action action to v3 ([#2400](https://github.com/TraceMachina/nativelink/issues/2400)) - ([fe6d437](https://github.com/TraceMachina/nativelink/commit/fe6d437c0e867b2f41de3429cb869e4a86371f24))
+- Update coverage for nativelink-error ([#1482](https://github.com/TraceMachina/nativelink/issues/1482)) - ([01eff09](https://github.com/TraceMachina/nativelink/commit/01eff099765ef12d78ed860a5187554566c0b52d))
+- Update dependency fumadocs-mdx to v15 ([#2383](https://github.com/TraceMachina/nativelink/issues/2383)) - ([cd11280](https://github.com/TraceMachina/nativelink/commit/cd11280d0f5fbec52fdfe857a56135889760dc47))
+- Update dependency tailwind-merge to v3 ([#2386](https://github.com/TraceMachina/nativelink/issues/2386)) - ([3c783c0](https://github.com/TraceMachina/nativelink/commit/3c783c01ed56e82114442c9feb0a71f2005f11ce))
+- Update dependency motion to v12 ([#2385](https://github.com/TraceMachina/nativelink/issues/2385)) - ([eaf3270](https://github.com/TraceMachina/nativelink/commit/eaf3270643d29246c537bb63249380f5e602cf77))
+- Update dependency @types/node to v25 ([#2372](https://github.com/TraceMachina/nativelink/issues/2372)) - ([c524dba](https://github.com/TraceMachina/nativelink/commit/c524dbaa852c4995c75bf7dda8c945d9aa57f766))
+- Update Rust crate tar to v0.4.46 [SECURITY] ([#2378](https://github.com/TraceMachina/nativelink/issues/2378)) - ([e5873e5](https://github.com/TraceMachina/nativelink/commit/e5873e5ad96bc79348ec5a4340cd50fc882eb40c))
+- Upgrade aws-smithy components to drop hyper 0.x ([#2384](https://github.com/TraceMachina/nativelink/issues/2384)) - ([f97e865](https://github.com/TraceMachina/nativelink/commit/f97e865a45693825d41151aef6cff969dd100c3f))
+
+## [1.3.2](https://github.com/TraceMachina/nativelink/compare/v1.3.1..v1.3.2) - 2026-05-29
+
+
+
+### 📚 Documentation
+
+- remove base path URL in docs ([#2375](https://github.com/TraceMachina/nativelink/issues/2375)) - ([9bd088e](https://github.com/TraceMachina/nativelink/commit/9bd088eff672c4cf95164e475bab155b5c99b0db))
+- Bugfix/copy regressions ([#2371](https://github.com/TraceMachina/nativelink/issues/2371)) - ([2c54961](https://github.com/TraceMachina/nativelink/commit/2c5496173036773d205c5a39e75d0b7fc1a08c8a))
+
+### 🧪 Testing & CI
+
+- Fix fast-slow store optimisation ([#2373](https://github.com/TraceMachina/nativelink/issues/2373)) - ([2169fde](https://github.com/TraceMachina/nativelink/commit/2169fde722960fcc9aba44575dc8846c883b640f))
+
+### ⚙️ Miscellaneous
+
+- add CSS ambient declarations to work with TS6 ([#2374](https://github.com/TraceMachina/nativelink/issues/2374)) - ([84a7b07](https://github.com/TraceMachina/nativelink/commit/84a7b0750636254a836e8375b331d844f72d89d6))
+- fixing broken contact us button and start free buttons ([#2369](https://github.com/TraceMachina/nativelink/issues/2369)) - ([b157f0c](https://github.com/TraceMachina/nativelink/commit/b157f0c412184584d8326d0d7cedb17d315e4d5b))
+
+### ⬆️ Bumps & Version Updates
+
+- Add cache metrics ([#2344](https://github.com/TraceMachina/nativelink/issues/2344)) - ([9b016e5](https://github.com/TraceMachina/nativelink/commit/9b016e5b2a27f3d5c96993febfa27a5fe8b75b97))
+
+## [1.3.1](https://github.com/TraceMachina/nativelink/compare/v1.3.0..v1.3.1) - 2026-05-23
+
+
+### 🐛 Bug Fixes
+
+- make permission walks symlink-safe ([#2358](https://github.com/TraceMachina/nativelink/issues/2358)) - ([c40fd10](https://github.com/TraceMachina/nativelink/commit/c40fd10fdc9362d1ee0555626b59056d45308c12))
+- keep directory-cache materialized inputs read-only by storing CAS blobs read-only - ([5b31e1a](https://github.com/TraceMachina/nativelink/commit/5b31e1a19633dc649dcbb63792bf64a4e8592e56))
+
+### ⚙️ Miscellaneous
+
+- make directory-cache entries already-writable ([#2357](https://github.com/TraceMachina/nativelink/issues/2357)) - ([83f7be1](https://github.com/TraceMachina/nativelink/commit/83f7be1aa63bbf2a1f20451a56225804cae0dc46))
+- hardlink CAS blobs in directory-cache construct ([#2359](https://github.com/TraceMachina/nativelink/issues/2359)) - ([bbf086a](https://github.com/TraceMachina/nativelink/commit/bbf086ac0ebe7ae6c0b69b2ec794187c4a0e28cb))
+- drop the two redundant full-tree walks in directory-cache build ([#2359](https://github.com/TraceMachina/nativelink/issues/2359)) - ([7c18e3a](https://github.com/TraceMachina/nativelink/commit/7c18e3a2a89b9a6a0b0c03d4f6311bc169ce8e2a))
+- narrow the directory-cache lock and single-flight construction ([#2359](https://github.com/TraceMachina/nativelink/issues/2359)) - ([73764ad](https://github.com/TraceMachina/nativelink/commit/73764ad0ac2ebd767a362d304bc306dd83bd66db))
+
+### 🧪 Testing & CI
+
+- remove inode stat in test - ([b7c6c9f](https://github.com/TraceMachina/nativelink/commit/b7c6c9f6e758c6eda03ab9650bb6ab4f4c8bae55))
+- Add --fallback to all remaining nix CI commands ([#2360](https://github.com/TraceMachina/nativelink/issues/2360)) - ([590c514](https://github.com/TraceMachina/nativelink/commit/590c514ebae8105ebd567d655245bdca02e79f6c))
+
+## [1.3.0](https://github.com/TraceMachina/nativelink/compare/v1.2.0..v1.3.0) - 2026-05-21
+
+
+### ⚠️ Compatibility Notes
+
+- Absolute symlink outputs are now resolved to the file or directory contents before upload instead of being returned as worker-local absolute symlink targets. Relative symlinks are still preserved. If a workflow expected the old worker-local target, update it to consume the uploaded file or directory output. ([#2346](https://github.com/TraceMachina/nativelink/issues/2346)) - ([74aa906](https://github.com/TraceMachina/nativelink/commit/74aa90624323ce2a48151e8a6cb0742d68ec6f56))
+
+### ⛰️  Features
+
+- Implement Remote Persistent Workers ([#2323](https://github.com/TraceMachina/nativelink/issues/2323)) - ([78d1232](https://github.com/TraceMachina/nativelink/commit/78d1232ab739f6ac87dcdb3d16f50a9a3d6eee7d))
+- Add Cloudflare R2 support ([#2319](https://github.com/TraceMachina/nativelink/issues/2319)) - ([3d76991](https://github.com/TraceMachina/nativelink/commit/3d76991e282d5609fe04910e70c293674edd6a68))
+- Add improved logging around command failures ([#2351](https://github.com/TraceMachina/nativelink/issues/2351)) - ([0cf6af7](https://github.com/TraceMachina/nativelink/commit/0cf6af7dc414016a72eba288af7f06e3f53cee97))
+
+### 🐛 Bug Fixes
+
+- Fix zero-digest output file uploads ([#2346](https://github.com/TraceMachina/nativelink/issues/2346)) - ([74aa906](https://github.com/TraceMachina/nativelink/commit/74aa90624323ce2a48151e8a6cb0742d68ec6f56))
+- Fix CAS inode corruption: directory cache cleanup must not chmod files ([#2347](https://github.com/TraceMachina/nativelink/issues/2347)) - ([a00bf8c](https://github.com/TraceMachina/nativelink/commit/a00bf8c0e10e49551d857063acc0caba0a9d259c))
+- APFS clonefile fast path + concurrency cap + zero-byte fix for Bazel input materialization ([#2338](https://github.com/TraceMachina/nativelink/issues/2338)) - ([e6def51](https://github.com/TraceMachina/nativelink/commit/e6def517a692487d76e0f7883905bf9a5bce33f1))
+- hold subscribed_keys write lock across receiver drop ([#2353](https://github.com/TraceMachina/nativelink/issues/2353)) - ([41c7789](https://github.com/TraceMachina/nativelink/commit/41c77898b318845e56b46c6204f53e67e2cb922b))
+- has_with_results consults fast store and in-flight slow writes ([#2343](https://github.com/TraceMachina/nativelink/issues/2343)) - ([2f42265](https://github.com/TraceMachina/nativelink/commit/2f422658d663c0df5872db58ca509028ccc3aa01))
+- replace usize counter with Semaphore RAII permit ([#2350](https://github.com/TraceMachina/nativelink/issues/2350)) - ([f25e7ac](https://github.com/TraceMachina/nativelink/commit/f25e7ac7fbf48d8c072f2ad5b45859ce6e4d76bd))
+
+### 🧪 Testing & CI
+
+- prefer macOS P-cores via pthread QoS USER_INITIATED ([#2342](https://github.com/TraceMachina/nativelink/issues/2342)) - ([2410a08](https://github.com/TraceMachina/nativelink/commit/2410a083f5390f0cf3cbfc65609ace395f3abb4f))
+
+### ⚙️ Miscellaneous
+
+- Replace bincode with wincode ([#2345](https://github.com/TraceMachina/nativelink/issues/2345)) - ([13c77ab](https://github.com/TraceMachina/nativelink/commit/13c77abcf32d157e548dcde0ddf51ca9c617cf71))
+- Update astro monorepo ([#2334](https://github.com/TraceMachina/nativelink/issues/2334)) - ([4082867](https://github.com/TraceMachina/nativelink/commit/40828671c88207eb1b6413291fdd108048317f8c))
+- Update Rust crate shlex to v2 ([#2340](https://github.com/TraceMachina/nativelink/issues/2340)) - ([2c04038](https://github.com/TraceMachina/nativelink/commit/2c0403831bc804ce1cd354f305def5fda78fd24e))
+
+## [1.2.0](https://github.com/TraceMachina/nativelink/compare/v1.1.0..v1.2.0) - 2026-05-14
+
+
+
+### ⚠️ Breaking Changes
+
+- Completed Redis scheduler actions now expire according to `retain_completed_for_s`. Deployments that relied on completed actions staying in Redis indefinitely should increase that retention setting before upgrading.
+
+### ⛰️  Features
+
+- pre-validate CAS blobs and return PreconditionFailure ([#2322](https://github.com/TraceMachina/nativelink/issues/2322)) - ([80ac19c](https://github.com/TraceMachina/nativelink/commit/80ac19c7a13553c70b9f290d17512db02ff79991))
+- Fix attic push ([#2310](https://github.com/TraceMachina/nativelink/issues/2310)) - ([fd5eddd](https://github.com/TraceMachina/nativelink/commit/fd5edddc132826e9dabf91877f8ef8d216bc7682))
+- Add --fallback to all the nix develop commands ([#2308](https://github.com/TraceMachina/nativelink/issues/2308)) - ([1c553b6](https://github.com/TraceMachina/nativelink/commit/1c553b63c8758912a7b6c6bccfbc75981ecc49dc))
+
+### 🐛 Bug Fixes
+
+- Add expiry to completed redis actions ([#2315](https://github.com/TraceMachina/nativelink/issues/2315)) - ([43ab01d](https://github.com/TraceMachina/nativelink/commit/43ab01dbaa0e158df8c30b901fb0397eb46e7811))
+- Fixes readonly eviction for directory cache ([#2332](https://github.com/TraceMachina/nativelink/issues/2332)) - ([b3d4064](https://github.com/TraceMachina/nativelink/commit/b3d4064fb669179c93dda42137186ece91198f03))
+- Fix the directory we push to attic from ([#2326](https://github.com/TraceMachina/nativelink/issues/2326)) - ([c9ade93](https://github.com/TraceMachina/nativelink/commit/c9ade93a132e62922b68cf7313d544ba12f75683))
+
+### 🧪 Testing & CI
+
+- Split rbe-toolchain into multiple tests ([#2330](https://github.com/TraceMachina/nativelink/issues/2330)) - ([bfba576](https://github.com/TraceMachina/nativelink/commit/bfba576675720526cb15ff9214b91fbac519288b))
+- Bound CAS leader-wait + per-blob batch deadline; tolerate empty FT.AGGREGATE ([#2298](https://github.com/TraceMachina/nativelink/issues/2298)) - ([feb6a15](https://github.com/TraceMachina/nativelink/commit/feb6a15f59ffc33997501f0813a87534f3a157a2))
+- fix RBE CI for hermetic LLVM ([#2314](https://github.com/TraceMachina/nativelink/issues/2314)) - ([6cdcf8e](https://github.com/TraceMachina/nativelink/commit/6cdcf8e89d589e90baf0ece9ba0cb24e7ede8ce4))
+
+### ⚙️ Miscellaneous
+
+- Generate precondition_failure ([#2333](https://github.com/TraceMachina/nativelink/issues/2333)) - ([b1cea14](https://github.com/TraceMachina/nativelink/commit/b1cea145f9396cbb29697d7d66799ed24609efa8))
+- migrate to bazel mod skill ([#2318](https://github.com/TraceMachina/nativelink/issues/2318)) - ([847b0d3](https://github.com/TraceMachina/nativelink/commit/847b0d300bf4ac766e5b46a355bd0f0f07c81771))
+- Only push attic client on a push ([#2316](https://github.com/TraceMachina/nativelink/issues/2316)) - ([743f1bf](https://github.com/TraceMachina/nativelink/commit/743f1bf0fe266d56de79c3b323abed1bc9df3623))
+- Migrate to hermetic llvm ([#2312](https://github.com/TraceMachina/nativelink/issues/2312)) - ([f5846df](https://github.com/TraceMachina/nativelink/commit/f5846df1f753df4c04360ee302c79cbd95722f81))
+- Mac-specific disk freeing ([#2309](https://github.com/TraceMachina/nativelink/issues/2309)) - ([2965392](https://github.com/TraceMachina/nativelink/commit/2965392cc03a34379718998f84cc14113da5f505))
+- Remove cascading eviction map from EvictingMap::get ([#2300](https://github.com/TraceMachina/nativelink/issues/2300)) - ([3dd4289](https://github.com/TraceMachina/nativelink/commit/3dd4289504449484fbc5c842216ac6c6a3254840))
+
+### ⬆️ Bumps & Version Updates
+
+- Update the SECURITY.md ([#2325](https://github.com/TraceMachina/nativelink/issues/2325)) - ([77a58df](https://github.com/TraceMachina/nativelink/commit/77a58dfee062abf8900119da3a92189ffeacb884))
+
+## [1.1.0](https://github.com/TraceMachina/nativelink/compare/v1.0.0..v1.1.0) - 2026-05-06
+
+
+
+### ⛰️  Features
+
+- Use mount namespace too ([#2248](https://github.com/TraceMachina/nativelink/issues/2248)) - ([d418919](https://github.com/TraceMachina/nativelink/commit/d4189198c6f58bcab53f5f56bbab509b5286e49b))
+- Add attic nix cache ([#2274](https://github.com/TraceMachina/nativelink/issues/2274)) - ([098cf67](https://github.com/TraceMachina/nativelink/commit/098cf676220cdc7c0946fce4822b865f5da6f837))
+- Add request limits for mongo ([#2229](https://github.com/TraceMachina/nativelink/issues/2229)) - ([a65c137](https://github.com/TraceMachina/nativelink/commit/a65c13708caf6445e1ded0840d1e4430499f0aed))
+
+### 🐛 Bug Fixes
+
+- Interval for keepalives ([#2305](https://github.com/TraceMachina/nativelink/issues/2305)) - ([02e038a](https://github.com/TraceMachina/nativelink/commit/02e038aa325b1448f42d3bf08ad30dd676bf80e7))
+- Set arg0 for process. ([#2267](https://github.com/TraceMachina/nativelink/issues/2267)) - ([dbb38fd](https://github.com/TraceMachina/nativelink/commit/dbb38fdf514963b731426afb47ef6631b38cfa69))
+- Add use_legacy_resource_names option to GrpcSpec ([#2285](https://github.com/TraceMachina/nativelink/issues/2285)) - ([03a723e](https://github.com/TraceMachina/nativelink/commit/03a723e6f01771e5de85160834ac7691cb28f1f9))
+- Reconnect when ft_create fails ([#2244](https://github.com/TraceMachina/nativelink/issues/2244)) - ([9b784b7](https://github.com/TraceMachina/nativelink/commit/9b784b7cccdc37d7daa3c5467821c59d4b5adbbb))
+- Fix container-image properties for LRE rust ([#2271](https://github.com/TraceMachina/nativelink/issues/2271)) - ([5e94e9b](https://github.com/TraceMachina/nativelink/commit/5e94e9b9a35068fc07cfb7b8515ba1aac3e050f7))
+- Fix community page scrollbar ([#2250](https://github.com/TraceMachina/nativelink/issues/2250)) - ([0bba2b8](https://github.com/TraceMachina/nativelink/commit/0bba2b878d5f01d4aad54a52771e25d932a91687))
+- Fix ft_create race ([#2246](https://github.com/TraceMachina/nativelink/issues/2246)) - ([11f8285](https://github.com/TraceMachina/nativelink/commit/11f8285935da90b9e28bff1ca6340d655d909a5b))
+- Fix the Not Found Store log level ([#2238](https://github.com/TraceMachina/nativelink/issues/2238)) - ([7fe7348](https://github.com/TraceMachina/nativelink/commit/7fe7348349ef42bbbf11eccde99a2609798825de))
+
+### 📚 Documentation
+
+- Document sandboxing settings ([#2289](https://github.com/TraceMachina/nativelink/issues/2289)) - ([a10ac2f](https://github.com/TraceMachina/nativelink/commit/a10ac2f8cae6dcb33db272a3375484a5e4622c8c))
+- Add docs for tempfs ([#2079](https://github.com/TraceMachina/nativelink/issues/2079)) - ([72e03f4](https://github.com/TraceMachina/nativelink/commit/72e03f49d5e34d4c99501a2b210912fdf87401f4))
+
+### 🧪 Testing & CI
+
+- Forward client headers and OTEL trace context to upstream gRPC stores ([#2288](https://github.com/TraceMachina/nativelink/issues/2288)) - ([c2904d3](https://github.com/TraceMachina/nativelink/commit/c2904d3496c0b9fa940ab9aaafb452c323c9448e))
+- Add get_part tests for legacy resource names ([#2291](https://github.com/TraceMachina/nativelink/issues/2291)) - ([aba12cd](https://github.com/TraceMachina/nativelink/commit/aba12cd1ec2b06092b6752c01d051005fa853658))
+- Add grpc test with an actual gRPC server ([#2287](https://github.com/TraceMachina/nativelink/issues/2287)) - ([ff15e88](https://github.com/TraceMachina/nativelink/commit/ff15e88fa210c97049ea61d853437120cae056e3))
+- Re-enable mongo integration test ([#2284](https://github.com/TraceMachina/nativelink/issues/2284)) - ([b7f3971](https://github.com/TraceMachina/nativelink/commit/b7f397129df91c950370318fac7c106685ee1929))
+
+### ⚙️ Miscellaneous
+
+- Readable last_seen ([#2304](https://github.com/TraceMachina/nativelink/issues/2304)) - ([f50dca8](https://github.com/TraceMachina/nativelink/commit/f50dca8afd48fdc9feb745b905bd2b3321ff3dff))
+- Testing and logging around worker keepalive ([#2302](https://github.com/TraceMachina/nativelink/issues/2302)) - ([d8426b6](https://github.com/TraceMachina/nativelink/commit/d8426b6f724dbcb7fb7cb70529ff72dc721c247b))
+- Curl 8.5.0-2ubuntu10.9 ([#2303](https://github.com/TraceMachina/nativelink/issues/2303)) - ([d26d24f](https://github.com/TraceMachina/nativelink/commit/d26d24f2d8e644ab7ace8e5675ee38fdd70abf12))
+- Detect changes as a result of Bazel runs ([#2294](https://github.com/TraceMachina/nativelink/issues/2294)) - ([48bd42b](https://github.com/TraceMachina/nativelink/commit/48bd42b0c05553e2e506e613196e3974538d4905))
+- If namespacing fails, give clearer errors as to why ([#2290](https://github.com/TraceMachina/nativelink/issues/2290)) - ([3ae7168](https://github.com/TraceMachina/nativelink/commit/3ae7168f92ff9b154a57a51b963436f2c4758520))
+- Retry attic cache setup ([#2295](https://github.com/TraceMachina/nativelink/issues/2295)) - ([64d8de0](https://github.com/TraceMachina/nativelink/commit/64d8de0a5e1038b511eba4caec300a01a3b1a70a))
+- add claude skills ([#2292](https://github.com/TraceMachina/nativelink/issues/2292)) - ([510f443](https://github.com/TraceMachina/nativelink/commit/510f4434b9ab0c71af42cd161f6573b478d4f2ad))
+- gitignore user.bazelrc ([#2282](https://github.com/TraceMachina/nativelink/issues/2282)) - ([533d0da](https://github.com/TraceMachina/nativelink/commit/533d0da7c643133c81f66b725248a5d8474b83d5))
+- Publish lre-rs image ([#2270](https://github.com/TraceMachina/nativelink/issues/2270)) - ([0e0ff9f](https://github.com/TraceMachina/nativelink/commit/0e0ff9f17487169c812e4fd375e87731fc8c3ed2))
+- native-cli is no longer needed ([#2268](https://github.com/TraceMachina/nativelink/issues/2268)) - ([f690481](https://github.com/TraceMachina/nativelink/commit/f690481e18dfcb1074281f62d888863ea02c23ca))
+- Remove Flux from deployment examples ([#2266](https://github.com/TraceMachina/nativelink/issues/2266)) - ([8228d85](https://github.com/TraceMachina/nativelink/commit/8228d85ce1ba48de7af2a14640dcadedc09a2125))
+- Upgrade actions for Node24 ([#2265](https://github.com/TraceMachina/nativelink/issues/2265)) - ([fb0d2fa](https://github.com/TraceMachina/nativelink/commit/fb0d2fad03fc215fae52886f1fa278958d104d0a))
+- Replace experimental_s3_store with experimental_cloud_object_store ([#2263](https://github.com/TraceMachina/nativelink/issues/2263)) - ([a92f15d](https://github.com/TraceMachina/nativelink/commit/a92f15d58e430016bfd1664e65210a9f5a52fcbc))
+- Delete unused WriteCounter code ([#2264](https://github.com/TraceMachina/nativelink/issues/2264)) - ([feb4dcc](https://github.com/TraceMachina/nativelink/commit/feb4dcc1c1a6252583d29ea114e61a56f7bb86b4))
+- Support empty instance name in basic_cas ([#2261](https://github.com/TraceMachina/nativelink/issues/2261)) - ([9402e75](https://github.com/TraceMachina/nativelink/commit/9402e75f642d82f0d29cba582bfef3d22c001919))
+- MacOS 26 doesn't like "sleep infinity" ([#2259](https://github.com/TraceMachina/nativelink/issues/2259)) - ([852c343](https://github.com/TraceMachina/nativelink/commit/852c343cba4ffaca7e70e2e754c8afb12e9b2e48))
+- Various security updates including aws-sdk-* ([#2256](https://github.com/TraceMachina/nativelink/issues/2256)) - ([4365b7f](https://github.com/TraceMachina/nativelink/commit/4365b7fbcfa50ea64eb1f6edcabe039e70e0dad5))
+- Log additional timeout cases ([#2232](https://github.com/TraceMachina/nativelink/issues/2232)) - ([10ed3c5](https://github.com/TraceMachina/nativelink/commit/10ed3c57b2083e568186a2e0c738c6ea21ff4a78))
+- 2026-03-24 flake update ([#2041](https://github.com/TraceMachina/nativelink/issues/2041)) - ([7b62bec](https://github.com/TraceMachina/nativelink/commit/7b62beca7701762d44a052c52e8f1ce69a92e9d6))
+- Upgrade to MacOS 26 on runners ([#2245](https://github.com/TraceMachina/nativelink/issues/2245)) - ([1ffae58](https://github.com/TraceMachina/nativelink/commit/1ffae58d75fd8358aad1ec2ac2c4a26cb85f9f1a))
+- Sandbox execution on Linux ([#2241](https://github.com/TraceMachina/nativelink/issues/2241)) - ([4413daf](https://github.com/TraceMachina/nativelink/commit/4413daf008964ac3fbeb2f2d3da2f8182f9297dd))
+- make local worker execute command with canonicalized path (v2) ([#2237](https://github.com/TraceMachina/nativelink/issues/2237)) - ([65c2600](https://github.com/TraceMachina/nativelink/commit/65c2600ee1e297ffc643c7790dd8340c854067af))
+- Redo make_err calls with Error::from_std_err ([#2239](https://github.com/TraceMachina/nativelink/issues/2239)) - ([05ae27e](https://github.com/TraceMachina/nativelink/commit/05ae27e81f74903330f4ecc60a9d4aa2edd1008f))
+
+### ⬆️ Bumps & Version Updates
+
+- Update dependency rules_python to v2 ([#2286](https://github.com/TraceMachina/nativelink/issues/2286)) - ([53b1f8d](https://github.com/TraceMachina/nativelink/commit/53b1f8dff2ee1f9d2c6019114278a906ede2d3dc))
+- Update rand and rustls-webpki ([#2283](https://github.com/TraceMachina/nativelink/issues/2283)) - ([28dc60c](https://github.com/TraceMachina/nativelink/commit/28dc60ca5503143b35e70de74443493317c0cfa0))
+- Update Rust crate rand to v0.9.4 [SECURITY] ([#2275](https://github.com/TraceMachina/nativelink/issues/2275)) - ([8d84808](https://github.com/TraceMachina/nativelink/commit/8d84808667a4b9eef3202289f3d600ecfc030800))
+- Update Rust crate rand to v0.9.3 [SECURITY] ([#2273](https://github.com/TraceMachina/nativelink/issues/2273)) - ([7aa7286](https://github.com/TraceMachina/nativelink/commit/7aa7286a1e775e94265b6eecd97857813ea18c90))
+- Update github.com/go-git/go-git/v5 and google.golang.org/grpc ([#2258](https://github.com/TraceMachina/nativelink/issues/2258)) - ([694dec5](https://github.com/TraceMachina/nativelink/commit/694dec5a9ecbbfc6ff194903a7012a2f7c220914))
+- Update references to v1.0.0 ([#2260](https://github.com/TraceMachina/nativelink/issues/2260)) - ([b5eaef8](https://github.com/TraceMachina/nativelink/commit/b5eaef8a60aa46a2dbb5469c03538603adc2efe9))
+- Update module google.golang.org/grpc to v1.79.3 [SECURITY] ([#2252](https://github.com/TraceMachina/nativelink/issues/2252)) - ([d7a3eb2](https://github.com/TraceMachina/nativelink/commit/d7a3eb2cc4edda242ace1eb01f1d28ef014deb8a))
+- Update Rust crate aws-sdk-s3 to v1.112.0 [SECURITY] ([#2254](https://github.com/TraceMachina/nativelink/issues/2254)) - ([d835945](https://github.com/TraceMachina/nativelink/commit/d835945a6a9b7ec7de99b2ab7b753d1bb6ea94a6))
+- Update dependency astro to v5.18.1 [SECURITY] ([#2247](https://github.com/TraceMachina/nativelink/issues/2247)) - ([67ae5d4](https://github.com/TraceMachina/nativelink/commit/67ae5d458f90a2b60ea76133309e3c2ca7ac0384))
+- Update dependency typescript to v6 ([#2240](https://github.com/TraceMachina/nativelink/issues/2240)) - ([cc52c3a](https://github.com/TraceMachina/nativelink/commit/cc52c3ac92dd6fff59e61ecd3399e8f6d9ecf2f8))
+
+## [1.0.0](https://github.com/TraceMachina/nativelink/compare/v0.8.0..v1.0.0) - 2026-03-23
+
+
+
+### ⛰️  Features
+
+- Implement Azure Blob Store ([#1554](https://github.com/TraceMachina/nativelink/issues/1554)) - ([5d625c2](https://github.com/TraceMachina/nativelink/commit/5d625c228b6a44df6df1ffbf3934763710ab21cb))
+- Add sources to auto error conversion ([#2225](https://github.com/TraceMachina/nativelink/issues/2225)) - ([6cb8d11](https://github.com/TraceMachina/nativelink/commit/6cb8d118953684db53fc5d11d6d41f2b850ac743))
+- Add debug info to connection manager queues ([#2188](https://github.com/TraceMachina/nativelink/issues/2188)) - ([6b6efcf](https://github.com/TraceMachina/nativelink/commit/6b6efcfdfd0488ebb927910e6ee4ef14790f7716))
+- Add json schema ([#2193](https://github.com/TraceMachina/nativelink/issues/2193)) - ([d926c47](https://github.com/TraceMachina/nativelink/commit/d926c4756a830e38c9b162c388e6fafcba091da7))
+- Add boolean and optional data size shellexpands ([#2172](https://github.com/TraceMachina/nativelink/issues/2172)) - ([e54a0c3](https://github.com/TraceMachina/nativelink/commit/e54a0c3e55b54f4b5c51fd67db5541ba01081224))
+- Add Max Concurrent Writes ([#2156](https://github.com/TraceMachina/nativelink/issues/2156)) - ([3a90838](https://github.com/TraceMachina/nativelink/commit/3a90838081e3e6a14d13ee231075492256753d22))
+- Add logs for stall detection ([#2155](https://github.com/TraceMachina/nativelink/issues/2155)) - ([94e7e3f](https://github.com/TraceMachina/nativelink/commit/94e7e3f134f2586aa89384e6088544a83dba2694))
+- Add Max action executing timeouts to scheduler ([#2153](https://github.com/TraceMachina/nativelink/issues/2153)) - ([5549a96](https://github.com/TraceMachina/nativelink/commit/5549a969bd7be1f10b94dc725ae6dcd68dd00130))
+- Add GRPC timeouts and other improvements to detect dead connections ([#2152](https://github.com/TraceMachina/nativelink/issues/2152)) - ([b4b44ba](https://github.com/TraceMachina/nativelink/commit/b4b44ba6db8b830d05de2d6180d0c452836eeea2))
+- Allows setting environment variables from the environment ([#2143](https://github.com/TraceMachina/nativelink/issues/2143)) - ([a57c771](https://github.com/TraceMachina/nativelink/commit/a57c7714b868e5b22bdcb7736e370ea454f5c843))
+- Add Max Upload timeout to CAS ([#2150](https://github.com/TraceMachina/nativelink/issues/2150)) - ([24cc324](https://github.com/TraceMachina/nativelink/commit/24cc324b21de72d8079fc7e54e5dc4abf678c0bd))
+- Add tracing to hyper-util ([#2132](https://github.com/TraceMachina/nativelink/issues/2132)) - ([bc773dc](https://github.com/TraceMachina/nativelink/commit/bc773dc3d43ff208e996e97547528c5b111abd14))
+
+### 🐛 Bug Fixes
+
+- *(deps)* update module github.com/go-git/go-git/v5 to v5.16.5 [security] ([#2138](https://github.com/TraceMachina/nativelink/issues/2138)) - ([dc25843](https://github.com/TraceMachina/nativelink/commit/dc258438336ba6ab5e63c0a48e71987bb88b4621))
+- Fix old Apple SDK refs ([#2224](https://github.com/TraceMachina/nativelink/issues/2224)) - ([edeef58](https://github.com/TraceMachina/nativelink/commit/edeef58de43fc8c2e7f73ec45240e4e9c2f5c9a1))
+- Handle correctly subscription messages ([#2201](https://github.com/TraceMachina/nativelink/issues/2201)) - ([2ea428b](https://github.com/TraceMachina/nativelink/commit/2ea428bfc66e9f7303108141e3a5ee9a6e84dc0d))
+- Fix Redis to reconnect in Sentinel (Chris Staite) ([#2190](https://github.com/TraceMachina/nativelink/issues/2190)) - ([8783134](https://github.com/TraceMachina/nativelink/commit/87831340af3cfcb3cffbc4f43bc3da9ecf8c8467))
+- Fix worker inflight tasks heading ([#2177](https://github.com/TraceMachina/nativelink/issues/2177)) - ([8ae17ba](https://github.com/TraceMachina/nativelink/commit/8ae17bae0603d66102d171554f331e10a3e9ac9e))
+- Fix all the current clippy lints ([#2174](https://github.com/TraceMachina/nativelink/issues/2174)) - ([23611ca](https://github.com/TraceMachina/nativelink/commit/23611caa3966a1934d6a3a7da0007083bbc75d8b))
+- Fix integer overflow in compression_store.rs data retrieval logic ([#2151](https://github.com/TraceMachina/nativelink/issues/2151)) - ([f996507](https://github.com/TraceMachina/nativelink/commit/f996507b152a7a5e79367475e7854680cce3eb2c))
+- Fix Max Inflight Workers job acceptance ([#2142](https://github.com/TraceMachina/nativelink/issues/2142)) - ([6ffab5f](https://github.com/TraceMachina/nativelink/commit/6ffab5f049666158b14e277653d8ce6b487c2ff6))
+
+### 📚 Documentation
+
+- Document max concurrent writes ([#2169](https://github.com/TraceMachina/nativelink/issues/2169)) - ([cedba0e](https://github.com/TraceMachina/nativelink/commit/cedba0e829daeb6affa601324ca7eacdcd4e7fea))
+- Document RPC timeouts in Redis config ([#2168](https://github.com/TraceMachina/nativelink/issues/2168)) - ([f0d12ff](https://github.com/TraceMachina/nativelink/commit/f0d12ffce777662eb23f898042393a2fac8f2952))
+- Document max inflight tasks ([#2167](https://github.com/TraceMachina/nativelink/issues/2167)) - ([2650680](https://github.com/TraceMachina/nativelink/commit/26506800e0bddfe9dd35008dfda279a2b19604df))
+
+### 🧪 Testing & CI
+
+- GCS error codes ([#2228](https://github.com/TraceMachina/nativelink/issues/2228)) - ([61a35d1](https://github.com/TraceMachina/nativelink/commit/61a35d1a1ea408ab64052ce9edac9b537cd09531))
+- Fix Fast slow store Not Found error by returning failed precondition ([#2194](https://github.com/TraceMachina/nativelink/issues/2194)) - ([3354945](https://github.com/TraceMachina/nativelink/commit/3354945b1f0cb9aba7041ad6ffad0bb67def8d4f))
+- Flake update fixes ([#2192](https://github.com/TraceMachina/nativelink/issues/2192)) - ([a7d873a](https://github.com/TraceMachina/nativelink/commit/a7d873aca54ae62f0ce13fbbf3dc7817f9f82efa))
+- pre-commit rustfmt all files ([#2176](https://github.com/TraceMachina/nativelink/issues/2176)) - ([27fa965](https://github.com/TraceMachina/nativelink/commit/27fa9652baf9ed7cdbc248fd6591bf813a790f65))
+
+### ⚙️ Miscellaneous
+
+- *(deps)* update rust crate toml to v1 ([#2147](https://github.com/TraceMachina/nativelink/issues/2147)) - ([85e9ecf](https://github.com/TraceMachina/nativelink/commit/85e9ecf05e1e6646513f4b32a8ce1fba609ebcf7))
+- *(deps)* update rust crate bytes to v1.11.1 [security] ([#2134](https://github.com/TraceMachina/nativelink/issues/2134)) - ([5d32d18](https://github.com/TraceMachina/nativelink/commit/5d32d181fe68d29bf354a2a5f41e634d8faaec37))
+- Implement Operations server ([#2233](https://github.com/TraceMachina/nativelink/issues/2233)) - ([b15154c](https://github.com/TraceMachina/nativelink/commit/b15154c78bdd0f11d304e7fa2e73bbca22d615bb))
+- Permit access times for files after FilesystemStore startup ([#2178](https://github.com/TraceMachina/nativelink/issues/2178)) - ([373e1b5](https://github.com/TraceMachina/nativelink/commit/373e1b53e7ea5b084530b8bd55db453ba457e5a4))
+- Reduce debug on all Batch* structs ([#2231](https://github.com/TraceMachina/nativelink/issues/2231)) - ([a5609d8](https://github.com/TraceMachina/nativelink/commit/a5609d81adac95da0ba876afff162365e2c7cca2))
+- Test Mongo against an embedded MongoDB instance, not external ([#2222](https://github.com/TraceMachina/nativelink/issues/2222)) - ([e71d738](https://github.com/TraceMachina/nativelink/commit/e71d738397961ddf3bf1c061085bcf479ced25d3))
+- empty find_missing_blobs can return immediately ([#2217](https://github.com/TraceMachina/nativelink/issues/2217)) - ([dad870a](https://github.com/TraceMachina/nativelink/commit/dad870a41d70208b88b395d6f4121f3d4e1b8828))
+- remove free cloud user ([#2199](https://github.com/TraceMachina/nativelink/issues/2199)) - ([c7109f6](https://github.com/TraceMachina/nativelink/commit/c7109f6d70e049a011c367dfe4018b5cea675b9e))
+- Only display Baggage enduser.id when identity is present ([#2197](https://github.com/TraceMachina/nativelink/issues/2197)) - ([86b86e1](https://github.com/TraceMachina/nativelink/commit/86b86e15e8dcc3936a07d22feb10d088dc9ad4ae))
+- Prevent retry loop large uploads ([#2195](https://github.com/TraceMachina/nativelink/issues/2195)) - ([2a2ca64](https://github.com/TraceMachina/nativelink/commit/2a2ca6496af559a91207de3e384e338111138fd1))
+- If all workers are fully allocated, shortcut find workers ([#2130](https://github.com/TraceMachina/nativelink/issues/2130)) - ([faad8bb](https://github.com/TraceMachina/nativelink/commit/faad8bb038fefc439daca73978138b821084648c))
+- Log NotFound as info, not error ([#2171](https://github.com/TraceMachina/nativelink/issues/2171)) - ([4ca9d7b](https://github.com/TraceMachina/nativelink/commit/4ca9d7b3d3e29e392d7b39b2ff509cb1b75cf5aa))
+- Dummy streams should be pending, not empty ([#2154](https://github.com/TraceMachina/nativelink/issues/2154)) - ([e72b5a0](https://github.com/TraceMachina/nativelink/commit/e72b5a0feaace00ee9960886d3c2715eeb76c361))
+- fix metrics ([#2097](https://github.com/TraceMachina/nativelink/issues/2097)) - ([e6c7097](https://github.com/TraceMachina/nativelink/commit/e6c70977a879d552b98ebc2cb23717ab51658a2a))
+- Advise the kernel to drop page cache ([#2149](https://github.com/TraceMachina/nativelink/issues/2149)) - ([727760d](https://github.com/TraceMachina/nativelink/commit/727760d1e208ca8be7bc134f432baf5dc5bf5928))
+- Replace Fred with redis-rs ([#2076](https://github.com/TraceMachina/nativelink/issues/2076)) - ([4956889](https://github.com/TraceMachina/nativelink/commit/4956889cd258a98f0e8720b5b7ef028ca0ed4d99))
+- No workers logging ([#2137](https://github.com/TraceMachina/nativelink/issues/2137)) - ([12c63f5](https://github.com/TraceMachina/nativelink/commit/12c63f50fef02bf36624ac0770fc8f5dac407a9c))
+- Make update_with_whole_file logging default to trace ([#2131](https://github.com/TraceMachina/nativelink/issues/2131)) - ([ecd2903](https://github.com/TraceMachina/nativelink/commit/ecd2903f8ca5086e10f74290533a9fc75c580a7c))
+- Be clearer about what property values workers are missing ([#2121](https://github.com/TraceMachina/nativelink/issues/2121)) - ([85385e6](https://github.com/TraceMachina/nativelink/commit/85385e68271d78b2b72a24098202aade157a5553))
+
+### ⬆️ Bumps & Version Updates
+
+- Update module google.golang.org/grpc to v1.79.3 [SECURITY] ([#2227](https://github.com/TraceMachina/nativelink/issues/2227)) - ([3f6ab07](https://github.com/TraceMachina/nativelink/commit/3f6ab075ad0ee50ee1c710ee970a1bd74020ab0d))
+- Update Rust crate lz4_flex to v0.11.6 [SECURITY] ([#2223](https://github.com/TraceMachina/nativelink/issues/2223)) - ([244a1c7](https://github.com/TraceMachina/nativelink/commit/244a1c77ed75d1ba5d2e27d3ad0ea22dedff48b9))
+- Upgrade curl to 8.5.0-2ubuntu10.8 ([#2204](https://github.com/TraceMachina/nativelink/issues/2204)) - ([36a8238](https://github.com/TraceMachina/nativelink/commit/36a823836a8c679bcf751ec64e830f272e4c2e28))
+- Update module github.com/cloudflare/circl to v1.6.3 [SECURITY] ([#2191](https://github.com/TraceMachina/nativelink/issues/2191)) - ([77b13f0](https://github.com/TraceMachina/nativelink/commit/77b13f053a40e3f67cb202ff086ca0a9185907fb))
+- Update curl version in Dockerfiles ([#2189](https://github.com/TraceMachina/nativelink/issues/2189)) - ([c161433](https://github.com/TraceMachina/nativelink/commit/c161433702cd6b6a29a169e7516c06a60c1341f9))
+- Update grafana/grafana Docker tag to v12 ([#2182](https://github.com/TraceMachina/nativelink/issues/2182)) - ([658dd53](https://github.com/TraceMachina/nativelink/commit/658dd532c2275c888cfc03c2149fa805de8ecbc5))
+- Update jsonwebtoken ([#2135](https://github.com/TraceMachina/nativelink/issues/2135)) - ([56a8955](https://github.com/TraceMachina/nativelink/commit/56a89557ee14130ca10b44f1688d5e9b6e4691d5))
+## [0.7.10](https://github.com/TraceMachina/nativelink/compare/v0.7.9..v0.7.10) - 2025-12-30
+
+
+
+### 🐛 Bug Fixes
+
+- *(deps)* update module golang.org/x/crypto to v0.45.0 [security] ([#2062](https://github.com/TraceMachina/nativelink/issues/2062)) - ([7a4cdb6](https://github.com/TraceMachina/nativelink/commit/7a4cdb681fe23b90f68f1bcc897b5b9ce43c1e37))
+
+### 🧪 Testing & CI
+
+- New filesystem test for eviction breaking ([#2024](https://github.com/TraceMachina/nativelink/issues/2024)) - ([47ebd44](https://github.com/TraceMachina/nativelink/commit/47ebd44809657889f185d0cb36c4217012211c48))
+
+### ⚙️ Miscellaneous
+
+- *(deps)* update dependency abseil-cpp to v20250512 ([#2099](https://github.com/TraceMachina/nativelink/issues/2099)) - ([2bdb869](https://github.com/TraceMachina/nativelink/commit/2bdb869b7cb42ad1c2411f282d454fe2cb81cc65))
+- *(deps)* update actions/checkout action to v6 ([#2085](https://github.com/TraceMachina/nativelink/issues/2085)) - ([fbda7bb](https://github.com/TraceMachina/nativelink/commit/fbda7bbfd1910bda6abace60feef3645f6f92ab4))
+- *(deps)* update actions/github-script action to v8 ([#2098](https://github.com/TraceMachina/nativelink/issues/2098)) - ([f9f3b60](https://github.com/TraceMachina/nativelink/commit/f9f3b6031f400cb3ef327b2c956ea6c6d0d4ff54))
+- reduce worker disconnect cascades ([#2093](https://github.com/TraceMachina/nativelink/issues/2093)) - ([44ada84](https://github.com/TraceMachina/nativelink/commit/44ada84405f17696c04f363b98773692a1c122f6))
+- Replace rustls-pemfile to fix RUSTSEC-2025-0134 ([#2094](https://github.com/TraceMachina/nativelink/issues/2094)) - ([1b85f71](https://github.com/TraceMachina/nativelink/commit/1b85f71d977f61ff79391934e434af9c10d057e8))
+
+## [0.7.9](https://github.com/TraceMachina/nativelink/compare/v0.7.8..v0.7.9) - 2025-12-10
+
+
+
+### ⛰️  Features
+
+- Add LazyNotFound Store Optimization, Support for fast_slow_store (S3, GCS slow_store targets) ([#2072](https://github.com/TraceMachina/nativelink/issues/2072)) - ([8c62bb3](https://github.com/TraceMachina/nativelink/commit/8c62bb318d849c7122659bd1c583fee627fa4f74))
+
+### 🐛 Bug Fixes
+
+- Fix the scheduler timeouts and errors ([#2083](https://github.com/TraceMachina/nativelink/issues/2083)) - ([93f4ead](https://github.com/TraceMachina/nativelink/commit/93f4eaddad157842549d1cd9cc1da676194997bd))
+
+### 📚 Documentation
+
+- Perf spike ([#2081](https://github.com/TraceMachina/nativelink/issues/2081)) - ([422bfa1](https://github.com/TraceMachina/nativelink/commit/422bfa176891bae17eacb78f1b64e95bd68916d9))
+- Implement remote execution metrics rebased ([#2080](https://github.com/TraceMachina/nativelink/issues/2080)) - ([e38af3d](https://github.com/TraceMachina/nativelink/commit/e38af3d6ce897084832fbd66757de25d532acae6))
+
+### ⚙️ Miscellaneous
+
+- Build Custom Docker Image for each PR ([#2084](https://github.com/TraceMachina/nativelink/issues/2084)) - ([0926bff](https://github.com/TraceMachina/nativelink/commit/0926bffdf8918c9fd15b07673cb0cddab9c382ff))
+
+## [0.7.8](https://github.com/TraceMachina/nativelink/compare/v0.7.7..v0.7.8) - 2025-11-28
+
+
+
+### 🐛 Bug Fixes
+
+- Fix the changelog post 0.7.7 ([#2057](https://github.com/TraceMachina/nativelink/issues/2057)) - ([437a785](https://github.com/TraceMachina/nativelink/commit/437a785e5631bff3b28378c16101a8b21b151d37))
+- Fix assertion message for fastcdc ([#2056](https://github.com/TraceMachina/nativelink/issues/2056)) - ([7ec4f11](https://github.com/TraceMachina/nativelink/commit/7ec4f11d1cac24dfcc3ad88803be0b087465610c))
+
+### 🧪 Testing & CI
+
+- use wildcard query when Redis index value is empty ([#2069](https://github.com/TraceMachina/nativelink/issues/2069)) ([#2075](https://github.com/TraceMachina/nativelink/issues/2075)) - ([92869d9](https://github.com/TraceMachina/nativelink/commit/92869d9ae0249de1c676396f6af439afc8112c86))
+- use wildcard query when Redis index value is empty ([#2069](https://github.com/TraceMachina/nativelink/issues/2069)) - ([43f7f8d](https://github.com/TraceMachina/nativelink/commit/43f7f8df6562c605cebbf3bbcbfa265f6cf2f46e))
+- Recoverable connection pool ([#2067](https://github.com/TraceMachina/nativelink/issues/2067)) - ([14b2cc6](https://github.com/TraceMachina/nativelink/commit/14b2cc684e77af485518444d40499b9cc204be55))
+- Redis store tester and permits ([#1878](https://github.com/TraceMachina/nativelink/issues/1878)) - ([3df6293](https://github.com/TraceMachina/nativelink/commit/3df6293e09131d44f73bb053eba1c1b282b3d9d7))
+
+### ⚙️ Miscellaneous
+
+- *(deps)* update dependency astro to v5.15.9 [security] ([#2061](https://github.com/TraceMachina/nativelink/issues/2061)) - ([3d41449](https://github.com/TraceMachina/nativelink/commit/3d4144985f6479e08dc1989f666bbecdbe98f98e))
+- Revert "bugfix: prefix Redis index name and sort key ([#2066](https://github.com/TraceMachina/nativelink/issues/2066))" ([#2068](https://github.com/TraceMachina/nativelink/issues/2068)) - ([2e84883](https://github.com/TraceMachina/nativelink/commit/2e848832053ec86a95be159578282fef68481d2e))
+- prefix Redis index name and sort key ([#2066](https://github.com/TraceMachina/nativelink/issues/2066)) - ([6a95ae8](https://github.com/TraceMachina/nativelink/commit/6a95ae8e258b70423da585e5cc2b78ec8d911072))
+- Disable digest updates for renovate and Nix magic cache ([#2059](https://github.com/TraceMachina/nativelink/issues/2059)) - ([f56c2bb](https://github.com/TraceMachina/nativelink/commit/f56c2bbe9c756c233c1efaf4f705aedbd3f940ee))
+- Do not need to store zero-length filesystem files ([#2033](https://github.com/TraceMachina/nativelink/issues/2033)) - ([5adf904](https://github.com/TraceMachina/nativelink/commit/5adf904b5a54eb7488f987706dc8c22e1fe4b75b))
+- Don't complain about worker stream error if we're shutting down ([#2055](https://github.com/TraceMachina/nativelink/issues/2055)) - ([6282afc](https://github.com/TraceMachina/nativelink/commit/6282afc6846bb071d2120e49f0488c905ad07200))
+
+### ⬆️ Bumps & Version Updates
+
+- Update the default max permits for redis ([#2063](https://github.com/TraceMachina/nativelink/issues/2063)) - ([7b9df29](https://github.com/TraceMachina/nativelink/commit/7b9df29b9a682b49add7f0c3198734509655d59a))
+
+## [0.7.7](https://github.com/TraceMachina/nativelink/compare/v0.7.6..v0.7.7) - 2025-11-17
+
+
+
+### ⛰️  Features
+
+- Add periodic logging regarding scheduler job states ([#2042](https://github.com/TraceMachina/nativelink/issues/2042)) - ([7d6f663](https://github.com/TraceMachina/nativelink/commit/7d6f6632628df772289b76b21321bc3d25a230f8))
+
+### 🧪 Testing & CI
+
+- *(worker)* Resolve deadlock due to file permit exhaustion ([#2051](https://github.com/TraceMachina/nativelink/issues/2051)) ([#2052](https://github.com/TraceMachina/nativelink/issues/2052)) - ([b5dd8fb](https://github.com/TraceMachina/nativelink/commit/b5dd8fbaba59a47598189d49efce7e02fc0e9ed2))
+
+### ⚙️ Miscellaneous
+
+- *(deps)* update dependency astro to v5.15.6 [security] ([#2045](https://github.com/TraceMachina/nativelink/issues/2045)) - ([0cd70ee](https://github.com/TraceMachina/nativelink/commit/0cd70eebf7134b0102ae5d37eae825fc340e1bd5))
+
+## [0.7.6](https://github.com/TraceMachina/nativelink/compare/v0.7.5..v0.7.6) - 2025-11-13
+
+
+
+### ⛰️  Features
+
+- Redo worker_find_logging as config ([#2039](https://github.com/TraceMachina/nativelink/issues/2039)) - ([958f687](https://github.com/TraceMachina/nativelink/commit/958f68763524e3f2d3d12f91e8949ecfeea98479))
+- Log on command complete ([#2032](https://github.com/TraceMachina/nativelink/issues/2032)) - ([daea037](https://github.com/TraceMachina/nativelink/commit/daea03751c09e6553f3c9636003ad315811cec03))
+- Directory Cache ([#2021](https://github.com/TraceMachina/nativelink/issues/2021)) - ([a01bd65](https://github.com/TraceMachina/nativelink/commit/a01bd652efb59cb092f1383398c54d694b137f60))
+- Log failures to update actions ([#2022](https://github.com/TraceMachina/nativelink/issues/2022)) - ([3697512](https://github.com/TraceMachina/nativelink/commit/369751249eb19e8dc3bdbb31f041fa60c6948cbc))
+
+### 🐛 Bug Fixes
+
+- Fix flake timestamp ([#2036](https://github.com/TraceMachina/nativelink/issues/2036)) - ([e0e4d41](https://github.com/TraceMachina/nativelink/commit/e0e4d411e5942bd65d2ff864be2e7e0019dacc24))
+
+### 🧪 Testing & CI
+
+- Add testing for running action manager failure logging ([#2031](https://github.com/TraceMachina/nativelink/issues/2031)) - ([922d7f6](https://github.com/TraceMachina/nativelink/commit/922d7f60b38dae49cf907217d8c1e485a011ced6))
+- Fix fast store direction ([#2019](https://github.com/TraceMachina/nativelink/issues/2019)) - ([e7f29fe](https://github.com/TraceMachina/nativelink/commit/e7f29fe8aad6e2e6f7bef1ce822b983090d77fc2))
+
+### ⚙️ Miscellaneous
+
+- *(deps)* update swatinem/rust-cache digest to a84bfdc ([#2018](https://github.com/TraceMachina/nativelink/issues/2018)) - ([d5ea603](https://github.com/TraceMachina/nativelink/commit/d5ea603356adfa60e563af406429fdb836039173))
+- Upgrade python3 to new security patch version ([#2044](https://github.com/TraceMachina/nativelink/issues/2044)) - ([222731d](https://github.com/TraceMachina/nativelink/commit/222731de0295abcdb9f6262cd5547d50168918cc))
+- Use common_s3_utils in s3_store ([#2040](https://github.com/TraceMachina/nativelink/issues/2040)) - ([b2eaf79](https://github.com/TraceMachina/nativelink/commit/b2eaf79b19d3f12afa6194968cb582d466a2a0d6))
+- Lockdown and upgrade the nix action versions ([#2038](https://github.com/TraceMachina/nativelink/issues/2038)) - ([f679946](https://github.com/TraceMachina/nativelink/commit/f6799465fc5a77263e025ffadeb6a670a9b37ffc))
+- Log more info about redis key updates ([#2035](https://github.com/TraceMachina/nativelink/issues/2035)) - ([1d3cc10](https://github.com/TraceMachina/nativelink/commit/1d3cc10390b8c246f40dd675404a1b94a2122d58))
+- Use display, not debug formatting for operation ids ([#2028](https://github.com/TraceMachina/nativelink/issues/2028)) - ([b7238b3](https://github.com/TraceMachina/nativelink/commit/b7238b3c1bbb549a7c364339d8a4b6e4a5d5ef47))
+- Removes starter pricing ([#2027](https://github.com/TraceMachina/nativelink/issues/2027)) - ([bef18b3](https://github.com/TraceMachina/nativelink/commit/bef18b31024c1c612b1d995c524aff33b82d1390))
+- Drops the cloud references ([#2025](https://github.com/TraceMachina/nativelink/issues/2025)) - ([c3431ac](https://github.com/TraceMachina/nativelink/commit/c3431acc109129586ee5a288166a5139e6a0d27c))
+
+## [0.7.5](https://github.com/TraceMachina/nativelink/compare/v0.7.4..v0.7.5) - 2025-10-30
+
+
+
+### 🐛 Bug Fixes
+
+- scheduler shutdown not guarded ([#2015](https://github.com/TraceMachina/nativelink/issues/2015)) - ([552a1cd](https://github.com/TraceMachina/nativelink/commit/552a1cde0013a90a9ceba93f77f4c18b6e475652))
+- Fast slow store directions ([#1581](https://github.com/TraceMachina/nativelink/issues/1581)) - ([6d867c9](https://github.com/TraceMachina/nativelink/commit/6d867c99b08f6cb078900b5a9f4fae1e262158d9))
+
+### 🧪 Testing & CI
+
+- Buck2 integration test ([#1828](https://github.com/TraceMachina/nativelink/issues/1828)) - ([1296a3a](https://github.com/TraceMachina/nativelink/commit/1296a3aaa6b1040d70f2d2609644698c57d029a6))
+
+### ⚙️ Miscellaneous
+
+- Filestore update deadlock ([#2007](https://github.com/TraceMachina/nativelink/issues/2007)) - ([d55c59d](https://github.com/TraceMachina/nativelink/commit/d55c59dd101173195fde4376a6185cbaaa50d252))
+- guard shutting down in scheduler while SIGTERM ([#2012](https://github.com/TraceMachina/nativelink/issues/2012)) - ([1708859](https://github.com/TraceMachina/nativelink/commit/17088593e5bcfc30f0e20cb9b25743ebcf90ca8b))
+- Remove unnecessary Mutex ([#2006](https://github.com/TraceMachina/nativelink/issues/2006)) - ([083232d](https://github.com/TraceMachina/nativelink/commit/083232dc47946bdbba1f82b741ebf8dde3ac948e))
+
+## [0.7.4](https://github.com/TraceMachina/nativelink/compare/v0.7.3..v0.7.4) - 2025-10-23
+
+
+
+### ⛰️  Features
+
+- GCS do not upload zero ([#1995](https://github.com/TraceMachina/nativelink/issues/1995)) - ([ab0d4e6](https://github.com/TraceMachina/nativelink/commit/ab0d4e6e1920f8d099ce17b8b20f93bbab6dba27))
+- GCS store connect timeout ([#1994](https://github.com/TraceMachina/nativelink/issues/1994)) - ([854d51c](https://github.com/TraceMachina/nativelink/commit/854d51caddef98888eaaff3e5866a5248a482d67))
+- Add cache to native-cargo step ([#1974](https://github.com/TraceMachina/nativelink/issues/1974)) - ([0c02306](https://github.com/TraceMachina/nativelink/commit/0c02306de8067c7f8d5c5d0e6b90c949ed3a99a6))
+- Add metadata checks to machete ([#1952](https://github.com/TraceMachina/nativelink/issues/1952)) - ([21d5fdc](https://github.com/TraceMachina/nativelink/commit/21d5fdc3b5f5ce6cd99c3199b14c30a3a7774168))
+
+### 🐛 Bug Fixes
+
+- Fix clippy::cast_possible_truncation ([#1423](https://github.com/TraceMachina/nativelink/issues/1423)) - ([b050976](https://github.com/TraceMachina/nativelink/commit/b0509764084bd5aa1c6b61c39a63429f3c6b6859))
+- Notify execution complete ([#1975](https://github.com/TraceMachina/nativelink/issues/1975)) - ([8527f25](https://github.com/TraceMachina/nativelink/commit/8527f258f756e5c337ad133dd635416bbf9b89fb))
+- Fix removal state ([#1981](https://github.com/TraceMachina/nativelink/issues/1981)) - ([d85e491](https://github.com/TraceMachina/nativelink/commit/d85e491c4e26bd78d88d08c5d1ca357fc42b3e93))
+- Fix Redis subscribe race ([#1970](https://github.com/TraceMachina/nativelink/issues/1970)) - ([9353508](https://github.com/TraceMachina/nativelink/commit/9353508fed8f96f5d754978047491869cbeba71a))
+
+### 📚 Documentation
+
+- fixed cost docs ([#1986](https://github.com/TraceMachina/nativelink/issues/1986)) - ([aab10ee](https://github.com/TraceMachina/nativelink/commit/aab10ee553781fb1bc2194d0eed58d6a625ee4f6))
+
+### 🧪 Testing & CI
+
+- Add Rust test to RBE work ([#1992](https://github.com/TraceMachina/nativelink/issues/1992)) - ([e01079b](https://github.com/TraceMachina/nativelink/commit/e01079b00f37c7211f5d2094c153e516dae09ef2))
+- Make all tests in running_actions_manager_test serial ([#1984](https://github.com/TraceMachina/nativelink/issues/1984)) - ([41cdd9c](https://github.com/TraceMachina/nativelink/commit/41cdd9cd62ad431fff7dea2fdbab9252a55ae05c))
+- comment legacy Dockerfile test ([#1983](https://github.com/TraceMachina/nativelink/issues/1983)) - ([6316b55](https://github.com/TraceMachina/nativelink/commit/6316b5529d3b228757ed454828352497caed39ea))
+- Adds testing to bytestream backwards compatibility ([#1979](https://github.com/TraceMachina/nativelink/issues/1979)) - ([21bb502](https://github.com/TraceMachina/nativelink/commit/21bb502c1eae34900b461b43ad65a443deb95406))
+
+### ⚙️ Miscellaneous
+
+- Pin various dependencies (mostly Docker images) ([#1990](https://github.com/TraceMachina/nativelink/issues/1990)) - ([29c3dc4](https://github.com/TraceMachina/nativelink/commit/29c3dc4581e511d28f7355ca6d203ddc65394f0c))
+- Unify all the service setups with a macro ([#1996](https://github.com/TraceMachina/nativelink/issues/1996)) - ([e46b5c7](https://github.com/TraceMachina/nativelink/commit/e46b5c7b8710df60efeaf895e9d92eb8296fc931))
+- Sweep forgotten client operation IDs ([#1965](https://github.com/TraceMachina/nativelink/issues/1965)) - ([9fcf5b1](https://github.com/TraceMachina/nativelink/commit/9fcf5b1de4a8d7ac7623039f43d51d0682a65e67))
+- Require default-features=false ([#1993](https://github.com/TraceMachina/nativelink/issues/1993)) - ([0146c34](https://github.com/TraceMachina/nativelink/commit/0146c34a6988a284c4b7d44ed4db14a2b66412e6))
+- Single worker stream ([#1977](https://github.com/TraceMachina/nativelink/issues/1977)) - ([e9250ee](https://github.com/TraceMachina/nativelink/commit/e9250ee83296aaaf950a2d930bca9fa05cc2ad4a))
+- Explicitly separate state locks and awaits ([#1991](https://github.com/TraceMachina/nativelink/issues/1991)) - ([930b352](https://github.com/TraceMachina/nativelink/commit/930b352548b1ca6a428e272d9c7ec12c2c228a2d))
+- Replace derivative with derive_more ([#1989](https://github.com/TraceMachina/nativelink/issues/1989)) - ([9f39700](https://github.com/TraceMachina/nativelink/commit/9f397002214cc8d734624499de113c08c4178176))
+- Build toolchain-examples ([#1971](https://github.com/TraceMachina/nativelink/issues/1971)) - ([2d08aba](https://github.com/TraceMachina/nativelink/commit/2d08abaeb9eaaa423eb3ebb598d0100a2212cf41))
+- Remove folders with bad permissions ([#1980](https://github.com/TraceMachina/nativelink/issues/1980)) - ([5e487f3](https://github.com/TraceMachina/nativelink/commit/5e487f374d7ef2c13a0239aa37c4bfe963951f0e))
+- Property replace ([#1976](https://github.com/TraceMachina/nativelink/issues/1976)) - ([41a2452](https://github.com/TraceMachina/nativelink/commit/41a2452ca0350eb6d153c6ac7b6af97c2152f614))
+- Harden worker disconnect ([#1972](https://github.com/TraceMachina/nativelink/issues/1972)) - ([1055cd1](https://github.com/TraceMachina/nativelink/commit/1055cd150430769d043561f16f9c0b759e707dc4))
+- Drop MacOS 14 support ([#1973](https://github.com/TraceMachina/nativelink/issues/1973)) - ([bdfa17c](https://github.com/TraceMachina/nativelink/commit/bdfa17c9c18439e7e20a0bdbddcda544e7110ebc))
+- Drop 22.04 support ([#1883](https://github.com/TraceMachina/nativelink/issues/1883)) - ([4fe024b](https://github.com/TraceMachina/nativelink/commit/4fe024b03f118fa56842e0500fa190d32694396d))
+
+### ⬆️ Bumps & Version Updates
+
+- Update Swatinem/rust-cache digest to 9416228 ([#2004](https://github.com/TraceMachina/nativelink/issues/2004)) - ([15c747e](https://github.com/TraceMachina/nativelink/commit/15c747e056567bae86c0bfd8a153eb480d40d88a))
+- Update dependency hermetic_cc_toolchain to v4 ([#1988](https://github.com/TraceMachina/nativelink/issues/1988)) - ([ed918d8](https://github.com/TraceMachina/nativelink/commit/ed918d8365a012c320a7cd8b4a0333975f2807ab))
+- Update Rust crate relative-path to v2 ([#1985](https://github.com/TraceMachina/nativelink/issues/1985)) - ([997feb4](https://github.com/TraceMachina/nativelink/commit/997feb4537fa19f7e2cb3bfedc45f9add772ddcf))
+- Update dependency astro to v5.14.3 [SECURITY] ([#1969](https://github.com/TraceMachina/nativelink/issues/1969)) - ([d896788](https://github.com/TraceMachina/nativelink/commit/d896788cda243950377a747c7e8c5b1cce1625d4))
+- Update dependency dotenv to v17 ([#1966](https://github.com/TraceMachina/nativelink/issues/1966)) - ([3b7f05f](https://github.com/TraceMachina/nativelink/commit/3b7f05fce82a36e1339590b827bfee8cbe150221))
+
+## [0.7.3](https://github.com/TraceMachina/nativelink/compare/v0.7.2..v0.7.3) - 2025-10-10
+
+
+
+### ⛰️  Features
+
+- Add timeout to health check ([#1961](https://github.com/TraceMachina/nativelink/issues/1961)) - ([cff9b6b](https://github.com/TraceMachina/nativelink/commit/cff9b6b58c32355278fdac855496e27a8880f06f))
+- Detect anonymous GCS auth and optionally quit ([#1958](https://github.com/TraceMachina/nativelink/issues/1958)) - ([4b77932](https://github.com/TraceMachina/nativelink/commit/4b77932e8662fc3f1dfb4cfa44dcaaaea9e8ae2a))
+
+### 🐛 Bug Fixes
+
+- De-dupe the fast-slow store ([#1956](https://github.com/TraceMachina/nativelink/issues/1956)) - ([75f402c](https://github.com/TraceMachina/nativelink/commit/75f402c106d2a15739e04a7276b7de7058a8e674))
+- Fix config parse control flow ([#1957](https://github.com/TraceMachina/nativelink/issues/1957)) - ([4d318c0](https://github.com/TraceMachina/nativelink/commit/4d318c09b8c5a07e492c054f680263a68b46d86e))
+
+## [0.7.2](https://github.com/TraceMachina/nativelink/compare/v0.7.1..v0.7.2) - 2025-10-08
+
+
+
+### ⛰️  Features
+
+- Move Bytestream to array config ([#1951](https://github.com/TraceMachina/nativelink/issues/1951)) - ([e5b0eef](https://github.com/TraceMachina/nativelink/commit/e5b0eefe72d67b9364fb41c041cd5a0814a07582))
+- Add more logging around active_drop_spawns ([#1941](https://github.com/TraceMachina/nativelink/issues/1941)) - ([24624ef](https://github.com/TraceMachina/nativelink/commit/24624effaa1930fa2f0d33dd36c53f770be95fdd))
+
+### 🐛 Bug Fixes
+
+- Fixes all the examples in the stores config ([#1948](https://github.com/TraceMachina/nativelink/issues/1948)) - ([f70c487](https://github.com/TraceMachina/nativelink/commit/f70c487da1875f1bdbfd2df6901d06883c0417c2))
+- Prevent UUID collisions ([#1945](https://github.com/TraceMachina/nativelink/issues/1945)) - ([184d629](https://github.com/TraceMachina/nativelink/commit/184d6290743b6928dd573c59eb5b16b98b6c8d5d))
+- Existence cache remove callbacks ([#1947](https://github.com/TraceMachina/nativelink/issues/1947)) - ([67adf59](https://github.com/TraceMachina/nativelink/commit/67adf590857017ed16f06a62248a074d10cd1ec5))
+- Make the error on a size field clearer ([#1939](https://github.com/TraceMachina/nativelink/issues/1939)) - ([a294778](https://github.com/TraceMachina/nativelink/commit/a29477856efdb3c815d74626cea1de006561ccb6))
+
+### 📚 Documentation
+
+- added validation warnings ([#1938](https://github.com/TraceMachina/nativelink/issues/1938)) - ([068d095](https://github.com/TraceMachina/nativelink/commit/068d0957e0f150f46a341119142a8fbffcf76c56))
+
+### ⚙️ Miscellaneous
+
+- RHEL8 demo image ([#1933](https://github.com/TraceMachina/nativelink/issues/1933)) - ([e3b108f](https://github.com/TraceMachina/nativelink/commit/e3b108f26d76a15d61adb055e3a56c64c61bf41d))
+- Better logging for store_awaited_action update failures ([#1940](https://github.com/TraceMachina/nativelink/issues/1940)) - ([892893e](https://github.com/TraceMachina/nativelink/commit/892893e1048a6d2b639fbacc62c8871319b128f5))
+- update hero with trademark ([#1942](https://github.com/TraceMachina/nativelink/issues/1942)) - ([f5c2c17](https://github.com/TraceMachina/nativelink/commit/f5c2c17dfd87ed499688908ec8b6923ac4236436))
+- LastMile AI case study ([#1937](https://github.com/TraceMachina/nativelink/issues/1937)) - ([ef03983](https://github.com/TraceMachina/nativelink/commit/ef039837078f626135d3695ebdec913889d660e0))
+- Add trending badge ([#1936](https://github.com/TraceMachina/nativelink/issues/1936)) - ([969713d](https://github.com/TraceMachina/nativelink/commit/969713d60008558de8d16a74fa31ce4c1f8055bd))
+
+## [0.7.1](https://github.com/TraceMachina/nativelink/compare/v0.7.0..v0.7.1) - 2025-09-24
+
+
+
+### ⛰️  Features
+
+- Add ONTAP S3 Store with existence cache ([#1630](https://github.com/TraceMachina/nativelink/issues/1630)) - ([b4c8216](https://github.com/TraceMachina/nativelink/commit/b4c82163190004a7469ed8a8d05680a59bc790d9))
+- Add worker_find_logging ([#1925](https://github.com/TraceMachina/nativelink/issues/1925)) - ([8b46fd8](https://github.com/TraceMachina/nativelink/commit/8b46fd848b68a3c4a43c3f79fa9baef26eef9174))
+
+### 🐛 Bug Fixes
+
+- Extended license to FSL-Apache ([#1930](https://github.com/TraceMachina/nativelink/issues/1930)) - ([7fcee85](https://github.com/TraceMachina/nativelink/commit/7fcee85a0803958505431f310b23a07b558640a1))
+
+### 🧪 Testing & CI
+
+- Prepare `0.7.1` Release ([#1932](https://github.com/TraceMachina/nativelink/issues/1932)) - ([a36521e](https://github.com/TraceMachina/nativelink/commit/a36521ed342242c4bffef96406387e1afd6c790c))
+- Re-enable integration tests ([#1915](https://github.com/TraceMachina/nativelink/issues/1915)) - ([3f9e037](https://github.com/TraceMachina/nativelink/commit/3f9e037428ccbdb3d427f89bf6f447a790d44de5))
+
+### ⚙️ Miscellaneous
+
+- Revert ExecutionComplete early scheduling optimization ([#1929](https://github.com/TraceMachina/nativelink/issues/1929)) - ([d39eeb6](https://github.com/TraceMachina/nativelink/commit/d39eeb625b8900f466894199aee38b707b850d82))
+- Support pre-0.7.0 cacheable spelling ([#1926](https://github.com/TraceMachina/nativelink/issues/1926)) - ([32ef435](https://github.com/TraceMachina/nativelink/commit/32ef4350c2a017b57c149f4fb7546e2903efc6f7))
+- Format JSON files ([#1927](https://github.com/TraceMachina/nativelink/issues/1927)) - ([ecc6c1e](https://github.com/TraceMachina/nativelink/commit/ecc6c1e85a63d48c97c9809abfd10d72b448b93a))
+- Make the bazelrc warnings back to being actual warnings ([#1914](https://github.com/TraceMachina/nativelink/issues/1914)) - ([6180146](https://github.com/TraceMachina/nativelink/commit/6180146cd68d29feb16ef5863f42d56c63a68e5c))
+
+### ⬆️ Bumps & Version Updates
+
+- Update dependency astro to v5.13.2 [SECURITY] ([#1890](https://github.com/TraceMachina/nativelink/issues/1890)) - ([7010351](https://github.com/TraceMachina/nativelink/commit/7010351ac1a1ac7148508955c96b5a31536d7042))
+- Update product pricing p2 ([#1923](https://github.com/TraceMachina/nativelink/issues/1923)) - ([7cedb68](https://github.com/TraceMachina/nativelink/commit/7cedb68e304c2cf0e19c2e3e460a2d66abfc41d2))
+- Update the Nativelink pricing in the website ([#1921](https://github.com/TraceMachina/nativelink/issues/1921)) - ([e973aa1](https://github.com/TraceMachina/nativelink/commit/e973aa116b2bab6bdba915adedd66153172add83))
+- Update Rust crate tracing-subscriber to v0.3.20 [SECURITY] ([#1917](https://github.com/TraceMachina/nativelink/issues/1917)) - ([f380d7d](https://github.com/TraceMachina/nativelink/commit/f380d7d112ebc292cfd78a6d99660d3ad650279e))
+
+## [0.7.0](https://github.com/TraceMachina/nativelink/compare/v0.6.0..v0.7.0) - 2025-08-16
+
+
+
+### ❌️  Breaking Changes
+
+- [Breaking] Remove support for MacOS 13 on x86_64 ([#1732](https://github.com/TraceMachina/nativelink/issues/1732)) - ([d7deee3](https://github.com/TraceMachina/nativelink/commit/d7deee3332f0ca387d390710a15b0fd8c39af028))
+- [Breaking] Change S3Store to a generic CloudObjectStore ([#1720](https://github.com/TraceMachina/nativelink/issues/1720)) - ([1d94417](https://github.com/TraceMachina/nativelink/commit/1d944178ec309fd97681688014a2ebc2e6d9969c))
+- [Breaking] Remove backwards compatibility for configs ([#1695](https://github.com/TraceMachina/nativelink/issues/1695)) - ([aff81c8](https://github.com/TraceMachina/nativelink/commit/aff81c8b62c50e316614b55f9a2a7a39c6f9a577))
+- [Breaking] Remove `experimental_prometheus` and `disable_metrics` ([#1686](https://github.com/TraceMachina/nativelink/issues/1686)) - ([23a64cf](https://github.com/TraceMachina/nativelink/commit/23a64cf1bfc97fe7bf0607983612f0625832fbf2))
+
+### ⛰️  Features
+
+- Early scheduling ([#1904](https://github.com/TraceMachina/nativelink/issues/1904)) - ([85c279a](https://github.com/TraceMachina/nativelink/commit/85c279a4467c5322159c5f55bca05be6b3bf92c4))
+- CMake tutorial for C/C++ devs not using Bazel/Buck2 ([#1896](https://github.com/TraceMachina/nativelink/issues/1896)) - ([bc95749](https://github.com/TraceMachina/nativelink/commit/bc957491734752a7fbfc5f21265c14a3870af438))
+- Add the O'Reilly book to our website ([#1886](https://github.com/TraceMachina/nativelink/issues/1886)) - ([d4e556d](https://github.com/TraceMachina/nativelink/commit/d4e556dde22c5405b930e2e7e55a3ba8b7eea711))
+- Add nix command to create local nativelink images ([#1871](https://github.com/TraceMachina/nativelink/issues/1871)) - ([fb538ca](https://github.com/TraceMachina/nativelink/commit/fb538ca240c65f6444ce6ba9b898f421a85f1c87))
+- Add debug helpers to check LRE kustomization ([#1857](https://github.com/TraceMachina/nativelink/issues/1857)) - ([ba1cd53](https://github.com/TraceMachina/nativelink/commit/ba1cd53033c9f9110afe9468446ff5ea52ef8b90))
+- Add GCS bucket/path when we fail to load metadata ([#1849](https://github.com/TraceMachina/nativelink/issues/1849)) - ([b63f623](https://github.com/TraceMachina/nativelink/commit/b63f623eb3db8b093c8ac2682e8f7b156bc566e5))
+- Add Browserbase wordmark ([#1800](https://github.com/TraceMachina/nativelink/issues/1800)) - ([bace8c0](https://github.com/TraceMachina/nativelink/commit/bace8c014516738d68fe76a9c70bd8b3524e20dc))
+- Add a Contributors Section To Website's Home Page ([#1797](https://github.com/TraceMachina/nativelink/issues/1797)) - ([f39be28](https://github.com/TraceMachina/nativelink/commit/f39be28935880016de5bd4b76576c4fa0f3d79a8))
+- Add support for native root certs ([#1782](https://github.com/TraceMachina/nativelink/issues/1782)) - ([cd3f993](https://github.com/TraceMachina/nativelink/commit/cd3f9930eac4942569b939c19f891f50e699cb00))
+- Add typos to spellcheck source code ([#1780](https://github.com/TraceMachina/nativelink/issues/1780)) - ([d545a1c](https://github.com/TraceMachina/nativelink/commit/d545a1c265a4c931e091f931c3eaba3c43ed76f6))
+- Add Finetuning LLMs on CPUs Blog Post ([#1748](https://github.com/TraceMachina/nativelink/issues/1748)) - ([18eb9e1](https://github.com/TraceMachina/nativelink/commit/18eb9e1d71c7d2b9ca2a1fbd71a545aaa1bf13ab))
+- Add shellcheck to lint shell scripts ([#1759](https://github.com/TraceMachina/nativelink/issues/1759)) - ([ce06332](https://github.com/TraceMachina/nativelink/commit/ce06332381270ce0588c09c6e8126712395c1aa9))
+- Add implementation for Google Cloud Storage with REST ([#1645](https://github.com/TraceMachina/nativelink/issues/1645)) - ([2839470](https://github.com/TraceMachina/nativelink/commit/2839470fc8cf04f9d0fd2aa228318d7b3d7d9827))
+- Add ISA support for buildstream ([#1681](https://github.com/TraceMachina/nativelink/issues/1681)) - ([4b42fec](https://github.com/TraceMachina/nativelink/commit/4b42fecd3a25b64c790e9e5a53b3ed6bc4fab719))
+- Add actualized param for reclient config dir ([#1679](https://github.com/TraceMachina/nativelink/issues/1679)) - ([39d390d](https://github.com/TraceMachina/nativelink/commit/39d390d1d680c16f58b7e02f9ab437ed461bc706))
+- Add RemoteAsset protobuf ([#1647](https://github.com/TraceMachina/nativelink/issues/1647)) - ([07bba7c](https://github.com/TraceMachina/nativelink/commit/07bba7c9a9d824dd37240280af646076b427c023))
+- Add Thirdwave Automation case study ([#1615](https://github.com/TraceMachina/nativelink/issues/1615)) - ([0125a34](https://github.com/TraceMachina/nativelink/commit/0125a347514682431f6886cdbd9e0f8cf6500eb7))
+
+### 🐛 Bug Fixes
+
+- Fix Docker error due to version drift ([#1882](https://github.com/TraceMachina/nativelink/issues/1882)) - ([3c9b1f3](https://github.com/TraceMachina/nativelink/commit/3c9b1f353c588c2d5a8ca1f6e35da37a510e8670))
+- Fix directory collision on action retries by waiting for cleanup and removing stales ([#1868](https://github.com/TraceMachina/nativelink/issues/1868)) - ([47602d1](https://github.com/TraceMachina/nativelink/commit/47602d1d83e9e478a56fb3fbeaa5c5e1fee813f4))
+- Fix local rustfmt with new flags ([#1850](https://github.com/TraceMachina/nativelink/issues/1850)) - ([efd5c5c](https://github.com/TraceMachina/nativelink/commit/efd5c5cb3e49df663537ce5f99d809adf9ea638f))
+- Fix execution_server instance name error ([#1858](https://github.com/TraceMachina/nativelink/issues/1858)) - ([e362da8](https://github.com/TraceMachina/nativelink/commit/e362da828963a760b705425bbb361b61875e5f24))
+- Fix wrong log messaging while removing file in `FilesystemStore` ([#1400](https://github.com/TraceMachina/nativelink/issues/1400)) - ([350070d](https://github.com/TraceMachina/nativelink/commit/350070de3317a03d1652f8bb8b20d735c8c6c3e8))
+- Improve root cert blog post ([#1795](https://github.com/TraceMachina/nativelink/issues/1795)) - ([3ad3f20](https://github.com/TraceMachina/nativelink/commit/3ad3f20d91f8178132a15756605bf9530778537e))
+- Fix blog post image. ([#1791](https://github.com/TraceMachina/nativelink/issues/1791)) - ([47fab25](https://github.com/TraceMachina/nativelink/commit/47fab25138db5d4bf03a0a6042aa4b2daa153ae9))
+- Resolve `clippy::fallible_impl_from` ([#1771](https://github.com/TraceMachina/nativelink/issues/1771)) - ([d53363d](https://github.com/TraceMachina/nativelink/commit/d53363dca585e5a467fe38fef2c914928537b5c3))
+- Fix clippy::similar_names ([#1777](https://github.com/TraceMachina/nativelink/issues/1777)) - ([acc2a8a](https://github.com/TraceMachina/nativelink/commit/acc2a8a50a2d857673acadd073439b02ddc2bcc0))
+- Fix clippy::from_iter_instead_of_collect ([#1768](https://github.com/TraceMachina/nativelink/issues/1768)) - ([f281e9a](https://github.com/TraceMachina/nativelink/commit/f281e9a643dac25cd3f24a70d1d742dd8b5fa96a))
+- Fix clippy::option_option ([#1765](https://github.com/TraceMachina/nativelink/issues/1765)) - ([1432b36](https://github.com/TraceMachina/nativelink/commit/1432b36b204432019764843a9e6114c5c710e87e))
+- Fix clippy::unnecessary_semicolon ([#1769](https://github.com/TraceMachina/nativelink/issues/1769)) - ([4721a81](https://github.com/TraceMachina/nativelink/commit/4721a8190436046dfcf695416e09d8042f1ac0ff))
+- Fix clippy::doc_link_with_quotes ([#1767](https://github.com/TraceMachina/nativelink/issues/1767)) - ([b52451a](https://github.com/TraceMachina/nativelink/commit/b52451ac940abe076ac4efc91101adaa209b6eb2))
+- Fix clippy::if_not_else ([#1766](https://github.com/TraceMachina/nativelink/issues/1766)) - ([ea03da7](https://github.com/TraceMachina/nativelink/commit/ea03da78425857018c5095664d196da1f13fbeb9))
+- Fix clippy lints after d106fe7 ([#1758](https://github.com/TraceMachina/nativelink/issues/1758)) - ([368bdb4](https://github.com/TraceMachina/nativelink/commit/368bdb48905d0adfb306506f7a12956cc0eb1b1b))
+- Fix remote build against lre-rs on NixOS ([#1762](https://github.com/TraceMachina/nativelink/issues/1762)) - ([c86801a](https://github.com/TraceMachina/nativelink/commit/c86801a0117fe180eaa2f4a386e24e48bc7e6e13))
+- Fix outdated homepage link ([#1755](https://github.com/TraceMachina/nativelink/issues/1755)) - ([ec4592b](https://github.com/TraceMachina/nativelink/commit/ec4592bcfbb1764c806c82e19de77f79d2c1d37f))
+- Fix formatting in configuration-intro ([#1742](https://github.com/TraceMachina/nativelink/issues/1742)) - ([08f1eb0](https://github.com/TraceMachina/nativelink/commit/08f1eb0a1b988f6017e9b488cf1f6f9dc09c1b10))
+- Handle slashes in instance name of `WaitExecutionRequest` ([#1689](https://github.com/TraceMachina/nativelink/issues/1689)) - ([5f4bbbf](https://github.com/TraceMachina/nativelink/commit/5f4bbbfa9adda750f9509d8e1c7dc6f47cceffcb))
+- Remove console-subscriber ([#1683](https://github.com/TraceMachina/nativelink/issues/1683)) - ([3ba41c9](https://github.com/TraceMachina/nativelink/commit/3ba41c902fe3bd32cf1855d7742289ac4d1b8039))
+- Fix admin router syntax for axum 0.8 ([#1675](https://github.com/TraceMachina/nativelink/issues/1675)) - ([3d8f4a8](https://github.com/TraceMachina/nativelink/commit/3d8f4a81763ef958e041e9e94362c73cef1723ed))
+- Fix keyword casing in docker-compose Dockerfile ([#1663](https://github.com/TraceMachina/nativelink/issues/1663)) - ([c196ce4](https://github.com/TraceMachina/nativelink/commit/c196ce4506dda655fcdebf3124924899722c9c31))
+- Fix various Bazel warnings after 24cbbfd501ffe5a569e23c2c456b391b58f4d8e4 ([#1621](https://github.com/TraceMachina/nativelink/issues/1621)) - ([742c985](https://github.com/TraceMachina/nativelink/commit/742c985a6fd08757045a70d463dfb8fb8ee537d7))
+
+### 📚 Documentation
+
+- Updating version in README and package manifests ([#1911](https://github.com/TraceMachina/nativelink/issues/1911)) - ([fe996ab](https://github.com/TraceMachina/nativelink/commit/fe996ab61dd26bcd13ff5c933efdbdadda841589))
+- Migrate tracing infrastructure to OpenTelemetry ([#1772](https://github.com/TraceMachina/nativelink/issues/1772)) - ([7a8f561](https://github.com/TraceMachina/nativelink/commit/7a8f561aaa4a2336a6a42d45e87cbadbad284997))
+- Add store README ([#1739](https://github.com/TraceMachina/nativelink/issues/1739)) - ([92ddb62](https://github.com/TraceMachina/nativelink/commit/92ddb62d3aa90132fbacb34a7bda2bae28471b9a))
+- Refactor `write_too_many_bytes_fails` test ([#1726](https://github.com/TraceMachina/nativelink/issues/1726)) - ([a0c5db0](https://github.com/TraceMachina/nativelink/commit/a0c5db0afbfc26bae02bd76bc59915ea76a75cb0))
+- Throw error on generate docs fail ([#1710](https://github.com/TraceMachina/nativelink/issues/1710)) - ([d9577c3](https://github.com/TraceMachina/nativelink/commit/d9577c3c5edf35cb5705913b9c306410af5ad0ef))
+- Prepare development cluster for OpenTelemetry ([#1685](https://github.com/TraceMachina/nativelink/issues/1685)) - ([6811139](https://github.com/TraceMachina/nativelink/commit/6811139133a3c5fc203769a6a02777b43a3695db))
+- Update ECR docs ([#1667](https://github.com/TraceMachina/nativelink/issues/1667)) - ([b09f9a6](https://github.com/TraceMachina/nativelink/commit/b09f9a6603763804ea6c156e8ddfca3b17d7972e))
+- Update native-cli loadbalancer and flux ([#1670](https://github.com/TraceMachina/nativelink/issues/1670)) - ([665cca8](https://github.com/TraceMachina/nativelink/commit/665cca89cf103ab0f5b3f4fb204ff31e85d82441))
+- Fix links in documentation ([#1655](https://github.com/TraceMachina/nativelink/issues/1655)) - ([8071565](https://github.com/TraceMachina/nativelink/commit/8071565cb2d7ff4978da191a8e6c900fc7f58fac))
+- Document contributing to the native-cli ([#1625](https://github.com/TraceMachina/nativelink/issues/1625)) - ([4e3366d](https://github.com/TraceMachina/nativelink/commit/4e3366dd4d42e5d3ce4f2b69d541ddd3462af2a0))
+
+### 🧪 Testing & CI
+
+- Fake Redis test ([#1895](https://github.com/TraceMachina/nativelink/issues/1895)) - ([df93f97](https://github.com/TraceMachina/nativelink/commit/df93f97ebbe65921f2e4c89366b6dd0caedcd98b))
+- Tested redaction for stream.first_msg in bytestream ([#1865](https://github.com/TraceMachina/nativelink/issues/1865)) - ([cd1e515](https://github.com/TraceMachina/nativelink/commit/cd1e51535f74d67a1e7ade08c38f2a00a421174a))
+- Fix RBE testing ([#1862](https://github.com/TraceMachina/nativelink/issues/1862)) - ([4efa1ab](https://github.com/TraceMachina/nativelink/commit/4efa1ab98a9357b34b7e353733ed166b4b91e2df))
+- Add integration test for mongo backend ([#1853](https://github.com/TraceMachina/nativelink/issues/1853)) - ([db1e341](https://github.com/TraceMachina/nativelink/commit/db1e341448dc88b25e370115629b59ccb10f140b))
+- Add JSON5 formatting to pre-commit ([#1817](https://github.com/TraceMachina/nativelink/issues/1817)) - ([4616615](https://github.com/TraceMachina/nativelink/commit/4616615a4189d8096d7c0bac503b2ba48aa5590a))
+- Re-enable doctests for nativelink-proto ([#1824](https://github.com/TraceMachina/nativelink/issues/1824)) - ([82b30ff](https://github.com/TraceMachina/nativelink/commit/82b30ff785d7e148e664c88e60707b6c5f393570))
+- Make default config for k8s examples more realistic ([#1802](https://github.com/TraceMachina/nativelink/issues/1802)) - ([45e300c](https://github.com/TraceMachina/nativelink/commit/45e300c529908a5e59632d0bdda3ba499b2187ec))
+- Largely switch from map-based to array-based config ([#1712](https://github.com/TraceMachina/nativelink/issues/1712)) - ([3f1cf3b](https://github.com/TraceMachina/nativelink/commit/3f1cf3b6340780bc68f45eb9482bcee8976e0048))
+- Synchronize clippy lints between bazel and cargo ([#1745](https://github.com/TraceMachina/nativelink/issues/1745)) - ([1a61af2](https://github.com/TraceMachina/nativelink/commit/1a61af2acffa892fd2ac8de1f8cb0ffc1b507dd4))
+- Add shfmt to lint shell scripts ([#1749](https://github.com/TraceMachina/nativelink/issues/1749)) - ([945c45c](https://github.com/TraceMachina/nativelink/commit/945c45c1aa94fd5fc558f28eb47f9bbe1af7f0e4))
+- Test bytestream message too large ([#1721](https://github.com/TraceMachina/nativelink/issues/1721)) - ([3dc666c](https://github.com/TraceMachina/nativelink/commit/3dc666cb4da88aa30407771ff4bdc915c905f57b))
+- Use default pre-commit hooks where possible ([#1723](https://github.com/TraceMachina/nativelink/issues/1723)) - ([e1d2e6f](https://github.com/TraceMachina/nativelink/commit/e1d2e6fa61a4fe7a2028c1f411ac30be5b33b602))
+- Create Bazel flake template ([#1718](https://github.com/TraceMachina/nativelink/issues/1718)) - ([d95db0d](https://github.com/TraceMachina/nativelink/commit/d95db0dac1b196f2b35a8782eff782b27971c3a0))
+- Add unit tests to bazel ([#1691](https://github.com/TraceMachina/nativelink/issues/1691)) - ([6473203](https://github.com/TraceMachina/nativelink/commit/6473203198f03aa4103c6b9ce1fc9c6af03a62c4))
+- Resolve clippy lints, change to `#[expect]` ([#1661](https://github.com/TraceMachina/nativelink/issues/1661)) - ([8d97af7](https://github.com/TraceMachina/nativelink/commit/8d97af79d1fe7613d2e9b1548581605e03448043))
+
+### ⚙️ Miscellaneous
+
+- Prepare 0.7.0-rc-2 ([#1908](https://github.com/TraceMachina/nativelink/issues/1908)) - ([b23cf19](https://github.com/TraceMachina/nativelink/commit/b23cf19ce07f3415a82a4860641d7d6248a17bd6))
+- Modified the todos, though many will be removed ([#1909](https://github.com/TraceMachina/nativelink/issues/1909)) - ([0e9626c](https://github.com/TraceMachina/nativelink/commit/0e9626cefa4f234db7938c2379ac3e5322171ce8))
+- Retry matching on failure ([#1892](https://github.com/TraceMachina/nativelink/issues/1892)) - ([e691bea](https://github.com/TraceMachina/nativelink/commit/e691bea24ba0b0b5827e9464a26cfd8988b61512))
+- Temporarily disable llre.yaml ([#1902](https://github.com/TraceMachina/nativelink/issues/1902)) - ([7c02e58](https://github.com/TraceMachina/nativelink/commit/7c02e589c6d0386db5e15487fd108a882fe97083))
+- Graceful worker shutdown ([#1899](https://github.com/TraceMachina/nativelink/issues/1899)) - ([98b1201](https://github.com/TraceMachina/nativelink/commit/98b1201433e3e7834dc4d1d1a2d8688061a26047))
+- Improve visibility of .conf ([#1900](https://github.com/TraceMachina/nativelink/issues/1900)) - ([d196648](https://github.com/TraceMachina/nativelink/commit/d1966487a3fafd29e178aa183c265c124c582c9f))
+- Typo/makefile formatting ([#1897](https://github.com/TraceMachina/nativelink/issues/1897)) - ([de2abb8](https://github.com/TraceMachina/nativelink/commit/de2abb8a929cadac9688820bd1f1eda4a1ddc447))
+- Repository hygiene, Rust 1.89.0, enter to submit ([#1894](https://github.com/TraceMachina/nativelink/issues/1894)) - ([e2cb612](https://github.com/TraceMachina/nativelink/commit/e2cb612037f613a26042932d322cd5d1fba4699b))
+- Download work on submit ([#1893](https://github.com/TraceMachina/nativelink/issues/1893)) - ([052c53a](https://github.com/TraceMachina/nativelink/commit/052c53a543934c58c28661419e5f795d0064815d))
+- Improve hero consistency ([#1887](https://github.com/TraceMachina/nativelink/issues/1887)) - ([d7ec1e1](https://github.com/TraceMachina/nativelink/commit/d7ec1e157a6e6340a5f44a7baeff9a5bfa59b06b))
+- Redact data fields in tracing ([#1884](https://github.com/TraceMachina/nativelink/issues/1884)) - ([bee59b5](https://github.com/TraceMachina/nativelink/commit/bee59b5206b21175db49ab99190fb41f7154404d))
+- Make Redis connection errors actually fail as such ([#1879](https://github.com/TraceMachina/nativelink/issues/1879)) - ([4e2c20e](https://github.com/TraceMachina/nativelink/commit/4e2c20e7dd75caa6d67b88e6ba4d57963bb79c21))
+- Create the client-to-operation mapping when a  client subscribes to an existing action ([#1876](https://github.com/TraceMachina/nativelink/issues/1876)) - ([7caa78b](https://github.com/TraceMachina/nativelink/commit/7caa78bea5bd0e1f59cbfcaeb4b5cfa68b1a3eba))
+- Improve evicting map performance ([#1875](https://github.com/TraceMachina/nativelink/issues/1875)) - ([036e394](https://github.com/TraceMachina/nativelink/commit/036e394838f08c79abafdc3f65926b602faf8dce))
+- When logging errors, detail the keys ([#1877](https://github.com/TraceMachina/nativelink/issues/1877)) - ([eeec964](https://github.com/TraceMachina/nativelink/commit/eeec9643e0dcb042f2d282bdd2ecc5e5a3d44339))
+- Readd publish-ghcr as needed by deploy ([#1873](https://github.com/TraceMachina/nativelink/issues/1873)) - ([0a331e5](https://github.com/TraceMachina/nativelink/commit/0a331e54c0dc68ff76d562c0bcde7fd0a9a436f3))
+- Redis scheduler store should read OperationId as a JSON instead of String. ([#1872](https://github.com/TraceMachina/nativelink/issues/1872)) - ([7ee11d6](https://github.com/TraceMachina/nativelink/commit/7ee11d657b65586ca09880474654ce79a09bd497))
+- Backwards compatibility now says what to change ([#1870](https://github.com/TraceMachina/nativelink/issues/1870)) - ([0c006fd](https://github.com/TraceMachina/nativelink/commit/0c006fdab5f709b6c92ded0bbed6c3d41cf7d572))
+- Reduce confusion ([#1867](https://github.com/TraceMachina/nativelink/issues/1867)) - ([6aaee38](https://github.com/TraceMachina/nativelink/commit/6aaee38747d35281644704fe4360cb9ff4b8a445))
+- Re-add Nix magic cache ([#1851](https://github.com/TraceMachina/nativelink/issues/1851)) - ([8d9470b](https://github.com/TraceMachina/nativelink/commit/8d9470b711c30acaa33db09bb549a5faac489fc1))
+- Log fallback calls to help with adding new gRPC bits ([#1861](https://github.com/TraceMachina/nativelink/issues/1861)) - ([05bef36](https://github.com/TraceMachina/nativelink/commit/05bef36519a44ca734e0dc16a44118e44bca67d6))
+- Remove background video on mobile ([#1812](https://github.com/TraceMachina/nativelink/issues/1812)) - ([181e39d](https://github.com/TraceMachina/nativelink/commit/181e39d6edb766a40f53baacc371e15236750ac4))
+- Remove unused cargo deps with machete ([#1839](https://github.com/TraceMachina/nativelink/issues/1839)) - ([5a11bce](https://github.com/TraceMachina/nativelink/commit/5a11bce8ac9a79106f2f388915d89512e0313968))
+- Mark all warnings as errors so bazel fails ([#1840](https://github.com/TraceMachina/nativelink/issues/1840)) - ([e6cf730](https://github.com/TraceMachina/nativelink/commit/e6cf730efdbb8a137d00ad61176f4d5858f03518))
+- Reduce renovate noise by limiting to security and major fixes only ([#1836](https://github.com/TraceMachina/nativelink/issues/1836)) - ([a24fa5b](https://github.com/TraceMachina/nativelink/commit/a24fa5b47f28d531736485a5014a0d3127b1cfe2))
+- Remove trace level and add note ([#1805](https://github.com/TraceMachina/nativelink/issues/1805)) - ([91ee900](https://github.com/TraceMachina/nativelink/commit/91ee9002b59f43c2b3dfaaf9b3e89c0c83500601))
+- Don't allow used_underscore_binding ([#1819](https://github.com/TraceMachina/nativelink/issues/1819)) - ([e70a4bb](https://github.com/TraceMachina/nativelink/commit/e70a4bb42ff04dc2ebff0afa54be3c104da20369))
+- Make config references version-specific ([#1823](https://github.com/TraceMachina/nativelink/issues/1823)) - ([cd73302](https://github.com/TraceMachina/nativelink/commit/cd733021c16c2112a48bcf36bd3a1bace453fbe0))
+- Override the reclient ToC with a working version ([#1827](https://github.com/TraceMachina/nativelink/issues/1827)) - ([36ccefd](https://github.com/TraceMachina/nativelink/commit/36ccefd6d023fd9e599bccd4919da3d6fe95d838))
+- Check example JSON5 files pass the parser ([#1818](https://github.com/TraceMachina/nativelink/issues/1818)) - ([20ad6a3](https://github.com/TraceMachina/nativelink/commit/20ad6a3e79f1959dbf815e5ba572a6910632b3b0))
+- Implements the internals of the remote asset protocol ([#1816](https://github.com/TraceMachina/nativelink/issues/1816)) - ([4a299f9](https://github.com/TraceMachina/nativelink/commit/4a299f9f38a4e15065c807f66d6336415a46e82c))
+- Generate bazel lints from Cargo.toml ([#1820](https://github.com/TraceMachina/nativelink/issues/1820)) - ([1cd0e5c](https://github.com/TraceMachina/nativelink/commit/1cd0e5c3f25cbcf8ff0491c69702cf5d1c221867))
+- Replace Video for Website's Hero Section ([#1809](https://github.com/TraceMachina/nativelink/issues/1809)) - ([9b4fbd4](https://github.com/TraceMachina/nativelink/commit/9b4fbd473f4cdd070243b0b823a405ba4887b8c3))
+- Use upstream buildstream packaging ([#1815](https://github.com/TraceMachina/nativelink/issues/1815)) - ([58513f3](https://github.com/TraceMachina/nativelink/commit/58513f3bc2ef22f785c9ba3b4e1b66242dc025bf))
+- Modify blog image ([#1811](https://github.com/TraceMachina/nativelink/issues/1811)) - ([afc36bd](https://github.com/TraceMachina/nativelink/commit/afc36bd55087ab2c782dd696d65a38a3108ad926))
+- Include Vale changes into web only workflows ([#1793](https://github.com/TraceMachina/nativelink/issues/1793)) - ([5c87e88](https://github.com/TraceMachina/nativelink/commit/5c87e88df180f46e7bc19eec66e6827166feae0a))
+- Use native root certs for S3 stores ([#1785](https://github.com/TraceMachina/nativelink/issues/1785)) - ([44e35ba](https://github.com/TraceMachina/nativelink/commit/44e35baaf40b6c27e8173f77f43d8449d6a94df0))
+- Blog about trust root support ([#1788](https://github.com/TraceMachina/nativelink/issues/1788)) - ([0fec68e](https://github.com/TraceMachina/nativelink/commit/0fec68eb4fdfc58a7425c415e4c76886cfc2c0fd))
+- Reduce verbosity of the info trace level ([#1778](https://github.com/TraceMachina/nativelink/issues/1778)) - ([fe813a9](https://github.com/TraceMachina/nativelink/commit/fe813a96a443a92decd1c5139739257d63f417a8))
+- Move redis fingerprint logic to logs ([#1773](https://github.com/TraceMachina/nativelink/issues/1773)) - ([708ab5b](https://github.com/TraceMachina/nativelink/commit/708ab5b311339b735dc29d5689f70227e8cdb1a5))
+- Simplify clippy configs ([#1764](https://github.com/TraceMachina/nativelink/issues/1764)) - ([c66ead2](https://github.com/TraceMachina/nativelink/commit/c66ead2158b420d44143c38ff14e8862bd0b254b))
+- Remove python from NixOS path ([#1763](https://github.com/TraceMachina/nativelink/issues/1763)) - ([19d4aac](https://github.com/TraceMachina/nativelink/commit/19d4aacdd5efa536859b78c7f12c6a7301cd0405))
+- Make K8s filesystem paths independent of `$HOME` ([#1761](https://github.com/TraceMachina/nativelink/issues/1761)) - ([c31233e](https://github.com/TraceMachina/nativelink/commit/c31233e914e10d8bbc9d7afaee5f900f48885e39))
+- Change title on website ([#1760](https://github.com/TraceMachina/nativelink/issues/1760)) - ([5be8d25](https://github.com/TraceMachina/nativelink/commit/5be8d25cf4b3cccf4a177072a0a0de3a8f03f3ac))
+- Enable more clippy lints ([#1746](https://github.com/TraceMachina/nativelink/issues/1746)) - ([d106fe7](https://github.com/TraceMachina/nativelink/commit/d106fe711a65b9e2180003f0fca385894e0c47be))
+- Test stream termination ([#1741](https://github.com/TraceMachina/nativelink/issues/1741)) - ([f9ab7c4](https://github.com/TraceMachina/nativelink/commit/f9ab7c437d0a50c5cceee4b4568d4a403fd09051))
+- Disable unnecessary workflows for web changes ([#1750](https://github.com/TraceMachina/nativelink/issues/1750)) - ([36d1c43](https://github.com/TraceMachina/nativelink/commit/36d1c4364f3b698a8123ec7023dd233eb51dfc08))
+- Reassign TODOs ([#1747](https://github.com/TraceMachina/nativelink/issues/1747)) - ([03152f1](https://github.com/TraceMachina/nativelink/commit/03152f1b6d274567fe85167bc7ce1c8990de8067))
+- Remove unnecessary photos ([#1733](https://github.com/TraceMachina/nativelink/issues/1733)) - ([411a018](https://github.com/TraceMachina/nativelink/commit/411a01808c31b3dfc292cc9b812a47dce40652a5))
+- Format toml files with taplo ([#1724](https://github.com/TraceMachina/nativelink/issues/1724)) - ([f6269d1](https://github.com/TraceMachina/nativelink/commit/f6269d19f392a90a7a63e9b9d3835d84f04868cd))
+- Implement `StoreDriver::list` for `RedisStore` ([#1697](https://github.com/TraceMachina/nativelink/issues/1697)) - ([06362d5](https://github.com/TraceMachina/nativelink/commit/06362d5014e767bdc07aaf24508b9fa96969ae6d))
+- Use explicit level macros instead of events ([#1725](https://github.com/TraceMachina/nativelink/issues/1725)) - ([78247a2](https://github.com/TraceMachina/nativelink/commit/78247a219def0296e6e4e17f792780499750574d))
+- Rename name to path in rustdoc ([#1708](https://github.com/TraceMachina/nativelink/issues/1708)) - ([8f327d7](https://github.com/TraceMachina/nativelink/commit/8f327d734685e33e7bbfaf9b09195e7f60863eaa))
+- Use `alloc`, `core` when possible ([#1704](https://github.com/TraceMachina/nativelink/issues/1704)) - ([18572ab](https://github.com/TraceMachina/nativelink/commit/18572ab3598fa70e965aa5371b5421d6b4489d36))
+- Refactor flake modules ([#1699](https://github.com/TraceMachina/nativelink/issues/1699)) - ([f9ff630](https://github.com/TraceMachina/nativelink/commit/f9ff630e09a3c22d6a3abea68d1bacc775eac6bb))
+- Initial Remote Asset support ([#1646](https://github.com/TraceMachina/nativelink/issues/1646)) - ([d319fda](https://github.com/TraceMachina/nativelink/commit/d319fdae798bc4cfbdce2fcf051b7d1b878644d4))
+- Standardize flake naming conventions ([#1698](https://github.com/TraceMachina/nativelink/issues/1698)) - ([0ff64b1](https://github.com/TraceMachina/nativelink/commit/0ff64b10796a4612644e234e1181c836adb59981))
+- Ramp up linting ([#1672](https://github.com/TraceMachina/nativelink/issues/1672)) - ([840a5b3](https://github.com/TraceMachina/nativelink/commit/840a5b36224a1727048719512fc0a75ab5adc1cc))
+- Refactor K8s namespaces ([#1680](https://github.com/TraceMachina/nativelink/issues/1680)) - ([0419f76](https://github.com/TraceMachina/nativelink/commit/0419f7629071b5fdf0a4eeecd6fab64883c5280c))
+- Ensure soundness of, rename `RawSymbolWrapper` ([#1673](https://github.com/TraceMachina/nativelink/issues/1673)) - ([9122f19](https://github.com/TraceMachina/nativelink/commit/9122f1945641e11d87fcb204dc4934343062c2f0))
+- Rename variants to Rust standards ([#1666](https://github.com/TraceMachina/nativelink/issues/1666)) - ([12b24be](https://github.com/TraceMachina/nativelink/commit/12b24be141c8d852a827242c2cd51dd0d934d957))
+- Remove indirection for wrapping tonic error codes ([#1656](https://github.com/TraceMachina/nativelink/issues/1656)) - ([a204116](https://github.com/TraceMachina/nativelink/commit/a204116e0a71c45d640187cbe32630efb16c4340))
+- Remove redundant settings in `Cargo.toml` ([#1659](https://github.com/TraceMachina/nativelink/issues/1659)) - ([3cff6ac](https://github.com/TraceMachina/nativelink/commit/3cff6acdb8f89ad89baa3d36db8bcef9ca995cdd))
+- Adjust nofile limit recommendations ([#1641](https://github.com/TraceMachina/nativelink/issues/1641)) - ([3431126](https://github.com/TraceMachina/nativelink/commit/343112689999ac39a27a2c53bb74397fb7e78723))
+- Migrate S3Store to hyper 1.x ([#1639](https://github.com/TraceMachina/nativelink/issues/1639)) - ([a5e845c](https://github.com/TraceMachina/nativelink/commit/a5e845ce3d41832f158ecf91ab3598921ba5ae75))
+- Start cilium before capacitor ([#1644](https://github.com/TraceMachina/nativelink/issues/1644)) - ([f91871c](https://github.com/TraceMachina/nativelink/commit/f91871cf64fb05b5ea2fd6fe24340188d59ad12f))
+- Use selector function for stdenv ([#1642](https://github.com/TraceMachina/nativelink/issues/1642)) - ([6952c3e](https://github.com/TraceMachina/nativelink/commit/6952c3e39fbe690d7b091fb3fd772d1dab017e85))
+- Migrate to Bazel 8 ([#1618](https://github.com/TraceMachina/nativelink/issues/1618)) - ([24cbbfd](https://github.com/TraceMachina/nativelink/commit/24cbbfd501ffe5a569e23c2c456b391b58f4d8e4))
+- Adjust team to show leaders ([#1617](https://github.com/TraceMachina/nativelink/issues/1617)) - ([fa64033](https://github.com/TraceMachina/nativelink/commit/fa6403351287e51e0e7b7f70613626a578723b8f))
+
+### ⬆️ Bumps & Version Updates
+
+- Retry on disconnect ([#1906](https://github.com/TraceMachina/nativelink/issues/1906)) - ([ea0e0ae](https://github.com/TraceMachina/nativelink/commit/ea0e0ae3927af505fc16b73af78ef306c9314118))
+- Update company.tsx ([#1901](https://github.com/TraceMachina/nativelink/issues/1901)) - ([1354bb0](https://github.com/TraceMachina/nativelink/commit/1354bb03d10d7009b596a897d3fe27bcf458469d))
+- Upgrades Mongo library to 3.x ([#1854](https://github.com/TraceMachina/nativelink/issues/1854)) - ([739613b](https://github.com/TraceMachina/nativelink/commit/739613b1a7d001da00a0acb2a46d5d8470383cd2))
+- Update ubuntu:22.04 Docker digest to 3c61d37 ([#1025](https://github.com/TraceMachina/nativelink/issues/1025)) - ([add1637](https://github.com/TraceMachina/nativelink/commit/add16372c9b919a653e55f54d19ce2394b6b8194))
+- Fix GCS store implementation ([#1846](https://github.com/TraceMachina/nativelink/issues/1846)) - ([3d2dd5e](https://github.com/TraceMachina/nativelink/commit/3d2dd5e6d1ef3d95ed2f5d060a8044729c98e74f))
+- Add ExperimentalMongoStore ([#1807](https://github.com/TraceMachina/nativelink/issues/1807)) - ([bc1c5ce](https://github.com/TraceMachina/nativelink/commit/bc1c5ce2c1f2d60a9e9f3b5b8f3c59e0e13d5d14))
+- Update dependency toolchains_protoc to v0.4.3 ([#1833](https://github.com/TraceMachina/nativelink/issues/1833)) - ([8c6180c](https://github.com/TraceMachina/nativelink/commit/8c6180cec2c5039bb30e63ef2b4b97abaf7fc5a9))
+- Bump github.com/cloudflare/circl from 1.6.0 to 1.6.1 in /native-cli ([#1834](https://github.com/TraceMachina/nativelink/issues/1834)) - ([da0f87f](https://github.com/TraceMachina/nativelink/commit/da0f87f0d1ea85fd2edf668aa3871a8c4c99ce2d))
+- Update Rust crate formatx to v0.2.4 ([#1751](https://github.com/TraceMachina/nativelink/issues/1751)) - ([5aebecd](https://github.com/TraceMachina/nativelink/commit/5aebecdd136b3c93424153fa44cee6859be5c471))
+- Update dependency rules_rust to v0.61.0 ([#1650](https://github.com/TraceMachina/nativelink/issues/1650)) - ([de0e26f](https://github.com/TraceMachina/nativelink/commit/de0e26fde7e537d391613c180ff2901b86a9dae6))
+- Updates smithy to remove proc-macro-error ([#1822](https://github.com/TraceMachina/nativelink/issues/1822)) - ([6e9b131](https://github.com/TraceMachina/nativelink/commit/6e9b131410d7fa5d05aa1cd52ba22e20089ebd95))
+- Update nix setup for GHA workflows ([#1813](https://github.com/TraceMachina/nativelink/issues/1813)) - ([76e769c](https://github.com/TraceMachina/nativelink/commit/76e769cd5ec067c443b56f5da417534c62865892))
+- Update bincode to 2.0.1 ([#1803](https://github.com/TraceMachina/nativelink/issues/1803)) - ([dd5d19c](https://github.com/TraceMachina/nativelink/commit/dd5d19c20d2df94429107fe45b46242f079f914c))
+- Update team ([#1801](https://github.com/TraceMachina/nativelink/issues/1801)) - ([5aa3603](https://github.com/TraceMachina/nativelink/commit/5aa3603db46d59381f769109f426ea639665a4a4))
+- Bump flake ([#1783](https://github.com/TraceMachina/nativelink/issues/1783)) - ([88e14dc](https://github.com/TraceMachina/nativelink/commit/88e14dc03a1d49d956b9712a1a88f6076d09ad7b))
+- Update website hero ([#1776](https://github.com/TraceMachina/nativelink/issues/1776)) - ([8a81bde](https://github.com/TraceMachina/nativelink/commit/8a81bde8148b5c227f1ddf8e2f29a5366ae209e5))
+- Fix various website issues ([#1752](https://github.com/TraceMachina/nativelink/issues/1752)) - ([9287f6d](https://github.com/TraceMachina/nativelink/commit/9287f6def51a8b4f63aeb2ed1155ae1238292315))
+- Update dependency @builder.io/qwik to v1.13.0 ([#1735](https://github.com/TraceMachina/nativelink/issues/1735)) - ([d6acccf](https://github.com/TraceMachina/nativelink/commit/d6acccf0c0df8d3cca09168d9719292f67d82368))
+- Update configuration example "stores" field format ([#1727](https://github.com/TraceMachina/nativelink/issues/1727)) - ([9798a0d](https://github.com/TraceMachina/nativelink/commit/9798a0d36eca489e3c9d8df7fb4a180f61b8e393))
+- Upgrade to 2024 edition ([#1676](https://github.com/TraceMachina/nativelink/issues/1676)) - ([07534c5](https://github.com/TraceMachina/nativelink/commit/07534c579b497e916f825e6cf43f4d2a92af7285))
+- Update Rust crate tokio to v1.44.2 ([#1677](https://github.com/TraceMachina/nativelink/issues/1677)) - ([81b2c14](https://github.com/TraceMachina/nativelink/commit/81b2c14118bd549764fea47e759ac297ecc47296))
+- Update Rust dependencies ([#1674](https://github.com/TraceMachina/nativelink/issues/1674)) - ([6b0cb60](https://github.com/TraceMachina/nativelink/commit/6b0cb60050ecab5c0ba944d7ef17635d91bb87d3))
+- Bump flake ([#1671](https://github.com/TraceMachina/nativelink/issues/1671)) - ([1cc2baf](https://github.com/TraceMachina/nativelink/commit/1cc2bafdbbcf25873ac673bc53d1036212fe875b))
+- Update website nits ([#1658](https://github.com/TraceMachina/nativelink/issues/1658)) - ([1982938](https://github.com/TraceMachina/nativelink/commit/198293884e399b48953826d55eb5aa6c97a67b2a))
+- Bump flake ([#1632](https://github.com/TraceMachina/nativelink/issues/1632)) - ([07bd27a](https://github.com/TraceMachina/nativelink/commit/07bd27a7b28aea8b21bcc8a2eca547ce7771c2fa))
+- Bump Cilium to 1.17.2 ([#1631](https://github.com/TraceMachina/nativelink/issues/1631)) - ([403a71c](https://github.com/TraceMachina/nativelink/commit/403a71c458f34a0b396af3a88f8609e4390b371a))
+- Bump Go deps ([#1622](https://github.com/TraceMachina/nativelink/issues/1622)) - ([c72adee](https://github.com/TraceMachina/nativelink/commit/c72adee4f791cd76eeeccdeed7165a5ad568c957))
+- Bump AWS SDK for Rust ([#1620](https://github.com/TraceMachina/nativelink/issues/1620)) - ([e465f73](https://github.com/TraceMachina/nativelink/commit/e465f7315a3f62cf8495a8567bdf5781d175402f))
+
 ## [0.6.0](https://github.com/TraceMachina/nativelink/compare/v0.5.4..v0.6.0) - 2025-03-06
 
 
@@ -34,7 +1082,6 @@ All notable changes to this project will be documented in this file.
 
 ### ⚙️ Miscellaneous
 
-- Release NativeLink v0.6.0 - ([e96f1eb](https://github.com/TraceMachina/nativelink/commit/e96f1ebdfd994f7db2be363587b533bb63d390dc))
 - Remove GrpcStore from health checker registry ([#1602](https://github.com/TraceMachina/nativelink/issues/1602)) - ([cba7359](https://github.com/TraceMachina/nativelink/commit/cba7359cc03d43789e2fa0b9cea634bc3d2c4900))
 - Mark functions `const` where possible ([#1573](https://github.com/TraceMachina/nativelink/issues/1573)) - ([8b9824f](https://github.com/TraceMachina/nativelink/commit/8b9824fea7b77b5e45838649ceff5d2aaa46c365))
 - Remove atime references to FilesystemStore ([#1584](https://github.com/TraceMachina/nativelink/issues/1584)) - ([0d6cbed](https://github.com/TraceMachina/nativelink/commit/0d6cbedeae514224c710fd736b9d6a03b571a5d2))
@@ -155,7 +1202,6 @@ All notable changes to this project will be documented in this file.
 
 ### ⚙️ Miscellaneous
 
-- Release NativeLink v0.5.4 ([#1572](https://github.com/TraceMachina/nativelink/issues/1572)) - ([dcba3f5](https://github.com/TraceMachina/nativelink/commit/dcba3f5ef11ffb153437df105789213740dd9692))
 - Make stores and schedulers lists of named specs ([#1496](https://github.com/TraceMachina/nativelink/issues/1496)) - ([c99dca6](https://github.com/TraceMachina/nativelink/commit/c99dca6d85a23a524102a3e9c7b4cab688fcd6ec))
 - Ensure that EvictingMap is threadsafe ([#1564](https://github.com/TraceMachina/nativelink/issues/1564)) - ([4b5fe2e](https://github.com/TraceMachina/nativelink/commit/4b5fe2eef13e4c6322800cc583a13c777c0b4a7b))
 - Minor fix to BEP key encoding ([#1539](https://github.com/TraceMachina/nativelink/issues/1539)) - ([c742302](https://github.com/TraceMachina/nativelink/commit/c742302eee9d720d14b0839e684c081fb437182d))
@@ -261,12 +1307,10 @@ All notable changes to this project will be documented in this file.
 
 ### ⚙️ Miscellaneous
 
-- Release NativeLink v0.5.3 ([#1314](https://github.com/TraceMachina/nativelink/issues/1314)) - ([913e710](https://github.com/TraceMachina/nativelink/commit/913e710d695750d6b51a1feb0ac8a001b04e2b01))
 - S3 store will now retry more aggresively ([#1302](https://github.com/TraceMachina/nativelink/issues/1302)) - ([0ecf5b4](https://github.com/TraceMachina/nativelink/commit/0ecf5b43d8046a119cf236c972b55208df3c6520))
 - Remove nix2container patch hash workaround ([#1296](https://github.com/TraceMachina/nativelink/issues/1296)) - ([d5c55ac](https://github.com/TraceMachina/nativelink/commit/d5c55ac16cfe4ee56aed6baa6923617db4236242))
 - Use docker to create a buck2 image ([#1275](https://github.com/TraceMachina/nativelink/issues/1275)) - ([8896b65](https://github.com/TraceMachina/nativelink/commit/8896b65fed8feeb76b2f3d62711a03f40acb4b22))
 - Support remote build execution on main and read-only remote cache on PRs ([#1277](https://github.com/TraceMachina/nativelink/issues/1277)) - ([2f9fd8b](https://github.com/TraceMachina/nativelink/commit/2f9fd8b199adb3a4482930afa27982f0c70bdcce))
-- Release NativeLink v0.5.2 ([#1283](https://github.com/TraceMachina/nativelink/issues/1283)) - ([a528481](https://github.com/TraceMachina/nativelink/commit/a52848185d7aabf388bef7ad96afbde2a63d7058))
 - Revert "Make de/serialized structs compliant with Rust naming practices ([#1271](https://github.com/TraceMachina/nativelink/issues/1271))" ([#1282](https://github.com/TraceMachina/nativelink/issues/1282)) - ([0933c1a](https://github.com/TraceMachina/nativelink/commit/0933c1ad4e531565f34e281b55e1d4d007c53eae))
 - Make de/serialized structs compliant with Rust naming practices ([#1271](https://github.com/TraceMachina/nativelink/issues/1271)) - ([a174fbf](https://github.com/TraceMachina/nativelink/commit/a174fbfbd9082110146a4ca497739084ea367892))
 - Append buck2 toolchain with additional packages ([#1264](https://github.com/TraceMachina/nativelink/issues/1264)) - ([042f4a5](https://github.com/TraceMachina/nativelink/commit/042f4a5d25abe6efebde2f7dd7b2bb450d25b6f1))
@@ -290,7 +1334,6 @@ All notable changes to this project will be documented in this file.
 
 ### ⚙️ Miscellaneous
 
-- Release NativeLink v0.5.1 ([#1252](https://github.com/TraceMachina/nativelink/issues/1252)) - ([b961192](https://github.com/TraceMachina/nativelink/commit/b961192a3930d415df453bf03c9903de7bc971a4))
 - Conversion implementations for awaited action db structs ([#1243](https://github.com/TraceMachina/nativelink/issues/1243)) - ([d5f2781](https://github.com/TraceMachina/nativelink/commit/d5f2781eff92432ceea9497f7b1fe1c3b672eda4))
 - Make redis clients available on RedisStore ([#1244](https://github.com/TraceMachina/nativelink/issues/1244)) - ([c3f648e](https://github.com/TraceMachina/nativelink/commit/c3f648ecaad4861983bce1a5dc67781685bd1e80))
 
@@ -396,7 +1439,6 @@ All notable changes to this project will be documented in this file.
 
 ### ⚙️ Miscellaneous
 
-- Release NativeLink v0.5.0 ([#1223](https://github.com/TraceMachina/nativelink/issues/1223)) - ([d898c54](https://github.com/TraceMachina/nativelink/commit/d898c5488741c209855b3e3f21cb20d749af3b10))
 - Migrate much of the ActionScheduler API to ClientStateManager API ([#1241](https://github.com/TraceMachina/nativelink/issues/1241)) - ([2b8f1ee](https://github.com/TraceMachina/nativelink/commit/2b8f1ee4f1078afb47f1d012ad8a347e752817db))
 - Move ActionSchedulerListener to ActionStateResult ([#1237](https://github.com/TraceMachina/nativelink/issues/1237)) - ([d57ee8d](https://github.com/TraceMachina/nativelink/commit/d57ee8d267e2a088f0f7f73c1108109b22ac1da0))
 - modified the lre file path ([#1239](https://github.com/TraceMachina/nativelink/issues/1239)) - ([33f09cb](https://github.com/TraceMachina/nativelink/commit/33f09cbd1b2833956ffb268f786a7c035f375dae))
@@ -536,7 +1578,6 @@ All notable changes to this project will be documented in this file.
 
 ### ⚙️ Miscellaneous
 
-- Release NativeLink v0.4.0 ([#913](https://github.com/TraceMachina/nativelink/issues/913)) - ([75105df](https://github.com/TraceMachina/nativelink/commit/75105df746c626da76f74e412764e6755296a8ab))
 - Reduce keep alive log message level ([#894](https://github.com/TraceMachina/nativelink/issues/894)) - ([f9e67aa](https://github.com/TraceMachina/nativelink/commit/f9e67aa1ba77f2a077153561afd1624bbfc502d8))
 - Migrate to Bazelisk ([#912](https://github.com/TraceMachina/nativelink/issues/912)) - ([ab46197](https://github.com/TraceMachina/nativelink/commit/ab46197a0a88ade04db8e142296ea99f0fdb29b3))
 - Enable hermetic Bazel sandboxing ([#902](https://github.com/TraceMachina/nativelink/issues/902)) - ([acec6d3](https://github.com/TraceMachina/nativelink/commit/acec6d3792f27f031c765aa0f38fee920dff2b06))
@@ -562,7 +1603,15 @@ All notable changes to this project will be documented in this file.
 - Update Rust crate rustls-pemfile to 2.1.2 ([#852](https://github.com/TraceMachina/nativelink/issues/852)) - ([44bc15f](https://github.com/TraceMachina/nativelink/commit/44bc15f54647903b698ff96816e30776936ca03a))
 - Update Rust crate async-trait to 0.1.80 ([#850](https://github.com/TraceMachina/nativelink/issues/850)) - ([8df4345](https://github.com/TraceMachina/nativelink/commit/8df4345a4b5a72a30e8c1d64d4b762b8ea3bf80c))
 
-## [0.3.0](https://github.com/TraceMachina/nativelink/compare/v0.2.0..v0.3.0) - 2024-04-10
+## [0.3.0](https://github.com/TraceMachina/nativelink/compare/v0.3.2..v0.3.0) - 2024-04-10
+
+
+
+### 🐛 Bug Fixes
+
+- Fix semver image workflow after 646253d ([#844](https://github.com/TraceMachina/nativelink/issues/844)) - ([e890c01](https://github.com/TraceMachina/nativelink/commit/e890c01c1e4654b9b2aae026614f005be06de117))
+
+## [0.3.2](https://github.com/TraceMachina/nativelink/compare/v0.2.0..v0.3.2) - 2024-04-09
 
 
 
@@ -599,7 +1648,6 @@ All notable changes to this project will be documented in this file.
 
 ### 🐛 Bug Fixes
 
-- Fix semver image workflow after 646253d ([#844](https://github.com/TraceMachina/nativelink/issues/844)) - ([e890c01](https://github.com/TraceMachina/nativelink/commit/e890c01c1e4654b9b2aae026614f005be06de117))
 - Resolve upload deadlock ([#816](https://github.com/TraceMachina/nativelink/issues/816)) - ([b61142d](https://github.com/TraceMachina/nativelink/commit/b61142dd9c9dc3e85d9adc8a23668f9ad234c128))
 - Fix nightly clippy warnings ([#817](https://github.com/TraceMachina/nativelink/issues/817)) - ([6d87cca](https://github.com/TraceMachina/nativelink/commit/6d87cca55ef739c2253860885e53529e2084c498))
 - Fix `.gitignore` after 1a43ef9 ([#797](https://github.com/TraceMachina/nativelink/issues/797)) - ([53e5a99](https://github.com/TraceMachina/nativelink/commit/53e5a99bd96491c75fce050fd290812cf47d7219))
@@ -658,9 +1706,6 @@ All notable changes to this project will be documented in this file.
 
 ### ⚙️ Miscellaneous
 
-- Release NativeLink v0.3.0 ([#845](https://github.com/TraceMachina/nativelink/issues/845)) - ([aab867a](https://github.com/TraceMachina/nativelink/commit/aab867a79396f1aefba7030fcd1128822107a2e0))
-- Revert "Release NativeLink v0.3.0 ([#838](https://github.com/TraceMachina/nativelink/issues/838))" ([#843](https://github.com/TraceMachina/nativelink/issues/843)) - ([002ece2](https://github.com/TraceMachina/nativelink/commit/002ece210ad223212676f6a0eefbba4a69e5f7ef))
-- Release NativeLink v0.3.0 ([#838](https://github.com/TraceMachina/nativelink/issues/838)) - ([f96ee92](https://github.com/TraceMachina/nativelink/commit/f96ee92ca4c8435b494bb92345f7923d5fa53acd))
 - Generalize Kubernetes worker setup ([#812](https://github.com/TraceMachina/nativelink/issues/812)) - ([4146a34](https://github.com/TraceMachina/nativelink/commit/4146a341a7c0bc31a74296fcb06550f05163eceb))
 -  Unify RunningAction and AwaitedAction ([#782](https://github.com/TraceMachina/nativelink/issues/782)) - ([7997f03](https://github.com/TraceMachina/nativelink/commit/7997f03a9426c2778863fea35e585bd752ab6930))
 - Don't update rustup in native Cargo workflow ([#775](https://github.com/TraceMachina/nativelink/issues/775)) - ([9d49514](https://github.com/TraceMachina/nativelink/commit/9d4951498547f6550ee71d47e0f9609a463993ee))
@@ -767,7 +1812,6 @@ All notable changes to this project will be documented in this file.
 
 ### ⚙️ Miscellaneous
 
-- Release navivelink v0.2.0 ([#572](https://github.com/TraceMachina/nativelink/issues/572)) - ([29eb1fa](https://github.com/TraceMachina/nativelink/commit/29eb1fa07e270f733b5dd364c8ac5206af8f2b75))
 - Publish SemVer-tagged images on tag pushes to main ([#569](https://github.com/TraceMachina/nativelink/issues/569)) - ([758c5d7](https://github.com/TraceMachina/nativelink/commit/758c5d7268a2cacf7dc3ae11f2b0f83007d6b6bb))
 - S3 Store credential provider ([#494](https://github.com/TraceMachina/nativelink/issues/494)) - ([1039ea0](https://github.com/TraceMachina/nativelink/commit/1039ea044ddeacc21361841751eb7ba29651178c))
 - fix a typo ([#560](https://github.com/TraceMachina/nativelink/issues/560)) - ([ff6d097](https://github.com/TraceMachina/nativelink/commit/ff6d0975666588d1373bcc6e315f24c4a30a0786))
@@ -1054,7 +2098,6 @@ All notable changes to this project will be documented in this file.
 
 ### ⚙️ Miscellaneous
 
-- Release nativelink 0.1.0 ([#533](https://github.com/TraceMachina/nativelink/issues/533)) - ([395674f](https://github.com/TraceMachina/nativelink/commit/395674f2b888cf825035bf0f34d34005ea73de07))
 - MacOS use non darwin iconv ([#534](https://github.com/TraceMachina/nativelink/issues/534)) - ([2e4a131](https://github.com/TraceMachina/nativelink/commit/2e4a131fb246d16c9d3082b6f231eaad1a85e357))
 - MacOS enable flake nix builds ([#529](https://github.com/TraceMachina/nativelink/issues/529)) - ([e1d35d6](https://github.com/TraceMachina/nativelink/commit/e1d35d661801d70c41babf48f9a0a10a8fe975a7))
 - Mark GCP & AWS terraform experimental ([#522](https://github.com/TraceMachina/nativelink/issues/522)) - ([910ad03](https://github.com/TraceMachina/nativelink/commit/910ad035ce59d8ba5335c46057fd55ab651fabb0))

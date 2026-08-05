@@ -1,0 +1,184 @@
+---
+name: Setup NativeLink Cloud
+description: >-
+  Writes a user.bazelrc that opts this job into NativeLink Cloud remote
+  cache/BES (and optionally remote execution) via the configs in ci.bazelrc.
+  Trusted lanes pass secret-fed credentials; fork PRs, which receive neither
+  secrets nor repository variables, fall back to the committed public
+  read-only defaults below (cache reads only — no uploads, no BES, no remote
+  execution). ci-mode 'off' disables trusted lanes; the public path's kill
+  switch is revoking the public key server-side.
+
+inputs:
+  api-key:
+    description: >-
+      NativeLink Cloud API key. Empty (fork PRs have no secrets) disables the
+      setup entirely.
+    required: false
+    default: ''
+  claim-base:
+    description: >-
+      Claim endpoint base as <claim>.<domain>, normally passed from
+      secrets.NATIVELINK_STAGING_CLAIM_BASE. The action derives the
+      grpcs://cas-, bes-, and scheduler- endpoints from it. Empty disables
+      the setup.
+    required: false
+    default: ''
+  bes-results-url:
+    description: >-
+      Optional console URL prefix for invocation links, normally passed from
+      secrets.NATIVELINK_STAGING_BES_RESULTS_URL. Omitted from the build when
+      empty.
+    required: false
+    default: ''
+  public-read-key:
+    description: >-
+      World-readable cache_read-only API key used when api-key/claim-base are
+      unavailable (fork PRs receive neither secrets nor repository variables,
+      so the value must live here as a committed default to reach them).
+      Deliberately public: fork code runs with the value in hand either way,
+      so it must never carry more than cache_read. Kill switch is revoking
+      the key server-side; rotation is editing this default.
+    required: false
+    default: '66532088547d98bfb5b0b41e8d5cbfea8b5da1bc1e23e776f9cefc12654c6cb6'
+  public-claim-base:
+    description: >-
+      Claim endpoint base for the public read-only path. Committed default
+      for the same reason as public-read-key.
+    required: false
+    default: 'marcus-eagan-h6a62e.staging.scdev.nativelink.net'
+  ci-mode:
+    description: >-
+      Kill switch, normally passed as vars.NATIVELINK_CI_MODE. Empty or 'off'
+      disables; 'cache' enables remote cache + BES; 'rbe' additionally honors
+      exec: on. The canary workflow pins this to 'cache'/'rbe' so it stays
+      live while regular lanes are dark.
+    required: false
+    default: ''
+  mode:
+    description: >-
+      'read' (PR lanes; never uploads action results) or 'write' (main-branch
+      push lanes; only TraceMachina main-branch identities hold write keys).
+    required: false
+    default: read
+  exec:
+    description: >-
+      'on' requests remote execution. Honored only when ci-mode is 'rbe', and
+      only on Linux runners.
+    required: false
+    default: 'off'
+  container-image:
+    description: >-
+      Exec property attached when remote execution is honored. Must
+      byte-for-byte match the container-image the claim's worker pool
+      advertises, or actions queue forever.
+    required: false
+    default: debian:bookworm-slim
+
+outputs:
+  enabled:
+    description: "'true' when a user.bazelrc was written, else 'false'."
+    value: ${{ steps.configure.outputs.enabled }}
+
+runs:
+  using: composite
+  steps:
+    - name: Write user.bazelrc
+      id: configure
+      shell: bash
+      env:
+        NL_API_KEY: ${{ inputs.api-key }}
+        NL_CLAIM_BASE: ${{ inputs.claim-base }}
+        NL_BES_RESULTS_URL: ${{ inputs.bes-results-url }}
+        NL_PUBLIC_KEY: ${{ inputs.public-read-key }}
+        NL_PUBLIC_CLAIM_BASE: ${{ inputs.public-claim-base }}
+        NL_CI_MODE: ${{ inputs.ci-mode }}
+        NL_MODE: ${{ inputs.mode }}
+        NL_EXEC: ${{ inputs.exec }}
+        NL_CONTAINER_IMAGE: ${{ inputs.container-image }}
+      run: |
+        set -euo pipefail
+
+        cred_kind=""
+        if [[ "$NL_CI_MODE" != "off" ]]; then
+          if [[ -n "$NL_API_KEY" && -n "$NL_CLAIM_BASE" ]]; then
+            # Private credentials also require the kill-switch variable to be
+            # explicitly on; never silently downgrade a trusted lane to the
+            # public path.
+            if [[ -n "$NL_CI_MODE" ]]; then
+              cred_kind="private"
+            fi
+          elif [[ -n "$NL_PUBLIC_KEY" && -n "$NL_PUBLIC_CLAIM_BASE" ]]; then
+            # Fork runs receive neither secrets nor repository variables, so
+            # the public read-only path cannot depend on ci-mode; revoking
+            # the public key server-side is its kill switch.
+            cred_kind="public"
+          fi
+        fi
+
+        if [[ -z "$cred_kind" ]]; then
+          echo "enabled=false" >> "$GITHUB_OUTPUT"
+          echo "NativeLink Cloud disabled (no credentials or ci-mode off); building locally."
+          exit 0
+        fi
+
+        exec_enabled=false
+        if [[ "$NL_EXEC" == "on" ]]; then
+          if [[ "$RUNNER_OS" != "Linux" ]]; then
+            # macOS auto-applies LRE platforms from lre.bazelrc that conflict
+            # with the nl-rbe Linux platform, and no non-Linux workers exist.
+            echo "exec: on is only supported on Linux runners (got $RUNNER_OS)" >&2
+            exit 1
+          fi
+          # Remote execution needs a write-capable identity; the public
+          # read-only path never executes remotely.
+          if [[ "$NL_CI_MODE" == "rbe" && "$cred_kind" == "private" ]]; then
+            exec_enabled=true
+          fi
+        fi
+
+        if [[ "$cred_kind" == "public" ]]; then
+          {
+            echo "common --config=nl-cache"
+            echo "common --remote_cache=grpcs://cas-${NL_PUBLIC_CLAIM_BASE}"
+            # The public key carries cache_read only: no uploads, no BES.
+            echo "common --remote_upload_local_results=false"
+            echo "common --remote_header=x-nativelink-api-key=${NL_PUBLIC_KEY}"
+            echo "common --remote_header=x-nativelink-project=nativelink-github-ci"
+            echo "common --build_metadata=ROLE=CI"
+          } >> user.bazelrc
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+          echo "NativeLink Cloud enabled: public read-only cache (no uploads, no BES)"
+          exit 0
+        fi
+
+        {
+          echo "common --config=nl-cache"
+          echo "common --remote_cache=grpcs://cas-${NL_CLAIM_BASE}"
+          echo "common --bes_backend=grpcs://bes-${NL_CLAIM_BASE}"
+          if [[ -n "$NL_BES_RESULTS_URL" ]]; then
+            echo "common --bes_results_url=${NL_BES_RESULTS_URL}"
+          fi
+          if [[ "$exec_enabled" == true ]]; then
+            echo "common --remote_executor=grpcs://scheduler-${NL_CLAIM_BASE}:443"
+            echo "common --remote_default_exec_properties=container-image=${NL_CONTAINER_IMAGE}"
+            echo "common --config=nl-rbe"
+          fi
+          if [[ "$NL_MODE" == "write" ]]; then
+            echo "common --config=nl-write"
+          else
+            # Plain (non-config) line so it also beats the nix-generated
+            # nativelink.bazelrc on lanes that run under nix develop.
+            echo "common --remote_upload_local_results=false"
+          fi
+          # Both headers from the same variable: a truncated BES key once
+          # caused silent 401s while the cache header kept working.
+          echo "common --remote_header=x-nativelink-api-key=${NL_API_KEY}"
+          echo "common --bes_header=x-nativelink-api-key=${NL_API_KEY}"
+          echo "common --remote_header=x-nativelink-project=nativelink-github-ci"
+          echo "common --build_metadata=ROLE=CI"
+        } >> user.bazelrc
+
+        echo "enabled=true" >> "$GITHUB_OUTPUT"
+        # Deliberately do not echo the endpoints: the claim base is a secret.
+        echo "NativeLink Cloud enabled: mode=${NL_MODE} exec=${exec_enabled}"

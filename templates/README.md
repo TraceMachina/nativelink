@@ -1,5 +1,4 @@
-NativeLink provides the following templates to use caching and remote execution
-on the NativeLink cloud:
+NativeLink provides the following templates to use caching and remote execution:
 - **`bazel`**:
   C++ with local remote execution using Bazel.
   Provides the same toolchain during local and remote execution to share cache
@@ -7,6 +6,11 @@ on the NativeLink cloud:
   Currently restricted to Linux.
   See [Local Remote Execution](https://www.nativelink.com/docs/explanations/lre)
   for further details.
+- **`cmake`**:
+  C/C++ with CMake using [`recc`](https://buildgrid.gitlab.io/recc) as the
+  bridge to NativeLink. Cache-only by default. Compiles run locally and
+  only their outputs travel through the cache. Works on Linux and macOS.
+  Tutorial: [Build CMake projects with NativeLink](https://docs.nativelink.com/getting-started/other-build-systems/cmake-recc).
 
 # Getting started
 

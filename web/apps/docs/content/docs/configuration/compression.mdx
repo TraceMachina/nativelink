@@ -1,0 +1,212 @@
+---
+title: Remote cache compression
+description: Cut remote cache transfer bytes for compressible artifacts with REAPI zstd wire compression and Bazel's --remote_cache_compression.
+---
+
+Build artifacts are often highly compressible — object files, archives,
+test logs — but a conventional remote cache transfers them byte-for-byte.
+With wire compression, clients and server exchange blobs as zstd-compressed
+streams and only the wire bytes shrink: NativeLink decompresses on upload
+and compresses on download at the gRPC boundary, so stores keep raw,
+uncompressed bytes and every existing read path sees ordinary blobs.
+
+NativeLink implements the server side of the REAPI
+[`compressed-blobs`](https://github.com/bazelbuild/remote-apis/blob/main/build/bazel/remote/execution/v2/remote_execution.proto)
+extension with `zstd` as the only supported non-identity compressor,
+matching what Bazel's `--remote_cache_compression` flag speaks: ByteStream
+reads and writes use `compressed-blobs/zstd/...` resource names, and the
+CAS batch RPCs accept and serve zstd-compressed payloads.
+
+## Requirements
+
+- A Bazel client with `--remote_cache_compression` (available since
+  Bazel 5).
+- Wire compression is **optional and off until it is enabled somewhere in
+  the NativeLink process**. Without the configuration below or an explicitly
+  enabled CAS gRPC store, NativeLink does not advertise zstd, rejects
+  `compressed-blobs/zstd` requests, and keeps outgoing transfers on the
+  identity path.
+
+## Enabling it
+
+Set `remote_cache_compression: true` on the capabilities service for the
+instance. The capabilities service advertises zstd to clients, and the
+ByteStream and CAS services accept and serve compressed payloads for that
+instance:
+
+```json5
+servers: [
+  {
+    // ...
+    services: {
+      cas: [{ instance_name: "main", cas_store: "CAS_MAIN_STORE" }],
+      bytestream: [{ instance_name: "main", cas_store: "CAS_MAIN_STORE" }],
+      capabilities: [
+        {
+          instance_name: "main",
+          remote_cache_compression: true,
+        },
+      ],
+      // ...
+    },
+  },
+],
+```
+
+Then build with:
+
+```sh
+bazel build //... \
+  --remote_cache=grpc://your-nativelink:50051 \
+  --remote_cache_compression
+```
+
+Clients only compress when the server advertises it, so enabling the
+option is safe with a mixed fleet of clients: anything that doesn't request
+`compressed-blobs/zstd` keeps using identity transfers.
+
+### NativeLink-to-NativeLink transfers
+
+Enabling zstd on any capabilities instance or CAS `grpc` store expresses
+process-wide zstd intent. NativeLink then automatically enables every CAS
+`grpc` store whose `experimental_remote_cache_compression` setting is
+omitted. This makes worker-to-CAS and proxy-to-upstream blob transfers use
+zstd without requiring the same setting to be repeated on every eligible
+store.
+
+#### Keeping compression consistent
+
+Don't enable zstd on some CAS `grpc` stores while explicitly disabling it
+on others. Inconsistent settings mean the disabled legs keep moving
+identity bytes — often on exactly the links that carry the most data — so
+blobs that cross both legs are compressed on one hop only to travel
+uncompressed on the next:
+
+```json5
+// Avoid: inconsistent compression across CAS stores.
+stores: [
+  {
+    name: "CAS_PRIMARY",
+    grpc: {
+      endpoints: [{ address: "grpc://cas-primary:50051" }],
+      store_type: "cas",
+      experimental_remote_cache_compression: true,
+    },
+  },
+  {
+    name: "CAS_MIRROR",
+    grpc: {
+      endpoints: [{ address: "grpc://cas-mirror:50051" }],
+      store_type: "cas",
+      // This leg stays on identity transfers while zstd is enabled
+      // elsewhere in the process; NativeLink logs a startup warning
+      // suggesting you enable zstd throughout.
+      experimental_remote_cache_compression: false,
+    },
+  },
+],
+```
+
+Instead, declare the intent once and let the inheritance policy carry it:
+enable zstd on the capabilities service (or any one CAS `grpc` store) and
+omit the setting everywhere else, so every eligible store inherits it:
+
+```json5
+// Prefer: declare zstd intent once; eligible stores inherit it.
+servers: [
+  {
+    // ...
+    services: {
+      capabilities: [
+        { instance_name: "main", remote_cache_compression: true },
+      ],
+    },
+  },
+],
+stores: [
+  {
+    name: "CAS_PRIMARY",
+    grpc: {
+      endpoints: [{ address: "grpc://cas-primary:50051" }],
+      store_type: "cas",
+      // Inherits zstd from the process-wide intent.
+    },
+  },
+  {
+    name: "CAS_MIRROR",
+    grpc: {
+      endpoints: [{ address: "grpc://cas-mirror:50051" }],
+      store_type: "cas",
+      // Inherits zstd from the process-wide intent.
+    },
+  },
+],
+```
+
+#### Opting a store out
+
+The upstream instance must accept zstd. When it does not — an older
+NativeLink or a third-party cache without `compressed-blobs` support — or
+when compression is undesirable for a particular link, opt that store out
+explicitly:
+
+```json5
+stores: [
+  {
+    name: "UNCOMPRESSED_UPSTREAM",
+    grpc: {
+      // ...
+      store_type: "cas",
+      experimental_remote_cache_compression: false,
+    },
+  },
+],
+```
+
+NativeLink logs a startup warning for an eligible CAS gRPC store that opts
+out while zstd is enabled elsewhere. Action-cache gRPC stores are never
+eligible for REAPI blob wire compression: they're left out of inheritance,
+and setting `experimental_remote_cache_compression: true` on one logs a
+warning because the setting has no effect there.
+
+## Semantics worth knowing
+
+- Resource names and digests always refer to the **uncompressed** blob;
+  only the bytes on the wire are compressed. ByteStream compressed writes
+  report `committed_size` in compressed wire bytes, as the REAPI extension
+  specifies.
+- Uploads are verified: NativeLink hashes the *decoded* bytes and rejects
+  a blob whose decompressed content doesn't match the digest or size it
+  was addressed with, bounding decompression by the expected size.
+- Batch reads fall back to identity when the zstd encoding would not be
+  smaller, so incompressible blobs don't pay the CPU and size overhead.
+
+## When it helps, and when it doesn't
+
+Compression pays off when clients reach the cache across a real network
+and the artifacts are compressible: uncompressed archives, binaries with
+debug info, and text-heavy outputs commonly shrink 2-10x on the wire. It
+does little on same-rack links — the zstd CPU cost buys nothing when the
+wire isn't the bottleneck — and nothing for already-compressed artifacts.
+
+Wire compression doesn't change what's stored: the CAS holds raw bytes.
+To also shrink bytes at rest, wrap the backing store in a
+[`compression` store](/reference/nativelink-config/main#compressionspec);
+the two compose, since one covers the wire and the other covers storage.
+
+## FAQ
+
+<Accordions type="multiple">
+  <Accordion title="Is it safe to enable with a mixed client fleet?" id="is-it-safe-to-enable-with-a-mixed-client-fleet">
+    Yes. Clients only compress when the server advertises support, so
+    anything that doesn't request `compressed-blobs/zstd` keeps using
+    identity transfers against the same instance.
+  </Accordion>
+  <Accordion title="Can I combine this with the dedup store?" id="can-i-combine-this-with-the-dedup-store">
+    Yes, but order matters at the store level: deduplication must operate
+    on raw content — identical chunks stop being identical after
+    compression, so a `dedup` store fed compressed bytes finds no
+    duplicates. Wire compression is fine either way; it's undone at the
+    gRPC boundary before any store sees the bytes.
+  </Accordion>
+</Accordions>

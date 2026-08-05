@@ -1,10 +1,10 @@
 // Copyright 2024 The Native Link Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,6 +14,7 @@
 
 use core::fmt::Debug;
 use core::pin::Pin;
+use core::time::Duration;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -22,6 +23,8 @@ use async_trait::async_trait;
 use futures::{Stream, StreamExt};
 use parking_lot::Mutex;
 use serde::Serialize;
+use tokio::time::timeout;
+use tracing::warn;
 
 /// Struct name health indicator component.
 type StructName = str;
@@ -46,6 +49,9 @@ pub enum HealthStatus {
     Failed {
         struct_name: &'static StructName,
         message: Cow<'static, Message>,
+    },
+    Timeout {
+        struct_name: &'static StructName,
     },
 }
 
@@ -189,23 +195,52 @@ impl Debug for HealthRegistry {
 pub trait HealthStatusReporter {
     fn health_status_report(
         &self,
+        timeout: &Duration,
     ) -> Pin<Box<dyn Stream<Item = HealthStatusDescription> + Send + '_>>;
 }
 
 /// Health status reporter implementation for the health registry that provides a stream
 /// of health status descriptions.
+///
+/// Indicator checks run **in parallel**: each indicator's
+/// `check_health` does real I/O against its store (write/has/read
+/// roundtrip per [`nativelink_util::store_trait::StoreDriver::check_health`]), so iterating
+/// indicators serially makes the total response time `N * timeout`.
+/// Under load that easily exceeds Kubernetes liveness probe budgets,
+/// causing kubelet to kill an otherwise-healthy pod whose only sin
+/// was that one congested store made the probe handler queue behind
+/// it. Parallel execution caps the total at ~`timeout` regardless of
+/// how many stores are registered.
 impl HealthStatusReporter for HealthRegistry {
     fn health_status_report(
         &self,
+        timeout_limit: &Duration,
     ) -> Pin<Box<dyn Stream<Item = HealthStatusDescription> + Send + '_>> {
-        Box::pin(futures::stream::iter(self.indicators.iter()).then(
-            |(namespace, indicator)| async move {
-                HealthStatusDescription {
-                    namespace: namespace.clone(),
-                    status: indicator.check_health(namespace.clone()).await,
-                }
-            },
-        ))
+        let local_timeout_limit = *timeout_limit;
+        Box::pin(
+            futures::stream::iter(self.indicators.iter().map(
+                move |(namespace, indicator)| async move {
+                    let status_res = timeout(
+                        local_timeout_limit,
+                        indicator.check_health(namespace.clone()),
+                    )
+                    .await;
+                    HealthStatusDescription {
+                        namespace: namespace.clone(),
+                        status: status_res.unwrap_or_else(|_| {
+                            let struct_name = indicator.struct_name();
+                            warn!(struct_name, "Timeout during health check");
+                            HealthStatus::Timeout { struct_name }
+                        }),
+                    }
+                },
+            ))
+            // Drive every indicator's check concurrently rather than
+            // serially. The order of the resulting descriptions is
+            // not part of the API contract; collect-into-Vec callers
+            // already ignore order.
+            .buffer_unordered(usize::MAX),
+        )
     }
 }
 

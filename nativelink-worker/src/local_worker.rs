@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,23 +12,28 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::hash::BuildHasher;
 use core::pin::Pin;
 use core::str;
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
+use std::borrow::Cow;
+use std::collections::HashMap;
+use std::env;
 use std::process::Stdio;
 use std::sync::{Arc, Weak};
 
 use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
 use futures::{Future, FutureExt, StreamExt, TryFutureExt, select};
-use nativelink_config::cas_server::LocalWorkerConfig;
+use nativelink_config::cas_server::{EnvironmentSource, LocalWorkerConfig};
 use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_worker::Update;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::worker_api_client::WorkerApiClient;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    ExecuteResult, GoingAwayRequest, KeepAliveRequest, UpdateForWorker, execute_result,
+    ActionResourceUsage, ExecuteComplete, ExecuteResult, GoingAwayRequest, KeepAliveRequest,
+    UpdateForWorker, execute_result,
 };
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_util::action_messages::{ActionResult, ActionStage, OperationId};
@@ -39,12 +44,11 @@ use nativelink_util::shutdown_guard::ShutdownGuard;
 use nativelink_util::store_trait::Store;
 use nativelink_util::{spawn, tls_utils};
 use opentelemetry::context::Context;
-use tokio::process;
 use tokio::sync::{broadcast, mpsc};
-use tokio::time::sleep;
+use tokio::{process, time};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::Streaming;
-use tracing::{Level, debug, error, info, info_span, instrument, warn};
+use tracing::{Level, debug, error, event, info, info_span, instrument, trace, warn};
 
 use crate::running_actions_manager::{
     ExecutionConfiguration, Metrics as RunningActionManagerMetrics, RunningAction,
@@ -67,9 +71,17 @@ const DEFAULT_ENDPOINT_TIMEOUT_S: f32 = 5.;
 
 /// Default maximum amount of time a task is allowed to run for.
 /// If this value gets modified the documentation in `cas_server.rs` must also be updated.
-const DEFAULT_MAX_ACTION_TIMEOUT: Duration = Duration::from_secs(1200); // 20 mins.
+const DEFAULT_MAX_ACTION_TIMEOUT: Duration = Duration::from_mins(20);
+const DEFAULT_MAX_UPLOAD_TIMEOUT: Duration = Duration::from_mins(10);
+const DEFAULT_MAX_CLEANUP_WAIT: Duration = Duration::from_secs(30);
+const DEFAULT_MAX_CLEANUP_BACKOFF: Duration = Duration::from_millis(500);
 
-struct LocalWorkerImpl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> {
+struct FinishedActionResult {
+    action_result: ActionResult,
+    resource_usage: Option<ActionResourceUsage>,
+}
+
+struct LocalWorkerImpl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> {
     config: &'a LocalWorkerConfig,
     // According to the tonic documentation it is a cheap operation to clone this.
     grpc_client: T,
@@ -83,7 +95,10 @@ struct LocalWorkerImpl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> {
     metrics: Arc<Metrics>,
 }
 
-async fn preconditions_met(precondition_script: Option<String>) -> Result<(), Error> {
+pub async fn preconditions_met<H: BuildHasher + Sync>(
+    precondition_script: Option<String>,
+    extra_envs: &HashMap<String, String, H>,
+) -> Result<(), Error> {
     let Some(precondition_script) = &precondition_script else {
         // No script means we are always ok to proceed.
         return Ok(());
@@ -94,15 +109,31 @@ async fn preconditions_met(precondition_script: Option<String>) -> Result<(), Er
     //       future to pass useful information through?  Or perhaps we'll
     //       have a pre-condition and a pre-execute script instead, although
     //       arguably entrypoint already gives us that.
-    let precondition_process = process::Command::new(precondition_script)
+
+    let maybe_split_cmd = shlex::split(precondition_script);
+    let (command, args) = match &maybe_split_cmd {
+        Some(split_cmd) => (&split_cmd[0], &split_cmd[1..]),
+        None => {
+            return Err(make_input_err!(
+                "Could not parse the value of precondition_script: '{}'",
+                precondition_script,
+            ));
+        }
+    };
+
+    let precondition_process = process::Command::new(command)
+        .args(args)
         .kill_on_drop(true)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .env_clear()
+        .envs(extra_envs)
         .spawn()
         .err_tip(|| format!("Could not execute precondition command {precondition_script:?}"))?;
     let output = precondition_process.wait_with_output().await?;
+    let stdout = str::from_utf8(&output.stdout).unwrap_or("");
+    trace!(status = %output.status, %stdout, "Preconditions script returned");
     if output.status.code() == Some(0) {
         Ok(())
     } else {
@@ -110,12 +141,12 @@ async fn preconditions_met(precondition_script: Option<String>) -> Result<(), Er
             Code::ResourceExhausted,
             "Preconditions script returned status {} - {}",
             output.status,
-            str::from_utf8(&output.stdout).unwrap_or("")
+            stdout
         ))
     }
 }
 
-impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, T, U> {
+impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorkerImpl<'a, T, U> {
     fn new(
         config: &'a LocalWorkerConfig,
         grpc_client: T,
@@ -141,29 +172,37 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
     async fn start_keep_alive(&self) -> Result<(), Error> {
         // According to tonic's documentation this call should be cheap and is the same stream.
         let mut grpc_client = self.grpc_client.clone();
+        let timeout = self
+            .config
+            .worker_api_endpoint
+            .timeout
+            .unwrap_or(DEFAULT_ENDPOINT_TIMEOUT_S);
 
-        loop {
-            let timeout = self
-                .config
-                .worker_api_endpoint
-                .timeout
-                .unwrap_or(DEFAULT_ENDPOINT_TIMEOUT_S);
-            // We always send 2 keep alive requests per timeout. Http2 should manage most of our
-            // timeout issues, this is a secondary check to ensure we can still send data.
-            sleep(Duration::from_secs_f32(timeout / 2.)).await;
-            if let Err(e) = grpc_client
-                .keep_alive(KeepAliveRequest {
-                    worker_id: self.worker_id.clone(),
-                })
-                .await
-            {
-                return Err(make_err!(
-                    Code::Internal,
-                    "Failed to send KeepAlive in LocalWorker : {:?}",
-                    e
-                ));
-            }
-        }
+        info!(timeout, "Started KeepAlive");
+
+        // We always send 2 keep alive requests per timeout. Http2 should manage most of our
+        // timeout issues, this is a secondary check to ensure we can still send data.
+        let mut interval = time::interval(Duration::from_secs_f32(timeout) / 2);
+        interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+
+        // Skip the first interval as it happens immediately and we don't need a keep alive until timeout/2 has passed
+        interval.tick().await;
+
+        // Explicitly spawn the keep alive loop so it goes onto a different thread from the execute commands
+        drop(
+            spawn!("keep alives", async move {
+                loop {
+                    interval.tick().await;
+                    if let Err(e) = grpc_client.keep_alive(KeepAliveRequest {}).await {
+                        error!(?e, "Failed to send KeepAlive in LocalWorker");
+                        return;
+                    }
+                    debug!("Sent KeepAlive");
+                }
+            })
+            .await,
+        );
+        Ok(())
     }
 
     async fn run(
@@ -190,10 +229,17 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
         let mut add_future_rx = UnboundedReceiverStream::new(add_future_rx).fuse();
 
         let mut update_for_worker_stream = update_for_worker_stream.fuse();
+        // A notify which is triggered every time actions_in_flight is subtracted.
+        let actions_notify = Arc::new(tokio::sync::Notify::new());
+        // A counter of actions that are in-flight, this is similar to actions_in_transit but
+        // includes the AC upload and notification to the scheduler.
+        let actions_in_flight = Arc::new(AtomicU64::new(0));
+        // Set to true when shutting down, this stops any new StartAction.
+        let mut shutting_down = false;
 
         loop {
             select! {
-                maybe_update = update_for_worker_stream.next() => {
+                maybe_update = update_for_worker_stream.next() => if !shutting_down || maybe_update.is_some() {
                     match maybe_update
                         .err_tip(|| "UpdateForWorker stream closed early")?
                         .err_tip(|| "Got error in UpdateForWorker stream")?
@@ -205,7 +251,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                 "Got ConnectionResult in LocalWorker::run which should never happen"
                             ));
                         }
-                        // TODO(aaronmondal) We should possibly do something with this notification.
+                        // TODO(palfrey) We should possibly do something with this notification.
                         Update::Disconnect(()) => {
                             self.metrics.disconnects_received.inc();
                         }
@@ -216,17 +262,33 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                             let operation_id = OperationId::from(kill_operation_request.operation_id);
                             if let Err(err) = self.running_actions_manager.kill_operation(&operation_id).await {
                                 error!(
-                                    ?operation_id,
+                                    %operation_id,
                                     ?err,
                                     "Failed to send kill request for operation"
                                 );
                             }
                         }
                         Update::StartAction(start_execute) => {
+                            // Don't accept any new requests if we're shutting down.
+                            if shutting_down {
+                                if let Some(instance_name) = start_execute.execute_request.map(|request| request.instance_name) {
+                                    self.grpc_client.clone().execution_response(
+                                        ExecuteResult{
+                                            instance_name,
+                                            operation_id: start_execute.operation_id,
+                                            result: Some(execute_result::Result::InternalError(make_err!(Code::ResourceExhausted, "Worker shutting down").into())),
+                                            resource_usage: None,
+                                        }
+                                    ).await?;
+                                }
+                                continue;
+                            }
+
                             self.metrics.start_actions_received.inc();
 
                             let execute_request = start_execute.execute_request.as_ref();
                             let operation_id = start_execute.operation_id.clone();
+                            let operation_id_to_log = operation_id.clone();
                             let maybe_instance_name = execute_request.map(|v| v.instance_name.clone());
                             let action_digest = execute_request.and_then(|v| v.action_digest.clone());
                             let digest_hasher = execute_request
@@ -236,11 +298,32 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
 
                             let start_action_fut = {
                                 let precondition_script_cfg = self.config.experimental_precondition_script.clone();
+                                let mut extra_envs: HashMap<String, String> = HashMap::new();
+                                if let Some(ref additional_environment) = self.config.additional_environment {
+                                    for (name, source) in additional_environment {
+                                        let value = match source {
+                                            EnvironmentSource::Property(property) => start_execute
+                                                .platform.as_ref().and_then(|p|p.properties.iter().find(|pr| &pr.name == property))
+                                                .map_or_else(|| Cow::Borrowed(""), |v| Cow::Borrowed(v.value.as_str())),
+                                            EnvironmentSource::Value(value) => Cow::Borrowed(value.as_str()),
+                                            EnvironmentSource::FromEnvironment => Cow::Owned(env::var(name).unwrap_or_default()),
+                                            other => {
+                                                debug!(?other, "Worker doesn't support this type of additional environment");
+                                                continue;
+                                            }
+                                        };
+                                        extra_envs.insert(name.clone(), value.into_owned());
+                                    }
+                                }
                                 let actions_in_transit = self.actions_in_transit.clone();
                                 let worker_id = self.worker_id.clone();
                                 let running_actions_manager = self.running_actions_manager.clone();
+                                let mut grpc_client = self.grpc_client.clone();
+                                let complete = ExecuteComplete {
+                                    operation_id: operation_id.clone(),
+                                };
                                 self.metrics.clone().wrap(move |metrics| async move {
-                                    metrics.preconditions.wrap(preconditions_met(precondition_script_cfg))
+                                    metrics.preconditions.wrap(preconditions_met(precondition_script_cfg, &extra_envs))
                                     .and_then(|()| running_actions_manager.create_and_add_action(worker_id, start_execute))
                                     .map(move |r| {
                                         // Now that we either failed or registered our action, we can
@@ -250,19 +333,31 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                     })
                                     .and_then(|action| {
                                         debug!(
-                                            operation_id = ?action.get_operation_id(),
+                                            operation_id = %action.get_operation_id(),
                                             "Received request to run action"
                                         );
                                         action
                                             .clone()
                                             .prepare_action()
                                             .and_then(RunningAction::execute)
+                                            .and_then(|result| async move {
+                                                // Notify that execution has completed so it can schedule a new action.
+                                                drop(grpc_client.execution_complete(complete).await);
+                                                Ok(result)
+                                            })
                                             .and_then(RunningAction::upload_results)
-                                            .and_then(RunningAction::get_finished_result)
+                                            .and_then(|action| async move {
+                                                let resource_usage = action.resource_usage();
+                                                let action_result = action.get_finished_result().await?;
+                                                Ok(FinishedActionResult {
+                                                    action_result,
+                                                    resource_usage,
+                                                })
+                                            })
                                             // Note: We need ensure we run cleanup even if one of the other steps fail.
                                             .then(|result| async move {
                                                 if let Err(e) = action.cleanup().await {
-                                                    return Result::<ActionResult, Error>::Err(e).merge(result);
+                                                    return Result::<FinishedActionResult, Error>::Err(e).merge(result);
                                                 }
                                                 result
                                             })
@@ -273,42 +368,70 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                             let make_publish_future = {
                                 let mut grpc_client = self.grpc_client.clone();
 
-                                let worker_id = self.worker_id.clone();
                                 let running_actions_manager = self.running_actions_manager.clone();
-                                move |res: Result<ActionResult, Error>| async move {
+                                let worker_id = self.worker_id.clone();
+                                move |res: Result<FinishedActionResult, Error>| async move {
                                     let instance_name = maybe_instance_name
                                         .err_tip(|| "`instance_name` could not be resolved; this is likely an internal error in local_worker.")?;
                                     match res {
-                                        Ok(mut action_result) => {
+                                        Ok(FinishedActionResult { mut action_result, resource_usage }) => {
                                             // Save in the action cache before notifying the scheduler that we've completed.
-                                            if let Some(digest_info) = action_digest.clone().and_then(|action_digest| action_digest.try_into().ok()) {
-                                                if let Err(err) = running_actions_manager.cache_action_result(digest_info, &mut action_result, digest_hasher).await {
+                                            if let Some(digest_info) = action_digest.clone().and_then(|action_digest| action_digest.try_into().ok()) &&
+                                                let Err(err) = running_actions_manager.cache_action_result(digest_info, &mut action_result, digest_hasher).await {
                                                     error!(
                                                         ?err,
                                                         ?action_digest,
                                                         "Error saving action in store",
                                                     );
                                                 }
-                                            }
                                             let action_stage = ActionStage::Completed(action_result);
+                                            let resource_usage = resource_usage.map(|mut resource_usage| {
+                                                resource_usage.operation_id.clone_from(&operation_id);
+                                                resource_usage.worker_id.clone_from(&worker_id);
+                                                resource_usage
+                                            });
                                             grpc_client.execution_response(
                                                 ExecuteResult{
-                                                    worker_id,
                                                     instance_name,
                                                     operation_id,
                                                     result: Some(execute_result::Result::ExecuteResponse(action_stage.into())),
+                                                    resource_usage,
                                                 }
                                             )
                                             .await
                                             .err_tip(|| "Error while calling execution_response")?;
                                         },
                                         Err(e) => {
-                                            grpc_client.execution_response(ExecuteResult{
-                                                worker_id,
-                                                instance_name,
-                                                operation_id,
-                                                result: Some(execute_result::Result::InternalError(e.into())),
-                                            }).await.err_tip(|| "Error calling execution_response with error")?;
+                                            let is_cas_blob_missing = e.code == Code::NotFound
+                                                && e.message_string().contains("not found in either fast or slow store");
+                                            if is_cas_blob_missing {
+                                                warn!(
+                                                    ?e,
+                                                    "Missing CAS inputs during prepare_action, returning FAILED_PRECONDITION"
+                                                );
+                                                let action_result = ActionResult {
+                                                    error: Some(make_err!(
+                                                        Code::FailedPrecondition,
+                                                        "{}",
+                                                        e.message_string()
+                                                    )),
+                                                    ..ActionResult::default()
+                                                };
+                                                let action_stage = ActionStage::Completed(action_result);
+                                                grpc_client.execution_response(ExecuteResult{
+                                                    instance_name,
+                                                    operation_id,
+                                                    result: Some(execute_result::Result::ExecuteResponse(action_stage.into())),
+                                                    resource_usage: None,
+                                                }).await.err_tip(|| "Error calling execution_response with missing inputs")?;
+                                            } else {
+                                                grpc_client.execution_response(ExecuteResult{
+                                                    instance_name,
+                                                    operation_id,
+                                                    result: Some(execute_result::Result::InternalError(e.into())),
+                                                    resource_usage: None,
+                                                }).await.err_tip(|| "Error calling execution_response with error")?;
+                                            }
                                         },
                                     }
                                     Ok(())
@@ -316,27 +439,45 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                             };
 
                             self.actions_in_transit.fetch_add(1, Ordering::Release);
-                            let futures_ref = &futures;
 
                             let add_future_channel = add_future_channel.clone();
 
                             info_span!(
                                 "worker_start_action_ctx",
+                                operation_id = operation_id_to_log,
                                 digest_function = %digest_hasher.to_string(),
                             ).in_scope(|| {
                                 let _guard = Context::current_with_value(digest_hasher)
                                     .attach();
 
-                                futures_ref.push(
+                                let actions_in_flight = actions_in_flight.clone();
+                                let actions_notify = actions_notify.clone();
+                                let actions_in_flight_fail = actions_in_flight.clone();
+                                let actions_notify_fail = actions_notify.clone();
+                                actions_in_flight.fetch_add(1, Ordering::Release);
+
+                                futures.push(
                                     spawn!("worker_start_action", start_action_fut).map(move |res| {
                                         let res = res.err_tip(|| "Failed to launch spawn")?;
                                         if let Err(err) = &res {
                                             error!(?err, "Error executing action");
                                         }
                                         add_future_channel
-                                            .send(make_publish_future(res).boxed())
-                                            .map_err(|_| make_err!(Code::Internal, "LocalWorker could not send future"))?;
+                                            .send(make_publish_future(res).then(move |res| {
+                                                actions_in_flight.fetch_sub(1, Ordering::Release);
+                                                actions_notify.notify_one();
+                                                core::future::ready(res)
+                                            }).boxed())
+                                            .map_err(|err|
+                                                Error::from_std_err(Code::Internal, &err).append("LocalWorker could not send future")
+                                                )?;
                                         Ok(())
+                                    })
+                                    .or_else(move |err| {
+                                        // If the make_publish_future is not run we still need to notify.
+                                        actions_in_flight_fail.fetch_sub(1, Ordering::Release);
+                                        actions_notify_fail.notify_one();
+                                        core::future::ready(Err(err))
                                     })
                                     .boxed()
                                 );
@@ -350,20 +491,29 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                 },
                 res = futures.next() => res.err_tip(|| "Keep-alive should always pending. Likely unable to send data to scheduler")??,
                 complete_msg = shutdown_rx.recv().fuse() => {
-                    warn!("Worker loop reveiced shutdown signal. Shutting down worker...",);
+                    warn!("Worker loop received shutdown signal. Shutting down worker...",);
                     let mut grpc_client = self.grpc_client.clone();
-                    let worker_id = self.worker_id.clone();
-                    let running_actions_manager = self.running_actions_manager.clone();
-                    let complete_msg_clone = complete_msg.map_err(|e| make_err!(Code::Internal, "Failed to receive shutdown message: {e:?}"))?.clone();
+                    let shutdown_guard = complete_msg.map_err(|e|
+                        Error::from_std_err(Code::Internal, &e).append("Failed to receive shutdown message"))?;
+                    let actions_in_flight = actions_in_flight.clone();
+                    let actions_notify = actions_notify.clone();
                     let shutdown_future = async move {
-                        if let Err(e) = grpc_client.going_away(GoingAwayRequest { worker_id }).await {
-                            error!("Failed to send GoingAwayRequest: {e}",);
-                            return Err(e.into());
+                        // Wait for in-flight operations to be fully completed.
+                        while actions_in_flight.load(Ordering::Acquire) > 0 {
+                            actions_notify.notified().await;
                         }
-                        running_actions_manager.complete_actions(complete_msg_clone).await;
+                        // Sending this message immediately evicts all jobs from
+                        // this worker, of which there should be none.
+                        if let Err(e) = grpc_client.going_away(GoingAwayRequest {}).await {
+                            error!("Failed to send GoingAwayRequest: {e}",);
+                            return Err(e);
+                        }
+                        // Allow shutdown to occur now.
+                        drop(shutdown_guard);
                         Ok::<(), Error>(())
                     };
                     futures.push(shutdown_future.boxed());
+                    shutting_down = true;
                 },
             };
         }
@@ -373,7 +523,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
 
 type ConnectionFactory<T> = Box<dyn Fn() -> BoxFuture<'static, Result<T, Error>> + Send + Sync>;
 
-pub struct LocalWorker<T: WorkerApiClientTrait, U: RunningActionsManager> {
+pub struct LocalWorker<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> {
     config: Arc<LocalWorkerConfig>,
     running_actions_manager: Arc<U>,
     connection_factory: ConnectionFactory<T>,
@@ -381,8 +531,10 @@ pub struct LocalWorker<T: WorkerApiClientTrait, U: RunningActionsManager> {
     metrics: Arc<Metrics>,
 }
 
-impl<T: WorkerApiClientTrait + core::fmt::Debug, U: RunningActionsManager + core::fmt::Debug>
-    core::fmt::Debug for LocalWorker<T, U>
+impl<
+    T: WorkerApiClientTrait + core::fmt::Debug + 'static,
+    U: RunningActionsManager + core::fmt::Debug,
+> core::fmt::Debug for LocalWorker<T, U>
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("LocalWorker")
@@ -407,10 +559,22 @@ pub async fn new_local_worker(
         .get_arc()
         .err_tip(|| "FastSlowStore's Arc doesn't exist")?;
 
+    // Log warning about CAS configuration for multi-worker setups
+    event!(
+        Level::INFO,
+        worker_name = %config.name,
+        "Starting worker '{}'. IMPORTANT: If running multiple workers, all workers \
+        must share the same CAS storage path to avoid 'Object not found' errors.",
+        config.name
+    );
+
     if let Ok(path) = fs::canonicalize(&config.work_directory).await {
-        fs::remove_dir_all(path)
-            .await
-            .err_tip(|| "Could not remove work_directory in LocalWorker")?;
+        fs::remove_dir_all(&path).await.err_tip(|| {
+            format!(
+                "Could not remove work_directory '{}' in LocalWorker",
+                &path.as_path().to_str().unwrap_or("bad path")
+            )
+        })?;
     }
 
     fs::create_dir_all(&config.work_directory)
@@ -421,11 +585,113 @@ pub async fn new_local_worker(
     } else {
         Some(config.entrypoint.clone())
     };
-    let max_action_timeout = if config.max_action_timeout == 0 {
+    let max_action_timeout = if config.max_action_timeout_s == 0 {
         DEFAULT_MAX_ACTION_TIMEOUT
     } else {
-        Duration::from_secs(config.max_action_timeout as u64)
+        Duration::from_secs(config.max_action_timeout_s as u64)
     };
+    let max_upload_timeout = if config.max_upload_timeout_s == 0 {
+        DEFAULT_MAX_UPLOAD_TIMEOUT
+    } else {
+        Duration::from_secs(config.max_upload_timeout_s as u64)
+    };
+    let max_cleanup_wait = if config.max_cleanup_wait_s == 0 {
+        DEFAULT_MAX_CLEANUP_WAIT
+    } else {
+        Duration::from_secs(config.max_cleanup_wait_s as u64)
+    };
+    let max_cleanup_backoff = if config.max_cleanup_backoff_ms == 0 {
+        DEFAULT_MAX_CLEANUP_BACKOFF
+    } else {
+        Duration::from_millis(config.max_cleanup_backoff_ms as u64)
+    };
+
+    // Initialize directory cache if configured
+    let directory_cache = if let Some(cache_config) = &config.directory_cache {
+        use std::path::PathBuf;
+
+        use crate::directory_cache::{
+            DirectoryCache, DirectoryCacheConfig as WorkerDirCacheConfig,
+        };
+
+        let cache_root = if cache_config.cache_root.is_empty() {
+            PathBuf::from(&config.work_directory).parent().map_or_else(
+                || PathBuf::from("/tmp/nativelink_directory_cache"),
+                |p| p.join("directory_cache"),
+            )
+        } else {
+            PathBuf::from(&cache_config.cache_root)
+        };
+
+        let worker_cache_config = WorkerDirCacheConfig {
+            max_entries: cache_config.max_entries,
+            max_size_bytes: cache_config.max_size_bytes,
+            cache_root,
+            experimental_subtree_caching: cache_config.experimental_subtree_caching,
+            max_concurrent_fetches: cache_config.max_concurrent_fetches,
+            experimental_get_tree_prefetch: cache_config.experimental_get_tree_prefetch,
+        };
+
+        match DirectoryCache::new(worker_cache_config, fast_slow_store.clone()).await {
+            Ok(cache) => {
+                tracing::info!("Directory cache initialized successfully");
+                Some(Arc::new(cache))
+            }
+            Err(e) => {
+                tracing::warn!("Failed to initialize directory cache: {:?}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    #[cfg(target_os = "linux")]
+    let use_namespaces = if let Some(use_namespaces) = &config.use_namespaces {
+        if *use_namespaces
+            && !crate::namespace_utils::namespaces_supported(
+                config.use_mount_namespace.unwrap_or_default(),
+            )
+        {
+            return Err(make_err!(Code::Unavailable, "Namespaces not supported"));
+        }
+        if !*use_namespaces {
+            crate::running_actions_manager::UseNamespaces::No
+        } else if config.use_mount_namespace.unwrap_or_default() {
+            crate::running_actions_manager::UseNamespaces::YesAndMount
+        } else {
+            crate::running_actions_manager::UseNamespaces::Yes
+        }
+    } else if config
+        .use_mount_namespace
+        .is_some_and(core::convert::identity)
+    {
+        return Err(make_err!(
+            Code::Unavailable,
+            "Mount namespaces not supported"
+        ));
+    } else {
+        crate::running_actions_manager::UseNamespaces::No
+    };
+
+    #[cfg(not(target_os = "linux"))]
+    if config.use_namespaces.is_some_and(core::convert::identity) {
+        return Err(make_err!(
+            Code::Unavailable,
+            "Namespaces not supported on non-Linux OSes"
+        ));
+    }
+    #[cfg(not(target_os = "linux"))]
+    if config
+        .use_mount_namespace
+        .is_some_and(core::convert::identity)
+    {
+        return Err(make_err!(
+            Code::Unavailable,
+            "Mount namespaces not supported on non-Linux OSes"
+        ));
+    }
+
     let running_actions_manager =
         Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
             root_action_directory: config.work_directory.clone(),
@@ -438,7 +704,13 @@ pub async fn new_local_worker(
             historical_store,
             upload_action_result_config: &config.upload_action_result,
             max_action_timeout,
+            max_upload_timeout,
+            max_cleanup_wait,
+            max_cleanup_backoff,
             timeout_handled_externally: config.timeout_handled_externally,
+            directory_cache,
+            #[cfg(target_os = "linux")]
+            use_namespaces,
         })?);
     let local_worker = LocalWorker::new_with_connection_factory_and_actions_manager(
         config.clone(),
@@ -456,26 +728,28 @@ pub async fn new_local_worker(
                         .err_tip(|| "Parsing local worker TLS configuration")?;
                 let endpoint =
                     tls_utils::endpoint_from(&config.worker_api_endpoint.uri, tls_config)
-                        .map_err(|e| make_input_err!("Invalid URI for worker endpoint : {e:?}"))?
+                        .map_err(|e| {
+                            Error::from_std_err(Code::InvalidArgument, &e)
+                                .append("Invalid URI for worker endpoint")
+                        })?
                         .connect_timeout(timeout_duration)
                         .timeout(timeout_duration);
 
                 let transport = endpoint.connect().await.map_err(|e| {
-                    make_err!(
-                        Code::Internal,
-                        "Could not connect to endpoint {}: {e:?}",
+                    Error::from_std_err(Code::Internal, &e).append(format!(
+                        "Could not connect to endpoint {}",
                         config.worker_api_endpoint.uri
-                    )
+                    ))
                 })?;
                 Ok(WorkerApiClient::new(transport).into())
             })
         }),
-        Box::new(move |d| Box::pin(sleep(d))),
+        Box::new(move |d| Box::pin(time::sleep(d))),
     );
     Ok(local_worker)
 }
 
-impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
+impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T, U> {
     pub fn new_with_connection_factory_and_actions_manager(
         config: Arc<LocalWorkerConfig>,
         running_actions_manager: Arc<U>,
@@ -506,9 +780,33 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
         &self,
         client: &mut T,
     ) -> Result<(String, Streaming<UpdateForWorker>), Error> {
-        let connect_worker_request =
-            make_connect_worker_request(self.config.name.clone(), &self.config.platform_properties)
-                .await?;
+        let mut extra_envs: HashMap<String, String> = HashMap::new();
+        if let Some(ref additional_environment) = self.config.additional_environment {
+            for (name, source) in additional_environment {
+                let value = match source {
+                    EnvironmentSource::Value(value) => Cow::Borrowed(value.as_str()),
+                    EnvironmentSource::FromEnvironment => {
+                        Cow::Owned(env::var(name).unwrap_or_default())
+                    }
+                    other => {
+                        debug!(
+                            ?other,
+                            "Worker registration doesn't support this type of additional environment"
+                        );
+                        continue;
+                    }
+                };
+                extra_envs.insert(name.clone(), value.into_owned());
+            }
+        }
+
+        let connect_worker_request = make_connect_worker_request(
+            self.config.name.clone(),
+            &self.config.platform_properties,
+            &extra_envs,
+            self.config.max_inflight_tasks,
+        )
+        .await?;
         let mut update_for_worker_stream = client
             .connect_worker(connect_worker_request)
             .await
@@ -526,7 +824,7 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
             Some(Update::ConnectionResult(connection_result)) => connection_result.worker_id,
             other => {
                 return Err(make_input_err!(
-                    "Expected first response from scheduler to be a ConnectResult got : {:?}",
+                    "Expected first response from scheduler to be a ConnectionResult got : {:?}",
                     other
                 ));
             }
@@ -539,6 +837,14 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
         mut self,
         mut shutdown_rx: broadcast::Receiver<ShutdownGuard>,
     ) -> Result<(), Error> {
+        // Belt-and-suspenders QoS bump: the main binary already calls
+        // this before runtime creation so the tokio worker threads
+        // inherit P-core preference via pthread QoS inheritance, but
+        // any thread that reaches this point should also be tagged in
+        // case it was spawned by a path that bypassed `on_thread_start`.
+        // No-op on non-macOS.
+        let _ = crate::qos::set_user_initiated();
+
         let sleep_fn = self
             .sleep_fn
             .take()
@@ -558,6 +864,8 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
                     continue; // Try to connect again.
                 }
             };
+
+            debug!("Connected to endpoint");
 
             // Next register our worker with the scheduler.
             let (inner, update_for_worker_stream) = match self.register_worker(&mut client).await {
@@ -583,24 +891,36 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
 
             // Now listen for connections and run all other services.
             if let Err(err) = inner.run(update_for_worker_stream, &mut shutdown_rx).await {
-                'no_more_actions: {
-                    // Ensure there are no actions in transit before we try to kill
-                    // all our actions.
-                    const ITERATIONS: usize = 1_000;
+                // Give in-transit actions a chance to settle before we kill
+                // them, so their results still reach the scheduler.
+                const ITERATIONS: usize = 1_000;
 
-                    const ERROR_MSG: &str = "Actions in transit did not reach zero before we disconnected from the scheduler";
-
-                    let sleep_duration = ACTIONS_IN_TRANSIT_TIMEOUT_S / ITERATIONS as f32;
-                    for _ in 0..ITERATIONS {
-                        if inner.actions_in_transit.load(Ordering::Acquire) == 0 {
-                            break 'no_more_actions;
-                        }
-                        (sleep_fn_pin)(Duration::from_secs_f32(sleep_duration)).await;
+                let sleep_duration = ACTIONS_IN_TRANSIT_TIMEOUT_S / ITERATIONS as f32;
+                let mut drained = false;
+                for _ in 0..ITERATIONS {
+                    if inner.actions_in_transit.load(Ordering::Acquire) == 0 {
+                        drained = true;
+                        break;
                     }
-                    error!(ERROR_MSG);
-                    return Err(err.append(ERROR_MSG));
+                    (sleep_fn_pin)(Duration::from_secs_f32(sleep_duration)).await;
                 }
-                error!(?err, "Worker disconnected from scheduler");
+                if !drained {
+                    // Deliberately not fatal. Returning here propagates out of
+                    // the worker's main loop and aborts the process, so a
+                    // scheduler blip that happened to catch an action in
+                    // transit took the whole worker down — and every action it
+                    // held then had to run again elsewhere. At fleet scale that
+                    // is a restart storm. kill_all() below discards these
+                    // actions anyway, so the wait is a courtesy and overrunning
+                    // it costs nothing beyond the actions we were already
+                    // giving up on.
+                    error!(
+                        actions_in_transit = inner.actions_in_transit.load(Ordering::Acquire),
+                        "Actions in transit did not reach zero before we disconnected from the scheduler"
+                    );
+                }
+
+                error!(?err, "Worker disconnected from scheduler, reconnecting");
                 // Kill off any existing actions because if we re-connect, we'll
                 // get some more and it might resource lock us.
                 self.running_actions_manager.kill_all().await;

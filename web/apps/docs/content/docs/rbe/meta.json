@@ -1,0 +1,9 @@
+{
+  "pages": [
+    "local-testing",
+    "local-remote-execution",
+    "examples",
+    "nix-templates"
+  ],
+  "title": "Testing Remote Execution"
+}

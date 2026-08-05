@@ -1,5 +1,5 @@
 {nix2container}: final: _prev: {
-  inherit (nix2container.packages.${final.system}) nix2container;
+  inherit (nix2container.packages.${final.stdenv.hostPlatform.system}) nix2container;
 
   rbe-configs-gen = final.callPackage ./rbe-configs-gen {};
 
@@ -10,7 +10,7 @@
   lre =
     {
       stdenv = final.callPackage ./stdenv.nix {
-        llvmPackages = final.llvmPackages_20;
+        llvmPackages = final.llvmPackages_22;
         targetPackages = final;
       };
 

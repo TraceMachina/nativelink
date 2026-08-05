@@ -34,15 +34,27 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: >- # v4.2.2
-          actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: >- # v6.0.2
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      # Ubuntu 24.04 restricts unprivileged user namespaces by default, which breaks
+      # the worker tests that use namespaces (e.g. for sandboxing).
+      - name: Disable AppArmor namespace restrictions
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+        if: matrix.os == 'ubuntu-24.04'
 
       - name: Set up Rust toolchain
         run: rustup update && rustup default ${{ matrix.toolchain }}
-        shell: bash
+
+      - name: Rust cache
+        uses: >- # v2.9.1
+          Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
 
       - name: Build on ${{ runner.os }}
         run: cargo build --all --profile=smol
 
       - name: Test on ${{ runner.os }}
         run: cargo test --all --profile=smol
+
+      - name: Check schema export
+        run: cargo run --bin build-schema --features dev-schema --package nativelink-config

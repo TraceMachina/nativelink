@@ -1,5 +1,7 @@
 bazel-*
+!tools/bazel-retry.sh
 target/
+nativelink-test/fuzz/target/
 .vscode/
 .idea/
 .zed
@@ -14,12 +16,16 @@ __pycache__
 .DS_Store
 .pre-commit-config.yaml
 result
-MODULE.bazel.lock
 trivy-results.sarif
 Pulumi.dev.yaml
+rust-project.json
 lre.bazelrc
 nixos.bazelrc
-rust-project.json
 darwin.bazelrc
 nativelink.bazelrc
-integration_tests/**/*.log
+user.bazelrc
+*.log
+buck-out/
+nativelink_config.schema.json
+.gstack/
+.worktrees/

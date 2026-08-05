@@ -53,11 +53,10 @@ A very basic configuration that's a pure in-memory store is:
       "capabilities": [{
         "instance_name": "main"
       }],
-      "bytestream": {
-        "cas_stores": {
-          "main": "CAS_MAIN_STORE",
-        }
-      }
+      "bytestream": [{
+        "instance_name": "main",
+        "cas_store": "CAS_MAIN_STORE",
+      }]
     }
   }]
 }
@@ -108,9 +107,7 @@ the data is retrieved.
 }
 ```
 
-<!-- vale off -->
 ### Dedup Store
-<!-- vale on -->
 
 In this example we will attempt to de-duplicate our data and compress it before
 storing it. This works by applying the [FastCDC](https://www.usenix.org/system/files/conference/atc16/atc16-paper-xia.pdf)
@@ -201,7 +198,8 @@ stores, but in this example we'll store the raw files.
   "stores": [
     {
       "name": "CAS_MAIN_STORE",
-      "experimental_s3_store": {
+      "experimental_cloud_object_store": {
+        "provider": "aws",
         // Region the bucket lives in.
         "region": "us-west-1",
         // Name of the bucket to upload to.
@@ -218,7 +216,8 @@ stores, but in this example we'll store the raw files.
     },
     {
       "name": "AC_MAIN_STORE",
-      "experimental_s3_store": {
+      "experimental_cloud_object_store": {
+        "provider": "aws",
         "region": "us-west-1",
         "bucket": "some-bucket-name",
         "key_prefix": "ac/",
@@ -233,6 +232,111 @@ stores, but in this example we'll store the raw files.
   // Place rest of configuration here ...
 }
 ```
+
+### R2 Store
+
+[Cloudflare R2](https://developers.cloudflare.com/r2/) is an S3-compatible
+object store with no egress fees, which makes it attractive for read-heavy
+CAS workloads. The endpoint is derived from your Cloudflare `account_id`;
+credentials are read from env vars via `shellexpand`.
+
+```js
+{
+  "stores": [
+    {
+      "name": "CAS_MAIN_STORE",
+      "experimental_cloud_object_store": {
+        "provider": "r2",
+        "account_id": "your-cloudflare-account-id",
+        "bucket": "nativelink-cas",
+        "access_key_id": "${R2_ACCESS_KEY_ID}",
+        "secret_access_key": "${R2_SECRET_ACCESS_KEY}",
+        "key_prefix": "cas/",
+        "retry": {
+          "max_retries": 6,
+          "delay": 0.3,
+          "jitter": 0.5,
+        }
+      }
+    },
+    {
+      "name": "AC_MAIN_STORE",
+      "experimental_cloud_object_store": {
+        "provider": "r2",
+        "account_id": "your-cloudflare-account-id",
+        "bucket": "nativelink-cas",
+        "access_key_id": "${R2_ACCESS_KEY_ID}",
+        "secret_access_key": "${R2_SECRET_ACCESS_KEY}",
+        "key_prefix": "ac/",
+      }
+    }
+  ],
+  // Place rest of configuration here ...
+}
+```
+
+A complete runnable example with CAS and AC is at
+[`nativelink-config/examples/r2_backend.json5`](https://github.com/TraceMachina/nativelink/blob/main/nativelink-config/examples/r2_backend.json5).
+If `access_key_id` and `secret_access_key` are omitted, NativeLink falls
+back to the standard AWS credential chain (`AWS_*` env vars,
+`~/.aws/credentials`, IMDS).
+
+### OCI Store
+
+[Oracle Cloud Infrastructure Object Storage](https://docs.oracle.com/en-us/iaas/Content/Object/Tasks/s3compatibleapi.htm)
+exposes an S3-compatible API, so NativeLink can use it as a CAS/AC backend. The
+path-style endpoint is derived from your Object Storage `namespace` and
+`region` as
+`https://{namespace}.compat.objectstorage.{region}.oci.customer-oci.com`.
+Authenticate with a Customer Secret Key (an Access Key/Secret Key pair created
+under **User Settings → Customer secret keys** in the OCI console); the secret
+cannot be retrieved after generation, so read it from an env var via
+`shellexpand`.
+
+```js
+{
+  "stores": [
+    {
+      "name": "CAS_MAIN_STORE",
+      "experimental_cloud_object_store": {
+        "provider": "oci",
+        "namespace": "your-object-storage-namespace",
+        "region": "us-phoenix-1",
+        "bucket": "nativelink-cas",
+        "access_key_id": "${OCI_ACCESS_KEY_ID}",
+        "secret_access_key": "${OCI_SECRET_ACCESS_KEY}",
+        "key_prefix": "cas/",
+        "retry": {
+          "max_retries": 6,
+          "delay": 0.3,
+          "jitter": 0.5,
+        }
+      }
+    },
+    {
+      "name": "AC_MAIN_STORE",
+      "experimental_cloud_object_store": {
+        "provider": "oci",
+        "namespace": "your-object-storage-namespace",
+        "region": "us-phoenix-1",
+        "bucket": "nativelink-cas",
+        "access_key_id": "${OCI_ACCESS_KEY_ID}",
+        "secret_access_key": "${OCI_SECRET_ACCESS_KEY}",
+        "key_prefix": "ac/",
+      }
+    }
+  ],
+  // Place rest of configuration here ...
+}
+```
+
+A complete runnable example with CAS and AC is at
+[`nativelink-config/examples/oci_backend.json5`](https://github.com/TraceMachina/nativelink/blob/main/nativelink-config/examples/oci_backend.json5).
+The `region` is used both to build the endpoint host and as the AWS `SigV4`
+signing region; if your tooling cannot set an OCI region identifier, OCI also
+accepts `us-east-1` to target your tenancy home region. As with the other
+S3-compatible stores, omitting `access_key_id` and `secret_access_key` falls
+back to the standard AWS credential chain (`AWS_*` env vars).
 
 ### Fast Slow Store
 
@@ -260,7 +364,8 @@ the rest will be stored in AWS's S3:
           }
         },
         "slow": {
-          "experimental_s3_store": {
+          "experimental_cloud_object_store": {
+            "provider": "aws",
             "region": "us-west-1",
             "bucket": "some-bucket-name",
             "key_prefix": "cas/",
@@ -280,7 +385,8 @@ the rest will be stored in AWS's S3:
           }
         },
         "slow": {
-          "experimental_s3_store": {
+          "experimental_cloud_object_store": {
+            "provider": "aws",
             "region": "us-west-1",
             "bucket": "some-bucket-name",
             "key_prefix": "ac/",

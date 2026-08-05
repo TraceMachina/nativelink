@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use core::pin::Pin;
+use core::time::Duration;
 use std::borrow::Cow;
 
 use bytes::BytesMut;
@@ -33,8 +34,14 @@ use opentelemetry::baggage::BaggageExt;
 use opentelemetry::context::Context;
 use opentelemetry_semantic_conventions::attribute::ENDUSER_ID;
 use prost::Message;
+use tokio::time::sleep;
 use tonic::{Request, Response, Result, Status, Streaming};
-use tracing::{Level, instrument};
+use tracing::{Level, instrument, warn};
+
+/// Bounded retries for persisting a BEP event so a transient store failure
+/// (e.g. a Redis Sentinel failover) doesn't drop it — BEP events are the
+/// authoritative build record, the same durability class as origin events.
+const MAX_BEP_UPLOAD_ATTEMPTS: u32 = 5;
 
 /// Current version of the BEP event. This might be used in the future if
 /// there is a breaking change in the BEP event format.
@@ -100,10 +107,33 @@ impl BepServer {
             .encode(&mut buf)
             .err_tip(|| "Could not encode PublishLifecycleEventRequest proto")?;
 
-        self.store
-            .update_oneshot(store_key, buf.freeze())
-            .await
-            .err_tip(|| "Failed to store PublishLifecycleEventRequest")?;
+        let data = buf.freeze();
+        for attempt in 1..=MAX_BEP_UPLOAD_ATTEMPTS {
+            match self
+                .store
+                .update_oneshot(store_key.borrow(), data.clone())
+                .await
+            {
+                Ok(()) => break,
+                Err(err) if attempt < MAX_BEP_UPLOAD_ATTEMPTS => {
+                    warn!(
+                        attempt,
+                        max = MAX_BEP_UPLOAD_ATTEMPTS,
+                        ?err,
+                        %store_key,
+                        "Failed to store BEP lifecycle event, retrying"
+                    );
+                    sleep(Duration::from_secs_f32(0.1 * attempt as f32)).await;
+                }
+                Err(err) => {
+                    return Err(err).err_tip(|| {
+                        format!(
+                            "Failed to store PublishLifecycleEventRequest for {store_key} after retries"
+                        )
+                    });
+                }
+            }
+        }
 
         Ok(Response::new(()))
     }
@@ -141,16 +171,31 @@ impl BepServer {
                 .encode(&mut buf)
                 .err_tip(|| "Could not encode PublishBuildToolEventStreamRequest proto")?;
 
-            store
-                .update_oneshot(
-                    StoreKey::Str(Cow::Owned(format!(
-                        "BepEvent:be:{}:{}:{}",
-                        &stream_id.build_id, &stream_id.invocation_id, sequence_number,
-                    ))),
-                    buf.freeze(),
-                )
-                .await
-                .err_tip(|| "Failed to store PublishBuildToolEventStreamRequest")?;
+            let store_key = StoreKey::Str(Cow::Owned(format!(
+                "BepEvent:be:{}:{}:{}",
+                &stream_id.build_id, &stream_id.invocation_id, sequence_number,
+            )));
+            let data = buf.freeze();
+            for attempt in 1..=MAX_BEP_UPLOAD_ATTEMPTS {
+                match store.update_oneshot(store_key.borrow(), data.clone()).await {
+                    Ok(()) => break,
+                    Err(err) if attempt < MAX_BEP_UPLOAD_ATTEMPTS => {
+                        warn!(
+                            attempt,
+                            max = MAX_BEP_UPLOAD_ATTEMPTS,
+                            ?err,
+                            %store_key,
+                            "Failed to store BEP build-tool event, retrying"
+                        );
+                        sleep(Duration::from_secs_f32(0.1 * attempt as f32)).await;
+                    }
+                    Err(err) => {
+                        return Err(err).err_tip(
+                            || "Failed to store PublishBuildToolEventStreamRequest after retries",
+                        )?;
+                    }
+                }
+            }
 
             Ok(PublishBuildToolEventStreamResponse {
                 stream_id: Some(stream_id.clone()),

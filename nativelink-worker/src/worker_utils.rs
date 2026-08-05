@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use core::hash::BuildHasher;
-use core::str::from_utf8;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Cursor};
 use std::process::Stdio;
@@ -24,12 +23,14 @@ use nativelink_error::{Error, ResultExt, make_err, make_input_err};
 use nativelink_proto::build::bazel::remote::execution::v2::platform::Property;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::ConnectWorkerRequest;
 use tokio::process;
-use tracing::info;
+use tracing::{info, warn};
 
 #[expect(clippy::future_not_send)] // TODO(jhpratt) remove this
 pub async fn make_connect_worker_request<S: BuildHasher>(
     worker_id_prefix: String,
     worker_properties: &HashMap<String, WorkerProperty, S>,
+    extra_envs: &HashMap<String, String, S>,
+    max_inflight_tasks: u64,
 ) -> Result<ConnectWorkerRequest, Error> {
     let mut futures = vec![];
     for (property_name, worker_property) in worker_properties {
@@ -59,27 +60,28 @@ pub async fn make_connect_worker_request<S: BuildHasher>(
                     };
                     let mut process = process::Command::new(command);
                     process.env_clear();
+                    process.envs(extra_envs);
                     process.args(args);
                     process.stdin(Stdio::null());
-                    let err_fn =
-                        || format!("Error executing property_name {property_name} command");
+                    let err_fn = || {
+                        format!("Error executing property_name {property_name} command: '{cmd}'")
+                    };
                     info!(cmd, property_name, "Spawning process",);
                     let process_output = process.output().await.err_tip(err_fn)?;
+                    if !process_output.stderr.is_empty() {
+                        warn!(
+                            stderr = ?String::from_utf8_lossy(&process_output.stderr),
+                            cmd = cmd,
+                            property_name = property_name,
+                            "Got stderr when running query cmd"
+                        );
+                    }
                     if !process_output.status.success() {
                         return Err(make_err!(
                             process_output.status.code().unwrap().into(),
                             "{}",
                             err_fn()
                         ));
-                    }
-                    if !process_output.stderr.is_empty() {
-                        eprintln!(
-                            "{}",
-                            from_utf8(&process_output.stderr).map_err(|e| make_input_err!(
-                                "Failed to decode stderr to utf8 : {:?}",
-                                e
-                            ))?
-                        );
                     }
                     let reader = BufReader::new(Cursor::new(process_output.stdout));
 
@@ -102,5 +104,6 @@ pub async fn make_connect_worker_request<S: BuildHasher>(
     Ok(ConnectWorkerRequest {
         worker_id_prefix,
         properties: try_join_all(futures).await?.into_iter().flatten().collect(),
+        max_inflight_tasks,
     })
 }

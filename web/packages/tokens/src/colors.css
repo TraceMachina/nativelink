@@ -1,0 +1,83 @@
+:root,
+:root[data-theme="light"] {
+  /* Surface */
+  --nl-color-background: 250 248 245;
+  --nl-color-surface: 255 255 255;
+  --nl-color-surface-elevated: 252 250 247;
+
+  /* Text */
+  --nl-color-foreground: 17 17 19;
+  --nl-color-muted: 102 105 115;
+  --nl-color-muted-foreground: 70 73 82;
+
+  /* Border */
+  --nl-color-border: 226 224 218;
+  --nl-color-border-strong: 200 197 188;
+  --nl-color-accent-line: 226 224 218;
+
+  /* Brand — electric purple */
+  --nl-color-brand: 114 71 255;
+  --nl-color-brand-strong: 88 50 220;
+  --nl-color-brand-soft: 235 228 255;
+  --nl-color-brand-foreground: 255 255 255;
+
+  /* Success — mint teal */
+  --nl-color-success: 39 168 137;
+  --nl-color-success-soft: 220 240 232;
+
+  /* Accent (CTA fill) */
+  --nl-color-accent: 17 17 19;
+  --nl-color-accent-hover: 38 38 42;
+}
+
+/* Dark scheme — tuned for luminous brand purple on a deep purple-tinted
+ * near-black. Activated via [data-theme="dark"] on <html>. */
+:root[data-theme="dark"] {
+  --nl-color-background: 10 9 14;
+  --nl-color-surface: 18 17 24;
+  --nl-color-surface-elevated: 26 24 34;
+
+  --nl-color-foreground: 245 244 248;
+  --nl-color-muted: 148 150 162;
+  --nl-color-muted-foreground: 188 190 202;
+
+  --nl-color-border: 38 36 50;
+  --nl-color-border-strong: 60 58 78;
+  --nl-color-accent-line: 38 36 50;
+
+  --nl-color-brand: 156 124 255;
+  --nl-color-brand-strong: 188 162 255;
+  --nl-color-brand-soft: 38 28 70;
+  --nl-color-brand-foreground: 250 248 255;
+
+  --nl-color-success: 88 220 178;
+  --nl-color-success-soft: 22 50 42;
+
+  --nl-color-accent: 245 244 248;
+  --nl-color-accent-hover: 220 218 228;
+}
+
+/* If user has no saved preference and system prefers dark, default dark.
+ * The init-script in <head> handles this at runtime so SSR matches; this
+ * block is the no-JS fallback. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --nl-color-background: 10 9 14;
+    --nl-color-surface: 18 17 24;
+    --nl-color-surface-elevated: 26 24 34;
+    --nl-color-foreground: 245 244 248;
+    --nl-color-muted: 148 150 162;
+    --nl-color-muted-foreground: 188 190 202;
+    --nl-color-border: 38 36 50;
+    --nl-color-border-strong: 60 58 78;
+    --nl-color-accent-line: 38 36 50;
+    --nl-color-brand: 156 124 255;
+    --nl-color-brand-strong: 188 162 255;
+    --nl-color-brand-soft: 38 28 70;
+    --nl-color-brand-foreground: 250 248 255;
+    --nl-color-success: 88 220 178;
+    --nl-color-success-soft: 22 50 42;
+    --nl-color-accent: 245 244 248;
+    --nl-color-accent-hover: 220 218 228;
+  }
+}

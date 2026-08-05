@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -20,7 +20,7 @@ use futures::future::Future;
 use futures::stream::StreamExt;
 use nativelink_config::stores::{ErrorCode, Retry};
 use nativelink_error::{Code, Error, make_err};
-use tracing::error;
+use tracing::{error, info};
 
 struct ExponentialBackoff {
     current: Duration,
@@ -130,7 +130,7 @@ impl Retrier {
     }
 
     fn get_retry_config(&self) -> impl Iterator<Item = Duration> + '_ {
-        ExponentialBackoff::new(Duration::from_millis(self.config.delay as u64))
+        ExponentialBackoff::new(Duration::from_secs_f32(self.config.delay))
             .map(|d| (self.jitter_fn)(d))
             .take(self.config.max_retries) // Remember this is number of retries, so will run max_retries + 1.
     }
@@ -163,7 +163,11 @@ impl Retrier {
                     }
                     Some(RetryResult::Retry(err)) => {
                         if !self.should_retry(err.code) {
-                            error!(?attempt, ?err, "Not retrying permanent error");
+                            if err.code == Code::NotFound {
+                                info!(?err, "Not found, not retrying");
+                            } else {
+                                error!(?attempt, ?err, "Not retrying permanent error");
+                            }
                             return Err(err);
                         }
                         (self.sleep_fn)(

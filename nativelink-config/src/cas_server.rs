@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,17 +14,22 @@
 
 use std::collections::HashMap;
 
-use nativelink_error::{Error, ResultExt};
-use serde::Deserialize;
+use nativelink_error::{Code, Error, ResultExt, make_err};
+#[cfg(feature = "dev-schema")]
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 use crate::schedulers::SchedulerSpec;
 use crate::serde_utils::{
-    convert_data_size_with_shellexpand, convert_duration_with_shellexpand,
-    convert_numeric_with_shellexpand, convert_optional_numeric_with_shellexpand,
-    convert_optional_string_with_shellexpand, convert_string_with_shellexpand,
-    convert_vec_string_with_shellexpand,
+    convert_boolean_with_shellexpand, convert_data_size_with_shellexpand,
+    convert_duration_with_shellexpand, convert_numeric_with_shellexpand,
+    convert_optional_numeric_with_shellexpand, convert_optional_string_with_shellexpand,
+    convert_string_with_shellexpand, convert_vec_string_with_shellexpand,
 };
-use crate::stores::{ClientTlsConfig, ConfigDigestHashFunction, StoreRefName, StoreSpec};
+use crate::stores::{
+    ClientTlsConfig, ConfigDigestHashFunction, StoreRefName, StoreSpec, StoreType,
+};
 
 /// Name of the scheduler. This type will be used when referencing a
 /// scheduler in the `CasConfig::schedulers`'s map key.
@@ -33,8 +38,10 @@ pub type SchedulerRefName = String;
 /// Used when the config references `instance_name` in the protocol.
 pub type InstanceName = String;
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct WithInstanceName<T> {
+    /// Used when the config references `instance_name` in the protocol.
     #[serde(default)]
     pub instance_name: InstanceName,
     #[serde(flatten)]
@@ -49,15 +56,17 @@ impl<T> core::ops::Deref for WithInstanceName<T> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct NamedConfig<Spec> {
     pub name: String,
     #[serde(flatten)]
     pub spec: Spec,
 }
 
-#[derive(Deserialize, Debug, Default, Clone, Copy)]
+#[derive(Deserialize, Serialize, Debug, Default, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum HttpCompressionAlgorithm {
     /// No compression.
     #[default]
@@ -76,8 +85,9 @@ pub enum HttpCompressionAlgorithm {
 /// services with different compression settings that are served on
 /// different ports. Then configure the non-cloud clients to use one port
 /// and cloud-clients to use another.
-#[derive(Deserialize, Debug, Default)]
+#[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct HttpCompressionConfig {
     /// The compression algorithm that the server will use when sending
     /// responses to clients. Enabling this will likely save a lot of
@@ -99,8 +109,9 @@ pub struct HttpCompressionConfig {
     pub accepted_compression_algorithms: Vec<HttpCompressionAlgorithm>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct AcStoreConfig {
     /// The store name referenced in the `stores` map in the main config.
     /// This store name referenced here may be reused multiple times.
@@ -113,34 +124,159 @@ pub struct AcStoreConfig {
     pub read_only: bool,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct CasStoreConfig {
     /// The store name referenced in the `stores` map in the main config.
     /// This store name referenced here may be reused multiple times.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub cas_store: StoreRefName,
+
+    /// Optional and experimental: enables the REAPI `SplitBlob`/`SpliceBlob`
+    /// RPCs used by content-defined chunking clients (e.g. Bazel's
+    /// `--experimental_remote_cache_chunking`). When set, the capabilities
+    /// service advertises blob split/splice support and `FastCDC` 2020
+    /// parameters for this instance. When `cas_store` is a grpc store the
+    /// RPCs are forwarded to the backend (which must support chunking with
+    /// matching parameters); otherwise they are served locally.
+    ///
+    /// See `nativelink-config/examples/chunking_cas.json5` for a complete
+    /// configuration example.
+    ///
+    /// Default: not set — chunking RPCs are rejected, nothing is advertised,
+    /// and behavior is identical to when this option did not exist.
+    #[serde(default)]
+    pub experimental_chunking: Option<CasChunkingConfig>,
 }
 
-#[derive(Deserialize, Debug, Default)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct CasChunkingConfig {
+    /// The store name referenced in the `stores` map in the main config used
+    /// to persist blob-to-chunks layouts. Keys are the digests of the
+    /// original blobs and values are serialized chunk layouts (which do not
+    /// hash to those digests), so this store MUST NOT perform content digest
+    /// verification and MUST NOT be the same store as `cas_store` — writing
+    /// layouts into the CAS would overwrite blob content. Using the same
+    /// store name as `cas_store` is rejected at startup.
+    ///
+    /// Required unless `cas_store` is a grpc store: for proxied instances
+    /// the `SplitBlob`/`SpliceBlob` RPCs are forwarded to the backend, which
+    /// owns the chunk layouts, and setting an `index_store` is rejected at
+    /// startup.
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub index_store: Option<StoreRefName>,
+
+    /// The average chunk size in bytes advertised to clients through the
+    /// `FastCDC` 2020 capability parameters and used for server-side
+    /// chunking in `SplitBlob`. Clients derive the minimum and maximum
+    /// chunk sizes from this value (avg / 4 and avg * 4). The value must
+    /// be between 1 KiB and 1 MiB.
+    ///
+    /// Default: 524288 (512 KiB)
+    #[serde(default)]
+    pub avg_chunk_size_bytes: u64,
+
+    /// Maximum number of chunks accepted in a `SpliceBlob` request or
+    /// produced by on-demand chunking in `SplitBlob`. Blobs that would
+    /// produce more chunks are served without chunking (`SplitBlob` returns
+    /// `NOT_FOUND` and clients fall back to a regular download). This bounds
+    /// the size of stored chunk layouts and of `SplitBlobResponse` messages
+    /// (roughly 80-140 bytes per chunk). At the default average chunk size
+    /// the default cap supports blobs up to ~25 GiB; note that values above
+    /// ~50000 may produce responses that exceed default gRPC message size
+    /// limits on clients.
+    ///
+    /// Default: 50000
+    #[serde(default)]
+    pub max_chunk_count: u64,
+}
+
+impl CasChunkingConfig {
+    /// Default for `avg_chunk_size_bytes`, the value recommended by the
+    /// REAPI spec for `FastCdc2020Params`.
+    pub const DEFAULT_AVG_CHUNK_SIZE_BYTES: u64 = 512 * 1024;
+    /// Bounds for `avg_chunk_size_bytes` mandated by the REAPI spec for
+    /// `FastCdc2020Params`.
+    pub const MIN_AVG_CHUNK_SIZE_BYTES: u64 = 1024;
+    pub const MAX_AVG_CHUNK_SIZE_BYTES: u64 = 1024 * 1024;
+    /// Default for `max_chunk_count`.
+    pub const DEFAULT_MAX_CHUNK_COUNT: u64 = 50_000;
+
+    /// Returns `avg_chunk_size_bytes` with the default applied.
+    #[must_use]
+    pub const fn resolved_avg_chunk_size_bytes(&self) -> u64 {
+        if self.avg_chunk_size_bytes == 0 {
+            Self::DEFAULT_AVG_CHUNK_SIZE_BYTES
+        } else {
+            self.avg_chunk_size_bytes
+        }
+    }
+
+    /// Returns `max_chunk_count` with the default applied.
+    #[must_use]
+    pub const fn resolved_max_chunk_count(&self) -> u64 {
+        if self.max_chunk_count == 0 {
+            Self::DEFAULT_MAX_CHUNK_COUNT
+        } else {
+            self.max_chunk_count
+        }
+    }
+
+    /// Returns `avg_chunk_size_bytes` with the default applied, or an error
+    /// when the configured value is outside the REAPI-mandated bounds.
+    pub fn validated_avg_chunk_size_bytes(&self) -> Result<u64, Error> {
+        let avg_chunk_size_bytes = self.resolved_avg_chunk_size_bytes();
+        if !(Self::MIN_AVG_CHUNK_SIZE_BYTES..=Self::MAX_AVG_CHUNK_SIZE_BYTES)
+            .contains(&avg_chunk_size_bytes)
+        {
+            return Err(make_err!(
+                Code::InvalidArgument,
+                "'experimental_chunking.avg_chunk_size_bytes' is {avg_chunk_size_bytes}, must be between {} and {}",
+                Self::MIN_AVG_CHUNK_SIZE_BYTES,
+                Self::MAX_AVG_CHUNK_SIZE_BYTES
+            ));
+        }
+        Ok(avg_chunk_size_bytes)
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, Default)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct CapabilitiesRemoteExecutionConfig {
     /// Scheduler used to configure the capabilities of remote execution.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub scheduler: SchedulerRefName,
 }
 
-#[derive(Deserialize, Debug, Default)]
+#[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct CapabilitiesConfig {
     /// Configuration for remote execution capabilities.
     /// If not set the capabilities service will inform the client that remote
     /// execution is not supported.
     pub remote_execution: Option<CapabilitiesRemoteExecutionConfig>,
+
+    /// Whether this instance supports Bazel remote cache compression.
+    /// When enabled, the capabilities service advertises zstd wire compression
+    /// and the ByteStream/CAS services accept REAPI compressed-blobs/zstd data.
+    ///
+    /// Bazel clients enable this with `--remote_cache_compression`.
+    #[serde(
+        default,
+        skip_serializing_if = "is_default",
+        deserialize_with = "convert_boolean_with_shellexpand"
+    )]
+    pub remote_cache_compression: bool,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ExecutionConfig {
     /// The store name referenced in the `stores` map in the main config.
     /// This store name referenced here may be reused multiple times.
@@ -153,8 +289,9 @@ pub struct ExecutionConfig {
     pub scheduler: SchedulerRefName,
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct FetchConfig {
     /// The store name referenced in the `stores` map in the main config.
     /// This store name referenced here may be reused multiple times.
@@ -162,8 +299,9 @@ pub struct FetchConfig {
     pub fetch_store: StoreRefName,
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct PushConfig {
     /// The store name referenced in the `stores` map in the main config.
     /// This store name referenced here may be reused multiple times.
@@ -176,11 +314,17 @@ pub struct PushConfig {
     pub read_only: bool,
 }
 
-#[derive(Deserialize, Debug, Default)]
+// From https://github.com/serde-rs/serde/issues/818#issuecomment-287438544
+fn is_default<T: Default + PartialEq>(t: &T) -> bool {
+    *t == Default::default()
+}
+
+#[derive(Deserialize, Serialize, Debug, Default, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ByteStreamConfig {
     /// Name of the store in the "stores" configuration.
-    pub cas_stores: HashMap<InstanceName, StoreRefName>,
+    pub cas_store: StoreRefName,
 
     /// Max number of bytes to send on each grpc stream chunk.
     /// According to <https://github.com/grpc/grpc.github.io/issues/371>
@@ -188,34 +332,68 @@ pub struct ByteStreamConfig {
     ///
     ///
     /// Default: 64KiB
-    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
+    #[serde(
+        default,
+        deserialize_with = "convert_data_size_with_shellexpand",
+        skip_serializing_if = "is_default"
+    )]
     pub max_bytes_per_stream: usize,
-
-    /// Maximum number of bytes to decode on each grpc stream chunk.
-    /// Default: 4 MiB
-    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
-    pub max_decoding_message_size: usize,
 
     /// In the event a client disconnects while uploading a blob, we will hold
     /// the internal stream open for this many seconds before closing it.
     /// This allows clients that disconnect to reconnect and continue uploading
     /// the same blob.
     ///
-    /// Default: 10 (seconds)
-    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
-    pub persist_stream_on_disconnect_timeout: usize,
+    /// Default: 10 seconds
+    #[serde(
+        default,
+        deserialize_with = "convert_duration_with_shellexpand",
+        skip_serializing_if = "is_default",
+        alias = "persist_stream_on_disconnect_timeout"
+    )]
+    pub persist_stream_on_disconnect_timeout_s: usize,
 }
 
-#[derive(Deserialize, Debug)]
+// Older bytestream config. All fields are as per the newer docs, but this requires
+// the hashed `cas_stores` v.s. the WithInstanceName approach. This should _not_ be updated
+// with newer fields, and eventually dropped
+#[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+pub struct OldByteStreamConfig {
+    pub cas_stores: HashMap<InstanceName, StoreRefName>,
+    #[serde(
+        default,
+        deserialize_with = "convert_data_size_with_shellexpand",
+        skip_serializing_if = "is_default"
+    )]
+    pub max_bytes_per_stream: usize,
+    #[serde(
+        default,
+        deserialize_with = "convert_data_size_with_shellexpand",
+        skip_serializing_if = "is_default"
+    )]
+    pub max_decoding_message_size: usize,
+    #[serde(
+        default,
+        deserialize_with = "convert_duration_with_shellexpand",
+        skip_serializing_if = "is_default",
+        alias = "persist_stream_on_disconnect_timeout"
+    )]
+    pub persist_stream_on_disconnect_timeout_s: usize,
+}
+
+#[derive(Deserialize, Serialize, Debug)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct WorkerApiConfig {
     /// The scheduler name referenced in the `schedulers` map in the main config.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub scheduler: SchedulerRefName,
 }
 
-#[derive(Deserialize, Debug, Default)]
+#[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct AdminConfig {
     /// Path to register the admin API. If path is "/admin", and your
     /// domain is "example.com", you can reach the endpoint with:
@@ -226,8 +404,9 @@ pub struct AdminConfig {
     pub path: String,
 }
 
-#[derive(Deserialize, Debug, Default)]
+#[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct HealthConfig {
     /// Path to register the health status check. If path is "/status", and your
     /// domain is "example.com", you can reach the endpoint with:
@@ -236,9 +415,14 @@ pub struct HealthConfig {
     /// Default: "/status"
     #[serde(default)]
     pub path: String,
+
+    /// Timeout on health checks. Default: 5s.
+    #[serde(default)]
+    pub timeout_seconds: u64,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct BepConfig {
     /// The store to publish build events to.
     /// The store name referenced in the `stores` map in the main config.
@@ -246,7 +430,8 @@ pub struct BepConfig {
     pub store: StoreRefName,
 }
 
-#[derive(Deserialize, Clone, Debug, Default)]
+#[derive(Deserialize, Serialize, Clone, Debug, Default)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct IdentityHeaderSpec {
     /// The name of the header to look for the identity in.
     /// Default: "x-identity"
@@ -258,7 +443,8 @@ pub struct IdentityHeaderSpec {
     pub required: bool,
 }
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct OriginEventsPublisherSpec {
     /// The store to publish nativelink events to.
     /// The store name referenced in the `stores` map in the main config.
@@ -266,7 +452,8 @@ pub struct OriginEventsPublisherSpec {
     pub store: StoreRefName,
 }
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct OriginEventsSpec {
     /// The publisher configuration for origin events.
     pub publisher: OriginEventsPublisherSpec,
@@ -280,8 +467,9 @@ pub struct OriginEventsSpec {
     pub max_event_queue_size: usize,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ServicesConfig {
     /// The Content Addressable Storage (CAS) backend config.
     /// The key is the `instance_name` used in the protocol and the
@@ -303,7 +491,7 @@ pub struct ServicesConfig {
 
     /// Capabilities service is required in order to use most of the
     /// bazel protocol. This service is used to provide the supported
-    /// features and versions of this bazel GRPC service.
+    /// features and versions of this bazel gRPC service.
     #[serde(
         default,
         deserialize_with = "super::backcompat::opt_vec_with_instance_name"
@@ -322,7 +510,8 @@ pub struct ServicesConfig {
     /// This is the service used to stream data to and from the CAS.
     /// Bazel's protocol strongly encourages users to use this streaming
     /// interface to interact with the CAS when the data is large.
-    pub bytestream: Option<ByteStreamConfig>,
+    #[serde(default, deserialize_with = "super::backcompat::opt_bytestream")]
+    pub bytestream: Option<Vec<WithInstanceName<ByteStreamConfig>>>,
 
     /// These two are collectively the Remote Asset protocol, but it's
     /// defined as two separate services
@@ -360,8 +549,9 @@ pub struct ServicesConfig {
     pub health: Option<HealthConfig>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct TlsConfig {
     /// Path to the certificate file.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
@@ -388,8 +578,9 @@ pub struct TlsConfig {
 ///
 /// Note: All of these default to hyper's default values unless otherwise
 /// specified.
-#[derive(Deserialize, Debug, Default, Clone, Copy)]
+#[derive(Deserialize, Serialize, Debug, Default, Clone, Copy)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct HttpServerConfig {
     /// Interval to send keep-alive pings via HTTP2.
     /// Note: This is in seconds.
@@ -432,12 +623,12 @@ pub struct HttpServerConfig {
     )]
     pub experimental_http2_max_concurrent_streams: Option<u32>,
 
-    /// Note: This is in seconds.
     #[serde(
         default,
-        deserialize_with = "convert_optional_numeric_with_shellexpand"
+        deserialize_with = "convert_optional_numeric_with_shellexpand",
+        alias = "experimental_http2_keep_alive_timeout"
     )]
-    pub experimental_http2_keep_alive_timeout: Option<u32>,
+    pub experimental_http2_keep_alive_timeout_s: Option<u32>,
 
     #[serde(
         default,
@@ -455,20 +646,28 @@ pub struct HttpServerConfig {
     pub experimental_http2_max_header_list_size: Option<u32>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum ListenerConfig {
     /// Listener for HTTP/HTTPS/HTTP2 sockets.
     Http(HttpListener),
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct HttpListener {
     /// Address to listen on. Example: `127.0.0.1:8080` or `:8080` to listen
     /// to all IPs.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub socket_address: String,
+
+    /// Allow binding `socket_address` before it is assigned locally.
+    ///
+    /// Default: false
+    #[serde(default)]
+    pub freebind: bool,
 
     /// Data transport compression configuration to use for this service.
     #[serde(default)]
@@ -478,6 +677,11 @@ pub struct HttpListener {
     #[serde(default)]
     pub advanced_http: HttpServerConfig,
 
+    /// Maximum number of bytes to decode on each grpc stream chunk.
+    /// Default: 4 MiB
+    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
+    pub max_decoding_message_size: usize,
+
     /// Tls Configuration for this server.
     /// If not set, the server will not use TLS.
     ///
@@ -486,8 +690,9 @@ pub struct HttpListener {
     pub tls: Option<TlsConfig>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ServerConfig {
     /// Name of the server. This is used to help identify the service
     /// for telemetry and logs.
@@ -508,8 +713,9 @@ pub struct ServerConfig {
     pub experimental_identity_header: IdentityHeaderSpec,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum WorkerProperty {
     /// List of static values.
     /// Note: Generally there should only ever be 1 value, but if the platform
@@ -518,28 +724,30 @@ pub enum WorkerProperty {
     Values(Vec<String>),
 
     /// A dynamic configuration. The string will be executed as a command
-    /// (not sell) and will be split by "\n" (new line character).
+    /// (not shell) and will be split by "\n" (new line character).
     QueryCmd(String),
 }
 
 /// Generic config for an endpoint and associated configs.
-#[derive(Deserialize, Debug, Default)]
+#[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct EndpointConfig {
     /// URI of the endpoint.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub uri: String,
 
     /// Timeout in seconds that a request should take.
-    /// Default: 5 (seconds)
+    /// Default: 5 seconds
     pub timeout: Option<f32>,
 
     /// The TLS configuration to use to connect to the endpoint.
     pub tls_config: Option<ClientTlsConfig>,
 }
 
-#[derive(Copy, Clone, Deserialize, Debug, Default)]
+#[derive(Copy, Clone, Deserialize, Serialize, Debug, Default)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum UploadCacheResultsStrategy {
     /// Only upload action results with an exit code of 0.
     #[default]
@@ -555,14 +763,18 @@ pub enum UploadCacheResultsStrategy {
     FailuresOnly,
 }
 
-#[derive(Clone, Deserialize, Debug)]
+#[derive(Clone, Deserialize, Serialize, Debug)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum EnvironmentSource {
     /// The name of the platform property in the action to get the value from.
     Property(String),
 
     /// The raw value to set.
     Value(#[serde(deserialize_with = "convert_string_with_shellexpand")] String),
+
+    /// Take the value from the local environment corresponding to the name key
+    FromEnvironment,
 
     /// The max amount of time in milliseconds the command is allowed to run
     /// (requested by the client).
@@ -602,8 +814,9 @@ pub enum EnvironmentSource {
     ActionDirectory,
 }
 
-#[derive(Deserialize, Debug, Default)]
+#[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct UploadActionResultConfig {
     /// Underlying AC store that the worker will use to publish execution results
     /// into. Objects placed in this store should be reachable from the
@@ -615,7 +828,7 @@ pub struct UploadActionResultConfig {
     /// if set to `SuccessOnly` then only results with an exit code of 0 will be
     /// uploaded, if set to Everything all completed results will be uploaded.
     ///
-    /// Default: `UploadCacheResultsStrategy::SuccessOnly`
+    /// Default: `SuccessOnly`
     #[serde(default)]
     pub upload_ac_results_strategy: UploadCacheResultsStrategy,
 
@@ -629,7 +842,7 @@ pub struct UploadActionResultConfig {
     /// to the CAS key-value lookup format and are always a `HistoricalExecuteResponse`
     /// serialized message.
     ///
-    /// Default: `UploadCacheResultsStrategy::FailuresOnly`
+    /// Default: `FailuresOnly`
     #[serde(default)]
     pub upload_historical_results_strategy: Option<UploadCacheResultsStrategy>,
 
@@ -662,12 +875,13 @@ pub struct UploadActionResultConfig {
     pub failure_message_template: String,
 }
 
-#[derive(Deserialize, Debug, Default)]
+#[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct LocalWorkerConfig {
     /// Name of the worker. This is give a more friendly name to a worker for logging
     /// and metric publishing. This is also the prefix of the worker id
-    /// (ie: "{name}{uuidv6}").
+    /// (i.e. "{name}{uuidv6}").
     /// Default: {Index position in the workers list}
     #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
     pub name: String,
@@ -678,9 +892,45 @@ pub struct LocalWorkerConfig {
     /// The maximum time an action is allowed to run. If a task requests for a timeout
     /// longer than this time limit, the task will be rejected. Value in seconds.
     ///
-    /// Default: 1200 (seconds / 20 mins)
+    /// Default: 20 minutes
+    #[serde(
+        default,
+        deserialize_with = "convert_duration_with_shellexpand",
+        alias = "max_action_timeout"
+    )]
+    pub max_action_timeout_s: usize,
+
+    /// Maximum time allowed for uploading action results to CAS after execution
+    /// completes. If upload takes longer than this, the action fails with
+    /// `DeadlineExceeded` and may be retried by the scheduler. Value in seconds.
+    ///
+    /// Default: 10 minutes
+    #[serde(
+        default,
+        deserialize_with = "convert_duration_with_shellexpand",
+        alias = "max_upload_timeout"
+    )]
+    pub max_upload_timeout_s: usize,
+
+    /// Maximum time to wait for action directory cleanup before timing out.
+    /// Value in seconds.
+    ///
+    /// Default: 30 seconds
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
-    pub max_action_timeout: usize,
+    pub max_cleanup_wait_s: usize,
+
+    /// Maximum backoff duration for exponential backoff when waiting for cleanup.
+    /// Value in milliseconds.
+    ///
+    /// Default: 500 milliseconds
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub max_cleanup_backoff_ms: usize,
+
+    /// Maximum number of inflight tasks this worker can cope with.
+    ///
+    /// Default: 0 (infinite tasks)
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub max_inflight_tasks: u64,
 
     /// If timeout is handled in `entrypoint` or another wrapper script.
     /// If set to true `NativeLink` will not honor the timeout the action requested
@@ -747,22 +997,146 @@ pub struct LocalWorkerConfig {
     pub platform_properties: HashMap<String, WorkerProperty>,
 
     /// An optional mapping of environment names to set for the execution
-    /// as well as those specified in the action itself.  If set, will set each
+    /// as well as those specified in the action itself. If set, will set each
     /// key as an environment variable before executing the job with the value
     /// of the environment variable being the value of the property of the
     /// action being executed of that name or the fixed value.
     pub additional_environment: Option<HashMap<String, EnvironmentSource>>,
+
+    /// Optional directory cache configuration for improving performance by caching
+    /// reconstructed input directories and using hardlinks instead of rebuilding
+    /// them from CAS for every action.
+    /// Default: None (directory cache disabled)
+    pub directory_cache: Option<DirectoryCacheConfig>,
+
+    /// Whether to use namespaces to isolate the execution. This is only available
+    /// on Linux. It is highly recommended as it avoids a number of issues with
+    /// zombie processes and also provides additional hermeticity. If explicitly set
+    /// to true and it is not supported the worker will exit with an error.
+    ///
+    /// Note: this will fail for non-privileged Dockerised workers, as workers in
+    /// Docker don't have permissions to make a new user namespace. Privileged
+    /// containers can do this.
+    ///
+    /// Default: False.
+    pub use_namespaces: Option<bool>,
+
+    /// Whether to use a mount namespace to isolate the worker root. This is only
+    /// available on Linux and when `use_namespaces` is true. It is highly recommended
+    /// provides additional hermeticity. If explicitly set to true and it is not
+    /// supported or `use_namespaces` is not set to true the worker will exit with an
+    /// error.
+    /// Default: False.
+    pub use_mount_namespace: Option<bool>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct DirectoryCacheConfig {
+    /// Maximum number of cached directories.
+    /// Default: 1000
+    #[serde(default = "default_directory_cache_max_entries")]
+    pub max_entries: usize,
+
+    /// Maximum total size in bytes for all cached directories (0 = unlimited).
+    /// Default: 10737418240 (10 GB)
+    #[serde(
+        default = "default_directory_cache_max_size_bytes",
+        deserialize_with = "convert_data_size_with_shellexpand"
+    )]
+    pub max_size_bytes: u64,
+
+    /// Base directory for cache storage. This directory will be managed by
+    /// the worker and should be on the same filesystem as `work_directory`.
+    /// Default: `{work_directory}/../directory_cache`
+    #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
+    pub cache_root: String,
+
+    /// Optional and experimental: additionally cache every subdirectory by
+    /// its own `Directory` digest, not just the root directory. REAPI Merkle
+    /// nodes are content-addressed, so a subtree that is byte-identical
+    /// between two different roots has the same digest and can be
+    /// materialized with a single hardlink pass instead of being rebuilt
+    /// from the CAS. This makes the common "one input file changed out of
+    /// thousands" case reuse every unchanged subtree.
+    ///
+    /// Note: subtree caching multiplies the entry COUNT in the cache (every
+    /// distinct subdirectory becomes its own entry, subject to the normal
+    /// eviction budgets), so operators enabling this should raise
+    /// `max_entries` accordingly (for example 10x). To avoid multiplying the
+    /// SIZE accounting too, an entry's recorded size covers only bytes not
+    /// owned by a descendant entry, so the cache's size total approximates
+    /// unique materialized bytes rather than counting each file once per
+    /// ancestor level.
+    ///
+    /// Trade-off: cold constructions pay roughly one extra hardlink pass per
+    /// tree level (measured ~10% cold overhead at depth 3, within run
+    /// variance) in exchange for the churn-path reuse above.
+    ///
+    /// Default: false (only root directories are cached; existing behavior)
+    #[serde(default)]
+    pub experimental_subtree_caching: bool,
+
+    /// Maximum number of concurrent slow-store fetches across ALL directory
+    /// constructions of this cache. This bound protects backing stores from
+    /// RPC storms: per-level construction concurrency compounds
+    /// multiplicatively across tree levels and concurrent actions.
+    ///
+    /// Interaction with read coalescing: this semaphore fragments coalesced
+    /// batches to at most this many items and serializes fetch waves for
+    /// trees with many tiny files. Deployments using
+    /// `experimental_read_batching` on the underlying grpc store can raise
+    /// this substantially (for example 512), since batching collapses the
+    /// RPC count. Must be greater than 0.
+    ///
+    /// Default: 64
+    #[serde(default = "default_directory_cache_max_concurrent_fetches")]
+    pub max_concurrent_fetches: usize,
+    /// On a directory-cache miss, prefetch every `Directory` proto of the
+    /// tree with one logical `GetTree` traversal instead of fetching protos
+    /// level by level (which costs one round trip per tree DEPTH). The
+    /// [REAPI request contract] permits servers to impose their own limit even
+    /// when no page size is specified, and the [REAPI response contract]
+    /// requires clients to continue with the returned page token. A paginated
+    /// traversal may therefore use multiple RPCs. Only takes effect when the
+    /// slow tier is a `grpc` store;
+    /// any prefetch failure falls back to the per-level path. Worthwhile when
+    /// worker-to-CAS latency is non-trivial and trees are deep; measured 5-34x
+    /// on the proto phase at 5-25ms RTT. Note the serving CAS pays the tree walk
+    /// against its own backend, so its directory protos should be served
+    /// from a fast tier.
+    ///
+    /// [REAPI request contract]: https://github.com/bazelbuild/remote-apis/blob/becdd8f9ff811df88a22d3eadd6341753d51d167/build/bazel/remote/execution/v2/remote_execution.proto#L1932-L1942
+    /// [REAPI response contract]: https://github.com/bazelbuild/remote-apis/blob/becdd8f9ff811df88a22d3eadd6341753d51d167/build/bazel/remote/execution/v2/remote_execution.proto#L1961-L1965
+    /// Default: false
+    #[serde(default)]
+    pub experimental_get_tree_prefetch: bool,
+}
+
+const fn default_directory_cache_max_entries() -> usize {
+    1000
+}
+
+const fn default_directory_cache_max_concurrent_fetches() -> usize {
+    64
+}
+
+const fn default_directory_cache_max_size_bytes() -> u64 {
+    10 * 1024 * 1024 * 1024 // 10 GB
+}
+
+#[derive(Deserialize, Serialize, Debug)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum WorkerConfig {
     /// A worker type that executes jobs locally on this machine.
     Local(LocalWorkerConfig),
 }
 
-#[derive(Deserialize, Debug, Clone, Copy)]
+#[derive(Deserialize, Serialize, Debug, Clone, Copy)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct GlobalConfig {
     /// Maximum number of open files that can be opened at one time.
     /// This value is not strictly enforced, it is a best effort. Some internal libraries
@@ -796,8 +1170,9 @@ pub struct GlobalConfig {
 pub type StoreConfig = NamedConfig<StoreSpec>;
 pub type SchedulerConfig = NamedConfig<SchedulerSpec>;
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct CasConfig {
     /// List of stores available to use in this config.
     /// The keys can be used in other configs when needing to reference a store.
@@ -824,12 +1199,316 @@ pub struct CasConfig {
 }
 
 impl CasConfig {
+    const ZSTD_COMPRESSION_DOCS_URL: &'static str =
+        "https://docs.nativelink.com/configuration/compression";
+
     /// # Errors
     ///
     /// Will return `Err` if we can't load the file.
     pub fn try_from_json5_file(config_file: &str) -> Result<Self, Error> {
         let json_contents = std::fs::read_to_string(config_file)
             .err_tip(|| format!("Could not open config file {config_file}"))?;
-        Ok(serde_json5::from_str(&json_contents)?)
+        Self::try_from_json5_str(&json_contents)
+    }
+
+    fn try_from_json5_str(json_contents: &str) -> Result<Self, Error> {
+        let mut config: Self = serde_json5::from_str(json_contents)?;
+        for server in &config.servers {
+            if let Some(services) = &server.services {
+                Self::check_store_conflict(services)?;
+            }
+        }
+        config.apply_zstd_grpc_store_defaults();
+        Ok(config)
+    }
+
+    fn zstd_wire_compression_enabled_anywhere(&self) -> bool {
+        if self
+            .servers
+            .iter()
+            .filter_map(|server| server.services.as_ref())
+            .filter_map(|services| services.capabilities.as_deref())
+            .flatten()
+            .any(|capabilities| capabilities.remote_cache_compression)
+        {
+            return true;
+        }
+
+        self.stores.iter().any(|store| {
+            let mut enabled = false;
+            store.spec.visit_grpc_specs(&mut |grpc| {
+                enabled |= matches!(grpc.store_type, StoreType::Cas)
+                    && grpc.experimental_remote_cache_compression == Some(true);
+            });
+            enabled
+        })
+    }
+
+    fn apply_zstd_grpc_store_defaults(&mut self) {
+        let zstd_enabled_anywhere = self.zstd_wire_compression_enabled_anywhere();
+
+        for store in &mut self.stores {
+            let store_name = store.name.as_str();
+            store.spec.visit_grpc_specs_mut(&mut |grpc| {
+                if !matches!(grpc.store_type, StoreType::Cas) {
+                    if grpc.experimental_remote_cache_compression == Some(true) {
+                        warn!(
+                            store = store_name,
+                            instance_name = grpc.instance_name,
+                            "'experimental_remote_cache_compression' is enabled on a non-CAS \
+                             gRPC store, where it has no effect: REAPI zstd wire compression \
+                             only applies to CAS blob transfers. Enable it on the CAS gRPC \
+                             stores or a capabilities instance instead. See {}",
+                            Self::ZSTD_COMPRESSION_DOCS_URL,
+                        );
+                    }
+                    return;
+                }
+
+                if !zstd_enabled_anywhere {
+                    return;
+                }
+
+                match grpc.experimental_remote_cache_compression {
+                    None => grpc.experimental_remote_cache_compression = Some(true),
+                    Some(false) => warn!(
+                        store = store_name,
+                        instance_name = grpc.instance_name,
+                        "Zstd wire compression is enabled elsewhere, but this eligible CAS gRPC \
+                         store explicitly disables it. Unless this upstream cannot use zstd, \
+                         enable 'experimental_remote_cache_compression' for substantially faster \
+                         transfers of compressible artifacts. See {}",
+                        Self::ZSTD_COMPRESSION_DOCS_URL,
+                    ),
+                    Some(true) => {}
+                }
+            });
+        }
+    }
+
+    fn check_store_conflict(services: &ServicesConfig) -> Result<(), Error> {
+        if let Some(cas_config) = &services.cas
+            && let Some(ac_config) = &services.ac
+        {
+            // Create a hashmap from the CAS configuration for quick lookup
+            let cas_store_map: HashMap<_, _> = cas_config
+                .iter()
+                .map(|with_instance_name| {
+                    (
+                        &with_instance_name.instance_name,
+                        &with_instance_name.cas_store,
+                    )
+                })
+                .collect();
+
+            for with_instance_name in ac_config {
+                if let Some(cas_store) = cas_store_map.get(&with_instance_name.instance_name)
+                    && cas_store == &&with_instance_name.ac_store
+                {
+                    return Err(make_err!(
+                        Code::InvalidArgument,
+                        "CAS and AC use the same store '{}' in the config",
+                        cas_store
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tracing_test::traced_test;
+
+    use super::*;
+
+    fn grpc_compression_configs(config: &CasConfig) -> Vec<(bool, Option<bool>)> {
+        let mut configs = Vec::new();
+        for store in &config.stores {
+            store.spec.visit_grpc_specs(&mut |grpc| {
+                configs.push((
+                    matches!(grpc.store_type, StoreType::Cas),
+                    grpc.experimental_remote_cache_compression,
+                ));
+            });
+        }
+        configs
+    }
+
+    #[test]
+    fn capabilities_config_remote_cache_compression_deserializes_true() {
+        let config: CapabilitiesConfig =
+            serde_json5::from_str(r#"{"remote_cache_compression": true}"#).unwrap();
+
+        assert!(config.remote_cache_compression);
+    }
+
+    #[test]
+    fn capabilities_config_remote_cache_compression_defaults_false() {
+        let config: CapabilitiesConfig = serde_json5::from_str("{}").unwrap();
+
+        assert!(!config.remote_cache_compression);
+    }
+
+    #[test]
+    fn omitted_grpc_compression_stays_disabled_without_zstd_intent() {
+        let config = CasConfig::try_from_json5_str(
+            r#"{
+                stores: [{
+                    name: "upstream",
+                    grpc: {
+                        endpoints: [{ address: "http://localhost:1234" }],
+                        store_type: "cas",
+                    },
+                }],
+                servers: [],
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(grpc_compression_configs(&config), vec![(true, None)]);
+    }
+
+    #[test]
+    fn explicit_grpc_zstd_intent_enables_other_eligible_grpc_stores() {
+        let config = CasConfig::try_from_json5_str(
+            r#"{
+                stores: [
+                    {
+                        name: "enabled",
+                        grpc: {
+                            endpoints: [{ address: "http://localhost:1234" }],
+                            store_type: "cas",
+                            experimental_remote_cache_compression: true,
+                        },
+                    },
+                    {
+                        name: "inherited",
+                        grpc: {
+                            endpoints: [{ address: "http://localhost:5678" }],
+                            store_type: "cas",
+                        },
+                    },
+                ],
+                servers: [],
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            grpc_compression_configs(&config),
+            vec![(true, Some(true)), (true, Some(true))]
+        );
+    }
+
+    #[test]
+    #[traced_test]
+    fn ac_grpc_compression_warns_and_expresses_no_cas_intent() {
+        let config = CasConfig::try_from_json5_str(
+            r#"{
+                stores: [
+                    {
+                        name: "action-cache",
+                        grpc: {
+                            instance_name: "ac",
+                            endpoints: [{ address: "http://localhost:1234" }],
+                            store_type: "ac",
+                            experimental_remote_cache_compression: true,
+                        },
+                    },
+                    {
+                        name: "cas",
+                        grpc: {
+                            endpoints: [{ address: "http://localhost:5678" }],
+                            store_type: "cas",
+                        },
+                    },
+                ],
+                servers: [],
+            }"#,
+        )
+        .unwrap();
+
+        // The AC-store setting is inert: it neither compresses AC RPCs nor
+        // expresses process-wide zstd intent, so the CAS store stays unset.
+        assert_eq!(
+            grpc_compression_configs(&config),
+            vec![(false, Some(true)), (true, None)]
+        );
+        assert!(logs_contain("store=\"action-cache\""));
+        assert!(logs_contain("no effect"));
+    }
+
+    #[test]
+    #[traced_test]
+    fn capabilities_zstd_intent_defaults_nested_cas_grpc_and_warns_on_opt_out() {
+        let config = CasConfig::try_from_json5_str(
+            r#"{
+                stores: [{
+                    name: "nested-upstreams",
+                    fast_slow: {
+                        fast: {
+                            grpc: {
+                                instance_name: "auto",
+                                endpoints: [{ address: "http://localhost:1234" }],
+                                store_type: "cas",
+                            },
+                        },
+                        slow: {
+                            shard: {
+                                stores: [
+                                    {
+                                        store: {
+                                            grpc: {
+                                                instance_name: "opt-out",
+                                                endpoints: [{
+                                                    address: "http://localhost:5678",
+                                                }],
+                                                store_type: "cas",
+                                                experimental_remote_cache_compression: false,
+                                            },
+                                        },
+                                        weight: 1,
+                                    },
+                                    {
+                                        store: {
+                                            grpc: {
+                                                instance_name: "action-cache",
+                                                endpoints: [{
+                                                    address: "http://localhost:9012",
+                                                }],
+                                                store_type: "ac",
+                                            },
+                                        },
+                                        weight: 1,
+                                    },
+                                ],
+                            },
+                        },
+                    },
+                }],
+                servers: [{
+                    listener: {
+                        http: { socket_address: "127.0.0.1:50051" },
+                    },
+                    services: {
+                        capabilities: [{
+                            instance_name: "main",
+                            remote_cache_compression: true,
+                        }],
+                    },
+                }],
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            grpc_compression_configs(&config),
+            vec![(true, Some(true)), (true, Some(false)), (false, None),]
+        );
+        assert!(logs_contain("store=\"nested-upstreams\""));
+        assert!(logs_contain("instance_name=\"opt-out\""));
+        assert!(logs_contain(CasConfig::ZSTD_COMPRESSION_DOCS_URL));
     }
 }

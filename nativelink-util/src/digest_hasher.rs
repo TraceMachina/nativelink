@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -51,6 +51,14 @@ where
 /// Get the default hasher.
 pub fn default_digest_hasher_func() -> DigestHasherFunc {
     *DEFAULT_DIGEST_HASHER_FUNC.get_or_init(|| DigestHasherFunc::Sha256)
+}
+
+/// Get the hasher requested by the client from the active context (set via
+/// [`make_ctx_for_hash_func`]), falling back to the default hasher.
+pub fn digest_hasher_func_from_context() -> DigestHasherFunc {
+    Context::current()
+        .get::<DigestHasherFunc>()
+        .map_or_else(default_digest_hasher_func, |v| *v)
 }
 
 /// Sets the default hasher to use if no hasher was requested by the client.
@@ -278,10 +286,10 @@ impl DigestHasher for DigestHasherImpl {
         }
         // If we are a small file, it's faster to just do it the "slow" way.
         // Great read: https://github.com/david-slatinek/c-read-vs.-mmap
-        if let Some(size_hint) = size_hint {
-            if size_hint <= fs::DEFAULT_READ_BUFF_SIZE as u64 {
-                return self.hash_file(file).await;
-            }
+        if let Some(size_hint) = size_hint
+            && size_hint <= fs::DEFAULT_READ_BUFF_SIZE as u64
+        {
+            return self.hash_file(file).await;
         }
         let file_path = file_path.as_ref().to_path_buf();
         match self.hash_func_impl {
@@ -289,7 +297,8 @@ impl DigestHasher for DigestHasherImpl {
             DigestHasherFuncImpl::Blake3(mut hasher) => {
                 spawn_blocking!("digest_for_file", move || {
                     hasher.update_mmap(file_path).map_err(|e| {
-                        make_err!(Code::Internal, "Error in blake3's update_mmap: {e:?}")
+                        Error::from_std_err(Code::Internal, &e)
+                            .append("Error in blake3's update_mmap")
                     })?;
                     Result::<_, Error>::Ok((
                         DigestInfo::new(hasher.finalize().into(), hasher.count()),

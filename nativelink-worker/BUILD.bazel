@@ -10,12 +10,21 @@ load(
 rust_library(
     name = "nativelink-worker",
     srcs = [
+        "src/directory_cache.rs",
         "src/lib.rs",
         "src/local_worker.rs",
+        "src/persistent_worker/live_worker.rs",
+        "src/persistent_worker/mod.rs",
+        "src/persistent_worker/pool.rs",
+        "src/persistent_worker/protocol.rs",
+        "src/qos.rs",
         "src/running_actions_manager.rs",
         "src/worker_api_client_wrapper.rs",
         "src/worker_utils.rs",
-    ],
+    ] + select({
+        "@platforms//os:linux": ["src/namespace_utils.rs"],
+        "//conditions:default": [],
+    }),
     proc_macro_deps = [
         "@crates//:async-trait",
     ],
@@ -28,6 +37,7 @@ rust_library(
         "//nativelink-store",
         "//nativelink-util",
         "@crates//:bytes",
+        "@crates//:dunce",
         "@crates//:filetime",
         "@crates//:formatx",
         "@crates//:futures",
@@ -37,6 +47,7 @@ rust_library(
         "@crates//:relative-path",
         "@crates//:scopeguard",
         "@crates//:serde",
+        "@crates//:serde_json",
         "@crates//:serde_json5",
         "@crates//:shlex",
         "@crates//:tokio",
@@ -44,15 +55,23 @@ rust_library(
         "@crates//:tonic",
         "@crates//:tracing",
         "@crates//:uuid",
-    ],
+    ] + select({
+        "@platforms//os:linux": ["@crates//:libc"],
+        "@platforms//os:macos": ["@crates//:libc"],
+        "//conditions:default": [],
+    }),
 )
 
 rust_test_suite(
     name = "integration",
     timeout = "short",
     srcs = [
+        "tests/directory_cache_stress_test.rs",
+        "tests/directory_cache_test.rs",
         "tests/local_worker_test.rs",
+        "tests/namespace_utils_test.rs",
         "tests/running_actions_manager_test.rs",
+        "tests/worker_utils_test.rs",
     ],
     compile_data = [
         "tests/utils/local_worker_test_utils.rs",
@@ -66,22 +85,32 @@ rust_test_suite(
         ":nativelink-worker",
         "//nativelink-config",
         "//nativelink-error",
+        "//nativelink-metric",
         "//nativelink-proto",
         "//nativelink-store",
         "//nativelink-util",
         "@crates//:async-lock",
         "@crates//:bytes",
         "@crates//:futures",
-        "@crates//:hyper-1.6.0",
+        "@crates//:hyper-1.7.0",
+        "@crates//:pathdiff",
         "@crates//:pin-project-lite",
         "@crates//:pretty_assertions",
         "@crates//:prost",
         "@crates//:prost-types",
-        "@crates//:rand",
         "@crates//:serial_test",
         "@crates//:tokio",
         "@crates//:tonic",
-    ],
+        "@crates//:tonic-prost",
+        "@crates//:tracing",
+        "@crates//:tracing-test",
+        "@crates//:uuid",
+        "@crates//:which",
+    ] + select({
+        "@platforms//os:linux": ["@crates//:libc"],
+        "@platforms//os:macos": ["@crates//:libc"],
+        "//conditions:default": [],
+    }),
 )
 
 rust_test(
@@ -93,11 +122,13 @@ rust_test(
     ],
     deps = [
         "@crates//:hyper",
-        "@crates//:hyper-util",
         "@crates//:pretty_assertions",
         "@crates//:prost-types",
         "@crates//:rand",
+        "@crates//:serde_json",
         "@crates//:serial_test",
+        "@crates//:tempfile",
+        "@crates//:tracing-test",
     ],
 )
 

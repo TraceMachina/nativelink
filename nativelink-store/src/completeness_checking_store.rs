@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::stream::{FuturesUnordered, StreamExt};
-use futures::{FutureExt, TryFutureExt, select};
+use futures::{FutureExt, TryFutureExt, select, try_join};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_proto::build::bazel::remote::execution::v2::{
@@ -28,7 +28,9 @@ use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::metrics_utils::CounterWithTime;
-use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{
+    RemoveCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+};
 use parking_lot::Mutex;
 use tokio::sync::Notify;
 use tracing::warn;
@@ -40,7 +42,7 @@ use crate::ac_utils::{get_and_decode_digest, get_size_and_decode_digest};
 fn get_digests_and_output_dirs(
     action_result: ProtoActionResult,
 ) -> Result<(Vec<StoreKey<'static>>, Vec<ProtoOutputDirectory>), Error> {
-    // TODO(aaronmondal) When `try_collect()` is stable we can use it instead.
+    // TODO(palfrey) When `try_collect()` is stable we can use it instead.
     let mut digest_iter = action_result
         .output_files
         .into_iter()
@@ -76,7 +78,7 @@ async fn check_output_directories<'a>(
             .err_tip(|| "Could not decode tree digest CompletenessCheckingStore::has")?;
         futures.push(async move {
             let tree = get_and_decode_digest::<ProtoTree>(cas_store, tree_digest.into()).await?;
-            // TODO(aaronmondal) When `try_collect()` is stable we can use it instead.
+            // TODO(palfrey) When `try_collect()` is stable we can use it instead.
             // https://github.com/rust-lang/rust/issues/94047
             let mut digest_iter = tree.children.into_iter().chain(tree.root).flat_map(|dir| {
                 dir.files
@@ -223,7 +225,7 @@ impl CompletenessCheckingStore {
                 .map_err(move |mut e| {
                     if e.code != Code::NotFound {
                         e = e.append(
-                            "Error checking existence of digest in CompletenessCheckingStore::has",
+                            format!("Error checking existence of digest ({digest}) in CompletenessCheckingStore::has"),
                         );
                     }
                     (e, i)
@@ -339,6 +341,14 @@ impl CompletenessCheckingStore {
 
 #[async_trait]
 impl StoreDriver for CompletenessCheckingStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        try_join!(
+            self.cas_store.clone().into_inner().post_init(),
+            self.ac_store.clone().into_inner().post_init()
+        )?;
+        Ok(())
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],
@@ -352,7 +362,7 @@ impl StoreDriver for CompletenessCheckingStore {
         key: StoreKey<'_>,
         reader: DropCloserReadHalf,
         size_info: UploadSizeInfo,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         self.ac_store.update(key, reader, size_info).await
     }
 
@@ -386,6 +396,12 @@ impl StoreDriver for CompletenessCheckingStore {
 
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
+    }
+
+    fn register_remove_callback(self: Arc<Self>, callback: RemoveCallback) -> Result<(), Error> {
+        self.ac_store.register_remove_callback(callback.clone())?;
+        self.cas_store.register_remove_callback(callback)?;
+        Ok(())
     }
 }
 

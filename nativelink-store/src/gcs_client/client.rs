@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,28 +16,26 @@ use core::fmt::{Debug, Formatter};
 use core::future::Future;
 use core::time::Duration;
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use bytes::Bytes;
 use futures::Stream;
-use google_cloud_auth::credentials::CredentialsFile;
-use google_cloud_storage::client::{Client, ClientConfig};
-use google_cloud_storage::http::Error as GcsError;
-use google_cloud_storage::http::objects::Object;
-use google_cloud_storage::http::objects::download::Range;
-use google_cloud_storage::http::objects::get::GetObjectRequest;
-use google_cloud_storage::http::objects::upload::{Media, UploadObjectRequest, UploadType};
-use google_cloud_storage::http::resumable_upload_client::{ChunkSize, UploadStatus};
+use gcloud_auth::credentials::CredentialsFile;
+use gcloud_storage::client::{Client, ClientConfig};
+use gcloud_storage::http::Error as GcsError;
+use gcloud_storage::http::objects::Object;
+use gcloud_storage::http::objects::download::Range;
+use gcloud_storage::http::objects::get::GetObjectRequest;
+use gcloud_storage::http::objects::upload::{Media, UploadObjectRequest, UploadType};
+use gcloud_storage::http::resumable_upload_client::{ChunkSize, UploadStatus};
 use nativelink_config::stores::ExperimentalGcsSpec;
-use nativelink_error::{Code, Error, make_err};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_util::buf_channel::DropCloserReadHalf;
 use rand::Rng;
-use tokio::fs;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::sleep;
 
+use crate::common_s3_utils::install_default_rustls_crypto_provider;
 use crate::gcs_client::types::{
     CHUNK_SIZE, DEFAULT_CONCURRENT_UPLOADS, DEFAULT_CONTENT_TYPE, GcsObject,
     INITIAL_UPLOAD_RETRY_DELAY_MS, MAX_UPLOAD_RETRIES, MAX_UPLOAD_RETRY_DELAY_MS, ObjectPath,
@@ -46,27 +44,38 @@ use crate::gcs_client::types::{
 
 /// A trait that defines the required GCS operations.
 /// This abstraction allows for easier testing by mocking GCS responses.
-#[async_trait]
 pub trait GcsOperations: Send + Sync + Debug {
     /// Read metadata for a GCS object
-    async fn read_object_metadata(&self, object: &ObjectPath) -> Result<Option<GcsObject>, Error>;
+    fn read_object_metadata(
+        &self,
+        object: &ObjectPath,
+    ) -> impl Future<Output = Result<Option<GcsObject>, Error>> + Send;
 
     /// Read the content of a GCS object, optionally with a range
-    async fn read_object_content(
+    fn read_object_content(
         &self,
         object_path: &ObjectPath,
         start: u64,
         end: Option<u64>,
-    ) -> Result<Box<dyn Stream<Item = Result<Bytes, Error>> + Send + Unpin>, Error>;
+    ) -> impl Future<
+        Output = Result<Box<dyn Stream<Item = Result<Bytes, Error>> + Send + Unpin>, Error>,
+    > + Send;
 
     /// Write object with simple upload (for smaller objects)
-    async fn write_object(&self, object_path: &ObjectPath, content: Vec<u8>) -> Result<(), Error>;
+    fn write_object(
+        &self,
+        object_path: &ObjectPath,
+        content: Vec<u8>,
+    ) -> impl Future<Output = Result<(), Error>> + Send;
 
     /// Start a resumable write operation and return the upload URL
-    async fn start_resumable_write(&self, object_path: &ObjectPath) -> Result<String, Error>;
+    fn start_resumable_write(
+        &self,
+        object_path: &ObjectPath,
+    ) -> impl Future<Output = Result<String, Error>> + Send;
 
     /// Upload a chunk of data in a resumable upload session
-    async fn upload_chunk(
+    fn upload_chunk(
         &self,
         upload_url: &str,
         object_path: &ObjectPath,
@@ -74,19 +83,22 @@ pub trait GcsOperations: Send + Sync + Debug {
         offset: u64,
         end_offset: u64,
         total_size: Option<u64>,
-    ) -> Result<(), Error>;
+    ) -> impl Future<Output = Result<(), Error>> + Send;
 
     /// Complete high-level operation to upload data from a reader
-    async fn upload_from_reader(
+    fn upload_from_reader(
         &self,
         object_path: &ObjectPath,
         reader: &mut DropCloserReadHalf,
         upload_id: &str,
         max_size: u64,
-    ) -> Result<(), Error>;
+    ) -> impl Future<Output = Result<(), Error>>;
 
     /// Check if an object exists
-    async fn object_exists(&self, object_path: &ObjectPath) -> Result<bool, Error>;
+    fn object_exists(
+        &self,
+        object_path: &ObjectPath,
+    ) -> impl Future<Output = Result<bool, Error>> + Send;
 }
 
 /// Main client for interacting with Google Cloud Storage
@@ -97,98 +109,58 @@ pub struct GcsClient {
 }
 
 impl GcsClient {
+    fn create_client_config(spec: &ExperimentalGcsSpec) -> Result<ClientConfig, Error> {
+        install_default_rustls_crypto_provider();
+
+        let mut client_config = ClientConfig::default();
+        let connect_timeout = if spec.connection_timeout_s > 0 {
+            Duration::from_secs(spec.connection_timeout_s)
+        } else {
+            Duration::from_secs(3)
+        };
+        let read_timeout = if spec.read_timeout_s > 0 {
+            Duration::from_secs(spec.read_timeout_s)
+        } else {
+            Duration::from_secs(3)
+        };
+        let client = reqwest::ClientBuilder::new()
+            .connect_timeout(connect_timeout)
+            .read_timeout(read_timeout)
+            .build()
+            .map_err(|e| {
+                Error::from_std_err(Code::Internal, &e).append("Unable to create GCS client")
+            })?;
+        let mid_client = reqwest_middleware::ClientBuilder::new(client).build();
+        client_config.http = Some(mid_client);
+        Ok(client_config)
+    }
+
     /// Create a new GCS client from the provided spec
     pub async fn new(spec: &ExperimentalGcsSpec) -> Result<Self, Error> {
-        // Creating default config without authentication initially
-        let mut client_config = ClientConfig::default().anonymous();
-        let mut auth_success = false;
-
-        // Trying authentication with credentials file path from environment variable.
-        // Google Cloud Auth expects the path to the credentials file to be specified
-        // in the GOOGLE_APPLICATION_CREDENTIALS environment variable.
-        // Check https://cloud.google.com/docs/authentication/application-default-credentials#GAC
-        // for more details.
-        if let Ok(creds_path) = std::env::var("GOOGLE_APPLICATION_CREDENTIALS") {
-            let path_str = PathBuf::from(creds_path).to_string_lossy().to_string();
-
-            tracing::info!("Attempting to load credentials from: {}", path_str);
-            match CredentialsFile::new_from_file(path_str.clone()).await {
-                Ok(creds_file) => {
-                    match ClientConfig::default().with_credentials(creds_file).await {
-                        Ok(config) => {
-                            tracing::info!("Successfully authenticated with credentials file");
-                            client_config = config;
-                            auth_success = true;
-                        }
-                        Err(e) => {
-                            tracing::warn!("Failed to configure client with credentials: {}", e);
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to load credentials from file: {}", e);
-                }
+        // Attempt to get the authentication from a file with the environment
+        // variable GOOGLE_APPLICATION_CREDENTIALS or directly from the
+        // environment in variable GOOGLE_APPLICATION_CREDENTIALS_JSON.  If that
+        // fails, attempt to get authentication from the environment.
+        let maybe_client_config = match CredentialsFile::new().await {
+            Ok(credentials) => {
+                Self::create_client_config(spec)?
+                    .with_credentials(credentials)
+                    .await
             }
+            Err(_) => Self::create_client_config(spec)?.with_auth().await,
         }
+        .map_err(|e| {
+            Error::from_std_err(Code::Internal, &e)
+                .append("Failed to create client config with credentials")
+        });
 
-        // Trying JSON credentials in environment variable if first method failed
-        if !auth_success {
-            if let Ok(creds_json) = std::env::var("GOOGLE_APPLICATION_CREDENTIALS_JSON") {
-                tracing::info!("Attempting to use credentials from environment variable");
-
-                // Creating temporary file
-                let temp_dir = std::env::temp_dir();
-                let temp_path = temp_dir.join(format!("gcs-creds-{}.json", uuid::Uuid::new_v4()));
-                let temp_path_str = temp_path.to_string_lossy().to_string();
-
-                // Writing JSON to temporary file
-                if let Err(e) = fs::write(&temp_path, creds_json).await {
-                    tracing::warn!("Failed to write credentials to temp file: {}", e);
-                } else {
-                    // Load credentials from temporary file
-                    match CredentialsFile::new_from_file(temp_path_str).await {
-                        Ok(creds_file) => {
-                            match ClientConfig::default().with_credentials(creds_file).await {
-                                Ok(config) => {
-                                    tracing::info!(
-                                        "Successfully authenticated with JSON credentials"
-                                    );
-                                    client_config = config;
-                                    auth_success = true;
-                                }
-                                Err(e) => {
-                                    tracing::warn!(
-                                        "Failed to configure client with JSON credentials: {}",
-                                        e
-                                    );
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!("Failed to load credentials from JSON: {}", e);
-                        }
-                    }
-
-                    // Clean up temporary file
-                    drop(fs::remove_file(temp_path).await);
-                }
-            }
-        }
-
-        if !auth_success {
-            match ClientConfig::default().with_auth().await {
-                Ok(config) => {
-                    tracing::info!(
-                        "Successfully authenticated with application default credentials"
-                    );
-                    client_config = config;
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to use application default credentials: {}", e);
-                    tracing::info!("Continuing with unauthenticated access");
-                }
-            }
-        }
+        // If authentication is required then error, otherwise use anonymous.
+        let client_config = if spec.authentication_required {
+            maybe_client_config.err_tip(|| "Authentication required and none found.")?
+        } else {
+            maybe_client_config
+                .or_else(|_| Self::create_client_config(spec).map(ClientConfig::anonymous))?
+        };
 
         // Creating client with the configured authentication
         let client = Client::new(client_config);
@@ -207,16 +179,34 @@ impl GcsClient {
         })
     }
 
+    /// Create a mock GCS client for testing
+    pub fn new_mock(spec: &ExperimentalGcsSpec, endpoint: String) -> Result<Self, Error> {
+        let mut client_config = ClientConfig::anonymous(Self::create_client_config(spec)?);
+        client_config.storage_endpoint = endpoint;
+
+        let client = Client::new(client_config);
+        let resumable_chunk_size = spec.resumable_chunk_size.unwrap_or(CHUNK_SIZE);
+        let max_connections = spec
+            .common
+            .multipart_max_concurrent_uploads
+            .unwrap_or(DEFAULT_CONCURRENT_UPLOADS);
+
+        Ok(Self {
+            client,
+            resumable_chunk_size,
+            semaphore: Arc::new(Semaphore::new(max_connections)),
+        })
+    }
+
     /// Generic method to execute operations with connection limiting
     async fn with_connection<F, Fut, T>(&self, operation: F) -> Result<T, Error>
     where
         F: FnOnce() -> Fut + Send,
         Fut: Future<Output = Result<T, Error>> + Send,
     {
-        let permit =
-            self.semaphore.acquire().await.map_err(|e| {
-                make_err!(Code::Internal, "Failed to acquire connection permit: {}", e)
-            })?;
+        let permit = self.semaphore.acquire().await.map_err(|e| {
+            Error::from_std_err(Code::Internal, &e).append("Failed to acquire connection permit")
+        })?;
 
         let result = operation().await;
         drop(permit);
@@ -226,7 +216,7 @@ impl GcsClient {
     /// Convert GCS object to our internal representation
     fn convert_to_gcs_object(&self, obj: Object) -> GcsObject {
         let update_time = obj.updated.map(|dt| Timestamp {
-            seconds: dt.unix_timestamp(),
+            seconds: dt.unix_timestamp() as u64,
             nanos: 0,
         });
 
@@ -251,10 +241,21 @@ impl GcsClient {
                 500..=599 => Code::Unavailable,
                 _ => Code::Unknown,
             },
+            GcsError::HttpClient(resp) => match resp.status() {
+                Some(http::StatusCode::NOT_FOUND) => Code::NotFound,
+                Some(http::StatusCode::UNAUTHORIZED | http::StatusCode::FORBIDDEN) => {
+                    Code::PermissionDenied
+                }
+                Some(http::StatusCode::REQUEST_TIMEOUT | http::StatusCode::TOO_MANY_REQUESTS) => {
+                    Code::ResourceExhausted
+                }
+                Some(code) if code.is_server_error() => Code::Unavailable,
+                _ => Code::Unknown,
+            },
             _ => Code::Internal,
         };
 
-        make_err!(code, "GCS operation failed: {}", err)
+        Error::from_std_err(code, &err).append("GCS operation failed")
     }
 
     /// Reading data from reader and upload in a single operation
@@ -264,9 +265,12 @@ impl GcsClient {
         reader: &mut DropCloserReadHalf,
         max_size: u64,
     ) -> Result<(), Error> {
-        let initial_capacity = core::cmp::min(max_size as usize, 10 * 1024 * 1024);
+        let initial_capacity = core::cmp::min(
+            usize::try_from(max_size).unwrap_or(usize::MAX),
+            10 * 1024 * 1024,
+        );
         let mut data = Vec::with_capacity(initial_capacity);
-        let max_size = max_size as usize;
+        let max_size = usize::try_from(max_size).unwrap_or(usize::MAX);
         let mut total_size = 0usize;
 
         while total_size < max_size {
@@ -317,7 +321,7 @@ impl GcsClient {
 
             // Upload data in chunks
             let mut offset: u64 = 0;
-            let max_size = max_size as usize;
+            let max_size = usize::try_from(max_size).unwrap_or(usize::MAX);
             let mut total_uploaded = 0usize;
 
             while total_uploaded < max_size {
@@ -385,7 +389,6 @@ impl Debug for GcsClient {
     }
 }
 
-#[async_trait]
 impl GcsOperations for GcsClient {
     async fn read_object_metadata(
         &self,
@@ -401,10 +404,10 @@ impl GcsOperations for GcsClient {
             match self.client.get_object(&request).await {
                 Ok(obj) => Ok(Some(self.convert_to_gcs_object(obj))),
                 Err(err) => {
-                    if let GcsError::Response(resp) = &err {
-                        if resp.code == 404 {
-                            return Ok(None);
-                        }
+                    if let GcsError::Response(resp) = &err
+                        && resp.code == 404
+                    {
+                        return Ok(None);
                     }
                     Err(Self::handle_gcs_error(&err))
                 }
@@ -419,7 +422,7 @@ impl GcsOperations for GcsClient {
         start: u64,
         end: Option<u64>,
     ) -> Result<Box<dyn Stream<Item = Result<Bytes, Error>> + Send + Unpin>, Error> {
-        type StreamItem = Result<Bytes, google_cloud_storage::http::Error>;
+        type StreamItem = Result<Bytes, gcloud_storage::http::Error>;
         struct ReadStream<T: Stream<Item = StreamItem> + Send + Unpin> {
             stream: T,
             permit: Option<OwnedSemaphorePermit>,
@@ -453,10 +456,9 @@ impl GcsOperations for GcsClient {
             }
         }
 
-        let permit =
-            self.semaphore.clone().acquire_owned().await.map_err(|e| {
-                make_err!(Code::Internal, "Failed to acquire connection permit: {}", e)
-            })?;
+        let permit = self.semaphore.clone().acquire_owned().await.map_err(|e| {
+            Error::from_std_err(Code::Internal, &e).append("Failed to acquire connection permit")
+        })?;
         let request = GetObjectRequest {
             bucket: object_path.bucket.clone(),
             object: object_path.path.clone(),
@@ -591,7 +593,11 @@ impl GcsOperations for GcsClient {
 
                     let mut rng = rand::rng();
                     let jitter_factor = rng.random::<f64>().mul_add(0.4, 0.8);
-                    retry_delay = (retry_delay as f64 * jitter_factor) as u64;
+                    retry_delay = Duration::from_millis(retry_delay)
+                        .mul_f64(jitter_factor)
+                        .as_millis()
+                        .try_into()
+                        .unwrap_or(u64::MAX);
 
                     retry_count += 1;
                 }

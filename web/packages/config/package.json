@@ -1,0 +1,17 @@
+{
+  "name": "@nativelink/config",
+  "type": "module",
+  "exports": {
+    "./biome/base.json": "./biome/base.json",
+    "./tailwind/preset.css": "./tailwind/preset.css",
+    "./tsconfig/base.json": "./tsconfig/base.json",
+    "./tsconfig/nextjs.json": "./tsconfig/nextjs.json"
+  },
+  "files": [
+    "tsconfig",
+    "biome",
+    "tailwind"
+  ],
+  "private": true,
+  "version": "0.0.0"
+}

@@ -1,0 +1,41 @@
+{
+  stores: [
+    {
+      name: "MAIN_STORE",
+      filesystem: {
+        content_path: "/tmp/nativelink/data-worker-test/content_path-ac",
+        temp_path: "/tmp/nativelink/data-worker-test/tmp_path-ac",
+      },
+    },
+  ],
+  servers: [
+    {
+      name: "public",
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50051",
+        },
+      },
+      services: {
+        cas: [
+          {
+            instance_name: "main",
+            cas_store: "MAIN_STORE",
+          },
+        ],
+        ac: [
+          {
+            instance_name: "main",
+            ac_store: "MAIN_STORE",
+          },
+        ],
+        bytestream: [
+          {
+            instance_name: "main",
+            cas_store: "MAIN_STORE",
+          },
+        ],
+      },
+    },
+  ],
+}

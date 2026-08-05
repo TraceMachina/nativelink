@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -22,7 +22,9 @@ use nativelink_metric::{
 };
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
-use nativelink_util::store_trait::{StoreDriver, StoreKey, StoreOptimizations, UploadSizeInfo};
+use nativelink_util::store_trait::{
+    RemoveCallback, StoreDriver, StoreKey, StoreOptimizations, UploadSizeInfo,
+};
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NoopStore;
@@ -45,12 +47,18 @@ impl NoopStore {
 
 #[async_trait]
 impl StoreDriver for NoopStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         _keys: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
-        results.iter_mut().for_each(|r| *r = None);
+        for result in results.iter_mut() {
+            *result = None;
+        }
         Ok(())
     }
 
@@ -59,11 +67,11 @@ impl StoreDriver for NoopStore {
         _key: StoreKey<'_>,
         mut reader: DropCloserReadHalf,
         _size_info: UploadSizeInfo,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         // We need to drain the reader to avoid the writer complaining that we dropped
         // the connection prematurely.
-        reader.drain().await.err_tip(|| "In NoopStore::update")?;
-        Ok(())
+        let size = reader.drain().await.err_tip(|| "In NoopStore::update")?;
+        Ok(size)
     }
 
     fn optimized_for(&self, optimization: StoreOptimizations) -> bool {
@@ -91,6 +99,11 @@ impl StoreDriver for NoopStore {
 
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
+    }
+
+    fn register_remove_callback(self: Arc<Self>, _callback: RemoveCallback) -> Result<(), Error> {
+        // does nothing, so drop
+        Ok(())
     }
 }
 

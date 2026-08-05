@@ -1,10 +1,10 @@
-// Copyright 2022 The NativeLink Authors. All rights reserved.
+// Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -29,7 +29,7 @@ pub struct BatchUpdateBlobsRequestOverride {
 }
 /// Nested message and enum types in `BatchUpdateBlobsRequestOverride`.
 pub mod batch_update_blobs_request_override {
-    #[derive(Clone, PartialEq, ::prost::Message)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct Request {
         #[prost(message, optional, tag = "1")]
         pub digest: ::core::option::Option<
@@ -82,7 +82,7 @@ pub mod batch_read_blobs_response_override {
 }
 /// / Same as google.bytestream.WriteRequest, but without the data field,
 /// / and add a `data_len` field.
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct WriteRequestOverride {
     #[prost(string, tag = "1")]
     pub resource_name: ::prost::alloc::string::String,
@@ -166,7 +166,10 @@ pub mod request_event {
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ResponseEvent {
-    #[prost(oneof = "response_event::Event", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11")]
+    #[prost(
+        oneof = "response_event::Event",
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12"
+    )]
     pub event: ::core::option::Option<response_event::Event>,
 }
 /// Nested message and enum types in `ResponseEvent`.
@@ -211,6 +214,8 @@ pub mod response_event {
         PushBlobResponse(
             super::super::super::super::super::super::build::bazel::remote::asset::v1::PushBlobResponse,
         ),
+        #[prost(message, tag = "12")]
+        ActionResourceUsage(super::super::remote_execution::ActionResourceUsage),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -294,7 +299,7 @@ pub struct OriginEvents {
     pub events: ::prost::alloc::vec::Vec<OriginEvent>,
 }
 /// / Bep event that has occurred.
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct BepEvent {
     /// / The version of this message.
     #[prost(uint32, tag = "1")]
@@ -311,7 +316,7 @@ pub struct BepEvent {
 /// Nested message and enum types in `BepEvent`.
 pub mod bep_event {
     /// / The event that occurred.
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Event {
         #[prost(message, tag = "3")]
         LifecycleEvent(

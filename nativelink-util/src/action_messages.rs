@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,12 +14,14 @@
 
 use core::cmp::Ordering;
 use core::convert::Into;
+use core::fmt::Display;
 use core::hash::Hash;
 use core::time::Duration;
 use std::collections::HashMap;
 use std::time::SystemTime;
 
-use nativelink_error::{Error, ResultExt, error_if, make_input_err};
+use humantime::format_duration;
+use nativelink_error::{Error, ErrorContext, ResultExt, error_if, make_input_err};
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent, publish,
 };
@@ -30,15 +32,16 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
 };
 use nativelink_proto::google::longrunning::Operation;
 use nativelink_proto::google::longrunning::operation::Result as LongRunningResult;
-use nativelink_proto::google::rpc::Status;
+use nativelink_proto::google::rpc::{PreconditionFailure, Status, precondition_failure};
 use prost::Message;
 use prost::bytes::Bytes;
 use prost_types::Any;
 use serde::ser::Error as SerdeError;
 use serde::{Deserialize, Serialize};
+use tonic::Code;
 use uuid::Uuid;
 
-use crate::common::{DigestInfo, HashMapExt, VecExt};
+use crate::common::{self, DigestInfo, HashMapExt, VecExt};
 use crate::digest_hasher::DigestHasherFunc;
 
 /// Default priority remote execution jobs will get when not provided.
@@ -69,7 +72,7 @@ impl Default for OperationId {
     }
 }
 
-impl core::fmt::Display for OperationId {
+impl Display for OperationId {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Uuid(uuid) => uuid.fmt(f),
@@ -111,8 +114,8 @@ impl TryFrom<Bytes> for OperationId {
             // for free then convert the Vec<u8> to a String for free too.
             Ok(value) => {
                 let value = String::from_utf8(value.into()).map_err(|e| {
-                    make_input_err!(
-                        "Failed to convert bytes to string in try_from<Bytes> for OperationId : {e:?}"
+                    Error::from_std_err(Code::InvalidArgument, &e).append(
+                        "Failed to convert bytes to string in try_from<Bytes> for OperationId",
                     )
                 })?;
                 Ok(Self::from(value))
@@ -120,8 +123,8 @@ impl TryFrom<Bytes> for OperationId {
             // We could not take ownership of the Bytes, so we may need to copy our data.
             Err(value) => {
                 let value = core::str::from_utf8(&value).map_err(|e| {
-                    make_input_err!(
-                        "Failed to convert bytes to string in try_from<Bytes> for OperationId : {e:?}"
+                    Error::from_std_err(Code::InvalidArgument, &e).append(
+                        "Failed to convert bytes to string in try_from<Bytes> for OperationId",
                     )
                 })?;
                 Ok(Self::from(value))
@@ -144,7 +147,7 @@ impl MetricsComponent for WorkerId {
     }
 }
 
-impl core::fmt::Display for WorkerId {
+impl Display for WorkerId {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_fmt(format_args!("{}", self.0))
     }
@@ -152,7 +155,7 @@ impl core::fmt::Display for WorkerId {
 
 impl core::fmt::Debug for WorkerId {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        core::fmt::Display::fmt(&self, f)
+        Display::fmt(&self, f)
     }
 }
 
@@ -173,8 +176,10 @@ impl From<String> for WorkerId {
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ActionUniqueQualifier {
     /// The action is cacheable.
+    #[serde(alias = "Cachable")] // Pre 0.7.0 spelling
     Cacheable(ActionUniqueKey),
     /// The action is uncacheable.
+    #[serde(alias = "Uncachable")] // Pre 0.7.0 spelling
     Uncacheable(ActionUniqueKey),
 }
 
@@ -223,7 +228,7 @@ impl ActionUniqueQualifier {
     }
 }
 
-impl core::fmt::Display for ActionUniqueQualifier {
+impl Display for ActionUniqueQualifier {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let (cacheable, unique_key) = match self {
             Self::Cacheable(action) => (true, action),
@@ -257,7 +262,7 @@ pub struct ActionUniqueKey {
     pub digest: DigestInfo,
 }
 
-impl core::fmt::Display for ActionUniqueKey {
+impl Display for ActionUniqueKey {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_fmt(format_args!(
             "{}/{}/{}",
@@ -352,7 +357,10 @@ impl ActionInfo {
                 .timeout
                 .unwrap_or_default()
                 .try_into()
-                .map_err(|_| make_input_err!("Failed convert proto duration to system duration"))?,
+                .map_err(|err| {
+                    Error::from_std_err(Code::InvalidArgument, &err)
+                        .append("Failed convert proto duration to system duration")
+                })?,
             platform_properties,
             priority: execute_request
                 .execution_policy
@@ -749,7 +757,7 @@ pub enum ActionStage {
     CacheCheck,
     /// Action has been accepted and waiting for worker to take it.
     Queued,
-    // TODO(aaronmondal) We need a way to know if the job was sent to a worker, but hasn't begun
+    // TODO(palfrey) We need a way to know if the job was sent to a worker, but hasn't begun
     // execution yet.
     /// Worker is executing the action.
     Executing,
@@ -800,6 +808,17 @@ impl ActionStage {
                 | (Self::CompletedFromCache(_), Self::CompletedFromCache(_))
         )
     }
+
+    pub fn name(&self) -> String {
+        match self {
+            Self::Unknown => "Unknown".to_string(),
+            Self::CacheCheck => "CacheCheck".to_string(),
+            Self::Queued => "Queued".to_string(),
+            Self::Executing => "Executing".to_string(),
+            Self::Completed(_) => "Completed".to_string(),
+            Self::CompletedFromCache(_) => "CompletedFromCache".to_string(),
+        }
+    }
 }
 
 impl MetricsComponent for ActionStage {
@@ -808,15 +827,7 @@ impl MetricsComponent for ActionStage {
         _kind: MetricKind,
         _field_metadata: MetricFieldData,
     ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
-        let value = match self {
-            Self::Unknown => "Unknown".to_string(),
-            Self::CacheCheck => "CacheCheck".to_string(),
-            Self::Queued => "Queued".to_string(),
-            Self::Executing => "Executing".to_string(),
-            Self::Completed(_) => "Completed".to_string(),
-            Self::CompletedFromCache(_) => "CompletedFromCache".to_string(),
-        };
-        Ok(MetricPublishKnownKindData::String(value))
+        Ok(MetricPublishKnownKindData::String(self.name()))
     }
 }
 
@@ -829,6 +840,35 @@ impl From<&ActionStage> for execution_stage::Value {
             ActionStage::Executing => Self::Executing,
             ActionStage::Completed(_) | ActionStage::CompletedFromCache(_) => Self::Completed,
         }
+    }
+}
+
+/// Build a `google.rpc.Status` of code `FAILED_PRECONDITION` whose
+/// details carry a `PreconditionFailure` naming the missing blob.
+///
+/// This is the worker-side counterpart to `execution_server`'s
+/// `missing_blobs_failed_precondition` — both produce the `REv2`
+/// subject format `blobs/{hash}/{size}` that Bazel auto-retries on.
+fn missing_blob_failed_precondition_status(err: &Error, hash: &str, size: i64) -> Status {
+    let pf = PreconditionFailure {
+        violations: vec![precondition_failure::Violation {
+            r#type: common::VIOLATION_TYPE_MISSING.to_string(),
+            // REv2-mandated subject format for missing-blob violations.
+            subject: format!("blobs/{hash}/{size}"),
+            description: err.message_string(),
+        }],
+    };
+    let mut buf: Vec<u8> = Vec::with_capacity(pf.encoded_len());
+    pf.encode(&mut buf)
+        .expect("encoding prost message into Vec<u8> cannot fail");
+    let any = Any {
+        type_url: PreconditionFailure::TYPE_URL.to_string(),
+        value: buf,
+    };
+    Status {
+        code: Code::FailedPrecondition as i32,
+        message: err.message_string(),
+        details: vec![any],
     }
 }
 
@@ -847,11 +887,31 @@ pub fn to_execute_response(action_result: ActionResult) -> ExecuteResponse {
         logs
     }
 
+    // If the action failed because a CAS blob is missing — most often a
+    // `Directory` proto in the input tree (the Execute pre-check only
+    // validates the top-level Action, command_digest, and
+    // input_root_digest; nested Directories are fetched lazily by the
+    // worker) — surface the failure as `FAILED_PRECONDITION` with a
+    // `PreconditionFailure` detail naming the digest. Bazel sees the
+    // detail, re-uploads the missing blob, and retries automatically;
+    // without the detail it gives up and the build fails.
+    //
+    // The dispatch is on `Error::context` (typed metadata attached at
+    // the production site in `fast_slow_store`), not the message text.
+    // String-matching across crate boundaries silently regresses when
+    // the producing crate reformats its error — see commit history.
     let status = Some(
         action_result
             .error
             .clone()
-            .map_or_else(Status::default, Into::into),
+            .map(|err| match &err.context {
+                ErrorContext::MissingDigest { hash, size } => {
+                    let (hash, size) = (hash.clone(), *size);
+                    missing_blob_failed_precondition_status(&err, &hash, size)
+                }
+                ErrorContext::None => err.into(),
+            })
+            .unwrap_or_default(),
     );
     let message = action_result.message.clone();
     ExecuteResponse {
@@ -1052,7 +1112,7 @@ impl TryFrom<ExecuteResponse> for ActionStage {
 }
 
 // TODO: Should be able to remove this after tokio-rs/prost#299
-trait TypeUrl: Message {
+pub trait TypeUrl: Message {
     const TYPE_URL: &'static str;
 }
 
@@ -1064,6 +1124,10 @@ impl TypeUrl for ExecuteResponse {
 impl TypeUrl for ExecuteOperationMetadata {
     const TYPE_URL: &'static str =
         "type.googleapis.com/build.bazel.remote.execution.v2.ExecuteOperationMetadata";
+}
+
+impl TypeUrl for PreconditionFailure {
+    const TYPE_URL: &'static str = "type.googleapis.com/google.rpc.PreconditionFailure";
 }
 
 fn from_any<T>(message: &Any) -> Result<T, Error>
@@ -1091,15 +1155,57 @@ where
 
 /// Current state of the action.
 /// This must be 100% compatible with `Operation` in `google/longrunning/operations.proto`.
-#[derive(PartialEq, Debug, Clone, Serialize, Deserialize, MetricsComponent)]
+#[derive(Debug, Clone, Serialize, Deserialize, MetricsComponent)]
 pub struct ActionState {
     #[metric(help = "The current stage of the action.")]
     pub stage: ActionStage,
+    #[metric(help = "Last time this action changed stage")]
+    pub last_transition_timestamp: SystemTime,
     #[metric(help = "The unique identifier of the action.")]
     pub client_operation_id: OperationId,
     #[metric(help = "The digest of the action.")]
     pub action_digest: DigestInfo,
 }
+
+impl Display for ActionState {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "stage={} last_transition={} client_operation_id={} action_digest={}",
+            self.stage.name(),
+            self.last_transition_timestamp.elapsed().map_or_else(
+                |_| "<unknown duration>".to_string(),
+                |d| { format_duration(d).to_string() }
+            ),
+            self.client_operation_id,
+            self.action_digest
+        )
+    }
+}
+
+impl PartialOrd for ActionState {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ActionState {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.last_transition_timestamp
+            .cmp(&other.last_transition_timestamp)
+    }
+}
+
+impl PartialEq for ActionState {
+    fn eq(&self, other: &Self) -> bool {
+        // Ignore last_transition_timestamp as the actions can still be the same even if they happened at different times
+        self.stage == other.stage
+            && self.client_operation_id == other.client_operation_id
+            && self.action_digest == other.action_digest
+    }
+}
+
+impl Eq for ActionState {}
 
 impl ActionState {
     pub fn try_from_operation(
@@ -1154,6 +1260,7 @@ impl ActionState {
             stage,
             client_operation_id,
             action_digest,
+            last_transition_timestamp: SystemTime::now(),
         })
     }
 
@@ -1172,7 +1279,7 @@ impl ActionState {
         let metadata = ExecuteOperationMetadata {
             stage,
             action_digest: digest,
-            // TODO(aaronmondal) We should support stderr/stdout streaming.
+            // TODO(palfrey) We should support stderr/stdout streaming.
             stdout_stream_name: String::default(),
             stderr_stream_name: String::default(),
             partial_execution_metadata: None,

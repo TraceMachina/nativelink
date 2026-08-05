@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -18,11 +18,13 @@ use std::time::SystemTime;
 
 use futures::stream::FuturesOrdered;
 use futures::{Future, TryStreamExt};
-use nativelink_config::stores::{ExperimentalCloudObjectSpec, StoreSpec};
+use nativelink_config::stores::{ExperimentalCloudObjectSpec, RedisMode, StoreSpec};
 use nativelink_error::Error;
 use nativelink_util::health_utils::HealthRegistryBuilder;
 use nativelink_util::store_trait::{Store, StoreDriver};
 
+use crate::azure_blob_store::AzureBlobStore;
+use crate::cache_metrics_store::CacheMetricsStore;
 use crate::completeness_checking_store::CompletenessCheckingStore;
 use crate::compression_store::CompressionStore;
 use crate::dedup_store::DedupStore;
@@ -34,6 +36,10 @@ use crate::grpc_store::GrpcStore;
 use crate::memory_store::MemoryStore;
 use crate::mongo_store::ExperimentalMongoStore;
 use crate::noop_store::NoopStore;
+use crate::oci_store::OciStore;
+use crate::ontap_s3_existence_cache_store::OntapS3ExistenceCache;
+use crate::ontap_s3_store::OntapS3Store;
+use crate::r2_store::R2Store;
 use crate::redis_store::RedisStore;
 use crate::ref_store::RefStore;
 use crate::s3_store::S3Store;
@@ -51,16 +57,38 @@ pub fn store_factory<'a>(
 ) -> Pin<FutureMaybeStore<'a>> {
     Box::pin(async move {
         let store: Arc<dyn StoreDriver> = match backend {
+            StoreSpec::CacheMetrics(spec) => CacheMetricsStore::new(
+                spec,
+                store_factory(&spec.backend, store_manager, None).await?,
+            ),
             StoreSpec::Memory(spec) => MemoryStore::new(spec),
             StoreSpec::ExperimentalCloudObjectStore(spec) => match spec {
                 ExperimentalCloudObjectSpec::Aws(aws_config) => {
                     S3Store::new(aws_config, SystemTime::now).await?
                 }
+                ExperimentalCloudObjectSpec::Ontap(ontap_config) => {
+                    OntapS3Store::new(ontap_config, SystemTime::now).await?
+                }
                 ExperimentalCloudObjectSpec::Gcs(gcs_config) => {
                     GcsStore::new(gcs_config, SystemTime::now).await?
                 }
+                ExperimentalCloudObjectSpec::Azure(azure_config) => {
+                    AzureBlobStore::new(azure_config, SystemTime::now).await?
+                }
+                ExperimentalCloudObjectSpec::R2(r2_config) => {
+                    R2Store::new(r2_config, SystemTime::now).await?
+                }
+                ExperimentalCloudObjectSpec::Oci(oci_config) => {
+                    OciStore::new(oci_config, SystemTime::now).await?
+                }
             },
-            StoreSpec::RedisStore(spec) => RedisStore::new(spec.clone())?,
+            StoreSpec::RedisStore(spec) => {
+                if spec.mode == RedisMode::Cluster {
+                    RedisStore::new_cluster(spec.clone()).await?
+                } else {
+                    RedisStore::new_standard(spec.clone()).await?
+                }
+            }
             StoreSpec::Verify(spec) => VerifyStore::new(
                 spec,
                 store_factory(&spec.backend, store_manager, None).await?,
@@ -78,6 +106,9 @@ pub fn store_factory<'a>(
                 spec,
                 store_factory(&spec.backend, store_manager, None).await?,
             ),
+            StoreSpec::OntapS3ExistenceCache(spec) => {
+                OntapS3ExistenceCache::new(spec, SystemTime::now).await?
+            }
             StoreSpec::CompletenessChecking(spec) => CompletenessCheckingStore::new(
                 store_factory(&spec.backend, store_manager, None).await?,
                 store_factory(&spec.cas_store, store_manager, None).await?,

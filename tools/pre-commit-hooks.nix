@@ -2,9 +2,10 @@
   pkgs,
   nightly-rust,
   generate-bazel-rc,
+  generate-stores-config,
   ...
 }: let
-  excludes = ["nativelink-proto/genproto" "native-cli/vendor"];
+  excludes = ["nativelink-proto/genproto"];
 in {
   # Default hooks
   check-case-conflicts = {
@@ -76,63 +77,16 @@ in {
 
   # General
   typos = {
-    args = ["--force-exclude"];
     enable = true;
-    inherit excludes;
     settings.configPath = "typos.toml";
-  };
-
-  # Go
-  gci = {
-    description = "Fix go imports.";
-    enable = true;
-    entry = "${pkgs.gci}/bin/gci write";
-    inherit excludes;
-    name = "gci";
-    types = ["go"];
-  };
-  gofumpt = {
-    description = "Format Go.";
-    enable = true;
-    entry = "${pkgs.gofumpt}/bin/gofumpt -w -l";
-    inherit excludes;
-    name = "gofumpt";
-    types = ["go"];
-  };
-  # TODO(aaronmondal): This linter works in the nix developmen environment, but
-  #                    not with `nix flake check`. It's unclear how to fix this.
-  golangci-lint-in-shell = {
-    enable = true;
-    entry = let
-      script = pkgs.writeShellScript "precommit-golangci-lint" ''
-        # TODO(aaronmondal): This linter works in the nix development
-        #                    environment, but not with `nix flake check`. It's
-        #                    unclear how to fix this.
-        if [ ''${IN_NIX_SHELL} = "impure" ]; then
-          export PATH=${pkgs.go}/bin:$PATH
-          cd native-cli
-          CC=customClang ${pkgs.golangci-lint}/bin/golangci-lint run --modules-download-mode=readonly
-        fi
-      '';
-    in
-      builtins.toString script;
-    inherit excludes;
-    pass_filenames = false;
-    require_serial = true;
-    types = ["go"];
-  };
-  golines = {
-    description = "Shorten Go lines.";
-    enable = true;
-    entry = "${pkgs.golines}/bin/golines --max-len=80 -w";
-    inherit excludes;
-    name = "golines";
-    types = ["go"];
   };
 
   # Nix
   alejandra.enable = true;
-  deadnix.enable = true;
+  deadnix = {
+    excludes = ["tools/cargo-llvm-cov/package.nix"] ++ excludes; # because the upstream pattern has some things we don't want to drop
+    enable = true;
+  };
   statix.enable = true;
 
   # Rust
@@ -140,10 +94,21 @@ in {
     enable = true;
     packageOverrides.cargo = nightly-rust.cargo;
     packageOverrides.rustfmt = nightly-rust.rustfmt;
+    pass_filenames = true;
+    inherit excludes;
   };
+
+  # Taplo fmt
   taplo = {
     enable = true;
-    excludes = ["nativelink-proto"];
+    types = ["toml"];
+  };
+
+  # Taplo validate
+  taplo-validate = {
+    enable = true;
+    entry = "${pkgs.taplo}/bin/taplo validate";
+    name = "taplo validate";
     types = ["toml"];
   };
 
@@ -185,8 +150,16 @@ in {
     pass_filenames = false;
   };
 
+  pretty-format-json = {
+    enable = true;
+    args = ["--autofix" "--top-keys" "name,type"];
+  };
+
   # json5
   formatjson5 = {
+    excludes =
+      excludes
+      ++ ["nativelink-config/examples/stores-config.json5"];
     description = "Format json5 files";
     enable = true;
     entry = "${pkgs.formatjson5}/bin/formatjson5";
@@ -208,7 +181,17 @@ in {
     description = "Detect unused cargo deps";
     enable = true;
     entry = "${pkgs.cargo-machete}/bin/cargo-machete";
-    args = ["."];
+    args = ["--with-metadata" "."];
+    pass_filenames = false;
+  };
+
+  # Generate demo config to test stores.rs comments
+  generate-stores-config = {
+    description = "Generate stores config";
+    enable = true;
+    entry = "${generate-stores-config}/bin/generate-stores-config nativelink-config/src/stores.rs nativelink-config/examples/stores-config.json5";
+    name = "generate-stores-config";
+    files = "nativelink-config/src/stores.rs|nativelink-config/examples/stores-config.json5";
     pass_filenames = false;
   };
 }

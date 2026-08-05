@@ -30,11 +30,50 @@ rust_binary(
         "@crates//:hyper-util",
         "@crates//:mimalloc",
         "@crates//:parking_lot",
-        "@crates//:rustls-pemfile",
+        "@crates//:rustls-pki-types",
         "@crates//:tokio",
         "@crates//:tokio-rustls",
         "@crates//:tonic",
         "@crates//:tower",
+        "@crates//:tracing",
+    ],
+)
+
+rust_binary(
+    name = "redis_store_tester",
+    srcs = [
+        "src/bin/redis_store_tester.rs",
+    ],
+    deps = [
+        "//nativelink-config",
+        "//nativelink-error",
+        "//nativelink-store",
+        "//nativelink-util",
+        "@crates//:bytes",
+        "@crates//:clap",
+        "@crates//:futures",
+        "@crates//:rand",
+        "@crates//:redis",
+        "@crates//:tokio",
+        "@crates//:tracing",
+    ],
+)
+
+rust_binary(
+    name = "cas_speed_check",
+    srcs = [
+        "src/bin/cas_speed_check.rs",
+    ],
+    deps = [
+        "//nativelink-error",
+        "//nativelink-proto",
+        "//nativelink-util",
+        "@crates//:clap",
+        "@crates//:hex",
+        "@crates//:rand",
+        "@crates//:sha2",
+        "@crates//:tokio",
+        "@crates//:tonic",
         "@crates//:tracing",
     ],
 )
@@ -75,7 +114,6 @@ test_suite(
         "//nativelink-config:doc_test",
         "//nativelink-error:doc_test",
         "//nativelink-macro:doc_test",
-        "//nativelink-proto:doc_test",
         "//nativelink-scheduler:doc_test",
         "//nativelink-service:doc_test",
         "//nativelink-store:doc_test",
@@ -94,4 +132,13 @@ sh_test(
     name = "dummy_test",
     timeout = "short",
     srcs = [":dummy_test_sh"],
+)
+
+# Large deterministic output used by integration_tests/chunking_cache_test.sh
+# to exercise --experimental_remote_cache_chunking (must exceed the chunking
+# threshold of 4x the average chunk size).
+genrule(
+    name = "chunking_test_artifact",
+    outs = ["chunking_test_artifact.txt"],
+    cmd = "seq 1 1000000 > \"$@\"",
 )

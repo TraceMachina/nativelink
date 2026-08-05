@@ -1,10 +1,10 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,8 +16,8 @@ use core::cmp::{Eq, Ordering};
 use core::hash::{BuildHasher, Hash};
 use core::ops::{Deref, DerefMut};
 use std::collections::HashMap;
-use std::fmt;
 use std::io::{Cursor, Write};
+use std::{env, fmt};
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use nativelink_error::{Error, ResultExt, make_input_err};
@@ -26,14 +26,16 @@ use nativelink_metric::{
 };
 use nativelink_proto::build::bazel::remote::execution::v2::Digest;
 use prost::Message;
+use rand::Rng;
 use serde::de::Visitor;
 use serde::ser::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use tonic::Code;
 use tracing::error;
 
 pub use crate::fs;
 
-#[derive(Default, Clone, Copy, Eq, PartialEq, Hash)]
+#[derive(Default, Clone, Copy, Eq, PartialEq, Hash, wincode::SchemaRead, wincode::SchemaWrite)]
 #[repr(C)]
 pub struct DigestInfo {
     /// Raw hash in packed form.
@@ -146,30 +148,31 @@ impl<'a> DigestStackStringifier<'a> {
         let len = {
             let mut cursor = Cursor::new(&mut self.buf[..]);
             let hex = self.digest.packed_hash.to_hex().map_err(|e| {
-                make_input_err!(
-                    "Could not convert PackedHash to hex - {e:?} - {:?}",
+                Error::from_std_err(Code::InvalidArgument, &e).append(format!(
+                    "Could not convert PackedHash to hex - {:?}",
                     self.digest
-                )
+                ))
             })?;
             cursor
                 .write_all(&hex)
-                .err_tip(|| format!("Could not write hex to buffer - {hex:?} - {hex:?}",))?;
+                .err_tip(|| format!("Could not write hex to buffer - {hex:?} - {hex:?}"))?;
             // Note: We already have a hyphen at this point because we
             // initialized the buffer with hyphens.
             cursor.advance(1);
             cursor
                 .write_fmt(format_args!("{}", self.digest.size_bytes()))
-                .err_tip(|| format!("Could not write size_bytes to buffer - {hex:?}",))?;
-            cursor.position() as usize
+                .err_tip(|| format!("Could not write size_bytes to buffer - {hex:?}"))?;
+            cursor.position().try_into().map_err(|e| {
+                Error::from_std_err(Code::InvalidArgument, &e)
+                    .append("Cursor position exceeds usize bounds")
+            })?
         };
         // Convert the buffer into utf8 string.
         core::str::from_utf8(&self.buf[..len]).map_err(|e| {
-            make_input_err!(
-                "Could not convert [u8] to string - {} - {:?} - {:?}",
-                self.digest,
-                self.buf,
-                e,
-            )
+            Error::from_std_err(Code::InvalidArgument, &e).append(format!(
+                "Could not convert [u8] to string - {} - {:?}",
+                self.digest, self.buf
+            ))
         })
     }
 }
@@ -274,10 +277,10 @@ impl TryFrom<Digest> for DigestInfo {
     fn try_from(digest: Digest) -> Result<Self, Self::Error> {
         let packed_hash = PackedHash::from_hex(&digest.hash)
             .err_tip(|| format!("Invalid sha256 hash: {}", digest.hash))?;
-        let size_bytes = digest
-            .size_bytes
-            .try_into()
-            .map_err(|_| make_input_err!("Could not convert {} into u64", digest.size_bytes))?;
+        let size_bytes = digest.size_bytes.try_into().map_err(|e| {
+            Error::from_std_err(Code::InvalidArgument, &e)
+                .append(format!("Could not convert {} into u64", digest.size_bytes))
+        })?;
         Ok(Self {
             packed_hash,
             size_bytes,
@@ -291,10 +294,10 @@ impl TryFrom<&Digest> for DigestInfo {
     fn try_from(digest: &Digest) -> Result<Self, Self::Error> {
         let packed_hash = PackedHash::from_hex(&digest.hash)
             .err_tip(|| format!("Invalid sha256 hash: {}", digest.hash))?;
-        let size_bytes = digest
-            .size_bytes
-            .try_into()
-            .map_err(|_| make_input_err!("Could not convert {} into u64", digest.size_bytes))?;
+        let size_bytes = digest.size_bytes.try_into().map_err(|e| {
+            Error::from_std_err(Code::InvalidArgument, &e)
+                .append(format!("Could not convert {} into u64", digest.size_bytes))
+        })?;
         Ok(Self {
             packed_hash,
             size_bytes,
@@ -331,7 +334,19 @@ impl From<&DigestInfo> for Digest {
 }
 
 #[derive(
-    Debug, Serialize, Deserialize, Default, Clone, Copy, Eq, PartialEq, Hash, PartialOrd, Ord,
+    Debug,
+    Serialize,
+    Deserialize,
+    Default,
+    Clone,
+    Copy,
+    Eq,
+    PartialEq,
+    Hash,
+    PartialOrd,
+    Ord,
+    wincode::SchemaRead,
+    wincode::SchemaWrite,
 )]
 pub struct PackedHash([u8; 32]);
 
@@ -343,8 +358,10 @@ impl PackedHash {
 
     fn from_hex(hash: &str) -> Result<Self, Error> {
         let mut packed_hash = [0u8; 32];
-        hex::decode_to_slice(hash, &mut packed_hash)
-            .map_err(|e| make_input_err!("Invalid sha256 hash: {hash} - {e:?}"))?;
+        hex::decode_to_slice(hash, &mut packed_hash).map_err(|e| {
+            Error::from_std_err(Code::InvalidArgument, &e)
+                .append(format!("Invalid sha256 hash: {hash}"))
+        })?;
         Ok(Self(packed_hash))
     }
 
@@ -454,7 +471,7 @@ pub fn encode_stream_proto<T: Message>(proto: &T) -> Result<Bytes, Box<dyn core:
         // Compressed-Flag -> 0 / 1 # encoded as 1 byte unsigned integer.
         buf.put_u8(0);
         // Message-Length -> {length of Message} # encoded as 4 byte unsigned integer (big endian).
-        buf.put_u32(len as u32);
+        buf.put_u32(u32::try_from(len)?);
         // Message -> *{binary octet}.
     }
 
@@ -468,5 +485,27 @@ pub fn encode_stream_proto<T: Message>(proto: &T) -> Result<Bytes, Box<dyn core:
 pub fn reseed_rng_for_test() -> Result<(), Error> {
     rand::rng()
         .reseed()
-        .map_err(|e| make_input_err!("Could not reseed RNG - {e:?}"))
+        .map_err(|e| Error::from_std_err(Code::InvalidArgument, &e).append("Could not reseed RNG"))
 }
+
+/// Get temporary path from either `TEST_TMPDIR` or best effort temp directory if
+/// not set.
+pub fn make_temp_path(data: &str) -> String {
+    #[cfg(target_family = "unix")]
+    return format!(
+        "{}/{}/{}",
+        env::var("TEST_TMPDIR").unwrap_or_else(|_| env::temp_dir().to_str().unwrap().to_string()),
+        rand::rng().random::<u64>(),
+        data
+    );
+    #[cfg(target_family = "windows")]
+    return format!(
+        "{}\\{}\\{}",
+        env::var("TEST_TMPDIR").unwrap_or_else(|_| env::temp_dir().to_str().unwrap().to_string()),
+        rand::rng().random::<u64>(),
+        data
+    );
+}
+
+// Constant for PreconditionFailure
+pub const VIOLATION_TYPE_MISSING: &str = "MISSING";
