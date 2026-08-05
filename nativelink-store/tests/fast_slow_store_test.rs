@@ -2004,9 +2004,8 @@ async fn get_part_propagates_not_found_after_partial_fast_read() -> Result<(), E
     Ok(())
 }
 
-/// `populate_fast_store` short-circuits on `fast_store.has()`, an in-memory index.
-/// If anybody detects this and calls `remove_entry_if_file_missing` we need to recover
-/// i.e. the next populate repairs the divergence.
+/// `populate_fast_store` short-circuits on `fast_store.has()`, an in-memory index, so
+/// after `hardlink_to` drops a diverged entry the next populate must repair it.
 #[nativelink_test]
 async fn healed_divergence_is_repaired_by_next_populate() -> Result<(), Error> {
     const VALUE: &str = "0123456789";
@@ -2052,10 +2051,17 @@ async fn healed_divergence_is_repaired_by_next_populate() -> Result<(), Error> {
         "precondition: the index still advertises the blob it no longer has",
     );
 
-    // The heal the worker invokes at its hardlink ENOENT.
+    let dest_dir = make_temp_path("hardlink_dest");
+    fs::create_dir_all(&dest_dir).await?;
+    let dest = format!("{dest_dir}/staged");
+    let err = fast_store
+        .hardlink_to(&digest, false, &dest)
+        .await
+        .expect_err("hardlinking a missing blob must fail");
+    assert_eq!(err.code, Code::NotFound, "got: {err:?}");
     assert!(
-        fast_store.remove_entry_if_file_missing(&digest).await,
-        "a diverged entry (map says present, file gone) must be removed",
+        fast_store.as_ref().has(digest).await?.is_none(),
+        "the failed hardlink must have dropped the diverged entry",
     );
 
     // With the stale entry gone, populate must miss and repair.
@@ -2063,31 +2069,22 @@ async fn healed_divergence_is_repaired_by_next_populate() -> Result<(), Error> {
         .populate_fast_store(digest.into())
         .await
         .err_tip(|| "Populate after healing must repair the fast tier")?;
-    assert!(
-        fs::metadata(&content_file).await.is_ok(),
-        "populate_fast_store after healing must put the content file back; \
-         the worker's retry hardlinks this exact path"
-    );
-
-    let data = fast_store
-        .as_ref()
-        .get_part_unchunked(digest, 0, None)
+    fast_store
+        .hardlink_to(&digest, false, &dest)
         .await
-        .err_tip(|| "Fast tier must serve the blob after populate")?;
-    assert_eq!(
-        data.as_ref(),
-        VALUE.as_bytes(),
-        "fast tier must hold the blob"
-    );
+        .err_tip(|| "Hardlink after the repairing populate")?;
+    assert_eq!(fs::read(&dest).await?, VALUE.as_bytes());
 
-    // That ENOENT can have other causes, so healing must spare a healthy entry.
-    assert!(
-        !fast_store.remove_entry_if_file_missing(&digest).await,
-        "a healthy entry must survive the heal",
-    );
+    // A hardlink can also fail with ENOENT for reasons that are nothing to do with the
+    // source (here: no such destination directory), so a healthy entry must survive.
+    let err = fast_store
+        .hardlink_to(&digest, false, "no_such_dir/staged")
+        .await
+        .expect_err("hardlinking into a missing directory must fail");
+    assert_eq!(err.code, Code::NotFound, "got: {err:?}");
     assert!(
         fast_store.as_ref().has(digest).await?.is_some(),
-        "the healthy entry must still be indexed after a no-op heal",
+        "a healthy entry must survive a hardlink failure",
     );
     Ok(())
 }
