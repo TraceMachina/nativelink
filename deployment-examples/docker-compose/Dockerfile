@@ -14,8 +14,11 @@
 
 # Current supported Ubuntu version, Noble Numbat aka 24.04 LTS
 # Locked down to a specific revision to avoid issues with package versions
-ARG BAZELISK_URL=https://github.com/bazelbuild/bazelisk/releases/download/v1.25.0/bazelisk-linux-amd64
-ARG BAZELISK_SHA256=fd8fdff418a1758887520fa42da7e6ae39aefc788cf5e7f7bb8db6934d279fc4
+# Bazelisk (the Bazel launcher). Defaults are picked per build architecture
+# (linux-amd64 vs linux-arm64) in the dependencies stage; override these to
+# pin a specific binary.
+ARG BAZELISK_URL
+ARG BAZELISK_SHA256
 # `--compilation_mode` to pass into bazel (eg: opt, dbg, fastbuild).
 ARG OPT_LEVEL=opt
 # Additional bazel flags.
@@ -27,8 +30,19 @@ ARG ADDITIONAL_SETUP_WORKER_CMD=
 FROM ubuntu:noble-20250925@sha256:728785b59223d755e3e5c5af178fab1be7031f3522c5ccd7a0b32b80d8248123 AS dependencies
 ARG BAZELISK_URL
 ARG BAZELISK_SHA256
+ARG TARGETARCH
 COPY ./tools/bazel-retry.sh /usr/local/bin/bazel-retry
-RUN apt-get update \
+RUN ARCH_SUFFIX=amd64 \
+    && if [ "$TARGETARCH" = "arm64" ]; then ARCH_SUFFIX=arm64; fi \
+    && BAZELISK_URL="${BAZELISK_URL:-https://github.com/bazelbuild/bazelisk/releases/download/v1.25.0/bazelisk-linux-${ARCH_SUFFIX}}" \
+    && if [ -z "$BAZELISK_SHA256" ]; then \
+         if [ "$TARGETARCH" = "arm64" ]; then \
+           BAZELISK_SHA256=4c8d966e40ac2c4efcc7f1a5a5cceef2c0a2f16b957e791fa7a867cce31e8fcb; \
+         else \
+           BAZELISK_SHA256=fd8fdff418a1758887520fa42da7e6ae39aefc788cf5e7f7bb8db6934d279fc4; \
+         fi; \
+       fi \
+    && apt-get update \
     && DEBIAN_FRONTEND=noninteractive \
     apt-get install --no-install-recommends -y \
         git=1:2.43.0-1ubuntu7.3 \
