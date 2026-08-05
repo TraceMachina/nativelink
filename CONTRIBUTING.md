@@ -462,7 +462,7 @@ most automatically generated changelogs provide.
    Then prepend the new section:
 
    ```bash
-   git cliff --unreleased --tag=v0.x.y --prepend CHANGELOG.md
+   git cliff --unreleased --tag=v1.x.y --prepend CHANGELOG.md
    ```
 
    Verify with `git diff CHANGELOG.md` that the change is purely additive:
