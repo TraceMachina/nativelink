@@ -16,6 +16,7 @@ use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::time::Duration;
 use std::ffi::OsString;
+use std::io::{Read, Write};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -854,6 +855,45 @@ async fn update_zstd_rejects_incomplete_trailing_frame() -> Result<(), Error> {
         .await
         .expect_err("zero-digest validation must reject a partial trailing frame too");
     assert_eq!(err.code, Code::InvalidArgument, "got: {err}");
+    Ok(())
+}
+
+/// The decoded-size bound alone does not limit zstd's history allocation: a
+/// small frame header may request a much larger window before producing output.
+/// Reject frames beyond the store's 8 MiB interoperability ceiling.
+#[nativelink_test]
+async fn update_zstd_rejects_a_window_larger_than_eight_mib() -> Result<(), Error> {
+    let temp = make_temp_path("zstd-window-limit");
+    let (zstd, _store, inner) = build(&spec_for(temp.clone())).await?;
+    let data = random_bytes(9 * 1024 * 1024);
+    let digest = digest_for(&data);
+
+    let mut encoder = zstd::stream::Encoder::new(Vec::new(), 3).unwrap();
+    encoder.window_log(24).unwrap();
+    encoder.write_all(&data).unwrap();
+    let compressed = encoder.finish().unwrap();
+
+    // Prove the fixture is otherwise valid and specifically needs a window
+    // above the store limit.
+    let mut decoder = zstd::stream::read::Decoder::new(compressed.as_slice()).unwrap();
+    decoder.window_log_max(24).unwrap();
+    let mut decoded = Vec::new();
+    decoder.read_to_end(&mut decoded).unwrap();
+    assert_eq!(decoded, data);
+    let mut limited_decoder = zstd::stream::read::Decoder::new(compressed.as_slice()).unwrap();
+    limited_decoder.window_log_max(23).unwrap();
+    assert!(
+        limited_decoder.read_to_end(&mut Vec::new()).is_err(),
+        "the fixture must require a window above the store limit"
+    );
+
+    let err = zstd
+        .update_zstd_oneshot(digest, DigestHasherFunc::Sha256, Bytes::from(compressed))
+        .await
+        .expect_err("a zstd frame requiring more than an 8 MiB window must be rejected");
+    assert_eq!(err.code, Code::InvalidArgument, "got: {err}");
+    assert_eq!(inner.has(digest).await?, None);
+    assert_eq!(dir_entry_count(&temp), 0);
     Ok(())
 }
 
@@ -2165,10 +2205,11 @@ async fn new_rejects_recompression_size_without_a_level() -> Result<(), Error> {
 
 /// A client that trickles bytes forever resets any per-message idle timeout, so
 /// the store applies a *total* validate-and-stage deadline. On expiry the upload
-/// fails with `DeadlineExceeded`, the staged file is removed, and the staging
-/// slot is released — proven by a second upload behind a bound of 1 completing.
+/// fails with `DeadlineExceeded`. The detached validator must retain its staging
+/// slot until its input closes; a second upload can proceed only after that
+/// validator exits.
 #[nativelink_test]
-async fn stage_timeout_bounds_a_trickling_client_and_frees_the_slot() -> Result<(), Error> {
+async fn stage_timeout_retains_the_slot_until_the_validator_exits() -> Result<(), Error> {
     const DATA: &[u8] = b"payload delivered one byte at a time aaaaaaaaaaaaaaaaaaaa";
 
     let temp = make_temp_path("zstd-stage-timeout");
@@ -2207,20 +2248,28 @@ async fn stage_timeout_bounds_a_trickling_client_and_frees_the_slot() -> Result<
         Code::DeadlineExceeded,
         "a trickling upload must surface DeadlineExceeded, got: {err}"
     );
-    // Stop trickling so the abandoned blocking task's reader errors and it can
-    // run its cleanup guard.
-    stop.store(true, Ordering::Relaxed);
-
-    // The staging permit must have been released with the deadline: with a bound
-    // of 1, a blocked permit would hang this second upload forever.
-    zstd.update_zstd_oneshot(
+    // The async timeout must not release admission while the non-cancellable
+    // validator is still consuming the live stream. Keep this second future so
+    // the short timeout only observes it rather than cancelling it.
+    let second_upload = zstd.update_zstd_oneshot(
         digest,
         DigestHasherFunc::Sha256,
         Bytes::from(compressed.clone()),
-    )
-    .await?;
-    // The abandoned blocking task cleans up once its reader errors, which happens
-    // asynchronously after the deadline fires.
+    );
+    tokio::pin!(second_upload);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(250), &mut second_upload)
+            .await
+            .is_err(),
+        "the second upload must wait while the timed-out validator still owns the only slot"
+    );
+
+    // Closing the first validator's input lets it unwind, remove its file, and
+    // release admission. The already-waiting valid upload can then complete.
+    stop.store(true, Ordering::Relaxed);
+    tokio::time::timeout(Duration::from_secs(3), second_upload)
+        .await
+        .expect("the second upload must acquire the slot after validator cleanup")?;
     while dir_entry_count(&temp) != 0 {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }

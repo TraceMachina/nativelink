@@ -1181,7 +1181,27 @@ impl ByteStreamServer {
                 &bytes_received,
                 instance.compressed_upload_idle_timeout,
             );
-            let (client_stream_result, update_result) = tokio::join!(client_stream_fut, update_fut);
+            tokio::pin!(client_stream_fut);
+            tokio::pin!(update_fut);
+            let (client_stream_result, update_result) = tokio::select! {
+                // Preserve a client-side error when both sides are already
+                // ready, but do not keep pumping an unbounded client stream
+                // after the store has failed or timed out. Dropping the pump
+                // closes `compressed_tx`, allowing a detached blocking
+                // validator to exit while retaining admission until it does.
+                biased;
+                client_stream_result = &mut client_stream_fut => {
+                    let update_result = update_fut.await;
+                    (client_stream_result, update_result)
+                }
+                update_result = &mut update_fut => match update_result {
+                    Err(err) => return Err(err),
+                    ok @ Ok(_) => {
+                        let client_stream_result = client_stream_fut.await;
+                        (client_stream_result, ok)
+                    }
+                },
+            };
 
             if let Some(err) = first_client_attributable_error([
                 client_stream_result.as_ref().err(),

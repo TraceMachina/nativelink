@@ -2398,6 +2398,7 @@ pub async fn zstd_store_compressed_read_rejects_nonzero_read_limit()
 /// `ZstdStore` over memory with a configurable staged-upload bound.
 async fn make_zstd_store_manager_with_staging(
     max_concurrent_staged_uploads: usize,
+    stage_timeout_s: u64,
 ) -> Result<Arc<StoreManager>, Error> {
     let store_manager = Arc::new(StoreManager::new());
     let temp_path = make_temp_path("bytestream-zstd-idle");
@@ -2409,6 +2410,7 @@ async fn make_zstd_store_manager_with_staging(
             temp_path,
             max_compressed_upload_size: 512 * 1024 * 1024,
             max_concurrent_staged_uploads,
+            stage_timeout_s,
             ..ZstdConfig::default()
         }),
     }));
@@ -2431,7 +2433,7 @@ async fn make_zstd_store_manager_with_staging(
 #[nativelink_test]
 async fn zstd_compressed_upload_idle_timeout_frees_staging_slot()
 -> Result<(), Box<dyn core::error::Error>> {
-    let store_manager = make_zstd_store_manager_with_staging(1).await?;
+    let store_manager = make_zstd_store_manager_with_staging(1, 0).await?;
     // Short idle timeout; under start_paused the virtual clock advances past it.
     let config = vec![WithInstanceName {
         instance_name: INSTANCE_NAME.to_string(),
@@ -2513,7 +2515,7 @@ async fn zstd_compressed_upload_idle_timeout_frees_staging_slot()
 #[nativelink_test]
 async fn zstd_compressed_upload_making_progress_is_not_idle_timed_out()
 -> Result<(), Box<dyn core::error::Error>> {
-    let store_manager = make_zstd_store_manager_with_staging(1).await?;
+    let store_manager = make_zstd_store_manager_with_staging(1, 0).await?;
     let config = vec![WithInstanceName {
         instance_name: INSTANCE_NAME.to_string(),
         config: ByteStreamConfig {
@@ -2571,5 +2573,96 @@ async fn zstd_compressed_upload_making_progress_is_not_idle_timed_out()
         raw.as_bytes(),
         "the progressive upload must store the decompressed bytes"
     );
+    Ok(())
+}
+
+/// A total `ZstdStore` staging deadline must terminate the `ByteStream` RPC even
+/// while the client stays connected and continues sending within the service's
+/// per-message idle deadline. Terminating the pump closes the store channel so
+/// its detached validator can release the staging slot.
+#[nativelink_test]
+async fn zstd_stage_timeout_stops_a_progressing_client_and_frees_the_slot()
+-> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_zstd_store_manager_with_staging(1, 1).await?;
+    let config = vec![WithInstanceName {
+        instance_name: INSTANCE_NAME.to_string(),
+        config: ByteStreamConfig {
+            cas_store: "main_cas".to_string(),
+            persist_stream_on_disconnect_timeout_s: 1,
+            compressed_upload_idle_timeout_s: 5,
+            max_bytes_per_stream: 1024,
+        },
+    }];
+    let bs_server = Arc::new(make_bytestream_server_with_remote_cache_compression(
+        store_manager.as_ref(),
+        Some(config),
+        true,
+    )?);
+
+    // A long valid frame ensures the byte-at-a-time prefix remains incomplete
+    // until the store's total staging deadline fires.
+    let mut state = 0x9E37_79B9_u32;
+    let raw = (0..256 * 1024)
+        .map(|_| {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (state >> 24) as u8
+        })
+        .collect::<Vec<_>>();
+    let compressed = zstd::bulk::compress(&raw, 3)?;
+    assert!(compressed.len() > 100);
+    let hash = sha256_hex(&raw);
+
+    let resource_a =
+        make_compressed_resource_name("dddddddd-1111-2222-3333-444444444444", &hash, raw.len());
+    let (tx_a, join_a) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    let trickle = Bytes::from(compressed.clone());
+    let sender = spawn!("bytestream_zstd_stage_timeout_trickle", async move {
+        let mut offset = 0usize;
+        while offset < trickle.len() {
+            if tx_a
+                .send(Frame::data(
+                    encode_stream_proto(&WriteRequest {
+                        resource_name: resource_a.clone(),
+                        write_offset: i64::try_from(offset).unwrap(),
+                        finish_write: false,
+                        data: trickle.slice(offset..=offset),
+                    })
+                    .unwrap(),
+                ))
+                .await
+                .is_err()
+            {
+                return;
+            }
+            offset += 1;
+            tokio::time::sleep(core::time::Duration::from_millis(100)).await;
+        }
+    });
+
+    let status_a = tokio::time::timeout(core::time::Duration::from_secs(3), join_a)
+        .await
+        .expect("the store timeout must stop the client pump before the idle timeout")
+        .expect("join A")
+        .expect_err("the progressively trickling upload must hit the total staging deadline");
+    assert_eq!(status_a.code(), Code::DeadlineExceeded, "got: {status_a:?}");
+    drop(sender);
+
+    // The failed RPC dropped the pump, so the blocking validator can finish
+    // cleanup and a valid upload behind the single staging slot can proceed.
+    let resource_b =
+        make_compressed_resource_name("eeeeeeee-1111-2222-3333-444444444444", &hash, raw.len());
+    let (tx_b, join_b) = make_stream_and_writer_spawn(bs_server, None);
+    tx_b.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name: resource_b,
+        write_offset: 0,
+        finish_write: true,
+        data: compressed.into(),
+    })?))
+    .await?;
+    tokio::time::timeout(core::time::Duration::from_secs(3), join_b)
+        .await
+        .expect("the valid upload must acquire the slot after cleanup")
+        .expect("join B")
+        .expect("valid upload B must succeed");
     Ok(())
 }

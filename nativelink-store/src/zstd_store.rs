@@ -57,7 +57,7 @@ const DEFAULT_MAX_CONCURRENT_IDENTITY_OPS: usize = 256;
 /// Default number of concurrent recompressions when the config value is `0`.
 const DEFAULT_MAX_CONCURRENT_RECOMPRESSIONS: usize = 1;
 /// Default total validate-and-stage deadline (seconds) when the config value is
-/// `0`. Bounds a client that trickles bytes to hold a staging slot open.
+/// `0`. Bounds how long the caller waits for a trickling upload's validation.
 const DEFAULT_STAGE_TIMEOUT_S: u64 = 600;
 /// Default commit timeout (seconds) when the config value is `0`. Bounds how
 /// long a stalled inner-store commit (or recompression) may hold a staging
@@ -66,6 +66,10 @@ const DEFAULT_COMMIT_TIMEOUT_S: u64 = 300;
 /// Default ceiling for committing a compressed upload straight from memory
 /// (no staging file, no `fsync`) when the config value is `0`.
 const DEFAULT_MAX_INLINE_COMMIT_SIZE: u64 = 4 * 1024 * 1024;
+/// Maximum decoder history window accepted from a zstd frame. This matches the
+/// largest window emitted by the configured `1..=19` compression-level range
+/// while preventing a tiny frame from reserving zstd's 128 MiB default limit.
+const MAX_ZSTD_WINDOW_LOG: u32 = 23;
 /// Level used when no `compression_level` is configured, matching the service
 /// wire codec (`nativelink-service` `wire_compression::ZSTD_COMPRESSION_LEVEL`).
 const DEFAULT_ENCODE_LEVEL: i32 = 3;
@@ -109,6 +113,23 @@ impl<'a> Inflight<'a> {
 }
 
 impl Drop for Inflight<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// Owned variant used when an admission gauge must outlive the async future
+/// that spawned non-cancellable blocking work.
+struct OwnedInflight(Arc<AtomicU64>);
+
+impl OwnedInflight {
+    fn enter(gauge: Arc<AtomicU64>) -> Self {
+        gauge.fetch_add(1, Ordering::Relaxed);
+        Self(gauge)
+    }
+}
+
+impl Drop for OwnedInflight {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::Relaxed);
     }
@@ -245,6 +266,12 @@ fn decode_identity(
         make_err!(
             Code::DataLoss,
             "Zstd decoder init failed in zstd store: {e}"
+        )
+    })?;
+    decoder.window_log_max(MAX_ZSTD_WINDOW_LOG).map_err(|e| {
+        make_err!(
+            Code::DataLoss,
+            "Failed to cap zstd decoder window in zstd store: {e}"
         )
     })?;
 
@@ -452,12 +479,22 @@ where
     S: ChunkSource,
     F: FnMut(&[u8]) -> Result<(), Error>,
 {
-    let raw_decoder = zstd::stream::raw::Decoder::new().map_err(|e| {
+    let mut raw_decoder = zstd::stream::raw::Decoder::new().map_err(|e| {
         make_err!(
             Code::Internal,
             "Zstd decoder init failed in zstd store: {e}"
         )
     })?;
+    raw_decoder
+        .set_parameter(zstd::stream::raw::DParameter::WindowLogMax(
+            MAX_ZSTD_WINDOW_LOG,
+        ))
+        .map_err(|e| {
+            make_err!(
+                Code::Internal,
+                "Failed to cap zstd decoder window in zstd store: {e}"
+            )
+        })?;
     let mut decoder = zstd::stream::zio::Writer::new(sink, raw_decoder);
     let mut wire_bytes_consumed: u64 = 0;
     loop {
@@ -498,6 +535,10 @@ struct StageOutput {
     file: FileSlot,
     /// The cleanup guard, owned by the blocking task until it returns.
     guard: TempFileGuard,
+    /// Admission remains owned by the blocking task after an async timeout and
+    /// returns to the commit path only after validation has actually stopped.
+    permit: OwnedSemaphorePermit,
+    inflight: OwnedInflight,
 }
 
 /// Resources transferred to the detached staging task. In particular, the
@@ -511,6 +552,8 @@ struct StageCompressedInput {
     collect_limit: Option<u64>,
     fs_permit: tokio::sync::SemaphorePermit<'static>,
     guard: TempFileGuard,
+    permit: OwnedSemaphorePermit,
+    inflight: OwnedInflight,
 }
 
 /// Blocking validation pass: exclusively create the temp file at `path`, stream
@@ -532,6 +575,8 @@ fn stage_compressed_blocking(
         collect_limit,
         fs_permit,
         guard,
+        permit,
+        inflight,
     }: StageCompressedInput,
 ) -> Result<StageOutput, Error> {
     let mut file = create_temp_exclusive(&path)?;
@@ -559,6 +604,8 @@ fn stage_compressed_blocking(
         collected,
         file: FileSlot::from_std(fs_permit, file),
         guard,
+        permit,
+        inflight,
     })
 }
 
@@ -632,6 +679,7 @@ struct StagedStream {
     /// this by `max_recompression_size`; it is consumed before commit.
     collected: Option<Vec<u8>>,
     _permit: OwnedSemaphorePermit,
+    _inflight: OwnedInflight,
     _guard: TempFileGuard,
 }
 
@@ -674,8 +722,8 @@ pub struct ZstdStore {
     recompression_semaphore: Arc<Semaphore>,
     /// Total time one upload may spend being validated and staged, from the
     /// moment it is admitted. Unlike a per-message idle timeout, slow continuous
-    /// progress does not reset it, so a trickling client cannot hold a staging
-    /// slot open indefinitely.
+    /// progress does not reset it. The admitted blocking validator retains its
+    /// slot until it actually exits, including after the caller times out.
     stage_timeout: Duration,
     /// Upper bound on how long the inner-store commit (and any recompression)
     /// of a staged upload may take before it fails with `DeadlineExceeded`,
@@ -697,9 +745,9 @@ pub struct ZstdStore {
     #[metric(help = "Compressed uploads committed from a staging file")]
     staged_commits: AtomicU64,
     #[metric(help = "Compressed uploads currently validating or staging")]
-    staged_uploads_inflight: AtomicU64,
+    staged_uploads_inflight: Arc<AtomicU64>,
     #[metric(help = "Identity reads and writes currently in flight")]
-    identity_ops_inflight: AtomicU64,
+    identity_ops_inflight: Arc<AtomicU64>,
     #[metric(help = "Recompressions that produced a smaller stream and were kept")]
     recompressions_applied: AtomicU64,
     #[metric(help = "Recompressions that were not smaller and were discarded")]
@@ -786,8 +834,8 @@ impl ZstdStore {
             batch_identity_decodes: AtomicU64::new(0),
             inline_commits: AtomicU64::new(0),
             staged_commits: AtomicU64::new(0),
-            staged_uploads_inflight: AtomicU64::new(0),
-            identity_ops_inflight: AtomicU64::new(0),
+            staged_uploads_inflight: Arc::new(AtomicU64::new(0)),
+            identity_ops_inflight: Arc::new(AtomicU64::new(0)),
             recompressions_applied: AtomicU64::new(0),
             recompressions_rejected: AtomicU64::new(0),
             recompressions_skipped_busy: AtomicU64::new(0),
@@ -1048,15 +1096,33 @@ impl ZstdStore {
             self.batch_zstd_passthroughs.fetch_add(1, Ordering::Relaxed);
             return Ok((physical, true));
         }
+        let permit = self.acquire_identity_permit().await?;
+        let inflight = OwnedInflight::enter(self.identity_ops_inflight.clone());
         let expected_size = usize::try_from(digest.size_bytes())
             .map_err(|_| make_err!(Code::Internal, "Digest size too large for this platform"))?;
         let raw = flatten_join(
             spawn_blocking!("zstd_store_batch_decode", move || {
+                let _permit = permit;
+                let _inflight = inflight;
                 // Stored data was validated at upload time, and
-                // `bulk::decompress` bounds its output by `expected_size`, so a
+                // the bulk decoder bounds its output by `expected_size`, so a
                 // failure here is corruption of already-stored bytes.
-                zstd::bulk::decompress(&physical, expected_size)
-                    .map_err(|e| make_err!(Code::DataLoss, "Zstd decode failed in zstd store: {e}"))
+                let mut decompressor = zstd::bulk::Decompressor::new().map_err(|e| {
+                    make_err!(Code::DataLoss, "Zstd decoder init failed in zstd store: {e}")
+                })?;
+                decompressor
+                    .set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(
+                        MAX_ZSTD_WINDOW_LOG,
+                    ))
+                    .map_err(|e| {
+                        make_err!(
+                            Code::DataLoss,
+                            "Failed to cap zstd decoder window in zstd store: {e}"
+                        )
+                    })?;
+                decompressor.decompress(&physical, expected_size).map_err(|e| {
+                    make_err!(Code::DataLoss, "Zstd decode failed in zstd store: {e}")
+                })
             })
             .await,
             "Failed to run zstd store batch decode task",
@@ -1075,10 +1141,12 @@ impl ZstdStore {
         digest_function: DigestHasherFunc,
         source: S,
     ) -> Result<u64, Error> {
-        let _permit = self.acquire_staging_permit().await?;
-        let _inflight = Inflight::enter(&self.staged_uploads_inflight);
+        let permit = self.acquire_staging_permit().await?;
+        let inflight = OwnedInflight::enter(self.staged_uploads_inflight.clone());
         let max_compressed_upload_size = self.max_compressed_upload_size;
         let validate_fut = spawn_blocking!("zstd_store_validate_empty", move || {
+            let _permit = permit;
+            let _inflight = inflight;
             validate_bounded_zstd_blocking(source, digest_function, 0, max_compressed_upload_size)
         });
         match tokio::time::timeout(self.stage_timeout, validate_fut).await {
@@ -1091,7 +1159,7 @@ impl ZstdStore {
         self.stage_timeouts.fetch_add(1, Ordering::Relaxed);
         make_err!(
             Code::DeadlineExceeded,
-            "zstd store validation and staging exceeded stage_timeout_s ({}s); cleaning up",
+            "zstd store validation and staging exceeded stage_timeout_s ({}s); cleanup remains admitted until validation exits",
             self.stage_timeout.as_secs()
         )
     }
@@ -1175,25 +1243,30 @@ impl ZstdStore {
         digest_function: DigestHasherFunc,
         data: Bytes,
     ) -> Result<u64, Error> {
-        let _permit = self.acquire_staging_permit().await?;
-        let _inflight = Inflight::enter(&self.staged_uploads_inflight);
+        let permit = self.acquire_staging_permit().await?;
+        let inflight = OwnedInflight::enter(self.staged_uploads_inflight.clone());
 
         let max_compressed_upload_size = self.max_compressed_upload_size;
         let collect_limit = self.recompression_limit();
         // `Bytes` is refcounted, so the validation copy is free.
         let to_validate = data.clone();
         let validate_fut = spawn_blocking!("zstd_store_validate_inline", move || {
-            validate_zstd_buffer(
+            let result = validate_zstd_buffer(
                 to_validate,
                 digest,
                 digest_function,
                 max_compressed_upload_size,
                 collect_limit,
-            )
+            );
+            (result, permit, inflight)
         });
-        let (wire_bytes_consumed, collected) =
+        let ((wire_bytes_consumed, collected), _permit, _inflight) =
             match tokio::time::timeout(self.stage_timeout, validate_fut).await {
-                Ok(joined) => flatten_join(joined, "Failed to run zstd store inline validation")?,
+                Ok(joined) => {
+                    let (result, permit, inflight) = joined
+                        .err_tip(|| "Failed to run zstd store inline validation")?;
+                    (result?, permit, inflight)
+                }
                 Err(_elapsed) => return Err(self.stage_timeout_err()),
             };
 
@@ -1225,7 +1298,7 @@ impl ZstdStore {
         reader: DropCloserReadHalf,
     ) -> Result<StagedStream, Error> {
         let permit = self.acquire_staging_permit().await?;
-        let _inflight = Inflight::enter(&self.staged_uploads_inflight);
+        let inflight = OwnedInflight::enter(self.staged_uploads_inflight.clone());
 
         let stage_path = format!("{}/zstd-stage-{}", self.temp_path, uuid::Uuid::new_v4());
         // Transfer an already-armed guard to the detached blocking task. If this
@@ -1248,6 +1321,8 @@ impl ZstdStore {
                 collect_limit,
                 fs_permit,
                 guard,
+                permit,
+                inflight,
             })
         });
         let output = match tokio::time::timeout(self.stage_timeout, stage_fut).await {
@@ -1261,7 +1336,8 @@ impl ZstdStore {
             compressed_size: output.wire_bytes_consumed,
             wire_bytes_consumed: output.wire_bytes_consumed,
             collected: output.collected,
-            _permit: permit,
+            _permit: output.permit,
+            _inflight: output.inflight,
             _guard: output.guard,
         })
     }
@@ -1278,7 +1354,7 @@ impl ZstdStore {
         collected: Vec<u8>,
         current_size: u64,
     ) -> Result<Option<Vec<u8>>, Error> {
-        let Ok(_rec_permit) = self.recompression_semaphore.clone().try_acquire_owned() else {
+        let Ok(rec_permit) = self.recompression_semaphore.clone().try_acquire_owned() else {
             self.recompressions_skipped_busy
                 .fetch_add(1, Ordering::Relaxed);
             return Ok(None);
@@ -1286,6 +1362,7 @@ impl ZstdStore {
         let level = self.encode_level();
         let recompressed = flatten_join(
             spawn_blocking!("zstd_store_recompress", move || {
+                let _rec_permit = rec_permit;
                 zstd::bulk::compress(&collected, level).map_err(|e| {
                     make_err!(
                         Code::Internal,
@@ -1601,10 +1678,14 @@ default_health_status_indicator!(ZstdStore);
 mod tests {
     use std::io::Write;
 
-    use nativelink_util::digest_hasher::DigestHasherFunc;
+    use bytes::Bytes;
+    use nativelink_config::stores::{MemorySpec, ZstdConfig};
+    use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
+    use nativelink_util::store_trait::{Store, StoreLike};
 
-    use super::{DecodeSink, create_temp_exclusive};
+    use super::{DecodeSink, ZstdStore, create_temp_exclusive};
     use crate::cas_utils::is_zero_digest;
+    use crate::memory_store::MemoryStore;
 
     fn unique_temp_path(tag: &str) -> std::path::PathBuf {
         // Process- and call-unique name under the system temp dir. `Math`-style
@@ -1698,6 +1779,57 @@ mod tests {
         assert_eq!(sink.decoded_len, 0);
         // An empty write is a no-op success (decoders may flush zero bytes).
         assert_eq!(sink.write(b"").unwrap(), 0);
+    }
+
+    #[nativelink_macro::nativelink_test]
+    async fn batch_identity_decode_waits_for_identity_admission() {
+        let data = Bytes::from_static(b"batch identity admission regression payload");
+        let mut hasher = DigestHasherFunc::Sha256.hasher();
+        hasher.update(&data);
+        let digest = hasher.finalize_digest();
+        let physical = zstd::bulk::compress(&data, 3).unwrap();
+
+        let inner = Store::new(MemoryStore::new(&MemorySpec::default()));
+        inner
+            .update_oneshot(digest, Bytes::from(physical))
+            .await
+            .unwrap();
+        let zstd = ZstdStore::new(
+            &ZstdConfig {
+                temp_path: unique_temp_path("batch-admission")
+                    .to_string_lossy()
+                    .into_owned(),
+                max_compressed_upload_size: 1024 * 1024,
+                max_concurrent_identity_ops: 1,
+                ..ZstdConfig::default()
+            },
+            inner,
+        )
+        .unwrap();
+
+        let held_permit = zstd
+            .identity_semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .unwrap();
+        let batch_read = zstd.get_for_batch(digest, false);
+        tokio::pin!(batch_read);
+        assert!(
+            tokio::time::timeout(core::time::Duration::from_millis(100), &mut batch_read)
+                .await
+                .is_err(),
+            "identity batch decode must wait for max_concurrent_identity_ops admission"
+        );
+
+        drop(held_permit);
+        let (decoded, is_zstd) =
+            tokio::time::timeout(core::time::Duration::from_secs(1), batch_read)
+                .await
+                .expect("batch decode must proceed after admission is released")
+                .unwrap();
+        assert!(!is_zstd);
+        assert_eq!(decoded, data);
     }
 
     #[test]

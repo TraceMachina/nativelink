@@ -1193,12 +1193,13 @@ pub struct ZstdConfig {
     pub max_concurrent_recompressions: usize,
 
     /// Maximum time, in seconds, one upload may spend being validated and
-    /// staged, measured from the moment it is admitted to a staging slot. This
-    /// is the bound on a client that trickles bytes to hold a slot open: unlike
+    /// staged, measured from the moment it is admitted to a staging slot. Unlike
     /// a per-message idle timeout, continuous slow progress does not reset it.
-    /// On expiry it fails with `DEADLINE_EXCEEDED`, removes the staged file, and
-    /// releases its slot. Size it against `max_compressed_upload_size` and the
-    /// slowest upload bandwidth worth serving.
+    /// On expiry it fails with `DEADLINE_EXCEEDED`; the non-cancellable blocking
+    /// validator retains its slot and staged-file cleanup guard until its input
+    /// closes and it exits, so callers must promptly close the input after the
+    /// failure. Size it against `max_compressed_upload_size` and the slowest
+    /// upload bandwidth worth serving.
     /// `0` means "use default 600" at construction time.
     /// Default: 0
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]

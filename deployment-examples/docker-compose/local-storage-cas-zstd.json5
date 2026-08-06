@@ -124,8 +124,9 @@
             // Total time one upload may spend being validated and staged,
             // measured from admission to a staging slot. Unlike the ByteStream
             // per-message idle timeout, continuous slow progress does NOT reset
-            // it, so this is the bound on a client that trickles bytes to hold a
-            // staging slot open. Size it against max_compressed_upload_size and
+            // it. On expiry the blocking validator retains its slot and cleanup
+            // guard until its input closes; ByteStream closes that input when
+            // the store fails. Size this against max_compressed_upload_size and
             // the slowest upload bandwidth worth serving.
             stage_timeout_s: 600,
 

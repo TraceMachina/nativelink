@@ -203,22 +203,27 @@ caps the compressed bytes a client may push; exceeding it fails the upload with
 digest's declared uncompressed size and rejects with `INVALID_ARGUMENT` the
 moment decoded bytes *would* exceed it — so a small "zstd bomb" that expands to
 a huge buffer is stopped at the first over-limit block rather than being fully
-materialized. Zero-digest validation streams through the same bounded decoder
-with an output cap of zero: it never allocates the decoded output, and it takes
-an admission permit like any other staged upload, so it cannot spawn unbounded
-decode jobs.
+materialized. The decoder also rejects frames requesting more than an 8 MiB
+history window, before their header can cause zstd's larger default allocation.
+Zero-digest validation streams through the same bounded decoder with an output
+cap of zero: it never allocates the decoded output, and it takes an admission
+permit like any other staged upload, so it cannot spawn unbounded decode jobs.
 
 `max_concurrent_staged_uploads` admits a bounded number of compressed uploads at
 a time, but admission alone can't stop a stalled client or backend from parking
-on a slot forever. Three deadlines close that gap, and each one ends the same
-way: `DEADLINE_EXCEEDED`, the staged file removed, the staging slot released.
-Cancellation, any timeout, validation failure, and success all clean up.
+on a slot forever. The deadlines below fail the RPC with `DEADLINE_EXCEEDED`.
+Validation runs in a non-cancellable blocking task, so a staging timeout does
+not release admission early: the task retains its slot and cleanup guard until
+its input closes and it exits. The ByteStream fast path stops its client pump on
+a store failure, closing that input promptly. Direct store callers must do the
+same. Cancellation, validation failure, and success all clean up once the
+validator has stopped.
 
 - **`stage_timeout_s`** — total seconds one upload may spend being validated and
-  staged, measured from the moment it takes a staging slot. This is the bound on
-  a client that *trickles* bytes: unlike an idle timeout, continuous slow
-  progress does not reset it. Size it against `max_compressed_upload_size` and
-  the slowest upload bandwidth worth serving. `0` uses the default of 600.
+  staged, measured from the moment it takes a staging slot. Unlike an idle
+  timeout, continuous slow progress does not reset it. Size it against
+  `max_compressed_upload_size` and the slowest upload bandwidth worth serving.
+  `0` uses the default of 600.
 - **`commit_timeout_s`** — seconds to wait, after validation and staging, for
   optional recompression and the inner-store commit. Bounds a stalled backend.
   `0` uses the default of 300.
