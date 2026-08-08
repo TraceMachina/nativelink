@@ -127,6 +127,12 @@ fn missing_blobs_failed_precondition(
 
 type InstanceInfoName = String;
 
+const FAILED_TO_FIND_EXISTING_TASK_MESSAGE: &str = "Failed to find existing task. If this \
+    instance uses a gRPC scheduler, its retry settings max_retries, delay, and jitter default to 0 \
+    (one request and no retries). Consider configuring the shared schedulers[].grpc.retry policy \
+    with max_retries greater than 0 and a non-zero delay; jitter is recommended to avoid \
+    synchronized retries.";
+
 struct NativelinkOperationId {
     instance_name: InstanceInfoName,
     client_operation_id: OperationId,
@@ -469,7 +475,7 @@ impl ExecutionServer {
             .next()
             .await
         else {
-            return Err(Status::not_found("Failed to find existing task"));
+            return Err(Status::not_found(FAILED_TO_FIND_EXISTING_TASK_MESSAGE));
         };
         Ok(Self::to_execute_stream(&nl_operation_id, rx))
     }

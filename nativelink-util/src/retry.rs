@@ -135,14 +135,28 @@ impl Retrier {
             .take(self.config.max_retries) // Remember this is number of retries, so will run max_retries + 1.
     }
 
+    pub fn retry<'a, T: Send>(
+        &'a self,
+        operation: impl futures::stream::Stream<Item = RetryResult<T>> + Send + 'a,
+    ) -> impl Future<Output = Result<T, Error>> + Send + 'a {
+        self.retry_with_additional_codes(operation, &[])
+    }
+
+    /// Retry an operation using the configured policy plus the supplied default error codes.
+    ///
+    /// This is intended for request-specific cases where a normally permanent error is
+    /// transient in a particular protocol flow. Additional codes extend only the default error
+    /// classification; an explicitly configured `retry_on_errors` allowlist remains authoritative.
+    /// The configured retry limit and backoff still apply.
     #[expect(
         clippy::manual_async_fn,
         reason = "making an `async fn` results in a potential compiler bug in seemingly unrelated \
             code"
     )]
-    pub fn retry<'a, T: Send>(
+    pub fn retry_with_additional_codes<'a, T: Send>(
         &'a self,
         operation: impl futures::stream::Stream<Item = RetryResult<T>> + Send + 'a,
+        additional_retry_codes: &'a [Code],
     ) -> impl Future<Output = Result<T, Error>> + Send + 'a {
         async move {
             let mut iter = self.get_retry_config();
@@ -162,7 +176,9 @@ impl Retrier {
                         return Err(e.append(format!("On attempt {attempt}")));
                     }
                     Some(RetryResult::Retry(err)) => {
-                        if !self.should_retry(err.code) {
+                        let should_retry_additional_code = self.config.retry_on_errors.is_none()
+                            && additional_retry_codes.contains(&err.code);
+                        if !self.should_retry(err.code) && !should_retry_additional_code {
                             if err.code == Code::NotFound {
                                 info!(?err, "Not found, not retrying");
                             } else {

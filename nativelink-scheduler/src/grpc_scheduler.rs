@@ -48,6 +48,8 @@ use tracing::{error, info, warn};
 
 use crate::known_platform_property_provider::KnownPlatformPropertyProvider;
 
+const WAIT_EXECUTION_ADDITIONAL_RETRY_CODES: &[Code] = &[Code::NotFound];
+
 struct GrpcActionStateResult {
     client_operation_id: OperationId,
     rx: watch::Receiver<Arc<ActionState>>,
@@ -120,7 +122,23 @@ impl GrpcScheduler {
         })
     }
 
-    async fn perform_request<F, Fut, R, I>(&self, input: I, mut request: F) -> Result<R, Error>
+    async fn perform_request<F, Fut, R, I>(&self, input: I, request: F) -> Result<R, Error>
+    where
+        F: FnMut(I) -> Fut + Send + Copy,
+        Fut: Future<Output = Result<R, Error>> + Send,
+        R: Send,
+        I: Send + Clone,
+    {
+        self.perform_request_with_additional_retry_codes(input, request, &[])
+            .await
+    }
+
+    async fn perform_request_with_additional_retry_codes<F, Fut, R, I>(
+        &self,
+        input: I,
+        mut request: F,
+        additional_retry_codes: &[Code],
+    ) -> Result<R, Error>
     where
         F: FnMut(I) -> Fut + Send + Copy,
         Fut: Future<Output = Result<R, Error>> + Send,
@@ -128,15 +146,18 @@ impl GrpcScheduler {
         I: Send + Clone,
     {
         self.retrier
-            .retry(unfold(input, move |input| async move {
-                let input_clone = input.clone();
-                Some((
-                    request(input_clone)
-                        .await
-                        .map_or_else(RetryResult::Retry, RetryResult::Ok),
-                    input,
-                ))
-            }))
+            .retry_with_additional_codes(
+                unfold(input, move |input| async move {
+                    let input_clone = input.clone();
+                    Some((
+                        request(input_clone)
+                            .await
+                            .map_or_else(RetryResult::Retry, RetryResult::Ok),
+                        input,
+                    ))
+                }),
+                additional_retry_codes,
+            )
             .await
     }
 
@@ -305,17 +326,21 @@ impl GrpcScheduler {
             name: client_operation_id.to_string(),
         };
         let result_stream = self
-            .perform_request(request, |request| async move {
-                let channel = self
-                    .connection_manager
-                    .connection(format!("filter_operations: {}", request.name))
-                    .await
-                    .err_tip(|| "in find_by_client_operation_id()")?;
-                ExecutionClient::new(channel)
-                    .wait_execution(Request::new(request))
-                    .await
-                    .err_tip(|| "While getting wait_execution stream")
-            })
+            .perform_request_with_additional_retry_codes(
+                request,
+                |request| async move {
+                    let channel = self
+                        .connection_manager
+                        .connection(format!("filter_operations: {}", request.name))
+                        .await
+                        .err_tip(|| "in find_by_client_operation_id()")?;
+                    ExecutionClient::new(channel)
+                        .wait_execution(Request::new(request))
+                        .await
+                        .err_tip(|| "While getting wait_execution stream")
+                },
+                WAIT_EXECUTION_ADDITIONAL_RETRY_CODES,
+            )
             .and_then(|result_stream| Self::stream_state(result_stream.into_inner()))
             .await;
         match result_stream {
