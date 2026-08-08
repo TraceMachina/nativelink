@@ -88,12 +88,25 @@ jobs:
             "$RUNNER_TEMP/bep.json")
           invocation=$(jq -rs '[.[] | select(.id.started != null)
             | .started.uuid][0] // empty' "$RUNNER_TEMP/bep.json")
+          action_events=$(jq -s '[.[]
+            | select(.id.actionCompleted != null)] | length' \
+            "$RUNNER_TEMP/bep.json")
+          target_summaries=$(jq -s '[.[]
+            | select(.id.targetSummary != null)] | length' \
+            "$RUNNER_TEMP/bep.json")
+          metadata_run_id=$(jq -rs '[.[]
+            | select(.id.buildMetadata != null)
+            | .buildMetadata.metadata.GITHUB_RUN_ID][0] // empty' \
+            "$RUNNER_TEMP/bep.json")
 
           echo "Remote cache hits on rebuild: ${hits}/${total} (invocation ${invocation})"
           {
             echo "### NativeLink Cloud canary"
             echo "- Remote cache hits on rebuild: **${hits}/${total}**"
             echo "- Invocation: \`${invocation}\`"
+            echo "- Action events: **${action_events}**"
+            echo "- Target summaries: **${target_summaries}**"
+            echo "- Metadata run ID: \`${metadata_run_id}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
           if [[ "$total" -eq 0 ]]; then
@@ -102,5 +115,17 @@ jobs:
           fi
           if (( hits * 100 < total * 90 )); then
             echo "FAIL: remote cache hit rate below 90% on an unchanged rebuild" >&2
+            exit 1
+          fi
+          if [[ "$action_events" -eq 0 ]]; then
+            echo "FAIL: BEP contains no ActionExecuted events" >&2
+            exit 1
+          fi
+          if [[ "$target_summaries" -eq 0 ]]; then
+            echo "FAIL: BEP contains no TargetSummary events" >&2
+            exit 1
+          fi
+          if [[ "$metadata_run_id" != "$GITHUB_RUN_ID" ]]; then
+            echo "FAIL: BEP is missing the expected GitHub run metadata" >&2
             exit 1
           fi
