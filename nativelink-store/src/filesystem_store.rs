@@ -13,19 +13,19 @@
 // limitations under the License.
 
 use core::fmt::{Debug, Formatter};
+use core::hash::{Hash, Hasher};
 use core::pin::Pin;
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
 use std::borrow::Cow;
 #[cfg(unix)]
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
 use std::ffi::{OsStr, OsString};
 use std::sync::{Arc, Weak};
 use std::time::SystemTime;
 
-#[cfg(unix)]
-use async_lock::Mutex;
-use async_lock::RwLock;
+use async_lock::{Mutex, RwLock};
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use futures::stream::{StreamExt, TryStreamExt};
@@ -93,6 +93,26 @@ pub struct SharedContext {
     temp_path: String,
     #[metric(help = "Path to the configured content path")]
     content_path: String,
+    /// Serializes the two renames that can touch a key's content path:
+    /// `emplace_file()` publishing temp→content and `unref()` retiring
+    /// content→temp. Sharded by key hash; every caller takes exactly one
+    /// shard, so a hash collision can only serialize unrelated keys, never
+    /// deadlock.
+    rename_locks: Box<[Mutex<()>]>,
+}
+
+/// Shard count for [`SharedContext::rename_locks`]. Contention is only ever
+/// two renames racing on one key, so a small fixed pool suffices.
+const RENAME_LOCK_SHARDS: usize = 64;
+
+impl SharedContext {
+    fn rename_lock_for_key(&self, key: &StoreKey<'_>) -> &Mutex<()> {
+        let mut hasher = DefaultHasher::new();
+        key.hash(&mut hasher);
+        let idx = usize::try_from(hasher.finish() % self.rename_locks.len() as u64)
+            .expect("Always succeeds because the modulo is < RENAME_LOCK_SHARDS");
+        &self.rename_locks[idx]
+    }
 }
 
 #[derive(Eq, PartialEq, Debug)]
@@ -112,6 +132,10 @@ pub struct EncodedFilePath {
     shared_context: Arc<SharedContext>,
     path_type: PathType,
     key: StoreKey<'static>,
+    /// Inode of the content file this entry owns; `0` = unknown (never
+    /// emplaced, or a platform without inodes). `unref()` refuses to retire
+    /// a content path whose inode it does not own — see the guard there.
+    content_inode: u64,
 }
 
 impl EncodedFilePath {
@@ -677,6 +701,42 @@ impl LenEntry for FileEntryImpl {
 
         let to_path = to_full_path_from_key(&encoded_file_path.shared_context.temp_path, &new_key);
 
+        // The evicting map calls `unref()` outside its state lock (see
+        // `insert_with_time`), so by the time we run, our key may have been
+        // re-inserted and re-emplaced: the content path then holds the NEW
+        // entry's file — same name, different inode. Renaming it away here
+        // would strand that live entry (map says present, disk says ENOENT:
+        // "Could not make hardlink ... file was likely evicted"). Retire the
+        // path only while we still own its inode; the rename shard closes the
+        // stat→rename window against a concurrent `emplace_file()`.
+        let shared_context = encoded_file_path.shared_context.clone();
+        let _rename_lock = shared_context
+            .rename_lock_for_key(&encoded_file_path.key)
+            .lock()
+            .await;
+        #[cfg(unix)]
+        match fs::metadata(&from_path).await {
+            Ok(metadata)
+                if encoded_file_path.content_inode != 0
+                    && std::os::unix::fs::MetadataExt::ino(&metadata)
+                        != encoded_file_path.content_inode =>
+            {
+                debug!(
+                    key = ?encoded_file_path.key,
+                    "Content path was re-emplaced by a newer entry; skipping rename",
+                );
+                // Mark Temp with the never-created temp key (as the benign
+                // ENOENT branch below does) so a repeat unref no-ops and drop
+                // deletes nothing.
+                encoded_file_path.path_type = PathType::Temp;
+                encoded_file_path.key = new_key;
+                return;
+            }
+            // Ours, missing, unknowable, or pre-restart entry with no
+            // recorded inode — the rename below sorts each of those out.
+            _ => {}
+        }
+
         if let Err(err) = fs::rename(&from_path, &to_path).await {
             // ENOENT from rename is ambiguous: the source may be gone, or
             // a directory component of the destination (the temp dir) may
@@ -762,6 +822,7 @@ async fn add_files_to_cache<Fe: FileEntry>(
         file_type: FileType,
         atime: SystemTime,
         data_size: u64,
+        inode: u64,
         block_size: u64,
         anchor_time: &SystemTime,
         shared_context: &Arc<SharedContext>,
@@ -775,6 +836,7 @@ async fn add_files_to_cache<Fe: FileEntry>(
                 shared_context: shared_context.clone(),
                 path_type: PathType::Content,
                 key: key.borrow().into_owned(),
+                content_inode: inode,
             }),
         );
         let time_since_anchor = if let Ok(d) = anchor_time.duration_since(atime) {
@@ -801,7 +863,7 @@ async fn add_files_to_cache<Fe: FileEntry>(
     async fn read_files(
         folder: Option<&str>,
         shared_context: &SharedContext,
-    ) -> Result<Vec<(String, SystemTime, u64, bool)>, Error> {
+    ) -> Result<Vec<(String, SystemTime, u64, bool, u64)>, Error> {
         // Note: In Dec 2024 this is for backwards compatibility with the old
         // way files were stored on disk. Previously all files were in a single
         // folder regardless of the StoreKey type. This allows old versions of
@@ -836,11 +898,16 @@ async fn add_files_to_cache<Fe: FileEntry>(
                     .accessed()
                     .or_else(|_| metadata.modified())
                     .unwrap_or(SystemTime::UNIX_EPOCH);
-                Result::<(String, SystemTime, u64, bool), Error>::Ok((
+                #[cfg(unix)]
+                let inode = std::os::unix::fs::MetadataExt::ino(&metadata);
+                #[cfg(not(unix))]
+                let inode = 0u64;
+                Result::<(String, SystemTime, u64, bool, u64), Error>::Ok((
                     file_name,
                     atime,
                     metadata.len(),
                     is_file,
+                    inode,
                 ))
             })
             .buffer_unordered(SIMULTANEOUS_METADATA_READS)
@@ -862,7 +929,7 @@ async fn add_files_to_cache<Fe: FileEntry>(
 
         let to_path = format!("{}/{DIGEST_FOLDER}", shared_context.content_path);
 
-        for (file_name, _, _, _) in file_infos.into_iter().filter(|x| x.3) {
+        for (file_name, _, _, _, _) in file_infos.into_iter().filter(|x| x.3) {
             let from_file: OsString = format!("{from_path}/{file_name}").into();
             let to_file: OsString = format!("{to_path}/{file_name}").into();
 
@@ -891,13 +958,14 @@ async fn add_files_to_cache<Fe: FileEntry>(
 
         let path_root = format!("{}/{folder}", shared_context.content_path);
 
-        for (file_name, atime, data_size, _) in file_infos.into_iter().filter(|x| x.3) {
+        for (file_name, atime, data_size, _, inode) in file_infos.into_iter().filter(|x| x.3) {
             let result = process_entry(
                 evicting_map,
                 &file_name,
                 file_type,
                 atime,
                 data_size,
+                inode,
                 block_size,
                 anchor_time,
                 shared_context,
@@ -985,7 +1053,28 @@ where
             let temp_path = temp_file_encoded_file_path.get_file_path();
             trace!(?existing_path, ?temp_path, "Checking duplicate files");
             let mut temp_file = fs::open_file(&temp_path, 0, file_length).await?;
-            let mut existing_file = fs::open_file(&existing_path, 0, file_length).await?;
+            let mut existing_file = match fs::open_file(&existing_path, 0, file_length).await {
+                Ok(file) => file,
+                Err(err) if err.code == Code::NotFound => {
+                    // Map/disk divergence (same self-heal as `get_part`): the
+                    // existing entry's content file is gone — e.g. retired by
+                    // a stale `unref()` before the inode guard existed. Drop
+                    // the stale entry and let this upload re-emplace, instead
+                    // of failing every future write of this key with ENOENT.
+                    warn!(
+                        ?key,
+                        "Map/disk divergence in check_duplicate_files: dropping stale entry",
+                    );
+                    drop(existing_item_encoded_file_path);
+                    evicting_map
+                        .remove_if(&key.borrow().into_owned(), |map_entry| {
+                            Arc::<Fe>::ptr_eq(map_entry, &existing_item)
+                        })
+                        .await;
+                    return Ok(false);
+                }
+                Err(err) => return Err(err),
+            };
 
             let mut temp_buffer: [u8; CHUNK_SIZE] = [0; CHUNK_SIZE];
             let mut existing_buffer: [u8; CHUNK_SIZE] = [0; CHUNK_SIZE];
@@ -1200,6 +1289,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             active_drop_spawns: AtomicU64::new(0),
             temp_path: spec.temp_path.clone(),
             content_path: spec.content_path.clone(),
+            rename_locks: (0..RENAME_LOCK_SHARDS).map(|_| Mutex::new(())).collect(),
         });
 
         let block_size = if spec.block_size == 0 {
@@ -1577,6 +1667,12 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
                 return Ok(());
             }
 
+            // Serialize our temp→content publish against `unref()`'s
+            // content→temp retire of the same key — see the ownership guard
+            // in `unref()`.
+            let shared_context = encoded_file_path.shared_context.clone();
+            let rename_lock = shared_context.rename_lock_for_key(&key).lock().await;
+
             let final_path = get_file_path_raw(
                 &PathType::Content,
                 encoded_file_path.shared_context.as_ref(),
@@ -1584,6 +1680,16 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             );
 
             let from_path = encoded_file_path.get_file_path();
+
+            // Capture the temp file's inode before the rename (rename
+            // preserves it) so `unref()` can later prove it still owns the
+            // content path. Best-effort: 0 disables the guard for this entry.
+            #[cfg(unix)]
+            let content_inode = fs::metadata(&from_path)
+                .await
+                .map_or(0, |metadata| std::os::unix::fs::MetadataExt::ino(&metadata));
+            #[cfg(not(unix))]
+            let content_inode = 0u64;
 
             // Lock the blob down as read-only *before* it lands at its final
             // content path, so every hardlink of it (the worker directory cache
@@ -1626,6 +1732,8 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
                 // Warning: To prevent deadlock we need to release our lock or during `remove_if()`
                 // it will call `unref()`, which triggers a write-lock on `encoded_file_path`.
                 drop(encoded_file_path);
+                // Same for the rename shard: `unref()` takes it too.
+                drop(rename_lock);
                 // It is possible that the item in our map is no longer the item we inserted,
                 // So, we need to conditionally remove it only if the pointers are the same.
 
@@ -1635,8 +1743,10 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
                 return Err(err);
             }
             trace!(?key, "Finished emplace file");
+            encoded_file_path.content_inode = content_inode;
             encoded_file_path.path_type = PathType::Content;
             encoded_file_path.key = key;
+            drop(rename_lock);
             Ok(())
         })
         .await
@@ -1728,6 +1838,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
                 shared_context: self.shared_context.clone(),
                 path_type: PathType::Temp,
                 key: temp_key,
+                content_inode: 0,
             },
         )
         .await
@@ -1888,6 +1999,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
                 shared_context: self.shared_context.clone(),
                 path_type: PathType::Custom(path),
                 key: key.borrow().into_owned(),
+                content_inode: 0,
             }),
         );
         // We are done with the file, if we hold a reference to the file here, it could
