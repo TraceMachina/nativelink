@@ -124,6 +124,26 @@ const WIRE_COMPRESSION_MIN_SIZE_BYTES: u64 = 64 * 1024;
 /// while encoding slower, and internal hops are throughput-sensitive.
 const WIRE_COMPRESSION_ZSTD_LEVEL: i32 = 1;
 
+/// A ByteStream `WriteRequest` must stay under the receiving gRPC server's
+/// maximum message size (4 MiB by default in tonic). Reader chunks can be much
+/// larger, so use a conservative cap that leaves room for protobuf framing and
+/// the resource name.
+const MAX_WRITE_CHUNK_SIZE_BYTES: usize = 2 * 1024 * 1024;
+
+/// Returns the next capped `WriteRequest` payload, retaining any unused bytes
+/// from an oversized reader chunk for the next call.
+async fn next_write_request_data(
+    reader: &mut DropCloserReadHalf,
+    pending: &mut Bytes,
+    error_context: &'static str,
+) -> Result<Bytes, Error> {
+    if pending.is_empty() {
+        *pending = reader.recv().await.err_tip(|| error_context)?;
+    }
+    let take = pending.len().min(MAX_WRITE_CHUNK_SIZE_BYTES);
+    Ok(pending.split_to(take))
+}
+
 /// Estimated per-entry protobuf and framing overhead charged against
 /// `max_batch_bytes`, so that batches of many tiny blobs cannot push a
 /// `BatchReadBlobs` response over the gRPC message size limit.
@@ -1142,6 +1162,8 @@ impl GrpcStore {
             compressed_rx: DropCloserReadHalf,
             did_error: bool,
             bytes_received: i64,
+            // Residue of an encoder chunk larger than the write-request cap.
+            pending: Bytes,
         }
 
         let mut buf = Uuid::encode_buffer();
@@ -1185,17 +1207,19 @@ impl GrpcStore {
             compressed_rx,
             did_error: false,
             bytes_received: 0,
+            pending: Bytes::new(),
         };
         let stream = Box::pin(unfold(local_state, |mut local_state| async move {
             if local_state.did_error {
                 error!("GrpcStore::update_compressed() polled stream after error was returned");
                 return None;
             }
-            let data = match local_state
-                .compressed_rx
-                .recv()
-                .await
-                .err_tip(|| "In GrpcStore::update_compressed()")
+            let data = match next_write_request_data(
+                &mut local_state.compressed_rx,
+                &mut local_state.pending,
+                "In GrpcStore::update_compressed()",
+            )
+            .await
             {
                 Ok(data) => data,
                 Err(err) => {
@@ -1582,6 +1606,8 @@ impl StoreDriver for GrpcStore {
             reader: DropCloserReadHalf,
             did_error: bool,
             bytes_received: i64,
+            // Residue of a reader chunk larger than the write-request cap.
+            pending: Bytes,
         }
 
         let is_digest_key = matches!(key, StoreKey::Digest(_));
@@ -1636,6 +1662,7 @@ impl StoreDriver for GrpcStore {
             reader,
             did_error: false,
             bytes_received: 0,
+            pending: Bytes::new(),
         };
 
         let stream = Box::pin(unfold(local_state, |mut local_state| async move {
@@ -1643,11 +1670,12 @@ impl StoreDriver for GrpcStore {
                 error!("GrpcStore::update() polled stream after error was returned");
                 return None;
             }
-            let data = match local_state
-                .reader
-                .recv()
-                .await
-                .err_tip(|| "In GrpcStore::update()")
+            let data = match next_write_request_data(
+                &mut local_state.reader,
+                &mut local_state.pending,
+                "In GrpcStore::update()",
+            )
+            .await
             {
                 Ok(data) => data,
                 Err(err) => {
