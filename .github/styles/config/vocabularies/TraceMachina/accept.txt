@@ -14,6 +14,9 @@ Colab
 composable
 CPUs
 [Dd]eduplication
+[Dd]emotes?
+[Dd]emoted
+[Dd]emotion
 eviction_policy
 ELB
 Eskandar
