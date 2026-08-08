@@ -69,7 +69,7 @@ store name the server exposes.
 
 | Store key | Wraps | What it adds |
 | --- | --- | --- |
-| `compression` | one store | LZ4-compresses on write, decompresses on read. |
+| `compression` | one store | Select `lz4` for NativeLink's LZ4 framing, or `zstd` for standard zstd frames and optional wire-compression passthrough. |
 | `dedup` | two stores (`index_store` + `content_store`) | Rolling-hash chunking so only changed slices upload. |
 | `fast_slow` | two stores (`fast` + `slow`) | Reads try `fast` first, fall back to `slow`, and backfill `fast`. Writes mirror to both. |
 | `shard` | N stores | Routes by digest hash. The standard shape for scaling CAS past one backend. |
@@ -91,7 +91,238 @@ store name the server exposes.
   - `existence_cache` and `size_partitioning` are CAS-only; `completeness_checking`
     is AC-only. Using them on the other store type produces confusing
     correctness bugs, not a config error.
+  - `compression` with `compression_algorithm: { zstd: ... }` is the one
+    algorithm choice that isn't position-agnostic: it must be the store an
+    instance points at directly, or its main benefit doesn't apply. See the
+    dedicated section below before deploying it.
 </Callout>
+
+## Pass-through compression: `compression_algorithm.zstd`
+
+The `zstd` algorithm of `compression` keeps CAS blobs as zstd streams **at
+rest** instead of raw bytes. Unlike `compression_algorithm: { lz4: ... }`
+(which uses NativeLink's LZ4 framing and decompresses back to raw bytes at
+the `StoreDriver` boundary), `compression_algorithm: { zstd: ... }` can serve its stored bytes
+**byte-for-byte** to a Bazel client running `--remote_cache_compression` on
+a cache hit — no decompress-then-recompress round trip at the gRPC
+boundary. Identity clients (no `--remote_cache_compression`) are unaffected:
+they still receive plain decompressed bytes. See
+[Remote cache compression](/configuration/compression) for the wire-level
+feature this pairs with.
+
+It is **CAS-only** — every operation requires a digest key. Never point an
+AC store at it.
+
+**Example JSON5 config:**
+
+```json5
+{
+  name: "CAS_MAIN_STORE",
+  compression: {
+    compression_algorithm: {
+      zstd: {
+        temp_path: "/var/tmp/nativelink-zstd",
+        max_compressed_upload_size: "512MiB",
+        max_concurrent_staged_uploads: 4,
+        max_concurrent_identity_ops: 256,
+        compression_level: 9,
+        max_recompression_size: "64MiB",
+        max_concurrent_recompressions: 1,
+        max_inline_commit_size: "4MiB",
+        stage_timeout_s: 600,
+        commit_timeout_s: 300,
+      },
+    },
+    backend: { memory: { eviction_policy: { max_bytes: "10GiB" } } },
+  },
+}
+```
+
+### Placement: it must be the outermost store
+
+Every wrapper in the table above can nest at any depth. `compression` with
+`compression_algorithm.zstd` is different: **it must be the store the
+instance/CAS/ByteStream service points at directly** for the byte-for-byte
+passthrough to apply. `fast_slow`,
+`dedup`, `existence_cache`, `cache_metrics`, `shard`, `ref_store`, and
+`size_partitioning` are all fine **inside** it — they then operate on the
+physical zstd stream exactly as they would on raw bytes.
+
+A wrapper placed **outside** the zstd compression store (for example,
+`verify` wrapping it) is still correct, but that wrapper has to decode the
+stream to do its job, which disables passthrough at that boundary.
+
+<Callout type="warn" title="backend must be a dedicated, empty namespace — no in-place migration">
+  The `backend` of `compression_algorithm.zstd` stores digest → zstd bytes,
+  not digest → raw bytes. The digest key is identical either way, and raw CAS payloads are
+  unstructured — an arbitrary raw blob can legitimately start with the zstd
+  magic number — so there is no safe way to sniff which encoding a given
+  entry is in. Version 1 has no in-place migration.
+
+  - `backend` must point at a brand-new or empty store namespace, never one
+    a raw-bytes reader or writer touches — including a plain
+    `filesystem`/`experimental_cloud_object_store` CAS, a different
+    instance, or a pre-zstd NativeLink version pointed at the same
+    path/bucket/prefix.
+  - Rollout **and** rollback both require a cache flush (or cutting over to
+    a new namespace) — there is no supported way to select or remove zstd
+    compression in place against a populated namespace.
+  - A rolling/mixed-version deployment against **one shared namespace** is
+    unsupported: while some replicas write raw bytes and others write zstd
+    to the same keys, every reader misinterprets roughly half the entries.
+</Callout>
+
+### `compression_level`: capped at 19, not 22
+
+`compression_level` is optional and sets the level used for **two** things: the
+uploads this store compresses itself (identity clients), and the re-encoding of
+incoming compressed uploads when `max_recompression_size > 0`. Omitted, it uses
+level 3 and never re-encodes an already-compressed upload. When set, it must be
+in `1..=19` — NativeLink rejects anything outside that range at
+config-validation time (startup).
+
+Level 9 is a reasonable general-purpose choice; it costs a fraction of level
+19's CPU per byte. Reach for the high end only when blobs are read far more often
+than written.
+
+The zstd level isn't recorded in the frame; decoders are level-agnostic. The
+actual cross-client constraint is **window size**. Standard levels 1–19 cap
+the encoded frame at `windowLog ≤ 23` (≤ 8 MiB), decodable by every
+Bazel/zstd-jni client using plain `libzstd` defaults. Bazel's decoder never
+calls `setLongMax`, so its hard ceiling is `windowLog ≤ 27` (128 MiB) —
+level 19 keeps a wide margin under that ceiling rather than chasing the
+absolute cap. Zstd compression never enables long-distance matching or external
+dictionaries (REAPI has no dictionary channel, and long-distance matching
+alone can push `windowLog` past 23).
+
+### Bounds and admission: stopping a zstd bomb
+
+Every compressed input is bounded from both ends. `max_compressed_upload_size`
+caps the compressed bytes a client may push; exceeding it fails the upload with
+`RESOURCE_EXHAUSTED`. Independently, the decoder's output sink is capped at the
+digest's declared uncompressed size and rejects with `INVALID_ARGUMENT` the
+moment decoded bytes *would* exceed it — so a small "zstd bomb" that expands to
+a huge buffer is stopped at the first over-limit block rather than being fully
+materialized. The decoder also rejects frames requesting more than an 8 MiB
+history window, before their header can cause zstd's larger default allocation.
+Zero-digest validation streams through the same bounded decoder with an output
+cap of zero: it never allocates the decoded output, and it takes an admission
+permit like any other staged upload, so it cannot spawn unbounded decode jobs.
+
+`max_concurrent_staged_uploads` admits a bounded number of compressed uploads at
+a time, but admission alone can't stop a stalled client or backend from parking
+on a slot forever. The deadlines below fail the RPC with `DEADLINE_EXCEEDED`.
+Validation runs in a non-cancellable blocking task, so a staging timeout does
+not release admission early: the task retains its slot and cleanup guard until
+its input closes and it exits. The ByteStream fast path stops its client pump on
+a store failure, closing that input promptly. Direct store callers must do the
+same. Cancellation, validation failure, and success all clean up once the
+validator has stopped.
+
+- **`stage_timeout_s`** — total seconds one upload may spend being validated and
+  staged, measured from the moment it takes a staging slot. Unlike an idle
+  timeout, continuous slow progress does not reset it. Size it against
+  `max_compressed_upload_size` and the slowest upload bandwidth worth serving.
+  `0` uses the default of 600.
+- **`commit_timeout_s`** — seconds to wait, after validation and staging, for
+  optional recompression and the inner-store commit. Bounds a stalled backend.
+  `0` uses the default of 300.
+- **`compressed_upload_idle_timeout_s`** — a ByteStream instance setting, not a
+  store setting: how long to wait for the *next* `WriteRequest` of a compressed
+  upload. A client making continuous progress is never timed out, only an idle
+  one. `0` uses the default of 60. (Earlier builds reused
+  `persist_stream_on_disconnect_timeout_s` for this; it is now its own knob,
+  because how long a disconnected upload stays resumable has nothing to do with
+  how long an attached client may stall.)
+
+Two admission bounds sit alongside those deadlines:
+
+- **`max_concurrent_staged_uploads`** — compressed uploads validating or staging
+  at once. `0` uses the default of 4.
+- **`max_concurrent_identity_ops`** — uncompressed (identity) reads and writes at
+  once. Each one holds a blocking thread for the whole transfer, so without a
+  bound a flood of slow identity clients can starve the process-wide blocking
+  pool that filesystem I/O also uses. Raising it trades that risk for more
+  queuing on this store; `0` uses the default of 256.
+
+Small compressed uploads skip staging altogether. **`max_inline_commit_size`**
+(default 4 MiB) is the ceiling below which an upload is validated and committed
+straight from memory — no staging file, no `fsync`. `BatchUpdateBlobs` payloads
+are small and numerous, so a per-blob disk round trip would dominate their cost.
+Inline uploads are validated exactly as staged ones are and take the same
+staging admission permit and `stage_timeout_s`.
+
+### `temp_path`: staging directory, size and place it deliberately
+
+Zstd compression stages every compressed upload larger than
+`max_inline_commit_size` as a temp file under `temp_path` before committing it to
+`backend`. Recompression keeps the decoded bytes in bounded memory and overwrites
+the same validated descriptor only when the result is smaller, so it never adds a
+second staging file.
+
+`temp_path` must be a private directory owned by the operator and **not** writable
+by local users you do not trust. At startup the store verifies it is a directory, rejects
+a world-writable directory that lacks the sticky bit, and probes that it is
+writable. Each staging file is created exclusively (`O_EXCL` / `create_new`) under
+an unguessable name, with `0o600` applied atomically at creation rather than by a
+later `chmod`. Every staged file is removed on success, error, and cancellation.
+
+- **What defends against an observe-and-replace race depends on the backend.**
+  Both the validated descriptor and its pathname are handed to `backend` at
+  commit. Backends that stream the bytes — the default, so `memory`,
+  `experimental_cloud_object_store`, and friends — read the exact descriptor that
+  was validated, and never reopen the path. A `filesystem` backend instead drops
+  the descriptor and commits with `rename(2)` on the pathname, so for that backend
+  the guarantee rests on exclusive creation of an unguessable name inside an
+  operator-private directory, which is why the directory checks above are not
+  optional.
+- **Worst-case temp disk usage** is roughly `max_concurrent_staged_uploads
+  * max_compressed_upload_size`. Recompression uses bounded memory, capped by
+  `max_recompression_size`, rather than an additional staging file. Size and
+  monitor `temp_path` against the disk bound, not just steady-state usage.
+- **Put `temp_path` on the same filesystem as the `content_path` of a
+  `filesystem` backend.** That backend commits with the `rename(2)` above, and a
+  cross-filesystem rename fails with `EXDEV` — the upload fails, the blob is
+  never stored, and the temp file is still cleaned up — instead of silently
+  falling back to a copy.
+
+### Recompression: keep whichever encoding is smaller
+
+With `compression_level` set and `max_recompression_size > 0`, an incoming
+upload whose *decoded* size is within `max_recompression_size` gets
+re-encoded at `compression_level`, and zstd compression keeps whichever of the
+original or re-encoded stream is smaller. `max_recompression_size: 0`
+disables recompression entirely — `compression_level` still picks the level
+used to encode brand-new, not-already-compressed uploads; incoming compressed
+streams are left unchanged.
+
+Because re-encoding needs a level, `max_recompression_size > 0` **requires**
+`compression_level`. Setting the ceiling without a level is rejected at startup
+rather than silently disabling recompression.
+
+`max_concurrent_recompressions` bounds how many re-encodes run at once, and it is
+**best-effort**: an upload that finds every slot busy commits its original stream
+instead of queuing. That matters because the upload is holding a staging slot
+while it waits, so a small recompression pool would otherwise throttle the entire
+upload path. Skipped recompressions are counted in the store's metrics
+(`recompressions_skipped_busy`); a persistently high rate means the pool is too
+small for the offered load, not that anything failed. Recompression also runs
+under the same `commit_timeout_s` deadline as the inner-store commit.
+
+### Observability
+
+The store publishes its own counters, so the bounds above can be tuned against
+measurements rather than guesses:
+
+| Metric | What it tells you |
+| --- | --- |
+| `wire_uploads`, `wire_upload_bytes` | How much traffic actually takes the compressed fast path. |
+| `wire_downloads` | Cache hits served byte-for-byte, with no re-encode. |
+| `batch_zstd_passthroughs`, `batch_identity_decodes` | The same split for `BatchReadBlobs`. |
+| `inline_commits`, `staged_commits` | How much of the upload mix stays in memory vs. hits `temp_path`. Tune `max_inline_commit_size` from this. |
+| `staged_uploads_inflight`, `identity_ops_inflight` | Live occupancy against `max_concurrent_staged_uploads` / `max_concurrent_identity_ops`. Sustained saturation means requests are queuing. |
+| `recompressions_applied`, `recompressions_rejected`, `recompressions_skipped_busy` | Whether recompression is earning its CPU, and whether its pool is too small. |
+| `stage_timeouts`, `commit_timeouts` | Deadlines that fired. A nonzero `stage_timeouts` is either a trickling client or a `stage_timeout_s` set below real upload times. |
 
 ## Choosing a terminal backend
 
@@ -189,3 +420,6 @@ instead of declaring the same backend twice:
   fit alongside servers, schedulers, and workers.
 - [Configuration → Production](/configuration/production) — sharded,
   multi-region store topologies end to end.
+- [`deployment-examples/docker-compose/local-storage-cas-zstd.json5`](https://github.com/TraceMachina/nativelink/blob/main/deployment-examples/docker-compose/local-storage-cas-zstd.json5)
+  — a complete zstd compression deployment, annotated with the namespace and
+  placement rules above.

@@ -22,7 +22,7 @@ use bytes::{Buf, BufMut, BytesMut};
 use futures::future::FutureExt;
 use lz4_flex::block::{compress_into, decompress_into, get_maximum_output_size};
 use nativelink_config::stores::CompressionSpec;
-use nativelink_error::{Code, Error, ResultExt, error_if, make_err};
+use nativelink_error::{Code, Error, ResultExt, error_if, make_err, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{
     DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
@@ -257,8 +257,9 @@ impl core::fmt::Debug for CompressionStore {
 
 impl CompressionStore {
     pub fn new(spec: &CompressionSpec, inner_store: Store) -> Result<Arc<Self>, Error> {
-        let lz4_config = match spec.compression_algorithm {
-            nativelink_config::stores::CompressionAlgorithm::Lz4(mut lz4_config) => {
+        let lz4_config = match &spec.compression_algorithm {
+            nativelink_config::stores::CompressionAlgorithm::Lz4(lz4_config) => {
+                let mut lz4_config = *lz4_config;
                 if lz4_config.block_size == 0 {
                     lz4_config.block_size = DEFAULT_BLOCK_SIZE;
                 }
@@ -266,6 +267,11 @@ impl CompressionStore {
                     lz4_config.max_decode_block_size = lz4_config.block_size;
                 }
                 lz4_config
+            }
+            nativelink_config::stores::CompressionAlgorithm::Zstd(_) => {
+                return Err(make_input_err!(
+                    "CompressionStore only implements the lz4 compression algorithm"
+                ));
             }
         };
         Ok(Arc::new(Self {

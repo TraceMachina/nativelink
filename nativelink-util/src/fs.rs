@@ -44,6 +44,23 @@ pub struct FileSlot {
 }
 
 impl FileSlot {
+    /// Wrap an already-open [`std::fs::File`] that is accounted for by `permit`
+    /// (a permit from [`OPEN_FILE_SEMAPHORE`], e.g. via [`get_permit`]).
+    ///
+    /// This is the escape hatch for callers that open/create a descriptor inside
+    /// their own `spawn_blocking!` closure (for example, to write synchronously
+    /// with the [`std::io`] API) and later need to hand the *same* descriptor to
+    /// an async consumer such as [`crate::store_trait::StoreLike::update_with_whole_file`].
+    /// The caller is responsible for having acquired `permit` before opening the
+    /// file so the descriptor stays accounted for by the global semaphore.
+    #[must_use]
+    pub fn from_std(permit: SemaphorePermit<'static>, file: std::fs::File) -> Self {
+        Self {
+            _permit: permit,
+            inner: tokio::fs::File::from_std(file),
+        }
+    }
+
     /// Advise the kernel to drop page cache for this file's contents.
     /// Only available on Linux;
     #[cfg(target_os = "linux")]
