@@ -100,31 +100,30 @@ impl Retrier {
     /// This should only return true if the error code should be interpreted as
     /// temporary.
     fn should_retry(&self, code: Code) -> bool {
-        if code == Code::Ok {
-            false
-        } else if let Some(retry_codes) = &self.config.retry_on_errors {
+        if let Some(retry_codes) = &self.config.retry_on_errors {
             retry_codes.contains(&to_error_code(code))
         } else {
+            // Match is intentionally exhaustive: if a new `Code` variant is added,
+            // the compiler forces a decision here. New codes default to permanent
+            // (no retry) rather than silently being retried.
             match code {
-                // TODO(SchahinRohani): Handle all cases properly so there is no need for a wildcard match
-                // All cases where a retry should happen are commented out here and replaced with a wildcard match.
-                Code::InvalidArgument
-                | Code::FailedPrecondition
-                | Code::OutOfRange
-                | Code::Unimplemented
+                Code::Cancelled
+                | Code::Unknown
+                | Code::DeadlineExceeded
+                | Code::ResourceExhausted
+                | Code::Aborted
+                | Code::Internal
+                | Code::Unavailable
+                | Code::DataLoss => true,
+                Code::Ok
+                | Code::InvalidArgument
                 | Code::NotFound
                 | Code::AlreadyExists
                 | Code::PermissionDenied
+                | Code::FailedPrecondition
+                | Code::OutOfRange
+                | Code::Unimplemented
                 | Code::Unauthenticated => false,
-                // Code::Cancelled
-                // | Code::Unknown
-                // | Code::DeadlineExceeded
-                // | Code::ResourceExhausted
-                // | Code::Aborted
-                // | Code::Internal
-                // | Code::Unavailable
-                // | Code::DataLoss => true,
-                _ => true,
             }
         }
     }
