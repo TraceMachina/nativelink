@@ -370,7 +370,7 @@ async fn release_filesystem_stores(
 ) {
     join_all(
         filesystem_stores
-            .into_iter()
+            .iter()
             .map(|filesystem_store| filesystem_store.release_digests(&digests)),
     )
     .await;
