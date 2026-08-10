@@ -328,33 +328,47 @@ impl ActionInputLease {
         }
     }
 
-    async fn release(&self) {
+    fn take_release_work(&self) -> Option<(Vec<Arc<FilesystemStore>>, Vec<DigestInfo>)> {
         if self.released.swap(true, Ordering::AcqRel) {
-            return;
+            return None;
         }
-        let digests: Vec<_> = core::mem::take(&mut *self.digests.lock())
+        let digests = core::mem::take(&mut *self.digests.lock())
             .into_iter()
             .collect();
-        for filesystem_store in &self.filesystem_stores {
-            filesystem_store.release_digests(&digests).await;
-        }
+        Some((self.filesystem_stores.clone(), digests))
+    }
+
+    async fn release(&self) {
+        let Some((filesystem_stores, digests)) = self.take_release_work() else {
+            return;
+        };
+        // Detach the actual release before awaiting it so cancellation of the
+        // action cleanup future cannot strand leases in a later filesystem
+        // tier.
+        let handle = background_spawn!("action_input_lease_release", async move {
+            release_filesystem_stores(filesystem_stores, &digests).await;
+        });
+        let _result = handle.await;
     }
 }
 
 impl Drop for ActionInputLease {
     fn drop(&mut self) {
-        if self.released.swap(true, Ordering::AcqRel) {
+        let Some((filesystem_stores, digests)) = self.take_release_work() else {
             return;
-        }
-        let filesystem_stores = self.filesystem_stores.clone();
-        let digests: Vec<_> = core::mem::take(&mut *self.digests.lock())
-            .into_iter()
-            .collect();
+        };
         background_spawn!("action_input_lease_drop", async move {
-            for filesystem_store in &filesystem_stores {
-                filesystem_store.release_digests(&digests).await;
-            }
+            release_filesystem_stores(filesystem_stores, &digests).await;
         });
+    }
+}
+
+async fn release_filesystem_stores(
+    filesystem_stores: Vec<Arc<FilesystemStore>>,
+    digests: &[DigestInfo],
+) {
+    for filesystem_store in &filesystem_stores {
+        filesystem_store.release_digests(digests).await;
     }
 }
 
