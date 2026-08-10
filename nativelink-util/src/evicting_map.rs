@@ -109,6 +109,10 @@ struct State<
     /// operation is using them. A key can be leased before it is inserted,
     /// which closes the admission-to-insert race for cache populations.
     leases: HashMap<K, u32>,
+    /// Number of resident entries that are not leased. This lets pressure
+    /// eviction return immediately while an active action has leased every
+    /// resident entry, instead of scanning the whole LRU for every insert.
+    unleased_entry_count: usize,
     #[metric(help = "Total size of all items in the store")]
     sum_store_size: u64,
 
@@ -151,6 +155,9 @@ impl<
         if let Some(btree) = &mut self.btree {
             btree.remove(key);
         }
+        if !self.leases.contains_key(key) {
+            self.unleased_entry_count -= 1;
+        }
         self.sum_store_size -= eviction_item.data.len();
         if replaced {
             self.replaced_items.inc();
@@ -181,6 +188,9 @@ impl<
         // If we are maintaining a btree index, we need to update it.
         if let Some(btree) = &mut self.btree {
             btree.insert(key.clone());
+        }
+        if !self.leases.contains_key::<K>(key) {
+            self.unleased_entry_count += 1;
         }
         self.lru
             .put(key.clone(), eviction_item)
@@ -281,6 +291,7 @@ where
                 lru: LruCache::unbounded(),
                 btree: None,
                 leases: HashMap::new(),
+                unleased_entry_count: 0,
                 sum_store_size: 0,
                 evicted_bytes: Counter::default(),
                 evicted_items: CounterWithTime::default(),
@@ -379,6 +390,10 @@ where
 
     #[must_use]
     fn evict_items(&self, state: &mut State<K, Q, T, C>) -> (Vec<T>, Vec<RemoveFuture>) {
+        if state.unleased_entry_count == 0 {
+            return (Vec::new(), Vec::new());
+        }
+
         // Select all victims in one pass. Re-scanning the LRU from its tail
         // after every removal turns pressure eviction into O(n * victims)
         // when a large active action has leased many entries.
@@ -667,6 +682,11 @@ where
     /// eviction cannot race with the start of input materialization.
     pub fn lease_key(&self, key: K) {
         let mut state = self.state.lock();
+        let was_unleased = !state.leases.contains_key::<K>(&key);
+        let is_resident = state.lru.peek(key.borrow()).is_some();
+        if was_unleased && is_resident {
+            state.unleased_entry_count -= 1;
+        }
         let lease_count = state.leases.entry(key).or_default();
         *lease_count = lease_count.saturating_add(1);
     }
@@ -702,6 +722,9 @@ where
                 };
                 if remove_lease {
                     state.leases.remove(key.borrow());
+                    if state.lru.peek(key.borrow()).is_some() {
+                        state.unleased_entry_count += 1;
+                    }
                     released_any = true;
                 }
             }

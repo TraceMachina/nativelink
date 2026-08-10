@@ -216,6 +216,49 @@ async fn leased_key_survives_fast_tier_pressure_until_released() -> Result<(), E
 }
 
 #[nativelink_test]
+async fn all_leased_entries_can_temporarily_exceed_capacity() -> Result<(), Error> {
+    const DATA: &str = "12345678";
+    let evicting_map = EvictingMap::<DigestInfo, DigestInfo, BytesWrapper, MockInstantWrapped>::new(
+        &EvictionPolicy {
+            max_count: 1,
+            max_seconds: 0,
+            max_bytes: 0,
+            evict_bytes: 0,
+        },
+        MockInstantWrapped::default(),
+    );
+    let first_key = DigestInfo::try_new(HASH1, 0)?;
+    let second_key = DigestInfo::try_new(HASH2, 0)?;
+
+    // With no unleased victim, pressure insertion must not repeatedly scan
+    // and evict active inputs just to satisfy max_count.
+    evicting_map.lease_key(first_key);
+    evicting_map.lease_key(second_key);
+    evicting_map
+        .insert(first_key, Bytes::from(DATA).into())
+        .await;
+    evicting_map
+        .insert(second_key, Bytes::from(DATA).into())
+        .await;
+    assert_eq!(evicting_map.len_for_test(), 2);
+
+    // Releasing one lease makes the retained entry an ordinary victim again.
+    evicting_map.release_key(&first_key).await;
+    assert_eq!(
+        evicting_map.size_for_key(&first_key).await,
+        None,
+        "released entry should be trimmed once an unleased victim exists",
+    );
+    assert_eq!(
+        evicting_map.size_for_key(&second_key).await,
+        Some(DATA.len() as u64),
+        "the still-leased entry must remain available",
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
 async fn leased_key_batch_release_preserves_reference_counts() -> Result<(), Error> {
     const DATA: &str = "12345678";
     let evicting_map = EvictingMap::<DigestInfo, DigestInfo, BytesWrapper, MockInstantWrapped>::new(
