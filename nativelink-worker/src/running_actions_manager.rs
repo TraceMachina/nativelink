@@ -302,7 +302,7 @@ struct ActionInputLease {
 
 impl ActionInputLease {
     fn new(
-        cas_store: Arc<FastSlowStore>,
+        cas_store: &FastSlowStore,
         command_digest: DigestInfo,
         input_root_digest: DigestInfo,
     ) -> Arc<Self> {
@@ -332,11 +332,11 @@ impl ActionInputLease {
         if self.released.swap(true, Ordering::AcqRel) {
             return;
         }
-        let digests = std::mem::take(&mut *self.digests.lock());
-        for digest in digests {
-            for filesystem_store in &self.filesystem_stores {
-                filesystem_store.release_digest(&digest).await;
-            }
+        let digests: Vec<_> = core::mem::take(&mut *self.digests.lock())
+            .into_iter()
+            .collect();
+        for filesystem_store in &self.filesystem_stores {
+            filesystem_store.release_digests(&digests).await;
         }
     }
 }
@@ -347,12 +347,12 @@ impl Drop for ActionInputLease {
             return;
         }
         let filesystem_stores = self.filesystem_stores.clone();
-        let digests = std::mem::take(&mut *self.digests.lock());
+        let digests: Vec<_> = core::mem::take(&mut *self.digests.lock())
+            .into_iter()
+            .collect();
         background_spawn!("action_input_lease_drop", async move {
-            for digest in digests {
-                for filesystem_store in &filesystem_stores {
-                    filesystem_store.release_digest(&digest).await;
-                }
+            for filesystem_store in &filesystem_stores {
+                filesystem_store.release_digests(&digests).await;
             }
         });
     }
@@ -556,6 +556,13 @@ fn download_to_directory_with_lease<'a>(
                 .try_into()
                 .err_tip(|| "In Directory::file::digest")?;
             let new_directory_path = format!("{}/{}", current_directory, directory.name);
+            if let Some(input_lease) = &input_lease {
+                // Reserve queued child directories before their futures are
+                // polled. Without this, a large parent can leave later
+                // directory digests exposed to slow-tier eviction while the
+                // first batch of children is being materialized.
+                input_lease.acquire(&digest);
+            }
             let input_lease = input_lease.clone();
             futures.push(
                 async move {
@@ -1182,7 +1189,7 @@ impl RunningActionImpl {
     ) -> Self {
         let work_directory = format!("{}/{}", action_directory, "work");
         let input_lease = ActionInputLease::new(
-            running_actions_manager.cas_store.clone(),
+            running_actions_manager.cas_store.as_ref(),
             action_info.command_digest,
             action_info.input_root_digest,
         );

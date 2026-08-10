@@ -666,16 +666,40 @@ where
     /// Release one lease and trim any entries that were retained while the
     /// lease was active.
     pub async fn release_key(&self, key: &Q) {
+        self.release_keys([key]).await;
+    }
+
+    /// Release a batch of leases and trim retained entries once.
+    ///
+    /// Action input leases commonly contain thousands of digests. Batching
+    /// avoids rescanning the LRU and running deferred cleanup once per digest
+    /// during action teardown.
+    pub async fn release_keys<It, R>(&self, keys: It)
+    where
+        It: IntoIterator<Item = R> + Send,
+        <It as IntoIterator>::IntoIter: Send,
+        R: Borrow<Q> + Send,
+    {
         let (items_to_unref, removal_futures) = {
             let mut state = self.state.lock();
-            let Some(lease_count) = state.leases.get_mut(key) else {
-                return;
-            };
-            if *lease_count > 1 {
-                *lease_count -= 1;
+            let mut released_any = false;
+            for key in keys {
+                let remove_lease = match state.leases.get_mut(key.borrow()) {
+                    Some(lease_count) if *lease_count > 1 => {
+                        *lease_count -= 1;
+                        false
+                    }
+                    Some(_) => true,
+                    None => false,
+                };
+                if remove_lease {
+                    state.leases.remove(key.borrow());
+                    released_any = true;
+                }
+            }
+            if !released_any {
                 return;
             }
-            state.leases.remove(key);
             self.evict_items(&mut state)
         };
 

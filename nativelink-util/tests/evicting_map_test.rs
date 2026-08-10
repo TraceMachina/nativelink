@@ -216,6 +216,58 @@ async fn leased_key_survives_fast_tier_pressure_until_released() -> Result<(), E
 }
 
 #[nativelink_test]
+async fn leased_key_batch_release_preserves_reference_counts() -> Result<(), Error> {
+    const DATA: &str = "12345678";
+    let evicting_map = EvictingMap::<DigestInfo, DigestInfo, BytesWrapper, MockInstantWrapped>::new(
+        &EvictionPolicy {
+            max_count: 1,
+            max_seconds: 0,
+            max_bytes: 0,
+            evict_bytes: 0,
+        },
+        MockInstantWrapped::default(),
+    );
+    let leased_key = DigestInfo::try_new(HASH1, 0)?;
+    let other_key = DigestInfo::try_new(HASH2, 0)?;
+
+    // Three references let the batch release exercise both duplicate keys and
+    // the remaining reference-counted lease.
+    evicting_map.lease_key(leased_key);
+    evicting_map.lease_key(leased_key);
+    evicting_map.lease_key(leased_key);
+    evicting_map
+        .insert(leased_key, Bytes::from(DATA).into())
+        .await;
+    evicting_map.release_keys([&leased_key, &leased_key]).await;
+
+    evicting_map
+        .insert(other_key, Bytes::from(DATA).into())
+        .await;
+    assert_eq!(
+        evicting_map.size_for_key(&leased_key).await,
+        Some(DATA.len() as u64),
+        "one remaining lease must keep the input available",
+    );
+    assert_eq!(
+        evicting_map.size_for_key(&other_key).await,
+        None,
+        "unleased pressure entry should be evicted first",
+    );
+
+    evicting_map.release_keys([&leased_key]).await;
+    evicting_map
+        .insert(other_key, Bytes::from(DATA).into())
+        .await;
+    assert_eq!(
+        evicting_map.size_for_key(&leased_key).await,
+        None,
+        "the final release must re-enable normal eviction",
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
 async fn leased_key_survives_ttl_until_released() -> Result<(), Error> {
     const DATA: &str = "12345678";
     let evicting_map = EvictingMap::<DigestInfo, DigestInfo, BytesWrapper, MockInstantWrapped>::new(
