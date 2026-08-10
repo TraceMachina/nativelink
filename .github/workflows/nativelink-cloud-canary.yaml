@@ -129,3 +129,40 @@ jobs:
             echo "FAIL: BEP is missing the expected GitHub run metadata" >&2
             exit 1
           fi
+
+  # Daily safety net for integration tests that must upload locally-built
+  # results to the cache (chunking_cache_test, simple_cache_test). The repo-wide
+  # --remote_upload_local_results=false keeps PR/developer lanes read-only, so
+  # these tests self-skip unless NL_LOCAL_UPLOADS=1 -- set here (and on merges to
+  # main in main.yaml). Never runs on PRs: no upload lane, keeps the canary's PR
+  # leg light.
+  upload-integration-tests:
+    name: Upload-dependent integration tests
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: >- # v6.0.2
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Set up Docker Buildx
+        uses: >- # v3.9.0
+          docker/setup-buildx-action@f7ce87c1d6bead3e36075b2ce75da1f6cc28aaca
+
+      - name: Build image
+        uses: >- # v6.13.0
+          docker/build-push-action@ca877d9245402d1537745e0e356eab47c3520991
+        with:
+          context: .
+          file: ./deployment-examples/docker-compose/Dockerfile
+          build-args: |
+            OPT_LEVEL=fastbuild
+            ADDITIONAL_BAZEL_FLAGS=--extra_toolchains=@rust_toolchains//:all
+          load: true # Brings the image into `docker images` for docker-compose.
+          tags: trace_machina/nativelink:latest
+
+      - name: Run upload-dependent integration tests
+        env:
+          NL_LOCAL_UPLOADS: '1'
+        run: ./run_integration_tests.sh chunking_cache_test.sh simple_cache_test.sh
