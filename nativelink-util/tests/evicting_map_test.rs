@@ -230,8 +230,8 @@ async fn all_leased_entries_can_temporarily_exceed_capacity() -> Result<(), Erro
     let first_key = DigestInfo::try_new(HASH1, 0)?;
     let second_key = DigestInfo::try_new(HASH2, 0)?;
 
-    // With no unleased victim, pressure insertion must not repeatedly scan
-    // and evict active inputs just to satisfy max_count.
+    // With no evictable victim, pressure insertion must not evict active
+    // inputs just to satisfy max_count.
     evicting_map.lease_key(first_key);
     evicting_map.lease_key(second_key);
     evicting_map
@@ -253,6 +253,117 @@ async fn all_leased_entries_can_temporarily_exceed_capacity() -> Result<(), Erro
         evicting_map.size_for_key(&second_key).await,
         Some(DATA.len() as u64),
         "the still-leased entry must remain available",
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn evictable_lru_tracks_unleased_access() -> Result<(), Error> {
+    const DATA: &str = "12345678";
+    let evicting_map = EvictingMap::<DigestInfo, DigestInfo, BytesWrapper, MockInstantWrapped>::new(
+        &EvictionPolicy {
+            max_count: 3,
+            max_seconds: 0,
+            max_bytes: 0,
+            evict_bytes: 0,
+        },
+        MockInstantWrapped::default(),
+    );
+    let first_key = DigestInfo::try_new(HASH1, 0)?;
+    let leased_key = DigestInfo::try_new(HASH2, 0)?;
+    let third_key = DigestInfo::try_new(HASH3, 0)?;
+    let fourth_key = DigestInfo::try_new(HASH4, 0)?;
+
+    evicting_map
+        .insert(first_key, Bytes::from(DATA).into())
+        .await;
+    evicting_map
+        .insert(leased_key, Bytes::from(DATA).into())
+        .await;
+    evicting_map
+        .insert(third_key, Bytes::from(DATA).into())
+        .await;
+
+    // Removing a key from the evictable index must not make the next
+    // unleased insertion scan or evict the active input.
+    evicting_map.lease_key(leased_key);
+    // A normal read promotes both indexes. If only the resident LRU were
+    // updated, `first_key` would be selected instead of `third_key`.
+    assert_eq!(
+        evicting_map.get(&first_key).await,
+        Some(Bytes::from(DATA).into())
+    );
+    evicting_map
+        .insert(fourth_key, Bytes::from(DATA).into())
+        .await;
+    assert_eq!(
+        evicting_map.size_for_key(&first_key).await,
+        Some(DATA.len() as u64),
+        "an unleased read must promote the evictable LRU as well",
+    );
+    assert_eq!(
+        evicting_map.size_for_key(&third_key).await,
+        None,
+        "the least-recently used unleased entry should be evicted",
+    );
+    assert_eq!(
+        evicting_map.size_for_key(&leased_key).await,
+        Some(DATA.len() as u64),
+        "leased entries are never eviction candidates",
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn released_lease_reenters_evictable_lru_as_mru() -> Result<(), Error> {
+    const DATA: &str = "12345678";
+    let evicting_map = EvictingMap::<DigestInfo, DigestInfo, BytesWrapper, MockInstantWrapped>::new(
+        &EvictionPolicy {
+            max_count: 2,
+            max_seconds: 0,
+            max_bytes: 0,
+            evict_bytes: 0,
+        },
+        MockInstantWrapped::default(),
+    );
+    let older_key = DigestInfo::try_new(HASH1, 0)?;
+    let leased_key = DigestInfo::try_new(HASH2, 0)?;
+    let resident_key = DigestInfo::try_new(HASH3, 0)?;
+
+    evicting_map
+        .insert(older_key, Bytes::from(DATA).into())
+        .await;
+    evicting_map.lease_key(leased_key);
+    evicting_map
+        .insert(leased_key, Bytes::from(DATA).into())
+        .await;
+    evicting_map
+        .insert(resident_key, Bytes::from(DATA).into())
+        .await;
+    assert_eq!(
+        evicting_map.size_for_key(&older_key).await,
+        None,
+        "the ordinary unleased entry should be evicted while the lease is active",
+    );
+
+    // Releasing a resident key re-enters the candidate index as MRU. The
+    // existing unleased `resident_key` is therefore evicted before the just-released
+    // key when another item creates pressure.
+    evicting_map.release_key(&leased_key).await;
+    evicting_map
+        .insert(older_key, Bytes::from(DATA).into())
+        .await;
+    assert_eq!(
+        evicting_map.size_for_key(&leased_key).await,
+        Some(DATA.len() as u64),
+        "a released key should re-enter as MRU",
+    );
+    assert_eq!(
+        evicting_map.size_for_key(&resident_key).await,
+        None,
+        "older unleased entries should be evicted before a just-released key",
     );
 
     Ok(())
@@ -849,6 +960,30 @@ async fn range_multiple_items_test() -> Result<(), Error> {
         let found_values = get_map_range(&evicting_map, KEY2.to_string()..KEY3.to_string()).await;
         assert_eq!(expected_values, found_values);
     }
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn replacing_entry_keeps_filter_index_consistent() -> Result<(), Error> {
+    let evicting_map = EvictingMap::<DigestInfo, DigestInfo, BytesWrapper, MockInstantWrapped>::new(
+        &EvictionPolicy::default(),
+        MockInstantWrapped::default(),
+    );
+    let key = DigestInfo::try_new(HASH1, 0)?;
+    let first_value = BytesWrapper(Bytes::from_static(b"first"));
+    let second_value = BytesWrapper(Bytes::from_static(b"second"));
+
+    evicting_map.enable_filtering().await;
+    evicting_map.insert(key, first_value).await;
+    evicting_map.insert(key, second_value.clone()).await;
+
+    let mut values = Vec::new();
+    evicting_map.range(.., |_, value| {
+        values.push(value.clone());
+        true
+    });
+    assert_eq!(values, vec![second_value]);
 
     Ok(())
 }
