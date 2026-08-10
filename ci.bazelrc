@@ -24,8 +24,18 @@
 # Remote cache + BES for lanes that still execute locally. Safe on any host.
 common:nl-cache --remote_timeout=600
 common:nl-cache --remote_retries=5
+# Emit the optional BEP records that are most useful for invocation and target
+# inspection. These flags are shared by the Bazel 8 and Bazel 9 CI lanes.
 common:nl-cache --build_event_publish_all_actions
-common:nl-cache --bes_upload_mode=fully_async
+common:nl-cache --experimental_bep_target_summary
+common:nl-cache --experimental_build_event_expand_filesets
+common:nl-cache --experimental_run_bep_event_include_residue
+common:nl-cache --bes_lifecycle_events
+# CI must not report success before the backend has acknowledged the complete
+# stream. `fully_async` may lose events, leave streams incomplete, and omit the
+# final lifecycle events when a runner exits or an upload transiently fails.
+common:nl-cache --bes_upload_mode=wait_for_upload_complete
+common:nl-cache --build_event_upload_max_retries=8
 
 # Main-branch mode: populate the shared cache. Only TraceMachina main-branch
 # identities may hold a write-capable key; PR lanes instead get a plain
