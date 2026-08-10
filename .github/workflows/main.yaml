@@ -94,6 +94,19 @@ jobs:
       uses: >- # v6.0.2
         actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
+    - name: Setup NativeLink Cloud
+      uses: ./.github/actions/setup-nativelink-cloud
+      with:
+        ci-mode: ${{ vars.NATIVELINK_CI_MODE }}
+        claim-base: ${{ secrets.NATIVELINK_STAGING_CLAIM_BASE }}
+        bes-results-url: ${{ secrets.NATIVELINK_STAGING_BES_RESULTS_URL }}
+        api-key: >-
+          ${{ github.event_name == 'push'
+              && secrets.NATIVELINK_STAGING_API_KEY_RW
+              || secrets.NATIVELINK_STAGING_API_KEY_RO }}
+        mode: ${{ github.event_name == 'push' && 'write' || 'read' }}
+        exec: ${{ runner.os == 'Linux' && 'on' || 'off' }}
+
     - name: Set up Docker Buildx
       uses: >- # v3.9.0
         docker/setup-buildx-action@f7ce87c1d6bead3e36075b2ce75da1f6cc28aaca
@@ -107,6 +120,8 @@ jobs:
         build-args: |
           OPT_LEVEL=fastbuild
           ADDITIONAL_BAZEL_FLAGS=--extra_toolchains=@rust_toolchains//:all
+        secret-files: |
+          nativelink-bazelrc=user.bazelrc
         load: true # This brings the build into `docker images` from buildx.
         tags: trace_machina/nativelink:latest
 
