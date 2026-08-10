@@ -105,11 +105,9 @@ struct State<
 > {
     lru: LruCache<K, EvictionItem<T>>,
     btree: Option<BTreeSet<K>>,
-    /// LRU index containing only entries that are currently eligible for
-    /// eviction. Normal writes and reads mirror the recency order of `lru`;
-    /// a final lease release intentionally re-enters a resident key as MRU.
-    /// Eviction can therefore inspect only candidates instead of scanning
-    /// leased entries.
+    /// A mirror of `lru` that contains only currently unleased keys.
+    /// Keeping this index in LRU order lets eviction visit candidates without
+    /// scanning entries that an active operation has pinned.
     evictable_lru: LruCache<K, ()>,
     /// Reference counts for keys that must not be evicted while an active
     /// operation is using them. A key can be leased before it is inserted,
@@ -142,6 +140,64 @@ impl<
     C: RemoveItemCallback<Q>,
 > State<K, Q, T, C>
 {
+    fn is_leased(&self, key: &Q) -> bool {
+        self.leases.contains_key(key)
+    }
+
+    /// Keep candidate recency aligned with a normal read from `lru`.
+    fn touch_evictable(&mut self, key: &Q) {
+        if !self.is_leased(key) {
+            self.evictable_lru.get(key);
+        }
+    }
+
+    /// Add a newly written key to the candidate index unless it is reserved
+    /// by a lease that was acquired before insertion.
+    fn insert_evictable(&mut self, key: K) {
+        if !self.is_leased(key.borrow()) {
+            self.evictable_lru.put(key, ());
+        }
+    }
+
+    fn lease(&mut self, key: K) {
+        if let Some(lease_count) = self.leases.get_mut(key.borrow()) {
+            *lease_count = lease_count.saturating_add(1);
+            return;
+        }
+
+        self.evictable_lru.pop(key.borrow());
+        self.leases.insert(key, 1);
+    }
+
+    /// Release one reference and return the owned key when the lease ends.
+    fn release_lease(&mut self, key: &Q) -> Option<K> {
+        let remove_lease = match self.leases.get_mut(key) {
+            Some(lease_count) if *lease_count > 1 => {
+                *lease_count -= 1;
+                false
+            }
+            Some(_) => true,
+            None => false,
+        };
+        if !remove_lease {
+            return None;
+        }
+
+        Some(
+            self.leases
+                .remove_entry(key)
+                .expect("Lease must exist when its final reference is released")
+                .0,
+        )
+    }
+
+    /// Re-enter a resident key as the newest eviction candidate.
+    fn reinsert_evictable(&mut self, key: K) {
+        if self.lru.peek(key.borrow()).is_some() {
+            self.evictable_lru.put(key, ());
+        }
+    }
+
     /// Removes an item from the cache and returns the data for deferred cleanup.
     /// The caller is responsible for calling `unref()` on the returned data outside of the lock.
     #[must_use]
@@ -157,9 +213,7 @@ impl<
         if let Some(btree) = &mut self.btree {
             btree.remove(key);
         }
-        // `evictable_lru` intentionally has no entry for leased keys, but
-        // popping unconditionally keeps the two indexes self-healing if a
-        // caller removes a leased entry directly.
+        // Removal is the single place that clears every resident index.
         self.evictable_lru.pop(key);
         self.sum_store_size -= eviction_item.data.len();
         if replaced {
@@ -194,11 +248,8 @@ impl<
             .map(|old_item| self.remove(key.borrow(), &old_item, true));
 
         // `remove()` drops the old key from both indexes. Reinsert it after
-        // replacement so a write promotes an unleased key to MRU in both
-        // indexes and does not accidentally remove it from the B-tree.
-        if !self.leases.contains_key::<K>(key) {
-            self.evictable_lru.put(key.clone(), ());
-        }
+        // replacement so an unleased write is MRU in both LRU indexes.
+        self.insert_evictable(key.clone());
         if let Some(btree) = &mut self.btree {
             btree.insert(key.clone());
         }
@@ -399,20 +450,21 @@ where
 
     #[must_use]
     fn evict_items(&self, state: &mut State<K, Q, T, C>) -> (Vec<T>, Vec<RemoveFuture>) {
-        let Some((first_key, _)) = state.evictable_lru.peek_lru() else {
+        let Some((first_key, ())) = state.evictable_lru.peek_lru() else {
             return (Vec::new(), Vec::new());
         };
 
-        // Select all victims in one pass. The separate evictable LRU means
-        // leased entries are never scanned, while re-scanning the LRU from
-        // its tail after every removal is avoided when multiple victims are
-        // needed.
+        // Select all victims in one pass. The candidate index means leased
+        // entries are never scanned, and collecting keys first avoids
+        // restarting the LRU walk after each removal.
         let keys_to_evict = {
             let first_entry = state
                 .lru
                 .peek(first_key.borrow())
                 .expect("Evictable LRU key must be resident in the main LRU");
 
+            // Preserve the configured low-watermark behavior: once pressure
+            // is detected, keep evicting until `evict_bytes` is reclaimed.
             let max_bytes = if self.max_bytes != 0
                 && self.evict_bytes != 0
                 && self.should_evict(
@@ -429,26 +481,18 @@ where
             let mut keys_to_evict = Vec::new();
             let mut lru_len = state.lru.len();
             let mut sum_store_size = state.sum_store_size;
-            let mut consider_entry = |key: &K, entry: &EvictionItem<T>| {
+
+            for (key, ()) in state.evictable_lru.iter().rev() {
+                let entry = state
+                    .lru
+                    .peek(key.borrow())
+                    .expect("Evictable LRU key must be resident in the main LRU");
                 if !self.should_evict(lru_len, entry, sum_store_size, max_bytes) {
-                    return false;
+                    break;
                 }
                 keys_to_evict.push(key.clone());
                 lru_len -= 1;
                 sum_store_size -= entry.data.len();
-                true
-            };
-
-            if consider_entry(first_key, first_entry) {
-                for (key, _) in state.evictable_lru.iter().rev().skip(1) {
-                    let entry = state
-                        .lru
-                        .peek(key.borrow())
-                        .expect("Evictable LRU key must be resident in the main LRU");
-                    if !consider_entry(key, entry) {
-                        break;
-                    }
-                }
             }
             keys_to_evict
         };
@@ -503,9 +547,9 @@ where
             let mut data_to_unref = Vec::new();
             let mut removal_futures = Vec::new();
             for (key, result) in keys.into_iter().zip(results.iter_mut()) {
-                let is_leased = state.leases.contains_key(key.borrow());
-                if !is_leased && !peek {
-                    state.evictable_lru.get(key.borrow());
+                let is_leased = state.is_leased(key.borrow());
+                if !peek {
+                    state.touch_evictable(key.borrow());
                 }
                 let maybe_entry = if peek {
                     state.lru.peek_mut(key.borrow())
@@ -584,10 +628,8 @@ where
         let (data, expired_data, removal_futures) = {
             let mut state = self.state.lock();
             let lru_len = state.lru.len();
-            let is_leased = state.leases.contains_key(key.borrow());
-            if !is_leased {
-                state.evictable_lru.get(key.borrow());
-            }
+            let is_leased = state.is_leased(key.borrow());
+            state.touch_evictable(key.borrow());
             let entry = state.lru.get_mut(key.borrow())?;
             // Pass `sum_store_size=0` and `max_bytes=u64::MAX` so we only
             // consult TTL / count predicates — never the global byte budget.
@@ -697,13 +739,7 @@ where
     /// reserve a digest before populating the fast tier, so insertion and
     /// eviction cannot race with the start of input materialization.
     pub fn lease_key(&self, key: K) {
-        let mut state = self.state.lock();
-        let was_unleased = !state.leases.contains_key::<K>(&key);
-        if was_unleased {
-            state.evictable_lru.pop(key.borrow());
-        }
-        let lease_count = state.leases.entry(key).or_default();
-        *lease_count = lease_count.saturating_add(1);
+        self.state.lock().lease(key);
     }
 
     /// Release one lease and trim any entries that were retained while the
@@ -727,25 +763,10 @@ where
             let mut state = self.state.lock();
             let mut released_any = false;
             for key in keys {
-                let remove_lease = match state.leases.get_mut(key.borrow()) {
-                    Some(lease_count) if *lease_count > 1 => {
-                        *lease_count -= 1;
-                        false
-                    }
-                    Some(_) => true,
-                    None => false,
-                };
-                if remove_lease {
-                    let (leased_key, _) = state
-                        .leases
-                        .remove_entry(key.borrow())
-                        .expect("Lease must exist when its final reference is released");
-                    if state.lru.peek(leased_key.borrow()).is_some() {
-                        // A released key re-enters as MRU. This gives an
-                        // actively used input a fair chance to remain cached
-                        // after its action completes.
-                        state.evictable_lru.put(leased_key, ());
-                    }
+                if let Some(leased_key) = state.release_lease(key.borrow()) {
+                    // A released key re-enters as MRU, giving an actively used
+                    // input a fair chance to remain cached after its action.
+                    state.reinsert_evictable(leased_key);
                     released_any = true;
                 }
             }
@@ -849,9 +870,7 @@ where
     {
         let (evicted_items, removal_futures, removed_item) = {
             let mut state = self.state.lock();
-            if !state.leases.contains_key(key.borrow()) {
-                state.evictable_lru.get(key.borrow());
-            }
+            state.touch_evictable(key.borrow());
             if let Some(entry) = state.lru.get(key.borrow()) {
                 if !cond(&entry.data) {
                     return false;
