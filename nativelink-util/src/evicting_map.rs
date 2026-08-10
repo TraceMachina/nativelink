@@ -481,17 +481,14 @@ where
         // Pop the candidate index directly instead of collecting and cloning
         // all victim keys. Both indexes are protected by the same lock.
         loop {
-            let should_evict = match state.evictable_lru.peek_lru() {
-                Some((key, ())) => {
-                    let entry = state
-                        .lru
-                        .peek(key.borrow())
-                        .expect("Evictable LRU key must be resident in the main LRU");
-                    self.should_evict(state.lru.len(), entry, state.sum_store_size, max_bytes)
-                }
-                None => false,
+            let Some((key, ())) = state.evictable_lru.peek_lru() else {
+                break;
             };
-            if !should_evict {
+            let entry = state
+                .lru
+                .peek(key.borrow())
+                .expect("Evictable LRU key must be resident in the main LRU");
+            if !self.should_evict(state.lru.len(), entry, state.sum_store_size, max_bytes) {
                 break;
             }
 
