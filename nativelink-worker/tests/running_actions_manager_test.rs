@@ -345,7 +345,7 @@ mod tests {
                     upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
                     ..Default::default()
                 },
-                max_action_timeout: Duration::from_secs(600),
+                max_action_timeout: Duration::from_mins(10),
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
