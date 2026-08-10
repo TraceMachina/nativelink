@@ -35,7 +35,9 @@ use std::time::SystemTime;
 use bytes::{Bytes, BytesMut};
 use filetime::{FileTime, set_file_mtime};
 use formatx::Template;
-use futures::future::{BoxFuture, Future, FutureExt, TryFutureExt, try_join, try_join_all};
+use futures::future::{
+    BoxFuture, Future, FutureExt, TryFutureExt, join_all, try_join, try_join_all,
+};
 use futures::stream::{FuturesUnordered, StreamExt, TryStreamExt};
 use nativelink_config::cas_server::{
     EnvironmentSource, UploadActionResultConfig, UploadCacheResultsStrategy,
@@ -296,8 +298,7 @@ const DOWNLOAD_TO_DIRECTORY_CONCURRENCY: usize = 64;
 #[derive(Debug)]
 struct ActionInputLease {
     filesystem_stores: Vec<Arc<FilesystemStore>>,
-    digests: Mutex<HashSet<DigestInfo>>,
-    released: AtomicBool,
+    digests: Mutex<Option<HashSet<DigestInfo>>>,
 }
 
 impl ActionInputLease {
@@ -308,8 +309,7 @@ impl ActionInputLease {
     ) -> Arc<Self> {
         let lease = Arc::new(Self {
             filesystem_stores: cas_store.get_filesystem_stores(),
-            digests: Mutex::new(HashSet::new()),
-            released: AtomicBool::new(false),
+            digests: Mutex::new(Some(HashSet::new())),
         });
         lease.acquire(&command_digest);
         lease.acquire(&input_root_digest);
@@ -318,9 +318,9 @@ impl ActionInputLease {
 
     fn acquire(&self, digest: &DigestInfo) {
         let mut digests = self.digests.lock();
-        if self.released.load(Ordering::Acquire) {
+        let Some(digests) = digests.as_mut() else {
             return;
-        }
+        };
         if digests.insert(*digest) {
             for filesystem_store in &self.filesystem_stores {
                 filesystem_store.lease_digest(digest);
@@ -329,12 +329,7 @@ impl ActionInputLease {
     }
 
     fn take_release_work(&self) -> Option<(Vec<Arc<FilesystemStore>>, Vec<DigestInfo>)> {
-        if self.released.swap(true, Ordering::AcqRel) {
-            return None;
-        }
-        let digests = core::mem::take(&mut *self.digests.lock())
-            .into_iter()
-            .collect();
+        let digests = self.digests.lock().take()?.into_iter().collect();
         Some((self.filesystem_stores.clone(), digests))
     }
 
@@ -346,9 +341,15 @@ impl ActionInputLease {
         // action cleanup future cannot strand leases in a later filesystem
         // tier.
         let handle = background_spawn!("action_input_lease_release", async move {
-            release_filesystem_stores(filesystem_stores, &digests).await;
+            release_filesystem_stores(filesystem_stores, digests).await;
         });
         let _result = handle.await;
+    }
+}
+
+impl crate::directory_cache::DigestLease for ActionInputLease {
+    fn acquire(&self, digest: &DigestInfo) {
+        ActionInputLease::acquire(self, digest);
     }
 }
 
@@ -358,18 +359,21 @@ impl Drop for ActionInputLease {
             return;
         };
         background_spawn!("action_input_lease_drop", async move {
-            release_filesystem_stores(filesystem_stores, &digests).await;
+            release_filesystem_stores(filesystem_stores, digests).await;
         });
     }
 }
 
 async fn release_filesystem_stores(
     filesystem_stores: Vec<Arc<FilesystemStore>>,
-    digests: &[DigestInfo],
+    digests: Vec<DigestInfo>,
 ) {
-    for filesystem_store in &filesystem_stores {
-        filesystem_store.release_digests(digests).await;
-    }
+    join_all(
+        filesystem_stores
+            .iter()
+            .map(|filesystem_store| filesystem_store.release_digests(&digests)),
+    )
+    .await;
 }
 
 /// Aggressively download the digests of files and make a local folder from it. This function
@@ -667,15 +671,12 @@ async fn prepare_action_inputs_with_lease(
     work_directory: &str,
     input_lease: Option<Arc<ActionInputLease>>,
 ) -> Result<(), Error> {
-    // Try cache first if available
-    //
-    // A directory-cache hit does not visit the individual CAS digests, so an
-    // action input lease cannot protect the underlying fast-tier entries on
-    // that path. Use the normal traversal while a lease is active; it
-    // reserves each directory and file digest before fetching it.
-    if input_lease.is_none()
-        && let Some(cache) = directory_cache
-    {
+    // Try cache first if available. Cache hits are safe while an action lease
+    // is active because the directory cache pins its own materialized tree
+    // across the hardlink operation. On a miss, pass the action lease into
+    // cache construction so every CAS digest is reserved before it is
+    // fetched/populated.
+    if let Some(cache) = directory_cache {
         // `clonefile(2)` and `hardlink_directory_tree` both require the
         // destination to not exist. Remove the empty directory the caller
         // pre-created; without this the cache fails its precondition on every
@@ -683,10 +684,20 @@ async fn prepare_action_inputs_with_lease(
         fs::remove_dir(work_directory)
             .await
             .err_tip(|| format!("Failed to clear pre-created work directory {work_directory}"))?;
-        match cache
-            .get_or_create(*digest, Path::new(work_directory))
-            .await
-        {
+        let cache_result = if let Some(input_lease) = &input_lease {
+            cache
+                .get_or_create_with_lease(
+                    *digest,
+                    Path::new(work_directory),
+                    Some(input_lease.as_ref()),
+                )
+                .await
+        } else {
+            cache
+                .get_or_create(*digest, Path::new(work_directory))
+                .await
+        };
+        match cache_result {
             Ok(cache_hit) => {
                 // The materialized tree is already usable. The directory
                 // cache locks each entry down with `set_readonly_recursive`,
@@ -1226,8 +1237,10 @@ impl RunningActionImpl {
                 execution_metadata,
                 error: None,
             }),
-            // Always need to ensure that we're removed from the manager on Drop.
-            has_manager_entry: AtomicBool::new(true),
+            // Set to true only after the action is inserted into the manager.
+            // The constructor can fail the operation-id uniqueness check
+            // immediately after this object is created.
+            has_manager_entry: AtomicBool::new(false),
             // Only needs to be cleaned up after a prepare_action call, set there.
             did_cleanup: AtomicBool::new(true),
         }
@@ -2857,6 +2870,20 @@ impl RunningActionsManagerImpl {
             };
 
             if !should_wait {
+                let action_is_running = self
+                    .running_actions
+                    .lock()
+                    .get(operation_id)
+                    .and_then(Weak::upgrade)
+                    .is_some();
+                if action_is_running {
+                    return Err(make_err!(
+                        Code::AlreadyExists,
+                        "Action with operation_id {} is already running",
+                        operation_id
+                    ));
+                }
+
                 let dir_path =
                     PathBuf::from(&self.root_action_directory).join(operation_id.to_string());
 
@@ -3097,6 +3124,9 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                             ));
                     }
                     running_actions.insert(operation_id, Arc::downgrade(&running_action));
+                    running_action
+                        .has_manager_entry
+                        .store(true, Ordering::Release);
                 }
                 Ok(running_action)
             })

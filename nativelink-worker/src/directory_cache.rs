@@ -108,6 +108,13 @@ pub struct DirectoryCacheConfig {
     pub experimental_get_tree_prefetch: bool,
 }
 
+/// Receives every CAS digest before the directory cache starts materializing
+/// that node. Action workers use this hook to keep the digest pinned in their
+/// local eviction-managed CAS tiers for the duration of the action.
+pub trait DigestLease: Send + Sync {
+    fn acquire(&self, digest: &DigestInfo);
+}
+
 impl Default for DirectoryCacheConfig {
     fn default() -> Self {
         Self {
@@ -405,8 +412,25 @@ impl DirectoryCache {
     /// * `Ok(false)` - Cache miss (directory was constructed)
     /// * `Err` - Error during construction or hardlinking
     pub async fn get_or_create(&self, digest: DigestInfo, dest_path: &Path) -> Result<bool, Error> {
+        self.get_or_create_with_lease(digest, dest_path, None).await
+    }
+
+    /// Gets or creates a cached directory while optionally reserving each CAS
+    /// digest used by a construction.
+    ///
+    /// Existing cache hits only hardlink from the already-materialized cache
+    /// entry, whose own pin protects the source tree. On a miss, the lease is
+    /// called before the root, file, and child-directory digests are fetched
+    /// or populated, closing the admission-to-eviction race for active
+    /// actions.
+    pub async fn get_or_create_with_lease(
+        &self,
+        digest: DigestInfo,
+        dest_path: &Path,
+        lease: Option<&dyn DigestLease>,
+    ) -> Result<bool, Error> {
         let (hit, _size) = self
-            .get_or_create_entry(digest, dest_path, None, true)
+            .get_or_create_entry(digest, dest_path, None, true, lease)
             .await?;
         Ok(hit)
     }
@@ -430,8 +454,12 @@ impl DirectoryCache {
         dest_path: &Path,
         protos: Option<&HashMap<DigestInfo, ProtoDirectory>>,
         prefetch_on_miss: bool,
+        lease: Option<&dyn DigestLease>,
     ) -> Result<(bool, u64), Error> {
         self.maybe_log_summary();
+        if let Some(lease) = lease {
+            lease.acquire(&digest);
+        }
 
         // Fast path: serve from an existing entry.
         if let Some(size) = self.try_materialize_from_cache(&digest, dest_path).await {
@@ -464,7 +492,7 @@ impl DirectoryCache {
         // held until the end of this function — `forget_construction_lock`
         // only unmaps the Arc; any waiter already cloned it before blocking.
         let result = self
-            .construct_and_materialize(digest, dest_path, protos, prefetch_on_miss)
+            .construct_and_materialize(digest, dest_path, protos, prefetch_on_miss, lease)
             .await;
         self.forget_construction_lock(&digest).await;
         result
@@ -526,6 +554,7 @@ impl DirectoryCache {
         dest_path: &Path,
         protos: Option<&HashMap<DigestInfo, ProtoDirectory>>,
         prefetch_on_miss: bool,
+        lease: Option<&dyn DigestLease>,
     ) -> Result<(bool, u64), Error> {
         // Re-check: another task may have just constructed this digest while
         // we waited on the construction lock. If the entry turns out to be
@@ -567,7 +596,10 @@ impl DirectoryCache {
         let protos = prefetched.as_ref().or(protos);
         let temp_path = self.allocate_scratch_path(TEMP_PREFIX);
         let mut temp_guard = ScratchGuard::new(temp_path.clone());
-        let size = match self.construct_directory(digest, &temp_path, protos).await {
+        let size = match self
+            .construct_directory(digest, &temp_path, protos, lease)
+            .await
+        {
             Ok(size) => size,
             Err(e) => {
                 temp_guard.disarm();
@@ -858,9 +890,13 @@ impl DirectoryCache {
         digest: DigestInfo,
         dest_path: &'a Path,
         protos: Option<&'a HashMap<DigestInfo, ProtoDirectory>>,
+        lease: Option<&'a dyn DigestLease>,
     ) -> Pin<Box<dyn Future<Output = Result<u64, Error>> + Send + 'a>> {
         Box::pin(async move {
             debug!(?digest, ?dest_path, "Constructing directory");
+            if let Some(lease) = lease {
+                lease.acquire(&digest);
+            }
 
             // Use the prefetched proto when available; otherwise fetch it
             // (permit held only for the fetch). A prefetch-map miss (e.g.
@@ -885,6 +921,11 @@ impl DirectoryCache {
                 if let Some(file_digest) = &file.digest {
                     // size_bytes is non-negative; clamp defensively.
                     total_size += u64::try_from(file_digest.size_bytes).unwrap_or(0);
+                    if let Some(lease) = lease
+                        && let Ok(file_digest) = DigestInfo::try_from(file_digest)
+                    {
+                        lease.acquire(&file_digest);
+                    }
                 }
             }
 
@@ -905,8 +946,14 @@ impl DirectoryCache {
                 }));
             }
             for dir_node in &directory.directories {
+                if let Some(lease) = lease
+                    && let Some(dir_digest) = &dir_node.digest
+                    && let Ok(dir_digest) = DigestInfo::try_from(dir_digest)
+                {
+                    lease.acquire(&dir_digest);
+                }
                 node_futures.push(Box::pin(
-                    self.create_subdirectory(dest_path, dir_node, protos),
+                    self.create_subdirectory(dest_path, dir_node, protos, lease),
                 ));
             }
             for symlink in &directory.symlinks {
@@ -1111,6 +1158,7 @@ impl DirectoryCache {
         parent: &Path,
         dir_node: &DirectoryNode,
         protos: Option<&HashMap<DigestInfo, ProtoDirectory>>,
+        lease: Option<&dyn DigestLease>,
     ) -> Result<u64, Error> {
         let dir_path = parent.join(&dir_node.name);
         let digest =
@@ -1130,7 +1178,7 @@ impl DirectoryCache {
             // through this method, so nested subtrees get their own entries
             // too (leaf-level reuse).
             let (hit, _size) = self
-                .get_or_create_entry(digest, &dir_path, protos, false)
+                .get_or_create_entry(digest, &dir_path, protos, false, lease)
                 .await?;
             let counter = if hit {
                 &self.subtree_hits
@@ -1150,7 +1198,8 @@ impl DirectoryCache {
         }
 
         // Recursively construct subdirectory
-        self.construct_directory(digest, &dir_path, protos).await
+        self.construct_directory(digest, &dir_path, protos, lease)
+            .await
     }
 
     /// Creates a symlink from a `SymlinkNode`

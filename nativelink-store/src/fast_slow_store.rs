@@ -215,10 +215,11 @@ impl FastSlowStore {
 
     /// Returns the filesystem-backed tiers that can evict a digest.
     ///
-    /// The fast store is normally a `FilesystemStore`, while the slow store
-    /// may be one behind a `RefStore`. `Store::downcast_ref` follows those
-    /// references through `inner_store`, so callers can protect both local
-    /// eviction maps without depending on the configured wrapper stack.
+    /// The worker's fast store is normally a `FilesystemStore`, while the slow
+    /// store may be one behind a `RefStore`. `Store::downcast_ref` follows
+    /// wrappers that delegate `inner_store`; transforming wrappers intentionally
+    /// keep themselves visible because their digest-to-bytes mapping may differ,
+    /// so they are not recursively inspected here.
     pub fn get_filesystem_stores(&self) -> Vec<Arc<FilesystemStore>> {
         let mut stores = Vec::with_capacity(2);
         for store in [&self.fast_store, &self.slow_store] {

@@ -364,14 +364,6 @@ where
         is_over_size || old_item_exists || is_over_count
     }
 
-    fn oldest_unleased_key(state: &State<K, Q, T, C>) -> Option<K> {
-        state
-            .lru
-            .iter()
-            .rev()
-            .find_map(|(key, _)| (!state.leases.contains_key::<K>(key)).then(|| key.clone()))
-    }
-
     // Gets a debugging snapshot of the state of the map. It's inevitably out of date by the time it gets sent to the user
     // but does provide a momentary glimpse into possible issues e.g. if current_bytes is close to max_bytes
     pub fn get_snapshot(&self) -> EvictionSnapshot {
@@ -387,51 +379,67 @@ where
 
     #[must_use]
     fn evict_items(&self, state: &mut State<K, Q, T, C>) -> (Vec<T>, Vec<RemoveFuture>) {
-        let Some(first_key) = Self::oldest_unleased_key(state) else {
-            return (Vec::new(), Vec::new());
-        };
-        let Some(mut peek_entry) = state.lru.peek(first_key.borrow()) else {
-            return (Vec::new(), Vec::new());
-        };
+        // Select all victims in one pass. Re-scanning the LRU from its tail
+        // after every removal turns pressure eviction into O(n * victims)
+        // when a large active action has leased many entries.
+        let keys_to_evict = {
+            let mut unleased_entries = state
+                .lru
+                .iter()
+                .rev()
+                .filter(|(key, _)| !state.leases.contains_key::<K>(key));
+            let Some((first_key, first_entry)) = unleased_entries.next() else {
+                return (Vec::new(), Vec::new());
+            };
 
-        let max_bytes = if self.max_bytes != 0
-            && self.evict_bytes != 0
-            && self.should_evict(
-                state.lru.len(),
-                peek_entry,
-                state.sum_store_size,
-                self.max_bytes,
-            ) {
-            self.max_bytes.saturating_sub(self.evict_bytes)
-        } else {
-            self.max_bytes
+            let max_bytes = if self.max_bytes != 0
+                && self.evict_bytes != 0
+                && self.should_evict(
+                    state.lru.len(),
+                    first_entry,
+                    state.sum_store_size,
+                    self.max_bytes,
+                ) {
+                self.max_bytes.saturating_sub(self.evict_bytes)
+            } else {
+                self.max_bytes
+            };
+
+            let mut keys_to_evict = Vec::new();
+            let mut lru_len = state.lru.len();
+            let mut sum_store_size = state.sum_store_size;
+            let mut consider_entry = |key: &K, entry: &EvictionItem<T>| {
+                if !self.should_evict(lru_len, entry, sum_store_size, max_bytes) {
+                    return false;
+                }
+                keys_to_evict.push(key.clone());
+                lru_len -= 1;
+                sum_store_size -= entry.data.len();
+                true
+            };
+
+            if consider_entry(first_key, first_entry) {
+                for (key, entry) in unleased_entries {
+                    if !consider_entry(key, entry) {
+                        break;
+                    }
+                }
+            }
+            keys_to_evict
         };
 
         let mut items_to_unref = Vec::new();
         let mut removal_futures = Vec::new();
 
-        while self.should_evict(state.lru.len(), peek_entry, state.sum_store_size, max_bytes) {
-            let Some(key) = Self::oldest_unleased_key(state) else {
-                // Every remaining item is leased by an active operation. Keep
-                // the entries until those operations release their leases.
-                break;
-            };
-            let Some(eviction_item) = state.lru.pop(key.borrow()) else {
-                break;
-            };
+        for key in keys_to_evict {
+            let eviction_item = state
+                .lru
+                .pop(key.borrow())
+                .expect("Selected eviction key disappeared while state was locked");
             debug!(?key, "Evicting");
             let (data, futures) = state.remove(key.borrow(), &eviction_item, false);
             items_to_unref.push(data);
             removal_futures.extend(futures);
-
-            peek_entry = if let Some(next_key) = Self::oldest_unleased_key(state) {
-                let Some(entry) = state.lru.peek(next_key.borrow()) else {
-                    break;
-                };
-                entry
-            } else {
-                break;
-            };
         }
 
         (items_to_unref, removal_futures)

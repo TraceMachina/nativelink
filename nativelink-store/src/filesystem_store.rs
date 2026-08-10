@@ -1270,13 +1270,6 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         self.evicting_map.lease_key(StoreKeyBorrow::from(key));
     }
 
-    /// Release one action-input lease and trim entries retained while the
-    /// lease was active.
-    pub async fn release_digest(&self, digest: &DigestInfo) {
-        let key: StoreKey<'static> = (*digest).into();
-        self.evicting_map.release_keys([&key]).await;
-    }
-
     /// Release a batch of action-input leases and trim retained entries once.
     pub async fn release_digests(&self, digests: &[DigestInfo]) {
         self.evicting_map
