@@ -283,6 +283,81 @@ fn persistent_worker_request_arguments(argv: &[String]) -> Vec<String> {
 /// overhead.
 const DOWNLOAD_TO_DIRECTORY_CONCURRENCY: usize = 64;
 
+/// Keeps every digest used by an action present in locally eviction-managed
+/// CAS tiers.
+///
+/// A lease is registered before a digest is populated. This is important for
+/// blobs that are not yet in the fast tier: reserving the key first prevents
+/// the insertion that follows from immediately evicting the blob under pressure.
+/// Both filesystem tiers of the worker's `FastSlowStore` are leased when
+/// present, so a slow CAS eviction cannot remove a queued input before the
+/// worker reaches it. The reference count also lets concurrent actions share a
+/// digest safely.
+#[derive(Debug)]
+struct ActionInputLease {
+    filesystem_stores: Vec<Arc<FilesystemStore>>,
+    digests: Mutex<HashSet<DigestInfo>>,
+    released: AtomicBool,
+}
+
+impl ActionInputLease {
+    fn new(
+        cas_store: Arc<FastSlowStore>,
+        command_digest: DigestInfo,
+        input_root_digest: DigestInfo,
+    ) -> Arc<Self> {
+        let lease = Arc::new(Self {
+            filesystem_stores: cas_store.get_filesystem_stores(),
+            digests: Mutex::new(HashSet::new()),
+            released: AtomicBool::new(false),
+        });
+        lease.acquire(&command_digest);
+        lease.acquire(&input_root_digest);
+        lease
+    }
+
+    fn acquire(&self, digest: &DigestInfo) {
+        let mut digests = self.digests.lock();
+        if self.released.load(Ordering::Acquire) {
+            return;
+        }
+        if digests.insert(*digest) {
+            for filesystem_store in &self.filesystem_stores {
+                filesystem_store.lease_digest(digest);
+            }
+        }
+    }
+
+    async fn release(&self) {
+        if self.released.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let digests = std::mem::take(&mut *self.digests.lock());
+        for digest in digests {
+            for filesystem_store in &self.filesystem_stores {
+                filesystem_store.release_digest(&digest).await;
+            }
+        }
+    }
+}
+
+impl Drop for ActionInputLease {
+    fn drop(&mut self) {
+        if self.released.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let filesystem_stores = self.filesystem_stores.clone();
+        let digests = std::mem::take(&mut *self.digests.lock());
+        background_spawn!("action_input_lease_drop", async move {
+            for digest in digests {
+                for filesystem_store in &filesystem_stores {
+                    filesystem_store.release_digest(&digest).await;
+                }
+            }
+        });
+    }
+}
+
 /// Aggressively download the digests of files and make a local folder from it. This function
 /// gates each directory level to at most `DOWNLOAD_TO_DIRECTORY_CONCURRENCY`
 /// concurrent in-flight materialization futures.
@@ -299,7 +374,20 @@ pub fn download_to_directory<'a>(
     digest: &'a DigestInfo,
     current_directory: &'a str,
 ) -> BoxFuture<'a, Result<(), Error>> {
+    download_to_directory_with_lease(cas_store, filesystem_store, digest, current_directory, None)
+}
+
+fn download_to_directory_with_lease<'a>(
+    cas_store: &'a FastSlowStore,
+    filesystem_store: Pin<&'a FilesystemStore>,
+    digest: &'a DigestInfo,
+    current_directory: &'a str,
+    input_lease: Option<Arc<ActionInputLease>>,
+) -> BoxFuture<'a, Result<(), Error>> {
     async move {
+        if let Some(input_lease) = &input_lease {
+            input_lease.acquire(digest);
+        }
         let directory = get_and_decode_digest::<ProtoDirectory>(cas_store, digest.into())
             .await
             .err_tip(|| "Converting digest to Directory")?;
@@ -317,6 +405,9 @@ pub fn download_to_directory<'a>(
                 Some(properties) => (properties.mtime, properties.unix_mode),
                 None => (None, None),
             };
+            if let Some(input_lease) = &input_lease {
+                input_lease.acquire(&digest);
+            }
             futures.push(
                 cas_store
                     .populate_fast_store(digest.into())
@@ -465,16 +556,18 @@ pub fn download_to_directory<'a>(
                 .try_into()
                 .err_tip(|| "In Directory::file::digest")?;
             let new_directory_path = format!("{}/{}", current_directory, directory.name);
+            let input_lease = input_lease.clone();
             futures.push(
                 async move {
                     fs::create_dir(&new_directory_path)
                         .await
                         .err_tip(|| format!("Could not create directory {new_directory_path}"))?;
-                    download_to_directory(
+                    download_to_directory_with_lease(
                         cas_store,
                         filesystem_store,
                         &digest,
                         &new_directory_path,
+                        input_lease,
                     )
                     .await
                     .err_tip(|| format!("in download_to_directory : {new_directory_path}"))?;
@@ -534,8 +627,34 @@ pub async fn prepare_action_inputs(
     digest: &DigestInfo,
     work_directory: &str,
 ) -> Result<(), Error> {
+    prepare_action_inputs_with_lease(
+        directory_cache,
+        cas_store,
+        filesystem_store,
+        digest,
+        work_directory,
+        None,
+    )
+    .await
+}
+
+async fn prepare_action_inputs_with_lease(
+    directory_cache: &Option<Arc<crate::directory_cache::DirectoryCache>>,
+    cas_store: &FastSlowStore,
+    filesystem_store: Pin<&FilesystemStore>,
+    digest: &DigestInfo,
+    work_directory: &str,
+    input_lease: Option<Arc<ActionInputLease>>,
+) -> Result<(), Error> {
     // Try cache first if available
-    if let Some(cache) = directory_cache {
+    //
+    // A directory-cache hit does not visit the individual CAS digests, so an
+    // action input lease cannot protect the underlying fast-tier entries on
+    // that path. Use the normal traversal while a lease is active; it
+    // reserves each directory and file digest before fetching it.
+    if input_lease.is_none()
+        && let Some(cache) = directory_cache
+    {
         // `clonefile(2)` and `hardlink_directory_tree` both require the
         // destination to not exist. Remove the empty directory the caller
         // pre-created; without this the cache fails its precondition on every
@@ -584,7 +703,14 @@ pub async fn prepare_action_inputs(
     }
 
     // Traditional path (cache disabled or failed)
-    download_to_directory(cas_store, filesystem_store, digest, work_directory).await
+    download_to_directory_with_lease(
+        cas_store,
+        filesystem_store,
+        digest,
+        work_directory,
+        input_lease,
+    )
+    .await
 }
 
 #[cfg(target_family = "windows")]
@@ -1037,6 +1163,7 @@ pub struct RunningActionImpl {
     action_directory: String,
     work_directory: String,
     action_info: ActionInfo,
+    input_lease: Arc<ActionInputLease>,
     timeout: Duration,
     running_actions_manager: Arc<RunningActionsManagerImpl>,
     state: Mutex<RunningActionImplState>,
@@ -1054,12 +1181,18 @@ impl RunningActionImpl {
         running_actions_manager: Arc<RunningActionsManagerImpl>,
     ) -> Self {
         let work_directory = format!("{}/{}", action_directory, "work");
+        let input_lease = ActionInputLease::new(
+            running_actions_manager.cas_store.clone(),
+            action_info.command_digest,
+            action_info.input_root_digest,
+        );
         let (kill_channel_tx, kill_channel_rx) = oneshot::channel();
         Self {
             operation_id,
             action_directory,
             work_directory,
             action_info,
+            input_lease,
             timeout,
             running_actions_manager,
             state: Mutex::new(RunningActionImplState {
@@ -1122,12 +1255,13 @@ impl RunningActionImpl {
                 // Use directory cache if available for better performance.
                 self.metrics()
                     .download_to_directory
-                    .wrap(prepare_action_inputs(
+                    .wrap(prepare_action_inputs_with_lease(
                         &self.running_actions_manager.directory_cache,
                         &self.running_actions_manager.cas_store,
                         filesystem_store_pin,
                         &self.action_info.input_root_digest,
                         &self.work_directory,
+                        Some(self.input_lease.clone()),
                     ))
                     .await
             })
@@ -2092,6 +2226,10 @@ impl Drop for RunningActionImpl {
                         .cleanup_action(&self.operation_id),
                 );
             }
+            let input_lease = self.input_lease.clone();
+            background_spawn!("running_action_impl_release_input_lease", async move {
+                input_lease.release().await;
+            });
             return;
         }
         let operation_id = self.operation_id.clone();
@@ -2101,18 +2239,19 @@ impl Drop for RunningActionImpl {
         );
         let running_actions_manager = self.running_actions_manager.clone();
         let action_directory = self.action_directory.clone();
+        let input_lease = self.input_lease.clone();
         background_spawn!("running_action_impl_drop", async move {
-            let Err(err) =
-                do_cleanup(&running_actions_manager, &operation_id, &action_directory).await
-            else {
-                return;
-            };
-            error!(
-                %operation_id,
-                ?action_directory,
-                ?err,
-                "Error cleaning up action"
-            );
+            let cleanup_result =
+                do_cleanup(&running_actions_manager, &operation_id, &action_directory).await;
+            input_lease.release().await;
+            if let Err(err) = cleanup_result {
+                error!(
+                    %operation_id,
+                    ?action_directory,
+                    ?err,
+                    "Error cleaning up action"
+                );
+            }
         });
     }
 }
@@ -2210,6 +2349,7 @@ impl RunningAction for RunningActionImpl {
                     &self.action_directory,
                 )
                 .await;
+                self.input_lease.release().await;
                 self.has_manager_entry.store(false, Ordering::Release);
                 self.did_cleanup.store(true, Ordering::Release);
                 result.map(move |()| self)

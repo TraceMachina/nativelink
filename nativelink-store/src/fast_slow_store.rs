@@ -41,6 +41,8 @@ use parking_lot::Mutex;
 use tokio::sync::OnceCell;
 use tracing::{debug, info, trace, warn};
 
+use crate::filesystem_store::FilesystemStore;
+
 // TODO(palfrey) This store needs to be evaluated for more efficient memory usage,
 // there are many copies happening internally.
 
@@ -209,6 +211,31 @@ impl FastSlowStore {
 
     pub const fn slow_store(&self) -> &Store {
         &self.slow_store
+    }
+
+    /// Returns the filesystem-backed tiers that can evict a digest.
+    ///
+    /// The fast store is normally a `FilesystemStore`, while the slow store
+    /// may be one behind a `RefStore`. `Store::downcast_ref` follows those
+    /// references through `inner_store`, so callers can protect both local
+    /// eviction maps without depending on the configured wrapper stack.
+    pub fn get_filesystem_stores(&self) -> Vec<Arc<FilesystemStore>> {
+        let mut stores = Vec::with_capacity(2);
+        for store in [&self.fast_store, &self.slow_store] {
+            let Some(filesystem_store) = store
+                .downcast_ref::<FilesystemStore>(None)
+                .and_then(FilesystemStore::get_arc)
+            else {
+                continue;
+            };
+            if !stores
+                .iter()
+                .any(|existing| Arc::ptr_eq(existing, &filesystem_store))
+            {
+                stores.push(filesystem_store);
+            }
+        }
+        stores
     }
 
     pub fn get_arc(&self) -> Option<Arc<Self>> {

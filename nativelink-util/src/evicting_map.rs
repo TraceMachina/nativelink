@@ -20,7 +20,7 @@ use core::hash::Hash;
 use core::marker::PhantomData;
 use core::ops::RangeBounds;
 use core::pin::Pin;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use futures::StreamExt;
@@ -105,6 +105,10 @@ struct State<
 > {
     lru: LruCache<K, EvictionItem<T>>,
     btree: Option<BTreeSet<K>>,
+    /// Reference counts for keys that must not be evicted while an active
+    /// operation is using them. A key can be leased before it is inserted,
+    /// which closes the admission-to-insert race for cache populations.
+    leases: HashMap<K, u32>,
     #[metric(help = "Total size of all items in the store")]
     sum_store_size: u64,
 
@@ -276,6 +280,7 @@ where
             state: Mutex::new(State {
                 lru: LruCache::unbounded(),
                 btree: None,
+                leases: HashMap::new(),
                 sum_store_size: 0,
                 evicted_bytes: Counter::default(),
                 evicted_items: CounterWithTime::default(),
@@ -359,6 +364,14 @@ where
         is_over_size || old_item_exists || is_over_count
     }
 
+    fn oldest_unleased_key(state: &State<K, Q, T, C>) -> Option<K> {
+        state
+            .lru
+            .iter()
+            .rev()
+            .find_map(|(key, _)| (!state.leases.contains_key::<K>(key)).then(|| key.clone()))
+    }
+
     // Gets a debugging snapshot of the state of the map. It's inevitably out of date by the time it gets sent to the user
     // but does provide a momentary glimpse into possible issues e.g. if current_bytes is close to max_bytes
     pub fn get_snapshot(&self) -> EvictionSnapshot {
@@ -374,7 +387,10 @@ where
 
     #[must_use]
     fn evict_items(&self, state: &mut State<K, Q, T, C>) -> (Vec<T>, Vec<RemoveFuture>) {
-        let Some((_, mut peek_entry)) = state.lru.peek_lru() else {
+        let Some(first_key) = Self::oldest_unleased_key(state) else {
+            return (Vec::new(), Vec::new());
+        };
+        let Some(mut peek_entry) = state.lru.peek(first_key.borrow()) else {
             return (Vec::new(), Vec::new());
         };
 
@@ -395,16 +411,23 @@ where
         let mut removal_futures = Vec::new();
 
         while self.should_evict(state.lru.len(), peek_entry, state.sum_store_size, max_bytes) {
-            let (key, eviction_item) = state
-                .lru
-                .pop_lru()
-                .expect("Tried to peek() then pop() but failed");
+            let Some(key) = Self::oldest_unleased_key(state) else {
+                // Every remaining item is leased by an active operation. Keep
+                // the entries until those operations release their leases.
+                break;
+            };
+            let Some(eviction_item) = state.lru.pop(key.borrow()) else {
+                break;
+            };
             debug!(?key, "Evicting");
             let (data, futures) = state.remove(key.borrow(), &eviction_item, false);
             items_to_unref.push(data);
             removal_futures.extend(futures);
 
-            peek_entry = if let Some((_, entry)) = state.lru.peek_lru() {
+            peek_entry = if let Some(next_key) = Self::oldest_unleased_key(state) {
+                let Some(entry) = state.lru.peek(next_key.borrow()) else {
+                    break;
+                };
                 entry
             } else {
                 break;
@@ -447,6 +470,7 @@ where
             let mut data_to_unref = Vec::new();
             let mut removal_futures = Vec::new();
             for (key, result) in keys.into_iter().zip(results.iter_mut()) {
+                let is_leased = state.leases.contains_key(key.borrow());
                 let maybe_entry = if peek {
                     state.lru.peek_mut(key.borrow())
                 } else {
@@ -457,7 +481,7 @@ where
                         // Note: We need to check eviction because the item might be expired
                         // based on the current time. In such case, we remove the item while
                         // we are here.
-                        if self.should_evict(lru_len, entry, 0, u64::MAX) {
+                        if !is_leased && self.should_evict(lru_len, entry, 0, u64::MAX) {
                             *result = None;
                             if let Some((key, eviction_item)) = state.lru.pop_entry(key.borrow()) {
                                 info!(?key, "Item expired, evicting");
@@ -524,11 +548,12 @@ where
         let (data, expired_data, removal_futures) = {
             let mut state = self.state.lock();
             let lru_len = state.lru.len();
+            let is_leased = state.leases.contains_key(key.borrow());
             let entry = state.lru.get_mut(key.borrow())?;
             // Pass `sum_store_size=0` and `max_bytes=u64::MAX` so we only
             // consult TTL / count predicates — never the global byte budget.
             // Mirrors the per-key reap path in `sizes_for_keys`.
-            if self.should_evict(lru_len, entry, 0, u64::MAX) {
+            if !is_leased && self.should_evict(lru_len, entry, 0, u64::MAX) {
                 let (popped_key, eviction_item) = state
                     .lru
                     .pop_entry(key.borrow())
@@ -625,6 +650,40 @@ where
             .collect::<FuturesUnordered<_>>()
             .collect::<Vec<_>>()
             .await
+    }
+
+    /// Lease a key so size, count, and expiry eviction cannot remove it.
+    ///
+    /// Leasing before the value is inserted is intentional: an action can
+    /// reserve a digest before populating the fast tier, so insertion and
+    /// eviction cannot race with the start of input materialization.
+    pub fn lease_key(&self, key: K) {
+        let mut state = self.state.lock();
+        let lease_count = state.leases.entry(key).or_default();
+        *lease_count = lease_count.saturating_add(1);
+    }
+
+    /// Release one lease and trim any entries that were retained while the
+    /// lease was active.
+    pub async fn release_key(&self, key: &Q) {
+        let (items_to_unref, removal_futures) = {
+            let mut state = self.state.lock();
+            let Some(lease_count) = state.leases.get_mut(key) else {
+                return;
+            };
+            if *lease_count > 1 {
+                *lease_count -= 1;
+                return;
+            }
+            state.leases.remove(key);
+            self.evict_items(&mut state)
+        };
+
+        let mut futures: FuturesUnordered<_> = removal_futures.into_iter().collect();
+        while futures.next().await.is_some() {}
+
+        let mut futures: FuturesUnordered<_> = items_to_unref.iter().map(LenEntry::unref).collect();
+        while futures.next().await.is_some() {}
     }
 
     fn inner_insert_many<It>(
