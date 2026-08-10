@@ -164,7 +164,7 @@ impl<
 
     fn lease(&mut self, key: K) {
         if let Some(lease_count) = self.leases.get_mut(key.borrow()) {
-            *lease_count = lease_count.saturating_add(1);
+            *lease_count = lease_count.checked_add(1).expect("lease count overflow");
             return;
         }
 
@@ -174,15 +174,9 @@ impl<
 
     /// Release one reference and return the owned key when the lease ends.
     fn release_lease(&mut self, key: &Q) -> Option<K> {
-        let remove_lease = match self.leases.get_mut(key) {
-            Some(lease_count) if *lease_count > 1 => {
-                *lease_count -= 1;
-                false
-            }
-            Some(_) => true,
-            None => false,
-        };
-        if !remove_lease {
+        let lease_count = self.leases.get_mut(key)?;
+        if *lease_count > 1 {
+            *lease_count -= 1;
             return None;
         }
 
@@ -216,7 +210,7 @@ impl<
         if let Some(btree) = &mut self.btree {
             btree.remove(key);
         }
-        // Removal is the single place that clears every resident index.
+        // Keep every auxiliary resident index in sync with the main LRU.
         self.evictable_lru.pop(key);
         self.sum_store_size -= eviction_item.data.len();
         if replaced {

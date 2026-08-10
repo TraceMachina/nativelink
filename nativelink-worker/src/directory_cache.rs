@@ -898,7 +898,8 @@ impl DirectoryCache {
     ) -> Pin<Box<dyn Future<Output = Result<u64, Error>> + Send + 'a>> {
         Box::pin(async move {
             debug!(?digest, ?dest_path, "Constructing directory");
-            acquire_digest(lease, &digest);
+            // The root is reserved by `get_or_create_entry`; child digests are
+            // reserved before their recursive futures are queued below.
 
             // Use the prefetched proto when available; otherwise fetch it
             // (permit held only for the fetch). A prefetch-map miss (e.g.

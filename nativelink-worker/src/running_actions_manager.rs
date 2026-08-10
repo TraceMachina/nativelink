@@ -311,12 +311,12 @@ impl ActionInputLease {
             filesystem_stores: cas_store.get_filesystem_stores(),
             digests: Mutex::new(Some(HashSet::new())),
         });
-        lease.acquire(&command_digest);
-        lease.acquire(&input_root_digest);
+        lease.lease_digest(&command_digest);
+        lease.lease_digest(&input_root_digest);
         lease
     }
 
-    fn acquire(&self, digest: &DigestInfo) {
+    fn lease_digest(&self, digest: &DigestInfo) {
         let mut digests = self.digests.lock();
         let Some(digests) = digests.as_mut() else {
             return;
@@ -356,7 +356,7 @@ impl ActionInputLease {
 
 impl crate::directory_cache::DigestLease for ActionInputLease {
     fn acquire(&self, digest: &DigestInfo) {
-        Self::acquire(self, digest);
+        self.lease_digest(digest);
     }
 }
 
@@ -406,7 +406,7 @@ fn download_to_directory_with_lease<'a>(
 ) -> BoxFuture<'a, Result<(), Error>> {
     async move {
         if let Some(input_lease) = &input_lease {
-            input_lease.acquire(digest);
+            input_lease.lease_digest(digest);
         }
         let directory = get_and_decode_digest::<ProtoDirectory>(cas_store, digest.into())
             .await
@@ -426,7 +426,7 @@ fn download_to_directory_with_lease<'a>(
                 None => (None, None),
             };
             if let Some(input_lease) = &input_lease {
-                input_lease.acquire(&digest);
+                input_lease.lease_digest(&digest);
             }
             futures.push(
                 cas_store
@@ -581,7 +581,7 @@ fn download_to_directory_with_lease<'a>(
                 // polled. Without this, a large parent can leave later
                 // directory digests exposed to slow-tier eviction while the
                 // first batch of children is being materialized.
-                input_lease.acquire(&digest);
+                input_lease.lease_digest(&digest);
             }
             let input_lease = input_lease.clone();
             futures.push(
