@@ -291,10 +291,10 @@ const DOWNLOAD_TO_DIRECTORY_CONCURRENCY: usize = 64;
 /// A lease is registered before a digest is populated. This is important for
 /// blobs that are not yet in the fast tier: reserving the key first prevents
 /// the insertion that follows from immediately evicting the blob under pressure.
-/// Both filesystem tiers of the worker's `FastSlowStore` are leased when
-/// present, so a slow CAS eviction cannot remove a queued input before the
-/// worker reaches it. The reference count also lets concurrent actions share a
-/// digest safely.
+/// Every directly discoverable filesystem tier of the worker's
+/// `FastSlowStore` is leased when present (including a `RefStore` target).
+/// Transforming wrappers remain opaque by design. The reference count lets
+/// concurrent actions share a digest safely.
 #[derive(Debug)]
 struct ActionInputLease {
     filesystem_stores: Vec<Arc<FilesystemStore>>,

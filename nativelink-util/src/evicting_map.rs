@@ -455,53 +455,50 @@ where
             return (Vec::new(), Vec::new());
         };
 
-        // Select all victims in one pass. The candidate index means leased
-        // entries are never scanned, and collecting keys first avoids
-        // restarting the LRU walk after each removal.
-        let keys_to_evict = {
-            let first_entry = state
-                .lru
-                .peek(first_key.borrow())
-                .expect("Evictable LRU key must be resident in the main LRU");
+        let first_entry = state
+            .lru
+            .peek(first_key.borrow())
+            .expect("Evictable LRU key must be resident in the main LRU");
 
-            // Preserve the configured low-watermark behavior: once pressure
-            // is detected, keep evicting until `evict_bytes` is reclaimed.
-            let max_bytes = if self.max_bytes != 0
-                && self.evict_bytes != 0
-                && self.should_evict(
-                    state.lru.len(),
-                    first_entry,
-                    state.sum_store_size,
-                    self.max_bytes,
-                ) {
-                self.max_bytes.saturating_sub(self.evict_bytes)
-            } else {
-                self.max_bytes
-            };
-
-            let mut keys_to_evict = Vec::new();
-            let mut lru_len = state.lru.len();
-            let mut sum_store_size = state.sum_store_size;
-
-            for (key, ()) in state.evictable_lru.iter().rev() {
-                let entry = state
-                    .lru
-                    .peek(key.borrow())
-                    .expect("Evictable LRU key must be resident in the main LRU");
-                if !self.should_evict(lru_len, entry, sum_store_size, max_bytes) {
-                    break;
-                }
-                keys_to_evict.push(key.clone());
-                lru_len -= 1;
-                sum_store_size -= entry.data.len();
-            }
-            keys_to_evict
+        // Preserve the configured low-watermark behavior: once pressure is
+        // detected, keep evicting until `evict_bytes` is reclaimed.
+        let max_bytes = if self.max_bytes != 0
+            && self.evict_bytes != 0
+            && self.should_evict(
+                state.lru.len(),
+                first_entry,
+                state.sum_store_size,
+                self.max_bytes,
+            ) {
+            self.max_bytes.saturating_sub(self.evict_bytes)
+        } else {
+            self.max_bytes
         };
 
         let mut items_to_unref = Vec::new();
         let mut removal_futures = Vec::new();
 
-        for key in keys_to_evict {
+        // Pop the candidate index directly instead of collecting and cloning
+        // all victim keys. Both indexes are protected by the same lock.
+        loop {
+            let should_evict = match state.evictable_lru.peek_lru() {
+                Some((key, ())) => {
+                    let entry = state
+                        .lru
+                        .peek(key.borrow())
+                        .expect("Evictable LRU key must be resident in the main LRU");
+                    self.should_evict(state.lru.len(), entry, state.sum_store_size, max_bytes)
+                }
+                None => false,
+            };
+            if !should_evict {
+                break;
+            }
+
+            let (key, ()) = state
+                .evictable_lru
+                .pop_lru()
+                .expect("Evictable LRU key disappeared while state was locked");
             let eviction_item = state
                 .lru
                 .pop(key.borrow())
