@@ -196,6 +196,24 @@ impl<
         }
     }
 
+    fn peek_evictable(&self) -> Option<&EvictionItem<T>> {
+        let (key, ()) = self.evictable_lru.peek_lru()?;
+        Some(
+            self.lru
+                .peek(key.borrow())
+                .expect("Evictable LRU key must be resident in the main LRU"),
+        )
+    }
+
+    fn pop_evictable(&mut self) -> Option<(K, EvictionItem<T>)> {
+        let (candidate_key, ()) = self.evictable_lru.pop_lru()?;
+        let (key, entry) = self
+            .lru
+            .pop_entry(candidate_key.borrow())
+            .expect("Evictable LRU key must be resident in the main LRU");
+        Some((key, entry))
+    }
+
     /// Removes an item from the cache and returns the data for deferred cleanup.
     /// The caller is responsible for calling `unref()` on the returned data outside of the lock.
     #[must_use]
@@ -451,14 +469,9 @@ where
 
     #[must_use]
     fn evict_items(&self, state: &mut State<K, Q, T, C>) -> (Vec<T>, Vec<RemoveFuture>) {
-        let Some((first_key, ())) = state.evictable_lru.peek_lru() else {
+        let Some(first_entry) = state.peek_evictable() else {
             return (Vec::new(), Vec::new());
         };
-
-        let first_entry = state
-            .lru
-            .peek(first_key.borrow())
-            .expect("Evictable LRU key must be resident in the main LRU");
 
         // Preserve the configured low-watermark behavior: once pressure is
         // detected, keep evicting until `evict_bytes` is reclaimed.
@@ -480,26 +493,14 @@ where
 
         // Pop the candidate index directly instead of collecting and cloning
         // all victim keys. Both indexes are protected by the same lock.
-        loop {
-            let Some((key, ())) = state.evictable_lru.peek_lru() else {
-                break;
-            };
-            let entry = state
-                .lru
-                .peek(key.borrow())
-                .expect("Evictable LRU key must be resident in the main LRU");
+        while let Some(entry) = state.peek_evictable() {
             if !self.should_evict(state.lru.len(), entry, state.sum_store_size, max_bytes) {
                 break;
             }
 
-            let (key, ()) = state
-                .evictable_lru
-                .pop_lru()
+            let (key, eviction_item) = state
+                .pop_evictable()
                 .expect("Evictable LRU key disappeared while state was locked");
-            let eviction_item = state
-                .lru
-                .pop(key.borrow())
-                .expect("Selected eviction key disappeared while state was locked");
             debug!(?key, "Evicting");
             let (data, futures) = state.remove(key.borrow(), &eviction_item, false);
             items_to_unref.push(data);
@@ -857,26 +858,26 @@ where
         let (evicted_items, removal_futures, removed_item) = {
             let mut state = self.state.lock();
             state.touch_evictable(key.borrow());
-            if let Some(entry) = state.lru.get(key.borrow()) {
-                if !cond(&entry.data) {
-                    return false;
-                }
-                // First perform eviction
-                let (evicted_items, mut removal_futures) = self.evict_items(&mut state);
-
-                // Then try to remove the requested item
-                let removed_item = if let Some(entry) = state.lru.pop(key.borrow()) {
-                    let (item, more_removal_futures) = state.remove(key, &entry, false);
-                    removal_futures.extend(more_removal_futures);
-                    Some(item)
-                } else {
-                    None
-                };
-
-                (evicted_items, removal_futures, removed_item)
-            } else {
-                (vec![], vec![].into_iter().collect(), None)
+            let Some(entry) = state.lru.get(key.borrow()) else {
+                return false;
+            };
+            if !cond(&entry.data) {
+                return false;
             }
+
+            // First perform eviction
+            let (evicted_items, mut removal_futures) = self.evict_items(&mut state);
+
+            // Then try to remove the requested item
+            let removed_item = if let Some(entry) = state.lru.pop(key.borrow()) {
+                let (item, more_removal_futures) = state.remove(key, &entry, false);
+                removal_futures.extend(more_removal_futures);
+                Some(item)
+            } else {
+                None
+            };
+
+            (evicted_items, removal_futures, removed_item)
         };
 
         // Perform the async callbacks outside of the lock

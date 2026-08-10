@@ -337,13 +337,11 @@ impl ActionInputLease {
         let (filesystem_stores, digests) = self.take_release_work()?;
         Some(background_spawn!(
             "action_input_lease_release",
-            async move {
-                release_filesystem_stores(filesystem_stores, digests).await;
-            }
+            release_filesystem_stores(filesystem_stores, digests)
         ))
     }
 
-    async fn release(&self) {
+    async fn release(self: Arc<Self>) {
         let Some(handle) = self.spawn_release() else {
             return;
         };
@@ -372,7 +370,7 @@ async fn release_filesystem_stores(
 ) {
     join_all(
         filesystem_stores
-            .iter()
+            .into_iter()
             .map(|filesystem_store| filesystem_store.release_digests(&digests)),
     )
     .await;
@@ -2263,9 +2261,10 @@ impl Drop for RunningActionImpl {
                 );
             }
             let input_lease = self.input_lease.clone();
-            background_spawn!("running_action_impl_release_input_lease", async move {
-                input_lease.release().await;
-            });
+            background_spawn!(
+                "running_action_impl_release_input_lease",
+                input_lease.release()
+            );
             return;
         }
         let operation_id = self.operation_id.clone();
@@ -2391,7 +2390,7 @@ impl RunningAction for RunningActionImpl {
                 // lease is released. If this future is cancelled while the
                 // release task is finishing, Drop still observes a completed
                 // cleanup and cannot strand the action in the manager.
-                self.input_lease.release().await;
+                self.input_lease.clone().release().await;
                 result.map(move |()| self)
             })
             .await;
