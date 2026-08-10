@@ -333,16 +333,23 @@ impl ActionInputLease {
         Some((self.filesystem_stores.clone(), digests))
     }
 
+    fn spawn_release(&self) -> Option<tokio::task::JoinHandle<()>> {
+        let (filesystem_stores, digests) = self.take_release_work()?;
+        Some(background_spawn!(
+            "action_input_lease_release",
+            async move {
+                release_filesystem_stores(filesystem_stores, digests).await;
+            }
+        ))
+    }
+
     async fn release(&self) {
-        let Some((filesystem_stores, digests)) = self.take_release_work() else {
+        let Some(handle) = self.spawn_release() else {
             return;
         };
         // Detach the actual release before awaiting it so cancellation of the
         // action cleanup future cannot strand leases in a later filesystem
         // tier.
-        let handle = background_spawn!("action_input_lease_release", async move {
-            release_filesystem_stores(filesystem_stores, digests).await;
-        });
         let _result = handle.await;
     }
 }
@@ -355,12 +362,7 @@ impl crate::directory_cache::DigestLease for ActionInputLease {
 
 impl Drop for ActionInputLease {
     fn drop(&mut self) {
-        let Some((filesystem_stores, digests)) = self.take_release_work() else {
-            return;
-        };
-        background_spawn!("action_input_lease_drop", async move {
-            release_filesystem_stores(filesystem_stores, digests).await;
-        });
+        drop(self.spawn_release());
     }
 }
 

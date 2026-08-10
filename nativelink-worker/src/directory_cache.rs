@@ -115,6 +115,12 @@ pub trait DigestLease: Send + Sync {
     fn acquire(&self, digest: &DigestInfo);
 }
 
+fn acquire_digest(lease: Option<&dyn DigestLease>, digest: &DigestInfo) {
+    if let Some(lease) = lease {
+        lease.acquire(digest);
+    }
+}
+
 impl Default for DirectoryCacheConfig {
     fn default() -> Self {
         Self {
@@ -457,9 +463,7 @@ impl DirectoryCache {
         lease: Option<&dyn DigestLease>,
     ) -> Result<(bool, u64), Error> {
         self.maybe_log_summary();
-        if let Some(lease) = lease {
-            lease.acquire(&digest);
-        }
+        acquire_digest(lease, &digest);
 
         // Fast path: serve from an existing entry.
         if let Some(size) = self.try_materialize_from_cache(&digest, dest_path).await {
@@ -894,9 +898,7 @@ impl DirectoryCache {
     ) -> Pin<Box<dyn Future<Output = Result<u64, Error>> + Send + 'a>> {
         Box::pin(async move {
             debug!(?digest, ?dest_path, "Constructing directory");
-            if let Some(lease) = lease {
-                lease.acquire(&digest);
-            }
+            acquire_digest(lease, &digest);
 
             // Use the prefetched proto when available; otherwise fetch it
             // (permit held only for the fetch). A prefetch-map miss (e.g.
@@ -921,10 +923,8 @@ impl DirectoryCache {
                 if let Some(file_digest) = &file.digest {
                     // size_bytes is non-negative; clamp defensively.
                     total_size += u64::try_from(file_digest.size_bytes).unwrap_or(0);
-                    if let Some(lease) = lease
-                        && let Ok(file_digest) = DigestInfo::try_from(file_digest)
-                    {
-                        lease.acquire(&file_digest);
+                    if let Ok(file_digest) = DigestInfo::try_from(file_digest) {
+                        acquire_digest(lease, &file_digest);
                     }
                 }
             }
@@ -946,11 +946,10 @@ impl DirectoryCache {
                 }));
             }
             for dir_node in &directory.directories {
-                if let Some(lease) = lease
-                    && let Some(dir_digest) = &dir_node.digest
+                if let Some(dir_digest) = &dir_node.digest
                     && let Ok(dir_digest) = DigestInfo::try_from(dir_digest)
                 {
-                    lease.acquire(&dir_digest);
+                    acquire_digest(lease, &dir_digest);
                 }
                 node_futures.push(Box::pin(
                     self.create_subdirectory(dest_path, dir_node, protos, lease),

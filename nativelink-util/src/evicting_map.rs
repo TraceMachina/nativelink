@@ -145,10 +145,13 @@ impl<
     }
 
     /// Keep candidate recency aligned with a normal read from `lru`.
-    fn touch_evictable(&mut self, key: &Q) {
-        if !self.is_leased(key) {
-            self.evictable_lru.get(key);
+    /// Returns whether the key is leased so callers do not repeat the lookup.
+    fn touch_evictable(&mut self, key: &Q) -> bool {
+        if self.is_leased(key) {
+            return true;
         }
+        self.evictable_lru.get(key);
+        false
     }
 
     /// Add a newly written key to the candidate index unless it is reserved
@@ -423,8 +426,7 @@ where
     ) -> bool {
         let is_over_size = max_bytes != 0 && sum_store_size >= max_bytes;
 
-        let elapsed_seconds =
-            i32::try_from(self.anchor_time.elapsed().as_secs()).unwrap_or(i32::MAX);
+        let elapsed_seconds = self.elapsed_seconds();
         let evict_older_than_seconds = elapsed_seconds.saturating_sub(self.max_seconds);
         let old_item_exists =
             self.max_seconds != 0 && peek_entry.seconds_since_anchor < evict_older_than_seconds;
@@ -433,6 +435,10 @@ where
             self.max_count != 0 && u64::try_from(lru_len).unwrap_or(u64::MAX) > self.max_count;
 
         is_over_size || old_item_exists || is_over_count
+    }
+
+    fn elapsed_seconds(&self) -> i32 {
+        i32::try_from(self.anchor_time.elapsed().as_secs()).unwrap_or(i32::MAX)
     }
 
     // Gets a debugging snapshot of the state of the map. It's inevitably out of date by the time it gets sent to the user
@@ -547,10 +553,11 @@ where
             let mut data_to_unref = Vec::new();
             let mut removal_futures = Vec::new();
             for (key, result) in keys.into_iter().zip(results.iter_mut()) {
-                let is_leased = state.is_leased(key.borrow());
-                if !peek {
-                    state.touch_evictable(key.borrow());
-                }
+                let is_leased = if peek {
+                    state.is_leased(key.borrow())
+                } else {
+                    state.touch_evictable(key.borrow())
+                };
                 let maybe_entry = if peek {
                     state.lru.peek_mut(key.borrow())
                 } else {
@@ -573,9 +580,7 @@ where
                             }
                         } else {
                             if !peek {
-                                entry.seconds_since_anchor =
-                                    i32::try_from(self.anchor_time.elapsed().as_secs())
-                                        .unwrap_or(i32::MAX);
+                                entry.seconds_since_anchor = self.elapsed_seconds();
                             }
                             *result = Some(entry.data.len());
                         }
@@ -628,8 +633,7 @@ where
         let (data, expired_data, removal_futures) = {
             let mut state = self.state.lock();
             let lru_len = state.lru.len();
-            let is_leased = state.is_leased(key.borrow());
-            state.touch_evictable(key.borrow());
+            let is_leased = state.touch_evictable(key.borrow());
             let entry = state.lru.get_mut(key.borrow())?;
             // Pass `sum_store_size=0` and `max_bytes=u64::MAX` so we only
             // consult TTL / count predicates — never the global byte budget.
@@ -643,8 +647,7 @@ where
                 let (data, futures) = state.remove(popped_key.borrow(), &eviction_item, false);
                 (None, Some(data), futures)
             } else {
-                entry.seconds_since_anchor =
-                    i32::try_from(self.anchor_time.elapsed().as_secs()).unwrap_or(i32::MAX);
+                entry.seconds_since_anchor = self.elapsed_seconds();
                 (Some(entry.data.clone()), None, Vec::new())
             }
         };
@@ -664,12 +667,8 @@ where
     where
         K: 'static,
     {
-        self.insert_with_time(
-            key,
-            data,
-            i32::try_from(self.anchor_time.elapsed().as_secs()).unwrap_or(i32::MAX),
-        )
-        .await
+        self.insert_with_time(key, data, self.elapsed_seconds())
+            .await
     }
 
     /// Returns the replaced item if any.
@@ -711,11 +710,7 @@ where
 
         let (items_to_unref, removal_futures) = {
             let mut state = self.state.lock();
-            self.inner_insert_many(
-                &mut state,
-                inserts,
-                i32::try_from(self.anchor_time.elapsed().as_secs()).unwrap_or(i32::MAX),
-            )
+            self.inner_insert_many(&mut state, inserts, self.elapsed_seconds())
         };
 
         let mut futures: FuturesUnordered<_> = removal_futures.into_iter().collect();
