@@ -1736,7 +1736,7 @@ mod tests {
             b"hello-from-outside".len()
         );
         // Verify the blob actually landed in CAS by re-reading it.
-        let key: nativelink_util::store_trait::StoreKey<'_> = uploaded.digest.into();
+        let key: StoreKey<'_> = uploaded.digest.into();
         let blob = slow_store.as_ref().get_part_unchunked(key, 0, None).await?;
         assert_eq!(blob.as_ref(), b"hello-from-outside");
         Ok(())
@@ -1898,7 +1898,7 @@ mod tests {
             .clone()
             .expect("inner.txt must have a digest")
             .try_into()?;
-        let key: nativelink_util::store_trait::StoreKey<'_> = inner_digest.into();
+        let key: StoreKey<'_> = inner_digest.into();
         let blob = slow_store.as_ref().get_part_unchunked(key, 0, None).await?;
         assert_eq!(blob.as_ref(), b"inner-payload");
         Ok(())
