@@ -349,7 +349,7 @@ impl ActionInputLease {
 
 impl crate::directory_cache::DigestLease for ActionInputLease {
     fn acquire(&self, digest: &DigestInfo) {
-        ActionInputLease::acquire(self, digest);
+        Self::acquire(self, digest);
     }
 }
 
