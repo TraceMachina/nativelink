@@ -317,6 +317,48 @@ async fn evictable_lru_tracks_unleased_access() -> Result<(), Error> {
 }
 
 #[nativelink_test]
+async fn remove_if_tracks_unleased_access() -> Result<(), Error> {
+    const DATA: &str = "12345678";
+    let evicting_map = EvictingMap::<DigestInfo, DigestInfo, BytesWrapper, MockInstantWrapped>::new(
+        &EvictionPolicy {
+            max_count: 3,
+            max_seconds: 0,
+            max_bytes: 0,
+            evict_bytes: 0,
+        },
+        MockInstantWrapped::default(),
+    );
+    let first_key = DigestInfo::try_new(HASH1, 0)?;
+    let second_key = DigestInfo::try_new(HASH2, 0)?;
+    let third_key = DigestInfo::try_new(HASH3, 0)?;
+    let fourth_key = DigestInfo::try_new(HASH4, 0)?;
+
+    for key in [first_key, second_key, third_key] {
+        evicting_map.insert(key, Bytes::from(DATA).into()).await;
+    }
+    assert!(
+        !evicting_map.remove_if(&first_key, |_| false).await,
+        "the conditional removal should leave the entry resident",
+    );
+    evicting_map
+        .insert(fourth_key, Bytes::from(DATA).into())
+        .await;
+
+    assert_eq!(
+        evicting_map.size_for_key(&first_key).await,
+        Some(DATA.len() as u64),
+        "remove_if must promote the evictable LRU with the resident LRU",
+    );
+    assert_eq!(
+        evicting_map.size_for_key(&second_key).await,
+        None,
+        "the least-recently used unleased entry should be evicted",
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
 async fn released_lease_reenters_evictable_lru_as_mru() -> Result<(), Error> {
     const DATA: &str = "12345678";
     let evicting_map = EvictingMap::<DigestInfo, DigestInfo, BytesWrapper, MockInstantWrapped>::new(

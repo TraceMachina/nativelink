@@ -849,6 +849,9 @@ where
     {
         let (evicted_items, removal_futures, removed_item) = {
             let mut state = self.state.lock();
+            if !state.leases.contains_key(key.borrow()) {
+                state.evictable_lru.get(key.borrow());
+            }
             if let Some(entry) = state.lru.get(key.borrow()) {
                 if !cond(&entry.data) {
                     return false;
