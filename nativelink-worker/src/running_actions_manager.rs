@@ -2385,9 +2385,13 @@ impl RunningAction for RunningActionImpl {
                     &self.action_directory,
                 )
                 .await;
-                self.input_lease.release().await;
                 self.has_manager_entry.store(false, Ordering::Release);
                 self.did_cleanup.store(true, Ordering::Release);
+                // The work directory and manager entry are gone before the
+                // lease is released. If this future is cancelled while the
+                // release task is finishing, Drop still observes a completed
+                // cleanup and cannot strand the action in the manager.
+                self.input_lease.release().await;
                 result.map(move |()| self)
             })
             .await;

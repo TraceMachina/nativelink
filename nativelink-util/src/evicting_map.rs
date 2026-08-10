@@ -188,7 +188,8 @@ impl<
         )
     }
 
-    /// Re-enter a resident key as the newest eviction candidate.
+    /// Re-enter a resident key as the newest eviction candidate. Its age is
+    /// intentionally preserved, so a long lease does not extend the TTL.
     fn reinsert_evictable(&mut self, key: K) {
         if self.lru.peek(key.borrow()).is_some() {
             self.evictable_lru.put(key, ());
@@ -722,11 +723,13 @@ where
             .await
     }
 
-    /// Lease a key so size, count, and expiry eviction cannot remove it.
+    /// Lease a key so automatic size, count, and expiry eviction cannot remove it.
     ///
     /// Leasing before the value is inserted is intentional: an action can
     /// reserve a digest before populating the fast tier, so insertion and
-    /// eviction cannot race with the start of input materialization.
+    /// eviction cannot race with the start of input materialization. Explicit
+    /// `remove` and `remove_if` calls still remove leased entries; those paths
+    /// are used for deliberate deletion and filesystem self-healing.
     pub fn lease_key(&self, key: K) {
         self.state.lock().lease(key);
     }
