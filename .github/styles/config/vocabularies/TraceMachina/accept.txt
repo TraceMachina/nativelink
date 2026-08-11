@@ -200,6 +200,7 @@ rules_scala
 [Tt]oolchainize
 [Tt]oolchainized
 [Vv]endored
+[Vv]alidator
 dev_dependency
 Fumadocs
 Turborepo

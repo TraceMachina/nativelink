@@ -1108,7 +1108,10 @@ impl ZstdStore {
                 // the bulk decoder bounds its output by `expected_size`, so a
                 // failure here is corruption of already-stored bytes.
                 let mut decompressor = zstd::bulk::Decompressor::new().map_err(|e| {
-                    make_err!(Code::DataLoss, "Zstd decoder init failed in zstd store: {e}")
+                    make_err!(
+                        Code::DataLoss,
+                        "Zstd decoder init failed in zstd store: {e}"
+                    )
                 })?;
                 decompressor
                     .set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(
@@ -1120,9 +1123,9 @@ impl ZstdStore {
                             "Failed to cap zstd decoder window in zstd store: {e}"
                         )
                     })?;
-                decompressor.decompress(&physical, expected_size).map_err(|e| {
-                    make_err!(Code::DataLoss, "Zstd decode failed in zstd store: {e}")
-                })
+                decompressor
+                    .decompress(&physical, expected_size)
+                    .map_err(|e| make_err!(Code::DataLoss, "Zstd decode failed in zstd store: {e}"))
             })
             .await,
             "Failed to run zstd store batch decode task",
@@ -1263,8 +1266,8 @@ impl ZstdStore {
         let ((wire_bytes_consumed, collected), _permit, _inflight) =
             match tokio::time::timeout(self.stage_timeout, validate_fut).await {
                 Ok(joined) => {
-                    let (result, permit, inflight) = joined
-                        .err_tip(|| "Failed to run zstd store inline validation")?;
+                    let (result, permit, inflight) =
+                        joined.err_tip(|| "Failed to run zstd store inline validation")?;
                     (result?, permit, inflight)
                 }
                 Err(_elapsed) => return Err(self.stage_timeout_err()),
