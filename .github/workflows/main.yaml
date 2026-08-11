@@ -126,4 +126,10 @@ jobs:
         tags: trace_machina/nativelink:latest
 
     - name: Run tests
+      env:
+        # Merges to main are a trusted upload lane; PRs are not (keeps the
+        # repo-wide --remote_upload_local_results=false anti-poisoning default
+        # in force for PRs). Upload-dependent integration tests
+        # (chunking_cache_test, simple_cache_test) self-skip unless this is 1.
+        NL_LOCAL_UPLOADS: ${{ github.event_name == 'push' && '1' || '0' }}
       run: ./run_integration_tests.sh
