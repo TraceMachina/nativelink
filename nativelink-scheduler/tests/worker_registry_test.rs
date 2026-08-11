@@ -30,8 +30,11 @@ async fn is_worker_alive_logging() -> Result<(), Error> {
             .is_worker_alive(&worker_id, Duration::from_secs(10), SystemTime::UNIX_EPOCH)
             .await
     );
+    // `liveness` replaced the old `is_alive` bool: a two-state field could not
+    // express "not registered on this instance", which is what made
+    // multi-scheduler deployments time each other's actions out.
     assert!(logs_contain(
-        "FLOW: Worker liveness check worker_id=foo last_seen=1970-01-01T00:00:00Z timeout=10s is_alive=true"
+        "FLOW: Worker liveness check worker_id=foo last_seen=1970-01-01T00:00:00Z timeout=10s liveness=Alive"
     ));
     Ok(())
 }
