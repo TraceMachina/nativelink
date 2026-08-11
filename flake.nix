@@ -205,6 +205,12 @@
 
         docs = pkgs.callPackage ./tools/docs.nix {rust = pkgs.lre.stable-rust;};
 
+        bazel = pkgs.writeShellScriptBin "bazel" ''
+          unset TMPDIR TMP
+          exec ${pkgs.bazelisk}/bin/bazelisk "$@"
+        '';
+        bazel-retry = pkgs.writeScriptBin "bazel-retry" (builtins.readFile ./tools/bazel-retry.sh);
+
         inherit (nix2container.packages.${system}.nix2container) pullImage;
         inherit (nix2container.packages.${system}.nix2container) buildImage;
 
@@ -437,7 +443,7 @@
               inherit nativelink mongodb wait4x bazelisk;
             };
             rbe-toolchain-with-nativelink-test = pkgs.callPackage toolchain-examples/rbe-toolchain-test.nix {
-              inherit nativelink bazelisk;
+              inherit nativelink bazel-retry bazel;
             };
             buck2-with-nativelink-test = pkgs.callPackage integration_tests/buck2/buck2-with-nativelink-test.nix {
               inherit nativelink buck2;
@@ -510,36 +516,7 @@
           "${gnused}/bin"
         ];
         devShells.default = pkgs.mkShell {
-          packages = let
-            bazel = pkgs.writeShellScriptBin "bazel" ''
-              unset TMPDIR TMP
-              exec ${pkgs.bazelisk}/bin/bazelisk "$@"
-            '';
-            bazel-retry = pkgs.writeShellScriptBin "bazel-retry" ''
-              set -o pipefail
-              BAZEL_LOG=$(mktemp -t)
-              unset TMPDIR TMP
-              # Bazel's downloader retry only covers truncated downloads, not HTTP 5xx/403 failures,
-              # so a flaky fetch aborts the build with no retry. We retry the download in this case.
-              delay=5
-              for attempt in 1 2 3; do
-                if exec ${pkgs.bazelisk}/bin/bazelisk "$@" | tee ''${BAZEL_LOG}; then
-                  exit 0
-                fi
-                grep -E '^ERROR:' ''${BAZEL_LOG} \
-                  | grep -Eq 'GET returned (403|429|5[0-9][0-9])|Bad Gateway|Connection (reset|timed out)|read timed out|Could not resolve host' || {
-                  echo "Bazel failed (non-transient); not retrying"
-                  exit 1
-                }
-                [ "$attempt" -lt 3 ] || break
-                echo "Transient fetch error (attempt ''${attempt}); retrying in ''${delay}s..."
-                sleep "$delay"
-                delay=$((delay * 2))
-              done
-              echo "Bazel still failing after 3 attempts."
-              exit 1
-            '';
-          in
+          packages =
             [
               # Development tooling
               pkgs.git

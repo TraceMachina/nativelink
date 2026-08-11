@@ -1945,7 +1945,7 @@ async fn chunking_on_grpc_store_forbids_index_store() -> Result<(), Box<dyn core
                 headers: std::collections::HashMap::new(),
                 forward_headers: vec![],
                 experimental_read_batching: None,
-                experimental_remote_cache_compression: false,
+                experimental_remote_cache_compression: Some(false),
             }),
             &store_manager,
             None,
