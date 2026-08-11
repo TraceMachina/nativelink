@@ -577,15 +577,15 @@ most automatically generated changelogs provide.
 
     ```bash
     # Verify the SLSA provenance covers the artifact.
-    slsa-verifier verify-artifact nativelink-0.x.y-x86_64-unknown-linux-musl.tar.gz \
-      --provenance-path nativelink-0.x.y.intoto.jsonl \
+    slsa-verifier verify-artifact nativelink-1.x.y-x86_64-unknown-linux-musl.tar.gz \
+      --provenance-path nativelink-1.x.y.intoto.jsonl \
       --source-uri github.com/TraceMachina/nativelink \
       --source-tag v1.x.y
 
     # Verify the cosign signature.
-    cosign verify-blob nativelink-0.x.y-x86_64-unknown-linux-musl.tar.gz \
-      --signature nativelink-0.x.y-x86_64-unknown-linux-musl.tar.gz.sig \
-      --certificate nativelink-0.x.y-x86_64-unknown-linux-musl.tar.gz.pem \
+    cosign verify-blob nativelink-1.x.y-x86_64-unknown-linux-musl.tar.gz \
+      --signature nativelink-1.x.y-x86_64-unknown-linux-musl.tar.gz.sig \
+      --certificate nativelink-1.x.y-x86_64-unknown-linux-musl.tar.gz.pem \
       --certificate-identity-regexp '^https://github.com/TraceMachina/nativelink/' \
       --certificate-oidc-issuer https://token.actions.githubusercontent.com
     ```
