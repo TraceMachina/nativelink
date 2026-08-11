@@ -211,6 +211,10 @@ const fn is_retryable_code(code: Code) -> bool {
 // This store is usually a pass-through store, but can also be used as a CAS store. Using it as an
 // AC store has one major side-effect... The has() function may not give the proper size of the
 // underlying data. This might cause issues if embedded in certain stores.
+/// Largest `data` payload in a single `ByteStream` `WriteRequest`, kept under
+/// tonic's 4MiB default `max_decoding_message_size` with room to spare.
+const MAX_WRITE_REQUEST_DATA_BYTES: usize = 2 * 1024 * 1024;
+
 #[derive(Debug, MetricsComponent)]
 pub struct GrpcStore {
     #[metric(help = "Instance name for the store")]
@@ -1582,6 +1586,8 @@ impl StoreDriver for GrpcStore {
             reader: DropCloserReadHalf,
             did_error: bool,
             bytes_received: i64,
+            /// Remainder of a buffer too large to send as one `WriteRequest`.
+            pending: Bytes,
         }
 
         let is_digest_key = matches!(key, StoreKey::Digest(_));
@@ -1636,6 +1642,7 @@ impl StoreDriver for GrpcStore {
             reader,
             did_error: false,
             bytes_received: 0,
+            pending: Bytes::new(),
         };
 
         let stream = Box::pin(unfold(local_state, |mut local_state| async move {
@@ -1643,17 +1650,33 @@ impl StoreDriver for GrpcStore {
                 error!("GrpcStore::update() polled stream after error was returned");
                 return None;
             }
-            let data = match local_state
-                .reader
-                .recv()
-                .await
-                .err_tip(|| "In GrpcStore::update()")
-            {
-                Ok(data) => data,
-                Err(err) => {
-                    local_state.did_error = true;
-                    return Some((Err(err), local_state));
+            // Drain any remainder before reading more.
+            let data = if local_state.pending.is_empty() {
+                match local_state
+                    .reader
+                    .recv()
+                    .await
+                    .err_tip(|| "In GrpcStore::update()")
+                {
+                    Ok(data) => data,
+                    Err(err) => {
+                        local_state.did_error = true;
+                        return Some((Err(err), local_state));
+                    }
                 }
+            } else {
+                core::mem::take(&mut local_state.pending)
+            };
+
+            // `update_oneshot` writes a whole blob in one go, and a message
+            // over the receiver's decode limit is rejected outright rather
+            // than degrading, so split rather than forwarding it as-is.
+            let data = if data.len() > MAX_WRITE_REQUEST_DATA_BYTES {
+                let rest = data.slice(MAX_WRITE_REQUEST_DATA_BYTES..);
+                local_state.pending = rest;
+                data.slice(..MAX_WRITE_REQUEST_DATA_BYTES)
+            } else {
+                data
             };
 
             let write_offset = local_state.bytes_received;
@@ -1663,7 +1686,9 @@ impl StoreDriver for GrpcStore {
                 Ok(WriteRequest {
                     resource_name: local_state.resource_name.clone(),
                     write_offset,
-                    finish_write: data.is_empty(), // EOF is when no data was polled.
+                    // EOF is when no data was polled. A split always leaves a
+                    // non-empty remainder, so this cannot fire early.
+                    finish_write: data.is_empty(),
                     data,
                 }),
                 local_state,
