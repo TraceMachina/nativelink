@@ -512,7 +512,11 @@ async fn update_splits_buffers_larger_than_the_grpc_message_limit() -> Result<()
     const BLOB_LEN: usize = 9_869_079;
 
     let (server, port) = make_fake_bytestream_server_draining().await;
-    let spec = test_spec(format!("http://localhost:{port}"), false);
+    let mut spec = test_spec(format!("http://localhost:{port}"), false);
+    // This test moves and reassembles almost 10 MiB under instrumented builds.
+    // Keep the RPC deadline comfortably above sanitizer overhead; timeout
+    // behavior is not what this test exercises.
+    spec.rpc_timeout_s = 5;
     let store = GrpcStore::new(&spec).await?;
     let digest = DigestInfo::try_new(VALID_HASH, BLOB_LEN).unwrap();
 
