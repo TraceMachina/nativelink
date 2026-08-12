@@ -3,11 +3,44 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.6.4](https://github.com/TraceMachina/nativelink/compare/v1.6.3..1.6.4) - 2026-08-04
+
+### ⛰️  Features
+
+- Add issue templating for more approachable reports ([#2471](https://github.com/TraceMachina/nativelink/issues/2471)) - ([4eb80ad](https://github.com/TraceMachina/nativelink/commit/4eb80ad835753eff8e301d9086afe934930d26b7))
+- Add opt-in zstd wire compression to GrpcStore transfers ([#2596](https://github.com/TraceMachina/nativelink/issues/2596)) - ([64ca974](https://github.com/TraceMachina/nativelink/commit/64ca97402b2ce14fe5fcfe255130bb6b69db827b))
+
+### 🐛 Bug Fixes
+
+- Fix deadlock due to worker resource-tracking leak in scheduler [1.6-patch-1] ([#2642](https://github.com/TraceMachina/nativelink/issues/2642)) - ([7ddf1bd](https://github.com/TraceMachina/nativelink/commit/7ddf1bd1e03b5fff6569bf2e32092f8f6aa65208))
+- Fix duplicate executions of the same action that caused scheduler state to get out of sync [1.6-patch-6] ([#2648](https://github.com/TraceMachina/nativelink/issues/2648)) - ([4278d4b](https://github.com/TraceMachina/nativelink/commit/4278d4b3c15edfc6c269dd240f5bdd884478f1ec))
+- Fix S3 credential discovery over HTTP ([#2651](https://github.com/TraceMachina/nativelink/issues/2651)) - ([58dd792](https://github.com/TraceMachina/nativelink/commit/58dd792e274009b9bf3fc128b2ea3ad9ee8dafe6))
+- *(redis)* skip FT.AGGREGATE rows for docs that expired mid-query ([#2656](https://github.com/TraceMachina/nativelink/issues/2656)) - ([f784549](https://github.com/TraceMachina/nativelink/commit/f784549380576efc3556ad4ec3dd26f244f83e51))
+- *(error)* classify transient Redis failures as retryable ([#2657](https://github.com/TraceMachina/nativelink/issues/2657)) - ([56aa6f7](https://github.com/TraceMachina/nativelink/commit/56aa6f705cb53ebdc7eea2dc5aefc4d5a18e3783))
+- *(worker)* don't abort the worker when a disconnect catches an action in transit ([#2658](https://github.com/TraceMachina/nativelink/issues/2658)) - ([bafafc7](https://github.com/TraceMachina/nativelink/commit/bafafc78f8eddb68201ad76b43641b6bd2f45a35))
+
+### 📚 Documentation
+
+- *(config-reference)* regenerate for NativeLink ([#2652](https://github.com/TraceMachina/nativelink/issues/2652)) - ([4649c50](https://github.com/TraceMachina/nativelink/commit/4649c5034b0e04bce676b9825cb9bd15c52c5c69))
+- Zstd transfers consistency ([#2660](https://github.com/TraceMachina/nativelink/issues/2660)) - ([46a3202](https://github.com/TraceMachina/nativelink/commit/46a32026f2a1a572834f18c8c32108d7dc3496b5))
+- Add GTM to the docs site to improve developer experience ([#2661](https://github.com/TraceMachina/nativelink/issues/2661)) - ([af1bd74](https://github.com/TraceMachina/nativelink/commit/af1bd740f114e768b1a40741ce9b09919026b844))
+- remove NativeLink Cloud product listings and links ([#2637](https://github.com/TraceMachina/nativelink/issues/2637)) - ([d16a1d7](https://github.com/TraceMachina/nativelink/commit/d16a1d70b438f8616c93de96857e2f9a29421d5f))
+
+### 🧪 Testing & CI
+
+- bazel-retry improvements ([#2655](https://github.com/TraceMachina/nativelink/issues/2655)) - ([2c23a86](https://github.com/TraceMachina/nativelink/commit/2c23a867b01b5136af54c0e11baf6b5a2f04909b))
+
+### ⚙️ Miscellaneous
+
+- *(worker)* prevent upload_results deadlock when file count exceeds semaphore permits ([#2636](https://github.com/TraceMachina/nativelink/issues/2636)) ([#2638](https://github.com/TraceMachina/nativelink/issues/2638)) - ([7db3f70](https://github.com/TraceMachina/nativelink/commit/7db3f701323d2bdf1cbb271f499b3d3d2ffdd7f1))
+- Move Github bazel retry into a general command ([#2616](https://github.com/TraceMachina/nativelink/issues/2616)) - ([66055ac](https://github.com/TraceMachina/nativelink/commit/66055ac403391cdeeebcd45204b8b45e1c62171e))
+- Remove the marketing site tracker script ([#2612](https://github.com/TraceMachina/nativelink/issues/2612)) - ([4c2269a](https://github.com/TraceMachina/nativelink/commit/4c2269ac3da9508a07bc2b1b4be9f9c14d8fbdd2))
+
 ## [1.6.3](https://github.com/TraceMachina/nativelink/compare/v1.6.2..v1.6.3) - 2026-07-24
 
 ### ⛰️  Features
 
-- Add Google Tag Manager to the marketing site ([#2610](https://github.com/TraceMachina/nativelink/issues/2610)) - ([94f312a](https://github.com/TraceMachina/nativelink/commit/94f312a043847d5dd0f8ca95b676b00d4697c04d))
+- Add GTM to the corporate site ([#2610](https://github.com/TraceMachina/nativelink/issues/2610)) - ([94f312a](https://github.com/TraceMachina/nativelink/commit/94f312a043847d5dd0f8ca95b676b00d4697c04d))
 - Add the Leadfeeder tracker to the marketing site ([#2606](https://github.com/TraceMachina/nativelink/issues/2606)) - ([9700a4a](https://github.com/TraceMachina/nativelink/commit/9700a4a522de525b9121188f19bd1c74b2d4a10e))
 - Prefetch directory-cache tree protos with one GetTree stream ([#2546](https://github.com/TraceMachina/nativelink/issues/2546)) - ([2cbf21e](https://github.com/TraceMachina/nativelink/commit/2cbf21ef52f78ea95d0eb11f9f4396022619b70d))
 

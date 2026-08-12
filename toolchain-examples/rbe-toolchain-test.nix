@@ -1,8 +1,9 @@
 {
   nativelink,
   writeShellScriptBin,
-  bazelisk,
   jo,
+  bazel-retry,
+  bazel,
 }:
 writeShellScriptBin "rbe-toolchain-test" ''
   set -uo pipefail
@@ -63,7 +64,7 @@ writeShellScriptBin "rbe-toolchain-test" ''
 
   run_cmd() {
     cmd=$1
-    FULL_CMD="${bazelisk}/bin/bazelisk $cmd $CORE_BAZEL_ARGS"
+    FULL_CMD="PATH=${bazel}/bin:$PATH ${bazel-retry}/bin/bazel-retry $cmd $CORE_BAZEL_ARGS"
     echo $FULL_CMD
     echo -e \\n$FULL_CMD\\n >> toolchain-examples/cmd.log
     cmd_output=$(cd toolchain-examples && eval "$FULL_CMD" 2>&1 | tee -ai cmd.log)
