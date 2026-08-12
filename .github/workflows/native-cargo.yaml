@@ -5,13 +5,13 @@ on:
   push:
     branches: [main]
     paths-ignore:
-      - '.github/styles/**'
-      - 'web/**'
+      - ".github/styles/**"
+      - "web/**"
   pull_request:
     branches: [main]
     paths-ignore:
-      - '.github/styles/**'
-      - 'web/**'
+      - ".github/styles/**"
+      - "web/**"
 
 permissions: read-all
 
@@ -52,6 +52,18 @@ jobs:
 
       - name: Build on ${{ runner.os }}
         run: cargo build --all --profile=smol
+
+      - name: Set up Node.js for Azurite test runner
+        uses: >- # v7.0.0
+          actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: nativelink-store/tests/azurite_runner/package-lock.json
+
+      - name: Install Azurite for Azure store tests
+        run: npm ci
+        working-directory: nativelink-store/tests/azurite_runner
 
       - name: Test on ${{ runner.os }}
         run: cargo test --all --profile=smol
