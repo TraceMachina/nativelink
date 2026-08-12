@@ -145,7 +145,7 @@ Visit our [Contributing](https://github.com/tracemachina/nativelink/blob/main/CO
 
 ## 📜 License
 
-Copyright 2020–2025 Trace Machina, Inc.
+Copyright 2020–2026 Trace Machina, Inc.
 
 Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License.
 SPDX identifier: `FSL-1.1-Apache-2.0`.
