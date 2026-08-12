@@ -41,7 +41,7 @@ use tracing::{debug, info, trace, warn};
 use super::awaited_action_db::{
     AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, SortedAwaitedActionState,
 };
-use crate::worker_registry::SharedWorkerRegistry;
+use crate::worker_registry::{SharedWorkerRegistry, WorkerLiveness};
 
 /// Maximum number of times an update to the database
 /// can fail before giving up.
@@ -367,34 +367,42 @@ where
             }
         }
 
-        let registry_alive = if let Some(ref worker_registry) = self.worker_registry {
-            if let Some(worker_id) = awaited_action.worker_id() {
+        let liveness = match (&self.worker_registry, awaited_action.worker_id()) {
+            (Some(worker_registry), Some(worker_id)) => {
                 worker_registry
-                    .is_worker_alive(worker_id, self.no_event_action_timeout, now)
+                    .check_liveness(worker_id, self.no_event_action_timeout, now)
                     .await
-            } else {
-                false
             }
-        } else {
-            false
+            // No registry, or not assigned yet: fall back to the
+            // timestamp-only check.
+            _ => WorkerLiveness::Stale,
         };
 
-        if registry_alive {
-            if self.max_executing_timeout > Duration::ZERO {
-                let last_update = awaited_action.last_worker_updated_timestamp();
-                if let Ok(elapsed) = now.duration_since(last_update) {
-                    return elapsed > self.max_executing_timeout;
+        match liveness {
+            // Unknown means "not registered here", which with several
+            // schedulers on shared state is usually a peer's healthy worker.
+            // We never see its heartbeats, so only the stuck-but-alive ceiling
+            // can judge it; that also backstops a genuine orphan.
+            WorkerLiveness::Alive | WorkerLiveness::Unknown => {
+                if self.max_executing_timeout > Duration::ZERO {
+                    let last_update = awaited_action.last_worker_updated_timestamp();
+                    if let Ok(elapsed) = now.duration_since(last_update) {
+                        return elapsed > self.max_executing_timeout;
+                    }
                 }
+                false
             }
-            return false;
+
+            // Registered here and gone quiet: ours, and it looks dead.
+            WorkerLiveness::Stale => {
+                let worker_should_update_before = awaited_action
+                    .last_worker_updated_timestamp()
+                    .checked_add(self.no_event_action_timeout)
+                    .unwrap_or(now);
+
+                worker_should_update_before < now
+            }
         }
-
-        let worker_should_update_before = awaited_action
-            .last_worker_updated_timestamp()
-            .checked_add(self.no_event_action_timeout)
-            .unwrap_or(now);
-
-        worker_should_update_before < now
     }
 
     async fn apply_filter_predicate(
@@ -571,41 +579,13 @@ where
             .await
             .err_tip(|| "In SimpleSchedulerStateManager::timeout_operation_id")?;
 
-        // If the action is not executing, we should not timeout the action.
-        if !matches!(awaited_action.state().stage, ActionStage::Executing) {
-            return Ok(());
-        }
-
-        let now = (self.now_fn)().now();
-
-        // Check worker liveness via registry if available.
-        let registry_alive = if let Some(ref worker_registry) = self.worker_registry {
-            if let Some(worker_id) = awaited_action.worker_id() {
-                worker_registry
-                    .is_worker_alive(worker_id, self.no_event_action_timeout, now)
-                    .await
-            } else {
-                false
-            }
-        } else {
-            false
-        };
-
-        let timestamp_alive = {
-            let worker_should_update_before = awaited_action
-                .last_worker_updated_timestamp()
-                .checked_add(self.no_event_action_timeout)
-                .unwrap_or(now);
-            worker_should_update_before >= now
-        };
-
-        if registry_alive || timestamp_alive {
+        // Re-check under the lock against freshly loaded state, and delegate
+        // rather than re-deriving the rule: the two copies had drifted.
+        if !self.should_timeout_operation(&awaited_action).await {
             trace!(
                 %operation_id,
                 worker_id = ?awaited_action.worker_id(),
-                registry_alive,
-                timestamp_alive,
-                "Worker is alive, operation not timed out"
+                "Operation no longer needs timing out, skipping"
             );
             return Ok(());
         }
@@ -613,9 +593,7 @@ where
         warn!(
             %operation_id,
             worker_id = ?awaited_action.worker_id(),
-            registry_alive,
-            timestamp_alive,
-            "Worker not alive via registry or timestamp, timing out operation"
+            "Timing out operation"
         );
 
         self.assign_operation(
