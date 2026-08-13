@@ -115,9 +115,9 @@ struct State<
     leases: HashMap<K, u32>,
     #[metric(help = "Total size of all items in the store")]
     sum_store_size: u64,
-    #[metric(help = "Number of items currently leased and not evictable")]
+    #[metric(help = "Number of active lease keys (including keys not yet resident)")]
     leased_items: u64,
-    #[metric(help = "Number of bytes currently leased and not evictable")]
+    #[metric(help = "Number of resident bytes protected by active leases")]
     leased_bytes: u64,
 
     #[metric(help = "Number of bytes evicted from the store")]
@@ -200,8 +200,8 @@ impl<
         Some(leased_key)
     }
 
-    /// Re-enter a resident key as the newest eviction candidate. Its age is
-    /// intentionally preserved, so a long lease does not extend the TTL.
+    /// Re-enter a resident key as the newest eviction candidate without
+    /// changing its stored age.
     fn reinsert_evictable(&mut self, key: K) {
         if self.lru.peek(key.borrow()).is_some() {
             self.evictable_lru.put(key, ());
@@ -781,20 +781,42 @@ where
     {
         let (items_to_unref, removal_futures) = {
             let mut state = self.state.lock();
+            let mut items_to_unref = Vec::new();
+            let mut removal_futures = Vec::new();
+            let expired_before = (self.max_seconds != 0)
+                .then(|| self.elapsed_seconds().saturating_sub(self.max_seconds));
             let mut released_any = false;
             for key in keys {
                 if let Some(leased_key) = state.release_lease(key.borrow()) {
-                    // A released key re-enters as MRU, giving an actively used
-                    // input a fair chance to remain cached after its action.
-                    state.reinsert_evictable(leased_key);
+                    // A lease can keep an item past its TTL. Remove it now
+                    // instead of hiding it behind newer eviction candidates.
+                    let expired = expired_before.is_some_and(|expired_before| {
+                        state
+                            .lru
+                            .peek(leased_key.borrow())
+                            .is_some_and(|entry| entry.seconds_since_anchor < expired_before)
+                    });
+                    if expired {
+                        if let Some((key, eviction_item)) = state.lru.pop_entry(leased_key.borrow())
+                        {
+                            let (data, futures) = state.remove(key.borrow(), &eviction_item, false);
+                            items_to_unref.push(data);
+                            removal_futures.extend(futures);
+                        }
+                    } else {
+                        // A released key re-enters as MRU, giving an actively
+                        // used input a fair chance to remain cached.
+                        state.reinsert_evictable(leased_key);
+                    }
                     released_any = true;
                 }
             }
             if released_any {
-                self.evict_items(&mut state)
-            } else {
-                (Vec::new(), Vec::new())
+                let (mut evicted, futures) = self.evict_items(&mut state);
+                items_to_unref.append(&mut evicted);
+                removal_futures.extend(futures);
             }
+            (items_to_unref, removal_futures)
         };
 
         let mut futures: FuturesUnordered<_> = removal_futures.into_iter().collect();
