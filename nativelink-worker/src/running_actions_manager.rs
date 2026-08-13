@@ -100,10 +100,18 @@ const DEFAULT_HISTORICAL_RESULTS_STRATEGY: UploadCacheResultsStrategy =
 #[cfg(target_os = "linux")]
 const RESOURCE_USAGE_SAMPLE_INTERVAL: Duration = Duration::from_millis(250);
 
+/// What the sampler observed over an action's lifetime.
+#[cfg(target_os = "linux")]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct SampledResourceUsage {
+    peak_memory_kb: u64,
+    cpu_time_ms: u64,
+}
+
 #[cfg(target_os = "linux")]
 struct ActionResourceUsageSampler {
     stop_tx: watch::Sender<bool>,
-    handle: tokio::task::JoinHandle<u64>,
+    handle: tokio::task::JoinHandle<SampledResourceUsage>,
 }
 
 #[cfg(target_os = "linux")]
@@ -111,24 +119,43 @@ fn start_action_resource_usage_sampler(pgid: u32) -> ActionResourceUsageSampler 
     let (stop_tx, stop_rx) = watch::channel(false);
     let handle = background_spawn!(
         "action_resource_usage_sampler",
-        sample_action_peak_memory_kb(pgid, stop_rx)
+        sample_action_resource_usage(pgid, stop_rx)
     );
     ActionResourceUsageSampler { stop_tx, handle }
 }
 
 #[cfg(target_os = "linux")]
-async fn finish_action_resource_usage_sampler(sampler: ActionResourceUsageSampler) -> Option<u64> {
+async fn finish_action_resource_usage_sampler(
+    sampler: ActionResourceUsageSampler,
+) -> Option<SampledResourceUsage> {
     let _ = sampler.stop_tx.send(true);
     sampler.handle.await.ok()
 }
 
 #[cfg(target_os = "linux")]
-async fn sample_action_peak_memory_kb(pgid: u32, mut stop_rx: watch::Receiver<bool>) -> u64 {
+async fn sample_action_resource_usage(
+    pgid: u32,
+    mut stop_rx: watch::Receiver<bool>,
+) -> SampledResourceUsage {
     let mut peak_memory_kb = 0;
+    // CPU time is cumulative per process and a process that exits stops
+    // appearing, so summing the live group at the end would lose everything
+    // short-lived. Keep the last figure seen for each pid and total them at
+    // the end instead.
+    let mut cpu_ticks_by_pid = HashMap::new();
+
+    let mut sample = |peak_memory_kb: &mut u64, cpu_ticks_by_pid: &mut HashMap<u32, u64>| {
+        let observed = sample_process_group(pgid, cpu_ticks_by_pid);
+        if let Some(memory_kb) = observed {
+            *peak_memory_kb = (*peak_memory_kb).max(memory_kb);
+        }
+        observed
+    };
+
     loop {
-        if let Some(memory_kb) = sample_process_group_memory_kb(pgid) {
-            peak_memory_kb = peak_memory_kb.max(memory_kb);
-        } else if !Path::new(&format!("/proc/{pgid}")).exists() {
+        if sample(&mut peak_memory_kb, &mut cpu_ticks_by_pid).is_none()
+            && !Path::new(&format!("/proc/{pgid}")).exists()
+        {
             // The group leader has been reaped and no member process remains,
             // so the action is finished.
             break;
@@ -141,16 +168,31 @@ async fn sample_action_peak_memory_kb(pgid: u32, mut stop_rx: watch::Receiver<bo
         tokio::select! {
             changed = stop_rx.changed() => {
                 if changed.is_ok() && *stop_rx.borrow() {
-                    if let Some(memory_kb) = sample_process_group_memory_kb(pgid) {
-                        peak_memory_kb = peak_memory_kb.max(memory_kb);
-                    }
+                    sample(&mut peak_memory_kb, &mut cpu_ticks_by_pid);
                     break;
                 }
             }
             () = tokio::time::sleep(RESOURCE_USAGE_SAMPLE_INTERVAL) => {}
         }
     }
-    peak_memory_kb
+
+    SampledResourceUsage {
+        peak_memory_kb,
+        cpu_time_ms: ticks_to_millis(cpu_ticks_by_pid.values().sum()),
+    }
+}
+
+/// Converts clock ticks from `/proc` into milliseconds.
+///
+/// `_SC_CLK_TCK` is 100 on every Linux we run on, but it is queryable so ask
+/// rather than assume, and fall back to 100 if the query fails.
+#[cfg(target_os = "linux")]
+fn ticks_to_millis(ticks: u64) -> u64 {
+    // SAFETY: `sysconf` takes an int and returns a long, with no memory
+    // safety considerations.
+    let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    let hz = if hz > 0 { hz as u64 } else { 100 };
+    ticks.saturating_mul(1_000) / hz
 }
 
 /// Sums the resident memory of every process in the action's process group.
@@ -165,7 +207,7 @@ async fn sample_action_peak_memory_kb(pgid: u32, mut stop_rx: watch::Receiver<bo
 /// inherited and survives reparenting, and excludes the worker's own group.
 /// Returns `None` when no member process can be read (the group is empty).
 #[cfg(target_os = "linux")]
-fn sample_process_group_memory_kb(pgid: u32) -> Option<u64> {
+fn sample_process_group(pgid: u32, cpu_ticks_by_pid: &mut HashMap<u32, u64>) -> Option<u64> {
     let Ok(entries) = std::fs::read_dir("/proc") else {
         return None;
     };
@@ -176,8 +218,17 @@ fn sample_process_group_memory_kb(pgid: u32) -> Option<u64> {
         let Ok(member_pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
             continue;
         };
-        if read_process_pgid(member_pid) != Some(pgid) {
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{member_pid}/stat")) else {
             continue;
+        };
+        if parse_pgid_from_stat(&stat) != Some(pgid) {
+            continue;
+        }
+        if let Some(ticks) = parse_cpu_ticks_from_stat(&stat) {
+            // Monotonic per process, but a pid could in principle be reused
+            // within one action, so never let the figure go backwards.
+            let entry = cpu_ticks_by_pid.entry(member_pid).or_insert(0);
+            *entry = (*entry).max(ticks);
         }
         if let Some(memory_kb) = read_process_rss_kb(member_pid) {
             total_kb += memory_kb;
@@ -214,6 +265,28 @@ pub fn parse_pgid_from_stat(stat: &str) -> Option<u32> {
     let after_comm = stat.rsplit_once(')')?.1;
     // Fields after the final ')': state(0) ppid(1) pgrp(2) ...
     after_comm.split_whitespace().nth(2)?.parse().ok()
+}
+
+/// Sums user and system CPU ticks (`utime` + `stime`, fields 14 and 15) from
+/// the contents of a `/proc/<pid>/stat` line.
+///
+/// Parsed relative to the final `)` for the same reason as the pgid above:
+/// `comm` can contain spaces and parentheses. Returns `None` when the line is
+/// malformed.
+///
+/// `cutime`/`cstime` are deliberately not included. They only cover children
+/// this process has already reaped, so adding them here would double count
+/// every child that is still its own entry in the group.
+#[cfg(target_os = "linux")]
+pub fn parse_cpu_ticks_from_stat(stat: &str) -> Option<u64> {
+    let after_comm = stat.rsplit_once(')')?.1;
+    let mut fields = after_comm.split_whitespace();
+    // Fields after the final ')': state(0) ppid(1) pgrp(2) session(3) tty(4)
+    // tpgid(5) flags(6) minflt(7) cminflt(8) majflt(9) cmajflt(10)
+    // utime(11) stime(12) ...
+    let utime: u64 = fields.nth(11)?.parse().ok()?;
+    let stime: u64 = fields.next()?.parse().ok()?;
+    Some(utime.saturating_add(stime))
 }
 
 /// Valid string reasons for a failure.
@@ -1643,13 +1716,19 @@ impl RunningActionImpl {
                     let resource_usage = match maybe_resource_usage_sampler.take() {
                         Some(sampler) => finish_action_resource_usage_sampler(sampler)
                             .await
-                            .and_then(|peak_memory_kb| {
-                                (peak_memory_kb > 0).then_some(ActionResourceUsage {
-                                    peak_memory_kb,
-                                    sampled: true,
-                                    operation_id: String::new(),
-                                    worker_id: String::new(),
-                                })
+                            .and_then(|usage| {
+                                // An action too short to catch a sample leaves
+                                // both at zero; report nothing rather than a
+                                // misleading zero.
+                                (usage.peak_memory_kb > 0 || usage.cpu_time_ms > 0).then_some(
+                                    ActionResourceUsage {
+                                        peak_memory_kb: usage.peak_memory_kb,
+                                        cpu_time_ms: usage.cpu_time_ms,
+                                        sampled: true,
+                                        operation_id: String::new(),
+                                        worker_id: String::new(),
+                                    },
+                                )
                             }),
                         None => None,
                     };
