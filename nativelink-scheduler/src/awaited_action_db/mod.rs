@@ -24,6 +24,8 @@ use nativelink_metric::MetricsComponent;
 use nativelink_util::action_messages::{ActionInfo, ActionStage, OperationId};
 use serde::{Deserialize, Serialize};
 
+use crate::worker_registry::SharedWorkerRegistry;
+
 mod awaited_action;
 
 /// Duration to wait before sending client keep alive messages.
@@ -188,4 +190,9 @@ pub trait AwaitedActionDb: Send + Sync + MetricsComponent + Unpin + 'static {
         action_info: Arc<ActionInfo>,
         no_event_action_timeout: Duration,
     ) -> impl Future<Output = Result<Self::Subscriber, Error>> + Send;
+
+    /// Lets an implementation judge worker liveness before deciding an
+    /// executing action was abandoned. Only shared-state implementations
+    /// need it, so the default ignores the registry.
+    fn set_worker_registry(&mut self, _worker_registry: SharedWorkerRegistry) {}
 }

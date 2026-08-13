@@ -8,15 +8,16 @@ use std::time::SystemTime;
 
 use bytes::Bytes;
 use futures::{Stream, stream};
-use mock_instant::thread_local::SystemTime as MockSystemTime;
+use mock_instant::thread_local::{MockClock, SystemTime as MockSystemTime};
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
-use nativelink_scheduler::awaited_action_db::AwaitedAction;
+use nativelink_scheduler::awaited_action_db::{AwaitedAction, AwaitedActionDb};
 use nativelink_scheduler::store_awaited_action_db::{
     StoreAwaitedActionDb, inner_update_awaited_action,
 };
+use nativelink_scheduler::worker_registry::{ORPHANED_ACTION_TIMEOUT, WorkerRegistry};
 use nativelink_util::action_messages::{
-    ActionInfo, ActionUniqueKey, ActionUniqueQualifier, OperationId,
+    ActionInfo, ActionStage, ActionUniqueKey, ActionUniqueQualifier, OperationId, WorkerId,
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
@@ -386,6 +387,173 @@ async fn try_subscribe_skips_lookup_for_uncacheable_qualifier() -> Result<(), Er
         counter.load(Ordering::SeqCst),
         0,
         "uncacheable qualifier must short-circuit before any lookup",
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// `try_subscribe` abandonment check.
+//
+// The stage/timestamp pair lives in the shared store and heartbeats never
+// refresh it, so without a liveness check a healthy long-running action looks
+// abandoned and a duplicate Execute forks a second execution of it.
+// ---------------------------------------------------------------------------
+
+const WORKER_TIMEOUT: Duration = Duration::from_mins(2);
+const NOW_TIME: u64 = 10_000;
+
+/// `MockInstantWrapped::now` reads `MockClock::time`, so timestamps have to be
+/// built from the same clock or nothing lines up.
+fn mock_now() -> SystemTime {
+    SystemTime::UNIX_EPOCH + MockClock::time()
+}
+
+fn make_executing_awaited_action(worker_id: &WorkerId) -> AwaitedAction {
+    let now = mock_now();
+    let mut action = AwaitedAction::new(
+        OperationId::from("existing-operation"),
+        make_cacheable_action_info(),
+        now,
+    );
+    action.set_worker_id(Some(worker_id.clone()), now);
+    let mut state = action.state().as_ref().clone();
+    state.stage = ActionStage::Executing;
+    action.worker_set_state(Arc::new(state), now);
+    action
+}
+
+/// Runs `try_subscribe` against an executing action owned by `worker_id`,
+/// after `elapsed` has passed, and reports whether the action was recreated
+/// rather than joined.
+async fn recreated_after(
+    registry: Option<Arc<WorkerRegistry>>,
+    worker_id: &WorkerId,
+    elapsed: Duration,
+) -> Result<bool, Error> {
+    let action = make_executing_awaited_action(worker_id);
+    let qualifier = action.action_info().unique_qualifier.clone();
+    let store = Arc::new(EventuallyVisibleStore::new(
+        /* empty_for = */ 0, &action,
+    ));
+    let mut db = build_db(store).await;
+    if let Some(registry) = registry {
+        db.set_worker_registry(registry);
+    }
+
+    MockClock::advance(elapsed);
+
+    let result = db
+        .try_subscribe(
+            &OperationId::from("client-abandon"),
+            &qualifier,
+            WORKER_TIMEOUT,
+            0,
+        )
+        .await?
+        .expect("the action is visible, so try_subscribe must return it");
+
+    Ok(*result.operation_id() == OperationId::from("new-operation"))
+}
+
+#[nativelink_test]
+async fn joins_an_executing_action_whose_worker_is_ours_and_alive() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let worker_id = WorkerId::from("worker-alive".to_string());
+    let registry = Arc::new(WorkerRegistry::new());
+
+    // Heartbeats keep the registry current even though the shared timestamp
+    // on the action does not move.
+    let action = make_executing_awaited_action(&worker_id);
+    let qualifier = action.action_info().unique_qualifier.clone();
+    let store = Arc::new(EventuallyVisibleStore::new(
+        /* empty_for = */ 0, &action,
+    ));
+    let mut db = build_db(store).await;
+    db.set_worker_registry(registry.clone());
+
+    // The action's shared timestamp stays put while the worker keeps
+    // heartbeating, which is exactly the case that used to look abandoned.
+    MockClock::advance(WORKER_TIMEOUT * 3);
+    registry
+        .update_worker_heartbeat(&worker_id, mock_now())
+        .await;
+
+    let result = db
+        .try_subscribe(
+            &OperationId::from("client-alive"),
+            &qualifier,
+            WORKER_TIMEOUT,
+            0,
+        )
+        .await?
+        .expect("action is visible");
+    let recreated = *result.operation_id() == OperationId::from("new-operation");
+
+    assert!(
+        !recreated,
+        "a worker we can see heartbeating owns this action; recreating it would run the work twice",
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn recreates_an_executing_action_whose_worker_went_quiet() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let worker_id = WorkerId::from("worker-stale".to_string());
+    let registry = Arc::new(WorkerRegistry::new());
+    registry.register_worker(&worker_id, mock_now()).await;
+
+    let recreated = recreated_after(Some(registry), &worker_id, WORKER_TIMEOUT * 2).await?;
+
+    assert!(
+        recreated,
+        "the worker is registered here and has stopped reporting, so the action is genuinely abandoned",
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn joins_an_executing_action_on_a_peers_worker() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let worker_id = WorkerId::from("worker-elsewhere".to_string());
+    // Empty registry: the worker belongs to another scheduler instance.
+    let registry = Arc::new(WorkerRegistry::new());
+
+    let recreated = recreated_after(Some(registry), &worker_id, WORKER_TIMEOUT * 5).await?;
+
+    assert!(
+        !recreated,
+        "worker_timeout_s must not apply to a worker this instance never sees heartbeats for",
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn recreates_an_orphan_once_past_the_backstop() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let worker_id = WorkerId::from("worker-orphaned".to_string());
+    let registry = Arc::new(WorkerRegistry::new());
+
+    let recreated =
+        recreated_after(Some(registry), &worker_id, ORPHANED_ACTION_TIMEOUT * 2).await?;
+
+    assert!(
+        recreated,
+        "an action nobody claims still has to be reaped eventually or it leaks forever",
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn falls_back_to_the_timestamp_when_there_is_no_registry() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let worker_id = WorkerId::from("worker-no-registry".to_string());
+
+    let recreated = recreated_after(None, &worker_id, WORKER_TIMEOUT * 2).await?;
+
+    assert!(
+        recreated,
+        "without a registry there is nothing better than the timestamp, so behaviour is unchanged",
     );
     Ok(())
 }
