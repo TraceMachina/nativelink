@@ -94,6 +94,9 @@ struct ReadRequestHolder {
 struct FakeStreamServer {
     write_requests: Arc<Mutex<Vec<WriteRequest>>>,
     read_requests: Arc<Mutex<Vec<ReadRequestHolder>>>,
+    /// Record every `WriteRequest`, not just the first, so a test can assert
+    /// on how the client chunked the stream.
+    drain_all: bool,
 }
 
 impl FakeStreamServer {
@@ -101,6 +104,14 @@ impl FakeStreamServer {
         Self {
             write_requests: Arc::new(Mutex::new(vec![])),
             read_requests: Arc::new(Mutex::new(vec![])),
+            drain_all: false,
+        }
+    }
+
+    fn new_draining() -> Self {
+        Self {
+            drain_all: true,
+            ..Self::new()
         }
     }
 }
@@ -156,7 +167,17 @@ impl ByteStream for FakeStreamServer {
         &self,
         grpc_request: Request<Streaming<WriteRequest>>,
     ) -> Result<Response<WriteResponse>, Status> {
-        let write_request = match grpc_request.into_inner().next().await {
+        let mut stream = grpc_request.into_inner();
+        if self.drain_all {
+            let mut committed_size = 0i64;
+            while let Some(req) = stream.next().await {
+                let req = req?;
+                committed_size += i64::try_from(req.data.len()).unwrap();
+                self.write_requests.lock().await.push(req);
+            }
+            return Ok(Response::new(WriteResponse { committed_size }));
+        }
+        let write_request = match stream.next().await {
             None => {
                 return Err(Status::unknown("Client closed stream"));
             }
@@ -178,8 +199,15 @@ impl ByteStream for FakeStreamServer {
     }
 }
 
+async fn make_fake_bytestream_server_draining() -> (FakeStreamServer, u16) {
+    spawn_bytestream_server(FakeStreamServer::new_draining()).await
+}
+
 async fn make_fake_bytestream_server() -> (FakeStreamServer, u16) {
-    let fake_stream_server = FakeStreamServer::new();
+    spawn_bytestream_server(FakeStreamServer::new()).await
+}
+
+async fn spawn_bytestream_server(fake_stream_server: FakeStreamServer) -> (FakeStreamServer, u16) {
     let server = ByteStreamServer::new(fake_stream_server.clone());
     let listener = TcpIncoming::bind("127.0.0.1:0".parse().unwrap()).unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -470,5 +498,89 @@ async fn split_and_splice_blob_forward_to_backend() -> Result<(), Error> {
         assert_eq!(splice_requests.len(), 1);
         assert_eq!(splice_requests[0].instance_name, "backend_instance");
     }
+    Ok(())
+}
+
+/// A whole-blob write (`update_oneshot`, how a worker uploads stdout) must not
+/// become one giant `WriteRequest`: receivers cap decoded message size and
+/// reject an oversized message outright rather than degrading.
+#[nativelink_test]
+async fn update_splits_buffers_larger_than_the_grpc_message_limit() -> Result<(), Error> {
+    const TONIC_DEFAULT_DECODE_LIMIT: usize = 4 * 1024 * 1024;
+    // Over the limit, and not a multiple of the chunk size so the last piece
+    // is a partial one.
+    const BLOB_LEN: usize = 9_869_079;
+
+    let (server, port) = make_fake_bytestream_server_draining().await;
+    let mut spec = test_spec(format!("http://localhost:{port}"), false);
+    // This test moves and reassembles almost 10 MiB under instrumented builds.
+    // Keep the RPC deadline comfortably above sanitizer overhead; timeout
+    // behavior is not what this test exercises.
+    spec.rpc_timeout_s = 5;
+    let store = GrpcStore::new(&spec).await?;
+    let digest = DigestInfo::try_new(VALID_HASH, BLOB_LEN).unwrap();
+
+    let payload = vec![0xABu8; BLOB_LEN];
+    let (mut tx, rx) = make_buf_channel_pair();
+    let send_payload = payload.clone();
+    let send_fut = async move {
+        // One write of the entire blob, exactly what update_oneshot does.
+        tx.send(send_payload.into()).await?;
+        tx.send_eof()
+    };
+    let (res1, res2) = futures::join!(
+        send_fut,
+        store.update(
+            digest,
+            rx,
+            UploadSizeInfo::ExactSize(BLOB_LEN.try_into().unwrap())
+        )
+    );
+    res1.merge(res2)?;
+
+    let write_requests = server.write_requests.lock().await;
+    assert!(
+        write_requests.len() > 1,
+        "expected the blob to be split across several WriteRequests, got {}",
+        write_requests.len()
+    );
+
+    for (i, req) in write_requests.iter().enumerate() {
+        assert!(
+            req.data.len() <= TONIC_DEFAULT_DECODE_LIMIT,
+            "WriteRequest {i} carries {} bytes, over the {TONIC_DEFAULT_DECODE_LIMIT} byte default decode limit",
+            req.data.len()
+        );
+    }
+
+    // Contiguous offsets and identical bytes: the split must not corrupt or
+    // reorder the blob.
+    let mut reassembled = Vec::with_capacity(BLOB_LEN);
+    let mut expected_offset = 0i64;
+    for req in write_requests.iter() {
+        assert_eq!(
+            req.write_offset, expected_offset,
+            "write_offset must be contiguous across chunks"
+        );
+        expected_offset += i64::try_from(req.data.len()).unwrap();
+        reassembled.extend_from_slice(&req.data);
+    }
+    assert_eq!(reassembled.len(), BLOB_LEN);
+    assert_eq!(
+        reassembled, payload,
+        "reassembled blob must match the input"
+    );
+
+    // Exactly one terminator, and it must be the last message.
+    let finish_flags: Vec<bool> = write_requests.iter().map(|r| r.finish_write).collect();
+    assert_eq!(
+        finish_flags.iter().filter(|f| **f).count(),
+        1,
+        "expected exactly one finish_write, got {finish_flags:?}"
+    );
+    assert!(
+        *finish_flags.last().unwrap(),
+        "finish_write must be on the final message"
+    );
     Ok(())
 }

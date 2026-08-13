@@ -22,6 +22,17 @@ if [[ $UNDER_TEST_RUNNER -ne 1 ]]; then
     echo "This script should be run under run_integration_tests.sh"
     exit 1
 fi
+
+# This test uploads a locally-built output to exercise the chunked write path
+# (see CHUNKING_FLAGS below), which the repo-wide
+# --remote_upload_local_results=false disables. To keep that anti-poisoning
+# default intact for PR/developer lanes, this test runs only where local
+# uploads are explicitly enabled: merges to main and the scheduled canary set
+# NL_LOCAL_UPLOADS=1 (see main.yaml / nativelink-cloud-canary.yaml).
+if [[ ${NL_LOCAL_UPLOADS:-0} != "1" ]]; then
+    echo "Skipping $(basename "$0"): requires local cache uploads (main/canary lanes only)."
+    exit 0
+fi
 set -x
 
 # Bazel uploads cache entries in the background by default

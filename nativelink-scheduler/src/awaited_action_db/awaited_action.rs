@@ -211,7 +211,7 @@ impl AwaitedAction {
     }
 
     /// Sets the worker id that is currently processing this action.
-    pub(crate) fn set_worker_id(&mut self, new_maybe_worker_id: Option<WorkerId>, now: SystemTime) {
+    pub fn set_worker_id(&mut self, new_maybe_worker_id: Option<WorkerId>, now: SystemTime) {
         if self.worker_id != new_maybe_worker_id {
             self.worker_id = new_maybe_worker_id;
             self.worker_keep_alive(now);
