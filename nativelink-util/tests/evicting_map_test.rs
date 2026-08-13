@@ -241,6 +241,9 @@ async fn all_leased_entries_can_temporarily_exceed_capacity() -> Result<(), Erro
         .insert(second_key, Bytes::from(DATA).into())
         .await;
     assert_eq!(evicting_map.len_for_test(), 2);
+    assert!(logs_contain(
+        "Eviction requested, but every resident entry is leased"
+    ));
 
     // Releasing one lease makes the retained entry an ordinary victim again.
     evicting_map.release_key(&first_key).await;
@@ -253,6 +256,56 @@ async fn all_leased_entries_can_temporarily_exceed_capacity() -> Result<(), Erro
         evicting_map.size_for_key(&second_key).await,
         Some(DATA.len() as u64),
         "the still-leased entry must remain available",
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn removing_leased_key_preserves_lease_until_release() -> Result<(), Error> {
+    const DATA: &str = "12345678";
+    let evicting_map = EvictingMap::<DigestInfo, DigestInfo, BytesWrapper, MockInstantWrapped>::new(
+        &EvictionPolicy {
+            max_count: 1,
+            max_seconds: 0,
+            max_bytes: 0,
+            evict_bytes: 0,
+        },
+        MockInstantWrapped::default(),
+    );
+    let leased_key = DigestInfo::try_new(HASH1, 0)?;
+    let other_key = DigestInfo::try_new(HASH2, 0)?;
+
+    // Explicit removal deletes the resident value but intentionally leaves
+    // the lease active so a subsequent population cannot race with eviction.
+    evicting_map.lease_key(leased_key);
+    evicting_map
+        .insert(leased_key, Bytes::from(DATA).into())
+        .await;
+    assert!(evicting_map.remove(&leased_key).await);
+    evicting_map
+        .insert(leased_key, Bytes::from(DATA).into())
+        .await;
+    assert_eq!(
+        evicting_map.size_for_key(&leased_key).await,
+        Some(DATA.len() as u64),
+        "reinserted leased value must remain resident",
+    );
+
+    // The final release must clear the lease even when the key was removed
+    // and repopulated while the lease was active.
+    evicting_map.release_key(&leased_key).await;
+    evicting_map
+        .insert(other_key, Bytes::from(DATA).into())
+        .await;
+    assert_eq!(
+        evicting_map.size_for_key(&leased_key).await,
+        None,
+        "reinserted value should become evictable after release",
+    );
+    assert_eq!(
+        evicting_map.size_for_key(&other_key).await,
+        Some(DATA.len() as u64),
     );
 
     Ok(())

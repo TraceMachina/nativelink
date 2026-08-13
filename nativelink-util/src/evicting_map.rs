@@ -115,6 +115,10 @@ struct State<
     leases: HashMap<K, u32>,
     #[metric(help = "Total size of all items in the store")]
     sum_store_size: u64,
+    #[metric(help = "Number of items currently leased and not evictable")]
+    leased_items: u64,
+    #[metric(help = "Number of bytes currently leased and not evictable")]
+    leased_bytes: u64,
 
     #[metric(help = "Number of bytes evicted from the store")]
     evicted_bytes: Counter,
@@ -169,6 +173,10 @@ impl<
         }
 
         self.evictable_lru.pop(key.borrow());
+        if let Some(entry) = self.lru.peek(key.borrow()) {
+            self.leased_bytes += entry.data.len();
+        }
+        self.leased_items += 1;
         self.leases.insert(key, 1);
     }
 
@@ -180,12 +188,16 @@ impl<
             return None;
         }
 
-        Some(
-            self.leases
-                .remove_entry(key)
-                .expect("Lease must exist when its final reference is released")
-                .0,
-        )
+        let leased_key = self
+            .leases
+            .remove_entry(key)
+            .expect("Lease must exist when its final reference is released")
+            .0;
+        self.leased_items -= 1;
+        if let Some(entry) = self.lru.peek(leased_key.borrow()) {
+            self.leased_bytes -= entry.data.len();
+        }
+        Some(leased_key)
     }
 
     /// Re-enter a resident key as the newest eviction candidate. Its age is
@@ -231,6 +243,9 @@ impl<
         }
         // Keep every auxiliary resident index in sync with the main LRU.
         self.evictable_lru.pop(key);
+        if self.is_leased(key) {
+            self.leased_bytes -= eviction_item.data.len();
+        }
         self.sum_store_size -= eviction_item.data.len();
         if replaced {
             self.replaced_items.inc();
@@ -258,11 +273,16 @@ impl<
         K: Clone,
         T: Clone,
     {
+        let is_leased = self.is_leased(key.borrow());
+        let new_item_size = eviction_item.data.len();
         let replaced_item = self
             .lru
             .put(key.clone(), eviction_item)
             .map(|old_item| self.remove(key.borrow(), &old_item, true));
 
+        if is_leased {
+            self.leased_bytes += new_item_size;
+        }
         // `remove()` drops the old key from both indexes. Reinsert it after
         // replacement so an unleased write is MRU in both LRU indexes.
         self.insert_evictable(key.clone());
@@ -369,6 +389,8 @@ where
                 evictable_lru: LruCache::unbounded(),
                 leases: HashMap::new(),
                 sum_store_size: 0,
+                leased_items: 0,
+                leased_bytes: 0,
                 evicted_bytes: Counter::default(),
                 evicted_items: CounterWithTime::default(),
                 replaced_bytes: Counter::default(),
@@ -470,6 +492,17 @@ where
     #[must_use]
     fn evict_items(&self, state: &mut State<K, Q, T, C>) -> (Vec<T>, Vec<RemoveFuture>) {
         let Some(first_entry) = state.peek_evictable() else {
+            if !state.lru.is_empty() {
+                debug!(
+                    resident_items = state.lru.len(),
+                    evictable_items = state.evictable_lru.len(),
+                    lease_keys = state.leases.len(),
+                    leased_items = state.leased_items,
+                    leased_bytes = state.leased_bytes,
+                    resident_bytes = state.sum_store_size,
+                    "Eviction requested, but every resident entry is leased",
+                );
+            }
             return (Vec::new(), Vec::new());
         };
 
