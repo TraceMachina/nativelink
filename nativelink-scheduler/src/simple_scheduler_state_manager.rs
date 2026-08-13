@@ -41,7 +41,7 @@ use tracing::{debug, info, trace, warn};
 use super::awaited_action_db::{
     AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, SortedAwaitedActionState,
 };
-use crate::worker_registry::{SharedWorkerRegistry, WorkerLiveness};
+use crate::worker_registry::{ORPHANED_ACTION_TIMEOUT, SharedWorkerRegistry, WorkerLiveness};
 
 /// Maximum number of times an update to the database
 /// can fail before giving up.
@@ -379,11 +379,9 @@ where
         };
 
         match liveness {
-            // Unknown means "not registered here", which with several
-            // schedulers on shared state is usually a peer's healthy worker.
-            // We never see its heartbeats, so only the stuck-but-alive ceiling
-            // can judge it; that also backstops a genuine orphan.
-            WorkerLiveness::Alive | WorkerLiveness::Unknown => {
+            // Ours and heartbeating: only the stuck-but-alive ceiling applies,
+            // and disabling that means no ceiling on a live worker.
+            WorkerLiveness::Alive => {
                 if self.max_executing_timeout > Duration::ZERO {
                     let last_update = awaited_action.last_worker_updated_timestamp();
                     if let Ok(elapsed) = now.duration_since(last_update) {
@@ -391,6 +389,23 @@ where
                     }
                 }
                 false
+            }
+
+            // Usually a peer's healthy worker, so worker_timeout_s must not
+            // apply. It can also be an orphan no instance will ever reap, and
+            // max_action_executing_timeout_s defaults to disabled, so fall
+            // back to a ceiling rather than never timing out.
+            WorkerLiveness::Unknown => {
+                let ceiling = if self.max_executing_timeout > Duration::ZERO {
+                    self.max_executing_timeout
+                } else {
+                    ORPHANED_ACTION_TIMEOUT
+                };
+                let last_update = awaited_action.last_worker_updated_timestamp();
+                match now.duration_since(last_update) {
+                    Ok(elapsed) => elapsed > ceiling,
+                    Err(_) => false,
+                }
             }
 
             // Registered here and gone quiet: ours, and it looks dead.

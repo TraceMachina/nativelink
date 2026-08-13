@@ -117,6 +117,63 @@ fn state_manager(
     )
 }
 
+/// Same as above but with `max_action_executing_timeout_s` disabled, which is
+/// its default.
+fn state_manager_no_executing_ceiling(
+    registry: Arc<WorkerRegistry>,
+) -> Arc<
+    SimpleSchedulerStateManager<
+        impl nativelink_scheduler::awaited_action_db::AwaitedActionDb,
+        MockInstantWrapped,
+        fn() -> MockInstantWrapped,
+    >,
+> {
+    let task_change_notify = Arc::new(Notify::new());
+    SimpleSchedulerStateManager::new(
+        5,
+        WORKER_TIMEOUT,
+        Duration::from_mins(5),
+        Duration::ZERO,
+        memory_awaited_action_db_factory(0, &task_change_notify, MockInstantWrapped::default),
+        MockInstantWrapped::default,
+        Some(registry),
+    )
+}
+
+/// An orphan must still be reaped when `max_action_executing_timeout_s` is
+/// disabled, which is its default.
+///
+/// An HPA scaling a replica down leaves its workers' actions Executing in
+/// shared state, naming worker ids no surviving instance recognises. If the
+/// only ceiling for Unknown were the executing timeout, the default config
+/// would never reap them and every scale-down would leak actions until the
+/// client gave up.
+#[nativelink_test]
+async fn reaps_an_orphan_even_with_the_executing_ceiling_disabled() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let action = executing_action(
+        &WorkerId::from(String::from("owner-was-scaled-down")),
+        make_system_time(0),
+    );
+    let state_mgr = state_manager_no_executing_ceiling(Arc::new(WorkerRegistry::new()));
+
+    // Past worker_timeout_s: still must not fire, this could be a healthy
+    // action on a peer's worker.
+    MockClock::advance(WORKER_TIMEOUT + Duration::from_mins(1));
+    assert!(
+        !state_mgr.should_timeout_operation(&action).await,
+        "must not reap at worker_timeout_s just because the ceiling is disabled"
+    );
+
+    // Past the orphan backstop: now it has to go, or it never will.
+    MockClock::advance(Duration::from_mins(61));
+    assert!(
+        state_mgr.should_timeout_operation(&action).await,
+        "an orphan must be reaped by the backstop when no ceiling is configured"
+    );
+    Ok(())
+}
+
 /// An action on a worker connected to a DIFFERENT scheduler instance must not
 /// be timed out here. This instance never sees that worker's heartbeats, so
 /// the action's timestamp looks frozen however healthy it is.

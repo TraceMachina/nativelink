@@ -468,7 +468,7 @@ impl SimpleScheduler {
         NowFn: Fn() -> I + Clone + Send + Unpin + Sync + 'static,
     >(
         spec: &SimpleSpec,
-        awaited_action_db: A,
+        mut awaited_action_db: A,
         on_matching_engine_run: F,
         task_change_notify: Arc<Notify>,
         now_fn: NowFn,
@@ -509,6 +509,10 @@ impl SimpleScheduler {
 
         // Create shared worker registry for single heartbeat per worker.
         let worker_registry = Arc::new(WorkerRegistry::new());
+
+        // The db decides on its own whether an executing action was abandoned,
+        // so it needs the same liveness view the state manager uses.
+        awaited_action_db.set_worker_registry(worker_registry.clone());
 
         let state_manager = SimpleSchedulerStateManager::new(
             max_job_retries,

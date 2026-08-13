@@ -21,6 +21,12 @@ use async_lock::RwLock;
 use nativelink_util::action_messages::WorkerId;
 use tracing::{debug, trace};
 
+/// Ceiling for an action whose worker no instance here recognises. Long on
+/// purpose: heartbeats never reach the shared state, so a healthy hour-long
+/// action and an abandoned one look identical from here, and acting early
+/// costs live work.
+pub const ORPHANED_ACTION_TIMEOUT: Duration = Duration::from_hours(1);
+
 /// What this scheduler instance knows about a worker's liveness.
 ///
 /// A worker only appears in the registry of the instance holding its
