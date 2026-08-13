@@ -401,6 +401,11 @@ where
     /// Per-call ceiling for `check_health` PING.
     health_check_timeout: Duration,
 
+    /// Expire keys this store writes after this long. `None` keeps them
+    /// forever, which is the default and what every store other than a BEP
+    /// store wants.
+    key_ttl: Option<Duration>,
+
     /// Have we done a subscribe for messages for `remove_callback` subscribes?
     has_remove_callback_subscribe: OnceCell<()>,
 
@@ -499,6 +504,7 @@ where
         max_client_permits: usize,
         max_count_per_cursor: u64,
         health_check_timeout: Duration,
+        key_ttl: Option<Duration>,
         subscriber_channel: UnboundedReceiver<PushInfo>,
         connection_manager: M,
     ) -> Result<Self, Error> {
@@ -526,6 +532,7 @@ where
             client_permits: Arc::new(Semaphore::new(max_client_permits)),
             max_count_per_cursor,
             health_check_timeout,
+            key_ttl,
             has_remove_callback_subscribe: OnceCell::const_new(),
             remove_callbacks,
         })
@@ -684,6 +691,7 @@ impl RedisStore<ClusterConnection, ClusterRedisManager<ClusterConnection>> {
             spec.max_client_permits,
             spec.max_count_per_cursor,
             Duration::from_millis(spec.health_check_timeout_ms),
+            (spec.key_ttl_s > 0).then(|| Duration::from_secs(spec.key_ttl_s)),
             subscriber_channel,
             ClusterRedisManager::new(client.get_async_connection().await?).await?,
         )
@@ -811,6 +819,7 @@ impl RedisStore<ConnectionManager, StandardRedisManager<ConnectionManager>> {
             spec.max_client_permits,
             spec.max_count_per_cursor,
             Duration::from_millis(spec.health_check_timeout_ms),
+            (spec.key_ttl_s > 0).then(|| Duration::from_secs(spec.key_ttl_s)),
             subscriber_channel,
             StandardRedisManager::new(Box::new(move || {
                 Box::pin(Self::connect(spec.clone(), tx.clone()))
@@ -1174,6 +1183,21 @@ where
                     Error::from(err).append("While queueing key rename in RedisStore::update()")
                 );
             }
+        }
+
+        // Expire the final key, not the temp one: RENAME would carry a TTL
+        // over, but setting it here keeps the window where the key exists
+        // without one down to a single round trip and keeps the intent
+        // obvious. A failure here is a real error rather than something to
+        // swallow, since a key that silently never expires is the bug this
+        // option exists to prevent.
+        if let Some(key_ttl) = self.key_ttl {
+            let ttl_secs = i64::try_from(key_ttl.as_secs()).unwrap_or(i64::MAX);
+            client
+                .connection_manager
+                .expire::<_, ()>(final_key.as_ref(), ttl_secs)
+                .await
+                .err_tip(|| format!("While setting TTL on {final_key} in RedisStore::update()"))?;
         }
 
         // If we have a publish channel configured, send a notice that the key has been set.

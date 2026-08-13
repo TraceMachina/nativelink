@@ -90,6 +90,7 @@ async fn fake_redis_sentinel_master_stream_with_script() -> u16 {
 async fn make_mock_store_with_prefix_and_subscriber_channel(
     mut commands: Vec<MockCmd>,
     key_prefix: String,
+    key_ttl: Option<Duration>,
     subscriber_channel: UnboundedReceiver<PushInfo>,
 ) -> RedisStore<MockRedisConnection, ClusterRedisManager<MockRedisConnection>> {
     commands.insert(
@@ -111,6 +112,7 @@ async fn make_mock_store_with_prefix_and_subscriber_channel(
         DEFAULT_MAX_PERMITS,
         DEFAULT_MAX_COUNT_PER_CURSOR,
         Duration::from_secs(4),
+        key_ttl,
         subscriber_channel,
         manager,
     )
@@ -118,12 +120,21 @@ async fn make_mock_store_with_prefix_and_subscriber_channel(
     .unwrap()
 }
 
+async fn make_mock_store_with_ttl(
+    commands: Vec<MockCmd>,
+    key_ttl: Duration,
+) -> RedisStore<MockRedisConnection, ClusterRedisManager<MockRedisConnection>> {
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    make_mock_store_with_prefix_and_subscriber_channel(commands, String::new(), Some(key_ttl), rx)
+        .await
+}
+
 async fn make_mock_store_with_prefix(
     commands: Vec<MockCmd>,
     key_prefix: String,
 ) -> RedisStore<MockRedisConnection, ClusterRedisManager<MockRedisConnection>> {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    make_mock_store_with_prefix_and_subscriber_channel(commands, key_prefix, rx).await
+    make_mock_store_with_prefix_and_subscriber_channel(commands, key_prefix, None, rx).await
 }
 
 #[nativelink_test]
@@ -2532,7 +2543,8 @@ where
     ];
 
     let redis_store = Arc::new(
-        make_mock_store_with_prefix_and_subscriber_channel(commands, prefix.clone(), rx).await,
+        make_mock_store_with_prefix_and_subscriber_channel(commands, prefix.clone(), None, rx)
+            .await,
     );
     let existence_store = ExistenceCacheStore::new(&spec, Store::new(redis_store.clone()));
 
@@ -2591,4 +2603,99 @@ async fn evict_keys_for_existence_cache_no_prefix() -> Result<(), Error> {
 #[nativelink_test]
 async fn evict_keys_for_existence_cache_prefix() -> Result<(), Error> {
     evict_keys_for_existence_cache_core(String::from("demo_prefix:"), logs_contain).await
+}
+
+/// A store configured with a TTL must expire what it writes. Without this a
+/// BEP store keeps every key it ever wrote once its consumer stops, which is
+/// how one deployment reached 1.79M keys with `expires=0`.
+#[nativelink_test]
+async fn update_sets_a_ttl_when_configured() -> Result<(), Error> {
+    const TTL_SECONDS: u64 = 7 * 24 * 60 * 60;
+    let data = Bytes::from_static(b"14");
+    let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
+    let packed_hash_hex = format!("{digest}");
+    let temp_key = make_temp_key(&packed_hash_hex);
+    let real_key = packed_hash_hex;
+
+    let store = make_mock_store_with_ttl(
+        vec![
+            MockCmd::new(
+                redis::cmd("SETRANGE")
+                    .arg(&temp_key)
+                    .arg(0)
+                    .arg(data.to_vec()),
+                Ok(Value::Int(0)),
+            ),
+            MockCmd::new(
+                redis::cmd("STRLEN").arg(&temp_key),
+                Ok(Value::Int(data.len().try_into().unwrap_or(i64::MAX))),
+            ),
+            MockCmd::new(
+                redis::cmd("RENAME").arg(&temp_key).arg(&real_key),
+                Ok(Value::Nil),
+            ),
+            // The point of the test: the expiry lands on the real key, after
+            // the rename, so the key is never left without one.
+            MockCmd::new(
+                redis::cmd("EXPIRE")
+                    .arg(&real_key)
+                    .arg(i64::try_from(TTL_SECONDS).unwrap()),
+                Ok(Value::Int(1)),
+            ),
+            // A read afterwards, purely so the expectations that follow EXPIRE
+            // get consumed. The mock ignores expectations nobody reaches, so
+            // without something after it a skipped EXPIRE would pass silently.
+            MockCmd::with_values(
+                redis::pipe()
+                    .cmd("STRLEN")
+                    .arg(&real_key)
+                    .cmd("EXISTS")
+                    .arg(&real_key),
+                Ok(vec![Value::Int(2), Value::Boolean(true)]),
+            ),
+        ],
+        Duration::from_secs(TTL_SECONDS),
+    )
+    .await;
+
+    store.update_oneshot(digest, data).await?;
+    let size = store.has(digest).await?;
+    assert_eq!(size, Some(2), "the value must survive the expiry being set");
+    Ok(())
+}
+
+/// The default must stay off. The same store type backs the CAS fast tier and
+/// the scheduler, and expiring scheduler state would drop in-flight actions.
+///
+/// The mock rejects any command it was not given, so an EXPIRE issued here
+/// would fail this test.
+#[nativelink_test]
+async fn update_sets_no_ttl_by_default() -> Result<(), Error> {
+    let data = Bytes::from_static(b"14");
+    let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
+    let packed_hash_hex = format!("{digest}");
+    let temp_key = make_temp_key(&packed_hash_hex);
+    let real_key = packed_hash_hex;
+
+    let store = make_mock_store(vec![
+        MockCmd::new(
+            redis::cmd("SETRANGE")
+                .arg(&temp_key)
+                .arg(0)
+                .arg(data.to_vec()),
+            Ok(Value::Int(0)),
+        ),
+        MockCmd::new(
+            redis::cmd("STRLEN").arg(&temp_key),
+            Ok(Value::Int(data.len().try_into().unwrap_or(i64::MAX))),
+        ),
+        MockCmd::new(
+            redis::cmd("RENAME").arg(&temp_key).arg(&real_key),
+            Ok(Value::Nil),
+        ),
+    ])
+    .await;
+
+    store.update_oneshot(digest, data).await?;
+    Ok(())
 }
