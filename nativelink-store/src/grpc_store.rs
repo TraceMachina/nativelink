@@ -32,7 +32,8 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
     ActionResult, BatchReadBlobsRequest, BatchReadBlobsResponse, BatchUpdateBlobsRequest,
     BatchUpdateBlobsResponse, FindMissingBlobsRequest, FindMissingBlobsResponse,
     GetActionResultRequest, GetTreeRequest, GetTreeResponse, SpliceBlobRequest, SpliceBlobResponse,
-    SplitBlobRequest, SplitBlobResponse, UpdateActionResultRequest, compressor,
+    SplitBlobRequest, SplitBlobResponse, UpdateActionResultRequest, batch_update_blobs_request,
+    compressor,
 };
 use nativelink_proto::google::bytestream::byte_stream_client::ByteStreamClient;
 use nativelink_proto::google::bytestream::{
@@ -47,7 +48,8 @@ use nativelink_util::connection_manager::ConnectionManager;
 use nativelink_util::digest_hasher::{DigestHasherFunc, default_digest_hasher_func};
 use nativelink_util::health_utils::HealthStatusIndicator;
 use nativelink_util::proto_stream_utils::{
-    FirstStream, WriteRequestStreamWrapper, WriteState, WriteStateWrapper,
+    FirstStream, MAX_WRITE_REQUEST_DATA_BYTES, WriteRequestStreamWrapper, WriteState,
+    WriteStateWrapper,
 };
 use nativelink_util::resource_info::ResourceInfo;
 use nativelink_util::retry::{Retrier, RetryResult};
@@ -211,9 +213,39 @@ const fn is_retryable_code(code: Code) -> bool {
 // This store is usually a pass-through store, but can also be used as a CAS store. Using it as an
 // AC store has one major side-effect... The has() function may not give the proper size of the
 // underlying data. This might cause issues if embedded in certain stores.
-/// Largest `data` payload in a single `ByteStream` `WriteRequest`, kept under
-/// tonic's 4MiB default `max_decoding_message_size` with room to spare.
-const MAX_WRITE_REQUEST_DATA_BYTES: usize = 2 * 1024 * 1024;
+/// Starting capacity for the stitched-together batch response. Only a hint:
+/// most batches are one chunk, and the vec grows if not.
+const MAX_BATCH_UPDATE_ENTRIES_HINT: usize = 256;
+
+/// Groups blobs so no single `BatchUpdateBlobs` RPC carries more than
+/// `MAX_WRITE_REQUEST_DATA_BYTES` of payload.
+///
+/// An entry larger than the cap on its own still goes out alone. Nothing can
+/// be done for it here, since a batch entry cannot be split across messages,
+/// and REAPI already tells clients to use `ByteStream` for blobs that size.
+fn split_batch_update_requests(
+    requests: Vec<batch_update_blobs_request::Request>,
+) -> Vec<Vec<batch_update_blobs_request::Request>> {
+    let mut chunks = Vec::new();
+    let mut current: Vec<batch_update_blobs_request::Request> = Vec::new();
+    let mut current_bytes = 0usize;
+
+    for request in requests {
+        let len = request.data.len();
+        if !current.is_empty() && current_bytes.saturating_add(len) > MAX_WRITE_REQUEST_DATA_BYTES {
+            chunks.push(core::mem::take(&mut current));
+            current_bytes = 0;
+        }
+        current_bytes = current_bytes.saturating_add(len);
+        current.push(request);
+    }
+    // An empty batch still needs one RPC: the caller expects the upstream's
+    // answer to an empty request, not a synthesised one.
+    if !current.is_empty() || chunks.is_empty() {
+        chunks.push(current);
+    }
+    chunks
+}
 
 #[derive(Debug, MetricsComponent)]
 pub struct GrpcStore {
@@ -396,22 +428,40 @@ impl GrpcStore {
 
         let mut request = grpc_request.into_inner();
         request.instance_name.clone_from(&self.instance_name);
-        self.perform_request(request, |request| async move {
-            let channel = self
-                .connection_manager
-                .connection("batch_update_blobs".into())
-                .await
-                .err_tip(|| "in batch_update_blobs")?;
-            ContentAddressableStorageClient::new(channel)
-                .batch_update_blobs(enrich_request(
-                    Request::new(request),
-                    &self.headers,
-                    &self.forward_headers,
-                ))
-                .await
-                .err_tip(|| "in GrpcStore::batch_update_blobs")
-        })
-        .await
+
+        // A batch is one message, so an oversized one cannot be chunked the
+        // way a ByteStream write can; it has to become several RPCs. Split on
+        // the accumulated payload and stitch the responses back together in
+        // request order, which is what the caller matches results by.
+        let mut responses =
+            Vec::with_capacity(request.requests.len().min(MAX_BATCH_UPDATE_ENTRIES_HINT));
+        for chunk in split_batch_update_requests(core::mem::take(&mut request.requests)) {
+            let chunk_request = BatchUpdateBlobsRequest {
+                instance_name: request.instance_name.clone(),
+                requests: chunk,
+                digest_function: request.digest_function,
+            };
+            let response = self
+                .perform_request(chunk_request, |chunk_request| async move {
+                    let channel = self
+                        .connection_manager
+                        .connection("batch_update_blobs".into())
+                        .await
+                        .err_tip(|| "in batch_update_blobs")?;
+                    ContentAddressableStorageClient::new(channel)
+                        .batch_update_blobs(enrich_request(
+                            Request::new(chunk_request),
+                            &self.headers,
+                            &self.forward_headers,
+                        ))
+                        .await
+                        .err_tip(|| "in GrpcStore::batch_update_blobs")
+                })
+                .await?;
+            responses.extend(response.into_inner().responses);
+        }
+
+        Ok(Response::new(BatchUpdateBlobsResponse { responses }))
     }
 
     pub async fn batch_read_blobs(

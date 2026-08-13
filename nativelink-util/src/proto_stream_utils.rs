@@ -207,6 +207,10 @@ impl Stream for FirstStream {
     }
 }
 
+/// Largest `data` payload in a single `ByteStream` `WriteRequest`, kept under
+/// tonic's 4MiB default `max_decoding_message_size` with room to spare.
+pub const MAX_WRITE_REQUEST_DATA_BYTES: usize = 2 * 1024 * 1024;
+
 /// This structure wraps all of the information required to perform a write
 /// request on the `GrpcStore`.  It stores the last message retrieved which allows
 /// the write to resume since the UUID allows upload resume at the server.
@@ -227,6 +231,9 @@ where
     resume_queue: [Option<WriteRequest>; 2],
     // An optimisation to avoid having to manage resume_queue when it's empty.
     is_resumed: bool,
+    // Remainder of an incoming frame too large to forward in one message.
+    // Drained before the next frame is read so ordering is preserved.
+    pending: Option<WriteRequest>,
     // When false, a partially-consumed stream never reports `can_resume()`:
     // uploads whose server-side protocol cannot accept a replay from a
     // nonzero offset (REAPI compressed-blobs writes) must fail fast instead
@@ -248,8 +255,32 @@ where
             cached_messages: [None, None],
             resume_queue: [None, None],
             is_resumed: false,
+            pending: None,
             resumable: true,
         }
+    }
+
+    /// Caps the payload of an outgoing message, stashing anything over the
+    /// limit to be sent as the following message.
+    ///
+    /// A caller can hand us a whole blob in one frame, and forwarding that
+    /// verbatim produces a message the receiver rejects at its 4MiB default.
+    /// Only the final piece carries `finish_write`, and each piece advances
+    /// `write_offset` by what came before it.
+    fn split_oversized(&mut self, mut message: WriteRequest) -> WriteRequest {
+        if message.data.len() <= MAX_WRITE_REQUEST_DATA_BYTES {
+            return message;
+        }
+        let rest = message.data.split_off(MAX_WRITE_REQUEST_DATA_BYTES);
+        let sent_len = i64::try_from(message.data.len()).unwrap_or(i64::MAX);
+        self.pending = Some(WriteRequest {
+            resource_name: message.resource_name.clone(),
+            write_offset: message.write_offset.saturating_add(sent_len),
+            finish_write: message.finish_write,
+            data: rest,
+        });
+        message.finish_write = false;
+        message
     }
 
     /// Marks this write as non-resumable: once the stream has been partially
@@ -340,6 +371,14 @@ where
         if cached_message.is_some() {
             return Poll::Ready(cached_message);
         }
+        // Finish draining an oversized frame before reading the next one.
+        if let Some(pending) = local_state.pending.take() {
+            let message = local_state.split_oversized(pending);
+            if local_state.is_resumable() {
+                local_state.push_message(message.clone());
+            }
+            return Poll::Ready(Some(message));
+        }
         // Read a new write request from the downstream.
         let Poll::Ready(maybe_message) = Pin::new(&mut local_state.read_stream).poll_next(cx)
         else {
@@ -365,6 +404,7 @@ where
                         }
                     }
                 }
+                let message = local_state.split_oversized(message);
                 // Cache the last request in case there is an error to allow
                 // the upload to be resumed. Non-resumable writes skip the
                 // clone: cached messages would never be replayed.
