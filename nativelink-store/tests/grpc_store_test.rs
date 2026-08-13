@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_lock::Mutex;
-use futures::stream::unfold;
+use futures::stream::{self, unfold};
 use futures::{Stream, StreamExt};
 use nativelink_config::stores::{GrpcEndpoint, GrpcSpec, Retry, StoreType};
 use nativelink_error::{Error, ResultExt};
@@ -16,7 +16,8 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
     BatchReadBlobsRequest, BatchReadBlobsResponse, BatchUpdateBlobsRequest,
     BatchUpdateBlobsResponse, Digest, FindMissingBlobsRequest, FindMissingBlobsResponse,
     GetTreeRequest, GetTreeResponse, SpliceBlobRequest, SpliceBlobResponse, SplitBlobRequest,
-    SplitBlobResponse, chunking_function, digest_function,
+    SplitBlobResponse, batch_update_blobs_request, batch_update_blobs_response, chunking_function,
+    compressor, digest_function,
 };
 use nativelink_proto::google::bytestream::byte_stream_server::{ByteStream, ByteStreamServer};
 use nativelink_proto::google::bytestream::{
@@ -27,6 +28,7 @@ use nativelink_store::grpc_store::GrpcStore;
 use nativelink_util::background_spawn;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
+use nativelink_util::proto_stream_utils::WriteRequestStreamWrapper;
 use nativelink_util::store_trait::{StoreLike, UploadSizeInfo};
 use nativelink_util::telemetry::ClientHeaders;
 use opentelemetry::Context;
@@ -363,6 +365,9 @@ async fn read_works_with_headers() -> Result<(), Error> {
 struct FakeCasServer {
     split_requests: Arc<Mutex<Vec<SplitBlobRequest>>>,
     splice_requests: Arc<Mutex<Vec<SpliceBlobRequest>>>,
+    /// Every `BatchUpdateBlobs` RPC received, so a test can assert on how the
+    /// store split an oversized batch.
+    batch_updates: Arc<Mutex<Vec<BatchUpdateBlobsRequest>>>,
 }
 
 impl FakeCasServer {
@@ -370,6 +375,7 @@ impl FakeCasServer {
         Self {
             split_requests: Arc::new(Mutex::new(vec![])),
             splice_requests: Arc::new(Mutex::new(vec![])),
+            batch_updates: Arc::new(Mutex::new(vec![])),
         }
     }
 }
@@ -388,12 +394,23 @@ impl ContentAddressableStorage for FakeCasServer {
         unimplemented!();
     }
 
-    #[allow(clippy::unimplemented)]
     async fn batch_update_blobs(
         &self,
-        _grpc_request: Request<BatchUpdateBlobsRequest>,
+        grpc_request: Request<BatchUpdateBlobsRequest>,
     ) -> Result<Response<BatchUpdateBlobsResponse>, Status> {
-        unimplemented!();
+        let request = grpc_request.into_inner();
+        // One response per entry, echoing the digest, so a test can check the
+        // stitched-together result keeps request order.
+        let responses = request
+            .requests
+            .iter()
+            .map(|r| batch_update_blobs_response::Response {
+                digest: r.digest.clone(),
+                status: None,
+            })
+            .collect();
+        self.batch_updates.lock().await.push(request);
+        Ok(Response::new(BatchUpdateBlobsResponse { responses }))
     }
 
     #[allow(clippy::unimplemented)]
@@ -581,6 +598,157 @@ async fn update_splits_buffers_larger_than_the_grpc_message_limit() -> Result<()
     assert!(
         *finish_flags.last().unwrap(),
         "finish_write must be on the final message"
+    );
+    Ok(())
+}
+
+/// The `ByteStream` pass-through forwards the caller's frames as it receives
+/// them, so a caller that hands over a whole blob in one frame would produce
+/// one oversized message and be rejected at the receiver's 4MiB default.
+#[nativelink_test]
+async fn write_splits_frames_larger_than_the_grpc_message_limit() -> Result<(), Error> {
+    const TONIC_DEFAULT_DECODE_LIMIT: usize = 4 * 1024 * 1024;
+    // Over the limit and not a multiple of the chunk size, so the tail is a
+    // partial piece. Kept just past the limit rather than at the ~9.4MB seen
+    // in the wild: the extra bytes prove nothing here and cost real time under
+    // sanitizers.
+    const BLOB_LEN: usize = 5_242_883;
+
+    let (server, port) = make_fake_bytestream_server_draining().await;
+    let mut spec = test_spec(format!("http://localhost:{port}"), false);
+    // Streaming several MiB through ByteStream is slow under instrumented
+    // builds. This deadline is headroom for that, not part of the test.
+    spec.rpc_timeout_s = 30;
+    let store = GrpcStore::new(&spec).await?;
+
+    let payload = vec![0xCDu8; BLOB_LEN];
+    let resource_name = format!(
+        "instance_name/uploads/{}/blobs/{VALID_HASH}/{BLOB_LEN}",
+        uuid::Uuid::new_v4()
+    );
+    // A single frame carrying the entire blob, which is what a client doing
+    // one big write looks like on the wire.
+    let requests = vec![WriteRequest {
+        resource_name,
+        write_offset: 0,
+        finish_write: true,
+        data: payload.clone().into(),
+    }];
+    let stream =
+        WriteRequestStreamWrapper::from(stream::iter(requests.into_iter().map(Ok::<_, Error>)))
+            .await?;
+
+    store.write(stream).await?;
+
+    let write_requests = server.write_requests.lock().await;
+    assert!(
+        write_requests.len() > 1,
+        "expected the frame to be split, got {}",
+        write_requests.len()
+    );
+
+    for (i, req) in write_requests.iter().enumerate() {
+        assert!(
+            req.data.len() <= TONIC_DEFAULT_DECODE_LIMIT,
+            "WriteRequest {i} carries {} bytes, over the {TONIC_DEFAULT_DECODE_LIMIT} byte default decode limit",
+            req.data.len()
+        );
+    }
+
+    let mut reassembled = Vec::with_capacity(BLOB_LEN);
+    let mut expected_offset = 0i64;
+    for req in write_requests.iter() {
+        assert_eq!(
+            req.write_offset, expected_offset,
+            "write_offset must be contiguous across chunks"
+        );
+        expected_offset += i64::try_from(req.data.len()).unwrap();
+        reassembled.extend_from_slice(&req.data);
+    }
+    assert_eq!(reassembled, payload, "the split must not corrupt the blob");
+
+    let finish_flags: Vec<bool> = write_requests.iter().map(|r| r.finish_write).collect();
+    assert_eq!(
+        finish_flags.iter().filter(|f| **f).count(),
+        1,
+        "expected exactly one finish_write, got {finish_flags:?}"
+    );
+    assert!(
+        *finish_flags.last().unwrap(),
+        "finish_write must be on the final chunk"
+    );
+    Ok(())
+}
+
+/// A batch is a single message, so an oversized one has to become several
+/// RPCs rather than several chunks of one RPC.
+#[nativelink_test]
+async fn batch_update_blobs_splits_an_oversized_batch_across_rpcs() -> Result<(), Error> {
+    const TONIC_DEFAULT_DECODE_LIMIT: usize = 4 * 1024 * 1024;
+    const ENTRY_LEN: usize = 900 * 1024;
+    const ENTRIES: usize = 12; // ~10.5MiB total, comfortably over the limit.
+
+    let (server, port) = make_fake_cas_server().await;
+    let mut spec = test_spec(format!("http://localhost:{port}"), false);
+    spec.instance_name = "backend_instance".to_string();
+    spec.rpc_timeout_s = 5;
+    let store = GrpcStore::new(&spec).await?;
+
+    let requests: Vec<batch_update_blobs_request::Request> = (0..ENTRIES)
+        .map(|i| batch_update_blobs_request::Request {
+            digest: Some(Digest {
+                hash: format!("{i:064x}"),
+                size_bytes: i64::try_from(ENTRY_LEN).unwrap(),
+            }),
+            data: vec![u8::try_from(i).unwrap_or(0); ENTRY_LEN].into(),
+            compressor: compressor::Value::Identity.into(),
+        })
+        .collect();
+    let expected_digests: Vec<Option<Digest>> = requests.iter().map(|r| r.digest.clone()).collect();
+
+    let response = store
+        .batch_update_blobs(Request::new(BatchUpdateBlobsRequest {
+            instance_name: "local_instance".to_string(),
+            requests,
+            digest_function: digest_function::Value::Sha256.into(),
+        }))
+        .await?;
+
+    let batches = server.batch_updates.lock().await;
+    assert!(
+        batches.len() > 1,
+        "expected the batch to be split across several RPCs, got {}",
+        batches.len()
+    );
+
+    for (i, batch) in batches.iter().enumerate() {
+        let bytes: usize = batch.requests.iter().map(|r| r.data.len()).sum();
+        assert!(
+            bytes <= TONIC_DEFAULT_DECODE_LIMIT,
+            "batch {i} carries {bytes} bytes, over the {TONIC_DEFAULT_DECODE_LIMIT} byte default decode limit",
+        );
+        assert_eq!(
+            batch.instance_name, "backend_instance",
+            "every split batch keeps the rewritten instance name"
+        );
+    }
+
+    // Nothing dropped or reordered by the split.
+    let sent: Vec<Option<Digest>> = batches
+        .iter()
+        .flat_map(|b| b.requests.iter().map(|r| r.digest.clone()))
+        .collect();
+    assert_eq!(sent, expected_digests, "every blob must be forwarded once");
+
+    let got: Vec<Option<Digest>> = response
+        .into_inner()
+        .responses
+        .into_iter()
+        .map(|r| r.digest)
+        .collect();
+    assert_eq!(
+        got, expected_digests,
+        "stitched responses must stay in request order"
     );
     Ok(())
 }
