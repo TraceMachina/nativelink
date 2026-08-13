@@ -58,11 +58,14 @@ fn test_redis_error_conversion_invalid_argument() {
 }
 
 #[test]
-fn test_redis_error_conversion_internal() {
-    let redis_error: redis::RedisError = (RedisErrorKind::Io, "Internal error").into();
+fn test_redis_error_conversion_io_is_unavailable() {
+    // An I/O error means the connection to Redis broke, which is transient
+    // and retryable — clients must be told UNAVAILABLE so they retry rather
+    // than fail the operation outright.
+    let redis_error: redis::RedisError = (RedisErrorKind::Io, "Connection error").into();
     let error: Error = redis_error.into();
-    assert_eq!(error.code, Code::Internal);
-    assert!(error.messages[0].contains("Internal error"));
+    assert_eq!(error.code, Code::Unavailable);
+    assert!(error.messages[0].contains("Connection error"));
 }
 
 #[test]
