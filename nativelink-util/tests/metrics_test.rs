@@ -18,7 +18,12 @@ use nativelink_util::action_messages::{
 use nativelink_util::common::DigestInfo;
 use nativelink_util::metrics::{
     CACHE_METRICS, CacheMetricAttrs, EXECUTION_METRICS, ExecutionMetricAttrs, ExecutionStage,
-    execution_output_bytes, make_execution_attributes, record_completed_execution_metrics,
+    WORKER_METRICS, WorkerDisconnectReason, execution_output_bytes, make_execution_attributes,
+    peak_memory_sample, pool_available_sample, record_completed_execution_metrics,
+    record_connection_acquired, record_connection_reconnect, record_execution_cpu_time,
+    record_execution_peak_memory, record_health_check, record_matching_pass, record_rpc_served,
+    record_store_tier_io, record_store_tier_read, record_worker_connected,
+    record_worker_disconnected, record_worker_keepalive, record_worker_state, split_grpc_path,
 };
 use opentelemetry::KeyValue;
 
@@ -113,6 +118,7 @@ fn test_metrics_lazy_initialization() {
     // Verify that the lazy static initialization works
     let _cache_metrics = &*CACHE_METRICS;
     let _execution_metrics = &*EXECUTION_METRICS;
+    let _worker_metrics = &*WORKER_METRICS;
 
     // If we got here without panicking, the metrics were initialized successfully
 }
@@ -249,4 +255,136 @@ fn record_completed_execution_metrics_guards_unpopulated_metadata() {
 
     // Default (UNIX_EPOCH) metadata must skip the duration records cleanly.
     record_completed_execution_metrics(&ActionResult::default(), "instance", None, None);
+}
+
+#[test]
+fn test_worker_disconnect_reason_labels() {
+    // These become metric label values, so they are part of the wire contract
+    // and dashboards break if they change.
+    assert_eq!(
+        WorkerDisconnectReason::Disconnected.as_str(),
+        "disconnected"
+    );
+    assert_eq!(WorkerDisconnectReason::Evicted.as_str(), "evicted");
+}
+
+#[test]
+fn test_worker_metric_helpers_are_callable() {
+    // The instruments are global, so there is nothing to read back here
+    // without a test exporter. This guards the call sites: every helper stays
+    // callable with the arguments the scheduler passes.
+    record_worker_connected();
+    record_worker_keepalive();
+    record_worker_state("draining", true);
+    record_worker_state("draining", false);
+    record_worker_disconnected(WorkerDisconnectReason::Disconnected, false, false);
+
+    // A worker that was draining and paused when it left unwinds both gauges.
+    record_worker_connected();
+    record_worker_state("draining", true);
+    record_worker_state("paused", true);
+    record_worker_disconnected(WorkerDisconnectReason::Evicted, true, true);
+}
+
+#[test]
+fn test_split_grpc_path() {
+    assert_eq!(
+        split_grpc_path(
+            "/build.bazel.remote.execution.v2.ContentAddressableStorage/FindMissingBlobs"
+        ),
+        (
+            "build.bazel.remote.execution.v2.ContentAddressableStorage",
+            "FindMissingBlobs"
+        )
+    );
+    assert_eq!(
+        split_grpc_path("/google.bytestream.ByteStream/Write"),
+        ("google.bytestream.ByteStream", "Write")
+    );
+    // Not a gRPC route. Reported whole rather than dropped, so an unexpected
+    // path is still visible.
+    assert_eq!(split_grpc_path("/healthz"), ("healthz", "unknown"));
+    assert_eq!(split_grpc_path(""), ("", "unknown"));
+}
+
+#[test]
+fn test_health_status_metric_labels() {
+    use std::borrow::Cow;
+
+    use nativelink_util::health_utils::HealthStatus;
+
+    // Label values are part of the wire contract for dashboards.
+    assert_eq!(
+        HealthStatus::Ok {
+            struct_name: "S",
+            message: Cow::Borrowed("")
+        }
+        .metric_label(),
+        "ok"
+    );
+    assert_eq!(
+        HealthStatus::Failed {
+            struct_name: "S",
+            message: Cow::Borrowed("")
+        }
+        .metric_label(),
+        "failed"
+    );
+    assert_eq!(
+        HealthStatus::Timeout { struct_name: "S" }.metric_label(),
+        "timeout"
+    );
+}
+
+#[test]
+fn test_new_metric_helpers_are_callable() {
+    // Global instruments, so nothing to read back without a test exporter.
+    // This guards the call sites against drift.
+    record_rpc_served("/pkg.Service/Method", 0, 0.01);
+    record_rpc_served("/pkg.Service/Method", 5, 1.5);
+    record_matching_pass(0.002, true);
+    record_matching_pass(0.002, false);
+    record_store_tier_read("fast", "hit");
+    record_store_tier_read("slow", "hit");
+    record_store_tier_io("fast", "read", 4096);
+    record_health_check("store", "ok");
+    record_execution_peak_memory(512 * 1024, "main");
+    record_execution_cpu_time(90_000, "main");
+    record_connection_acquired("grpc", Some(12), false);
+    record_connection_acquired("redis", Some(0), true);
+    record_connection_acquired("grpc", None, false);
+    record_connection_reconnect("redis");
+}
+
+/// An unlimited pool is a semaphore holding `Semaphore::MAX_PERMITS`, about
+/// 2.3e18. Recording that as a histogram sample overflowed the SDK's `u64`
+/// sum within a handful of samples and panicked a debug build, which killed a
+/// tokio worker and turned every later connection request into a `SendError`.
+///
+/// Callers now pass `None` for an unlimited pool. This covers the clamp that
+/// backstops them, which is the part that can be asserted without installing
+/// a meter provider.
+#[test]
+fn pool_available_sample_clamps_an_unbounded_permit_count() {
+    // Semaphore::MAX_PERMITS.
+    assert_eq!(pool_available_sample(usize::MAX >> 3), 1024);
+    assert_eq!(pool_available_sample(usize::MAX), 1024);
+    // Real counts pass through untouched.
+    assert_eq!(pool_available_sample(0), 0);
+    assert_eq!(pool_available_sample(12), 12);
+    assert_eq!(pool_available_sample(1024), 1024);
+}
+
+/// Peak memory arrives from a worker over gRPC, so a malfunctioning one could
+/// report a value that overflows the histogram's `u64` sum the same way an
+/// unbounded connection pool did.
+#[test]
+fn peak_memory_sample_bounds_an_absurd_reading() {
+    // KiB to bytes for anything plausible.
+    assert_eq!(peak_memory_sample(0), 0);
+    assert_eq!(peak_memory_sample(1), 1024);
+    assert_eq!(peak_memory_sample(4 * 1024 * 1024), 4 * 1024 * 1024 * 1024);
+    // Absurd readings are bounded rather than wrapped.
+    assert_eq!(peak_memory_sample(u64::MAX), 1 << 50);
+    assert_eq!(peak_memory_sample(u64::MAX / 512), 1 << 50);
 }

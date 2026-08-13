@@ -104,6 +104,11 @@ pub struct ActionResourceUsage {
     /// / The worker ID that observed the resource usage.
     #[prost(string, tag = "4")]
     pub worker_id: ::prost::alloc::string::String,
+    /// / Total CPU time consumed by the action process tree, in milliseconds.
+    /// / User and system time combined, summed across every process in the
+    /// / action's process group.
+    #[prost(uint64, tag = "5")]
+    pub cpu_time_ms: u64,
 }
 /// / Result sent back from the server when a node connects.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

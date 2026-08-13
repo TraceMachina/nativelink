@@ -37,6 +37,7 @@ use nativelink_redis_tester::SubscriptionManagerNotify;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
+use nativelink_util::metrics::{record_connection_acquired, record_connection_reconnect};
 use nativelink_util::store_trait::{
     BoolValue, RemoveCallback, SchedulerCurrentVersionProvider, SchedulerIndexProvider,
     SchedulerStore, SchedulerStoreDataProvider, SchedulerStoreDecodeTo, SchedulerStoreKeyProvider,
@@ -314,6 +315,7 @@ impl RedisManager<ConnectionManager> for StandardRedisManager<ConnectionManager>
                 return Ok(guard.clone());
             }
         }
+        record_connection_reconnect("redis");
         let mut connection_manager = (self.connect_func)().await?;
         let new_uuid = Uuid::new_v4();
         self.configure(&mut connection_manager).await?;
@@ -551,6 +553,9 @@ where
     async fn get_client(&self) -> Result<ClientWithPermit<C>, Error> {
         let local_client_permits = self.client_permits.clone();
         let remaining = local_client_permits.available_permits();
+        // Zero here means every client is busy and this call is about to wait,
+        // which is the saturation signal worth alerting on.
+        record_connection_acquired("redis", Some(remaining), remaining == 0);
         let semaphore_permit = local_client_permits.acquire_owned().await?;
         trace!(remaining, "Got a client permit");
         let (connection_manager, uuid) = self.connection_manager.get_connection().await?;
