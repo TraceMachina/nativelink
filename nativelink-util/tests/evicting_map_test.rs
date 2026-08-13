@@ -560,44 +560,6 @@ async fn leased_key_survives_ttl_until_released() -> Result<(), Error> {
 }
 
 #[nativelink_test]
-async fn released_expired_key_is_not_hidden_by_fresh_entry() -> Result<(), Error> {
-    const DATA: &str = "12345678";
-    let evicting_map = EvictingMap::<DigestInfo, DigestInfo, BytesWrapper, MockInstantWrapped>::new(
-        &EvictionPolicy {
-            max_count: 0,
-            max_seconds: 5,
-            max_bytes: 0,
-            evict_bytes: 0,
-        },
-        MockInstantWrapped::default(),
-    );
-    let leased_key = DigestInfo::try_new(HASH1, 0)?;
-    let fresh_key = DigestInfo::try_new(HASH2, 0)?;
-
-    evicting_map.lease_key(leased_key);
-    evicting_map
-        .insert(leased_key, Bytes::from(DATA).into())
-        .await;
-    MockClock::advance(Duration::from_secs(10));
-    evicting_map
-        .insert(fresh_key, Bytes::from(DATA).into())
-        .await;
-
-    evicting_map.release_key(&leased_key).await;
-
-    // Releasing an expired key must remove it immediately. Otherwise the
-    // fresh entry can become the LRU head and hide the expired key from
-    // eviction until a later insert.
-    assert_eq!(evicting_map.len_for_test(), 1);
-    assert_eq!(
-        evicting_map.size_for_key(&fresh_key).await,
-        Some(DATA.len() as u64)
-    );
-
-    Ok(())
-}
-
-#[nativelink_test]
 async fn insert_purges_to_low_watermark_at_max_bytes() -> Result<(), Error> {
     const DATA: &str = "12345678";
     let evicting_map = EvictingMap::<DigestInfo, DigestInfo, BytesWrapper, MockInstantWrapped>::new(

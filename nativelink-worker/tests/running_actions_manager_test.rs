@@ -379,9 +379,9 @@ mod tests {
             .await?;
         assert!(
             fast_store
-                .get_evicting_map()
-                .size_for_key(&StoreKey::Digest(file_digest))
-                .await
+                .as_ref()
+                .has(StoreKey::Digest(file_digest))
+                .await?
                 .is_some(),
             "an active action input must survive fast-tier pressure",
         );
@@ -416,9 +416,9 @@ mod tests {
             .await?;
         assert_eq!(
             fast_store
-                .get_evicting_map()
-                .size_for_key(&StoreKey::Digest(file_digest))
-                .await,
+                .as_ref()
+                .has(StoreKey::Digest(file_digest))
+                .await?,
             None,
             "released action inputs must become ordinary eviction candidates",
         );
