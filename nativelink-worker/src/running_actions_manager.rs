@@ -1262,7 +1262,9 @@ pub struct RunningActionImpl {
     action_directory: String,
     work_directory: String,
     action_info: ActionInfo,
-    input_lease: Arc<ActionInputLease>,
+    /// `Some` only when the manager was configured with
+    /// `experimental_active_input_leases`; `None` leaves eviction untouched.
+    input_lease: Option<Arc<ActionInputLease>>,
     timeout: Duration,
     running_actions_manager: Arc<RunningActionsManagerImpl>,
     state: Mutex<RunningActionImplState>,
@@ -1280,11 +1282,13 @@ impl RunningActionImpl {
         running_actions_manager: Arc<RunningActionsManagerImpl>,
     ) -> Self {
         let work_directory = format!("{}/{}", action_directory, "work");
-        let input_lease = ActionInputLease::new(
-            running_actions_manager.cas_store.as_ref(),
-            action_info.command_digest,
-            action_info.input_root_digest,
-        );
+        let input_lease = running_actions_manager.active_input_leases.then(|| {
+            ActionInputLease::new(
+                running_actions_manager.cas_store.as_ref(),
+                action_info.command_digest,
+                action_info.input_root_digest,
+            )
+        });
         let (kill_channel_tx, kill_channel_rx) = oneshot::channel();
         Self {
             operation_id,
@@ -1362,7 +1366,7 @@ impl RunningActionImpl {
                         filesystem_store_pin,
                         &self.action_info.input_root_digest,
                         &self.work_directory,
-                        Some(self.input_lease.clone()),
+                        self.input_lease.clone(),
                     ))
                     .await
             })
@@ -2333,11 +2337,12 @@ impl Drop for RunningActionImpl {
                         .cleanup_action(&self.operation_id),
                 );
             }
-            let input_lease = self.input_lease.clone();
-            background_spawn!(
-                "running_action_impl_release_input_lease",
-                input_lease.release()
-            );
+            if let Some(input_lease) = self.input_lease.clone() {
+                background_spawn!(
+                    "running_action_impl_release_input_lease",
+                    input_lease.release()
+                );
+            }
             return;
         }
         let operation_id = self.operation_id.clone();
@@ -2351,7 +2356,9 @@ impl Drop for RunningActionImpl {
         background_spawn!("running_action_impl_drop", async move {
             let cleanup_result =
                 do_cleanup(&running_actions_manager, &operation_id, &action_directory).await;
-            input_lease.release().await;
+            if let Some(input_lease) = input_lease {
+                input_lease.release().await;
+            }
             if let Err(err) = cleanup_result {
                 error!(
                     %operation_id,
@@ -2463,7 +2470,9 @@ impl RunningAction for RunningActionImpl {
                 // lease is released. If this future is cancelled while the
                 // release task is finishing, Drop still observes a completed
                 // cleanup and cannot strand the action in the manager.
-                self.input_lease.clone().release().await;
+                if let Some(input_lease) = self.input_lease.clone() {
+                    input_lease.release().await;
+                }
                 result.map(move |()| self)
             })
             .await;
@@ -2819,6 +2828,11 @@ pub struct RunningActionsManagerArgs<'a> {
     pub max_cleanup_backoff: Duration,
     pub timeout_handled_externally: bool,
     pub directory_cache: Option<Arc<crate::directory_cache::DirectoryCache>>,
+    /// When true, every digest in an active action's input Merkle closure is
+    /// leased in the locally eviction-managed CAS tiers until the action's
+    /// cleanup completes. While leases are held, those tiers may temporarily
+    /// exceed their configured `max_bytes` / `max_count` eviction limits.
+    pub active_input_leases: bool,
     #[cfg(target_os = "linux")]
     pub use_namespaces: UseNamespaces,
 }
@@ -2872,6 +2886,9 @@ pub struct RunningActionsManagerImpl {
     /// Optional directory cache for improving performance by caching reconstructed
     /// input directories and using hardlinks.
     directory_cache: Option<Arc<crate::directory_cache::DirectoryCache>>,
+    /// Whether active action inputs are leased against eviction in the local
+    /// CAS tiers (opt-in via `experimental_active_input_leases`).
+    active_input_leases: bool,
     persistent_worker_pool: PersistentWorkerPool,
 }
 
@@ -2917,6 +2934,7 @@ impl RunningActionsManagerImpl {
             max_cleanup_backoff: args.max_cleanup_backoff,
             cleanup_complete_notify: Arc::new(Notify::new()),
             directory_cache: args.directory_cache,
+            active_input_leases: args.active_input_leases,
             persistent_worker_pool: PersistentWorkerPool::default(),
             #[cfg(target_os = "linux")]
             use_namespaces: args.use_namespaces,

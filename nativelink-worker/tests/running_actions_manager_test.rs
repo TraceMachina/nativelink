@@ -350,6 +350,7 @@ mod tests {
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: true,
                 directory_cache: Some(directory_cache),
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -423,6 +424,133 @@ mod tests {
             "released action inputs must become ordinary eviction candidates",
         );
 
+        drop(action);
+        Ok(())
+    }
+
+    #[nativelink_test]
+    async fn action_inputs_stay_evictable_when_leases_disabled()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const FILE_CONTENT: &[u8] = b"unleased input";
+        const PRESSURE_CONTENT: &[u8] = b"pressure";
+        // High enough that action preparation never triggers eviction; the
+        // pressure loop below inserts this many fresh digests so every entry
+        // that predates it is evicted.
+        const MAX_COUNT: u64 = 10;
+
+        let (fast_store, slow_store, cas_store, _ac_store) =
+            setup_stores_with_eviction_policy(Some(EvictionPolicy {
+                max_count: MAX_COUNT,
+                ..Default::default()
+            }))
+            .await?;
+
+        let file_digest = DigestInfo::new([7u8; 32], FILE_CONTENT.len() as u64);
+        slow_store
+            .as_ref()
+            .update_oneshot(file_digest, FILE_CONTENT.into())
+            .await?;
+        let input_root_digest = serialize_and_upload_message(
+            &Directory {
+                files: vec![FileNode {
+                    name: "input.txt".to_string(),
+                    digest: Some(file_digest.into()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            slow_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let command_digest = serialize_and_upload_message(
+            &Command::default(),
+            slow_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let action_digest = serialize_and_upload_message(
+            &Action {
+                command_digest: Some(command_digest.into()),
+                input_root_digest: Some(input_root_digest.into()),
+                ..Default::default()
+            },
+            slow_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+        let directory_cache = Arc::new(
+            DirectoryCache::new(
+                DirectoryCacheConfig {
+                    cache_root: make_temp_path("directory_cache").into(),
+                    ..Default::default()
+                },
+                cas_store.clone(),
+            )
+            .await?,
+        );
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory,
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: cas_store.clone(),
+                ac_store: None,
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::from_mins(10),
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                directory_cache: Some(directory_cache),
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            })?);
+
+        let action = running_actions_manager
+            .create_and_add_action(
+                "test-worker".to_string(),
+                StartExecute {
+                    execute_request: Some(ExecuteRequest {
+                        action_digest: Some(action_digest.into()),
+                        digest_function: ProtoDigestFunction::Sha256.into(),
+                        ..Default::default()
+                    }),
+                    operation_id: OperationId::default().to_string(),
+                    ..Default::default()
+                },
+            )
+            .await?
+            .prepare_action()
+            .await?;
+
+        for pressure_index in 0..MAX_COUNT {
+            let pressure_digest = DigestInfo::new(
+                [0x80 + u8::try_from(pressure_index)?; 32],
+                PRESSURE_CONTENT.len() as u64,
+            );
+            fast_store
+                .as_ref()
+                .update_oneshot(pressure_digest, PRESSURE_CONTENT.into())
+                .await?;
+        }
+        assert_eq!(
+            fast_store
+                .as_ref()
+                .has(StoreKey::Digest(file_digest))
+                .await?,
+            None,
+            "with active input leases disabled, the fast tier must honor its eviction limits even while an action is running",
+        );
+
+        let action = action.cleanup().await?;
         drop(action);
         Ok(())
     }
@@ -755,6 +883,7 @@ mod tests {
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -882,6 +1011,7 @@ mod tests {
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -1011,6 +1141,7 @@ mod tests {
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -1195,6 +1326,7 @@ mod tests {
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -1381,6 +1513,7 @@ mod tests {
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -1636,6 +1769,7 @@ mod tests {
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -1789,6 +1923,7 @@ mod tests {
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -1933,6 +2068,7 @@ mod tests {
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -2072,6 +2208,7 @@ mod tests {
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -2279,6 +2416,7 @@ exit 0
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -2459,6 +2597,7 @@ exit 0
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -2633,6 +2772,7 @@ exit 1
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -2724,6 +2864,7 @@ exit 1
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -2802,6 +2943,7 @@ exit 1
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -2887,6 +3029,7 @@ exit 1
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -2993,6 +3136,7 @@ exit 1
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -3043,6 +3187,7 @@ exit 1
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -3114,6 +3259,7 @@ exit 1
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -3236,6 +3382,7 @@ exit 1
                     max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                     max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                     timeout_handled_externally: false,
+                    active_input_leases: false,
                     directory_cache: None,
                     #[cfg(target_os = "linux")]
                     use_namespaces: use_namespaces(),
@@ -3327,6 +3474,7 @@ exit 1
                     max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                     max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                     timeout_handled_externally: false,
+                    active_input_leases: false,
                     directory_cache: None,
                     #[cfg(target_os = "linux")]
                     use_namespaces: use_namespaces(),
@@ -3418,6 +3566,7 @@ exit 1
                     max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                     max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                     timeout_handled_externally: false,
+                    active_input_leases: false,
                     directory_cache: None,
                     #[cfg(target_os = "linux")]
                     use_namespaces: use_namespaces(),
@@ -3506,6 +3655,7 @@ exit 1
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -3658,6 +3808,7 @@ exit 1
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -3827,6 +3978,7 @@ exit 1
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -3940,6 +4092,7 @@ exit 1
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 // Pin namespaces off so this exercises the no-pre_exec/posix_spawn
                 // path regardless of what the host kernel supports.
@@ -4054,6 +4207,7 @@ exit 1
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -4263,6 +4417,7 @@ exit 1
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -4362,6 +4517,7 @@ done
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -4546,6 +4702,7 @@ done
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -4670,6 +4827,7 @@ done
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -4815,6 +4973,7 @@ done
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -4927,6 +5086,7 @@ done
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -5070,6 +5230,7 @@ done
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -5244,6 +5405,7 @@ done
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -5402,6 +5564,7 @@ done
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
