@@ -1024,6 +1024,23 @@ pub struct LocalWorkerConfig {
     /// Default: None (directory cache disabled)
     pub directory_cache: Option<DirectoryCacheConfig>,
 
+    /// Optional and experimental: lease every digest in an active action's
+    /// input Merkle closure in the worker's locally eviction-managed CAS
+    /// tiers (the `cas_fast_slow_store`'s filesystem-backed stores) until the
+    /// action has finished cleanup. This prevents `Lost inputs no longer
+    /// available remotely` failures caused by local fast-tier eviction while
+    /// inputs are being materialized under cache pressure.
+    ///
+    /// Trade-off: while leases are held, a local filesystem tier may
+    /// temporarily exceed its configured `max_bytes` / `max_count` eviction
+    /// limits; normal eviction resumes once the action's leases are released.
+    /// Operators should leave headroom on the underlying disk when enabling
+    /// this.
+    ///
+    /// Default: false (eviction behavior is unchanged)
+    #[serde(default)]
+    pub experimental_active_input_leases: bool,
+
     /// Whether to use namespaces to isolate the execution. This is only available
     /// on Linux. It is highly recommended as it avoids a number of issues with
     /// zombie processes and also provides additional hermeticity. If explicitly set

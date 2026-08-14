@@ -1263,6 +1263,20 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         self.weak_self.upgrade()
     }
 
+    /// Reserve a digest before it is populated so active action inputs cannot
+    /// be evicted while they are being materialized.
+    pub fn lease_digest(&self, digest: &DigestInfo) {
+        let key: StoreKey<'static> = (*digest).into();
+        self.evicting_map.lease_key(StoreKeyBorrow::from(key));
+    }
+
+    /// Release a batch of action-input leases and trim retained entries once.
+    pub async fn release_digests(&self, digests: &[DigestInfo]) {
+        self.evicting_map
+            .release_keys(digests.iter().map(|digest| StoreKey::Digest(*digest)))
+            .await;
+    }
+
     /// Path of the read-only executable (0o555) variant for `digest`.
     #[cfg(unix)]
     fn executable_variant_path(&self, digest: &DigestInfo) -> OsString {
