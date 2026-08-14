@@ -14,7 +14,7 @@ import re
 import sys
 
 # Each section a reviewer cannot reconstruct from the diff or from CI.
-REQUIRED_SECTIONS = ("What and why", "How this was verified", "Risk")
+REQUIRED_SECTIONS = ("What and why", "How was this verified?", "Risk")
 
 # Long enough to rule out "n/a" and "see title", short enough that one real
 # sentence clears it.

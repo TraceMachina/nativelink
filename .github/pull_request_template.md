@@ -14,7 +14,7 @@ that, and it is better at it than either of us. -->
 If there is an issue, link it as "Fixes #123" so it closes on merge. If there
 isn't, say what prompted the change. -->
 
-## How this was verified
+## How was this verified?
 
 <!-- What you ran, on what, and what you saw. Beyond CI.
 
