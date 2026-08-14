@@ -1223,19 +1223,41 @@ where
             }
         }
 
-        // Expire the final key, not the temp one: RENAME would carry a TTL
-        // over, but setting it here keeps the window where the key exists
-        // without one down to a single round trip and keeps the intent
-        // obvious. A failure here is a real error rather than something to
-        // swallow, since a key that silently never expires is the bug this
-        // option exists to prevent.
+        // The rename carries the temp key's TTL across, so the key is never
+        // unprotected. Re-setting it here restarts the window at completion
+        // rather than at the first byte, which matters for a large blob whose
+        // upload takes a noticeable slice of the TTL. Reconnect once on a
+        // transient failover error, the same as the rename above: a key that
+        // silently never expires is the bug this option exists to prevent.
         if let Some(key_ttl) = self.key_ttl {
-            let ttl_secs = i64::try_from(key_ttl.as_secs()).unwrap_or(i64::MAX);
-            client
+            let ttl_secs = ttl_seconds(key_ttl);
+            match client
                 .connection_manager
                 .expire::<_, ()>(final_key.as_ref(), ttl_secs)
                 .await
-                .err_tip(|| format!("While setting TTL on {final_key} in RedisStore::update()"))?;
+            {
+                Ok(()) => {}
+                Err(err) if is_retryable_redis_error(&err) => {
+                    let (connection_manager, uuid) =
+                        self.connection_manager.reconnect(client.uuid).await?;
+                    client.connection_manager = connection_manager;
+                    client.uuid = uuid;
+                    client
+                        .connection_manager
+                        .expire::<_, ()>(final_key.as_ref(), ttl_secs)
+                        .await
+                        .err_tip(|| {
+                            format!(
+                                "While setting TTL on {final_key} (after reconnect) in RedisStore::update()"
+                            )
+                        })?;
+                }
+                Err(err) => {
+                    return Err(Error::from(err).append(format!(
+                        "While setting TTL on {final_key} in RedisStore::update()"
+                    )));
+                }
+            }
         }
 
         // If we have a publish channel configured, send a notice that the key has been set.
