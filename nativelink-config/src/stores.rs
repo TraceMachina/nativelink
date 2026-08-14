@@ -1910,6 +1910,30 @@ pub struct RedisSpec {
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub connection_pool_size: usize,
 
+    /// Expire keys written by this store after this many seconds.
+    ///
+    /// Redis does not expire these on its own, so a store whose consumer
+    /// stops keeps every key it ever wrote. A BEP store is the case this
+    /// exists for: if the ETL stops consuming, the backlog grows until the
+    /// Redis node runs out of memory.
+    ///
+    /// Set this per store, not globally. The same store type backs the CAS
+    /// fast tier and the scheduler, and expiring scheduler state would drop
+    /// in-flight actions.
+    ///
+    /// This trades data for a bound. Anything not consumed within the window
+    /// is deleted, so the value has to exceed the longest consumer outage you
+    /// intend to survive, and it must also exceed how long a single upload can
+    /// take: the temp key an upload builds carries this same TTL, so a value
+    /// below the upload duration would expire the write in flight.
+    ///
+    /// Zero disables expiry. One second is the smallest value that enables it,
+    /// and any value that small is almost certainly a mistake.
+    ///
+    /// Default: 0 (keys never expire)
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub key_ttl_s: u64,
+
     /// The maximum number of upload chunks to allow per update.
     /// This is used to limit the amount of memory used when uploading
     /// large objects to the redis server. A good rule of thumb is to

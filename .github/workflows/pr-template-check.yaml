@@ -1,0 +1,87 @@
+---
+name: PR template
+
+# `pull_request_target` so the comment can be posted on pull requests from
+# forks, which is where a first-time contributor is most likely to need it.
+# Nothing from the pull request is checked out or executed: the checkout below
+# is the base branch, and the body is only ever read from a file.
+on:
+  pull_request_target:
+    types:
+      - opened
+      - edited
+      - reopened
+      - synchronize
+      - labeled
+      - unlabeled
+
+permissions: read-all
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    # Bots never fill in a template, and a maintainer can wave through a
+    # one-line fix with the skip-pr-template label.
+    if: >-
+      github.event.pull_request.user.type != 'Bot' &&
+      !contains(github.event.pull_request.labels.*.name, 'skip-pr-template')
+    steps:
+      - name: Checkout
+        uses: >- # v6.0.2
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Read the pull request description
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        # Written to a file rather than an env var so the description is never
+        # interpolated into a shell command.
+        run: |
+          gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --json body --jq .body > pr-body.md
+
+      - name: Check the description
+        id: check
+        run: |
+          set +e
+          python3 .github/scripts/check_pr_body.py pr-body.md > result.md
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          cat result.md
+
+      - name: Leave a comment saying what is missing
+        if: steps.check.outputs.exit_code != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        # One comment, edited in place, so a few rounds of fixing the
+        # description does not bury the discussion.
+        run: |
+          marker="<!-- pr-template-check -->"
+          printf '%s\n\n' "$marker" > comment.md
+          cat result.md >> comment.md
+
+          existing=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --json comments \
+            --jq ".comments[] | select(.body | startswith(\"$marker\")) | .url" \
+            | head -n 1)
+
+          if [ -n "$existing" ]; then
+            gh api --method PATCH \
+              "repos/$GITHUB_REPOSITORY/issues/comments/${existing##*-}" \
+              -f body="$(cat comment.md)" > /dev/null
+          else
+            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+              --body-file comment.md
+          fi
+
+      - name: Fail if the description is incomplete
+        if: steps.check.outputs.exit_code != '0'
+        run: exit 1

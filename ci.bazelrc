@@ -56,7 +56,11 @@ common:nl-rbe --extra_toolchains=@rust_toolchains//:all
 # which glibc-only worker images lack (genrule tools exit 127).
 common:nl-rbe --@rules_python//python/config_settings:py_linux_libc=glibc
 common:nl-rbe --jobs=200
-common:nl-rbe --remote_download_minimal
+# --remote_download_toplevel (not minimal): keep intermediate output trees on
+# the client so a CAS eviction mid-build is recoverable (the client can
+# re-upload) instead of a fatal FAILED_PRECONDITION "not found in fast or slow
+# store". Minimal keeps intermediates remote-only, which made eviction fatal.
+common:nl-rbe --remote_download_toplevel
 common:nl-rbe --remote_retries=8
 common:nl-rbe --experimental_remote_cache_eviction_retries=5
 
