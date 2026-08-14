@@ -14,13 +14,13 @@
 
 use core::cmp::min;
 use core::convert::Into;
-use core::fmt::Debug;
+use core::fmt::{Debug, Display};
 use core::pin::Pin;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::time::Duration;
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::collections::vec_deque::VecDeque;
-use std::collections::{HashMap, HashSet};
 use std::env;
 use std::ffi::{OsStr, OsString};
 #[cfg(target_family = "unix")]
@@ -73,8 +73,7 @@ use scopeguard::{ScopeGuard, guard};
 use serde::Deserialize;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::process;
-use tokio::sync::{Notify, oneshot, watch};
-use tokio::time::Instant;
+use tokio::sync::{oneshot, watch};
 use tokio_stream::wrappers::ReadDirStream;
 use tonic::Request;
 use tracing::{debug, error, info, trace, warn};
@@ -948,22 +947,18 @@ async fn process_side_channel_file(
 async fn do_cleanup(
     running_actions_manager: &Arc<RunningActionsManagerImpl>,
     operation_id: &OperationId,
+    attempt_id: AttemptId,
     action_directory: &str,
 ) -> Result<(), Error> {
-    // Mark this operation as being cleaned up
-    let Some(_cleaning_guard) = running_actions_manager.perform_cleanup(operation_id.clone())
-    else {
-        // Cleanup is already happening elsewhere.
-        return Ok(());
-    };
-
     debug!("Worker cleaning up");
     // Note: We need to be careful to keep trying to cleanup even if one of the steps fails.
+    // `action_directory` belongs to this attempt alone, so removing it can never
+    // disturb a retry of the same operation.
     let remove_dir_result = fs::remove_dir_all(action_directory)
         .await
         .err_tip(|| format!("Could not remove working directory {action_directory}"));
 
-    if let Err(err) = running_actions_manager.cleanup_action(operation_id) {
+    if let Err(err) = running_actions_manager.cleanup_action(operation_id, attempt_id) {
         error!(%operation_id, ?err, "Error cleaning up action");
         Result::<(), Error>::Err(err).merge(remove_dir_result)
     } else if let Err(err) = remove_dir_result {
@@ -1031,23 +1026,46 @@ struct RunningActionImplState {
     error: Option<Error>,
 }
 
+/// Identifies a single attempt at running an operation on this worker.
+///
+/// Attempt ids are unique for the lifetime of the process, so every attempt
+/// gets its own action directory. A retry of an operation therefore never
+/// shares a directory with a previous attempt, and a previous attempt's
+/// cleanup can never delete a retry's files.
+/// See: <https://github.com/TraceMachina/nativelink/issues/1859>
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AttemptId(u64);
+
+impl Display for AttemptId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        Display::fmt(&self.0, f)
+    }
+}
+
 #[derive(Debug)]
 pub struct RunningActionImpl {
     operation_id: OperationId,
+    attempt_id: AttemptId,
     action_directory: String,
     work_directory: String,
     action_info: ActionInfo,
     timeout: Duration,
     running_actions_manager: Arc<RunningActionsManagerImpl>,
     state: Mutex<RunningActionImplState>,
+    /// Whether this attempt still holds `operation_id`'s slot in
+    /// [`RunningActionsManagerImpl::running_actions`], which its cleanup must
+    /// release.
     has_manager_entry: AtomicBool,
+    /// Whether no directory obligation remains: either `action_directory` was
+    /// never created, or cleanup already removed it.
     did_cleanup: AtomicBool,
 }
 
 impl RunningActionImpl {
-    pub fn new(
+    fn new(
         execution_metadata: ExecutionMetadata,
         operation_id: OperationId,
+        attempt_id: AttemptId,
         action_directory: String,
         action_info: ActionInfo,
         timeout: Duration,
@@ -1057,6 +1075,7 @@ impl RunningActionImpl {
         let (kill_channel_tx, kill_channel_rx) = oneshot::channel();
         Self {
             operation_id,
+            attempt_id,
             action_directory,
             work_directory,
             action_info,
@@ -1074,7 +1093,8 @@ impl RunningActionImpl {
             }),
             // Always need to ensure that we're removed from the manager on Drop.
             has_manager_entry: AtomicBool::new(true),
-            // Only needs to be cleaned up after a prepare_action call, set there.
+            // Set to false by `create_and_add_action` as soon as the action
+            // directory exists, which is what obliges us to remove it again.
             did_cleanup: AtomicBool::new(true),
         }
     }
@@ -1116,8 +1136,6 @@ impl RunningActionImpl {
                 fs::create_dir(&self.work_directory)
                     .await
                     .err_tip(|| format!("Error creating work directory {}", self.work_directory))?;
-                // Now the work directory has been created, we have to clean up.
-                self.did_cleanup.store(false, Ordering::Release);
                 // Download the input files/folder and place them into the temp directory.
                 // Use directory cache if available for better performance.
                 self.metrics()
@@ -2089,21 +2107,30 @@ impl Drop for RunningActionImpl {
             if self.has_manager_entry.load(Ordering::Acquire) {
                 drop(
                     self.running_actions_manager
-                        .cleanup_action(&self.operation_id),
+                        .cleanup_action(&self.operation_id, self.attempt_id),
                 );
             }
             return;
         }
         let operation_id = self.operation_id.clone();
+        let attempt_id = self.attempt_id;
         error!(
             %operation_id,
             "RunningActionImpl did not cleanup. This is a violation of the requirements, will attempt to do it in the background."
         );
         let running_actions_manager = self.running_actions_manager.clone();
         let action_directory = self.action_directory.clone();
+        // This cleanup can run concurrently with a retry of the same operation.
+        // That is safe: `action_directory` is keyed by `attempt_id`, so it is
+        // ours alone, and `cleanup_action` only removes our own manager entry.
         background_spawn!("running_action_impl_drop", async move {
-            let Err(err) =
-                do_cleanup(&running_actions_manager, &operation_id, &action_directory).await
+            let Err(err) = do_cleanup(
+                &running_actions_manager,
+                &operation_id,
+                attempt_id,
+                &action_directory,
+            )
+            .await
             else {
                 return;
             };
@@ -2207,9 +2234,13 @@ impl RunningAction for RunningActionImpl {
                 let result = do_cleanup(
                     &self.running_actions_manager,
                     &self.operation_id,
+                    self.attempt_id,
                     &self.action_directory,
                 )
                 .await;
+                // Store order matters: Drop reads `did_cleanup` first, and
+                // only a store of `has_manager_entry` that happens-before
+                // `did_cleanup = true` is guaranteed visible to it.
                 self.has_manager_entry.store(false, Ordering::Release);
                 self.did_cleanup.store(true, Ordering::Release);
                 result.map(move |()| self)
@@ -2563,28 +2594,24 @@ pub struct RunningActionsManagerArgs<'a> {
     pub upload_action_result_config: &'a UploadActionResultConfig,
     pub max_action_timeout: Duration,
     pub max_upload_timeout: Duration,
-    pub max_cleanup_wait: Duration,
-    pub max_cleanup_backoff: Duration,
     pub timeout_handled_externally: bool,
     pub directory_cache: Option<Arc<crate::directory_cache::DirectoryCache>>,
     #[cfg(target_os = "linux")]
     pub use_namespaces: UseNamespaces,
 }
 
-struct CleanupGuard {
-    manager: Weak<RunningActionsManagerImpl>,
-    operation_id: OperationId,
-}
-
-impl Drop for CleanupGuard {
-    fn drop(&mut self) {
-        let Some(manager) = self.manager.upgrade() else {
-            return;
-        };
-        let mut cleaning = manager.cleaning_up_operations.lock();
-        cleaning.remove(&self.operation_id);
-        manager.cleanup_complete_notify.notify_waiters();
-    }
+/// A slot in [`RunningActionsManagerImpl::running_actions`].
+///
+/// The slot is claimed before the action's directory is created and released by
+/// the action's cleanup, which may run after a retry has already claimed the
+/// slot again. `attempt_id` distinguishes the two so a late cleanup cannot
+/// evict the retry.
+#[derive(Debug)]
+struct RunningActionEntry {
+    attempt_id: AttemptId,
+    /// Dead once the attempt has been dropped, which may be before its
+    /// cleanup has finished and removed the entry.
+    action: Weak<RunningActionImpl>,
 }
 
 /// Holds state info about what is being executed and the interface for interacting
@@ -2601,22 +2628,20 @@ pub struct RunningActionsManagerImpl {
     timeout_handled_externally: bool,
     #[cfg(target_os = "linux")]
     use_namespaces: UseNamespaces,
-    running_actions: Mutex<HashMap<OperationId, Weak<RunningActionImpl>>>,
+    /// The currently-running attempt for each operation, if any. An operation
+    /// may only have one attempt running on this worker at a time, but a
+    /// previous attempt's cleanup may still be in flight, so entries are
+    /// removed by matching [`AttemptId`].
+    running_actions: Mutex<HashMap<OperationId, RunningActionEntry>>,
+    /// Source of unique [`AttemptId`]s, one per action directory. Resets to
+    /// zero on restart, which is safe only because worker startup wipes
+    /// `root_action_directory` before any action runs.
+    next_attempt_id: AtomicU64,
     // Note: We don't use Notify because we need to support a .wait_for()-like function, which
     // Notify does not support.
     action_done_tx: watch::Sender<()>,
     callbacks: Callbacks,
     metrics: Arc<Metrics>,
-    /// Track operations being cleaned up to avoid directory collisions during action retries.
-    /// When an action fails and is retried on the same worker, we need to ensure the previous
-    /// attempt's directory is fully cleaned up before creating a new one.
-    /// See: <https://github.com/TraceMachina/nativelink/issues/1859>
-    cleaning_up_operations: Mutex<HashSet<OperationId>>,
-    max_cleanup_wait: Duration,
-    max_cleanup_backoff: Duration,
-    /// Notify waiters when a cleanup operation completes. This is used in conjunction with
-    /// `cleaning_up_operations` to coordinate directory cleanup and creation.
-    cleanup_complete_notify: Arc<Notify>,
     /// Optional directory cache for improving performance by caching reconstructed
     /// input directories and using hardlinks.
     directory_cache: Option<Arc<crate::directory_cache::DirectoryCache>>,
@@ -2654,16 +2679,13 @@ impl RunningActionsManagerImpl {
             max_upload_timeout: args.max_upload_timeout,
             timeout_handled_externally: args.timeout_handled_externally,
             running_actions: Mutex::new(HashMap::new()),
+            next_attempt_id: AtomicU64::new(0),
             action_done_tx,
             callbacks,
             metrics: Arc::new(Metrics {
                 directory_cache: args.directory_cache.as_ref().map(Arc::downgrade),
                 ..Default::default()
             }),
-            cleaning_up_operations: Mutex::new(HashSet::new()),
-            max_cleanup_wait: args.max_cleanup_wait,
-            max_cleanup_backoff: args.max_cleanup_backoff,
-            cleanup_complete_notify: Arc::new(Notify::new()),
             directory_cache: args.directory_cache,
             persistent_worker_pool: PersistentWorkerPool::default(),
             #[cfg(target_os = "linux")]
@@ -2681,116 +2703,46 @@ impl RunningActionsManagerImpl {
         )
     }
 
-    /// Fixes a race condition that occurs when an action fails to execute on a worker, and the same worker
-    /// attempts to re-execute the same action before the physical cleanup (file is removed) completes.
-    /// See this issue for additional details: <https://github.com/TraceMachina/nativelink/issues/1859>
-    async fn wait_for_cleanup_if_needed(&self, operation_id: &OperationId) -> Result<(), Error> {
-        let start = Instant::now();
-        let mut backoff = Duration::from_millis(10);
-        let mut has_waited = false;
-
-        loop {
-            let should_wait = {
-                let cleaning = self.cleaning_up_operations.lock();
-                cleaning.contains(operation_id)
-            };
-
-            if !should_wait {
-                let dir_path =
-                    PathBuf::from(&self.root_action_directory).join(operation_id.to_string());
-
-                if !dir_path.exists() {
-                    return Ok(());
-                }
-
-                // Safety check: ensure we're only removing directories under root_action_directory
-                let root_path = Path::new(&self.root_action_directory);
-                let canonical_root = root_path.canonicalize().err_tip(|| {
-                    format!(
-                        "Failed to canonicalize root directory: {}",
-                        self.root_action_directory
-                    )
-                })?;
-                let canonical_dir = dir_path.canonicalize().err_tip(|| {
-                    format!("Failed to canonicalize directory: {}", dir_path.display())
-                })?;
-
-                if !canonical_dir.starts_with(&canonical_root) {
-                    return Err(make_err!(
-                        Code::Internal,
-                        "Attempted to remove directory outside of root_action_directory: {}",
-                        dir_path.display()
-                    ));
-                }
-
-                // Directory exists but not being cleaned - remove it
-                warn!(
-                    "Removing stale directory for {}: {}",
-                    operation_id,
-                    dir_path.display()
-                );
-                self.metrics.stale_removals.inc();
-
-                // Try to remove the directory, with one retry on failure
-                let remove_result = fs::remove_dir_all(&dir_path).await;
-                if let Err(e) = remove_result {
-                    // Retry once after a short delay in case the directory is temporarily locked
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                    fs::remove_dir_all(&dir_path).await.err_tip(|| {
-                        format!(
-                            "Failed to remove stale directory {} for retry of {} after retry (original error: {})",
-                            dir_path.display(),
-                            operation_id,
-                            e
-                        )
-                    })?;
-                }
-                return Ok(());
-            }
-
-            if start.elapsed() > self.max_cleanup_wait {
-                self.metrics.cleanup_wait_timeouts.inc();
-                warn!(%operation_id, waited=?start.elapsed(), "Timeout waiting for previous operation cleanup");
-                return Err(make_err!(
-                    Code::DeadlineExceeded,
-                    "Timeout waiting for previous operation cleanup: {} (waited {:?})",
-                    operation_id,
-                    start.elapsed()
-                ));
-            }
-
-            if !has_waited {
-                self.metrics.cleanup_waits.inc();
-                has_waited = true;
-            }
-
-            trace!(
-                "Waiting for cleanup of {} (elapsed: {:?}, backoff: {:?})",
-                operation_id,
-                start.elapsed(),
-                backoff
-            );
-
-            tokio::select! {
-                () = self.cleanup_complete_notify.notified() => {},
-                () = tokio::time::sleep(backoff) => {
-                    // Exponential backoff
-                    backoff = (backoff * 2).min(self.max_cleanup_backoff);
-                },
-            }
+    /// The directory this attempt will run in. Includes the operation id for
+    /// the benefit of anyone reading logs or listing the work directory, and
+    /// the [`AttemptId`] to keep retries from sharing a directory.
+    ///
+    /// The [`AttemptId`] alone carries uniqueness: it is the final `-`-suffixed
+    /// component and is unique per process, so two distinct attempts can never
+    /// produce the same name no matter what the operation ids contain.
+    ///
+    /// The operation id is attacker-influenced, so it is restricted to a single
+    /// safe path component before being joined onto the root.
+    fn action_directory_path(
+        &self,
+        operation_id: &OperationId,
+        attempt_id: AttemptId,
+    ) -> Result<String, Error> {
+        let name = operation_id.to_string();
+        if name.is_empty()
+            || name == "."
+            || name == ".."
+            || name.contains(['/', '\\'])
+            || name.contains('\0')
+        {
+            return Err(make_input_err!(
+                "Operation id '{name}' is not usable as a directory name"
+            ));
         }
+        Ok(format!(
+            "{}/{name}-{attempt_id}",
+            self.root_action_directory
+        ))
     }
 
     fn make_action_directory<'a>(
         &'a self,
-        operation_id: &'a OperationId,
-    ) -> impl Future<Output = Result<String, Error>> + 'a {
+        action_directory: &'a str,
+    ) -> impl Future<Output = Result<(), Error>> + 'a {
         self.metrics.make_action_directory.wrap(async move {
-            let action_directory = format!("{}/{}", self.root_action_directory, operation_id);
-            fs::create_dir(&action_directory)
+            fs::create_dir(action_directory)
                 .await
-                .err_tip(|| format!("Error creating action directory {action_directory}"))?;
-            Ok(action_directory)
+                .err_tip(|| format!("Error creating action directory {action_directory}"))
         })
     }
 
@@ -2824,14 +2776,40 @@ impl RunningActionsManagerImpl {
         })
     }
 
-    fn cleanup_action(&self, operation_id: &OperationId) -> Result<(), Error> {
+    /// Releases `operation_id`'s slot, but only if it is still held by
+    /// `attempt_id`. A cleanup can outlive its attempt and overlap a retry that
+    /// has already claimed the slot; removing the entry unconditionally would
+    /// make the retry unkillable and fail its own cleanup.
+    fn cleanup_action(
+        &self,
+        operation_id: &OperationId,
+        attempt_id: AttemptId,
+    ) -> Result<(), Error> {
         let mut running_actions = self.running_actions.lock();
-        let result = running_actions.remove(operation_id).err_tip(|| {
-            format!("Expected operation id '{operation_id}' to exist in RunningActionsManagerImpl")
-        });
+        let result = match running_actions.get(operation_id) {
+            Some(entry) if entry.attempt_id == attempt_id => {
+                running_actions.remove(operation_id);
+                Ok(())
+            }
+            Some(entry) => {
+                // A retry claimed the slot while this attempt's cleanup was
+                // still in flight. Expected, and none of our business.
+                trace!(
+                    %operation_id,
+                    %attempt_id,
+                    current_attempt_id = %entry.attempt_id,
+                    "Cleanup finished after a retry claimed the operation",
+                );
+                Ok(())
+            }
+            None => Err(make_err!(
+                Code::Internal,
+                "Expected operation id '{operation_id}' to exist in RunningActionsManagerImpl"
+            )),
+        };
         // No need to copy anything, we just are telling the receivers an event happened.
         self.action_done_tx.send_modify(|()| {});
-        result.map(|_| ())
+        result
     }
 
     // Note: We do not capture metrics on this call, only `.kill_all()`.
@@ -2853,16 +2831,6 @@ impl RunningActionsManagerImpl {
                 "Error sending kill to running operation",
             );
         }
-    }
-
-    fn perform_cleanup(self: &Arc<Self>, operation_id: OperationId) -> Option<CleanupGuard> {
-        let mut cleaning = self.cleaning_up_operations.lock();
-        cleaning
-            .insert(operation_id.clone())
-            .then_some(CleanupGuard {
-                manager: Arc::downgrade(self),
-                operation_id,
-            })
     }
 }
 
@@ -2888,9 +2856,6 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                     ?action_info,
                     "Worker received action",
                 );
-                // Wait for any previous cleanup to complete before creating directory
-                self.wait_for_cleanup_if_needed(&operation_id).await?;
-                let action_directory = self.make_action_directory(&operation_id).await?;
                 let execution_metadata = ExecutionMetadata {
                     worker: worker_id,
                     queued_timestamp: action_info.insert_timestamp,
@@ -2916,27 +2881,49 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                         self.max_action_timeout.as_secs_f32()
                     ));
                 }
-                let running_action = Arc::new(RunningActionImpl::new(
-                    execution_metadata,
-                    operation_id.clone(),
-                    action_directory,
-                    action_info,
-                    timeout,
-                    self.clone(),
-                ));
-                {
+                // Claim the operation and build the action before touching the
+                // filesystem. The claim is what makes duplicate StartActions
+                // mutually exclusive, so it has to happen before any work a
+                // loser would have to undo. From here on the action owns its
+                // directory: if creating it fails, dropping the action releases
+                // the claim.
+                let attempt_id = AttemptId(self.next_attempt_id.fetch_add(1, Ordering::Relaxed));
+                let action_directory = self.action_directory_path(&operation_id, attempt_id)?;
+                let running_action = {
                     let mut running_actions = self.running_actions.lock();
                     // Check if action already exists and is still alive
-                    if let Some(existing_weak) = running_actions.get(&operation_id)
-                        && let Some(_existing_action) = existing_weak.upgrade() {
+                    if let Some(entry) = running_actions.get(&operation_id)
+                        && let Some(_existing_action) = entry.action.upgrade() {
                             return Err(make_err!(
                                 Code::AlreadyExists,
                                 "Action with operation_id {} is already running",
                                 operation_id
                             ));
                     }
-                    running_actions.insert(operation_id, Arc::downgrade(&running_action));
-                }
+                    let running_action = Arc::new(RunningActionImpl::new(
+                        execution_metadata,
+                        operation_id.clone(),
+                        attempt_id,
+                        action_directory,
+                        action_info,
+                        timeout,
+                        self.clone(),
+                    ));
+                    running_actions.insert(
+                        operation_id,
+                        RunningActionEntry {
+                            attempt_id,
+                            action: Arc::downgrade(&running_action),
+                        },
+                    );
+                    running_action
+                };
+                self.make_action_directory(&running_action.action_directory)
+                    .await?;
+                // The directory exists now, so it has to be removed again even
+                // if the caller abandons the action before `prepare_action`.
+                // Nothing else sweeps action directories up.
+                running_action.did_cleanup.store(false, Ordering::Release);
                 Ok(running_action)
             })
             .await
@@ -2963,7 +2950,7 @@ impl RunningActionsManager for RunningActionsManagerImpl {
             let running_actions = self.running_actions.lock();
             running_actions
                 .get(operation_id)
-                .and_then(Weak::upgrade)
+                .and_then(|entry| entry.action.upgrade())
                 .ok_or_else(|| make_input_err!("Failed to get running action {operation_id}"))?
         };
         Self::kill_operation(running_action).await;
@@ -2977,7 +2964,10 @@ impl RunningActionsManager for RunningActionsManagerImpl {
             .wrap_no_capture_result(async move {
                 let kill_operations: Vec<Arc<RunningActionImpl>> = {
                     let running_actions = self.running_actions.lock();
-                    running_actions.values().filter_map(Weak::upgrade).collect()
+                    running_actions
+                        .values()
+                        .filter_map(|entry| entry.action.upgrade())
+                        .collect()
                 };
                 let mut kill_futures: FuturesUnordered<_> = kill_operations
                     .into_iter()
@@ -3025,12 +3015,6 @@ pub struct Metrics {
     cleanup: AsyncCounterWrapper,
     #[metric(help = "Stats about the get_finished_result command.")]
     get_finished_result: AsyncCounterWrapper,
-    #[metric(help = "Number of times an action waited for cleanup to complete.")]
-    cleanup_waits: CounterWithTime,
-    #[metric(help = "Number of stale directories removed during action retries.")]
-    stale_removals: CounterWithTime,
-    #[metric(help = "Number of timeouts while waiting for cleanup to complete.")]
-    cleanup_wait_timeouts: CounterWithTime,
     #[metric(help = "Stats about the get_proto_command_from_store command.")]
     get_proto_command_from_store: AsyncCounterWrapper,
     #[metric(help = "Stats about the download_to_directory command.")]
