@@ -68,6 +68,10 @@ impl PlatformProperties {
                     return false;
                 }
             } else {
+                // Unknown properties only restrict workers that declare the key.
+                if let PlatformPropertyValue::Unknown(_) = check_value {
+                    continue;
+                }
                 if full_worker_logging {
                     info!("Property missing on worker property {property}");
                 }
@@ -121,6 +125,9 @@ impl From<&PlatformProperties> for ProtoPlatform {
 /// Ignore   - Jobs can request this key, but workers do not have to have it. This allows
 ///            for example the `InputRootAbsolutePath` case for chromium builds, where we can safely
 ///            ignore it without having to change the worker configs.
+/// Unknown  - The key was not declared in the scheduler's configuration. Workers
+///            that declare the key must match the value exactly, workers that do
+///            not declare the key are not restricted by it.
 #[derive(Eq, PartialEq, Hash, Clone, Ord, PartialOrd, Debug, Serialize, Deserialize)]
 pub enum PlatformPropertyValue {
     Exact(String),
@@ -148,8 +155,11 @@ impl PlatformPropertyValue {
             // workers can be selected, but might be used to prefer certain workers
             // over others.
             Self::Priority(_) | Self::Ignore(_) => true,
+            // Unknown properties are not typed by the scheduler config, so
+            // compare by value regardless of the worker's variant.
+            Self::Unknown(value) => worker_value.as_str() == value.as_str(),
             // Success exact case is handled above.
-            Self::Exact(_) | Self::Unknown(_) => false,
+            Self::Exact(_) => false,
         }
     }
 

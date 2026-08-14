@@ -116,6 +116,11 @@ pub struct SimpleSpec {
     /// have the `"cpu_arch"` label. We have no special treatment of any platform
     /// property labels other and entirely driven by worker configs and this
     /// config.
+    ///
+    /// Properties that are not listed here are matched dynamically: workers
+    /// that declare the key must match the value exactly, and workers that do
+    /// not declare the key are not restricted by it. List a property here to
+    /// enforce stricter matching.
     pub supported_platform_properties: Option<HashMap<String, PropertyType>>,
 
     /// The amount of time to retain completed actions for in case
