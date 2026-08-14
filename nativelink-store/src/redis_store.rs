@@ -37,6 +37,7 @@ use nativelink_redis_tester::SubscriptionManagerNotify;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
+use nativelink_util::metrics::{record_connection_acquired, record_connection_reconnect};
 use nativelink_util::store_trait::{
     BoolValue, RemoveCallback, SchedulerCurrentVersionProvider, SchedulerIndexProvider,
     SchedulerStore, SchedulerStoreDataProvider, SchedulerStoreDecodeTo, SchedulerStoreKeyProvider,
@@ -314,6 +315,7 @@ impl RedisManager<ConnectionManager> for StandardRedisManager<ConnectionManager>
                 return Ok(guard.clone());
             }
         }
+        record_connection_reconnect("redis");
         let mut connection_manager = (self.connect_func)().await?;
         let new_uuid = Uuid::new_v4();
         self.configure(&mut connection_manager).await?;
@@ -551,6 +553,9 @@ where
     async fn get_client(&self) -> Result<ClientWithPermit<C>, Error> {
         let local_client_permits = self.client_permits.clone();
         let remaining = local_client_permits.available_permits();
+        // Zero here means every client is busy and this call is about to wait,
+        // which is the saturation signal worth alerting on.
+        record_connection_acquired("redis", Some(remaining), remaining == 0);
         let semaphore_permit = local_client_permits.acquire_owned().await?;
         trace!(remaining, "Got a client permit");
         let (connection_manager, uuid) = self.connection_manager.get_connection().await?;
@@ -1218,19 +1223,41 @@ where
             }
         }
 
-        // Expire the final key, not the temp one: RENAME would carry a TTL
-        // over, but setting it here keeps the window where the key exists
-        // without one down to a single round trip and keeps the intent
-        // obvious. A failure here is a real error rather than something to
-        // swallow, since a key that silently never expires is the bug this
-        // option exists to prevent.
+        // The rename carries the temp key's TTL across, so the key is never
+        // unprotected. Re-setting it here restarts the window at completion
+        // rather than at the first byte, which matters for a large blob whose
+        // upload takes a noticeable slice of the TTL. Reconnect once on a
+        // transient failover error, the same as the rename above: a key that
+        // silently never expires is the bug this option exists to prevent.
         if let Some(key_ttl) = self.key_ttl {
-            let ttl_secs = i64::try_from(key_ttl.as_secs()).unwrap_or(i64::MAX);
-            client
+            let ttl_secs = ttl_seconds(key_ttl);
+            match client
                 .connection_manager
                 .expire::<_, ()>(final_key.as_ref(), ttl_secs)
                 .await
-                .err_tip(|| format!("While setting TTL on {final_key} in RedisStore::update()"))?;
+            {
+                Ok(()) => {}
+                Err(err) if is_retryable_redis_error(&err) => {
+                    let (connection_manager, uuid) =
+                        self.connection_manager.reconnect(client.uuid).await?;
+                    client.connection_manager = connection_manager;
+                    client.uuid = uuid;
+                    client
+                        .connection_manager
+                        .expire::<_, ()>(final_key.as_ref(), ttl_secs)
+                        .await
+                        .err_tip(|| {
+                            format!(
+                                "While setting TTL on {final_key} (after reconnect) in RedisStore::update()"
+                            )
+                        })?;
+                }
+                Err(err) => {
+                    return Err(Error::from(err).append(format!(
+                        "While setting TTL on {final_key} in RedisStore::update()"
+                    )));
+                }
+            }
         }
 
         // If we have a publish channel configured, send a notice that the key has been set.

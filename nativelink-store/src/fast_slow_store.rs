@@ -33,6 +33,7 @@ use nativelink_util::buf_channel::{
 };
 use nativelink_util::fs;
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
+use nativelink_util::metrics::{record_store_tier_io, record_store_tier_read};
 use nativelink_util::store_trait::{
     RemoveCallback, Store, StoreDriver, StoreKey, StoreLike, StoreOptimizations, UploadSizeInfo,
     slow_update_store_with_file,
@@ -308,6 +309,7 @@ impl FastSlowStore {
                     self.metrics
                         .slow_store_hit_count
                         .fetch_add(1, Ordering::Acquire);
+                    record_store_tier_read("slow", "hit");
                     counted_hit = true;
                 }
 
@@ -316,6 +318,7 @@ impl FastSlowStore {
                 self.metrics
                     .slow_store_downloaded_bytes
                     .fetch_add(output_buf_len, Ordering::Acquire);
+                record_store_tier_io("slow", "read", output_buf_len);
 
                 let writer_fut = Self::calculate_range(
                     &(bytes_received..bytes_received + output_buf_len),
@@ -769,7 +772,13 @@ impl StoreDriver for FastSlowStore {
         // `has()` can report a stale map entry whose file is gone, so
         // get_part may still return NotFound; fall through to the slow
         // store unless we have already streamed bytes to the caller.
-        if self.fast_store.has(key.borrow()).await?.is_some() {
+        // One existence check, reused: this is the hot read path and `has()`
+        // on a filesystem fast store is a syscall.
+        let in_fast_store = self.fast_store.has(key.borrow()).await?.is_some();
+        if !in_fast_store {
+            record_store_tier_read("fast", "miss");
+        }
+        if in_fast_store {
             let bytes_before = writer.get_bytes_written();
             match self
                 .fast_store
@@ -783,6 +792,8 @@ impl StoreDriver for FastSlowStore {
                     self.metrics
                         .fast_store_downloaded_bytes
                         .fetch_add(writer.get_bytes_written(), Ordering::Acquire);
+                    record_store_tier_read("fast", "hit");
+                    record_store_tier_io("fast", "read", writer.get_bytes_written());
                     return Ok(());
                 }
                 Err(e)
@@ -791,6 +802,7 @@ impl StoreDriver for FastSlowStore {
                     self.metrics
                         .fast_store_stale_map_falls_through
                         .fetch_add(1, Ordering::Acquire);
+                    record_store_tier_read("fast", "stale");
                     warn!(%key, ?e, "Stale fast-store map entry; falling through to slow store");
                     // fall through to populate path
                 }
@@ -815,6 +827,8 @@ impl StoreDriver for FastSlowStore {
             self.metrics
                 .slow_store_downloaded_bytes
                 .fetch_add(writer.get_bytes_written(), Ordering::Acquire);
+            record_store_tier_read("slow", "hit");
+            record_store_tier_io("slow", "read", writer.get_bytes_written());
             return Ok(());
         }
 
@@ -835,6 +849,8 @@ impl StoreDriver for FastSlowStore {
             self.metrics
                 .slow_store_downloaded_bytes
                 .fetch_add(writer.get_bytes_written(), Ordering::Acquire);
+            record_store_tier_read("slow", "hit");
+            record_store_tier_io("slow", "read", writer.get_bytes_written());
             return Ok(());
         }
 

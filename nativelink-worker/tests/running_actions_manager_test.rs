@@ -5141,6 +5141,48 @@ done
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn parse_cpu_ticks_from_stat_sums_user_and_system_time() {
+        use nativelink_worker::running_actions_manager::parse_cpu_ticks_from_stat;
+        // Fields after the final ')': state ppid pgrp session tty tpgid flags
+        // minflt cminflt majflt cmajflt utime stime ...
+        // utime = 120, stime = 34, so 154 ticks.
+        assert_eq!(
+            parse_cpu_ticks_from_stat(
+                "315 (perl) S 1 60 60 0 -1 0 100 0 200 0 120 34 7 9 20 0 1 0"
+            ),
+            Some(154)
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn parse_cpu_ticks_from_stat_handles_comm_with_spaces_and_parens() {
+        use nativelink_worker::running_actions_manager::parse_cpu_ticks_from_stat;
+        // Same trap as the pgid parser: a `comm` containing ')' would shift
+        // every field if parsed from the left.
+        assert_eq!(
+            parse_cpu_ticks_from_stat(
+                "1234 (weird )( name) R 1 777 777 0 -1 0 1 2 3 4 11 22 0 0 0 0"
+            ),
+            Some(33)
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn parse_cpu_ticks_from_stat_rejects_malformed_input() {
+        use nativelink_worker::running_actions_manager::parse_cpu_ticks_from_stat;
+        assert_eq!(parse_cpu_ticks_from_stat("no parenthesis here"), None);
+        // Truncated before utime.
+        assert_eq!(
+            parse_cpu_ticks_from_stat("123 (only) S 1 60 60 0 -1 0"),
+            None
+        );
+        assert_eq!(parse_cpu_ticks_from_stat(""), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn parse_pgid_from_stat_rejects_malformed_input() {
         use nativelink_worker::running_actions_manager::parse_pgid_from_stat;
         assert_eq!(parse_pgid_from_stat("no parenthesis here"), None);

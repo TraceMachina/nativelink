@@ -27,6 +27,7 @@ use nativelink_proto::com::github::trace_machina::nativelink::events::{
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::StartExecute;
 use nativelink_util::action_messages::{ActionInfo, ActionState, OperationId, WorkerId};
 use nativelink_util::instant_wrapper::InstantWrapper;
+use nativelink_util::metrics::record_matching_pass;
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager,
     OperationFilter, OperationStageFlags, OrderDirection, UpdateOperationType,
@@ -275,6 +276,13 @@ impl SimpleScheduler {
     // can create a map of capabilities of each worker and then try and match
     // the actions to the worker using the map lookup (ie. map reduce).
     async fn do_try_match(&self, full_worker_logging: bool) -> Result<(), Error> {
+        let match_started = Instant::now();
+        let result = self.do_try_match_inner(full_worker_logging).await;
+        record_matching_pass(match_started.elapsed().as_secs_f64(), result.is_ok());
+        result
+    }
+
+    async fn do_try_match_inner(&self, full_worker_logging: bool) -> Result<(), Error> {
         async fn match_action_to_worker(
             action_state_result: &dyn ActionStateResult,
             workers: &ApiWorkerScheduler,

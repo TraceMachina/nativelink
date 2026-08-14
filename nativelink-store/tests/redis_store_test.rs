@@ -2688,6 +2688,62 @@ async fn update_sets_a_ttl_when_configured() -> Result<(), Error> {
     Ok(())
 }
 
+/// A failover between the rename and the expire must not leave the key
+/// without a TTL. Every other step in `update` reconnects and retries once on
+/// a transient error; this one did not, which review caught after it merged.
+#[nativelink_test]
+async fn update_retries_the_ttl_after_a_failover() -> Result<(), Error> {
+    const TTL_SECONDS: u64 = 7 * 24 * 60 * 60;
+    let data = Bytes::from_static(b"14");
+    let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
+    let packed_hash_hex = format!("{digest}");
+    let temp_key = make_temp_key(&packed_hash_hex);
+    let real_key = packed_hash_hex;
+    let ttl_arg = i64::try_from(TTL_SECONDS).unwrap();
+
+    let store = make_mock_store_with_ttl(
+        vec![
+            MockCmd::new(
+                redis::cmd("SETRANGE")
+                    .arg(&temp_key)
+                    .arg(0)
+                    .arg(data.to_vec()),
+                Ok(Value::Int(0)),
+            ),
+            MockCmd::new(
+                redis::cmd("EXPIRE").arg(&temp_key).arg(ttl_arg),
+                Ok(Value::Int(1)),
+            ),
+            MockCmd::new(
+                redis::cmd("STRLEN").arg(&temp_key),
+                Ok(Value::Int(data.len().try_into().unwrap_or(i64::MAX))),
+            ),
+            MockCmd::new(
+                redis::cmd("RENAME").arg(&temp_key).arg(&real_key),
+                Ok(Value::Nil),
+            ),
+            // The master goes away right as we set the retention window.
+            MockCmd::new(
+                redis::cmd("EXPIRE").arg(&real_key).arg(ttl_arg),
+                Err::<Value, _>(RedisError::from(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionReset,
+                    "connection reset by peer",
+                ))),
+            ),
+            // After re-resolving the master the TTL is set on the new one.
+            MockCmd::new(
+                redis::cmd("EXPIRE").arg(&real_key).arg(ttl_arg),
+                Ok(Value::Int(1)),
+            ),
+        ],
+        Duration::from_secs(TTL_SECONDS),
+    )
+    .await;
+
+    store.update_oneshot(digest, data).await?;
+    Ok(())
+}
+
 /// The default must stay off. The same store type backs the CAS fast tier and
 /// the scheduler, and expiring scheduler state would drop in-flight actions.
 ///
