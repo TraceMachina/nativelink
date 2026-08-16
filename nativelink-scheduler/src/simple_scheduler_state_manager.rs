@@ -1183,6 +1183,35 @@ where
         self.inner_update_operation(operation_id, Some(worker_id), update)
             .await
     }
+
+    async fn is_executing_on_worker(
+        &self,
+        operation_id: &OperationId,
+        worker_id: &WorkerId,
+    ) -> Result<bool, Error> {
+        let Some(subscriber) = self
+            .action_db
+            .get_by_operation_id(operation_id)
+            .await
+            .err_tip(|| "In SimpleSchedulerStateManager::is_executing_on_worker")?
+        else {
+            return Ok(false);
+        };
+        let awaited_action = match subscriber.borrow().await {
+            Ok(awaited_action) => awaited_action,
+            // Store-backed dbs hand out a subscriber for any id and only
+            // discover the operation is gone on read.
+            Err(err) if err.code == Code::NotFound => return Ok(false),
+            Err(err) => {
+                return Err(err)
+                    .err_tip(|| "In SimpleSchedulerStateManager::is_executing_on_worker");
+            }
+        };
+        Ok(
+            matches!(awaited_action.state().stage, ActionStage::Executing)
+                && awaited_action.worker_id() == Some(worker_id),
+        )
+    }
 }
 
 #[async_trait]

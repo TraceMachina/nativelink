@@ -125,6 +125,14 @@ impl WorkerStateManager for MockWorkerStateManager {
             WorkerStateManagerReturns::UpdateOperation(result) => result,
         }
     }
+
+    async fn is_executing_on_worker(
+        &self,
+        _operation_id: &OperationId,
+        _worker_id: &WorkerId,
+    ) -> Result<bool, Error> {
+        Ok(true)
+    }
 }
 
 struct TestContext {

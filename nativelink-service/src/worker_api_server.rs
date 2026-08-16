@@ -48,6 +48,10 @@ pub type ConnectWorkerStream =
 
 pub type NowFn = Box<dyn Fn() -> Result<Duration, Error> + Send + Sync>;
 
+/// How often workers are told to kill operations the scheduler no longer
+/// has executing on them.
+const KILL_REVOKED_OPERATIONS_INTERVAL: Duration = Duration::from_secs(5);
+
 pub struct WorkerApiServer {
     scheduler: Arc<dyn WorkerScheduler>,
     now_fn: Arc<NowFn>,
@@ -78,22 +82,36 @@ impl WorkerApiServer {
             // eventually see the Arc went away and return.
             let weak_scheduler = Arc::downgrade(scheduler);
             background_spawn!("worker_api_server", async move {
-                let mut ticker = interval(Duration::from_secs(1));
+                let mut timeout_ticker = interval(Duration::from_secs(1));
+                let mut kill_ticker = interval(KILL_REVOKED_OPERATIONS_INTERVAL);
                 loop {
-                    ticker.tick().await;
-                    let timestamp = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .expect("Error: system time is now behind unix epoch");
-                    match weak_scheduler.upgrade() {
-                        Some(scheduler) => {
-                            if let Err(err) =
-                                scheduler.remove_timedout_workers(timestamp.as_secs()).await
-                            {
-                                error!(?err, "Failed to remove_timedout_workers",);
+                    tokio::select! {
+                        _ = timeout_ticker.tick() => {
+                            let timestamp = SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .expect("Error: system time is now behind unix epoch");
+                            match weak_scheduler.upgrade() {
+                                Some(scheduler) => {
+                                    if let Err(err) =
+                                        scheduler.remove_timedout_workers(timestamp.as_secs()).await
+                                    {
+                                        error!(?err, "Failed to remove_timedout_workers",);
+                                    }
+                                }
+                                // If we fail to upgrade, our service is probably destroyed, so return.
+                                None => return,
                             }
                         }
-                        // If we fail to upgrade, our service is probably destroyed, so return.
-                        None => return,
+                        _ = kill_ticker.tick() => {
+                            match weak_scheduler.upgrade() {
+                                Some(scheduler) => {
+                                    if let Err(err) = scheduler.kill_revoked_operations().await {
+                                        error!(?err, "Failed to kill_revoked_operations");
+                                    }
+                                }
+                                None => return,
+                            }
+                        }
                     }
                 }
             });

@@ -20,7 +20,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use nativelink_error::{Code, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    ConnectionResult, StartExecute, UpdateForWorker, update_for_worker,
+    ConnectionResult, KillOperationRequest, StartExecute, UpdateForWorker, update_for_worker,
 };
 use nativelink_util::action_messages::{ActionInfo, OperationId, WorkerId};
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime, FuncCounterWrapper};
@@ -56,12 +56,19 @@ pub enum WorkerUpdate {
 
     /// Request that the worker is no longer in the pool and may discard any jobs.
     Disconnect,
+
+    /// Requests that the worker stop executing this operation.
+    KillOperation(OperationId),
 }
 
 #[derive(Debug, MetricsComponent)]
 pub struct PendingActionInfoData {
     #[metric]
     pub action_info: ActionInfoWithProps,
+    /// Set once the worker has been told to kill this operation. Its later
+    /// report then only settles the worker's own bookkeeping.
+    #[metric(help = "If the worker has been asked to kill this operation.")]
+    pub kill_requested: bool,
 }
 
 /// Represents a connection to a worker and used as the medium to
@@ -164,6 +171,7 @@ impl Worker {
                 run_action: AsyncCounterWrapper::default(),
                 keep_alive: FuncCounterWrapper::default(),
                 notify_disconnect: CounterWithTime::default(),
+                kill_operation: CounterWithTime::default(),
             }),
         }
     }
@@ -191,7 +199,33 @@ impl Worker {
                 self.metrics.notify_disconnect.inc();
                 send_msg_to_worker(&self.tx, update_for_worker::Update::Disconnect(()))
             }
+            WorkerUpdate::KillOperation(operation_id) => {
+                let pending_action_info = self
+                    .running_action_infos
+                    .get_mut(&operation_id)
+                    .err_tip(|| {
+                        format!(
+                            "Worker {} asked to kill operation {operation_id} that is not running on it",
+                            self.id
+                        )
+                    })?;
+                pending_action_info.kill_requested = true;
+                self.metrics.kill_operation.inc();
+                send_msg_to_worker(
+                    &self.tx,
+                    update_for_worker::Update::KillOperationRequest(KillOperationRequest {
+                        operation_id: operation_id.to_string(),
+                    }),
+                )
+            }
         }
+    }
+
+    /// Whether the worker has been told to kill this operation.
+    pub(crate) fn is_kill_requested(&self, operation_id: &OperationId) -> bool {
+        self.running_action_infos
+            .get(operation_id)
+            .is_some_and(|pending_action_info| pending_action_info.kill_requested)
     }
 
     pub fn keep_alive(&mut self) -> Result<(), Error> {
@@ -228,7 +262,13 @@ impl Worker {
                     worker_platform_properties,
                     &action_info.platform_properties,
                 );
-                running_action_infos.insert(operation_id, PendingActionInfoData { action_info });
+                running_action_infos.insert(
+                    operation_id,
+                    PendingActionInfoData {
+                        action_info,
+                        kill_requested: false,
+                    },
+                );
 
                 send_msg_to_worker(tx, update_for_worker::Update::StartAction(start_execute))
             })
@@ -317,4 +357,6 @@ struct Metrics {
     keep_alive: FuncCounterWrapper,
     #[metric(help = "The number of notify_disconnect sent to this worker.")]
     notify_disconnect: CounterWithTime,
+    #[metric(help = "The number of kill_operation sent to this worker.")]
+    kill_operation: CounterWithTime,
 }
