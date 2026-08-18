@@ -503,16 +503,21 @@ struct PendingLink {
     src: PathBuf,
     dst: PathBuf,
     /// Keeps the CAS blob's `FileEntry` alive until the link is made, so the
-    /// inode cannot be dropped out from under the batch.
+    /// inode cannot be dropped out from under the batch. `None` for an
+    /// executable variant, which is a private file outside the entry map and so
+    /// has no entry to hold.
     ///
-    /// ponytail: the blob path is read under the entry's read lock and used
-    /// after that lock is released, so an eviction that *renames* the blob
-    /// between resolution and linking still surfaces `NotFound`. That race
-    /// predates batching (the per-file path resolved the same way); deferring
-    /// the link only widens the window from one file to one input tree, and an
-    /// action holding an [`ActionInputLease`] is protected from it entirely.
-    /// The upgrade path is a `hard_link_locked_many` on the `FileEntry` trait
-    /// that holds every read guard across the batch.
+    /// ponytail: neither case is fully closed. A held entry still only pins the
+    /// inode, so an eviction that *renames* the blob between resolution and
+    /// linking surfaces `NotFound`; a variant is deleted outright by the
+    /// eviction callback. Both races predate batching, which widens the window
+    /// from one file to one input tree. An action holding an
+    /// [`ActionInputLease`] is protected from both, because pinning the digest
+    /// prevents the eviction that would rename the blob or fire the callback,
+    /// and [`prepare_action_inputs`] always takes one; the exposure is the
+    /// unleased [`download_to_directory`] entry point. The upgrade path is a
+    /// `hard_link_locked_many` on the `FileEntry` trait that holds every read
+    /// guard across the batch.
     _keepalive: Option<Arc<FileEntryImpl>>,
 }
 

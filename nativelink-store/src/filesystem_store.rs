@@ -75,10 +75,10 @@ pub const DIGEST_FOLDER: &str = "d";
 #[cfg(unix)]
 const EXECUTABLE_DIR_SUFFIX: &str = ".exec";
 
-/// Concurrency for materializing executable variants that a batched lookup
-/// found missing. Each miss is a blob copy, so this bounds copy fan-out on a
-/// cold store; warm batches take the hit path and never reach it.
-#[cfg(unix)]
+/// Bounds how many digests of one batch resolve per-digest at a time. On unix
+/// that is the miss path, where each resolution is a blob copy, so this caps
+/// copy fan-out on a cold store; a warm batch answers from the existence check
+/// and never reaches it.
 const EXECUTABLE_VARIANT_MISS_CONCURRENCY: usize = 32;
 
 #[derive(Clone, Copy, Debug)]
@@ -1420,6 +1420,24 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         // cannot grow unbounded; a concurrent waiter already cloned the Arc.
         self.forget_executable_lock(digest);
         result.map(|()| variant_path)
+    }
+
+    /// Non-unix has no executable variants to check for, so there is no batched
+    /// existence check to amortize and this is just the per-digest path run
+    /// under the same bound.
+    #[cfg(not(unix))]
+    pub async fn get_executable_hardlink_sources(
+        &self,
+        digests: &[DigestInfo],
+    ) -> Vec<Result<OsString, Error>> {
+        futures::stream::iter(
+            digests
+                .iter()
+                .map(|digest| self.get_executable_hardlink_source(digest)),
+        )
+        .buffered(EXECUTABLE_VARIANT_MISS_CONCURRENCY)
+        .collect()
+        .await
     }
 
     /// Non-unix has no executable bit and no `ETXTBSY`, so just hardlink the
