@@ -853,6 +853,217 @@ mod tests {
         Ok(())
     }
 
+    /// Staging runs as separate passes over the whole tree — collect, create
+    /// directories, materialize the individual nodes, then link the rest — so
+    /// every node kind has to survive being handled out of order with respect
+    /// to the walk that found it.
+    ///
+    /// A tree with one node kind per directory would pass even if the passes
+    /// ran in the wrong order, so this nests them several levels deep and mixes
+    /// the kinds: a plain file, an executable (which resolves through the 0o555
+    /// variant rather than the shared blob), a zero-digest file, a file with
+    /// metadata to stamp (which needs a private inode), and a symlink. The
+    /// deepest leaves are what catch a missing directory, since nothing else
+    /// creates their parents.
+    #[nativelink_test]
+    async fn download_to_directory_deep_mixed_tree_test() -> Result<(), Box<dyn core::error::Error>>
+    {
+        const PLAIN_CONTENT: &str = "plain";
+        const EXEC_CONTENT: &str = "exec";
+        const STAMPED_CONTENT: &str = "stamped";
+        const STAMPED_MODE: u32 = 0o640;
+        const STAMPED_MTIME: u64 = 42;
+
+        let (fast_store, slow_store, cas_store, _ac_store) = setup_stores().await?;
+
+        let plain_digest = DigestInfo::new([21u8; 32], PLAIN_CONTENT.len() as u64);
+        slow_store
+            .as_ref()
+            .update_oneshot(plain_digest, PLAIN_CONTENT.into())
+            .await?;
+        let exec_digest = DigestInfo::new([22u8; 32], EXEC_CONTENT.len() as u64);
+        slow_store
+            .as_ref()
+            .update_oneshot(exec_digest, EXEC_CONTENT.into())
+            .await?;
+        let stamped_digest = DigestInfo::new([23u8; 32], STAMPED_CONTENT.len() as u64);
+        slow_store
+            .as_ref()
+            .update_oneshot(stamped_digest, STAMPED_CONTENT.into())
+            .await?;
+        // SHA-256 of empty content.
+        let zero_digest = DigestInfo::try_new(
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            0,
+        )?;
+
+        // The deepest level, holding every node kind that is not a plain
+        // hardlink, three directories below the root.
+        let leaf_digest = DigestInfo::new([24u8; 32], 128);
+        let leaf = Directory {
+            files: vec![
+                FileNode {
+                    name: "exec.sh".to_string(),
+                    digest: Some(exec_digest.into()),
+                    is_executable: true,
+                    node_properties: None,
+                },
+                FileNode {
+                    name: "zero.txt".to_string(),
+                    digest: Some(zero_digest.into()),
+                    ..Default::default()
+                },
+                FileNode {
+                    name: "stamped.txt".to_string(),
+                    digest: Some(stamped_digest.into()),
+                    is_executable: false,
+                    node_properties: Some(NodeProperties {
+                        properties: vec![],
+                        mtime: Some(
+                            SystemTime::UNIX_EPOCH
+                                .checked_add(Duration::from_secs(STAMPED_MTIME))
+                                .unwrap()
+                                .into(),
+                        ),
+                        unix_mode: Some(STAMPED_MODE),
+                    }),
+                },
+            ],
+            symlinks: vec![SymlinkNode {
+                name: "link".to_string(),
+                target: "exec.sh".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        slow_store
+            .as_ref()
+            .update_oneshot(leaf_digest, leaf.encode_to_vec().into())
+            .await?;
+
+        let middle_digest = DigestInfo::new([25u8; 32], 96);
+        let middle = Directory {
+            directories: vec![DirectoryNode {
+                name: "leaf".to_string(),
+                digest: Some(leaf_digest.into()),
+            }],
+            files: vec![FileNode {
+                name: "middle.txt".to_string(),
+                digest: Some(plain_digest.into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        slow_store
+            .as_ref()
+            .update_oneshot(middle_digest, middle.encode_to_vec().into())
+            .await?;
+
+        // A sibling of `middle`, so the batch creates directories that are not
+        // on a single root-to-leaf path.
+        let sibling_digest = DigestInfo::new([26u8; 32], 64);
+        let sibling = Directory {
+            files: vec![FileNode {
+                name: "sibling.txt".to_string(),
+                digest: Some(plain_digest.into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        slow_store
+            .as_ref()
+            .update_oneshot(sibling_digest, sibling.encode_to_vec().into())
+            .await?;
+
+        let root_digest = DigestInfo::new([27u8; 32], 128);
+        let root = Directory {
+            directories: vec![
+                DirectoryNode {
+                    name: "middle".to_string(),
+                    digest: Some(middle_digest.into()),
+                },
+                DirectoryNode {
+                    name: "sibling".to_string(),
+                    digest: Some(sibling_digest.into()),
+                },
+            ],
+            files: vec![FileNode {
+                name: "root.txt".to_string(),
+                digest: Some(plain_digest.into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        slow_store
+            .as_ref()
+            .update_oneshot(root_digest, root.encode_to_vec().into())
+            .await?;
+
+        let download_dir = make_temp_path("deep_mixed_tree");
+        fs::create_dir_all(&download_dir).await?;
+        download_to_directory(
+            cas_store.as_ref(),
+            fast_store.as_pin(),
+            &root_digest,
+            &download_dir,
+        )
+        .await?;
+
+        let leaf_dir = format!("{download_dir}/middle/leaf");
+        assert_eq!(
+            from_utf8(&fs::read(format!("{download_dir}/root.txt")).await?)?,
+            PLAIN_CONTENT
+        );
+        assert_eq!(
+            from_utf8(&fs::read(format!("{download_dir}/middle/middle.txt")).await?)?,
+            PLAIN_CONTENT
+        );
+        assert_eq!(
+            from_utf8(&fs::read(format!("{download_dir}/sibling/sibling.txt")).await?)?,
+            PLAIN_CONTENT
+        );
+        assert_eq!(
+            from_utf8(&fs::read(format!("{leaf_dir}/exec.sh")).await?)?,
+            EXEC_CONTENT
+        );
+        assert_eq!(
+            from_utf8(&fs::read(format!("{leaf_dir}/stamped.txt")).await?)?,
+            STAMPED_CONTENT
+        );
+
+        let zero_metadata = fs::metadata(format!("{leaf_dir}/zero.txt")).await?;
+        assert_eq!(zero_metadata.len(), 0, "zero-digest file must be empty");
+
+        #[cfg(target_family = "unix")]
+        {
+            let link_metadata = fs::symlink_metadata(format!("{leaf_dir}/link")).await?;
+            assert!(link_metadata.is_symlink());
+
+            let exec_metadata = fs::metadata(format!("{leaf_dir}/exec.sh")).await?;
+            assert_eq!(
+                exec_metadata.mode() & 0o111,
+                0o111,
+                "an executable input must arrive executable"
+            );
+
+            let stamped_metadata = fs::metadata(format!("{leaf_dir}/stamped.txt")).await?;
+            assert_eq!(stamped_metadata.mode() & 0o777, STAMPED_MODE);
+            assert_eq!(
+                stamped_metadata
+                    .modified()?
+                    .duration_since(SystemTime::UNIX_EPOCH)?
+                    .as_secs(),
+                STAMPED_MTIME
+            );
+            assert_eq!(
+                stamped_metadata.nlink(),
+                1,
+                "a stamped file must be a private inode, not a link to the shared blob"
+            );
+        }
+        Ok(())
+    }
+
     #[nativelink_test]
     async fn ensure_output_files_full_directories_are_created_no_working_directory_test()
     -> Result<(), Box<dyn core::error::Error>> {

@@ -3,11 +3,112 @@
 
 use std::env;
 use std::fs::{self, Permissions};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
 use nativelink_error::ResultExt;
 use nativelink_macro::nativelink_test;
-use nativelink_util::fs::remove_dir_all;
+use nativelink_util::fs::{create_dir_many, exists_many, hard_link_many, remove_dir_all};
+
+/// `hard_link_many` trades one `spawn_blocking` dispatch per link for one per
+/// batch, so its whole contract is that the batch still behaves like N
+/// independent `hard_link` calls: real hardlinks (shared inode, not copies),
+/// one result per input, positionally aligned, with a failing link neither
+/// aborting the batch nor shifting its neighbours' results.
+#[nativelink_test]
+async fn hard_link_many_links_in_order_and_isolates_failures()
+-> Result<(), Box<dyn core::error::Error>> {
+    let dir = env::temp_dir().join("hard_link_many_test");
+    drop(remove_dir_all(&dir).await);
+    fs::create_dir_all(&dir)?;
+
+    let (src_a, src_b) = (dir.join("a.src"), dir.join("b.src"));
+    fs::write(&src_a, "a")?;
+    fs::write(&src_b, "b")?;
+
+    // Middle entry's source does not exist, so only it may fail.
+    let links = vec![
+        (src_a.clone(), dir.join("a.dst")),
+        (dir.join("missing.src"), dir.join("missing.dst")),
+        (src_b.clone(), dir.join("b.dst")),
+    ];
+    let results = hard_link_many(links).await?;
+
+    assert_eq!(results.len(), 3, "one result per input");
+    assert!(results[0].is_ok(), "first link should succeed");
+    assert!(results[1].is_err(), "missing source should fail");
+    assert!(
+        results[2].is_ok(),
+        "a failed link must not abort the rest of the batch"
+    );
+
+    // A hardlink shares the source inode; a copy would not.
+    for (src, dst) in [(&src_a, "a.dst"), (&src_b, "b.dst")] {
+        assert_eq!(
+            fs::metadata(src)?.ino(),
+            fs::metadata(dir.join(dst))?.ino(),
+            "{dst} should share an inode with its source",
+        );
+    }
+    assert!(!fs::exists(dir.join("missing.dst"))?);
+
+    assert!(
+        hard_link_many(Vec::new()).await?.is_empty(),
+        "empty batch is a no-op"
+    );
+
+    remove_dir_all(&dir).await?;
+    Ok(())
+}
+
+/// `exists_many` answers positionally and reports every failure mode as
+/// `false`, and `create_dir_many` creates parents before children while
+/// refusing to swallow a directory that already exists.
+#[nativelink_test]
+async fn exists_many_and_create_dir_many_answer_positionally()
+-> Result<(), Box<dyn core::error::Error>> {
+    let dir = env::temp_dir().join("exists_many_test");
+    drop(remove_dir_all(&dir).await);
+    fs::create_dir_all(&dir)?;
+
+    let present = dir.join("present");
+    fs::write(&present, "x")?;
+
+    let answers = exists_many(vec![
+        dir.join("absent"),
+        present.clone(),
+        dir.join("nonexistent-parent/child"),
+    ])
+    .await?;
+    assert_eq!(
+        answers,
+        vec![false, true, false],
+        "answers must line up with the paths asked about"
+    );
+    assert!(exists_many(Vec::new()).await?.is_empty());
+
+    // A child may be listed before its parent; the batch sorts them itself.
+    let parent = dir.join("parent");
+    create_dir_many(vec![parent.join("child"), parent.clone()]).await?;
+    assert!(fs::exists(parent.join("child"))?);
+
+    // An existing directory is an error, not silent success. Tolerating it
+    // would merge two trees into one wherever sibling names collide, which is
+    // any pair differing only in case on a case-insensitive filesystem.
+    assert!(
+        create_dir_many(vec![parent.clone()]).await.is_err(),
+        "an already-existing directory must surface an error"
+    );
+
+    assert!(
+        create_dir_many(vec![dir.join("no/such/parent")])
+            .await
+            .is_err(),
+        "missing parent must surface an error"
+    );
+
+    remove_dir_all(&dir).await?;
+    Ok(())
+}
 
 #[nativelink_test]
 async fn remove_files_with_bad_permissions() -> Result<(), Box<dyn core::error::Error>> {
