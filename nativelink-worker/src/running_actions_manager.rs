@@ -1902,11 +1902,7 @@ impl RunningActionImpl {
                     let resource_usage = None;
 
                     // log something useful instead of repeating same ?arg
-                    if let Some(ru) = &resource_usage {
-                        info!(exit_code, ru.peak_memory_kb, ru.cpu_time_ms, "Command complete");
-                    } else {
-                        info!("Command complete");
-                    }
+                    info!(?exit_code, "Command complete");
 
                     let maybe_error_override = if let Some(side_channel_file) = maybe_side_channel_file {
                         process_side_channel_file(side_channel_file.clone(), &args, requested_timeout).await
