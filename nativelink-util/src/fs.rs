@@ -321,10 +321,69 @@ pub async fn hard_link(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> Result<(
     call_with_permit(move |_| std::fs::hard_link(src, dst).map_err(Into::<Error>::into)).await
 }
 
+/// Hardlinks many files under a single permit and a single `spawn_blocking`
+/// dispatch, returning one result per input in the same order.
+///
+/// [`hard_link`] pays a semaphore acquire plus a `spawn_blocking` hop per call,
+/// and both dwarf the `hard_link(2)` syscall itself, which is a few microseconds
+/// on tmpfs. Staging an input tree of thousands of small files therefore spends
+/// most of its wall time in the tokio scheduler rather than in the kernel.
+/// Batching amortizes the acquire and the dispatch over the whole batch.
+///
+/// A single permit covers the batch because `hard_link(2)` is a metadata
+/// operation that never leaves a file descriptor open, so it does not consume
+/// the open-file budget [`OPEN_FILE_SEMAPHORE`] exists to protect.
+pub async fn hard_link_many(
+    links: Vec<(PathBuf, PathBuf)>,
+) -> Result<Vec<Result<(), Error>>, Error> {
+    if links.is_empty() {
+        return Ok(Vec::new());
+    }
+    let permit = get_permit().await?;
+    spawn_blocking!("fs_hard_link_many", move || {
+        let _permit = permit;
+        links
+            .into_iter()
+            .map(|(src, dst)| std::fs::hard_link(src, dst).map_err(Into::<Error>::into))
+            .collect()
+    })
+    .await
+    .map_err(|e| Error::from_std_err(Code::Internal, &e).append("background task failed"))
+}
+
 pub async fn set_permissions(src: impl AsRef<Path>, perm: Permissions) -> Result<(), Error> {
     let src = src.as_ref().to_owned();
     call_with_permit(move |_| std::fs::set_permissions(src, perm).map_err(Into::<Error>::into))
         .await
+}
+
+/// Creates many directories under a single permit and a single `spawn_blocking`
+/// dispatch, returning one result per input in the same order.
+///
+/// `dirs` must be ordered parents-first (a lexicographic sort achieves this,
+/// since a parent path is a prefix of its children). An already-existing
+/// directory is reported as success, so the batch composes with callers that
+/// created some parents eagerly.
+///
+/// See [`hard_link_many`] for why batching matters here: the `mkdir(2)` syscall
+/// is dwarfed by the per-call semaphore acquire and `spawn_blocking` hop, and an
+/// input tree contributes hundreds of directories.
+pub async fn create_dir_many(dirs: Vec<PathBuf>) -> Result<Vec<Result<(), Error>>, Error> {
+    if dirs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let permit = get_permit().await?;
+    spawn_blocking!("fs_create_dir_many", move || {
+        let _permit = permit;
+        dirs.into_iter()
+            .map(|dir| match std::fs::create_dir(dir) {
+                Err(e) if e.kind() != io::ErrorKind::AlreadyExists => Err(e.into()),
+                _ => Ok(()),
+            })
+            .collect()
+    })
+    .await
+    .map_err(|e| Error::from_std_err(Code::Internal, &e).append("background task failed"))
 }
 
 pub async fn create_dir(path: impl AsRef<Path>) -> Result<(), Error> {
@@ -414,6 +473,32 @@ pub async fn canonicalize(path: impl AsRef<Path>) -> Result<PathBuf, Error> {
 pub async fn metadata(path: impl AsRef<Path>) -> Result<Metadata, Error> {
     let path = path.as_ref().to_owned();
     call_with_permit(move |_| std::fs::metadata(path).map_err(Into::<Error>::into)).await
+}
+
+/// Tests many paths for existence under a single permit and a single
+/// `spawn_blocking` dispatch, returning one answer per input in the same order.
+///
+/// A `stat(2)` on a warm tmpfs costs far less than the permit acquisition and
+/// thread hop needed to dispatch it, so callers checking a whole input tree pay
+/// almost entirely dispatch overhead when they ask one path at a time.
+///
+/// Any error is reported as `false`: the only caller wants "can I use this
+/// path", and every failure mode (absent, dangling, unreadable parent) has the
+/// same answer.
+pub async fn exists_many(paths: Vec<PathBuf>) -> Result<Vec<bool>, Error> {
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    let permit = get_permit().await?;
+    spawn_blocking!("fs_exists_many", move || {
+        let _permit = permit;
+        paths
+            .into_iter()
+            .map(|path| std::fs::metadata(path).is_ok())
+            .collect()
+    })
+    .await
+    .map_err(|e| Error::from_std_err(Code::Internal, &e).append("background task failed"))
 }
 
 pub async fn read(path: impl AsRef<Path>) -> Result<Vec<u8>, Error> {

@@ -57,7 +57,7 @@ use nativelink_store::ac_utils::{
 };
 use nativelink_store::cas_utils::is_zero_digest;
 use nativelink_store::fast_slow_store::FastSlowStore;
-use nativelink_store::filesystem_store::{FileEntry, FilesystemStore};
+use nativelink_store::filesystem_store::{FileEntry, FileEntryImpl, FilesystemStore};
 use nativelink_store::grpc_store::GrpcStore;
 use nativelink_util::action_messages::{
     ActionInfo, ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath, OperationId,
@@ -470,6 +470,232 @@ fn download_to_directory_with_lease<'a>(
     input_lease: Option<Arc<ActionInputLease>>,
 ) -> BoxFuture<'a, Result<(), Error>> {
     async move {
+        let (mut dirs, files) = collect_download_links(
+            cas_store,
+            filesystem_store,
+            digest,
+            current_directory,
+            input_lease,
+        )
+        .await?;
+
+        let (exec_files, plain_files): (Vec<_>, Vec<_>) =
+            files.into_iter().partition(|file| file.executable);
+        let mut links = resolve_plain_files(cas_store, filesystem_store, plain_files).await?;
+        links.extend(resolve_exec_files(cas_store, filesystem_store, exec_files).await?);
+
+        // Parents must exist before their children. A lexicographic sort
+        // guarantees that, because a parent's path is a prefix of its children's.
+        dirs.sort_unstable();
+        for (dir, result) in dirs.iter().zip(fs::create_dir_many(dirs.clone()).await?) {
+            result.err_tip(|| format!("Could not create directory {}", dir.display()))?;
+        }
+
+        materialize_links(filesystem_store, links).await
+    }
+    .boxed()
+}
+
+/// A hardlink deferred to the end of the input-tree walk, so the whole tree is
+/// materialized by one batched [`fs::hard_link_many`] pass instead of one
+/// `spawn_blocking` dispatch per file.
+struct PendingLink {
+    src: PathBuf,
+    dst: PathBuf,
+    /// Keeps the CAS blob's `FileEntry` alive until the link is made, so the
+    /// inode cannot be dropped out from under the batch.
+    ///
+    /// ponytail: the blob path is read under the entry's read lock and used
+    /// after that lock is released, so an eviction that *renames* the blob
+    /// between resolution and linking still surfaces `NotFound`. That race
+    /// predates batching (the per-file path resolved the same way); deferring
+    /// the link only widens the window from one file to one input tree, and an
+    /// action holding an [`ActionInputLease`] is protected from it entirely.
+    /// The upgrade path is a `hard_link_locked_many` on the `FileEntry` trait
+    /// that holds every read guard across the batch.
+    _keepalive: Option<Arc<FileEntryImpl>>,
+}
+
+/// A file whose CAS blob has not been resolved to a path yet.
+struct PendingFile {
+    digest: DigestInfo,
+    dst: String,
+    /// Resolves to the per-digest 0o555 variant rather than the shared 0o444
+    /// blob, which cannot carry the executable bit.
+    executable: bool,
+}
+
+/// The directories to create and the files to hardlink, for one input subtree.
+type CollectedTree = (Vec<PathBuf>, Vec<PendingFile>);
+
+/// Executes every deferred hardlink of an input tree in one batched pass.
+async fn materialize_links(
+    filesystem_store: Pin<&FilesystemStore>,
+    links: Vec<PendingLink>,
+) -> Result<(), Error> {
+    let pairs = links
+        .iter()
+        .map(|link| (link.src.clone(), link.dst.clone()))
+        .collect();
+    for (link, result) in links.iter().zip(fs::hard_link_many(pairs).await?) {
+        let (src_path, dest) = (&link.src, &link.dst);
+        result.map_err(|e| {
+            let src_metadata = std::fs::metadata(src_path);
+            let dest_metadata = std::fs::metadata(dest);
+            let dest_parent_metadata = dest.parent().map(Path::metadata);
+            let snapshot = filesystem_store.get_eviction_snapshot();
+            warn!(?e, fs_eviction_snapshot = %snapshot, ?src_path, ?src_metadata, ?dest, ?dest_metadata, ?dest_parent_metadata, "Could not make hardlink");
+            if e.code == Code::NotFound {
+                e.append(
+                    format!(
+                    "Could not make hardlink from {} to {}, file was likely evicted from cache.\n\
+                    This error often occurs when the filesystem store's max_bytes is too small for your workload.\n\
+                    To fix this issue:\n\
+                    1. Increase the 'max_bytes' value in your filesystem store configuration\n\
+                    2. Example: Change 'max_bytes: 10000000000' to 'max_bytes: 50000000000' (or higher)\n\
+                    3. The setting is typically found in your nativelink.json config under:\n\
+                    stores -> [your_filesystem_store] -> filesystem -> eviction_policy -> max_bytes\n\
+                    4. Restart NativeLink after making the change\n\n\
+                    If this error persists after increasing max_bytes several times, please report at:\n\
+                    https://github.com/TraceMachina/nativelink/issues\n\
+                    Include your config file and both server and client logs to help us assist you.",
+                    src_path.display(), dest.display()
+                ))
+            } else {
+                e.append(format!("Could not make hardlink from {} to {}", src_path.display(), dest.display()))
+            }
+        })?;
+    }
+    Ok(())
+}
+
+/// Resolves every non-executable file of an input tree to its CAS blob path.
+///
+/// The blob is nearly always resident, and `populate_fast_store` would take the
+/// store's eviction lock only to discover that, so resolving the entry directly
+/// answers the same question and yields the path. Only a genuine miss pays the
+/// populate round trip.
+async fn resolve_plain_files(
+    cas_store: &FastSlowStore,
+    filesystem_store: Pin<&FilesystemStore>,
+    files: Vec<PendingFile>,
+) -> Result<Vec<PendingLink>, Error> {
+    let mut tasks = Vec::with_capacity(files.len());
+    for file in files {
+        tasks.push(async move {
+            let file_entry = if let Ok(entry) = filesystem_store
+                .get_file_entry_for_digest(&file.digest)
+                .await
+            {
+                entry
+            } else {
+                cas_store
+                    .populate_fast_store(file.digest.into())
+                    .await
+                    .err_tip(|| "Populating fast store for hard link")?;
+                filesystem_store
+                    .get_file_entry_for_digest(&file.digest)
+                    .await
+                    .err_tip(|| "During hard link")?
+            };
+            // TODO: add a test for #2051: deadlock with large number of files
+            let src_path = file_entry
+                .get_file_path_locked(|src| async move { Ok(src) })
+                .await
+                .err_tip(|| format!("for digest {}", file.digest))?;
+            Ok::<_, Error>(PendingLink {
+                src: PathBuf::from(src_path),
+                dst: PathBuf::from(file.dst),
+                _keepalive: Some(file_entry),
+            })
+        });
+    }
+    futures::stream::iter(tasks)
+        .buffer_unordered(DOWNLOAD_TO_DIRECTORY_CONCURRENCY)
+        .try_collect()
+        .await
+}
+
+/// Resolves every executable file of an input tree to its 0o555 variant,
+/// checking the whole tree's variants for existence in one batch.
+///
+/// The shared 0o444 CAS blob cannot carry the executable bit, so each such
+/// digest hardlinks a private variant instead. Confirming a variant is already
+/// materialized is a single `stat(2)`, but dispatching one costs more than
+/// running one, and a toolchain-heavy input tree is almost entirely executable
+/// files.
+///
+/// A digest whose blob is not resident cannot have a variant built from it;
+/// those are fetched and retried concurrently, since a cold tier misses on
+/// every file of the tree.
+async fn resolve_exec_files(
+    cas_store: &FastSlowStore,
+    filesystem_store: Pin<&FilesystemStore>,
+    files: Vec<PendingFile>,
+) -> Result<Vec<PendingLink>, Error> {
+    if files.is_empty() {
+        return Ok(Vec::new());
+    }
+    let digests: Vec<DigestInfo> = files.iter().map(|file| file.digest).collect();
+    let sources = filesystem_store
+        .get_executable_hardlink_sources(&digests)
+        .await;
+
+    let mut tasks = Vec::with_capacity(files.len());
+    for (file, source) in files.into_iter().zip(sources) {
+        tasks.push(async move {
+            let src_path = if let Ok(src_path) = source {
+                src_path
+            } else {
+                cas_store
+                    .populate_fast_store(file.digest.into())
+                    .await
+                    .err_tip(|| "Populating fast store for executable")?;
+                filesystem_store
+                    .get_executable_hardlink_source(&file.digest)
+                    .await
+                    .err_tip(|| format!("Resolving executable variant for {}", file.digest))?
+            };
+            Ok::<_, Error>(PendingLink {
+                src: PathBuf::from(src_path),
+                dst: PathBuf::from(file.dst),
+                _keepalive: None,
+            })
+        });
+    }
+    futures::stream::iter(tasks)
+        .buffer_unordered(DOWNLOAD_TO_DIRECTORY_CONCURRENCY)
+        .try_collect()
+        .await
+}
+
+/// Creates the parent of `path` if it is missing.
+///
+/// The walk defers directory creation to one batched pass, but the rare inline
+/// nodes (zero-digest files, private copies, symlinks) are materialized during
+/// the walk and so cannot assume their parent exists yet. They are a tiny
+/// fraction of an input tree, so paying `create_dir_all` for them is cheaper
+/// than threading them through the deferral.
+async fn ensure_parent_dir(path: &str) -> Result<(), Error> {
+    let Some(parent) = Path::new(path).parent() else {
+        return Ok(());
+    };
+    fs::create_dir_all(parent)
+        .await
+        .err_tip(|| format!("Could not create parent directory for {path}"))
+}
+
+/// Walks the input tree, materializing symlinks, zero-digest files and
+/// metadata-bearing files inline, while accumulating the directories to create
+/// and the files to hardlink so the caller can issue each as one batch.
+fn collect_download_links<'a>(
+    cas_store: &'a FastSlowStore,
+    filesystem_store: Pin<&'a FilesystemStore>,
+    digest: &'a DigestInfo,
+    current_directory: &'a str,
+    input_lease: Option<Arc<ActionInputLease>>,
+) -> BoxFuture<'a, Result<CollectedTree, Error>> {
+    async move {
         if let Some(input_lease) = &input_lease {
             input_lease.lease_digest(digest);
         }
@@ -477,6 +703,11 @@ fn download_to_directory_with_lease<'a>(
             .await
             .err_tip(|| "Converting digest to Directory")?;
         let mut futures = Vec::new();
+        // Files with no metadata to stamp (the overwhelming majority) need
+        // nothing from the walk but their digest, so they are handed up
+        // unresolved and the whole tree resolves in one batched pass. See
+        // `resolve_plain_files` and `resolve_exec_files`.
+        let mut pending_files = Vec::new();
 
         for file in directory.files {
             let digest: DigestInfo = file
@@ -493,10 +724,22 @@ fn download_to_directory_with_lease<'a>(
             if let Some(input_lease) = &input_lease {
                 input_lease.lease_digest(&digest);
             }
+            // Hot path: nothing to stamp, so the file needs nothing from the
+            // walk beyond its digest. Hand it up unresolved and let the caller
+            // resolve and link the whole tree in one batch.
+            if mtime.is_none() && custom_unix_mode.is_none() && !is_zero_digest(digest) {
+                pending_files.push(PendingFile {
+                    digest,
+                    dst: dest,
+                    executable: is_executable,
+                });
+                continue;
+            }
             futures.push(
                 cas_store
                     .populate_fast_store(digest.into())
                     .and_then(move |()| async move {
+                        ensure_parent_dir(&dest).await?;
                         if is_zero_digest(digest) {
                             // Zero-digest files are never persisted by the
                             // FilesystemStore, so materialise them directly in
@@ -508,7 +751,7 @@ fn download_to_directory_with_lease<'a>(
                                 .write_all(&[])
                                 .await
                                 .err_tip(|| format!("Could not write zero-digest file at {dest}"))?;
-                        } else if custom_unix_mode.is_some() || mtime.is_some() {
+                        } else {
                             // Rare path: per-file metadata (a custom unix_mode or
                             // an mtime) must land on a PRIVATE inode. A
                             // chmod/utimes on a hardlink mutates the shared CAS
@@ -535,60 +778,6 @@ fn download_to_directory_with_lease<'a>(
                             .err_tip(|| {
                                 "Failed to launch spawn_blocking private copy in download_to_directory"
                             })??;
-                        } else {
-                            // Hot path: hardlink only — no writable fd is ever
-                            // opened for the materialized inode, so a concurrent
-                            // `execve` of an executable input cannot hit ETXTBSY
-                            // ("Text file busy"). Executables hardlink a
-                            // per-digest 0o555 variant created once off the hot
-                            // path (the 0o444 CAS blob is shared and cannot carry
-                            // +x); non-executables hardlink the 0o444 CAS blob.
-                            let src_path = if is_executable {
-                                filesystem_store
-                                    .get_executable_hardlink_source(&digest)
-                                    .await
-                                    .err_tip(|| "Resolving executable hardlink source")?
-                            } else {
-                                let file_entry = filesystem_store
-                                    .get_file_entry_for_digest(&digest)
-                                    .await
-                                    .err_tip(|| "During hard link")?;
-                                // TODO: add a test for #2051: deadlock with large number of files
-                                file_entry
-                                    .get_file_path_locked(|src| async move { Ok(src) })
-                                    .await?
-                            };
-                            fs::hard_link(&src_path, &dest)
-                                .await
-                                .map_err(|e| {
-                                    let src_metadata = std::fs::metadata(&src_path);
-                                    let dest_metadata = std::fs::metadata(&dest);
-                                    let dest_parent_metadata = Path::new(&dest).parent().map(Path::metadata);
-                                    let snapshot = filesystem_store.get_eviction_snapshot();
-                                    warn!(?e, fs_eviction_snapshot = %snapshot, ?src_path, ?src_metadata, %dest, ?dest_metadata, ?dest_parent_metadata, "Could not make hardlink");
-                                    if e.code == Code::NotFound {
-                                        e.append(
-                                            format!(
-                                            "Could not make hardlink from {} to {dest}, file was likely evicted from cache.\n\
-                                            This error often occurs when the filesystem store's max_bytes is too small for your workload.\n\
-                                            To fix this issue:\n\
-                                            1. Increase the 'max_bytes' value in your filesystem store configuration\n\
-                                            2. Example: Change 'max_bytes: 10000000000' to 'max_bytes: 50000000000' (or higher)\n\
-                                            3. The setting is typically found in your nativelink.json config under:\n\
-                                            stores -> [your_filesystem_store] -> filesystem -> eviction_policy -> max_bytes\n\
-                                            4. Restart NativeLink after making the change\n\n\
-                                            If this error persists after increasing max_bytes several times, please report at:\n\
-                                            https://github.com/TraceMachina/nativelink/issues\n\
-                                            Include your config file and both server and client logs to help us assist you.", src_path.display()
-                                        ))
-                                    } else {
-                                        e.append(format!("Could not make hardlink from {} to {dest}", src_path.display()))
-                                    }
-                                })?;
-                            // Hardlinked inodes are already correct (the 0o444
-                            // blob or the 0o555 executable variant) and carry no
-                            // per-file metadata, so there is nothing to stamp.
-                            return Ok(());
                         }
 
                         // Private-inode tail (zero-digest or private copy only):
@@ -627,7 +816,7 @@ fn download_to_directory_with_lease<'a>(
                                 || "Failed to launch spawn_blocking in download_to_directory",
                             )??;
                         }
-                        Ok(())
+                        Ok((Vec::new(), Vec::new()))
                     })
                     .map_err(move |e| e.append(format!("for digest {digest}")))
                     .boxed(),
@@ -651,10 +840,10 @@ fn download_to_directory_with_lease<'a>(
             let input_lease = input_lease.clone();
             futures.push(
                 async move {
-                    fs::create_dir(&new_directory_path)
-                        .await
-                        .err_tip(|| format!("Could not create directory {new_directory_path}"))?;
-                    download_to_directory_with_lease(
+                    // Creation is deferred to the caller's batched pass; the
+                    // walk itself only reads Directory protos, so it does not
+                    // need the directory to exist yet.
+                    let (mut sub_dirs, files) = collect_download_links(
                         cas_store,
                         filesystem_store,
                         &digest,
@@ -663,7 +852,8 @@ fn download_to_directory_with_lease<'a>(
                     )
                     .await
                     .err_tip(|| format!("in download_to_directory : {new_directory_path}"))?;
-                    Ok(())
+                    sub_dirs.push(PathBuf::from(new_directory_path));
+                    Ok((sub_dirs, files))
                 }
                 .boxed(),
             );
@@ -674,13 +864,14 @@ fn download_to_directory_with_lease<'a>(
             let dest = format!("{}/{}", current_directory, symlink_node.name);
             futures.push(
                 async move {
+                    ensure_parent_dir(&dest).await?;
                     fs::symlink(&symlink_node.target, &dest).await.err_tip(|| {
                         format!(
                             "Could not create symlink {} -> {}",
                             symlink_node.target, dest
                         )
                     })?;
-                    Ok(())
+                    Ok((Vec::new(), Vec::new()))
                 }
                 .boxed(),
             );
@@ -691,11 +882,17 @@ fn download_to_directory_with_lease<'a>(
         // pushed into an unbounded FuturesUnordered, which on macOS produced
         // thousands of parallel hardlink(2) calls fighting APFS's per-volume
         // metadata lock and regressing throughput vs serial.
-        futures::stream::iter(futures)
+        let collected: Vec<CollectedTree> = futures::stream::iter(futures)
             .buffer_unordered(DOWNLOAD_TO_DIRECTORY_CONCURRENCY)
-            .try_collect::<Vec<_>>()
+            .try_collect()
             .await?;
-        Ok(())
+
+        let mut dirs = Vec::new();
+        for (sub_dirs, sub_files) in collected {
+            dirs.extend(sub_dirs);
+            pending_files.extend(sub_files);
+        }
+        Ok((dirs, pending_files))
     }
     .boxed()
 }

@@ -75,6 +75,12 @@ pub const DIGEST_FOLDER: &str = "d";
 #[cfg(unix)]
 const EXECUTABLE_DIR_SUFFIX: &str = ".exec";
 
+/// Concurrency for materializing executable variants that a batched lookup
+/// found missing. Each miss is a blob copy, so this bounds copy fan-out on a
+/// cold store; warm batches take the hit path and never reach it.
+#[cfg(unix)]
+const EXECUTABLE_VARIANT_MISS_CONCURRENCY: usize = 32;
+
 #[derive(Clone, Copy, Debug)]
 pub enum FileType {
     Digest,
@@ -1285,6 +1291,53 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             self.shared_context.content_path
         )
         .into()
+    }
+
+    /// Resolves the executable variant for many digests at once, batching the
+    /// warm path's existence checks into a single dispatch.
+    ///
+    /// Every input file of an action that carries the executable bit resolves
+    /// through here, and in a toolchain-heavy input tree that is nearly all of
+    /// them. Asking one path at a time makes each file pay a permit
+    /// acquisition and a thread hop to run a `stat(2)` that is itself far
+    /// cheaper than its own dispatch.
+    ///
+    /// Only a genuine miss falls back to the per-digest path that materializes
+    /// the variant under its single-flight guard. Misses are bounded-concurrent
+    /// rather than sequential because a cold store misses on every file.
+    #[cfg(unix)]
+    pub async fn get_executable_hardlink_sources(
+        &self,
+        digests: &[DigestInfo],
+    ) -> Vec<Result<OsString, Error>> {
+        let paths: Vec<OsString> = digests
+            .iter()
+            .map(|digest| self.executable_variant_path(digest))
+            .collect();
+
+        // A batch failure is not fatal: treating every path as a miss falls
+        // back to the per-digest path, which reports real errors per file.
+        let exists = if self.executable_variants_enabled {
+            fs::exists_many(paths.iter().map(Into::into).collect())
+                .await
+                .unwrap_or_else(|_| vec![false; paths.len()])
+        } else {
+            vec![false; paths.len()]
+        };
+
+        let mut tasks = Vec::with_capacity(paths.len());
+        for ((digest, path), hit) in digests.iter().copied().zip(paths).zip(exists) {
+            tasks.push(async move {
+                if hit {
+                    return Ok(path);
+                }
+                self.get_executable_hardlink_source(&digest).await
+            });
+        }
+        futures::stream::iter(tasks)
+            .buffered(EXECUTABLE_VARIANT_MISS_CONCURRENCY)
+            .collect()
+            .await
     }
 
     /// Returns the path to a private, read-only **executable** (0o555) copy of
