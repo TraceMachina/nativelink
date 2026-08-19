@@ -1,0 +1,395 @@
+---
+title: Troubleshooting
+description: A symptom-to-cause-to-fix index for NativeLink, anchored on the error strings the system actually emits, including the ones that say nothing useful, and the failures that produce no error at all.
+---
+
+{/* archetype: reference, see /web/apps/docs/templates/reference.mdx */}
+
+**Who this is for:** something is wrong and you have a symptom but not a cause.
+**What you'll have at the end:** the cause, and either a fix or a pointer to
+the procedure that fixes it. **Time:** find your row, follow it.
+
+<Prerequisites>
+  A deployment that is misbehaving.
+</Prerequisites>
+
+Search this page for the error string you have. If your symptom is a *hang*
+rather than an error, start at
+[Actions queue forever and workers sit idle](#actions-queue-forever-and-workers-sit-idle);
+NativeLink's most common failure mode produces no error string at all.
+
+If you already know which incident you are having and need the procedure rather
+than the diagnosis, go to [Runbooks](/operate/runbooks).
+
+## The index [#the-index]
+
+| Symptom | Likely cause | Where to go |
+| --- | --- | --- |
+| Build hangs, no action ever starts, no error | Platform property *value* mismatch | [Actions queue forever](#actions-queue-forever-and-workers-sit-idle) |
+| `Unknown platform property '<name>'` immediately | Property *name* missing from the scheduler's `supported_platform_properties` | [The name/value asymmetry](#actions-queue-forever-and-workers-sit-idle) |
+| `FAILED_PRECONDITION` mentioning fast or slow store | Workers do not share CAS storage | [Actions fail with a CAS miss](#actions-fail-with-a-cas-miss) |
+| `not found in filesystem store ... evicted due to cache pressure` | `max_bytes` too small | [Actions fail with a CAS miss](#actions-fail-with-a-cas-miss) |
+| Action fails with exit code 9 | Child process killed by a signal, usually the OOM killer | [Runbooks: OOM](/operate/runbooks#a-worker-is-oom-killed) |
+| `Worker disconnected repeatedly while executing this action` | The worker *process* is dying, not the action | [Runbooks: OOM](/operate/runbooks#a-worker-is-oom-killed) |
+| `Failed to write data into filesystem store` | Disk full; there is no ENOSPC-specific error | [Runbooks: disk](/operate/runbooks#the-disk-fills-up) |
+| Actions re-queue forever, retries never exhaust | `ResourceExhausted` backpressure does not consume a retry | [Runbooks: backpressure](/operate/runbooks#the-queue-backpressures-and-never-recovers) |
+| `Operation timed out having no more clients listening` | The client gave up. Says nothing about *why* | [A misleading timeout](#the-timeout-message-that-tells-you-nothing) |
+| `Action timeout of N seconds is greater than the maximum allowed` | Client asked for more than `max_action_timeout_s` | [Timeouts](#timeouts) |
+| `Command '<cmd>' timed out after N seconds` | The action itself exceeded its timeout | [Timeouts](#timeouts) |
+| Worker logs cycle roughly twice a second | Reconnect storm, a flat 0.5 s retry | [Worker connection churn](#worker-connection-churn) |
+| Setting `max_job_retries: 0` did not stop retries | Zero is read as unset | [Zero means default](#zero-means-default) |
+| Everything slows down, nothing errors | FD semaphore exhaustion, or another blocking limit | [Limits that block](#limits-that-block-instead-of-erroring) |
+| Redis errors but the process stays up | By design: NativeLink serves errors during a Redis outage | [Runbooks: Redis](/operate/runbooks#redis-fails-over) |
+| `'cas_store': '<name>' does not exist` at startup | Store name typo in the config | [Startup failures](#startup-failures) |
+
+## Actions queue forever and workers sit idle [#actions-queue-forever-and-workers-sit-idle]
+
+The single most important asymmetry in NativeLink:
+
+<Callout type="warn" title="A bad property name errors instantly. A bad property value hangs forever.">
+
+  If your action names a platform property that is **not** in the scheduler's
+  `supported_platform_properties`, you get an immediate `InvalidArgument`:
+
+  ```text
+  Unknown platform property 'os_famly'
+  ```
+
+  If the property name is known but **no worker advertises a satisfying
+  value**, the scheduler's matching pass returns without doing anything.
+  The action stays `Queued`. Nothing escalates, nothing times out, nothing is
+  logged above `INFO`.
+
+</Callout>
+
+That second case is not a bug so much as a consequence of how matching works
+("no worker matches yet" is indistinguishable from "no worker matches ever"),
+but its operational effect is a build that hangs with no diagnostic.
+
+`max_action_executing_timeout_s` does not help, because it applies only to the
+`Executing` state and the action never reaches it. The only thing that ever
+ends the wait is `client_action_timeout_s` (default 60 s) noticing the client
+has stopped listening, which produces a message about
+[clients listening](#the-timeout-message-that-tells-you-nothing) and says
+nothing about properties.
+
+### Diagnose it [#diagnose-it]
+
+Raise the log level. Every useful diagnostic here is at `INFO`, and the shipped
+examples run at `warn`.
+
+```sh
+RUST_LOG=info
+```
+
+Then match what you see:
+
+| Log line | Meaning |
+| --- | --- |
+| `All workers are fully allocated` | No worker can accept work right now (all at `max_inflight_tasks`, paused or draining). Not a config problem; add workers. Checked first, before properties. |
+| `No workers in capability index match required properties` | Nothing you have can run this. A property value or a missing worker capability. |
+| `Worker <id> cannot accept work: is_paused=…, is_draining=…, inflight=…` | This specific worker matched on properties but is excluded, and the flags say why. |
+| `No workers matched!` | The pass finished with no candidate. |
+| `Property mismatch on worker property <p>. <worker> < <wanted>` | A `minimum` property the worker does not meet. |
+| `Property mismatch on worker property <p>. <worker> != <wanted>` | An `exact` property that differs. |
+| `Property missing on worker property <p>` | The worker never advertised it at all. |
+
+All of those lines, and the property mismatch lines below, are only written
+during the periodic full-logging pass, which is controlled by
+`worker_match_logging_interval_s`, default 10 seconds. `-1` or `0` disables
+it; anything invalid logs an error and disables it. The same pass emits
+`Oldest actions in state`, capped at five per stage, the intended "why is my
+queue stuck" tool.
+
+### Property types that constrain nothing [#property-types-that-constrain-nothing]
+
+| Type | Matching rule |
+| --- | --- |
+| `minimum` | worker value ≥ requested |
+| `exact` | equality |
+| `priority` | **always true; constrains nothing** |
+| `ignore` | **always true; constrains nothing** |
+| unknown | equality |
+
+A scheduler key configured as `priority` when it should be `exact` or `minimum`
+is the classic version of this bug, and it fails in the *opposite* direction:
+actions get scheduled onto workers that cannot run them. See
+[Scaling workers](/operate/scaling-workers) for the fleet-shaped version of
+this problem and [Platform properties](/remote-execution/platform-properties)
+for the full matching semantics.
+
+The converse hazard is documented in the config itself: if a worker fails to
+advertise a property the scheduler requires (`cpu_arch`, say), the scheduler
+will never send it any work at all.
+
+## Actions fail with a CAS miss [#actions-fail-with-a-cas-miss]
+
+### The string you will actually see [#the-string-you-will-actually-see]
+
+Bazel reports `FAILED_PRECONDITION`. Not `NOT_FOUND`. That translation happens
+on the worker, which checks for a `NotFound` whose message contains
+`not found in either fast or slow store` and converts it before returning:
+
+```text
+Missing CAS inputs during prepare_action, returning FAILED_PRECONDITION
+```
+
+The error your developers report will not contain the word "missing" and
+will not look like a cache problem. The underlying message is:
+
+```text
+Object <digest> not found in either fast or slow store. If using multiple
+workers, ensure all workers share the same CAS storage path.
+```
+
+<Callout type="info" title="That wording is load-bearing">
+  The worker matches on the substring `not found in either fast or slow store`.
+  It is a real coupling between two crates, not a cosmetic message; do not
+  "improve" it without changing both sides.
+</Callout>
+
+The same warning is pre-announced at worker startup, which is worth grepping
+for when you first bring a fleet up:
+
+```text
+Starting worker '<id>'. IMPORTANT: If running multiple workers, all workers
+must share the same CAS storage path to avoid 'Object not found' errors.
+```
+
+### The two causes [#the-two-causes]
+
+**Workers do not share CAS storage.** The fix is exactly what the message says:
+every worker's `fast_slow` slow tier must resolve to the same CAS the clients
+upload to. In Compose, `docker-compose-multi-worker.yml` does that by pointing
+each worker's slow store at the `cas-server` over gRPC (the `cas-data` volume
+it also mounts into the workers is not what shares the data); in Kubernetes,
+a shared backing store rather than per-pod local storage. See
+[Deploy with Docker Compose](/operate/deploy-docker-compose#the-multi-worker-variant).
+
+**Cache pressure evicted the blob.** A different string, and a much more
+helpful one:
+
+```text
+<digest> not found in filesystem store. This may indicate the file was evicted
+due to cache pressure. Consider increasing 'max_bytes' in your filesystem
+store's eviction_policy configuration.
+```
+
+Take that advice literally, and read
+[the disk runbook](/operate/runbooks#the-disk-fills-up) before you pick a
+number; the store can reach roughly twice `max_bytes` on disk.
+
+### A near-miss worth knowing [#a-near-miss-worth-knowing]
+
+```text
+<digest> is a zero-digest; FilesystemStore does not persist zero-byte files.
+```
+
+Zero-byte outputs are not stored. Callers materialise them directly. If you see
+this in a stack trace it is a caller bug, not a cache problem.
+
+## The timeout message that tells you nothing [#the-timeout-message-that-tells-you-nothing]
+
+```text
+Operation timed out having no more clients listening
+```
+
+This means the client stopped waiting, and `client_action_timeout_s` (default
+60 s) cleaned the operation up. It is a statement about the *client*, not about
+why the action never ran.
+
+It is the message operators find when chasing a hung build, and it is
+consistently misleading: the action was almost certainly stuck in
+[the silent queue](#actions-queue-forever-and-workers-sit-idle), and this
+string is just the tombstone.
+
+<Callout type="warn" title="Do not set client_action_timeout_s below the keepalive interval">
+  The scheduler logs an error at startup if you do, because a client that is
+  still actively waiting will be reaped between keepalives.
+</Callout>
+
+## Timeouts [#timeouts]
+
+| String | Code | Meaning |
+| --- | --- | --- |
+| `Action timeout of N seconds is greater than the maximum allowed timeout of M seconds` | `InvalidArgument` | The client asked for longer than `max_action_timeout_s` (default 20 minutes). **Rejected outright, not clamped.** |
+| `Command '<cmd>' timed out after N seconds` | `DeadlineExceeded` | The action ran past its timeout and was killed. |
+| `BatchUpdateBlobs per-blob timeout (30 s) elapsed for digest <d>` | `DeadlineExceeded` | Fixed 30-second per-blob budget. Not configurable. |
+| `BatchReadBlobs per-blob timeout (30 s) elapsed for digest <d>` | `DeadlineExceeded` | Same. |
+| `Timeout waiting for previous operation cleanup` | `DeadlineExceeded` | The previous action's cleanup exceeded `max_cleanup_wait_s` (default 30 s). |
+
+The timeout defaults that matter: `max_action_timeout_s` 20 minutes,
+`max_upload_timeout_s` 10 minutes, `max_cleanup_wait_s` 30 seconds,
+`worker_timeout_s` 5 seconds, `client_action_timeout_s` 60 seconds,
+`retain_completed_for_s` 60 seconds.
+
+`retain_completed_for_s` is not an execution timeout; it is how long a
+completed action stays findable. Set it too low and a client reconnecting after
+a network blip cannot find its own finished action.
+
+## Zero means default [#zero-means-default]
+
+Setting a field to `0` to disable it usually does the opposite.
+
+| Field | `0` means |
+| --- | --- |
+| `max_job_retries` | **3.** Not "no retries". |
+| `worker_timeout_s` | 5 seconds. |
+| `client_action_timeout_s` | 60 seconds. |
+| `retain_completed_for_s` | 60 seconds. |
+| `max_action_executing_timeout_s` | Genuinely disabled. The one exception. |
+| `max_inflight_tasks` | Genuinely infinite. |
+| `max_open_files` | The default of 24576. |
+| `eviction_policy.max_bytes` | Genuinely "never evict by size". |
+| `max_bytes_per_stream` | The default of 64 KiB. |
+| `max_concurrent_requests` | Genuinely unlimited. |
+| `max_concurrent_writes` | Genuinely unlimited. |
+
+No single rule applies here, which is exactly why the table exists. When in
+doubt, check [the config reference](/reference/nativelink-config) for the field
+rather than assuming.
+
+## Worker connection churn [#worker-connection-churn]
+
+A worker that logs at a steady ~2 Hz is reconnecting:
+
+```text
+Worker disconnected from scheduler
+```
+
+Reconnect is a **flat 0.5-second retry: no backoff, no jitter, no cap, and no
+configuration field**. That cadence is the signature, and a scheduler outage
+produces it from every worker simultaneously for the duration.
+
+Every reconnect calls `kill_all()`, destroying every in-flight action on that
+worker. If your builds are failing intermittently and your workers are
+churning, those are the same incident.
+
+| String | Meaning |
+| --- | --- |
+| `Worker registered with scheduler` | The handshake succeeded. |
+| `Worker disconnected from scheduler` | The stream broke; `kill_all()` is about to run. |
+| `Actions in transit did not reach zero before we disconnected from the scheduler` | The 10-second drain window expired with work still in flight. |
+| `Worker <id> timed out, removing from pool` | Scheduler side. A worker is only evicted when both its local timestamp and the worker registry agree it is dead. |
+| `Worker command failed, removing worker <id>` | The scheduler could not deliver work to it. |
+
+The worker sends a keepalive every half of its `worker_api_endpoint.timeout`
+(default 5 s, so every 2.5 s), and the scheduler evicts a worker it has not
+heard from for `worker_timeout_s` (default 5 s), checking once a second. The
+scheduler counts what it receives in `nativelink_worker_keepalives_total` and
+departures by reason in `nativelink_worker_disconnections_total`.
+
+## Limits that block instead of erroring [#limits-that-block-instead-of-erroring]
+
+If the symptom is "everything got slow and nothing errored", you are probably
+sitting on one of these:
+
+| Limit | Default | Behaviour |
+| --- | --- | --- |
+| Open file descriptors | 24576 | Blocks on a semaphore. **Never produces `EMFILE`.** |
+| `max_concurrent_requests` (gRPC) | unlimited | Queues rather than rejecting. |
+| `max_client_permits` (Redis) | 500 | Blocks. |
+| `max_concurrent_writes` (filesystem) | unlimited | Blocks when set. |
+
+The FD limit deserves special attention. NativeLink uses only **80% of the
+limit it actually achieved**, not 80% of what you configured. In a container
+with a hard `nofile` cap, the semaphore silently shrinks and the only evidence
+is a startup warning:
+
+```text
+The new open file limit (1024) is below the recommended value of 24576.
+Consider raising max_open_files.
+```
+
+Or, if the raise failed entirely:
+
+```text
+set_open_file_limit() failed to assign open file limit. Maybe system does not
+have ulimits, continuing anyway.
+```
+
+Every filesystem operation takes a permit: opens, creates, hard links, chmod,
+directory creation, directory reads, symlink reads. When permits run out,
+everything using the filesystem store queues.
+
+## Startup failures [#startup-failures]
+
+These all abort the process before it serves anything. All of them are config
+wiring, and all of them name the offending key.
+
+| String | Cause |
+| --- | --- |
+| `'cas_store': '<name>' does not exist` | The store name referenced by a service is not defined in `stores`. |
+| `'experimental_chunking.index_store' of instance '<i>' is required` | Chunking enabled without an index store. |
+| `'experimental_chunking.index_store': '<name>' does not exist` | Index store name typo. |
+| `'redis_store': '<name>' does not exist` | Scheduler backend points at an undefined store. |
+| `Could not downcast to redis store in RedisAwaitedActionDb::new` | The referenced store is not a standard-mode Redis store. |
+| `No addresses were specified in redis store configuration.` | Empty `addresses`. |
+| `Both connection_timeout_s and connection_timeout_ms were set, can only have one!` | Pick the `_ms` form; the `_s` form is deprecated. |
+| `upload_ac_results_strategy is set, but no ac_store is configured` | The worker will upload action results but has nowhere to put them. |
+| `Could not remove work_directory '<path>' in LocalWorker` | The worker purges its work directory at startup and could not. Two workers sharing one work directory is the usual cause. |
+
+Config parsing uses `deny_unknown_fields`, so a misspelled key is a startup
+error naming the key, not a silently ignored setting. That is a feature; trust
+the message.
+
+One string that looks like a startup failure and is not:
+`Could not parse the value of precondition_script: '<v>'`. The
+`experimental_precondition_script` value is split with `shlex` before every
+action, not at startup, so an unparseable value fails each action as it
+arrives and the worker stays up.
+
+## Retries [#retries]
+
+Retry exhaustion is **not** a distinct error. It is the last underlying error
+with a suffix appended:
+
+```text
+... On attempt 5
+```
+
+The code and message you see are the *cause*, and the suffix tells you it
+had been happening repeatedly.
+
+Non-retryable codes: `InvalidArgument`, `FailedPrecondition`, `OutOfRange`,
+`Unimplemented`, `NotFound`, `AlreadyExists`, `PermissionDenied`,
+`Unauthenticated`. Everything else retries, which is why a full disk, arriving
+as `Unknown` or `Internal`, burns the whole retry budget before failing.
+
+Two other retry strings: `Retry stream ended abruptly on attempt N`, and
+`Not retrying permanent error`.
+
+## Where else to look [#where-else-to-look]
+
+[Scaling workers](/operate/scaling-workers) has a "when it doesn't work"
+section covering the fleet-shaped versions of several problems above: queue
+depth high while workers idle, adding workers not helping, scale-in causing
+failed actions, two workers on one host behaving erratically. It complements
+this page rather than duplicating it.
+
+[Observability](/operate/observability#troubleshooting) covers the metrics
+pipeline itself: no metrics appearing, missing cache metrics, out-of-order
+samples. Note that those are problems with the *collector*, not with
+NativeLink.
+
+[Security hardening](/operate/security-hardening) covers what is deliberately
+absent rather than broken: there is no inbound authentication anywhere, and
+the committed certificates expired in 2024.
+
+<SourceLink file="nativelink-scheduler/src/simple_scheduler.rs" symbol="do_try_match" />
+<SourceLink file="nativelink-worker/src/local_worker.rs" symbol="is_cas_blob_missing" />
+<SourceLink file="nativelink-util/src/platform_properties.rs" symbol="is_satisfied_by" />
+
+## What's next [#whats-next]
+
+<NextStep href="/operate/runbooks" title="Runbooks">
+  Once you know which incident you are in, the procedure that ends it.
+</NextStep>
+
+<NextStep href="/reference/nativelink-config" title="Configuration reference" kind="aside">
+  Every field, every default, generated from the source.
+</NextStep>
+
+<NextStep href="/operate/tuning" title="Tuning" kind="aside">
+  The levers that make a healthy system faster.
+</NextStep>

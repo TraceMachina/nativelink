@@ -7,14 +7,19 @@ Every NativeLink crate compiles cleanly with plain Cargo. Use this
 workflow if you want a smaller dev shell, faster incremental builds
 during iteration, or just don't have Bazel installed.
 
-## Prerequisites
+## Prerequisites [#prerequisites]
 
-- A recent stable Rust toolchain. The exact version is pinned in
-  `rust-toolchain.toml`; `rustup` will pick it up automatically.
-- `protoc` 3+ on `$PATH` (for the gRPC proto generation step).
-- On Linux: `mold` is automatic if installed.
+- A recent stable Rust toolchain. No `rust-toolchain.toml` is checked in; the
+  minimum is `rust-version` in the root `Cargo.toml`, currently 1.93.1,
+  on edition 2024.
+- On Linux: `mold` is optional and has to be configured by hand; see
+  [faster incremental builds](#faster-incremental-builds).
 
-## First build
+You do **not** need `protoc`. The generated Rust for every proto is
+checked into `nativelink-proto/genproto/`, and `nativelink-proto`'s
+`[lib] path` points straight at it; there is no build script.
+
+## First build [#first-build]
 
 ```bash
 git clone https://github.com/TraceMachina/nativelink
@@ -25,14 +30,14 @@ cargo build --workspace
 First build is a few minutes (dependency compilation); subsequent
 incremental builds are typically a few seconds.
 
-## Common commands
+## Common commands [#common-commands]
 
 ```bash
 # Build everything.
 cargo build --workspace
 
-# Run all tests.
-cargo test --workspace
+# Run all tests. `smol` keeps target/ near 1GB instead of ~12GB.
+cargo test --all --profile=smol
 
 # Run a specific crate's tests.
 cargo test -p nativelink-store
@@ -40,14 +45,20 @@ cargo test -p nativelink-store
 # Run the server.
 cargo run -p nativelink -- /path/to/config.json5
 
-# Format.
-cargo fmt --all
-
-# Lint (CI runs this too).
+# Lint with the workspace lint set from the root Cargo.toml. The Cargo CI
+# lane builds and tests with RUSTFLAGS=-Dwarnings; clippy itself runs in CI
+# through the Bazel aspect, on the same lint set.
 cargo clippy --all-targets -- -D warnings
 ```
 
-## Faster incremental builds
+<Callout type="warn" title="Don't format with stable `cargo fmt`">
+  `.rustfmt.toml` uses `group_imports` and `imports_granularity`, both
+  nightly-only. Stable `cargo fmt` silently ignores them and produces
+  output CI rejects. Run `bazel run --config=rustfmt @rules_rust//:rustfmt`
+  instead.
+</Callout>
+
+## Faster incremental builds [#faster-incremental-builds]
 
 A few flags that help:
 
@@ -63,35 +74,33 @@ A few flags that help:
 - `CARGO_TARGET_DIR` set to a shared directory across checkouts to
   reuse incremental artifacts.
 
-- Pointing Cargo at a `sccache` backed by NativeLink:
+## Caveats [#caveats]
 
-  ```bash
-  export RUSTC_WRAPPER=sccache
-  export SCCACHE_BUCKET_URL=grpc://localhost:50051
-  ```
-
-## Caveats
-
-- Some Bazel-only crates (the LRE flake outputs, the
-  Bazel-generated proto bindings) don't have Cargo equivalents. If
-  you're touching those, you'll need Bazel.
-- The CI image runs Bazel — your Cargo build passing doesn't
-  guarantee CI passes. Run `bazel test //...` (or `nix develop`-
-  based equivalent) before submitting.
+- Three directories are excluded from the workspace and build on their
+  own: `nativelink-config/generate-stores-config`, `nativelink-test/fuzz`,
+  and `tools/generate-bazel-rc`. The LRE flake outputs are Nix, not Cargo.
+- Regenerating protos goes through Bazel
+  (`bazel run nativelink-proto:update_protos`), not Cargo.
+- CI runs Bazel, and `bazel test` attaches rustfmt and clippy aspects that
+  a Cargo run does not. A green `cargo test` does not guarantee a green CI.
+  Run `bazel test //...` before submitting.
 
 For the Bazel-based workflow, see
-[Develop with Bazel](/contribute/bazel).
+[Develop with Bazel](/contribute/bazel). For what the test suites contain,
+see [the testing guide](/contribute/testing-guide).
 
-## FAQ
+## FAQ [#faq]
 
 <Accordions type="multiple">
   <Accordion title="Do I need Bazel installed at all?" id="do-i-need-bazel-installed-at-all">
-    Not for most crates — the whole workspace builds with plain Cargo.
-    You need Bazel for the Bazel-only crates and for a pre-submit
-    `bazel test //...`, since that's what CI runs.
+    Not to build or test; the whole workspace builds with plain Cargo.
+    You need Bazel for a pre-submit `bazel test //...`, for regenerating
+    protos, and for formatting, since that's what CI runs.
   </Accordion>
-  <Accordion title="Why is protoc a prerequisite?" id="why-is-protoc-a-prerequisite">
-    The gRPC services are generated from protobuf definitions at build
-    time; without `protoc` 3+ on `$PATH`, those generation steps fail.
+  <Accordion title="Do I need protoc?" id="why-is-protoc-a-prerequisite">
+    No. The generated Rust is committed under `nativelink-proto/genproto/`
+    and there is no build script invoking `protoc`. If you change a `.proto`,
+    regenerate with `bazel run nativelink-proto:update_protos` and commit the
+    result. `//nativelink-proto:update_protos_test` is the CI gate for that.
   </Accordion>
 </Accordions>

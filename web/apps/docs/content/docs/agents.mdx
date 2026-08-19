@@ -1,0 +1,194 @@
+---
+title: For agents
+description: How an AI agent should read these docs end to end, where every entry point is, how to cite and verify a claim, and what the docs guarantee to a machine reader.
+---
+
+{/* archetype: explanation, see /web/apps/docs/templates/explanation.mdx */}
+
+**Who this is for:** an AI agent (Claude Code, Cursor, Copilot, a homegrown
+tool) that has been pointed at NativeLink, and the person pointing it.
+**What you'll have at the end:** the entry points, a procedure for reading
+the whole corpus in order, the conventions that make pages citable and
+verifiable, and a task index into the rest of the docs. **Time:** five
+minutes to read, one fetch to load everything.
+
+## Read this first if you are an agent [#read-this-first-if-you-are-an-agent]
+
+1. Fetch **[`/llms-full.txt`](/llms-full.txt)**. It is the entire documentation
+   corpus, every page body verbatim, in reading order, in one plain-text file
+   (under 1 MB). One fetch gives you everything a human would find by
+   clicking through the sidebar.
+2. If you only want the map, fetch **[`/llms.txt`](/llms.txt)** instead: one
+   line per page with its canonical URL and a one-sentence description, in
+   the same order.
+3. Each page in `llms-full.txt` starts with a line of the form
+   `# https://docs.nativelink.com/<path>`. That is the page's canonical URL.
+   Cite it, and cite headings with the explicit `#anchor` you see in the
+   source (`## Heading [#anchor]`), because those anchors never move.
+4. Three pages are generated from the source code and are linked rather than
+   inlined, because they are long and change on a different cadence. Fetch
+   them directly when you need them:
+   - [`/reference/nativelink-config`](/reference/nativelink-config): every
+     configuration field, its type and default, for the latest release;
+     older releases live at `/reference/nativelink-config/v1.x.y` and the
+     development branch at `/reference/nativelink-config/main`.
+   - [`/reference/metrics`](/reference/metrics): every OpenTelemetry
+     instrument, its attributes, and whether the binary actually emits it.
+   - [`/reference/changelog`](/reference/changelog): the release history.
+5. When a page states how the binary behaves, look for a source link: in the
+   page source it is `<SourceLink file="path/in/repo" symbol="name" />`, and
+   in rendered HTML an `<a data-source-link="path/in/repo" data-source-ref="vX.Y.Z">`.
+   It resolves to `https://github.com/TraceMachina/nativelink/blob/<ref>/<path>`.
+   Follow it to check the claim against the code at that tag before you rely
+   on it.
+6. The current release these docs describe is the `data-source-ref` value,
+   and the config reference and metrics reference both name the version and
+   commit they were generated from in a comment at the top of the page.
+
+Nothing here requires an account, an API key, or JavaScript: every URL above
+serves plain text or static HTML.
+
+## The three entry points [#the-three-entry-points]
+
+**`AGENTS.md` at the repo root** <SourceLink file="AGENTS.md" /> is for an
+agent working *on the code*. It maps every `nativelink-*` crate to what it
+owns, says where config, store, scheduler and worker logic actually live,
+gives the build and test commands, and carries a table of "you changed X, so
+this doc has to follow" pairs that are often missed.
+
+**[`/llms.txt`](/llms.txt)** is for an agent working *with the docs*. It
+follows the [llms.txt convention](https://llmstxt.org/): a link-first index of
+every published page with a one-line description, in reading order. It is
+generated from the navigation and page frontmatter by
+<SourceLink file="web/apps/docs/scripts/gen-llms.mjs" />, runs as part of
+`dev` and `build`, and is gitignored, so it cannot be edited into
+disagreement with the sidebar, because there is no committed copy to edit.
+
+**[`/llms-full.txt`](/llms-full.txt)** is the same corpus with bodies
+included, concatenated in the same order, for agents that would rather fetch
+once than crawl every page. Page bodies are reproduced verbatim, MDX
+components included, so nothing is lost in transcription.
+
+## How the corpus is ordered [#how-the-corpus-is-ordered]
+
+The sidebar, `llms.txt` and `llms-full.txt` all use the same order, defined
+once in the `meta.json` files under `content/docs/`:
+
+| Section | What it is | Read it when |
+| --- | --- | --- |
+| [Why NativeLink](/use-cases) | What a remote cache and remote execution do, and who benefits | Deciding whether to use it at all |
+| [Getting started](/getting-started) | A cache running, connected to a build, proven to be hitting | First contact |
+| [Remote execution](/remote-execution) | Workers running the actions the cache misses | After the cache works |
+| [Configuration](/configuration) | The config model: stores, servers, services, scheduler, workers | Writing a config rather than copying one |
+| [How-to guides](/how-to) | Task recipes: every storage backend, TLS, multiple workers, upgrades, migration | A specific task |
+| [Operate](/operate) | Production shape, deployment, observability, scaling, runbooks, troubleshooting | Running it for other people |
+| Concepts (`/explanations/...`) | How it is built: architecture, stores, scheduler, worker, correctness, LRE, history | Understanding a behaviour |
+| [Reference](/reference/nativelink-config) | Generated config and metrics references, CLI and environment, protocol, glossary, licence, changelog | Looking something up |
+| Contribute (`/contribute/...`) | Building, testing, the crate map, extending, releasing, working on these docs | Changing the code or the docs |
+
+Pages in the first six sections open with a `<Prerequisites>` block
+(`data-prerequisites` in HTML) stating what they assume you already have, and
+end with one primary `<NextStep>` (`data-next-step="next"`) naming the page
+that follows; detours are `data-next-step="aside"`. Concepts, Reference and
+Contribute carry no position: enter them from a search or a link.
+
+## Task index [#task-index]
+
+The shortest path from a question to the page that answers it.
+
+| If the task is | Read |
+| --- | --- |
+| Run NativeLink for the first time | [Quickstart](/getting-started/quickstart), then [Verify your cache](/getting-started/verify-your-cache) |
+| Point Bazel, Buck2, Siso, Chromium, Pants, BuildStream or CMake at it | [Connect your build](/getting-started/connect-your-build) |
+| Share one cache across a team | [Shared cache](/getting-started/shared-cache) |
+| Add workers and run actions remotely | [Remote execution](/remote-execution), [Your first remote action](/remote-execution/first-remote-action) |
+| Route actions to the right workers | [Platform properties](/remote-execution/platform-properties) |
+| Hermetic toolchains, containers, persistent workers | [Toolchains and hermeticity](/remote-execution/toolchains-and-hermeticity), [Containers and images](/remote-execution/containers-and-images), [Persistent workers](/remote-execution/persistent-workers) |
+| Understand or write a config file | [Configuration](/configuration), then the [generated reference](/reference/nativelink-config) |
+| Pick and configure a storage backend | [Storage backends](/how-to/stores) |
+| Compose stores (tiers, verification, dedup, compression, sharding) | [Compose stores](/how-to/stores/compose-stores), [Store model](/explanations/store-model) |
+| TLS, mTLS, identity headers | [TLS and auth](/how-to/tls-and-auth) |
+| Upgrade or migrate | [Upgrade versions](/how-to/upgrade-versions), [Migrate an existing cache](/how-to/migrate-an-existing-cache) |
+| Production shape, deployment, security | [Production configuration](/operate/production-config), [Docker Compose](/operate/deploy-docker-compose), [Bare metal](/operate/deploy-bare-metal), [Security hardening](/operate/security-hardening) |
+| Metrics, dashboards, alerts | [Observability](/operate/observability), [Metrics reference](/reference/metrics) |
+| Scale workers or the CAS | [Scaling workers](/operate/scaling-workers), [Scaling the CAS](/operate/scaling-cas), [Autoscaling reference](/operate/autoscaling-reference) |
+| Something is wrong | [Troubleshooting](/operate/troubleshooting), [Runbooks](/operate/runbooks) |
+| Every flag, environment variable and CLI argument | [CLI and environment](/reference/cli-and-env) |
+| Which RPCs and protocols are implemented | [Protocol and API](/reference/protocol-api) |
+| What is open source and what is licensed differently | [Open source and Enterprise](/reference/oss-and-enterprise) |
+| How the scheduler, worker and stores work internally | [Architecture](/explanations/architecture), [Scheduler internals](/explanations/scheduler-internals), [Worker execution](/explanations/worker-execution) |
+| Build, test or change the code | [Contribution guidelines](/contribute/guidelines), [Repository and crate map](/contribute/repo-crate-map), [Codebase internals](/contribute/codebase-internals), [How to extend](/contribute/how-to-extend) |
+| Change these docs | [Working on the documentation](/contribute/docs) |
+
+## What these docs guarantee to a machine reader [#what-these-docs-guarantee-to-a-machine-reader]
+
+Each of these is enforced by something in the repository, not by an author
+remembering. Where it is a script, the script is named.
+
+**One canonical page per concept.** If two pages would explain the same
+thing, one of them links the other. An agent that finds an answer has found
+*the* answer.
+
+**Stable anchors.** Every heading and every FAQ entry carries an explicit
+`[#anchor]` or `id`, so a citation to a specific claim keeps resolving after
+the prose around it is reworded.
+<SourceLink file="web/apps/docs/scripts/lint-anchors.mjs" />
+fails the check if one is missing, and its `--fix` writes the anchor Fumadocs
+would have derived from the heading text anyway, so pinning an anchor never
+moves a link that already worked.
+
+**Redirects on every moved URL.** This site's structure changed
+substantially; agents hold cached URLs longer than humans hold bookmarks, so
+old paths redirect rather than 404. They live in
+<SourceLink file="web/apps/docs/next.config.mjs" />. Follow redirects rather
+than treating a 301 as a failure.
+
+**Doc-to-source permalinks.** Behavioural claims carry a link to the code
+that implements them, pinned to a release tag rather than to `main`. A
+permalink that drifts is worse than no link, because the reader can't tell.
+The pinned ref is a single constant in
+<SourceLink file="web/apps/docs/lib/source-ref.ts" />.
+
+**Generated reference.** The configuration reference, the metrics reference
+and the changelog are generated from the source of truth in the repo rather
+than transcribed from it. An agent reading the docs and an agent reading the
+code get the same answer by construction. Config snippets in narrative pages
+are checked against that generated reference by
+<SourceLink file="web/apps/docs/scripts/lint-snippets.mjs" />, so a snippet
+cannot quietly reference a field that no longer exists.
+
+**Every internal link resolves, and every page on the path has a next step.**
+<SourceLink file="web/apps/docs/scripts/lint-links.mjs" /> and
+<SourceLink file="web/apps/docs/scripts/lint-navigation.mjs" /> run on every
+change, so a crawl never hits a dead internal link or a dead end.
+
+**Machine-detectable structure.** Verification blocks carry
+`data-verify-block`; prerequisite blocks carry `data-prerequisites`; next
+steps carry `data-next-step`; version badges carry `data-min-version`; source
+links carry `data-source-link` and `data-source-ref`. Ordering and
+provability are readable without parsing prose.
+
+## What is not guaranteed [#what-is-not-guaranteed]
+
+Being specific about the edges is more useful than a blanket claim.
+
+**Prose is not generated.** Everything outside the generated reference is
+written by a human and checked against the source at the pinned release, not
+by a script. A behavioural claim carrying a `<SourceLink>` has been checked
+against that file at the pinned tag; a claim without one has not been
+mechanically checked against anything.
+
+**The pinned ref lags releases.** `<SourceLink>` targets a release tag, so
+immediately after a release lands the links point at the previous one until
+the reference is regenerated. That is the deliberate trade: a stale-but-honest
+permalink over a `main` link that silently means something different next
+week.
+
+**Third-party tools are described from their own documentation.** Bazel,
+Buck2, Siso, Pants, BuildStream and recc flags are taken from those projects'
+docs at the time of writing; NativeLink's source cannot vouch for them.
+
+<NextStep href="/getting-started" title="Getting started">
+  If you're here to actually run NativeLink rather than to point something
+  else at it, Getting started is the start of the reading path.
+</NextStep>

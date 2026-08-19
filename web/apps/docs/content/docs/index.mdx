@@ -1,98 +1,190 @@
 ---
 title: Introduction
-description: NativeLink is a high-performance remote build cache and execution platform — open source, written in Rust, designed for build farms that can't blink.
+description: NativeLink is a remote build cache and execution service in one Rust binary. This is the documentation for running it yourself.
 ---
 
-NativeLink is a high-performance remote build cache and execution platform for
-build systems that speak the Remote Execution API — **Bazel, Buck2, Siso,
-Pants, Goma**, and **CMake via recc**. It's open source, written in Rust, and
-battle-tested on over a billion build requests a month.
+NativeLink is a **remote build cache** and a **remote execution** service in
+one program. Your build tool asks it "have you already built this?" and, when
+the answer is no, "can you build it for me over there?" Your source code
+doesn't change and your build files don't change: you point your build tool
+at a URL, and work that used to happen on your machine stops happening on your
+machine.
 
-This site is the source of truth for setting NativeLink up, configuring it,
-deploying it, and contributing to it. Content is currently being filled in —
-section landings are accurate, page bodies are coming.
+It's written in Rust and ships as a single binary that plays every role in the
+system: cache, scheduler, and worker are the same executable started with
+different configuration. It speaks the
+[Remote Execution API](https://github.com/bazelbuild/remote-apis), an open
+protocol rather than a NativeLink invention, which is why **Bazel, Buck2,
+Siso, Pants** and **BuildStream** connect to it without a plugin, and why
+plain CMake projects can via [recc](/getting-started/connect-your-build/cmake-recc).
+
+This site documents the open-source distribution: setting it up, configuring
+it, deploying it, operating it when other people depend on it, and
+contributing to it.
 
 <Callout type="info" title="Working with agents">
-  If you're integrating NativeLink with an AI coding agent (Claude Code,
-  Cursor, Copilot Workspace, Devin), start with [Getting Started → Setup](/getting-started/setup)
-  and then read [why hermeticity matters](/explanations/lre#faq).
+  If you're pointing a coding agent at NativeLink, at these docs or at the
+  codebase, [For agents](/agents) has the three entry points and what each
+  guarantees. If you're here because your *agents* are the ones waiting on
+  builds, start with [AI coding agents](/use-cases/ai-coding-agents).
 </Callout>
 
-## Pick a starting point
+## The reading path [#the-ladder]
 
-The docs are organised along the [Diátaxis](https://diataxis.fr/) framework —
-tutorials, how-to guides, explanations, and reference are kept apart so each
-serves its job well.
+The first four sections are ordered, and each one assumes the last. You can
+skip ahead, but the pages will tell you what they expected you to have.
 
-### I want to get something running
+| Section | What you have at the end |
+| --- | --- |
+| [Getting started](/getting-started) | A cache your build is talking to, and hits you can point at |
+| [Remote execution](/remote-execution) | Cache misses executing on the farm instead of on your laptop |
+| [Configuration](/configuration) | The ability to write a config from an empty file instead of copying one |
+| [How-to guides](/how-to) | The storage backend, transport and upgrade path you actually want, instead of the ones an example gave you |
 
-- [Setup](/getting-started/setup) — install and run a local cluster in
-  under 10 minutes.
-- [NativeLink on-prem](/getting-started/on-prem) — a single-server
-  deployment that survives a team-wide rollout.
-- [Other build systems](/getting-started/other-build-systems) — using NativeLink
-  without Bazel (Buck2, Siso, Pants, CMake).
+Two sections are ordered against the reading path without being part of it.
+[Why NativeLink](/use-cases) comes before Getting started: what a remote cache and
+remote execution actually do, and a short check for whether your build is one
+that benefits. It's worth ten minutes if you haven't decided yet.
+[Operate](/operate) comes after How-to guides, for when other people
+depend on your cluster and "it works on my machine" stops being the bar.
 
-### I want to configure or operate it
+Everything else sits outside the ordering: reference material you look things
+up in, explanations you read when you want to know why, and the contribution
+guides. Those are entered from a search or a link, at any point.
 
-- [Configuration introduction](/configuration/intro) — the JSON5 schema
-  in one page.
-- [Basic configurations](/configuration/basic) — common shapes for
-  single-node and small-cluster setups.
-- [Production configurations](/configuration/production) — multi-region
-  CAS, autoscaling workers, observability.
-- [Deployment examples](/deployment/on-prem-overview) — Kubernetes,
-  Chromium, metrics pipelines, persistent workers.
+## Start where you are [#start-where-you-are]
 
-### I want to understand how it works
+### I'm deciding whether this is for us [#im-deciding-whether-this-is-for-us]
 
-- [Architecture](/explanations/architecture) — scheduler, CAS, action
-  cache, workers — what each piece does.
-- [Local Remote Execution](/explanations/lre) — hermetic builds without
-  Docker.
-- [History](/explanations/history) — why NativeLink exists and what came
-  before.
+- [Why NativeLink](/use-cases): the mental model, and the 30-second test for
+  whether your build benefits.
+- [AI coding agents](/use-cases/ai-coding-agents): why an agent's build loop
+  makes cache hit rate a token-cost question.
+- [Silicon and large builds](/use-cases/silicon-and-large-builds): EDA flows,
+  large C++ and LLVM trees, ML graphs.
+- [Autonomous operation](/use-cases/autonomous-operation): what it takes to
+  run a farm nobody watches.
+- [Open source and Enterprise](/reference/oss-and-enterprise): what's licensed how, and
+  what the paid tiers are actually for.
 
-### I want to contribute
+### I want to get something running [#i-want-to-get-something-running]
 
-- [Contribution guidelines](/contribute/guidelines) — what we accept,
-  what we don't, and how reviews work.
-- [Develop with Bazel](/contribute/bazel), [Cargo](/contribute/cargo),
-  or [Nix](/contribute/nix).
+- [Quickstart](/getting-started/quickstart): a local cache in under ten
+  minutes.
+- [Connect your build tool](/getting-started/connect-your-build): Buck2,
+  Siso, Chromium, Pants, BuildStream, CMake.
+- [Shared cache](/getting-started/shared-cache): the single-server deployment
+  that survives a team-wide rollout.
+- [Your first remote action](/remote-execution/first-remote-action): once
+  caching works and you want the misses to move too.
 
-### I need a reference
+### I want to configure it [#i-want-to-configure-it]
 
-- [Configuration reference](/reference/nativelink-config) — every
-  configurable knob, autogenerated from the source.
-- [Glossary](/reference/glossary)
-- [Changelog](/reference/changelog)
+- [The config model](/configuration): how a NativeLink config is put
+  together, in one page.
+- [Stores](/configuration/stores): declaring, naming and composing the
+  storage a cache is built from.
+- [Scheduler and workers](/configuration/scheduler-and-workers): how work
+  gets matched to machines.
+- [Your first full config](/configuration/your-first-full-config): the
+  capstone: a complete cluster written from an empty file.
+- [How-to guides](/how-to): TLS and auth, multiple workers, cloud object
+  stores, upgrades, migrating an existing cache.
 
-## FAQ
+### I want to run it in production [#i-want-to-run-it-in-production]
 
-Every page on this site ends with an FAQ covering the questions we
-get most about that topic. The ones we get most overall:
+- [Production configuration](/operate/production-config): the three-process
+  split a real cluster runs in.
+- [Deploy with Docker Compose](/operate/deploy-docker-compose) or
+  [on bare metal](/operate/deploy-bare-metal): the two shapes, and where state
+  lives in each.
+- [Observability](/operate/observability): the OTLP to collector to
+  Prometheus to Grafana pipeline, and the one detail that silently breaks
+  every dashboard.
+- [Security hardening](/operate/security-hardening): what's unauthenticated
+  by default, and what to do about it.
+- [Runbooks](/operate/runbooks) and
+  [Troubleshooting](/operate/troubleshooting): the procedures that end an
+  incident, and the symptom index that tells you which one you're in.
+
+### I want to understand how it works [#i-want-to-understand-how-it-works]
+
+- [Architecture](/explanations/architecture): scheduler, CAS, action cache,
+  workers, and what each is responsible for.
+- [Architecture deep dive](/explanations/architecture-deep-dive): the same
+  system at the level of crates, startup order, and where an action's path
+  forks.
+- [The store model](/explanations/store-model),
+  [scheduler internals](/explanations/scheduler-internals) and
+  [worker execution](/explanations/worker-execution): one page per subsystem,
+  written against the source.
+- [Correctness and hermeticity](/explanations/correctness-hermeticity): what
+  a cache hit guarantees, what it doesn't, and which gaps are yours to close.
+- [Local Remote Execution](/explanations/lre): making your toolchain and your
+  workers' toolchain the same toolchain, so both share one cache.
+- [History](/explanations/history): why NativeLink exists and what it learned
+  from what came before.
+
+### I need to look something up [#i-need-to-look-something-up]
+
+- [Configuration reference](/reference/nativelink-config): every field,
+  generated from the source.
+- [Protocol and API surface](/reference/protocol-api): every gRPC service,
+  which RPCs are implemented, and what `Capabilities` advertises.
+- [Metrics](/reference/metrics): every instrument, its type, and whether it's
+  actually emitted.
+- [CLI and environment](/reference/cli-and-env): the complete flag and
+  variable surface.
+- [Glossary](/reference/glossary) and [Changelog](/reference/changelog).
+
+### I want to contribute [#i-want-to-contribute]
+
+- [Contribution guidelines](/contribute/guidelines): what gets accepted and
+  how review works.
+- Build from source with [Bazel](/contribute/bazel),
+  [Cargo](/contribute/cargo), or [Nix](/contribute/nix).
+- [Writing docs](/contribute/docs): the archetypes and conventions this site
+  is built on.
+
+## FAQ [#faq]
+
+Every page here ends with an FAQ for its own topic. These are the questions we
+get most overall.
 
 <Accordions type="multiple">
   <Accordion title="Is NativeLink free?" id="is-nativelink-free">
-    Yes — NativeLink is source-available and free for permitted
-    self-hosted use. Most of the monorepo is licensed under
-    `FSL-1.1-Apache-2.0`; a few modules (metrics, remote persistent
-    workers) are under the Business Source License, and a paid
-    [Enterprise](https://nativelink.com/pricing) tier exists if
-    you'd rather not run it yourself. The licensing details are in
-    [NativeLink on-prem](/getting-started/on-prem#faq).
+    For permitted use, yes. Most of the repository is `FSL-1.1-Apache-2.0`,
+    which allows internal use, modification, and redistribution for
+    non-competing purposes, and converts to Apache 2.0 two years after each
+    version ships. Two modules, metrics and persistent workers, carry a
+    Business Source License instead, and using those in shared, production or
+    commercial settings needs a separate agreement. Nothing in the binary
+    enforces any of that, which is exactly why
+    [Open source and Enterprise](/reference/oss-and-enterprise) exists.
   </Accordion>
   <Accordion title="Which build tools work with NativeLink?" id="which-build-tools-work-with-nativelink">
-    Any client that speaks the Remote Execution API: Bazel, Buck2, Siso,
-    Pants, BuildStream, Goma, and plain CMake via
-    [recc](/getting-started/other-build-systems/cmake-recc) — with no
-    build-file rewrites. See
-    [Other build systems](/getting-started/other-build-systems).
+    Any client that speaks the Remote Execution API. The ones with a page here
+    are [Bazel](/getting-started/quickstart),
+    [Buck2](/getting-started/connect-your-build/buck2),
+    [Siso](/getting-started/connect-your-build/siso),
+    [Chromium's build](/getting-started/connect-your-build/chromium),
+    [Pants](/getting-started/connect-your-build/pants),
+    [BuildStream](/getting-started/connect-your-build/buildstream), and
+    [CMake via recc](/getting-started/connect-your-build/cmake-recc). None of
+    them needs build-file rewrites.
   </Accordion>
   <Accordion title="What platforms does the server run on?" id="what-platforms-does-the-server-run-on">
     Linux and Windows on x86_64 and ARM64 via the multi-arch Docker image
-    (`ghcr.io/tracemachina/nativelink`, v1.6.0+), and macOS (Apple
-    Silicon and Intel) via the Docker image or a from-source Nix build.
-    See [Setup](/getting-started/setup).
+    (`ghcr.io/tracemachina/nativelink`, v1.6.0+), and macOS on Apple Silicon
+    and Intel via the Docker image or a from-source Nix build. See
+    [Quickstart](/getting-started/quickstart).
+  </Accordion>
+  <Accordion title="Do I need remote execution to get value from this?" id="do-i-need-remote-execution-to-get-value-from-this">
+    No, and most teams shouldn't start there. A shared cache is the smaller
+    change and usually the larger win: it needs no toolchain work, no
+    hermeticity audit, and no worker fleet. Remote execution is the second
+    section for a reason: it's what you add once your cache is hitting and the
+    misses are what's slow. [Why NativeLink](/use-cases) works through which of
+    the two your build actually needs.
   </Accordion>
 </Accordions>

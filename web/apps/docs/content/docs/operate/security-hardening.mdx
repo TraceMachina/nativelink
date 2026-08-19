@@ -1,0 +1,386 @@
+---
+title: Security hardening
+description: Open-source NativeLink has no inbound authentication on any service. What that means for your network, which ports must never be routable, how to configure mTLS, and why the worker sandbox is not a security boundary.
+---
+
+{/* archetype: how-to (deployment), see /web/apps/docs/templates/how-to.mdx */}
+
+**Who this is for:** you are about to put NativeLink somewhere more than one
+person can reach it. **What you'll have at the end:** a network layout where
+the dangerous ports are unreachable, mTLS on the ports that must be reachable,
+and an accurate picture of the trust you are extending to anyone who can submit
+an action. **Time:** 45 minutes, plus however long your certificate authority
+takes.
+
+<Prerequisites>
+  A deployment reachable by something other than your laptop.
+</Prerequisites>
+
+## Start here: there is no authentication [#start-here-there-is-no-authentication]
+
+Open-source NativeLink authenticates no inbound request, on any service, in any
+deployment. Not the CAS. Not the Action Cache. Not the Execution service. Not
+the worker API. Not the admin endpoint. No bearer-token check, no API
+key, no mTLS-identity-to-permission mapping; the code that would do it does
+not exist in the tree.
+
+This is not a gap you close in the configuration file. The one server option
+that looks like it might, `experimental_identity_header` with `required: true`,
+only rejects requests that arrive without an OpenTelemetry `Baggage:
+enduser.id=...` header; the value is a telemetry label and is never checked
+against anything. **Your network is the authorization layer.** Everything below
+follows from that one fact.
+
+<SourceLink file="nativelink-util/src/telemetry.rs" symbol="OtlpLayer" />
+
+<Mermaid>
+{`flowchart TD
+    subgraph PUB["Reachable by developers and CI"]
+      CAS["CAS / AC / ByteStream / Capabilities<br/>:50051 plain · :50071 TLS"]
+      SCH["Execution frontend<br/>:50052"]
+    end
+
+    subgraph PRIV["Must never be routable from outside"]
+      WAPI["worker API<br/>:50061"]
+      ADM["admin REST<br/>/admin/*"]
+      HLTH["health<br/>/status"]
+    end
+
+    subgraph W["Worker hosts: same blast radius as an action"]
+      WK["nativelink worker"]
+    end
+
+    DEV["developer / CI"] -->|"mTLS"| CAS
+    DEV -->|"mTLS"| SCH
+    WK -->|"registers, no authn"| WAPI
+    WK -->|"reads and writes blobs"| CAS
+    ADM -.->|"drains workers, no authn"| WAPI`}
+</Mermaid>
+
+## The port inventory [#the-port-inventory]
+
+Every listener NativeLink opens, what it serves, and who may reach it. Ports
+are the ones the shipped examples use; nothing in the binary reserves them;
+[Production configuration](/operate/production-config) covers how the three
+processes divide these listeners between them.
+
+| Port | Services on it | Who should reach it |
+| --- | --- | --- |
+| `50051` | CAS, Action Cache, ByteStream, Capabilities | Developers and CI. Everything on it is a cache read or write. |
+| `50052` | Execution, Capabilities, AC frontend | Developers and CI. Submitting an action means running code on a worker. |
+| `50061` | **worker API**, `admin`, `health` | Workers and your operators. **Never routable from a developer network.** |
+| `50071` | The TLS variant of `50051` in the shipped examples | Developers and CI. |
+
+The configuration crate says this itself, in the doc comment on the field:
+
+> This is the service used for workers to connect and communicate through.
+> NOTE: This service should be served on a different, non-public port. In other
+> words, `worker_api` configuration should not have any other services that are
+> served on the same port. Doing so is a security risk, as workers have a
+> different permission set than a client that makes the remote execution/cache
+> requests.
+
+<SourceLink file="nativelink-config/src/cas_server.rs" symbol="ServicesConfig::worker_api" />
+
+## The worker API has no authentication [#the-worker-api-has-no-authentication]
+
+Port 50061 is the one that turns a cache into a compromise. A process that can
+open a gRPC connection to it can call `ConnectWorker`, be added to the
+scheduler's pool, and start receiving actions, including the compiler
+invocations, the secrets in your action environments, and the outputs that get
+written back into the CAS under digests your developers will later trust.
+
+No handshake exists beyond the protocol's own. The scheduler does not check
+who is connecting, because there is nothing to check with.
+
+Three consequences, in order of how often they bite:
+
+An attacker who can reach 50061 can **register a malicious worker** and be
+handed real actions. Whatever those actions can see, they can see.
+
+An attacker who can reach 50061 can **poison the cache**, because a worker
+uploads action results and the CAS accepts them. A poisoned result for a
+widely-cached action propagates to every developer who gets a cache hit on it.
+
+An attacker who can reach 50061 can **denial-of-service the scheduler** by
+registering and disconnecting, since each disconnect requeues that worker's
+in-flight actions and, in this tree, consumes one of their retries.
+
+What to do:
+
+Bind it to an address only workers can reach. The single-host Compose file gets
+this right (the scheduler's 50061 is not published to the host at all; workers
+reach it over the Compose network) and
+[the multi-worker variant](/operate/deploy-docker-compose#the-multi-worker-variant)
+does not; it publishes `50061:50061` on all interfaces. Fix that before running
+it anywhere routable.
+
+On Kubernetes, keep 50061 off any `GRPCRoute` or `Ingress`, and add a
+`NetworkPolicy` that admits only the worker pods, since nothing else stops a
+pod in another namespace from dialling the Service directly.
+
+On [bare metal](/operate/deploy-bare-metal), bind it to the private interface or
+firewall it. It should never appear in a load balancer.
+
+## The admin endpoint has no authentication [#the-admin-endpoint-has-no-authentication]
+
+The admin REST API registers under `/admin` by default. Every shipped example
+that enables it puts it on the worker API listener; one
+(`nativelink-config/examples/worker_with_redis_scheduler.json5`) also enables it
+on the public listener, which is the thing not to copy. Its only route is:
+
+```text
+POST /admin/scheduler/{scheduler_name}/set_drain_worker/{worker_id}/{is_draining}
+```
+
+where the first segment is the scheduler's `name` from the config (the route
+parameter is called `instance_name` in the source, but it is looked up against
+scheduler names). Anyone who can issue that request can drain every worker in
+your fleet, one `worker_id` at a time, and your builds stop. No credential protects it. It
+is also the endpoint you will legitimately want during an incident (see
+[Runbooks](/operate/runbooks#a-worker-is-oom-killed)), so the answer is to make
+it reachable from your operator network and nowhere else, not to disable it.
+
+<SourceLink file="src/bin/nativelink.rs" symbol="set_drain_worker" />
+
+The `health` service is on the same footing: path `/status` by default, five
+second timeout, no authentication. It leaks less, but it is another reason the
+50061 listener belongs on a private network rather than behind an
+authentication proxy you have not written.
+
+<Callout type="warn" title="Do not move admin or health onto the public listener">
+  It is tempting to put `/status` on 50051 so a load balancer can probe it. That
+  moves the admin API there too if they share a `services` block, and it means
+  the health path is the same listener your developers reach. Configure a
+  separate listener if a probe needs a reachable endpoint, and put nothing else
+  on it.
+</Callout>
+
+## The committed certificates are not usable [#the-committed-certificates-are-not-usable]
+
+Two directories in the repository contain a certificate and a key:
+
+- `deployment-examples/docker-compose/example-do-not-use-in-prod-{rootca.crt,key.pem}`
+- `kubernetes/resources/insecure-certs/example-do-not-use-in-prod-{rootca.crt,key.pem}`
+
+They are **the same file**, byte for byte. And they are unusable for three
+independent reasons:
+
+| Property | Value |
+| --- | --- |
+| Subject and issuer | `CN = localhost`, self-signed |
+| Valid from | October 22, 2023 |
+| Valid until | **October 21, 2024** |
+| Private key | Committed to a public repository |
+
+The name is not a warning about best practice: the certificate expired, and
+its private key is public. Every client that talks to a listener using it must
+pass `--insecure` or equivalent, which is what the repository's own TLS
+integration test does. That is the only thing these files are for.
+
+No certificate-generation script exists anywhere in the tree. You supply real
+material yourself, from whatever your organisation already uses: an internal CA,
+cert-manager in a cluster, or a public CA if the endpoint is genuinely public.
+[TLS and auth](/how-to/tls-and-auth) walks through what the client side needs
+once you have it.
+
+## Configure TLS [#configure-tls]
+
+TLS is per-listener. Each server in the `servers` array carries its own
+optional `tls` block. Every field below is documented in
+[the configuration reference](/reference/nativelink-config):
+
+```json5
+{
+  servers: [
+    {
+      name: "public",
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50071",
+          tls: {
+            cert_file: "${NL_TLS_CERT:-/etc/nativelink/tls/tls.crt}",
+            key_file: "${NL_TLS_KEY:-/etc/nativelink/tls/tls.key}",
+            client_ca_file: "/etc/nativelink/tls/ca.crt",
+            client_crl_file: "/etc/nativelink/tls/ca.crl",
+          },
+        },
+      },
+      services: {
+        // cas, ac, bytestream, capabilities
+      },
+    },
+  ],
+}
+```
+
+<SourceLink file="nativelink-config/src/cas_server.rs" symbol="TlsConfig" />
+
+| Field | Effect |
+| --- | --- |
+| `cert_file` | Server certificate. Required when `tls` is present. |
+| `key_file` | Private key. Required when `tls` is present. |
+| `client_ca_file` | **Turns on mTLS.** Clients must present a certificate chaining to this CA. Absent means any client is accepted. |
+| `client_crl_file` | Revocation list checked against presented client certificates. |
+
+All four paths go through shellexpand, so `${VAR}` and `${VAR:-default}` work,
+which is how one configuration file serves several environments. Expansion
+happens once, at parse time; rotating a certificate on disk needs a restart.
+
+<Callout type="info" title="client_ca_file is the closest thing to authentication you get">
+
+  mTLS proves that a client holds a certificate your CA issued. It does not map
+  that identity to a permission; every authenticated client can do everything.
+  No read-only role, no per-instance-name restriction, and no way exists to
+  let CI write to the cache while developers only read.
+
+  If you need that distinction, it lives in front of NativeLink: separate
+  listeners, separate CAs, and a proxy or network policy that decides which
+  clients reach which listener.
+
+</Callout>
+
+### Outbound TLS [#outbound-tls]
+
+Outbound gRPC connections (a `grpc` store's `endpoints`, and the worker's
+`worker_api_endpoint`) configure their client side separately with a
+`tls_config` block on the endpoint. Object-store backends do not use it; they
+carry their own settings (for example `root_certificates` on the `ontap`
+provider).
+
+```json5
+{
+  name: "GRPC_CAS_STORE",
+  grpc: {
+    instance_name: "",
+    store_type: "cas",
+    endpoints: [
+      {
+        address: "grpcs://cas.internal:50071",
+        tls_config: {
+          ca_file: "/etc/nativelink/tls/upstream-ca.crt",
+          cert_file: "/etc/nativelink/tls/client.crt",
+          key_file: "/etc/nativelink/tls/client.key",
+          use_native_roots: false,
+        },
+      },
+    ],
+  },
+}
+```
+
+<SourceLink file="nativelink-config/src/stores.rs" symbol="ClientTlsConfig" />
+
+`use_native_roots: true` trusts the host's system trust store instead of a
+named CA. Convenient against a public endpoint, wrong against an internal one:
+it means any publicly-trusted certificate for that hostname is accepted.
+
+## The sandbox is not a security boundary [#the-sandbox-is-not-a-security-boundary]
+
+Workers can be configured with `use_namespaces: true` and
+`use_mount_namespace: true`. Both are real, and neither makes an action safe to
+run on your behalf.
+
+What the worker actually does before executing an action:
+
+```text
+unshare(CLONE_NEWPID | CLONE_NEWUSER | CLONE_NEWIPC | CLONE_NEWUTS)
+write /proc/self/setgroups  "deny"
+write /proc/self/uid_map    "<uid> <uid> 1"
+write /proc/self/gid_map    "<gid> <gid> 1"
+```
+
+<SourceLink file="nativelink-worker/src/namespace_utils.rs" symbol="unshare" />
+
+Read the uid map carefully. It is an **identity** map: uid *N* inside the
+namespace is uid *N* outside it. The action runs as the worker's own user, with
+the worker's own privileges on the host filesystem. This is not a
+uid-remapping sandbox; it is a process-reaping and hermeticity mechanism. PID
+namespacing means orphaned children die with the action instead of leaking;
+IPC and UTS namespacing means actions cannot see each other's semaphores or
+hostname (the hostname is set to `nativelink`). With `use_mount_namespace`
+the flag list also gains `CLONE_NEWNS`, and the worker's own root action
+directory is masked so one action cannot see another's tree; the rest of the
+host filesystem stays visible.
+
+Note what is absent from that flag list: **`CLONE_NEWNET`**. No network
+namespace is created. An action has the worker's full network access, including to port
+50061 on your scheduler, and to anything else on the worker's network.
+
+An action can, by design:
+
+- Read and write every file the worker's user can, outside its work directory
+- Open a connection to the worker API and register as a worker
+- Reach any internal service the worker host can reach
+- Consume the whole host's memory and CPU, since there is no per-action limit
+  of any kind in the configuration; the only bound is
+  [`max_inflight_tasks` and the container's own limits](/operate/runbooks#a-worker-is-oom-killed)
+
+The practical stance: **treat the right to submit an action as equivalent to
+shell access on a worker host.** Then the controls follow: workers on their own
+network segment with egress rules, no ambient cloud credentials on worker
+instance profiles, no shared secrets in the worker's environment, and a worker
+host you are willing to rebuild.
+
+Containerising the worker helps only as far as your container runtime is a
+boundary. The shipped Compose executor runs `privileged: true` precisely so
+`unshare` works, which removes most of what the container was giving you.
+
+## What to do, in order [#what-to-do-in-order]
+
+| Step | Why |
+| --- | --- |
+| Put 50061 on a network only workers and operators reach | Everything else on this page is a smaller problem than this one |
+| Replace the committed certificates | They expired in 2024 and the key is public |
+| Set `client_ca_file` on every reachable listener | mTLS is the only client identity NativeLink can express |
+| Give workers their own network segment with egress rules | An action has the worker's network |
+| Remove ambient credentials from worker hosts | An action can read them |
+| Put no secrets in `environment_variables` on the worker entrypoint | Every action sees them |
+| Decide you can rebuild a worker host at any time | Assume one will need it |
+
+<VerifyBlock>
+
+  From a developer workstation, `nc -vz <scheduler-host> 50061` fails to
+  connect. If it succeeds, stop and fix the network before anything else.
+
+  `curl -s -o /dev/null -w '%{http_code}' -X POST "http://<scheduler-host>:50061/admin/scheduler/MAIN_SCHEDULER/set_drain_worker/x/0"`
+  from outside your operator network fails to connect (a `500` means it
+  reached the admin API and only failed to find worker `x`).
+
+  `openssl s_client -connect <cas-host>:50071 -showcerts` presents your
+  certificate, not `CN = localhost`, and reports a `notAfter` in the future.
+
+  A client with no certificate is rejected by that listener once `client_ca_file`
+  is set. If it still connects, the listener is not the one you configured.
+
+  `grep -r example-do-not-use-in-prod` across your deployed configuration
+  returns nothing.
+
+</VerifyBlock>
+
+## Troubleshooting [#troubleshooting]
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| Clients fail with certificate-expired errors | You are still serving the committed example certificate | Supply real material; it expired October 21, 2024 |
+| TLS handshake fails only for some clients | `client_ca_file` is set and those clients have no certificate | Issue them one, or move them to a listener without mTLS |
+| Workers cannot register after locking down the network | 50061 is now unreachable from worker hosts too | Admit worker sources explicitly rather than blocking the port outright |
+| A certificate rotated on disk but the process serves the old one | Expansion and file reads happen at parse time | Restart the process |
+| An action reached an internal service it should not have | No network namespace | Segment the worker network; this is not fixable in configuration |
+| Actions fail with permission errors after adding `NoNewPrivileges` | It blocks the `unshare` the worker performs | See [bare metal](/operate/deploy-bare-metal), which omits it deliberately |
+| The health probe works from the internet | `health` shares a listener with something public | Give it a dedicated listener |
+| Something else is broken and it is not on this list | Not everything is a security problem | [Troubleshooting](/operate/troubleshooting) indexes the rest |
+
+## What's next [#whats-next]
+
+<NextStep href="/how-to/tls-and-auth" title="TLS end to end">
+  Certificates on both sides, including what Bazel needs on the client.
+</NextStep>
+
+<NextStep href="/operate/runbooks" title="Runbooks" kind="aside">
+  What to do when one of these goes wrong at three in the morning.
+</NextStep>
+
+<NextStep href="/operate/production-config" title="The rest of the production shape" kind="aside">
+  Three processes, their stores, and the pre-launch checklist.
+</NextStep>
