@@ -429,6 +429,91 @@ impl DropCloserReadHalf {
     }
 }
 
+/// A `std::io::Read` adapter over a [`DropCloserReadHalf`] that blocks the
+/// current (blocking) thread while waiting for the next chunk. Only safe to use
+/// from within `spawn_blocking!`.
+#[derive(Debug)]
+pub struct BufChannelReader {
+    rx: DropCloserReadHalf,
+    chunk: Bytes,
+    chunk_offset: usize,
+}
+
+impl BufChannelReader {
+    #[must_use]
+    pub const fn new(rx: DropCloserReadHalf) -> Self {
+        Self {
+            rx,
+            chunk: Bytes::new(),
+            chunk_offset: 0,
+        }
+    }
+
+    fn refill_chunk(&mut self) -> std::io::Result<bool> {
+        while self.chunk_offset == self.chunk.len() {
+            self.chunk = self.rx.blocking_recv().map_err(Error::to_std_err)?;
+            self.chunk_offset = 0;
+            if self.chunk.is_empty() {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+}
+
+impl std::io::Read for BufChannelReader {
+    fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+        if output.is_empty() {
+            return Ok(0);
+        }
+        if !self.refill_chunk()? {
+            return Ok(0);
+        }
+        let chunk_remaining = &self.chunk[self.chunk_offset..];
+        let bytes_to_copy = output.len().min(chunk_remaining.len());
+        output[..bytes_to_copy].copy_from_slice(&chunk_remaining[..bytes_to_copy]);
+        self.chunk_offset += bytes_to_copy;
+        Ok(bytes_to_copy)
+    }
+}
+
+/// A `std::io::Write` adapter over a [`DropCloserWriteHalf`] that blocks the
+/// current (blocking) thread while forwarding chunks. Only safe to use from
+/// within `spawn_blocking!`. EOF is intentionally NOT sent on drop; the caller
+/// must call [`BufChannelWriter::send_eof`] explicitly once the write is
+/// validated so a failed write never commits downstream.
+#[derive(Debug)]
+pub struct BufChannelWriter {
+    tx: DropCloserWriteHalf,
+}
+
+impl BufChannelWriter {
+    #[must_use]
+    pub const fn new(tx: DropCloserWriteHalf) -> Self {
+        Self { tx }
+    }
+
+    pub fn send_eof(&mut self) -> Result<(), Error> {
+        self.tx.send_eof()
+    }
+}
+
+impl std::io::Write for BufChannelWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        self.tx
+            .blocking_send(Bytes::copy_from_slice(buf))
+            .map_err(Error::to_std_err)?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 impl Stream for DropCloserReadHalf {
     type Item = Result<Bytes, std::io::Error>;
 

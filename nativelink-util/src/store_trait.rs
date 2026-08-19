@@ -353,6 +353,63 @@ impl Display for StoreKey<'_> {
     }
 }
 
+/// A wire representation understood by a [`WireCompressionStore`].
+///
+/// This is intentionally separate from the REAPI protobuf enum: stores own
+/// their physical representation, while protocol adapters translate their
+/// negotiated compressor to this util-level capability.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum WireCompressor {
+    /// A standard zstd frame.
+    Zstd,
+}
+
+/// Optional immediate-store capability for serving and accepting a compressed
+/// wire representation without a decode/re-encode round trip.
+///
+/// A `StoreDriver` exposes this capability only when it is itself the store
+/// that owns the physical representation. Wrappers must not forward it: their
+/// own transformation may make the wrapped bytes unsuitable for wire
+/// passthrough.
+#[async_trait]
+pub trait WireCompressionStore: Send + Sync + 'static {
+    /// Stores a client-supplied compressed stream after validating it against
+    /// the declared digest. Returns the number of compressed wire bytes stored.
+    async fn update_compressed(
+        self: Arc<Self>,
+        digest: DigestInfo,
+        digest_function: DigestHasherFunc,
+        compressor: WireCompressor,
+        reader: DropCloserReadHalf,
+    ) -> Result<u64, Error>;
+
+    /// Streams the stored compressed representation for a blob.
+    async fn get_compressed(
+        self: Arc<Self>,
+        digest: DigestInfo,
+        compressor: WireCompressor,
+        writer: DropCloserWriteHalf,
+    ) -> Result<(), Error>;
+
+    /// Stores a complete client-supplied compressed blob after validation.
+    async fn update_compressed_oneshot(
+        self: Arc<Self>,
+        digest: DigestInfo,
+        digest_function: DigestHasherFunc,
+        compressor: WireCompressor,
+        data: Bytes,
+    ) -> Result<(), Error>;
+
+    /// Returns either a stored compressed representation accepted by the
+    /// client, or the decoded identity representation. The optional compressor
+    /// describes `data`; `None` means identity.
+    async fn get_for_batch(
+        self: Arc<Self>,
+        digest: DigestInfo,
+        acceptable_compressors: &[WireCompressor],
+    ) -> Result<(Bytes, Option<WireCompressor>), Error>;
+}
+
 #[derive(Clone, MetricsComponent)]
 #[repr(transparent)]
 pub struct Store {
@@ -392,6 +449,16 @@ impl Store {
     #[inline]
     pub fn downcast_ref<U: StoreDriver>(&self, maybe_digest: Option<StoreKey<'_>>) -> Option<&U> {
         self.inner.inner_store(maybe_digest).as_any().downcast_ref()
+    }
+
+    /// Returns the wire-compression capability of the immediate store driver.
+    ///
+    /// This deliberately does not follow [`Self::inner_store`]. A wrapper
+    /// outside a representation-changing store must disable passthrough unless
+    /// it explicitly exposes its own valid wire representation.
+    #[inline]
+    pub fn wire_compression_store(&self) -> Option<Arc<dyn WireCompressionStore>> {
+        self.inner.clone().wire_compression_store()
     }
 
     /// Register health checks used to monitor the store.
@@ -623,6 +690,12 @@ pub trait StoreDriver:
     // Do "all the stores are setup" init e.g. if we need access to the store manager
     // for ref stores
     async fn post_init(self: Arc<Self>) -> Result<(), Error>;
+
+    /// Returns an optional capability for the driver's immediate compressed
+    /// wire representation. The default intentionally disables passthrough.
+    fn wire_compression_store(self: Arc<Self>) -> Option<Arc<dyn WireCompressionStore>> {
+        None
+    }
 
     /// See: [`StoreLike::has`] for details.
     #[inline]

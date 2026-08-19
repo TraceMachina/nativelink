@@ -59,13 +59,16 @@ use tokio::time::sleep;
 use tonic::{Request, Response, Status, Streaming};
 use tracing::{Instrument, Level, debug, error, error_span, info, instrument, trace, warn};
 
-use crate::wire_compression::RemoteCacheCompressionInstances;
+use crate::wire_compression::{RemoteCacheCompressionInstances, wire_compressor_capability};
 
 /// If this value changes update the documentation in the config definition.
 const DEFAULT_PERSIST_STREAM_ON_DISCONNECT_TIMEOUT: Duration = Duration::from_mins(1);
 
 /// If this value changes update the documentation in the config definition.
 const DEFAULT_MAX_BYTES_PER_STREAM: usize = 64 * 1024;
+
+/// If this value changes update the documentation in the config definition.
+const DEFAULT_COMPRESSED_UPLOAD_IDLE_TIMEOUT: Duration = Duration::from_mins(1);
 
 /// Metrics for `ByteStream` server operations.
 /// Tracks upload/download activity, throughput, and latency.
@@ -254,6 +257,10 @@ pub struct InstanceInfo {
     active_uploads: Arc<Mutex<HashMap<UuidKey, BytesWrittenAndIdleStream>>>,
     /// How long to keep idle streams before timing them out.
     idle_stream_timeout: Duration,
+    /// How long to wait for the next `WriteRequest` of a compressed upload.
+    /// Distinct from `idle_stream_timeout`, which governs how long a
+    /// disconnected upload stays resumable.
+    compressed_upload_idle_timeout: Duration,
     metrics: Arc<ByteStreamMetrics>,
     /// Handle to the global sweeper task. Kept alive for the lifetime of the instance.
     _sweeper_handle: Arc<JoinHandleDropGuard<()>>,
@@ -268,6 +275,10 @@ impl Debug for InstanceInfo {
             .field("max_bytes_per_stream", &self.max_bytes_per_stream)
             .field("active_uploads", &self.active_uploads)
             .field("idle_stream_timeout", &self.idle_stream_timeout)
+            .field(
+                "compressed_upload_idle_timeout",
+                &self.compressed_upload_idle_timeout,
+            )
             .field("metrics", &self.metrics)
             .field(
                 "remote_cache_compression_enabled",
@@ -337,6 +348,34 @@ impl InstanceInfo {
     }
 }
 
+/// Returns the first client-attributable error among `results`: a bad request or
+/// an expired deadline. Those are root causes worth reporting verbatim, whereas
+/// the other halves of a joined pipeline typically fail with a consequential
+/// "channel disconnected" error that would mask them.
+fn first_client_attributable_error<'a>(
+    results: impl IntoIterator<Item = Option<&'a Error>>,
+) -> Option<Error> {
+    results
+        .into_iter()
+        .flatten()
+        .find(|err| {
+            matches!(
+                err.code,
+                Code::InvalidArgument | Code::DeadlineExceeded | Code::ResourceExhausted
+            )
+        })
+        .cloned()
+}
+
+/// Folds `err` into an accumulated upload error, keeping the earlier error's
+/// messages first.
+fn merge_upload_error(accumulated: Option<Error>, err: Error) -> Error {
+    match accumulated {
+        Some(existing) => existing.merge(err),
+        None => err,
+    }
+}
+
 /// Pump compressed `ByteStream` upload chunks into the decoder.
 ///
 /// Compressed uploads intentionally do not support the identity upload resume
@@ -345,9 +384,25 @@ async fn process_compressed_client_stream(
     mut stream: WriteRequestStreamWrapper<impl Stream<Item = Result<WriteRequest, Status>> + Unpin>,
     mut tx: DropCloserWriteHalf,
     bytes_received: &Arc<AtomicU64>,
+    idle_timeout: Duration,
 ) -> Result<(), Error> {
     loop {
-        match stream.next().await {
+        // Bounds the wait for the *next* `WriteRequest` only, so continuous
+        // progress never trips it. A client that trickles bytes to hold a store
+        // slot open is bounded separately, by the store's own total staging
+        // deadline. Dropping `tx` on return disconnects the compressed channel,
+        // unwinding the store-side task through the caller's `join`.
+        let next = match tokio::time::timeout(idle_timeout, stream.next()).await {
+            Ok(next) => next,
+            Err(_elapsed) => {
+                return Err(make_err!(
+                    Code::DeadlineExceeded,
+                    "Compressed upload idle timeout ({}s) elapsed waiting for the next WriteRequest",
+                    idle_timeout.as_secs()
+                ));
+            }
+        };
+        match next {
             Some(Ok(write_request)) => {
                 if write_request.write_offset < 0 {
                     return Err(make_input_err!(
@@ -541,6 +596,11 @@ impl ByteStreamServer {
         } else {
             config.max_bytes_per_stream
         };
+        let compressed_upload_idle_timeout = if config.compressed_upload_idle_timeout_s == 0 {
+            DEFAULT_COMPRESSED_UPLOAD_IDLE_TIMEOUT
+        } else {
+            Duration::from_secs(config.compressed_upload_idle_timeout_s as u64)
+        };
 
         let active_uploads: Arc<Mutex<HashMap<UuidKey, BytesWrittenAndIdleStream>>> =
             Arc::new(Mutex::new(HashMap::new()));
@@ -602,6 +662,7 @@ impl ByteStreamServer {
             max_bytes_per_stream,
             active_uploads,
             idle_stream_timeout,
+            compressed_upload_idle_timeout,
             metrics,
             _sweeper_handle: Arc::new(sweeper_handle),
             remote_cache_compression_enabled,
@@ -1101,6 +1162,69 @@ impl ByteStreamServer {
         let (bytes_received, _guard) = instance.track_compressed_upload(uuid_key);
 
         let (compressed_tx, compressed_rx) = make_buf_channel_pair();
+
+        // Fast path: when the immediate instance store can accept the negotiated
+        // wire representation directly, hand it the client's COMPRESSED stream to
+        // validate/stage/commit byte-for-byte, skipping the decode + re-encode
+        // round trip. The client stream still runs through
+        // `process_compressed_client_stream` so `bytes_received` (and therefore
+        // QueryWriteStatus and `committed_size`) still tracks compressed
+        // wire-byte progress.
+        let maybe_wire_store = wire_compressor_capability(wire_compressor)
+            .and_then(|capability| Some((instance.store.wire_compression_store()?, capability)));
+        if let Some((wire_store, capability)) = maybe_wire_store {
+            let update_fut =
+                wire_store.update_compressed(digest, digest_function, capability, compressed_rx);
+            let client_stream_fut = process_compressed_client_stream(
+                stream,
+                compressed_tx,
+                &bytes_received,
+                instance.compressed_upload_idle_timeout,
+            );
+            tokio::pin!(client_stream_fut);
+            tokio::pin!(update_fut);
+            let (client_stream_result, update_result) = tokio::select! {
+                // Preserve a client-side error when both sides are already
+                // ready, but do not keep pumping an unbounded client stream
+                // after the store has failed or timed out. Dropping the pump
+                // closes `compressed_tx`, allowing a detached blocking
+                // validator to exit while retaining admission until it does.
+                biased;
+                client_stream_result = &mut client_stream_fut => {
+                    let update_result = update_fut.await;
+                    (client_stream_result, update_result)
+                }
+                update_result = &mut update_fut => match update_result {
+                    Err(err) => return Err(err),
+                    ok @ Ok(_) => {
+                        let client_stream_result = client_stream_fut.await;
+                        (client_stream_result, ok)
+                    }
+                },
+            };
+
+            if let Some(err) = first_client_attributable_error([
+                client_stream_result.as_ref().err(),
+                update_result.as_ref().err(),
+            ]) {
+                return Err(err);
+            }
+            let mut upload_error = update_result.err();
+            if let Err(err) = client_stream_result {
+                upload_error = Some(merge_upload_error(upload_error, err));
+            }
+            if let Some(err) = upload_error {
+                return Err(err);
+            }
+
+            // `committed_size` stays the compressed wire byte count tracked by
+            // the atomic, which should agree with the capability's returned wire
+            // byte count.
+            let committed_size = i64::try_from(bytes_received.load(Ordering::Acquire))
+                .err_tip(|| "Compressed upload size was not convertible to i64")?;
+            return Ok(Response::new(WriteResponse { committed_size }));
+        }
+
         let (decompressed_tx, decompressed_rx) = make_buf_channel_pair();
         let store = instance.store.clone();
         let store_update_context = make_ctx_for_hash_func(digest_function)?;
@@ -1126,33 +1250,27 @@ impl ByteStreamServer {
             digest_function,
             decompressed_tx,
         );
-        let client_stream_fut =
-            process_compressed_client_stream(stream, compressed_tx, &bytes_received);
+        let client_stream_fut = process_compressed_client_stream(
+            stream,
+            compressed_tx,
+            &bytes_received,
+            instance.compressed_upload_idle_timeout,
+        );
         let (client_stream_result, decode_result, store_update_result) =
             tokio::join!(client_stream_fut, decode_fut, store_update_fut);
 
-        if let Err(err) = &client_stream_result
-            && err.code == Code::InvalidArgument
-        {
-            return Err(err.clone());
-        }
-        if let Err(err) = &decode_result
-            && err.code == Code::InvalidArgument
-        {
-            return Err(err.clone());
+        if let Some(err) = first_client_attributable_error([
+            client_stream_result.as_ref().err(),
+            decode_result.as_ref().err(),
+        ]) {
+            return Err(err);
         }
         let mut upload_error = store_update_result.err();
         if let Err(err) = decode_result {
-            upload_error = Some(match upload_error {
-                Some(existing) => existing.merge(err),
-                None => err,
-            });
+            upload_error = Some(merge_upload_error(upload_error, err));
         }
         if let Err(err) = client_stream_result {
-            upload_error = Some(match upload_error {
-                Some(existing) => existing.merge(err),
-                None => err,
-            });
+            upload_error = Some(merge_upload_error(upload_error, err));
         }
         if let Some(err) = upload_error {
             return Err(err);
@@ -1211,6 +1329,8 @@ impl ByteStreamServer {
             }
         }
 
+        type BoxedResultFuture = Pin<Box<dyn Future<Output = Result<(), Error>> + Send>>;
+
         if read_request.read_limit != 0 {
             return Err(make_input_err!(
                 "read_limit must be 0 when reading compressed blobs"
@@ -1224,31 +1344,63 @@ impl ByteStreamServer {
         let read_offset = u64::try_from(read_request.read_offset)
             .err_tip(|| "Could not convert read_offset to u64")?;
 
-        let (raw_tx, raw_rx) = make_buf_channel_pair();
-        let (compressed_tx, compressed_rx) = make_buf_channel_pair();
+        // Fast path: at offset 0, when the immediate instance store already holds
+        // the negotiated wire representation, pipe its stored stream
+        // byte-for-byte into the same chunking pipeline, skipping the raw
+        // `get_part` + re-encode. REAPI defines `read_offset` against the
+        // *uncompressed* blob, so a resume at offset > 0 (and any instance
+        // without the capability) keeps the raw read + re-encode path.
+        let maybe_wire_store = if read_offset == 0 {
+            wire_compressor_capability(wire_compressor)
+                .and_then(|capability| Some((instance.store.wire_compression_store()?, capability)))
+        } else {
+            None
+        };
 
-        let store = instance.store.clone();
-        let get_part_fut = Box::pin(async move {
-            store
-                .get_part(digest, raw_tx, read_offset, None)
-                .await
-                .err_tip(|| "Failed to read blob for wire compression")
-        });
-        // The encode runs as a plain async future: it must not occupy a
-        // blocking-pool thread for the stream's lifetime, because it only
-        // progresses at the client's drain rate. Dropping the returned
-        // stream drops this future, which tears the encode down exactly
-        // like the previous task-abort-on-drop did.
-        let encode_fut = Box::pin(crate::wire_compression::stream_encode_compressed_download(
-            raw_rx,
-            wire_compressor,
-            crate::wire_compression::ZSTD_COMPRESSION_LEVEL,
-            compressed_tx,
-        ));
+        let (rx, get_part_fut, encode_fut): (
+            DropCloserReadHalf,
+            BoxedResultFuture,
+            BoxedResultFuture,
+        ) = if let Some((wire_store, capability)) = maybe_wire_store {
+            let (zstd_tx, zstd_rx) = make_buf_channel_pair();
+            let get_part_fut: BoxedResultFuture = Box::pin(async move {
+                wire_store
+                    .get_compressed(digest, capability, zstd_tx)
+                    .await
+                    .err_tip(|| "Failed to read stored compressed stream for passthrough")
+            });
+            // No re-encode on the fast path; a ready Ok keeps the existing
+            // error-merge machinery in `ReaderState::finish` a no-op here.
+            let encode_fut: BoxedResultFuture = Box::pin(async { Ok(()) });
+            (zstd_rx, get_part_fut, encode_fut)
+        } else {
+            let (raw_tx, raw_rx) = make_buf_channel_pair();
+            let (compressed_tx, compressed_rx) = make_buf_channel_pair();
+            let store = instance.store.clone();
+            let get_part_fut: BoxedResultFuture = Box::pin(async move {
+                store
+                    .get_part(digest, raw_tx, read_offset, None)
+                    .await
+                    .err_tip(|| "Failed to read blob for wire compression")
+            });
+            // The encode runs as a plain async future: it must not occupy a
+            // blocking-pool thread for the stream's lifetime, because it only
+            // progresses at the client's drain rate. Dropping the returned
+            // stream drops this future, which tears the encode down exactly
+            // like the previous task-abort-on-drop did.
+            let encode_fut: BoxedResultFuture =
+                Box::pin(crate::wire_compression::stream_encode_compressed_download(
+                    raw_rx,
+                    wire_compressor,
+                    crate::wire_compression::ZSTD_COMPRESSION_LEVEL,
+                    compressed_tx,
+                ));
+            (compressed_rx, get_part_fut, encode_fut)
+        };
 
         let state = Some(ReaderState {
             max_bytes_per_stream: instance.max_bytes_per_stream,
-            rx: compressed_rx,
+            rx,
             maybe_get_part_result: None,
             maybe_encode_result: None,
             get_part_fut,
