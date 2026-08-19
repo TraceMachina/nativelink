@@ -8,3 +8,9 @@ next-env.d.ts
 # Generated from the repository-root CHANGELOG.md by scripts/gen-changelog.mjs
 # (runs as part of `dev` and `build`).
 content/docs/reference/changelog.md
+
+# Generated from the navigation and page frontmatter by scripts/gen-llms.mjs
+# (runs as part of `dev` and `build`). Committing them would create a second
+# source of truth for the sidebar, which is the thing they exist to prevent.
+public/llms.txt
+public/llms-full.txt
