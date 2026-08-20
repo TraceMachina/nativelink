@@ -1,0 +1,260 @@
+---
+title: Redis
+description: Back the cache with Redis (standalone, sentinel or cluster) and the concurrency, chunking and timeout settings that keep it from timing out under a real build.
+---
+
+{/* archetype: how-to, see /web/apps/docs/templates/how-to.mdx */}
+
+**Who this is for:** anyone who wants several NativeLink processes to share one
+low-latency store, or who needs the scheduler's pub/sub subscriptions.
+**What you'll have at the end:** a Redis-backed store with concurrency and
+timeouts set so it survives a burst. **Time:** twenty minutes.
+
+<Prerequisites>
+  A config file you can edit (see [Configuration](/configuration)), and a reachable Redis instance.
+</Prerequisites>
+
+Redis sits between the filesystem and object storage: it is shared across
+machines like a bucket, and roughly a millisecond away like a local disk. What
+it is not is cheap per byte. Use it for small, hot, shared objects (the Action
+Cache, scheduler state, the index side of a `dedup` store) and put the bulk
+CAS somewhere that prices storage by the gigabyte.
+
+## The recipe [#the-recipe]
+
+```json5
+stores: [
+  {
+    name: "AC_MAIN_STORE",
+    redis_store: {
+      addresses: ["redis://127.0.0.1:6379/"],
+      mode: "standard",
+      key_prefix: "nativelink:ac:",
+    },
+  },
+],
+```
+
+`addresses` is the only required field. The URL carries everything Redis needs:
+scheme, optional credentials, host, port and database index.
+`redis://username:password@redis-server-url:6380/99` selects port 6380 and
+database 99. Keep credentials out of the file by writing
+`redis://${REDIS_USER}:${REDIS_PASSWORD}@redis:6379/` and exporting the
+variables; see [The config file](/configuration/config-file).
+
+<SourceLink file="nativelink-config/src/stores.rs" symbol="RedisSpec" />
+
+## Standalone, sentinel or cluster [#standalone-sentinel-or-cluster]
+
+`mode` takes `standard` (the default), `sentinel` or `cluster`.
+
+| Mode | What goes in `addresses` |
+| --- | --- |
+| `standard` | Exactly one server URL |
+| `sentinel` | Exactly one sentinel URL, not a data node; the master name comes from a `?sentinelServiceName=` query parameter (default `master`), and a `redis+sentinel://` scheme is accepted |
+| `cluster` | Any subset of the cluster's nodes; the client discovers the rest |
+
+The store connects to the sentinel, asks it for the current master, and
+re-resolves the master when a write hits a demoted replica or the connection
+drops. Passing more than one address in `standard` or `sentinel` mode is
+rejected at startup.
+
+<SourceLink file="nativelink-store/src/redis_store.rs" symbol="RedisStore" />
+
+`key_prefix` namespaces one Redis instance across several stores, and matters
+more here than with object storage: a Redis instance is much more likely to be
+shared with something else you run. Give the CAS, the AC and the scheduler
+distinct prefixes.
+
+## Sizing it so it doesn't time out [#sizing-it-so-it-doesnt-time-out]
+
+Redis is single-threaded per node, so the settings that matter are the ones
+bounding how much work you can have in flight.
+
+| Field | Default | What it decides |
+| --- | --- | --- |
+| `max_client_permits` | 500 | Ceiling on concurrent actions against the store |
+| `connection_pool_size` | 3 | Accepted but not used by the current client, which holds one multiplexed connection |
+| `read_chunk_size` | 64 KiB | Bytes pulled per chunk when streaming a blob out |
+| `max_chunk_uploads_per_update` | 10 | Concurrent chunk uploads within one write |
+| `command_timeout_ms` | 10000 | Per-command ceiling |
+| `connection_timeout_ms` | 3000 | Ceiling on establishing a connection |
+| `health_check_timeout_ms` | 4000 | Ceiling on the health-check `PING` |
+| `scan_count` | 10000 | `COUNT` hint per `SCAN` iteration |
+| `key_ttl_s` | 0 (never) | Expiry set on every key this store writes; must exceed the longest upload |
+
+`max_client_permits` is the most useful lever. It exists precisely to stop
+timeouts caused by many, many inflight actions: when the ceiling is reached,
+work queues instead of piling onto Redis and blowing through
+`command_timeout_ms`. Lower it if you see timeouts under load; that is almost
+always the right first move.
+
+Peak memory in the client process is roughly
+`read_chunk_size × max_chunk_uploads_per_update × concurrent uploads`. Working
+backwards from available memory, divide by about ten to leave room for
+everything else the process is doing.
+
+<Callout type="warn" title="Raising `read_chunk_size` can cause the timeouts it looks like it should fix">
+  A larger chunk means a single command moves more data, so a chunk that is too
+  large will exceed `command_timeout_ms` on a busy or distant Redis and fail the
+  whole operation. If large blobs are timing out, lower the chunk size or raise
+  the timeout, don't raise the chunk size.
+</Callout>
+
+`max_count_per_cursor` (default 1500) bounds how many entries one cursor
+returns; it exists to reduce thundering-herd effects when many workers hit the
+provisioner at once.
+
+<Callout type="info" title="Three fields are deprecated">
+  `response_timeout_s` is superseded by `command_timeout_ms` and is ignored
+  with a warning; `connection_timeout_s` is superseded by
+  `connection_timeout_ms` and is still honoured (converted to milliseconds)
+  if the millisecond field is unset, but setting both is an error.
+  `broadcast_channel_capacity` is unused by the current client.
+  `experimental_pub_sub_channel` remains, and is what scheduler
+  subscriptions ride on.
+</Callout>
+
+## Where Redis actually earns its place [#where-redis-actually-earns-its-place]
+
+Rather than as a bulk CAS, Redis is usually the fast or index half of a
+composition:
+
+```json5
+{
+  name: "CAS_MAIN_STORE",
+  dedup: {
+    index_store: {
+      redis_store: {
+        addresses: ["redis://redis:6379/"],
+        key_prefix: "nativelink:index:",
+      },
+    },
+    content_store: {
+      experimental_cloud_object_store: {
+        provider: "aws",
+        region: "us-east-1",
+        bucket: "my-nativelink-cas",
+        key_prefix: "cas/",
+      },
+    },
+  },
+},
+```
+
+The index is small, hot and shared by every process; the content is large, cold
+and cheap per byte. [Compose stores](/how-to/stores/compose-stores) covers the
+rest of these shapes.
+
+## Steps [#steps]
+
+<Steps>
+
+<li>
+
+**Provision Redis** with enough memory for what you intend to keep, and decide
+its eviction policy on the Redis side, because NativeLink does not manage it.
+
+</li>
+
+<li>
+
+**Add the store** with `addresses`, the right `mode`, and a `key_prefix` that
+won't collide with anything else using that instance.
+
+</li>
+
+<li>
+
+**Reference credentials through the environment** rather than writing them into
+the URL in the config file.
+
+</li>
+
+<li>
+
+**Run a build**, then run it again from a second machine pointed at the same
+Redis, to confirm the store really is shared.
+
+</li>
+
+<li>
+
+**Load-test it** and watch for `command_timeout_ms` errors. If you see them,
+lower `max_client_permits` before touching anything else.
+
+</li>
+
+</Steps>
+
+<VerifyBlock>
+
+- Keys appear under `key_prefix`: `SCAN` with a `MATCH` on the prefix returns
+  entries while a build runs.
+- A second machine pointed at the same Redis gets cache hits for objects the
+  first one uploaded.
+- No command timeouts in the logs under your normal peak load.
+- Redis memory use plateaus where its own eviction policy says it should,
+  rather than climbing to the instance limit.
+
+</VerifyBlock>
+
+## When it doesn't work [#when-it-doesnt-work]
+
+<Accordions>
+
+<Accordion title="Timeouts under load, fine when idle" id="timeouts-under-load-fine-when-idle">
+
+Too much in flight. Lower `max_client_permits` so work queues in NativeLink
+instead of piling onto a single-threaded Redis. Only after that, consider
+raising `command_timeout_ms`.
+
+</Accordion>
+
+<Accordion title="Large blobs time out, small ones don't" id="large-blobs-time-out-small-ones-dont">
+
+`read_chunk_size` is too large for the round-trip time to this Redis: one
+command is moving more data than fits in `command_timeout_ms`. Lower the chunk
+size.
+
+</Accordion>
+
+<Accordion title="Redis runs out of memory" id="redis-runs-out-of-memory">
+
+NativeLink does not evict from Redis; that's the instance's `maxmemory` and
+`maxmemory-policy`. The one knob on this side is `key_ttl_s`, which puts an
+expiry on every key the store writes (meant for stores whose consumer can
+stop, not for scheduler state). Set the Redis-side limits, and reconsider
+whether the bulk CAS should live here at all. For large blobs, a filesystem or object store tier is both
+cheaper and better suited.
+
+</Accordion>
+
+<Accordion title="Connection failures against a sentinel or cluster setup" id="connection-failures-against-a-sentinel-or-cluster-setup">
+
+Check `mode`. For `sentinel`, `addresses` must hold exactly one sentinel URL,
+not a data node, and the master name must match your sentinel configuration
+(`?sentinelServiceName=mymaster`; the default is `master`); pointing at a
+replica directly gives read-only errors on write. For `cluster`, any subset of
+nodes works and the client discovers the rest.
+
+</Accordion>
+
+<Accordion title="Two deployments are seeing each other's entries" id="two-deployments-are-seeing-each-others-entries">
+
+They share a `key_prefix`, or neither sets one. Give each deployment its own,
+or its own database index in the URL.
+
+</Accordion>
+
+</Accordions>
+
+<NextStep href="/how-to/stores/compose-stores" title="Compose stores">
+  Where a Redis store belongs inside a larger composition, usually as the
+  index or fast half, not the bulk store.
+</NextStep>
+
+<NextStep href="/configuration/scheduler-and-workers" kind="aside" title="Schedulers and workers">
+  Redis also backs scheduler state when more than one scheduler shares a
+  queue.
+</NextStep>

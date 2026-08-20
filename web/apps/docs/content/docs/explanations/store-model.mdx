@@ -1,0 +1,270 @@
+---
+title: The store model
+description: What a store actually is, how composition behaves, and where a digest stops being a claim and becomes a fact.
+---
+
+{/* archetype: explanation, see /web/apps/docs/templates/explanation.mdx */}
+
+**Who this is for:** anyone composing stores in a config file and wanting to
+predict the result, and anyone writing a new store backend. **What you'll
+have at the end:** the trait, the key space, the composition rules, and the
+one place verification actually happens. **Time:** twenty minutes.
+
+A NativeLink store is not a database binding. It is one small trait
+(eight required methods), and everything you configure as a "store" is either
+an implementation of it or a wrapper around other implementations of it. The
+`stores` block in your config is a graph, and its edges have semantics that
+the JSON5 does not show you.
+
+## Three names, one file [#three-names-one-file]
+
+`Store`, `StoreLike` and `StoreDriver` all live in
+<SourceLink file="nativelink-util/src/store_trait.rs" symbol="store_trait.rs" />,
+and the split between them matters when you read the source.
+
+`StoreDriver` is the trait a backend implements. `Store` is a
+`#[repr(transparent)]` newtype around `Arc<dyn StoreDriver>`, the handle
+everything else holds. `StoreLike` is the ergonomic layer callers use: its
+methods (`get`, `has`, `update_oneshot` and the rest) accept anything that
+converts into a `StoreKey` and forward to the pinned driver, so callers never
+deal with `Pin<&dyn StoreDriver>` directly.
+
+A driver must supply eight methods: `post_init`, `has_with_results`,
+`update`, `get_part`, `inner_store`, `as_any`, `as_any_arc`, and
+`register_remove_callback`. Only the middle three are the ones you would
+guess. The other five are what makes composition work, and `inner_store` in
+particular is where composition either succeeds or silently stops.
+
+## The key space is not just digests [#the-key-space-is-not-just-digests]
+
+`StoreKey` has two variants: `Digest(DigestInfo)` and `Str(Cow<str>)`. Most
+of NativeLink deals in the first. The second exists because two subsystems
+need to store things that are not content-addressed at all: the Build Event
+Protocol service, and the scheduler's awaited-action database.
+
+This has a consequence people hit and misread. `StoreKey::into_digest()`
+converts a `Str` key to a digest by BLAKE3-hashing the string, with the hash
+function hardcoded. That conversion is lossy and irreversible: a store that
+only understands digests will accept a `Str` key and file it somewhere
+deterministic, but the original string is gone. The filesystem store handles
+this more honestly by keeping the two in separate namespaces on disk (`s/`
+for string keys, `d/` for digests) so the two can never collide.
+
+<Callout type="info" title="Why a hardcoded hash here is fine">
+  Elsewhere, a hardcoded hash function would be a correctness bug, because
+  the client picks the digest function per request. Here it is not: these
+  keys never cross the REAPI wire and are never compared against a
+  client-supplied digest. The hash is an internal placement function, not an
+  identity.
+</Callout>
+
+## The digest on the wire is a claim, not a measurement [#the-digest-on-the-wire-is-a-claim-not-a-measurement]
+
+This is the single most important thing on this page.
+
+**NativeLink does not derive a blob's digest from its bytes on upload.** The
+client declares the digest in the ByteStream resource name, and the server
+stores the bytes under the declared key. See
+<SourceLink file="nativelink-service/src/bytestream_server.rs" symbol="ByteStreamServer" />.
+(The one exception is a zstd-compressed ByteStream upload, where the decoder
+already has to read every byte and rejects a decoded stream whose size or
+hash does not match the digest.)
+
+For plain uploads, the only thing that turns a claimed digest into a verified
+one is a `verify` store somewhere in the graph, and both of its checks
+default to **off**:
+
+| Field | Default | What it costs when on |
+| --- | --- | --- |
+| `verify_size` | `false` | Nearly nothing; a running byte count |
+| `verify_hash` | `false` | One hash pass over every uploaded byte |
+
+A cache with no `verify` store in the write path is a cache that will store,
+and later serve, whatever a buggy or hostile client claims. That is not a
+NativeLink-specific hazard (it is how the REAPI is specified), but the
+default being `false` means it is a decision you are making whether or not
+you know it. [Correctness and hermeticity](/explanations/correctness-hermeticity)
+covers what to do about it.
+
+### How the verify store actually works [#how-the-verify-store-actually-works]
+
+The implementation in
+<SourceLink file="nativelink-store/src/verify_store.rs" symbol="VerifyStore" />
+is worth understanding, because three of its properties are not apparent from the config.
+
+**Size is checked eagerly, before a byte is read.** If the declared size is
+already wrong at the point the request arrives, the upload is rejected
+without transferring anything.
+
+**The hash function is read per-request from the ambient context**, not from
+config. This is what lets one store serve both SHA-256 and BLAKE3 clients
+without duplicating the graph.
+
+**Verification runs concurrently with the write, not before it.** The inner
+store's `update` and the checker are driven together, so verification adds no
+serialised pass. The cost of that design is that a failing upload has already
+been partially written to the inner store when the failure is detected.
+
+Size is enforced along three separate paths (overshoot, an exact hit that
+turns out not to be EOF, and undershoot at EOF), and the hash is compared at
+EOF. Every failure is `InvalidArgument`, which is the correct code: the
+client sent something that did not match what the client said it was sending.
+
+<Callout type="warn" title="Nothing is re-verified on read">
+  `VerifyStore::get_part` is a bare pass-through. Verification is a
+  **write-side** property only. A blob that entered the store before you added
+  the verify wrapper, or through a path that bypassed it, will be served
+  without complaint forever.
+</Callout>
+
+## Composition, and the barriers in it [#composition-and-the-barriers-in-it]
+
+`inner_store` is how the system looks *through* a wrapper to find an
+optimisation opportunity, for example, to discover that the real backing
+store is a filesystem store and a hardlink is possible.
+
+Most wrappers return `self` from `inner_store`. That is not laziness; it is a
+statement that looking through them would be wrong, because they transform
+the bytes or the key. A `compression` store cannot let a caller hardlink its
+inner file: the inner file is not the blob, so most wrappers are
+**optimisation barriers**, and only three forward: `size_partitioning`,
+`shard`, and `ref_store`, the three that route without transforming.
+
+The practical rule when composing: **put transforming wrappers as close to the
+backend as you can**. A `verify` in front of a `fast_slow` is a barrier in
+front of the fast path.
+
+<Mermaid>{`graph LR
+  caller["Caller<br/>(CAS service, worker)"]
+  subgraph forward["Forward inner_store: routing only"]
+    sp["size_partitioning"]
+    sh["shard"]
+    rs["ref_store"]
+  end
+  subgraph barrier["Return self: optimisation barriers"]
+    vf["verify"]
+    cp["compression"]
+    dd["dedup"]
+  end
+  fs["filesystem<br/>hardlink possible here"]
+  caller --> forward
+  forward --> barrier
+  barrier --> fs
+  forward -. "caller can see through" .-> fs
+`}</Mermaid>
+
+A caller reaching through the routing wrappers can discover the filesystem
+store and hardlink from it. A caller reaching through a transforming wrapper
+cannot, because what is on disk underneath it is not the blob.
+
+`StoreOptimizations` is the vocabulary for the other half of this:
+`FileUpdates`, `NoopUpdates`, `NoopDownloads`, `LazyExistenceOnSync`,
+`SubscribesToUpdateOneshot`, capabilities a store advertises so callers can
+skip work rather than discovering at runtime that it was unnecessary.
+
+### `fast_slow` writes through, and deliberately re-uploads [#fast-slow-writes-through-and-deliberately-re-uploads]
+
+With the default `fast_direction` and `slow_direction`, writes go to both
+tiers concurrently and **both must succeed**. It has no write-behind and no
+eventual consistency window: an upload that returns OK is durable in the slow
+tier.
+
+The surprising part is existence. `fast_slow`'s `has_with_results`
+**intentionally never consults the fast store** (unless the slow tier is a
+`noop` store, in which case only the fast tier is checked). It asks the slow
+tier, then counts any slow-tier writes still in flight. A blob that is
+present only in the fast tier is reported absent, which causes the client to
+upload it again, and that upload is what gets it into the slow tier. The
+apparent inefficiency is the mechanism that stops the fast tier from becoming
+a place where data can be lost.
+
+Reads use a leader/follower scheme so that a hundred simultaneous misses for
+the same blob produce one fetch from the slow tier rather than a hundred.
+Followers wait up to one minute for the leader before giving up and fetching
+for themselves; that timeout is what stops a stuck leader from wedging every
+reader behind it.
+
+### `dedup` is a chunking index, and it has opinions [#dedup-is-a-chunking-index-and-it-has-opinions]
+
+A `dedup` store splits blobs with content-defined chunking (FastCDC), stores
+the chunks, and writes an index under the **original** key. Two large blobs
+that share most of their content share most of their chunks.
+
+Two things to know before enabling it. First, chunk hashing is **hardcoded to
+BLAKE3** regardless of the digest function the request used, which is
+correct for the same reason as `StoreKey::into_digest`, since chunk hashes
+are placement, not identity, but it does mean a `dedup` store's internal
+layout is unrelated to your clients' digest function.
+
+Second, a corrupted index reports itself inconsistently: `has()` returns
+`NotFound` while `get_part` returns `Internal`. If you are debugging a store
+where existence checks and reads disagree, a damaged dedup index is the
+first thing to suspect.
+
+## Two things that are not what their filenames say [#two-things-that-are-not-what-their-filenames-say]
+
+<SourceLink file="nativelink-store/src/r2_store.rs" symbol="r2_store.rs" /> and
+<SourceLink file="nativelink-store/src/oci_store.rs" symbol="oci_store.rs" />
+are not store implementations. Both are thin constructors that return an
+`S3Store`. Cloudflare R2 and OCI object storage are S3-compatible, and
+NativeLink treats them as exactly that. If you are chasing a bug in R2
+behaviour, the code you want is in `s3_store.rs`.
+
+`RefStore` is the other oddity: it resolves its target by name at
+`post_init`, holding a weak reference to the store manager, using
+`UnsafeCell` with a hand-written `Sync` impl. It is the mechanism that lets
+one store be named by several others without duplicating it, and it is why
+[store construction happens in two phases](/explanations/architecture-deep-dive#stores-are-built-in-two-phases).
+
+<Callout type="warn" title="A filesystem existence check can have a side effect">
+  When `FilesystemStore::has_with_results` is asked about the empty blob (the
+  digest of zero bytes) and that entry is not on disk yet, it creates the
+  zero-byte file as a side effect of what reads, from its name, like a pure
+  query. Anything counting inodes or watching the content directory should
+  expect an entry that no upload produced.
+</Callout>
+
+## Where the exact truth lives [#where-the-exact-truth-lives]
+
+Every store type, every field and every default is in the generated
+[store configuration reference](/reference/nativelink-config/store-overview). This
+page deliberately does not restate field names, because the reference is
+generated from the Rust types and this page is not.
+
+For choosing a backend rather than understanding the model, start at
+[Store backends](/how-to/stores).
+
+## Common questions [#common-questions]
+
+<Accordions type="multiple">
+  <Accordion title="Should I turn on verify_hash?" id="should-i-turn-on-verify-hash">
+    On the write path of anything shared between people, yes. The cost is one
+    hash pass over uploaded bytes, concurrent with the write rather than
+    serialised before it. The thing it buys is that a digest in your cache
+    means what it says. On a purely local single-developer cache the
+    calculation is different, because you are the only client and you are not
+    defending against yourself.
+  </Accordion>
+  <Accordion title="Why is my fast tier getting the same blob uploaded twice?" id="fast-tier-duplicate-uploads">
+    That is `fast_slow` working as designed: existence checks skip the fast
+    tier, so a blob present only there is reported missing and re-uploaded,
+    which is what lands it in the slow tier. The alternative would be a cache
+    that reports a blob present when the only durable copy of it does not
+    exist.
+  </Accordion>
+  <Accordion title="Does wrapping a store in compression break hardlinking?" id="compression-and-hardlinks">
+    Yes, and it must. Hardlinking works by handing the worker the store's own
+    file; a compression store's file is not the blob. That is why it returns
+    itself from `inner_store`; the barrier is the correct answer, not a
+    missing optimisation.
+  </Accordion>
+  <Accordion title="Can I point the CAS and the action cache at one store?" id="cas-and-ac-same-store">
+    No, and the config parser rejects it before anything starts. They hold
+    different value types under keys from the same space, so sharing a store
+    corrupts both.
+  </Accordion>
+</Accordions>
+
+<NextStep href="/explanations/scheduler-internals" title="Scheduler internals">
+  How an action that missed the cache becomes an action running on a worker.
+</NextStep>

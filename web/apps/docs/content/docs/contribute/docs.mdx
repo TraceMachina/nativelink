@@ -1,120 +1,353 @@
 ---
 title: Working on documentation
-description: Edit, preview, and ship changes to nativelink.com/docs.
+description: "How these docs are built: the four page archetypes, the components, the anchor and snippet lints, and what a docs PR is reviewed against."
 ---
 
-The docs live in this repo at
-[`web/apps/docs/content/docs/`](https://github.com/TraceMachina/nativelink/tree/main/web/apps/docs/content/docs).
-Each page is an MDX file: frontmatter at the top, Markdown plus
-embedded JSX below. No build step beyond `bun dev`.
+{/* archetype: how-to. See /web/apps/docs/templates/how-to.mdx */}
 
-## Develop locally
+**Who this is for:** anyone writing or editing a page on this site. **What
+you'll have at the end:** the local dev loop, the archetype your page has to
+satisfy, the components you can use without importing them, and the lints
+that will fail your PR if you skip them. **Time:** thirty minutes, once.
+
+The docs are an MDX corpus under
+<SourceLink file="web/apps/docs/content/docs" dir symbol="content/docs/" />,
+rendered by Fumadocs on Next.js. Frontmatter at the top, Markdown plus JSX
+below. The only build steps are the two generators the dev server runs on
+start (`gen:changelog` and `gen:llms`).
+
+Two things make this site different from most docs sites, and both are
+enforced rather than encouraged: **every page declares an archetype and is
+reviewed against that archetype's contract**, and **every heading carries an
+explicit anchor** so that a link cited by a human or cached by an agent keeps
+resolving after the heading is reworded.
+
+## The local loop [#the-local-loop]
 
 ```bash
 cd web
 bun install
-bun dev:docs        # docs only — http://localhost:3001/docs
+bun dev:docs        # docs only: http://localhost:3001/docs
 ```
 
-Edit any `.mdx` file under `apps/docs/content/docs/`. The dev server
-picks up changes on save.
+Edit any `.mdx` file under `apps/docs/content/docs/` and the dev server picks
+it up on save. To preview the marketing site and the docs together (the
+marketing app rewrites `/docs` to the docs app in dev), run `bun dev` and use
+`http://localhost:3000/docs`.
 
-To preview marketing + docs together (since marketing rewrites `/docs`
-to the docs app in dev):
+<Callout type="info" title="`web/` is not part of the Bazel build">
+  The docs are a Bun workspace. `bazel test //...` does not touch them, and
+  `bun` is the only toolchain you need to work on a page. See
+  [contribution guidelines](/contribute/guidelines) for the rest of the repo.
+</Callout>
 
-```bash
-bun dev             # both apps in parallel
-# → http://localhost:3000/docs
+## Pick the archetype first [#pick-the-archetype-first]
+
+Every page is exactly one of four kinds, and the kind determines the shape.
+Mixing two is the most common structural review comment, because a tutorial
+that pauses to explain tradeoffs stops being a guaranteed happy path, and an
+explanation that turns into a procedure stops being readable out of order.
+
+| Archetype | Answers | Shape |
+| --- | --- | --- |
+| **Tutorial** | "Walk me through it" | One guaranteed happy path. Numbered steps, each a command and its expected output. No options. |
+| **How-to** | "I need to do this specific thing" | The complete working artifact first, then field-by-field on the parts that matter, then troubleshooting. |
+| **Explanation** | "Why is it shaped this way?" | The mental model in three to five sentences, a diagram, then the tradeoffs. Facts alone are reference. |
+| **Reference** | "What exactly does this field do?" | Exhaustive, one anchor per entry, no narrative. Generated where possible. |
+
+The templates live in `web/apps/docs/templates/`. Copy the one you need,
+and keep the comment it puts directly under the frontmatter:
+
+```mdx
+{/* archetype: how-to. See /web/apps/docs/templates/how-to.mdx */}
 ```
 
-## Page frontmatter
+That comment is not decoration. It tells a reviewer, and an agent
+generating a page, which contract to check the page against.
 
-Every page needs at least `title` and `description`:
+## The opening block every page has [#the-opening-block]
+
+Directly under the archetype comment, before anything else:
+
+```mdx
+**Who this is for:** the reader this page assumes. **What you'll have at the
+end:** the concrete outcome. **Time:** an honest estimate.
+```
+
+It exists so a reader who landed here from a search result can decide in five
+seconds whether to keep reading. "Time" is a real estimate; rounding it down
+to look welcoming is how a page loses trust in its first paragraph.
+
+Pages on the reading path state what they assume on the next line:
+
+```mdx
+<Prerequisites>
+  A cache serving hits to your build. If you don't have one yet, start with
+  [Getting started](/getting-started).
+</Prerequisites>
+```
+
+<Callout type="warn" title="`<Prerequisites>` belongs on reading-path pages only">
+  The reading path is Getting started, Remote execution, Configuration and
+  How-to guides, with Why NativeLink before it and Operate after it. Pages
+  under `explanations/`, `reference/` and `contribute/` are read in any order
+  and must not state prerequisites, because that block is also what tells a
+  reader the corpus has an ordering.
+</Callout>
+
+## Frontmatter and navigation [#frontmatter-and-navigation]
+
+Two required fields, one optional:
 
 ```mdx
 ---
-title: My Page
-description: One short sentence Google can show in search results.
+title: My page
+description: One sentence, written for a search result rather than for a reader who already opened the page.
 ---
 ```
 
-Optional fields:
+`full: true` removes the right-hand table of contents. Use it on landing
+pages and wide generated references, not on ordinary pages.
 
-- `full: true` — kill the right-side TOC for this page. Useful for
-  reference pages and landing pages.
+Sidebar order comes from each section's `meta.json`:
 
-## Sidebar order
-
-Each section has a `meta.json` that controls the order:
-
-```json5
+{/* lint-snippets: ignore */}
+```json
 {
   "title": "Section name",
   "pages": ["first", "second", "third"]
 }
 ```
 
-The top-level
-[`content/docs/meta.json`](https://github.com/TraceMachina/nativelink)
-controls section order and uses `---Label---` entries to insert
-visual dividers in the sidebar.
+The top-level `content/docs/meta.json` orders the sections themselves; each
+section's `meta.json` gives it the title the sidebar shows. Do not list
+`index` in `pages`: a section's `index.mdx` becomes the link on the section
+title itself, and listing it would show the same page twice.
 
-## Custom MDX components
-
-Two project-specific components, available without import:
-
-```mdx
-<Callout type="info" title="Optional title">
-  Body markdown.
+<Callout type="warn" title="Three sections have no index page">
+  `explanations/`, `reference/` and `contribute/` are groupings, not
+  landing pages. Linking to `/explanations` or `/contribute` produces a 404;
+  link to a specific page inside them instead.
 </Callout>
 
-<Steps>
-  <li>First step.</li>
-  <li>Second step.</li>
-</Steps>
-```
+## Components [#components]
 
-`Callout` tones: `info`, `warn`, `success`, `error`.
+All of these are provided globally. **Never write an import in an `.mdx`
+file**; an import statement is the usual reason a page compiles locally and
+fails in the MDX check.
 
-For tabbed content, use Fumadocs's `Tabs` and `Tab`:
+| Component | Use |
+| --- | --- |
+| `<Callout type="info\|warn\|success\|error" title="…">` | An aside worth interrupting for |
+| `<Steps>` with `<li>` children | An ordered procedure |
+| `<Tabs items={["A","B"]}>` with `<Tab value="A">` | Alternatives the reader picks between |
+| `<Accordions type="multiple">` with `<Accordion title="…" id="…">` | The per-page FAQ |
+| `<Mermaid>` | Diagrams |
+| `<SourceLink file="…" symbol="…" />` | A permalink into the source at the pinned ref |
+| `<MinVersion v="1.6.0" />` | An inline badge for something that needs a minimum version |
+| `<VerifyBlock>` | The "you did it right if…" box that closes a tutorial |
+| `<Prerequisites>` | What a reading-path page assumes; see above |
+| `<NextStep href="…" title="…">` | The handoff at the bottom of a reading-path page; `kind="aside"` marks an optional detour rather than the path |
+
+`<ConfigVersionSwitcher>` is also registered, but only the generated
+configuration reference uses it.
+
+Two syntax details that catch people:
+
+**`<SourceLink>` takes no children.** It is always self-closing, and the
+label is the `symbol` prop. Pass `dir` instead of `file` to link a directory.
 
 ```mdx
-<Tabs items={["A", "B"]}>
-  <Tab value="A">Content A</Tab>
-  <Tab value="B">Content B</Tab>
-</Tabs>
+<SourceLink file="nativelink-util/src/store_trait.rs" symbol="StoreDriver" />
 ```
 
-## Style
+**`<Mermaid>` takes a template literal**, and literal angle brackets inside
+node text break the MDX parse; write `&lt;` and `&gt;`, or reword.
 
-- **Prefer plain English** over jargon. If you have to use jargon,
-  link to its definition.
-- **One idea per paragraph.** Long paragraphs are easier to skim
-  when broken up.
-- **Code blocks include the language tag** — Markdown needs it for
-  syntax highlighting.
-- **Em-dashes get spaces around them** — like this. The Vale config
-  disables the Microsoft "no spaces" rule.
+```mdx
+<Mermaid>{`graph LR
+  a["Client"] --> b["CAS"]
+`}</Mermaid>
+```
 
-## Submitting a PR
+## Anchors are explicit, and a lint enforces it [#anchors-are-explicit]
 
-Same flow as any other change — see
-[Contribution guidelines](/contribute/guidelines). Small docs
-PRs land same-day in most cases.
+Fumadocs derives a heading's id from its text. That is convenient and it is
+exactly the problem: the id is a function of the prose, so rewording a
+heading silently repoints every link that cited it. A human notices a dead
+in-page link and scrolls. An agent follows the cached URL, lands at the top
+of the page, and quotes whatever is there.
 
-## FAQ
+So every heading carries its id, and every FAQ entry carries an `id`:
+
+```mdx
+## The three store traits [#the-three-store-traits]
+
+<Accordion title="Why can't I use `tokio::spawn`?" id="why-not-tokio-spawn">
+```
+
+Once written, an anchor is a URL. Reword the heading freely; do not change
+the anchor without adding a redirect.
+
+```bash
+cd web
+bun --filter @nativelink/docs lint:anchors          # check
+bun --filter @nativelink/docs lint:anchors --fix    # freeze what exists
+```
+
+`--fix` writes the anchor Fumadocs would have generated anyway, so running it
+never moves an existing link; it only pins it. Generated pages are skipped.
+
+## Snippets are checked against the real schema [#snippets-are-checked]
+
+The configuration reference cannot drift from the binary, because it is
+generated from the same Rust types the binary deserializes. Prose pages can:
+a how-to showing a renamed field keeps showing it, and nothing fails until a
+reader copies it and the binary answers `unknown field`.
+
+`lint:snippets` closes that gap. It harvests every field name out of the
+generated reference and checks every `json`/`json5` fence under
+`content/docs/` against it.
+
+```bash
+bun --filter @nativelink/docs lint:snippets
+```
+
+For a fence that legitimately is not NativeLink config (a `meta.json`, a
+Bazel lockfile, an API response), put the escape hatch on the line before it:
+
+```mdx
+{/* lint-snippets: ignore */}
+```
+
+Keys nested under a free-form map (`properties`, `platform_properties`,
+`env`, …) are skipped automatically, since those names are the operator's to
+choose.
+
+## Generated pages: do not edit [#generated-pages]
+
+| Surface | Generated by |
+| --- | --- |
+| `reference/nativelink-config/` | `gen:config-reference` from the Rust config crate |
+| `reference/metrics` | `gen:metrics-reference` from `nativelink-util/src/metrics.rs` and its call sites |
+| `reference/changelog` | `gen:changelog` from `CHANGELOG.md` |
+| `public/llms.txt`, `public/llms-full.txt` | `gen:llms` from `meta.json` plus page frontmatter |
+
+Each MDX page among them opens with an `AUTOGENERATED` comment, which is
+also how the anchor lint knows to skip it. Fix the generator or the source doc comment; an edit to the
+output is overwritten on the next run.
+
+`gen:llms` is the one to remember when you add a page: it builds the machine
+reader's index from `meta.json` and frontmatter, so a page missing from a
+`meta.json` is invisible to agents even if it renders fine.
+
+```bash
+bun --filter @nativelink/docs gen:llms
+```
+
+## Style [#style]
+
+Vale (`.vale.ini`, error level only) runs over the MDX in pre-commit and in
+the `Vale` CI check; `typos` excludes `web/`. The house rules on top of that
+are short:
+
+**Write prose, not bullet fragments.** A bulleted list of six three-word
+items is a table that has not admitted it yet. Use a real table, or write
+sentences.
+
+**One idea per paragraph**, and lead with the claim rather than building up
+to it.
+
+**Every code block gets a language tag.** Markdown needs it for
+highlighting, and the snippet lint needs it to find the fence.
+
+**No em-dashes or en-dashes.** Use a comma, a colon, parentheses, or two
+sentences instead.
+
+**Say the surprising thing plainly.** If a default is wrong for most people,
+if a name points at the wrong crate, if a policy does not exist, write that
+down. A page that reads as a brochure is a page that stops being consulted.
+
+**Link the canonical page rather than restating it.** Field-level truth lives
+in the generated reference; a reading-path page states intent and tradeoffs
+and links out for the types and defaults.
+
+## Before you open the PR [#before-you-open-the-pr]
+
+<Steps>
+  <li>
+    **Run the lints** from `web/`. These are what the `Docs lint` workflow
+    runs on every PR that touches `web/apps/docs/`, and `gen:llms` must
+    leave the tree unchanged:
+
+    ```bash
+    bun --filter @nativelink/docs lint:anchors
+    bun --filter @nativelink/docs lint:links
+    bun --filter @nativelink/docs lint:snippets
+    bun --filter @nativelink/docs lint:boundaries
+    bun --filter @nativelink/docs lint:navigation
+    bun --filter @nativelink/docs gen:llms
+    ```
+  </li>
+  <li>
+    **Check that it compiles and typechecks.** `bun --filter @nativelink/docs build`
+    catches an MDX parse error or a stray import that the dev server tolerated.
+  </li>
+  <li>
+    **Run pre-commit** over what you changed,
+    `pre-commit run --files <paths>`, for Vale.
+  </li>
+  <li>
+    **Attach a screenshot** of the rendered page. Reviewers read the MDX, but
+    a broken table or an unrendered component only shows up in the render.
+  </li>
+</Steps>
+
+Then the normal flow: signed commits, an imperative title with no trailing
+period, a force-pushed amend rather than a follow-up commit. See
+[contribution guidelines](/contribute/guidelines).
+
+## Common questions [#common-questions]
 
 <Accordions type="multiple">
-  <Accordion title="Where do FAQs live?" id="where-do-faqs-live">
-    At the bottom of the page they belong to — each page ends with a
-    `## FAQ` section holding the questions readers actually ask about
-    that material. Add new Q&As there rather than to a standalone FAQ
-    section; there isn't one.
+  <Accordion title="Where do FAQs go?" id="where-do-faqs-go">
+    At the bottom of the page they belong to, under a `## Common questions`
+    heading, in an `<Accordions type="multiple">` block. No
+    standalone FAQ page exists, deliberately: a question is only useful next to the
+    material that raised it. Every `<Accordion>` needs an `id`.
   </Accordion>
-  <Accordion title="What checks run on a docs PR?" id="what-checks-run-on-a-docs-pr">
-    The same pre-commit suite as any PR, including
-    [Vale](https://vale.sh) style linting and typo checks over the MDX.
-    Run `pre-commit run --files <changed files>` locally to catch
-    failures before CI does.
+  <Accordion title="My page renders in dev but the build fails." id="renders-in-dev-build-fails">
+    Three usual causes, in order of likelihood: an `import` statement in the
+    MDX (components are global; remove it), a literal `<` or `>` inside
+    Mermaid node text, or children passed to `<SourceLink>`, which takes none.
+  </Accordion>
+  <Accordion title="Do I have to add an anchor to every heading?" id="anchor-every-heading">
+    Yes, on every `##` and `###`, and an `id` on every `<Accordion>`. Run
+    `lint:anchors --fix` and it writes the ids Fumadocs was already
+    generating, so nothing moves; it just stops the ids from tracking the
+    wording.
+  </Accordion>
+  <Accordion title="I need to move or rename a page." id="moving-a-page">
+    Add the redirect in `next.config.mjs` in the same PR, update the section's
+    `meta.json`, and grep the corpus for the old path. A moved page with no
+    redirect breaks every external link and every agent that cached the URL,
+    which is most of the reason the old URLs are still routable.
+  </Accordion>
+  <Accordion title="Can I add a new component?" id="adding-a-component">
+    Yes, in `web/apps/docs/components/`, registered in the global MDX
+    components map so pages do not import it. Prefer reusing what is there:
+    a component used on one page is a styling choice, and styling choices
+    belong in CSS.
+  </Accordion>
+  <Accordion title="Which pages need a `<NextStep>`?" id="which-pages-need-nextstep">
+    Every reading-path page: Getting started through How-to guides, Why
+    NativeLink and Operate, and the explanation and contribute chains. Reference pages are lookup surfaces and end where they
+    end. A reading-path page with no handoff is a dead end, and dead ends are
+    where readers leave.
   </Accordion>
 </Accordions>
+
+<NextStep href="/contribute/guidelines" title="Contribution guidelines">
+  The rest of the contribution flow: forks, signed commits, commit message
+  conventions, and how review works.
+</NextStep>

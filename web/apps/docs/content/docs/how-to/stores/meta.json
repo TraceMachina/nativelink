@@ -1,0 +1,15 @@
+{
+  "pages": [
+    "filesystem",
+    "s3-and-compatible",
+    "gcs",
+    "azure",
+    "redis",
+    "mongo",
+    "oci-object-storage",
+    "compose-stores",
+    "compression",
+    "chunking-and-dedup"
+  ],
+  "title": "Storage backends"
+}

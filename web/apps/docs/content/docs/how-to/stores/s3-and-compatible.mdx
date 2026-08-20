@@ -1,0 +1,321 @@
+---
+title: S3 and compatible
+description: "Back the cache with Amazon S3, Cloudflare R2 or NetApp ONTAP S3: one store type, three providers, and the shared options that decide cost and failure behaviour."
+---
+
+{/* archetype: how-to, see /web/apps/docs/templates/how-to.mdx */}
+
+**Who this is for:** anyone who wants durability they don't operate, on S3 or
+something that speaks S3. **What you'll have at the end:** a bucket-backed CAS
+behind a local fast tier, with credentials that aren't in the config file.
+**Time:** thirty minutes, most of it bucket and IAM setup.
+
+<Prerequisites>
+  A config file you can edit (see [Configuration](/configuration)), and a bucket you can write to.
+</Prerequisites>
+
+Three providers share one store type and one block of common options. `aws`
+and `r2` share one implementation (R2 is the S3 store with a derived endpoint
+and region `auto`); `ontap` has its own, with a few differences noted below.
+They differ mainly in how the endpoint and credentials are derived:
+
+| Provider | `provider` value | Identifies the endpoint by |
+| --- | --- | --- |
+| Amazon S3 | `aws` | `region` + `bucket` |
+| Cloudflare R2 | `r2` | `account_id` (endpoint is `https://{account_id}.r2.cloudflarestorage.com`) |
+| NetApp ONTAP S3 | `ontap` | an explicit `endpoint` plus `vserver_name` |
+
+[GCS](/how-to/stores/gcs), [Azure Blob](/how-to/stores/azure) and
+[OCI Object Storage](/how-to/stores/oci-object-storage) use the same store type
+with their own `provider` values and have their own pages.
+
+## Amazon S3 [#amazon-s3]
+
+```json5
+stores: [
+  {
+    name: "CAS_MAIN_STORE",
+    fast_slow: {
+      fast: {
+        filesystem: {
+          content_path: "/var/lib/nativelink/cas/content",
+          temp_path: "/var/lib/nativelink/cas/tmp",
+          eviction_policy: { max_bytes: "50gb" },
+        },
+      },
+      slow: {
+        experimental_cloud_object_store: {
+          provider: "aws",
+          region: "us-east-1",
+          bucket: "my-nativelink-cas",
+          key_prefix: "cas/",
+          retry: { max_retries: 6, delay: 0.3, jitter: 0.5 },
+        },
+      },
+    },
+  },
+],
+```
+
+`region` and `bucket` are the only fields you have to set. Credentials come
+from the standard AWS chain (environment variables, the shared credentials
+file, the EC2/ECS/EKS instance or task role), so nothing secret goes in the
+config.
+
+`key_prefix` lets one bucket hold several logical stores. Give the CAS `cas/`
+and the Action Cache `ac/` rather than provisioning two buckets; lifecycle
+rules can then treat them differently.
+
+<SourceLink file="nativelink-config/src/stores.rs" symbol="ExperimentalAwsSpec" />
+
+## Cloudflare R2 [#cloudflare-r2]
+
+R2 has no regions from the client's point of view: the endpoint is derived
+entirely from your account ID.
+
+```json5
+{
+  name: "CAS_SLOW_STORE",
+  experimental_cloud_object_store: {
+    provider: "r2",
+    account_id: "${R2_ACCOUNT_ID}",
+    bucket: "nativelink-cas",
+    access_key_id: "${R2_ACCESS_KEY_ID}",
+    secret_access_key: "${R2_SECRET_ACCESS_KEY}",
+    key_prefix: "cas/",
+    retry: { max_retries: 6, delay: 0.3, jitter: 0.5 },
+  },
+},
+```
+
+`access_key_id` and `secret_access_key` are optional in the schema (omitting
+both falls back to the AWS credential chain), but R2 tokens don't live in that
+chain, so in practice you set them, from environment variables. The
+`${VAR}` syntax is expanded at config-load time; see
+[The config file](/configuration/config-file).
+
+R2 charges no egress, which changes the arithmetic on how small a fast tier
+you can get away with.
+
+<SourceLink file="nativelink-config/src/stores.rs" symbol="ExperimentalR2Spec" />
+
+## NetApp ONTAP S3 [#netapp-ontap-s3]
+
+On-premises S3 needs an explicit endpoint, the storage VM serving it, and
+usually a private CA bundle:
+
+```json5
+{
+  name: "CAS_SLOW_STORE",
+  experimental_cloud_object_store: {
+    provider: "ontap",
+    endpoint: "https://ontap-s3-endpoint:443",
+    vserver_name: "your-vserver",
+    bucket: "your-bucket",
+    root_certificates: "/etc/nativelink/ontap-ca.pem",
+    key_prefix: "cas/",
+    retry: { max_retries: 6, delay: 0.3, jitter: 0.5 },
+    multipart_max_concurrent_uploads: 10,
+  },
+},
+```
+
+`root_certificates` is optional and points at a PEM bundle for the CA that
+signed the endpoint's certificate. Without it, the system roots are used and
+an internally-signed endpoint fails TLS verification. Credentials come from
+the same AWS chain as `aws` (`AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`
+in practice), and `vserver_name` doubles as the signing region.
+
+The ONTAP implementation differs from `aws` in three ways: it always uses
+path-style addressing, its default `max_retry_buffer_per_request` is 20 MB
+rather than 5 MB, and it is HTTPS-only with HTTP/1.1 and HTTP/2 both enabled,
+so `insecure_allow_http` and `disable_http2` have no effect on it.
+
+<SourceLink file="nativelink-store/src/ontap_s3_store.rs" symbol="OntapS3Store" />
+
+ONTAP has one extra store type of its own, `ontap_s3_existence_cache`, which
+keeps a persisted index of what the bucket contains and refreshes it on an
+interval:
+
+```json5
+{
+  name: "CAS_SLOW_STORE",
+  ontap_s3_existence_cache: {
+    index_path: "/var/lib/nativelink/ontap-index.json",
+    sync_interval_seconds: 300,
+    backend: {
+      endpoint: "https://ontap-s3-endpoint:443",
+      vserver_name: "your-vserver",
+      bucket: "your-bucket",
+      key_prefix: "cas/",
+    },
+  },
+},
+```
+
+It exists because `FindMissingBlobs` against an on-premises S3 endpoint is
+often the slowest thing in the build, and the answer is usually stale-tolerant.
+
+<SourceLink file="nativelink-config/src/stores.rs" symbol="ExperimentalOntapS3Spec" />
+
+## The options all three share [#the-options-all-three-share]
+
+Every provider flattens the same block of common options. These are the ones
+worth setting deliberately:
+
+| Field | Default | What it decides |
+| --- | --- | --- |
+| `key_prefix` | none | Namespacing inside one bucket |
+| `retry` | see below | How hard to try before surfacing an error |
+| `consider_expired_after_s` | `0` (never) | How old an object may be and still count as present |
+| `max_retry_buffer_per_request` | 5 MB (20 MB for `ontap`) | How much of a single-request upload is buffered so it can be retried |
+| `multipart_max_concurrent_uploads` | 10 | Concurrent `UploadPart` requests within one multipart upload |
+| `insecure_allow_http` | `false` | Permit plain HTTP; local testing only (`aws`, `r2`) |
+| `disable_http2` | `false` | Fall back to HTTP/1.1 for proxies that mishandle h2 (`aws`, `r2`) |
+
+`retry` is exponential with jitter: up to `max_retries` retries after the
+first attempt, a base `delay` in seconds that is doubled before the first
+retry and again for each retry after it, and `jitter` as a fraction of the
+computed delay (`0.5` means each wait is randomised within plus or minus 25%).
+The shipped examples all use `{ max_retries: 6, delay: 0.3, jitter: 0.5 }`:
+waits of about 0.6, 1.2, 2.4, 4.8, 9.6 and 19.2 seconds, roughly forty seconds
+of retrying across seven attempts.
+
+Objects smaller than 5 MB with a known size are uploaded in one `PutObject`
+request; anything larger, or of unknown size, goes through a multipart upload
+in parts of at least 5 MB, each part held in memory and retried on its own.
+
+<SourceLink file="nativelink-util/src/retry.rs" symbol="Retrier" />
+
+`consider_expired_after_s` is the one people are surprised by. When set, an
+object whose `last_modified` is older than this many seconds is reported as
+*not existing*, even though it is still in the bucket. Pair it with a bucket
+lifecycle rule whose window is longer by a comfortable margin (a few days):
+the rule deletes the object, and this setting stops NativeLink handing out a
+digest that is about to disappear. Clients that get a `NotFound`
+re-upload.
+
+<SourceLink file="nativelink-config/src/stores.rs" symbol="CommonObjectSpec" />
+
+## Steps [#steps]
+
+<Steps>
+
+<li>
+
+**Create the bucket** and a least-privilege credential that can head, get and
+put objects and create, upload to, complete and abort multipart uploads on it,
+nothing else. The store never lists or deletes objects (only the
+`ontap_s3_existence_cache` wrapper lists the bucket, to build its index).
+
+</li>
+
+<li>
+
+**Add a lifecycle rule** that aborts incomplete multipart uploads after a few
+days. A process killed mid-upload leaves orphaned parts you are billed for.
+
+</li>
+
+<li>
+
+**Export the credentials** into the process environment, and reference them
+with `${VAR}` rather than pasting them into the config.
+
+</li>
+
+<li>
+
+**Add the store** as the `slow` half of a `fast_slow` pair whose `fast` half
+is a local [filesystem store](/how-to/stores/filesystem).
+
+</li>
+
+<li>
+
+**Run a build twice**: once cold, once after clearing the local fast tier.
+
+</li>
+
+</Steps>
+
+<VerifyBlock>
+
+- Objects appear in the bucket under `key_prefix` during the first build.
+- The second build is a cache hit even after the local `content_path` is
+  emptied, which proves reads are falling through to the bucket.
+- Bucket request counts are far lower than blob counts, which proves the fast
+  tier is absorbing repeat reads.
+- No incomplete multipart uploads accumulate between builds.
+
+</VerifyBlock>
+
+## When it doesn't work [#when-it-doesnt-work]
+
+<Accordions>
+
+<Accordion title="Every request fails with a credentials error" id="every-request-fails-with-a-credentials-error">
+
+For `aws`, the credential chain found nothing. Confirm the process can see
+`AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, or that the instance/task
+role is attached and reachable. For `r2`, set `access_key_id` and
+`secret_access_key` explicitly, because R2 tokens are not in the AWS chain.
+
+</Accordion>
+
+<Accordion title="TLS verification fails against an on-premises endpoint" id="tls-verification-fails-against-an-on-premises-endpoint">
+
+Set `root_certificates` to the PEM bundle for the CA that signed the
+endpoint's certificate. Do not reach for `insecure_allow_http`, which
+disables transport security entirely and is meant only for a local test
+double.
+
+</Accordion>
+
+<Accordion title="Builds are slow even though the cache is hitting" id="builds-are-slow-even-though-the-cache-is-hitting">
+
+You're going to the bucket on every read. Check that the store is the `slow`
+half of a `fast_slow` pair and that the `fast` half's `eviction_policy` isn't
+so small it evicts everything before it's re-read.
+
+</Accordion>
+
+<Accordion title="The bucket bill is dominated by requests, not storage" id="the-bucket-bill-is-dominated-by-requests-not-storage">
+
+Same cause. A build cache issues enormous numbers of small existence checks
+and reads; object storage prices those individually. A local fast tier, and
+an [`existence_cache`](/how-to/stores/compose-stores) in front of the slow
+store, are the two levers.
+
+</Accordion>
+
+<Accordion title="Large uploads fail but small ones succeed" id="large-uploads-fail-but-small-ones-succeed">
+
+Objects of 5 MB and above go through multipart upload, so check that the
+credential can `CreateMultipartUpload`, `UploadPart`, `CompleteMultipartUpload`
+and `AbortMultipartUpload`; a policy that only allows `PutObject` breaks
+exactly at that size. Also check `max_retry_buffer_per_request` if you have
+lowered it: a single-request upload larger than the buffer cannot be replayed
+after a transient failure, and setting it to zero disables upload buffering
+entirely, which trades retry safety for memory.
+
+</Accordion>
+
+<Accordion title="Objects exist in the bucket but NativeLink reports them missing" id="objects-exist-in-the-bucket-but-nativelink-reports-them-missing">
+
+Check `consider_expired_after_s`. A non-zero value makes objects older than
+that window invisible on purpose. If you didn't intend that, set it back
+to `0`.
+
+</Accordion>
+
+</Accordions>
+
+<NextStep href="/how-to/stores/compose-stores" title="Compose stores">
+  Deduplication, compression and existence caching in front of the bucket,
+  the layers that decide what it actually costs.
+</NextStep>
+
+<NextStep href="/operate/production-config" kind="aside" title="Production configuration">
+  What this looks like once several processes share the same bucket.
+</NextStep>

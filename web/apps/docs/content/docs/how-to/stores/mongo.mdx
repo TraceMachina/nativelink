@@ -1,0 +1,219 @@
+---
+title: MongoDB
+description: "Back the cache with MongoDB: collections, write concern, timeouts, and what the change-streams flag is for."
+---
+
+{/* archetype: how-to, see /web/apps/docs/templates/how-to.mdx */}
+
+**Who this is for:** anyone who already operates MongoDB. **What you'll have
+at the end:** a Mongo-backed CAS behind a local fast tier. **Time:**
+twenty-five minutes.
+
+<Prerequisites>
+  A config file you can edit (see [Configuration](/configuration)), and a reachable MongoDB deployment.
+</Prerequisites>
+
+Mongo lands between [Redis](/how-to/stores/redis) and
+[object storage](/how-to/stores/s3-and-compatible): durable, shared across
+machines, single-digit milliseconds away, and priced by the cluster you run
+rather than per gigabyte stored. [Storage backends](/how-to/stores) compares
+all of them on the same axes.
+
+## The recipe [#the-recipe]
+
+```json5
+stores: [
+  {
+    name: "CAS_MAIN_STORE",
+    fast_slow: {
+      fast: {
+        memory: {
+          eviction_policy: { max_bytes: "1gb" },
+        },
+      },
+      slow: {
+        experimental_mongo: {
+          connection_string: "${MONGO_URI}",
+          database: "nativelink",
+          cas_collection: "cas",
+          key_prefix: "prod:",
+        },
+      },
+    },
+  },
+],
+```
+
+`connection_string` is the only required field and takes either form Mongo
+accepts, `mongodb://localhost:27017` or
+`mongodb+srv://cluster.mongodb.net` for Atlas. It carries the credentials, so
+keep it in the environment and reference it with `${VAR}`; see
+[The config file](/configuration/config-file).
+
+Everything else has a default: `database` is `nativelink`, `cas_collection` is
+`cas`, `scheduler_collection` is `scheduler`, and `key_prefix` is empty.
+
+<SourceLink file="nativelink-config/src/stores.rs" symbol="ExperimentalMongoSpec" />
+
+## Change streams and the scheduler [#change-streams-and-the-scheduler]
+
+The Mongo store implements the scheduler-store interface, and
+`enable_change_streams: true` is what that interface needs: the store refuses
+to hand out scheduler subscriptions without it. In v1.6.5, though, the `simple`
+scheduler's `experimental_backend` accepts only `memory` and `redis`, so there
+is no config path that puts a Mongo store behind the scheduler. Treat this
+store as a CAS and Action Cache backend, and see
+[Redis](/how-to/stores/redis) for a shared scheduler.
+
+<SourceLink file="nativelink-config/src/schedulers.rs" symbol="ExperimentalSimpleSchedulerBackend" />
+
+Leave `enable_change_streams` off for a store used as a CAS. It buys nothing
+there.
+
+<Callout type="warn" title="Change streams require a replica set">
+  Mongo only offers change streams on a replica set or sharded cluster; a
+  standalone `mongod` cannot serve them, no matter what this flag says. Atlas
+  is always a replica set; a local single-node deployment needs
+  `--replSet` and an initiated set.
+</Callout>
+
+## Options worth setting [#options-worth-setting]
+
+| Field | Default | What it decides |
+| --- | --- | --- |
+| `database` | `nativelink` | Database name |
+| `cas_collection` | `cas` | Collection holding CAS objects |
+| `scheduler_collection` | `scheduler` | Collection holding scheduler state |
+| `key_prefix` | empty | Namespacing when several deployments share one database |
+| `read_chunk_size` | 64 KB | Bytes pulled per chunk when streaming a blob out |
+| `max_requests` | unlimited | Ceiling on concurrent requests to the deployment |
+| `connection_timeout_ms` | 3000 | Applied as both the driver's connect timeout and its server-selection timeout |
+| `command_timeout_ms` | 10000 | Accepted and defaulted, but not applied to any driver option in v1.6.5 |
+| `enable_change_streams` | `false` | Required for scheduler subscriptions, which nothing uses yet (see above) |
+
+Write concern is exposed as three separate fields mirroring Mongo's own:
+`write_concern_w` (a number like `1`, or the string `"majority"`),
+`write_concern_j` (whether to wait for the journal), and
+`write_concern_timeout_ms`. All three are optional and unset means the
+deployment's own default applies, but `write_concern_j` or
+`write_concern_timeout_ms` without `write_concern_w` is rejected at startup.
+For a CAS, `"majority"` is the honest
+setting, because a cache entry acknowledged by one node and then lost to a failover is
+a cache entry a client believes exists.
+
+`max_requests` is the equivalent of Redis's permit ceiling and is unlimited by
+default. Set it if bursts are overwhelming the deployment; queuing in
+NativeLink beats timing out at Mongo. Zero is rejected at startup.
+
+<SourceLink file="nativelink-store/src/mongo_store.rs" symbol="ExperimentalMongoStore::new" />
+
+<Callout type="info" title="`max_concurrent_uploads` is deprecated and unused">
+  It survives in the schema for compatibility. Setting it only logs a warning;
+  use `max_requests` to bound concurrency.
+</Callout>
+
+## Steps [#steps]
+
+<Steps>
+
+<li>
+
+**Provision the deployment**: a replica set if you want writes to survive a
+failover with `"majority"` write concern.
+
+</li>
+
+<li>
+
+**Create a user** with read and write on the database, and put the full
+connection string in the environment rather than the config file.
+
+</li>
+
+<li>
+
+**Add the store**, choosing a `key_prefix` if this database is shared with
+another NativeLink deployment.
+
+</li>
+
+<li>
+
+**Set write concern** to `"majority"` for anything you intend to trust.
+
+</li>
+
+<li>
+
+**Run a build twice**, the second time from a different machine, to confirm the
+store is genuinely shared.
+
+</li>
+
+</Steps>
+
+<VerifyBlock>
+
+- Documents appear in the CAS collection during the first build.
+- A second machine pointed at the same deployment gets cache hits for objects
+  the first one uploaded.
+- No connection or server-selection timeouts in the logs at your normal peak
+  load.
+
+</VerifyBlock>
+
+## When it doesn't work [#when-it-doesnt-work]
+
+<Accordions>
+
+<Accordion title="Can this store back the scheduler?" id="workers-never-pick-up-queued-actions">
+
+Not in v1.6.5. The store implements the scheduler-store interface behind
+`enable_change_streams`, but the `simple` scheduler's `experimental_backend`
+only accepts `memory` and `redis`, so there is nothing to point at it. Use
+[Redis](/how-to/stores/redis) for a shared scheduler.
+
+</Accordion>
+
+<Accordion title="Connection failures against Atlas" id="connection-failures-against-atlas">
+
+Use the `mongodb+srv://` form, and check that the deployment's IP access list
+includes wherever NativeLink runs. An access-list rejection often surfaces as a
+connection timeout rather than as an authorization error.
+
+</Accordion>
+
+<Accordion title="Timeouts under load" id="timeouts-under-load">
+
+Set `max_requests` so concurrency queues in NativeLink instead of arriving all
+at once, then consider raising `connection_timeout_ms`, which also bounds
+server selection. Also check the deployment's own connection limit; Atlas
+tiers cap it low.
+
+</Accordion>
+
+<Accordion title="Cache entries disappear after a failover" id="cache-entries-disappear-after-a-failover">
+
+Write concern. With `write_concern_w` unset or `1`, a write acknowledged by the
+primary can be rolled back when that primary is replaced. Set `"majority"`.
+
+</Accordion>
+
+<Accordion title="Two deployments are seeing each other's entries" id="two-deployments-are-seeing-each-others-entries">
+
+They share a database with no `key_prefix`, or the same one. Give each its own
+prefix, or its own database.
+
+</Accordion>
+
+</Accordions>
+
+<NextStep href="/how-to/stores/compose-stores" title="Compose stores">
+  Putting a local fast tier in front of this one, and the rest of the
+  composition vocabulary.
+</NextStep>
+
+<NextStep href="/how-to/stores/redis" kind="aside" title="Redis">
+  The backend that can hold scheduler state in v1.6.5, if you need several
+  schedulers to share one queue.
+</NextStep>

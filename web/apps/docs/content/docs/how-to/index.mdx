@@ -1,0 +1,73 @@
+---
+title: How-to guides
+description: Pick the task you're doing, not the artifact you're reading about.
+---
+
+{/* archetype: how-to (chooser), see /web/apps/docs/templates/how-to.mdx */}
+
+**Who this is for:** anyone with a running NativeLink who now needs it to do
+one specific thing differently. **What you'll have at the end:** the one page
+that does your task, rather than a tour. **Time:** as long as the task takes.
+
+<Prerequisites>
+  A config file you wrote and understand. See [Configuration](/configuration).
+</Prerequisites>
+
+## How this section works [#how-this-section-works]
+
+Every page here is a task, phrased as the thing you are trying to do. None of
+them is a tour of a subsystem (that's what
+[Concepts](/explanations/architecture) is for), and none of them is an exhaustive
+field list, which is what [Reference](/reference/glossary) is for. A recipe gives you
+the complete working artifact first, then explains only the parts of it you
+have to decide about, then tells you how to tell it worked.
+
+Pages assume you have read [Configuration](/configuration): you have a config
+file and you know which part of it you're editing. If you don't yet, that
+section is worth the detour.
+
+## Pick your task [#pick-your-task]
+
+**I need my cache stored somewhere else.**
+[Storage backends](/how-to/stores) compares every place NativeLink can put
+bytes ([filesystem](/how-to/stores/filesystem),
+[S3 and compatibles](/how-to/stores/s3-and-compatible),
+[GCS](/how-to/stores/gcs), [Azure Blob](/how-to/stores/azure),
+[OCI](/how-to/stores/oci-object-storage), [Redis](/how-to/stores/redis) and
+[Mongo](/how-to/stores/mongo)) on durability, latency and cost.
+[Compose stores](/how-to/stores/compose-stores) is how you layer a fast tier
+over a durable one.
+
+**I need to shrink what I store or send.** See
+[Remote cache compression](/how-to/stores/compression) and
+[Content-defined chunking](/how-to/stores/chunking-and-dedup).
+
+**I need more than one worker.**
+[Run multiple workers](/how-to/run-multiple-workers) is the multi-worker
+topology: how workers share the CAS, how the scheduler picks one, and which
+parts of the shipped example will mislead you.
+
+**I need this to be secure on the network.**
+[TLS and authentication](/how-to/tls-and-auth) covers TLS on the public
+listeners, mutual TLS as the access control, keeping the worker API off the
+public interface, and what NativeLink does not authenticate.
+
+**I need to move to a newer version.**
+[Upgrade to a newer version](/how-to/upgrade-versions) is the upgrade path:
+what actually breaks between releases, the order to move the processes in, and
+what happens to the cache you already have.
+
+**I'm coming from another REAPI cache.**
+[Migrate from another REAPI cache](/how-to/migrate-an-existing-cache) puts
+NativeLink in front of your old one as a read-only diode, so you never copy the
+data and never lose the hit rate.
+
+<NextStep href="/configuration" kind="aside" title="Configuration">
+  If none of these is your task and you're here to learn the config file
+  itself, Configuration is the page you want.
+</NextStep>
+
+<NextStep href="/operate" title="Operate">
+  Recipes get the shape right. The Operate section is what you read once the
+  thing is real and other people depend on it.
+</NextStep>

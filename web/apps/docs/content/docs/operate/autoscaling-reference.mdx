@@ -1,0 +1,691 @@
+---
+title: An autoscaling reference deployment
+description: "The complete Kubernetes deployment that scales workers on queue depth without a human in the loop: every manifest, the reaction-time budget nobody publishes, and the five gaps in the shipped examples you have to close first."
+---
+
+{/* archetype: how-to, see /web/apps/docs/templates/how-to.mdx */}
+
+**Who this is for:** you have run [scaling workers](/operate/scaling-workers) and
+[scaling the CAS](/operate/scaling-cas) by hand, you trust the numbers, and you
+want the pool to size itself. **What you'll have at the end:** a worker
+deployment that grows and shrinks on queue depth, with probes, drain, and
+disruption budgets wired up. **Time:** a day to assemble, a week of watching
+before you trust it.
+
+<Prerequisites>
+  Workers and a CAS you have already sized by hand.
+</Prerequisites>
+
+The two scaling pages tell you *what* to scale on and *why*. This page is the
+deployment: the manifests, the config changes they depend on, and the latency
+between a build backing up and a pod existing.
+
+<Callout type="info" title="Kubernetes deployments ship with Enterprise">
+  The Helm charts for running NativeLink on Kubernetes are part of
+  [NativeLink Enterprise](https://enterprise.nativelink.com). What follows is the
+  reference for assembling worker autoscaling yourself on top of the Kustomize
+  building blocks this repository ships.
+</Callout>
+
+## What ships, and what this page supplies [#what-ships-and-what-this-page-supplies]
+
+Being blunt about this up front, because it changes how you read everything
+below.
+
+**The repository contains no autoscaling artifacts for NativeLink.** It has
+no `HorizontalPodAutoscaler`, no KEDA `ScaledObject`, no VPA, and no metrics
+adapter configuration for any NativeLink workload. The one HPA in the tree
+scales the OpenTelemetry collector, and the one `PodDisruptionBudget` protects
+the same collector. Neither has anything to do with your workers.
+
+Everything on this page is written by these docs against the shipped
+configuration schema and the shipped recording rules. It is a worked reference,
+not a file you can point `kubectl apply` at from a checkout. Treat the YAML as
+a starting shape you adapt, and read the [prerequisites](#five-gaps-you-close-first)
+section before you assume any of it drops onto the shipped manifests unchanged.
+
+<Callout type="warn" title="Read the reaction-time budget before you tune thresholds">
+  The default pipeline puts up to two and a half minutes between a queue spike
+  and an HPA that can see it. Most of that is fixable, and none of it is
+  documented anywhere else. It is the next section, and it is the single thing
+  most likely to make a correct-looking autoscaler behave badly.
+</Callout>
+
+## The reaction-time budget [#the-reaction-time-budget]
+
+The signal an autoscaler reads is not emitted by NativeLink. It is derived,
+several hops downstream, and each hop adds staleness. Here is the whole chain
+with its shipped defaults.
+
+<Mermaid>
+{`flowchart LR
+  A["NativeLink<br/>OTLP periodic export<br/><b>60s default</b>"] --> B["OTel collector<br/>batch processor<br/><b>up to 10s</b>"]
+  B --> C["Prometheus<br/>scrape_interval<br/><b>15s</b>"]
+  C --> D["recording rule<br/>nativelink:queue_depth<br/><b>60s group interval</b>"]
+  D --> E["HPA sync loop<br/><b>15s default</b>"]`}
+</Mermaid>
+
+Worst case, an action that queues right after an export window closes is
+invisible to the HPA for about two and a half minutes. Then the HPA's own
+stabilization window applies on top.
+
+Three of those five hops are yours to fix and two are not worth fixing.
+
+**The export interval is the big one, and it is an environment variable.** The
+binary builds its meter provider with a periodic exporter and never sets an
+interval, so it takes the OpenTelemetry SDK default of 60 seconds. Set
+`OTEL_METRIC_EXPORT_INTERVAL` on the scheduler pod to bring it down.
+
+<SourceLink file="nativelink-util/src/telemetry.rs" symbol="init_tracing" />
+
+**The recording-rule interval is the second.** `nativelink:queue_depth` lives in
+the `nativelink_performance` group in
+`deployment-examples/metrics/prometheus-recording-rules.yml`, and that group is
+declared `interval: 60s`. The execution group next to it uses 30s. Either move
+the rule into a group with a short interval, or skip the recording rule for
+scaling and point the adapter at the raw series.
+
+**The collector batch timeout** is 10 seconds in the shipped collector config
+and is not worth chasing; it overlaps the scrape interval anyway.
+
+<Callout type="warn" title="Do not simply drop the export interval to a few seconds">
+  Every export is a full OTLP push of every instrument. At 5 seconds you are
+  multiplying collector ingest and Prometheus sample volume by twelve for a
+  signal you are going to smooth with a stabilization window regardless. Fifteen
+  seconds is a good default and the point of diminishing returns for most pools.
+</Callout>
+
+## Five gaps you close first [#five-gaps-you-close-first]
+
+The shipped Kubernetes manifests cannot support an HPA as they stand. Not
+because of anything subtle, but because of five specific absences. Each one is a
+short fix and all five are prerequisites.
+
+| Gap | Where | Why it blocks autoscaling |
+| --- | --- | --- |
+| No `resources:` block on the worker container | `kubernetes/components/worker/worker.yaml` | A `Resource`-type HPA metric cannot compute utilization without requests. Scheduling is also unbounded. |
+| `servers: []` in every worker config | `kubernetes/components/worker/worker.json5`, both compose worker configs | A worker process listens on nothing, so there is no port and no path for a readiness or liveness probe. |
+| No `admin: {}` in any `kubernetes/` config | `kubernetes/nativelink/nativelink-config.json5` | The drain endpoint is never registered. Scale-in has no graceful path. |
+| No probes on any NativeLink pod | all shipped manifests | Traffic reaches a CAS that is still doing its startup scan, and rollouts have nothing to gate on. |
+| No PDB, `preStop`, or `terminationGracePeriodSeconds` | all shipped manifests | A scale-in or node drain kills workers mid-action on the default 30-second grace. |
+
+<SourceLink file="nativelink-config/src/cas_server.rs" symbol="AdminConfig" />
+
+## The health endpoint does less than you expect [#the-health-endpoint-does-less-than-you-expect]
+
+Before you write a readiness probe, understand what `/status` actually
+measures, because the answer is surprising in both directions.
+
+Health indicators are registered **only by leaf stores**: memory, filesystem,
+S3, GCS, Azure, Redis, and Mongo. Every composing store (`existence_cache`,
+`verify`, `fast_slow`, `size_partitioning`, `compression`, `dedup`, `shard`,
+`completeness_checking`, `ref_store`) inherits the trait's default
+`register_health`, which does nothing and does **not** recurse into its
+children. The single exception is `cache_metrics`, which forwards registration
+to its backend.
+
+<SourceLink file="nativelink-util/src/store_trait.rs" symbol="StoreDriver" />
+
+That has a sharp consequence. In the shipped Kubernetes config, `CAS_MAIN_STORE`
+is an `existence_cache` at the top and `AC_MAIN_STORE` is a
+`completeness_checking` at the top. Neither registers anything. The health
+registry is empty, `/status` serialises an empty list, and the endpoint returns
+`200 OK` unconditionally, including when the filesystem underneath is gone.
+
+Now the other direction. When a leaf store *is* at the top of a composition,
+what the check costs depends on which leaf it is. The filesystem store (the
+compose example's `AC_MAIN_STORE` is a bare `filesystem`) only `stat`s its
+`content_path`, with a two-second ceiling. GCS does a single `object_exists`
+on a fixed never-present key, Redis sends `PING` under
+`health_check_timeout_ms`, and Mongo pings the database. Memory, S3 and Azure
+fall back to the trait's default, which is a full round trip: it generates
+one megabyte of deterministic data, writes it with `update_oneshot`, calls
+`has`, reads it back, and compares.
+
+<SourceLink file="nativelink-util/src/store_trait.rs" symbol="check_health" />
+<SourceLink file="nativelink-store/src/filesystem_store.rs" symbol="check_health" />
+
+The digest is seeded from the store name, so it is the same blob every time and
+the store does not grow. But against S3 or Azure that is a PUT, a HEAD and a
+GET of a megabyte on every probe, per store, per replica. At a ten-second
+probe period on three replicas that is eighteen megabytes a minute of pure
+probe traffic and a billable request count to match.
+
+`global.default_digest_size_health_check` lowers the payload. The round trip
+itself you cannot turn off short of not enabling the health service. Whatever
+the probe, the endpoint returns `503` if any registered indicator reports
+`failed` or `timeout` (`HealthConfig.timeout_seconds`, default 5 s, bounds
+each check) and `200` otherwise.
+
+<Callout title="What to actually do">
+  Enable `health: {}` and probe it, but size the probe honestly: a period of 30
+  seconds or more on any process whose top-level store does the round trip,
+  and `default_digest_size_health_check` reduced to something like 65536
+  unless you specifically want the megabyte to exercise multipart paths. And
+  do not read a `200` from a composed store as "the store works"; it means
+  "nothing objected," which for most compositions is vacuous.
+</Callout>
+
+## Build the deployment [#build-the-deployment]
+
+<Steps>
+
+<li>
+
+**Make the signal fresh.** Two changes, one on the scheduler pod and one in
+Prometheus.
+
+```yaml
+# scheduler Deployment, container env
+env:
+  - name: OTEL_EXPORTER_OTLP_ENDPOINT
+    value: http://otel-collector-collector.default.svc:4317
+  - name: OTEL_EXPORTER_OTLP_COMPRESSION
+    value: zstd
+  - name: OTEL_METRIC_EXPORT_INTERVAL
+    value: "15000"   # milliseconds; SDK default is 60000
+```
+
+```yaml
+# a rule group of your own, evaluated fast enough to scale on
+groups:
+  - name: nativelink_autoscaling
+    interval: 15s
+    rules:
+      - record: nativelink:queue_depth_fast
+        expr: |
+          sum by (instance_name) (
+            nativelink_execution_active_count{execution_stage="queued"}
+          )
+```
+
+Keep the shipped `nativelink:queue_depth` for dashboards. Scale on the fast
+copy, summed without `execution_priority` so the HPA sees one series per
+instance rather than one per priority band.
+
+</li>
+
+<li>
+
+**Give the worker a server so it can be probed.** Every shipped worker config
+has `servers: []`, which means the process listens on nothing at all. Add a
+minimal server with only the health service on it.
+
+```json5
+servers: [{
+  name: "worker_health",
+  listener: {
+    http: {
+      socket_address: "0.0.0.0:50070",
+    },
+  },
+  services: {
+    health: {},
+  },
+}],
+```
+
+The worker's own stores register health the same way any other process's do.
+In the shipped worker configs the named stores are a `fast_slow` and two
+`grpc` stores, none of which registers an indicator, so the report is empty
+and the endpoint answers `200` whenever the process is up. Read it as a
+liveness signal ("the process is up and serving"), not as a statement about the
+CAS.
+
+</li>
+
+<li>
+
+**Name the worker after its pod.** `LocalWorkerConfig.name` is the prefix of the
+worker id the scheduler assigns, in the form `{name}{uuidv6}`, and it is
+shell-expanded, so the downward API can populate it.
+
+```json5
+workers: [{
+  local: {
+    name: "${POD_NAME:-worker}-",
+    max_inflight_tasks: 16,
+    // ...
+  },
+}],
+```
+
+```yaml
+env:
+  - name: POD_NAME
+    valueFrom:
+      fieldRef:
+        fieldPath: metadata.name
+```
+
+<SourceLink file="nativelink-config/src/cas_server.rs" symbol="LocalWorkerConfig" />
+
+This is what makes a worker id traceable back to a pod, in logs and in the
+`execution_worker_id` metric attribute. You need it for step 7.
+
+</li>
+
+<li>
+
+**Add resources and probes to the worker.**
+
+```yaml
+containers:
+  - name: nativelink-worker
+    image: nativelink-worker
+    ports:
+      - name: health
+        containerPort: 50070
+    resources:
+      requests:
+        cpu: "4"
+        memory: 8Gi
+      limits:
+        memory: 8Gi
+    readinessProbe:
+      httpGet:
+        path: /status
+        port: health
+      periodSeconds: 30
+      failureThreshold: 2
+    livenessProbe:
+      httpGet:
+        path: /status
+        port: health
+      periodSeconds: 30
+      failureThreshold: 4
+```
+
+Set `requests.cpu` to match the concurrency `max_inflight_tasks` implies, not to
+the node size. A CPU limit is deliberately absent: a compile that gets throttled
+at the cgroup boundary shows up as a slow action rather than a failure, which is
+harder to diagnose than an occasional noisy neighbour.
+
+</li>
+
+<li>
+
+**Enable the admin service on the scheduler.** It is a service entry, and it is
+absent from every `kubernetes/` config. Put it on the worker-API server block,
+which is already on its own port and its own permission boundary.
+
+```json5
+{
+  listener: {
+    http: {
+      socket_address: "0.0.0.0:50061",
+    },
+  },
+  services: {
+    worker_api: {
+      scheduler: "MAIN_SCHEDULER",
+    },
+    admin: {},
+    health: {},
+  },
+},
+```
+
+<Callout type="warn" title="The admin path has no authentication">
+  The drain route is plain HTTP with no auth of any kind. Keep it on the
+  internal worker-API port, keep that port off any Ingress, and restrict it with
+  a NetworkPolicy to the namespace that runs your drain job.
+</Callout>
+
+</li>
+
+<li>
+
+**Wire the external metric to an HPA.** Kubernetes cannot read Prometheus
+directly; something has to serve the `external.metrics.k8s.io` API. Nothing in
+the repository does this, so this is a Prometheus Adapter configuration written
+for the purpose.
+
+```yaml
+# prometheus-adapter values
+rules:
+  external:
+    - seriesQuery: 'nativelink:queue_depth_fast'
+      resources:
+        overrides:
+          namespace: {resource: "namespace"}
+      name:
+        matches: "^nativelink:queue_depth_fast$"
+        as: "nativelink_queue_depth"
+      metricsQuery: 'max(<<.Series>>{<<.LabelMatchers>>})'
+```
+
+```yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: nativelink-worker
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: nativelink-worker
+  minReplicas: 3
+  maxReplicas: 60
+  metrics:
+    - type: External
+      external:
+        metric:
+          name: nativelink_queue_depth
+        target:
+          type: AverageValue
+          averageValue: "8"
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 30
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 60
+        - type: Pods
+          value: 8
+          periodSeconds: 60
+      selectPolicy: Max
+    scaleDown:
+      stabilizationWindowSeconds: 600
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 120
+```
+
+`AverageValue: "8"` means "aim for eight queued actions per worker": the HPA
+divides the metric by the replica count, so the target is a per-worker backlog
+rather than an absolute queue length. Pick the number from the per-worker
+throughput you measured in [scaling workers](/operate/scaling-workers); eight is
+a placeholder, not a recommendation.
+
+The asymmetry between the windows is deliberate and matters more than the
+thresholds. Scaling up fast costs money. Scaling down fast costs work, because
+every worker you remove mid-action produces retries.
+
+</li>
+
+<li>
+
+**Drain on scale-in, as far as the API allows.** This is the part where honesty
+is more useful than a clean recipe.
+
+The drain endpoint takes a worker id the pod does not know at startup; the
+scheduler generates it at registration and returns it over the wire (the
+worker logs it once, in its `Worker registered with scheduler` line).
+
+```
+POST {admin_path}/scheduler/{scheduler_name}/set_drain_worker/{worker_id}/1
+```
+
+The second path segment is the scheduler's `name` from the `schedulers` list
+(`MAIN_SCHEDULER` in the shipped config), not the REAPI instance name. Because
+you set `name` to the pod name in step 3, the id is discoverable: it is the
+`execution_worker_id` label on the execution series the scheduler emits for
+that worker's actions, prefixed with the pod name.
+`nativelink_execution_active_count` does not carry that label (it is
+attributed by stage only); `nativelink_execution_stage_transitions_total` and
+`nativelink_execution_completed_count_total` do. A `preStop` hook can look it
+up and call drain.
+
+```yaml
+terminationGracePeriodSeconds: 1800
+lifecycle:
+  preStop:
+    exec:
+      command:
+        - /bin/sh
+        - -c
+        - |
+          WID=$(wget -qO- "http://prometheus:9090/api/v1/query?query=\
+          nativelink_execution_stage_transitions_total%7Bexecution_worker_id%3D~%5C%22\
+          ${POD_NAME}-.%2A%5C%22%7D" \
+            | sed -n 's/.*"execution_worker_id":"\([^"]*\)".*/\1/p' | head -1)
+          if [ -n "$WID" ]; then
+            wget -qO- --post-data='' \
+              "http://nativelink:50061/admin/scheduler/MAIN_SCHEDULER/set_drain_worker/$WID/1"
+          fi
+          sleep 1500
+```
+
+Three caveats, all of which you should weigh before adopting this.
+
+It only finds an id once that worker has reported at least one action to the
+scheduler since the scheduler started; the counter it queries is cumulative,
+so a worker that ran something an hour ago is still findable. A worker that
+has never run anything has no series, the lookup returns nothing, and the
+hook falls through, which is harmless, because such a worker has nothing to
+drain.
+
+It depends on Prometheus being reachable and current from inside a terminating
+pod. If that is unacceptable in your environment, drop the lookup and rely on
+`terminationGracePeriodSeconds` alone.
+
+The `sleep` is what actually holds the pod open while in-flight actions finish;
+the drain call only stops new work arriving. Size the grace period to your
+longest action, and cross-check it against `max_action_timeout_s` on the
+worker.
+
+<Callout title="Without any of this, work is still not lost">
+  A worker that disappears mid-action has its actions requeued with worker
+  affinity cleared, up to `max_job_retries`. Drain turns a retry storm into a
+  clean handover; it is not the difference between correct and incorrect.
+</Callout>
+
+</li>
+
+<li>
+
+**Protect the pool from everything that isn't the HPA.** Voluntary disruptions
+(node upgrades, cluster autoscaler consolidation) will otherwise take workers
+out in parallel with your scale-in.
+
+```yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: nativelink-worker
+spec:
+  minAvailable: 50%
+  selector:
+    matchLabels:
+      app: nativelink-worker
+---
+# in the worker pod spec
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        app: nativelink-worker
+```
+
+The shipped worker manifest has neither, so `replicas: 3` can and does land
+three workers on one node.
+
+</li>
+
+<li>
+
+**Leave the CAS out of the autoscaler.** The HPA scales workers and nothing
+else. A CAS process holds per-process state that makes a second replica a
+project rather than a replica count; [scaling the CAS](/operate/scaling-cas)
+covers which state and why. What the CAS needs from this deployment is a
+readiness probe with enough patience for its startup scan.
+
+```yaml
+readinessProbe:
+  httpGet:
+    path: /status
+    port: 50061
+  periodSeconds: 10
+  failureThreshold: 60      # ten minutes of scan
+  initialDelaySeconds: 10
+```
+
+The filesystem store walks its entire content directory before the process binds
+any socket, so during a restart the probe gets connection-refused rather than a
+`503`. A short `failureThreshold` turns a slow restart into a crash loop.
+
+</li>
+
+</Steps>
+
+<VerifyBlock>
+
+- `kubectl get --raw "/apis/external.metrics.k8s.io/v1beta1/namespaces/default/nativelink_queue_depth"`
+  returns a value, and it changes within about thirty seconds of a build
+  starting. If it is flat or missing, the adapter rule is wrong.
+- `kubectl describe hpa nativelink-worker` shows the current metric and a recent
+  scaling event, not `unable to fetch metrics`.
+- Starting a large build grows the pool, and the queue drains rather than
+  plateauing. A queue that stays deep while replicas sit at `maxReplicas` means
+  the ceiling, not the policy, is the constraint.
+- After the build, replicas fall back to `minReplicas` in one or two steps
+  spread over minutes, not immediately, and not in a single jump.
+- Scale-in does not coincide with a spike in retried actions. If it does, the
+  `preStop` hook isn't finding the worker id.
+- `kubectl drain` on a worker node evicts at most half the pool at once.
+- Restarting the CAS produces a pod that stays `NotReady` for the duration of
+  its scan and then goes `Ready` once, not a `CrashLoopBackOff`.
+
+</VerifyBlock>
+
+## What this deployment does not do [#what-this-deployment-does-not-do]
+
+Worth stating so the gaps are choices rather than surprises.
+
+**It does not scale the CAS or the scheduler.** Both are single-replica in this
+reference. The scheduler's default backend is in-memory, so a second scheduler
+is a second independent queue, not a bigger one.
+
+**It does not do predictive or scheduled scaling.** Queue depth is reactive by
+construction: pods start after work is already waiting. If your builds arrive on
+a known schedule, a `CronJob` that raises `minReplicas` before the wave beats any
+metric-driven policy.
+
+**It does not give you node capacity.** An HPA creates pods; something has to
+create nodes. Cluster Autoscaler or Karpenter underneath, sized so that
+`maxReplicas` is actually reachable.
+
+**It does not survive a move to the Redis scheduler backend.**
+`execution.active.count`, the series this whole page depends on, is emitted
+only by the in-memory awaited-action store.
+Under `experimental_backend`, the queue-depth series is not emitted at all and
+the HPA has nothing to read.
+
+## When it doesn't work [#when-it-doesnt-work]
+
+<Accordions>
+
+<Accordion title="The HPA reports `unable to fetch metrics` for the external metric" id="the-hpa-reports-unable-to-fetch-metrics-for-the-external-metric">
+
+Work backwards along the chain. Query the recording rule in Prometheus directly;
+if it returns nothing, the problem is upstream of Kubernetes entirely and the
+adapter is fine. If the rule returns data but the adapter doesn't, the usual
+cause is the `resources.overrides` block: external metrics still need a
+namespace association, and a series with no `namespace` label cannot be matched
+to one. Add a `namespace` label in the recording rule or via collector
+attributes.
+
+</Accordion>
+
+<Accordion title="The pool scales up long after the build has started" id="the-pool-scales-up-long-after-the-build-has-started">
+
+Sum the reaction-time budget for your actual configuration. The two defaults
+that dominate are the 60-second OTLP export interval and the 60-second interval
+on the shipped `nativelink_performance` rule group. If you skipped step 1, those
+two alone put you two minutes behind.
+
+</Accordion>
+
+<Accordion title="Replicas oscillate (up, down, up) during one build" id="replicas-oscillate--up-down-up--during-one-build">
+
+Almost always a `scaleDown` stabilization window that is too short relative to
+how bursty the graph is. Large builds have natural lulls between phases;
+`scaleDown.stabilizationWindowSeconds: 600` exists to ride through them. If it
+still oscillates at ten minutes, the target `averageValue` is close to your
+steady-state backlog, so small changes cross the threshold in both directions.
+Raise the target.
+
+</Accordion>
+
+<Accordion title="Scale-in produces a burst of retried actions every time" id="scale-in-produces-a-burst-of-retried-actions-every-time">
+
+The `preStop` hook is not resolving a worker id. Check that `POD_NAME` reaches
+the config: with the `${POD_NAME:-worker}` form above, a missing variable
+falls back to the literal default rather than failing loudly, and every worker
+ends up with the same prefix. Confirm by looking at the `execution_worker_id` label values in
+Prometheus: they should each begin with a distinct pod name.
+
+</Accordion>
+
+<Accordion title="Workers restart repeatedly under load with no obvious error" id="workers-restart-repeatedly-under-load-with-no-obvious-error">
+
+The liveness probe. `/status` on a process whose registered leaf store is
+memory, S3 or Azure does a full write, has and read round trip per store, and
+under load that queues behind real traffic; each check is also cut off at
+`HealthConfig.timeout_seconds` (default 5 s) and reported as `timeout`, which
+the endpoint turns into a `503`. With `periodSeconds: 30` and
+`failureThreshold: 4` you have two minutes of grace; anything much tighter
+kills healthy workers whose only problem is a congested store. Lower
+`global.default_digest_size_health_check` from its one-megabyte default as
+well. (A worker on the shipped configs registers no indicator at all, so if
+its probe fails the process itself is not answering.)
+
+</Accordion>
+
+<Accordion title="The readiness probe passes but builds fail against that pod" id="the-readiness-probe-passes-but-builds-fail-against-that-pod">
+
+Expected, if the store at the top of the composition is a wrapper. An
+`existence_cache` or `completeness_checking` at the top registers no health
+indicator, the report is empty, and the endpoint returns `200` regardless of
+what is underneath. Either accept the probe as a liveness check only, or restructure
+so that a leaf store (or a `cache_metrics` wrapper, which forwards registration)
+sits where the registry will see it.
+
+</Accordion>
+
+<Accordion title="Pods are `Pending` while the queue keeps growing" id="pods-are-pending-while-the-queue-keeps-growing">
+
+The HPA is doing its job and the cluster has no room. Check the node autoscaler
+and whether `resources.requests` on the worker fits the instance types it can
+provision. A worker requesting four CPUs and 8 GiB will never schedule on a
+two-CPU node pool, and the HPA has no visibility into that.
+
+</Accordion>
+
+<Accordion title="Scale-down never happens even when the pool is idle" id="scale-down-never-happens-even-when-the-pool-is-idle">
+
+Check whether the metric is going to zero or merely to a small non-zero value.
+`nativelink_execution_active_count` is an up-down counter; a stuck or abandoned
+operation can leave a queued action counted indefinitely, which pins the HPA
+above `minReplicas`. Compare the metric against the actual scheduler state before
+assuming the policy is wrong.
+
+</Accordion>
+
+<Accordion title="Everything works in staging and the adapter fails in production" id="everything-works-in-staging-and-the-adapter-fails-in-production">
+
+Usually multiple instance names. The shipped recording rule sums by
+`instance_name`, so a cluster serving several instances produces several series,
+and an adapter rule without an aggregation returns an ambiguous match. The
+`max(<<.Series>>{<<.LabelMatchers>>})` in the `metricsQuery` above collapses
+them; if you want per-instance pools, give each its own HPA and select on
+`instance_name` in the label matchers instead.
+
+</Accordion>
+
+</Accordions>
+
+<NextStep href="/operate/observability" title="Observability">
+  The pipeline this deployment reads from: how metrics get from the binary to
+  Prometheus, what the catalog contains, and what the shipped dashboards show.
+</NextStep>
+
+<NextStep href="/operate/tuning" kind="aside" title="Tuning">
+  The lever table. Once the pool sizes itself, tuning is what decides how much
+  each of those pods is worth.
+</NextStep>
