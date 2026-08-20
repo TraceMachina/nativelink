@@ -12,9 +12,9 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: {
     default: "NativeLink Docs",
-    template: "%s — NativeLink Docs",
+    template: "%s | NativeLink Docs",
   },
-  description: "Documentation for NativeLink — high-performance remote build cache & execution.",
+  description: "Documentation for NativeLink, a high-performance remote build cache and execution service.",
   metadataBase: new URL("https://docs.nativelink.com"),
 };
 

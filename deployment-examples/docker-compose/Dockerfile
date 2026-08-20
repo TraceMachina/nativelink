@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1
+
 # Copyright 2022-2025 The NativeLink Authors. All rights reserved.
 #
 # Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
@@ -62,7 +64,8 @@ COPY . .
 ARG OPT_LEVEL
 ARG ADDITIONAL_BAZEL_FLAGS
 # Add startup options to prevent Bazel server issues on ARM64
-RUN bazel-retry \
+RUN --mount=type=secret,id=nativelink-bazelrc,target=/root/nativelink/user.bazelrc \
+    bazel-retry \
     --batch \
     --output_base=/tmp/bazel_output \
     build -c ${OPT_LEVEL} ${ADDITIONAL_BAZEL_FLAGS} nativelink && \
@@ -75,7 +78,7 @@ COPY --from=builder /root/nativelink-bin /usr/local/bin/nativelink
 ARG ADDITIONAL_SETUP_WORKER_CMD
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl=8.5.0-2ubuntu10.11 \
+    && apt-get install -y --no-install-recommends curl=8.5.0-2ubuntu10.12 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
     && bash -ueo pipefail -c "${ADDITIONAL_SETUP_WORKER_CMD}" \

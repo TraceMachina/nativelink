@@ -49,6 +49,9 @@ jobs:
                 && secrets.NATIVELINK_STAGING_API_KEY_RW
                 || secrets.NATIVELINK_STAGING_API_KEY_RO }}
           mode: ${{ github.event_name == 'push' && 'write' || 'read' }}
+          # Remote execution only on Linux; the action hard-fails exec on
+          # non-Linux runners, so macOS lanes fall back to cache.
+          exec: ${{ runner.os == 'Linux' && 'on' || 'off' }}
 
       - name: Invoke Bazel build in Nix shell
         run: |

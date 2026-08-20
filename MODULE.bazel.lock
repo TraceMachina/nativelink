@@ -22,7 +22,6 @@
     "https://bcr.bazel.build/modules/apple_support/1.24.2/MODULE.bazel": "0e62471818affb9f0b26f128831d5c40b074d32e6dda5a0d3852847215a41ca4",
     "https://bcr.bazel.build/modules/apple_support/1.24.2/source.json": "2c22c9827093250406c5568da6c54e6fdf0ef06238def3d99c71b12feb057a8d",
     "https://bcr.bazel.build/modules/aspect_tools_telemetry/0.3.3/MODULE.bazel": "37c764292861c2f70314efa9846bb6dbb44fc0308903b3285da6528305450183",
-    "https://bcr.bazel.build/modules/aspect_tools_telemetry/0.3.3/source.json": "605086bbc197743a0d360f7ddc550a1d4dfa0441bc807236e17170f636153348",
     "https://bcr.bazel.build/modules/bazel_features/1.1.1/MODULE.bazel": "27b8c79ef57efe08efccbd9dd6ef70d61b4798320b8d3c134fd571f78963dbcd",
     "https://bcr.bazel.build/modules/bazel_features/1.10.0/MODULE.bazel": "f75e8807570484a99be90abcd52b5e1f390362c258bcb73106f4544957a48101",
     "https://bcr.bazel.build/modules/bazel_features/1.11.0/MODULE.bazel": "f9382337dd5a474c3b7d334c2f83e50b6eaedc284253334cf823044a26de03e8",
@@ -88,9 +87,10 @@
     "https://bcr.bazel.build/modules/jsoncpp/1.9.6/source.json": "a04756d367a2126c3541682864ecec52f92cdee80a35735a3cb249ce015ca000",
     "https://bcr.bazel.build/modules/libpfm/4.11.0/MODULE.bazel": "45061ff025b301940f1e30d2c16bea596c25b176c8b6b3087e92615adbd52902",
     "https://bcr.bazel.build/modules/llvm/0.7.7/MODULE.bazel": "0eeaf1814feca77abc7af3523e2b9d3735f92e2583043f8d6a2cc0fb5f479a28",
+    "https://bcr.bazel.build/modules/llvm/0.8.15/MODULE.bazel": "2a6f808abd87d6037a435d98816b46ccb4773caa4b1923dea5c02d0a21c9dc19",
+    "https://bcr.bazel.build/modules/llvm/0.8.15/source.json": "994db3a9052966be153f329219ee9ef163ecbc1e505bbd78079af14c1e24f767",
     "https://bcr.bazel.build/modules/llvm/0.8.3/MODULE.bazel": "dbc1bc13171f8f9980a75524883abef1c491613e8d8d805cd4ffa3767ba9708e",
     "https://bcr.bazel.build/modules/llvm/0.8.9/MODULE.bazel": "9e35ff5bcac996f9edc1b44b8f8baa58c7855e742c5608b07d925dcdbe642100",
-    "https://bcr.bazel.build/modules/llvm/0.8.9/source.json": "424b907b38875f1346b65946e5e482b202b842bd3a570abbe07047d2bc7d667b",
     "https://bcr.bazel.build/modules/nlohmann_json/3.6.1/MODULE.bazel": "6f7b417dcc794d9add9e556673ad25cb3ba835224290f4f848f8e2db1e1fca74",
     "https://bcr.bazel.build/modules/package_metadata/0.0.3/MODULE.bazel": "77890552ecea9e284b5424c9de827a58099348763a4359e975c359a83d4faa83",
     "https://bcr.bazel.build/modules/package_metadata/0.0.7/MODULE.bazel": "7adb03933fc8401f495800cf4eafcff0edc6da0ff55c7db223ef69d19f689486",
@@ -146,7 +146,8 @@
     "https://bcr.bazel.build/modules/rules_cc/0.2.17/MODULE.bazel": "1849602c86cb60da8613d2de887f9566a6d354a6df6d7009f9d04a14402f9a84",
     "https://bcr.bazel.build/modules/rules_cc/0.2.18/MODULE.bazel": "4460ec36adc8f722a6a2a4ac9374cb91f2acebadaa93fc37966129afb3dece87",
     "https://bcr.bazel.build/modules/rules_cc/0.2.19/MODULE.bazel": "d5e0f05b63273281a16654eb6b1a8742a75ec153ac8b4f0419949d6e401e46f0",
-    "https://bcr.bazel.build/modules/rules_cc/0.2.19/source.json": "1ef48cdbd7aa6238015189b582d3d74ef0cbea3cb3e2cb259d782463f570c14a",
+    "https://bcr.bazel.build/modules/rules_cc/0.2.20/MODULE.bazel": "f5c07bce5ddcb99be21a0812ff5aadb439e688b7449c6542152363b2fd859c1a",
+    "https://bcr.bazel.build/modules/rules_cc/0.2.20/source.json": "1155433dc6b8161bc339ce94095b337ed95feb1f048b014e10b62339d4b4239c",
     "https://bcr.bazel.build/modules/rules_cc/0.2.4/MODULE.bazel": "1ff1223dfd24f3ecf8f028446d4a27608aa43c3f41e346d22838a4223980b8cc",
     "https://bcr.bazel.build/modules/rules_cc/0.2.8/MODULE.bazel": "f1df20f0bf22c28192a794f29b501ee2018fa37a3862a1a2132ae2940a23a642",
     "https://bcr.bazel.build/modules/rules_foreign_cc/0.9.0/MODULE.bazel": "c9e8c682bf75b0e7c704166d79b599f93b72cfca5ad7477df596947891feeef6",
@@ -200,9 +201,9 @@
     "https://bcr.bazel.build/modules/rules_python/1.7.0/MODULE.bazel": "d01f995ecd137abf30238ad9ce97f8fc3ac57289c8b24bd0bf53324d937a14f8",
     "https://bcr.bazel.build/modules/rules_python/2.0.0/MODULE.bazel": "1459089e2d4194d2a49e07896f5334fb230a8f2966ae945b1f793bef87a292fd",
     "https://bcr.bazel.build/modules/rules_python/2.0.0/source.json": "b8e25661f58c573e5e27af21295867e87766e89211f326fcb84034e6e6b6794b",
+    "https://bcr.bazel.build/modules/rules_rs/0.0.102/MODULE.bazel": "6c64a272531e59dc2a55726117a4ca3161c6301fd69af3bd1038465730e86632",
+    "https://bcr.bazel.build/modules/rules_rs/0.0.102/source.json": "e0bb950a7126037e2bf5b341e88012fd393d68715489dccce54780f50e6df9ca",
     "https://bcr.bazel.build/modules/rules_rs/0.0.82/MODULE.bazel": "fb58eade192a4b957f6e697bdd665861e80acbd504eb1129e84c57cb54f8cba4",
-    "https://bcr.bazel.build/modules/rules_rs/0.0.96/MODULE.bazel": "678fdcee5a9847611276770eab47190dda04a41973b7bf6037e50a3f98e49e09",
-    "https://bcr.bazel.build/modules/rules_rs/0.0.96/source.json": "2b52d3d209324bd4aaa4896aa0e8b28d0123856b4ade32ebd7bf24b4fded6f12",
     "https://bcr.bazel.build/modules/rules_shell/0.2.0/MODULE.bazel": "fda8a652ab3c7d8fee214de05e7a9916d8b28082234e8d2c0094505c5268ed3c",
     "https://bcr.bazel.build/modules/rules_shell/0.3.0/MODULE.bazel": "de4402cd12f4cc8fda2354fce179fdb068c0b9ca1ec2d2b17b3e21b24c1a937b",
     "https://bcr.bazel.build/modules/rules_shell/0.4.1/MODULE.bazel": "00e501db01bbf4e3e1dd1595959092c2fadf2087b2852d3f553b5370f5633592",
@@ -235,27 +236,6 @@
   },
   "selectedYankedVersions": {},
   "moduleExtensions": {
-    "@@aspect_tools_telemetry+//:extension.bzl%telemetry": {
-      "general": {
-        "bzlTransitiveDigest": "cl5A2O84vDL6Tt+Qga8FCj1DUDGqn+e7ly5rZ+4xvcc=",
-        "usagesDigest": "Miy0EWu0H7wJMzfdekpzuz3TBOzJz0l6aNIq2pL6k2g=",
-        "recordedInputs": [
-          "REPO_MAPPING:aspect_tools_telemetry+,bazel_lib bazel_lib+",
-          "REPO_MAPPING:aspect_tools_telemetry+,bazel_skylib bazel_skylib+"
-        ],
-        "generatedRepoSpecs": {
-          "aspect_tools_telemetry_report": {
-            "repoRuleId": "@@aspect_tools_telemetry+//:extension.bzl%tel_repository",
-            "attributes": {
-              "deps": {
-                "rules_rs": "0.0.96",
-                "aspect_tools_telemetry": "0.3.3"
-              }
-            }
-          }
-        }
-      }
-    },
     "@@local-remote-execution+//rust:extension.bzl%lre_rs": {
       "general": {
         "bzlTransitiveDigest": "uG+JZDxQyPELNihTm54EkV+15PXyp8wI4w/Peu5bXa4=",
@@ -965,6 +945,7 @@
       "jobserver_0.1.34": "{\"dependencies\":[{\"features\":[\"std\"],\"name\":\"getrandom\",\"req\":\"^0.3.2\",\"target\":\"cfg(windows)\"},{\"name\":\"libc\",\"req\":\"^0.2.171\",\"target\":\"cfg(unix)\"},{\"features\":[\"fs\"],\"kind\":\"dev\",\"name\":\"nix\",\"req\":\"^0.28.0\",\"target\":\"cfg(unix)\"},{\"kind\":\"dev\",\"name\":\"tempfile\",\"req\":\"^3.10.1\"}],\"features\":{}}",
       "js-sys_0.3.102": "{\"dependencies\":[{\"name\":\"cfg-if\",\"req\":\"^1.0.0\"},{\"kind\":\"dev\",\"name\":\"futures-channel\",\"req\":\"^0.3\",\"target\":\"cfg(target_arch = \\\"wasm32\\\")\"},{\"default_features\":false,\"name\":\"futures-core\",\"optional\":true,\"req\":\"^0.3.8\"},{\"default_features\":false,\"kind\":\"dev\",\"name\":\"futures-lite\",\"req\":\"^2\",\"target\":\"cfg(target_arch = \\\"wasm32\\\")\"},{\"default_features\":false,\"features\":[\"std\"],\"name\":\"futures-util\",\"optional\":true,\"req\":\"^0.3.31\"},{\"kind\":\"dev\",\"name\":\"half\",\"req\":\"^2\",\"target\":\"cfg(target_arch = \\\"wasm32\\\")\"},{\"default_features\":false,\"name\":\"wasm-bindgen\",\"req\":\"=0.2.125\"}],\"features\":{\"default\":[\"std\",\"unsafe-eval\"],\"futures-core-03-stream\":[\"dep:futures-util\",\"dep:futures-core\"],\"std\":[\"wasm-bindgen/std\",\"dep:futures-util\"],\"unsafe-eval\":[]}}",
       "js-sys_0.3.82": "{\"dependencies\":[{\"default_features\":false,\"name\":\"once_cell\",\"req\":\"^1.12\"},{\"default_features\":false,\"name\":\"wasm-bindgen\",\"req\":\"=0.2.105\"}],\"features\":{\"default\":[\"std\"],\"std\":[\"wasm-bindgen/std\"]}}",
+      "jsonc-parser_0.26.2": "{\"dependencies\":[{\"name\":\"indexmap\",\"optional\":true,\"req\":\"^2.2.6\"},{\"kind\":\"dev\",\"name\":\"pretty_assertions\",\"req\":\"^1.0.0\"},{\"name\":\"serde_json\",\"optional\":true,\"req\":\"^1.0\"},{\"name\":\"unicode-width\",\"optional\":true,\"req\":\"^0.2.0\"}],\"features\":{\"cst\":[],\"error_unicode_width\":[\"unicode-width\"],\"preserve_order\":[\"indexmap\",\"serde_json/preserve_order\"],\"serde\":[\"serde_json\"]}}",
       "jsonwebtoken_10.3.0": "{\"dependencies\":[{\"name\":\"aws-lc-rs\",\"optional\":true,\"req\":\"^1.15.0\"},{\"name\":\"base64\",\"req\":\"^0.22\"},{\"default_features\":false,\"kind\":\"dev\",\"name\":\"criterion\",\"req\":\"^0.8\",\"target\":\"cfg(all(target_arch = \\\"wasm32\\\", not(any(target_os = \\\"emscripten\\\", target_os = \\\"wasi\\\"))))\"},{\"kind\":\"dev\",\"name\":\"criterion\",\"req\":\"^0.8\",\"target\":\"cfg(not(all(target_arch = \\\"wasm32\\\", not(any(target_os = \\\"emscripten\\\", target_os = \\\"wasi\\\")))))\"},{\"features\":[\"pkcs8\"],\"name\":\"ed25519-dalek\",\"optional\":true,\"req\":\"^2.1.1\"},{\"features\":[\"pkcs8\",\"rand_core\"],\"kind\":\"dev\",\"name\":\"ed25519-dalek\",\"req\":\"^2.1.1\"},{\"name\":\"getrandom\",\"req\":\"^0.2\",\"target\":\"cfg(target_arch = \\\"wasm32\\\")\"},{\"name\":\"hmac\",\"optional\":true,\"req\":\"^0.12.1\"},{\"name\":\"js-sys\",\"req\":\"^0.3\",\"target\":\"cfg(target_arch = \\\"wasm32\\\")\"},{\"features\":[\"ecdsa\"],\"name\":\"p256\",\"optional\":true,\"req\":\"^0.13.2\"},{\"features\":[\"ecdsa\"],\"name\":\"p384\",\"optional\":true,\"req\":\"^0.13.0\"},{\"name\":\"pem\",\"optional\":true,\"req\":\"^3\"},{\"default_features\":false,\"features\":[\"std\"],\"name\":\"rand\",\"optional\":true,\"req\":\"^0.8.5\"},{\"default_features\":false,\"features\":[\"std\"],\"kind\":\"dev\",\"name\":\"rand\",\"req\":\"^0.8.5\"},{\"kind\":\"dev\",\"name\":\"rand_core\",\"req\":\"^0.6.4\"},{\"name\":\"rsa\",\"optional\":true,\"req\":\"^0.9.6\"},{\"features\":[\"derive\"],\"name\":\"serde\",\"req\":\"^1.0.228\"},{\"name\":\"serde_json\",\"req\":\"^1.0\"},{\"features\":[\"oid\"],\"name\":\"sha2\",\"optional\":true,\"req\":\"^0.10.7\"},{\"features\":[\"std\"],\"name\":\"signature\",\"req\":\"^2.2.0\"},{\"name\":\"simple_asn1\",\"optional\":true,\"req\":\"^0.6\"},{\"features\":[\"wasm-bindgen\"],\"kind\":\"dev\",\"name\":\"time\",\"req\":\"^0.3\",\"target\":\"cfg(all(target_arch = \\\"wasm32\\\", not(any(target_os = \\\"emscripten\\\", target_os = \\\"wasi\\\"))))\"},{\"kind\":\"dev\",\"name\":\"time\",\"req\":\"^0.3\",\"target\":\"cfg(not(all(target_arch = \\\"wasm32\\\", not(any(target_os = \\\"emscripten\\\", target_os = \\\"wasi\\\")))))\"},{\"kind\":\"dev\",\"name\":\"wasm-bindgen-test\",\"req\":\"^0.3.1\"}],\"features\":{\"aws_lc_rs\":[\"aws-lc-rs\"],\"default\":[\"use_pem\"],\"rust_crypto\":[\"ed25519-dalek\",\"hmac\",\"p256\",\"p384\",\"rand\",\"rsa\",\"sha2\"],\"use_pem\":[\"pem\",\"simple_asn1\"]}}",
       "lazy_static_1.5.0": "{\"dependencies\":[{\"kind\":\"dev\",\"name\":\"doc-comment\",\"req\":\"^0.3.1\"},{\"default_features\":false,\"features\":[\"once\"],\"name\":\"spin\",\"optional\":true,\"req\":\"^0.9.8\"},{\"kind\":\"dev\",\"name\":\"trybuild\",\"req\":\"^1\"}],\"features\":{\"spin_no_std\":[\"spin\"]}}",
       "leb128_0.2.6": "{\"dependencies\":[{\"kind\":\"dev\",\"name\":\"quickcheck\",\"req\":\"^1.1\"}],\"features\":{\"nightly\":[]}}",
@@ -981,6 +962,7 @@
       "log_0.4.29": "{\"dependencies\":[{\"default_features\":false,\"kind\":\"dev\",\"name\":\"proc-macro2\",\"req\":\"^1.0.63\"},{\"features\":[\"derive\"],\"kind\":\"dev\",\"name\":\"serde\",\"req\":\"^1.0\"},{\"default_features\":false,\"name\":\"serde_core\",\"optional\":true,\"req\":\"^1.0\"},{\"kind\":\"dev\",\"name\":\"serde_json\",\"req\":\"^1.0\"},{\"kind\":\"dev\",\"name\":\"serde_test\",\"req\":\"^1.0\"},{\"default_features\":false,\"name\":\"sval\",\"optional\":true,\"req\":\"^2.16\"},{\"kind\":\"dev\",\"name\":\"sval\",\"req\":\"^2.16\"},{\"kind\":\"dev\",\"name\":\"sval_derive\",\"req\":\"^2.16\"},{\"default_features\":false,\"name\":\"sval_ref\",\"optional\":true,\"req\":\"^2.16\"},{\"default_features\":false,\"features\":[\"inline-i128\"],\"name\":\"value-bag\",\"optional\":true,\"req\":\"^1.12\"},{\"features\":[\"test\"],\"kind\":\"dev\",\"name\":\"value-bag\",\"req\":\"^1.12\"}],\"features\":{\"kv\":[],\"kv_serde\":[\"kv_std\",\"value-bag/serde\",\"serde\"],\"kv_std\":[\"std\",\"kv\",\"value-bag/error\"],\"kv_sval\":[\"kv\",\"value-bag/sval\",\"sval\",\"sval_ref\"],\"kv_unstable\":[\"kv\",\"value-bag\"],\"kv_unstable_serde\":[\"kv_serde\",\"kv_unstable_std\"],\"kv_unstable_std\":[\"kv_std\",\"kv_unstable\"],\"kv_unstable_sval\":[\"kv_sval\",\"kv_unstable\"],\"max_level_debug\":[],\"max_level_error\":[],\"max_level_info\":[],\"max_level_off\":[],\"max_level_trace\":[],\"max_level_warn\":[],\"release_max_level_debug\":[],\"release_max_level_error\":[],\"release_max_level_info\":[],\"release_max_level_off\":[],\"release_max_level_trace\":[],\"release_max_level_warn\":[],\"serde\":[\"serde_core\"],\"std\":[]}}",
       "log_0.4.30": "{\"dependencies\":[{\"default_features\":false,\"kind\":\"dev\",\"name\":\"proc-macro2\",\"req\":\"^1.0.63\"},{\"features\":[\"derive\"],\"kind\":\"dev\",\"name\":\"serde\",\"req\":\"^1.0\"},{\"default_features\":false,\"name\":\"serde_core\",\"optional\":true,\"req\":\"^1.0\"},{\"kind\":\"dev\",\"name\":\"serde_json\",\"req\":\"^1.0\"},{\"kind\":\"dev\",\"name\":\"serde_test\",\"req\":\"^1.0\"},{\"default_features\":false,\"name\":\"sval\",\"optional\":true,\"req\":\"^2.16\"},{\"kind\":\"dev\",\"name\":\"sval\",\"req\":\"^2.16\"},{\"kind\":\"dev\",\"name\":\"sval_derive\",\"req\":\"^2.16\"},{\"default_features\":false,\"name\":\"sval_ref\",\"optional\":true,\"req\":\"^2.16\"},{\"default_features\":false,\"features\":[\"inline-i128\"],\"name\":\"value-bag\",\"optional\":true,\"req\":\"^1.12\"},{\"features\":[\"test\"],\"kind\":\"dev\",\"name\":\"value-bag\",\"req\":\"^1.12\"}],\"features\":{\"kv\":[],\"kv_serde\":[\"kv_std\",\"value-bag/serde\",\"serde\"],\"kv_std\":[\"std\",\"kv\",\"value-bag/error\"],\"kv_sval\":[\"kv\",\"value-bag/sval\",\"sval\",\"sval_ref\"],\"kv_unstable\":[\"kv\",\"value-bag\"],\"kv_unstable_serde\":[\"kv_serde\",\"kv_unstable_std\"],\"kv_unstable_std\":[\"kv_std\",\"kv_unstable\"],\"kv_unstable_sval\":[\"kv_sval\",\"kv_unstable\"],\"max_level_debug\":[],\"max_level_error\":[],\"max_level_info\":[],\"max_level_off\":[],\"max_level_trace\":[],\"max_level_warn\":[],\"release_max_level_debug\":[],\"release_max_level_error\":[],\"release_max_level_info\":[],\"release_max_level_off\":[],\"release_max_level_trace\":[],\"release_max_level_warn\":[],\"serde\":[\"serde_core\"],\"std\":[]}}",
       "lru_0.16.3": "{\"dependencies\":[{\"name\":\"hashbrown\",\"optional\":true,\"req\":\"^0.16.0\"},{\"kind\":\"dev\",\"name\":\"scoped_threadpool\",\"req\":\"0.1.*\"},{\"kind\":\"dev\",\"name\":\"stats_alloc\",\"req\":\"0.1.*\"}],\"features\":{\"default\":[\"hashbrown\"],\"nightly\":[\"hashbrown\",\"hashbrown/nightly\"]}}",
+      "lru_0.18.2": "{\"dependencies\":[{\"name\":\"hashbrown\",\"optional\":true,\"req\":\"^0.17.0\"},{\"kind\":\"dev\",\"name\":\"scoped_threadpool\",\"req\":\"0.1.*\"},{\"kind\":\"dev\",\"name\":\"stats_alloc\",\"req\":\"0.1.*\"}],\"features\":{\"default\":[\"hashbrown\"],\"nightly\":[\"hashbrown\",\"hashbrown/nightly\"]}}",
       "lz4_flex_0.11.6": "{\"dependencies\":[{\"kind\":\"dev\",\"name\":\"binggan\",\"req\":\"^0.12.0\"},{\"kind\":\"dev\",\"name\":\"jemallocator\",\"req\":\"^0.5.4\"},{\"kind\":\"dev\",\"name\":\"lz4-compress\",\"req\":\"^0.1.1\"},{\"kind\":\"dev\",\"name\":\"lzzzz\",\"req\":\"^1.0.4\"},{\"kind\":\"dev\",\"name\":\"more-asserts\",\"req\":\"^0.3.1\"},{\"kind\":\"dev\",\"name\":\"proptest\",\"req\":\"^1.0.0\"},{\"kind\":\"dev\",\"name\":\"serde_json\",\"req\":\"^1.0.91\"},{\"kind\":\"dev\",\"name\":\"snap\",\"req\":\"^1.1.0\"},{\"default_features\":false,\"features\":[\"xxhash32\"],\"name\":\"twox-hash\",\"optional\":true,\"req\":\"^2.0.0\"}],\"features\":{\"checked-decode\":[],\"default\":[\"std\",\"safe-encode\",\"safe-decode\",\"frame\",\"checked-decode\"],\"frame\":[\"std\",\"dep:twox-hash\"],\"nightly\":[],\"safe-decode\":[],\"safe-encode\":[],\"std\":[]}}",
       "macro_magic_0.5.1": "{\"dependencies\":[{\"name\":\"macro_magic_core\",\"optional\":true,\"req\":\"^0.5.1\"},{\"name\":\"macro_magic_macros\",\"req\":\"^0.5.1\"},{\"name\":\"quote\",\"optional\":true,\"req\":\"^1\"},{\"features\":[\"full\"],\"name\":\"syn\",\"optional\":true,\"req\":\"^2\"}],\"features\":{\"default\":[],\"proc_support\":[\"dep:macro_magic_core\",\"dep:syn\",\"dep:quote\"]}}",
       "macro_magic_core_0.5.1": "{\"dependencies\":[{\"name\":\"const-random\",\"req\":\"^0.1.15\"},{\"name\":\"derive-syn-parse\",\"req\":\"^0.2\"},{\"name\":\"macro_magic_core_macros\",\"req\":\"^0.5.1\"},{\"name\":\"proc-macro2\",\"req\":\"^1\"},{\"name\":\"quote\",\"req\":\"^1\"},{\"features\":[\"full\"],\"name\":\"syn\",\"req\":\"^2\"}],\"features\":{\"default\":[]}}",
@@ -1454,6 +1436,7 @@
       "rust-std-1.92.0-powerpc64-unknown-linux-gnu.tar.xz": "2ce706afa4a46b6773340854de877fc63618a40e351298a4e3da8eb482619863",
       "rust-std-1.92.0-powerpc64le-unknown-linux-gnu.tar.xz": "eba59766c2d9805c0a1fc82fd723acbb36569e1bec1088c037bba84d965f70ba",
       "rust-std-1.92.0-powerpc64le-unknown-linux-musl.tar.xz": "8b515e18b6ac8f8d37ea3cabe644b7f571984333c3b4192b7f5877e79eae7893",
+      "rust-std-1.92.0-riscv32imac-unknown-none-elf.tar.xz": "5915223db6b8afa173f67eb4fe6f5aff2402351ed9abab1b370d0860be4af6c9",
       "rust-std-1.92.0-riscv32imc-unknown-none-elf.tar.xz": "e1c6968ce25ab78f2c5b5460691763a2d39cb71b01d6d54c208d4a8b735b0584",
       "rust-std-1.92.0-riscv64gc-unknown-linux-gnu.tar.xz": "8ee20dcf3b1063fa6069b3ce85e1fcf42794dfa783263314865cb53fff42d9e4",
       "rust-std-1.92.0-riscv64gc-unknown-linux-musl.tar.xz": "f20d822309900fd6c7230688694baf91e900154e44e6247feca49b7b7a203a57",

@@ -221,7 +221,10 @@ pub(crate) async fn setup_local_worker_with_config(
             let mock_worker_api_client = mock_worker_api_client_clone.clone();
             Box::pin(async move { Ok(mock_worker_api_client) })
         }),
-        Box::new(move |_| Box::pin(async move { /* No sleep */ })),
+        // Yield instead of sleeping so loops that spin on the sleep fn (e.g.
+        // the actions-in-transit drain after a disconnect) still give the
+        // runtime a chance to drop aborted tasks, as real sleeps do.
+        Box::new(move |_| Box::pin(async move { tokio::task::yield_now().await })),
     );
     let (shutdown_tx_test, _) = broadcast::channel::<ShutdownGuard>(BROADCAST_CAPACITY);
 
