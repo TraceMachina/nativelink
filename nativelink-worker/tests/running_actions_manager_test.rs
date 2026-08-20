@@ -3762,7 +3762,7 @@ exit 1
         let command = "[\"cmd\", \"/C\", \"ping -n 99999 127.0.0.1\"]";
 
         assert!(logs_contain(&format!("Executing command args={command}")));
-        assert!(logs_contain(&format!("Command complete args={command}")));
+        assert!(logs_contain("Command complete exit_code="));
 
         assert!(!logs_contain(
             "Child process was not cleaned up before dropping the call to execute(), killing in background spawn"
