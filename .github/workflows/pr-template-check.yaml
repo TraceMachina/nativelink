@@ -56,31 +56,54 @@ jobs:
           echo "exit_code=$?" >> "$GITHUB_OUTPUT"
           cat result.md
 
-      - name: Leave a comment saying what is missing
-        if: steps.check.outputs.exit_code != '0'
+      - name: Leave a comment saying what is missing, or mark as resolved
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         # One comment, edited in place, so a few rounds of fixing the
         # description does not bury the discussion.
+        #
+        # Once the description is fixed, the comment is collapsed.
         run: |
           marker="<!-- pr-template-check -->"
+
+          gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json comments \
+            --jq "[.comments[] | select(.body | startswith(\"$marker\"))] | first // {}" \
+            > existing.json
+          comment_id=$(jq -r '.id // empty' existing.json)
+          minimized=$(jq -r '.isMinimized // false' existing.json)
+
+          if [ "${{ steps.check.outputs.exit_code }}" = '0' ]; then
+            if [ -n "$comment_id" ] && [ "$minimized" = 'false' ]; then
+              gh api graphql -f id="$comment_id" -f query='
+                mutation($id: ID!) {
+                  minimizeComment(input: {subjectId: $id, classifier: RESOLVED}) {
+                    minimizedComment { isMinimized }
+                  }
+                }' > /dev/null
+            fi
+            exit 0
+          fi
+
           printf '%s\n\n' "$marker" > comment.md
           cat result.md >> comment.md
 
-          existing=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
-            --json comments \
-            --jq ".comments[] | select(.body | startswith(\"$marker\")) | .url" \
-            | head -n 1)
-
-          if [ -n "$existing" ]; then
-            gh api --method PATCH \
-              "repos/$GITHUB_REPOSITORY/issues/comments/${existing##*-}" \
-              -f body="$(cat comment.md)" > /dev/null
-          else
+          if [ -z "$comment_id" ]; then
             gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
               --body-file comment.md
+            exit 0
           fi
+
+          gh api graphql -f id="$comment_id" -F body="@comment.md" \
+            -F minimized="$minimized" -f query='
+            mutation($id: ID!, $body: String!, $minimized: Boolean!) {
+              updateIssueComment(input: {id: $id, body: $body}) {
+                issueComment { url }
+              }
+              unminimizeComment(input: {subjectId: $id}) @include(if: $minimized) {
+                unminimizedComment { isMinimized }
+              }
+            }' > /dev/null
 
       - name: Fail if the description is incomplete
         if: steps.check.outputs.exit_code != '0'
