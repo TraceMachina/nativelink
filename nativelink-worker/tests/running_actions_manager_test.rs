@@ -56,7 +56,7 @@ mod tests {
     use nativelink_store::ac_utils::compute_buf_digest;
     use nativelink_store::ac_utils::{get_and_decode_digest, serialize_and_upload_message};
     use nativelink_store::fast_slow_store::FastSlowStore;
-    use nativelink_store::filesystem_store::FilesystemStore;
+    use nativelink_store::filesystem_store::{FileEntry, FilesystemStore};
     use nativelink_store::memory_store::MemoryStore;
     #[cfg(target_family = "unix")]
     use nativelink_util::action_messages::DirectoryInfo;
@@ -270,6 +270,108 @@ mod tests {
                 FILE2_MTIME
             );
         }
+        Ok(())
+    }
+
+    /// When the fast tier's eviction map and content directory disagree about the presence of a
+    /// blob, the worker should notice when it fails to hardlink and trigger some kind of
+    /// recovery so that later attempts succeed.
+    /// Test by deleting a content file, simulating some kind of race or failed emplace etc
+    /// in the underlying store.
+    #[nativelink_test]
+    async fn download_to_directory_recovers_from_fast_store_divergence()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const FILE1_NAME: &str = "file1.txt";
+        const FILE1_CONTENT: &str = "HELLOFILE1";
+
+        let (fast_store, slow_store, cas_store, _ac_store) = setup_stores().await?;
+
+        let file1_content_digest = DigestInfo::new([2u8; 32], FILE1_CONTENT.len() as u64);
+        slow_store
+            .as_ref()
+            .update_oneshot(file1_content_digest, FILE1_CONTENT.into())
+            .await?;
+
+        let root_directory_digest = DigestInfo::new([1u8; 32], 32);
+        let root_directory = Directory {
+            files: vec![FileNode {
+                name: FILE1_NAME.to_string(),
+                digest: Some(file1_content_digest.into()),
+                is_executable: false,
+                node_properties: None,
+            }],
+            ..Default::default()
+        };
+        slow_store
+            .as_ref()
+            .update_oneshot(root_directory_digest, root_directory.encode_to_vec().into())
+            .await?;
+
+        let download_once = |dir_name: &'static str| {
+            let cas_store = cas_store.clone();
+            let fast_store = fast_store.clone();
+            async move {
+                let download_dir = make_temp_path(dir_name);
+                fs::create_dir_all(&download_dir)
+                    .await
+                    .err_tip(|| format!("Could not make download_dir : {download_dir}"))?;
+                download_to_directory(
+                    cas_store.as_ref(),
+                    fast_store.as_pin(),
+                    &root_directory_digest,
+                    &download_dir,
+                )
+                .await?;
+                Result::<String, Error>::Ok(download_dir)
+            }
+        };
+
+        // Attempt 1 populates the fast tier from the slow tier and succeeds.
+        let first_dir = download_once("divergence_attempt1").await?;
+        assert_eq!(
+            from_utf8(&fs::read(format!("{first_dir}/{FILE1_NAME}")).await?)?,
+            FILE1_CONTENT,
+        );
+
+        // Diverge the fast tier: delete the content file, leave the map entry.
+        let content_file = fast_store
+            .get_file_entry_for_digest(&file1_content_digest)
+            .await?
+            .get_file_path_locked(|path| async move { Ok(path) })
+            .await?;
+        fs::remove_file(&content_file).await?;
+
+        // Only presence is asserted; the filesystem store reports block-rounded sizes.
+        assert!(
+            fast_store
+                .as_ref()
+                .has(file1_content_digest)
+                .await?
+                .is_some(),
+            "precondition: the fast tier still advertises the blob it no longer has",
+        );
+
+        // The scheduler's retries: a fix may repair in place (2) or heal the stale
+        // entry and recover on the next attempt (3). Either must stage the blob.
+        let second = download_once("divergence_attempt2").await;
+        let third = download_once("divergence_attempt3").await;
+
+        if let (Err(second_err), Err(third_err)) = (&second, &third) {
+            panic!(
+                "every retry failed even though the slow store still holds the blob; \
+                 the action can never recover.\nattempt 2: {second_err:?}\nattempt 3: {third_err:?}"
+            );
+        }
+
+        let ((Ok(recovered_dir), _) | (Err(_), Ok(recovered_dir))) = (second, third) else {
+            unreachable!("handled above")
+        };
+        assert_eq!(
+            from_utf8(&fs::read(format!("{recovered_dir}/{FILE1_NAME}")).await?)?,
+            FILE1_CONTENT,
+            "recovered file must have the full contents from the slow tier",
+        );
+
         Ok(())
     }
 

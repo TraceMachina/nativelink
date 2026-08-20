@@ -20,6 +20,7 @@ use std::borrow::Cow;
 #[cfg(unix)]
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
+use std::path::Path;
 use std::sync::{Arc, Weak};
 use std::time::SystemTime;
 
@@ -1421,9 +1422,11 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             "filesystem_store_executable_variant",
             move || -> Result<(), Error> {
                 use std::os::unix::fs::PermissionsExt;
-                std::fs::copy(&src_path, &temp_owned).map_err(|e| {
-                    make_err!(Code::Internal, "executable-variant copy failed: {e:?}")
-                })?;
+                // Keep the io error's code: an ENOENT here means the CAS blob
+                // this variant copies from has diverged, and callers heal on
+                // `NotFound`.
+                std::fs::copy(&src_path, &temp_owned)
+                    .map_err(|e| Error::from(e).append("executable-variant copy failed"))?;
                 std::fs::set_permissions(&temp_owned, std::fs::Permissions::from_mode(0o555))
                     .map_err(|e| {
                         make_err!(
@@ -1489,6 +1492,136 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             .get(&digest.into())
             .await
             .ok_or_else(|| make_err!(Code::NotFound, "{digest} not found in filesystem store. This may indicate the file was evicted due to cache pressure. Consider increasing 'max_bytes' in your filesystem store's eviction_policy configuration."))
+    }
+
+    /// Hardlinks the blob for `digest` to `dest`, which must not already exist.
+    ///
+    /// `is_executable` links the 0o555 executable variant (see
+    /// [`Self::get_executable_hardlink_source`]), otherwise the shared 0o444 CAS
+    /// blob, which is linked under the entry's path lock so eviction cannot
+    /// rename it away mid-link.
+    ///
+    /// Fails with `NotFound` when the blob is absent from this store, and if it
+    /// is indexed but missing on disk the entry is dropped before returning —
+    /// the next `populate_fast_store` then re-fetches it instead of
+    /// short-circuiting on `has()`, which only consults the index.
+    pub async fn hardlink_to(
+        &self,
+        digest: &DigestInfo,
+        is_executable: bool,
+        dest: impl AsRef<Path>,
+    ) -> Result<(), Error> {
+        let dest = dest.as_ref();
+        if is_executable {
+            let src_path = match self.get_executable_hardlink_source(digest).await {
+                Ok(src_path) => src_path,
+                Err(err) => {
+                    // The variant is built by copying the CAS blob, so a
+                    // divergence surfaces here rather than at the hardlink.
+                    return Err(self
+                        .heal_and_describe_failed_hardlink(digest, None, dest, err)
+                        .await)
+                    .err_tip(|| "Resolving executable hardlink source");
+                }
+            };
+            return match fs::hard_link(&src_path, dest).await {
+                Ok(()) => Ok(()),
+                Err(err) => Err(self
+                    .heal_and_describe_failed_hardlink(digest, Some(&src_path), dest, err)
+                    .await),
+            };
+        }
+
+        let entry = self
+            .get_file_entry_for_digest(digest)
+            .await
+            .err_tip(|| "During hard link")?;
+        // Link under the entry's path lock: `unref()` takes it for writing to
+        // rename the blob away, so the source cannot move mid-link.
+        // TODO: add a test for #2051: deadlock with large number of files
+        let dest_owned = dest.to_owned();
+        let (src_path, link_result) = entry
+            .get_file_path_locked(|src_path| async move {
+                let link_result = fs::hard_link(&src_path, &dest_owned).await;
+                Ok((src_path, link_result))
+            })
+            .await?;
+        match link_result {
+            Ok(()) => Ok(()),
+            // Healing re-takes the path lock, so it must happen out here.
+            Err(err) => Err(self
+                .heal_and_describe_failed_hardlink(digest, Some(&src_path), dest, err)
+                .await),
+        }
+    }
+
+    /// Logs a failed hardlink, drops `digest`'s entry if its file is missing,
+    /// and returns `err` annotated for the caller.
+    async fn heal_and_describe_failed_hardlink(
+        &self,
+        digest: &DigestInfo,
+        src_path: Option<&OsStr>,
+        dest: &Path,
+        err: Error,
+    ) -> Error {
+        let src_metadata = src_path.map(std::fs::metadata);
+        let dest_metadata = std::fs::metadata(dest);
+        let dest_parent_metadata = dest.parent().map(Path::metadata);
+        let snapshot = self.get_eviction_snapshot();
+        warn!(?err, fs_eviction_snapshot = %snapshot, ?src_path, ?src_metadata, ?dest, ?dest_metadata, ?dest_parent_metadata, "Could not make hardlink");
+        let src_display = src_path.map_or_else(
+            || format!("{digest}"),
+            |src_path| src_path.display().to_string(),
+        );
+        if err.code != Code::NotFound {
+            return err.append(format!(
+                "Could not make hardlink from {src_display} to {}",
+                dest.display()
+            ));
+        }
+        self.remove_entry_if_file_missing(digest).await;
+        err.append(format!(
+            "Could not make hardlink from {src_display} to {}, file was likely evicted from cache.\n\
+            This error often occurs when the filesystem store's max_bytes is too small for your workload.\n\
+            To fix this issue:\n\
+            1. Increase the 'max_bytes' value in your filesystem store configuration\n\
+            2. Example: Change 'max_bytes: 10000000000' to 'max_bytes: 50000000000' (or higher)\n\
+            3. The setting is typically found in your nativelink.json config under:\n\
+            stores -> [your_filesystem_store] -> filesystem -> eviction_policy -> max_bytes\n\
+            4. Restart NativeLink after making the change\n\n\
+            If this error persists after increasing max_bytes several times, please report at:\n\
+            https://github.com/TraceMachina/nativelink/issues\n\
+            Include your config file and both server and client logs to help us assist you.",
+            dest.display()
+        ))
+    }
+
+    /// Removes `digest`'s entry if its file is missing from disk, and returns
+    /// whether it removed one. The check runs under the entry's path lock; an
+    /// entry whose file is present, or unreadable for some other reason, is
+    /// left alone.
+    async fn remove_entry_if_file_missing(&self, digest: &DigestInfo) -> bool {
+        let key: StoreKey<'static> = (*digest).into();
+        let Some(entry) = self.evicting_map.get(&key).await else {
+            return false;
+        };
+        let stat_result = entry
+            .get_file_path_locked(|path| async move { fs::metadata(&path).await })
+            .await;
+        let Err(err) = stat_result else {
+            return false;
+        };
+        // An unreadable-but-present file (e.g. EACCES) is not a divergence;
+        // leave the entry for a human to notice.
+        if err.code != Code::NotFound {
+            return false;
+        }
+        warn!(
+            ?key,
+            "Filesystem store map/disk divergence: removing entry; next populate will repair it from the slow store",
+        );
+        self.evicting_map.remove(&key).await;
+        true
     }
 
     async fn update_file(

@@ -543,48 +543,9 @@ fn download_to_directory_with_lease<'a>(
                             // per-digest 0o555 variant created once off the hot
                             // path (the 0o444 CAS blob is shared and cannot carry
                             // +x); non-executables hardlink the 0o444 CAS blob.
-                            let src_path = if is_executable {
-                                filesystem_store
-                                    .get_executable_hardlink_source(&digest)
-                                    .await
-                                    .err_tip(|| "Resolving executable hardlink source")?
-                            } else {
-                                let file_entry = filesystem_store
-                                    .get_file_entry_for_digest(&digest)
-                                    .await
-                                    .err_tip(|| "During hard link")?;
-                                // TODO: add a test for #2051: deadlock with large number of files
-                                file_entry
-                                    .get_file_path_locked(|src| async move { Ok(src) })
-                                    .await?
-                            };
-                            fs::hard_link(&src_path, &dest)
-                                .await
-                                .map_err(|e| {
-                                    let src_metadata = std::fs::metadata(&src_path);
-                                    let dest_metadata = std::fs::metadata(&dest);
-                                    let dest_parent_metadata = Path::new(&dest).parent().map(Path::metadata);
-                                    let snapshot = filesystem_store.get_eviction_snapshot();
-                                    warn!(?e, fs_eviction_snapshot = %snapshot, ?src_path, ?src_metadata, %dest, ?dest_metadata, ?dest_parent_metadata, "Could not make hardlink");
-                                    if e.code == Code::NotFound {
-                                        e.append(
-                                            format!(
-                                            "Could not make hardlink from {} to {dest}, file was likely evicted from cache.\n\
-                                            This error often occurs when the filesystem store's max_bytes is too small for your workload.\n\
-                                            To fix this issue:\n\
-                                            1. Increase the 'max_bytes' value in your filesystem store configuration\n\
-                                            2. Example: Change 'max_bytes: 10000000000' to 'max_bytes: 50000000000' (or higher)\n\
-                                            3. The setting is typically found in your nativelink.json config under:\n\
-                                            stores -> [your_filesystem_store] -> filesystem -> eviction_policy -> max_bytes\n\
-                                            4. Restart NativeLink after making the change\n\n\
-                                            If this error persists after increasing max_bytes several times, please report at:\n\
-                                            https://github.com/TraceMachina/nativelink/issues\n\
-                                            Include your config file and both server and client logs to help us assist you.", src_path.display()
-                                        ))
-                                    } else {
-                                        e.append(format!("Could not make hardlink from {} to {dest}", src_path.display()))
-                                    }
-                                })?;
+                            filesystem_store
+                                .hardlink_to(&digest, is_executable, &dest)
+                                .await?;
                             // Hardlinked inodes are already correct (the 0o444
                             // blob or the 0o555 executable variant) and carry no
                             // per-file metadata, so there is nothing to stamp.
