@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1
+
 # Copyright 2022-2025 The NativeLink Authors. All rights reserved.
 #
 # Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
@@ -14,8 +16,11 @@
 
 # Current supported Ubuntu version, Noble Numbat aka 24.04 LTS
 # Locked down to a specific revision to avoid issues with package versions
-ARG BAZELISK_URL=https://github.com/bazelbuild/bazelisk/releases/download/v1.25.0/bazelisk-linux-amd64
-ARG BAZELISK_SHA256=fd8fdff418a1758887520fa42da7e6ae39aefc788cf5e7f7bb8db6934d279fc4
+# Bazelisk (the Bazel launcher). Defaults are picked per build architecture
+# (linux-amd64 vs linux-arm64) in the dependencies stage; override these to
+# pin a specific binary.
+ARG BAZELISK_URL
+ARG BAZELISK_SHA256
 # `--compilation_mode` to pass into bazel (eg: opt, dbg, fastbuild).
 ARG OPT_LEVEL=opt
 # Additional bazel flags.
@@ -27,7 +32,19 @@ ARG ADDITIONAL_SETUP_WORKER_CMD=
 FROM ubuntu:noble-20250925@sha256:728785b59223d755e3e5c5af178fab1be7031f3522c5ccd7a0b32b80d8248123 AS dependencies
 ARG BAZELISK_URL
 ARG BAZELISK_SHA256
-RUN apt-get update \
+ARG TARGETARCH
+COPY ./tools/bazel-retry.sh /usr/local/bin/bazel-retry
+RUN ARCH_SUFFIX=amd64 \
+    && if [ "$TARGETARCH" = "arm64" ]; then ARCH_SUFFIX=arm64; fi \
+    && BAZELISK_URL="${BAZELISK_URL:-https://github.com/bazelbuild/bazelisk/releases/download/v1.25.0/bazelisk-linux-${ARCH_SUFFIX}}" \
+    && if [ -z "$BAZELISK_SHA256" ]; then \
+         if [ "$TARGETARCH" = "arm64" ]; then \
+           BAZELISK_SHA256=4c8d966e40ac2c4efcc7f1a5a5cceef2c0a2f16b957e791fa7a867cce31e8fcb; \
+         else \
+           BAZELISK_SHA256=fd8fdff418a1758887520fa42da7e6ae39aefc788cf5e7f7bb8db6934d279fc4; \
+         fi; \
+       fi \
+    && apt-get update \
     && DEBIAN_FRONTEND=noninteractive \
     apt-get install --no-install-recommends -y \
         git=1:2.43.0-1ubuntu7.3 \
@@ -37,7 +54,8 @@ RUN apt-get update \
         ca-certificates=20240203 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
-    && python3 -c 'import hashlib, pathlib, stat, sys, urllib.request; data = urllib.request.urlopen(sys.argv[1], timeout=60).read(); digest = hashlib.sha256(data).hexdigest(); assert digest == sys.argv[2], f"sha256 mismatch: {digest}"; path = pathlib.Path("/usr/local/bin/bazel"); path.write_bytes(data); path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)' "$BAZELISK_URL" "$BAZELISK_SHA256"
+    && python3 -c 'import hashlib, pathlib, stat, sys, urllib.request; data = urllib.request.urlopen(sys.argv[1], timeout=60).read(); digest = hashlib.sha256(data).hexdigest(); assert digest == sys.argv[2], f"sha256 mismatch: {digest}"; path = pathlib.Path("/usr/local/bin/bazel"); path.write_bytes(data); path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)' "$BAZELISK_URL" "$BAZELISK_SHA256" \
+    && chmod +x /usr/local/bin/bazel-retry
 
 # Build the binary.
 FROM dependencies AS builder
@@ -46,7 +64,8 @@ COPY . .
 ARG OPT_LEVEL
 ARG ADDITIONAL_BAZEL_FLAGS
 # Add startup options to prevent Bazel server issues on ARM64
-RUN bazel \
+RUN --mount=type=secret,id=nativelink-bazelrc,target=/root/nativelink/user.bazelrc \
+    bazel-retry \
     --batch \
     --output_base=/tmp/bazel_output \
     build -c ${OPT_LEVEL} ${ADDITIONAL_BAZEL_FLAGS} nativelink && \
@@ -59,7 +78,7 @@ COPY --from=builder /root/nativelink-bin /usr/local/bin/nativelink
 ARG ADDITIONAL_SETUP_WORKER_CMD
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl=8.5.0-2ubuntu10.11 \
+    && apt-get install -y --no-install-recommends curl=8.5.0-2ubuntu10.12 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
     && bash -ueo pipefail -c "${ADDITIONAL_SETUP_WORKER_CMD}" \

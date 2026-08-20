@@ -417,12 +417,18 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                     // Cleanup action_info_hash_key_to_awaited_action if it was marked cached.
                     match &awaited_action.action_info().unique_qualifier {
                         ActionUniqueQualifier::Cacheable(action_key) => {
-                            let maybe_awaited_action = self
+                            // Once this operation finished, a newer operation for the
+                            // same action key may have claimed the entry; removing it
+                            // unconditionally here would orphan that operation's
+                            // deduplication entry.
+                            let owned_by_this_operation = self
                                 .action_info_hash_key_to_awaited_action
-                                .remove(action_key);
-                            if !awaited_action.state().stage.is_finished()
-                                && maybe_awaited_action.is_none()
-                            {
+                                .get(action_key)
+                                .is_some_and(|id| id == &operation_id);
+                            if owned_by_this_operation {
+                                self.action_info_hash_key_to_awaited_action
+                                    .remove(action_key);
+                            } else if !awaited_action.state().stage.is_finished() {
                                 error!(
                                     %operation_id,
                                     ?awaited_action,
@@ -550,18 +556,19 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
         }
         match &new_awaited_action.action_info().unique_qualifier {
             ActionUniqueQualifier::Cacheable(action_key) => {
-                let maybe_awaited_action =
-                    action_info_hash_key_to_awaited_action.remove(action_key);
-                match maybe_awaited_action {
-                    Some(removed_operation_id) => {
-                        if &removed_operation_id != new_awaited_action.operation_id() {
-                            error!(
-                                ?removed_operation_id,
-                                ?new_awaited_action,
-                                ?action_key,
-                                "action_info_hash_key_to_awaited_action and operation_id_to_awaited_action are out of sync",
-                            );
-                        }
+                match action_info_hash_key_to_awaited_action.get(action_key) {
+                    Some(owning_operation_id)
+                        if owning_operation_id == new_awaited_action.operation_id() => {}
+                    Some(owning_operation_id) => {
+                        // The entry belongs to a newer operation for the same
+                        // action key; leave it in place.
+                        error!(
+                            ?owning_operation_id,
+                            ?new_awaited_action,
+                            ?action_key,
+                            "action_info_hash_key_to_awaited_action and operation_id_to_awaited_action are out of sync",
+                        );
+                        return;
                     }
                     None => {
                         error!(
@@ -569,8 +576,10 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                             ?action_key,
                             "action_info_hash_key_to_awaited_action out of sync, it should have had the unique_key",
                         );
+                        return;
                     }
                 }
+                action_info_hash_key_to_awaited_action.remove(action_key);
             }
             ActionUniqueQualifier::Uncacheable(_action_key) => {
                 // If we are not cacheable, the action should not be in the

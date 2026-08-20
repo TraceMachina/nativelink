@@ -193,6 +193,84 @@ async fn kill_all_called_on_disconnect() -> Result<(), Error> {
     Ok(())
 }
 
+/// A disconnect that catches an action mid-handoff must still reconnect.
+/// Returning from the worker's main loop here aborts the process, so a
+/// scheduler blip that happened to land while an action was in transit took
+/// the whole worker down and every action it held had to run again elsewhere.
+#[nativelink_test]
+async fn reconnects_when_action_stuck_in_transit_on_disconnect() -> Result<(), Error> {
+    let mut test_context = setup_local_worker(HashMap::new()).await;
+    let streaming_response = test_context.maybe_streaming_response.take().unwrap();
+
+    test_context
+        .client
+        .expect_connect_worker(Ok(streaming_response))
+        .await;
+
+    let expected_worker_id = "foobar".to_string();
+    let tx_stream = test_context.maybe_tx_stream.take().unwrap();
+    tx_stream
+        .send(Frame::data(
+            encode_stream_proto(&UpdateForWorker {
+                update: Some(Update::ConnectionResult(ConnectionResult {
+                    worker_id: expected_worker_id.clone(),
+                })),
+            })
+            .unwrap(),
+        ))
+        .await
+        .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+
+    let action_info = ActionInfo {
+        command_digest: DigestInfo::new([1u8; 32], 10),
+        input_root_digest: DigestInfo::new([2u8; 32], 10),
+        timeout: Duration::from_secs(1),
+        platform_properties: HashMap::new(),
+        priority: 0,
+        load_timestamp: SystemTime::UNIX_EPOCH,
+        insert_timestamp: SystemTime::UNIX_EPOCH,
+        unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+            instance_name: INSTANCE_NAME.to_string(),
+            digest_function: DigestHasherFunc::Sha256,
+            digest: DigestInfo::new([3u8; 32], 10),
+        }),
+    };
+
+    // Start an action, but deliberately never answer create_and_add_action.
+    // The action stays counted as in transit, so the drain wait on disconnect
+    // runs to its limit instead of settling.
+    tx_stream
+        .send(Frame::data(
+            encode_stream_proto(&UpdateForWorker {
+                update: Some(Update::StartAction(StartExecute {
+                    execute_request: Some((&action_info).into()),
+                    operation_id: String::new(),
+                    queued_timestamp: None,
+                    platform: Some(Platform::default()),
+                    worker_id: expected_worker_id,
+                })),
+            })
+            .unwrap(),
+        ))
+        .await
+        .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+
+    // Disconnect while that action is still in transit.
+    drop(tx_stream);
+
+    test_context.actions_manager.expect_kill_all().await;
+
+    // The worker must come back rather than exiting.
+    let (_, streaming_response) = setup_grpc_stream();
+    let props = test_context
+        .client
+        .expect_connect_worker(Ok(streaming_response))
+        .await;
+    assert_eq!(props, ConnectWorkerRequest::default());
+
+    Ok(())
+}
+
 #[nativelink_test]
 async fn blake3_digest_function_registered_properly() -> Result<(), Error> {
     let mut test_context = setup_local_worker(HashMap::new()).await;
@@ -1021,4 +1099,110 @@ async fn keep_alive_fail_logs() -> Result<(), Error> {
         Code::DeadlineExceeded,
         "Timed out looking for KeepAlive logs"
     ))
+}
+
+/// Regression test: a disconnect from the scheduler while an action is still
+/// "in transit" (`StartAction` received, inputs still downloading) must lead to
+/// kill-all + reconnect like any other disconnect. It used to strand the
+/// `actions_in_transit` counter — the decrement lived inside the action
+/// future, which is aborted by the disconnect — so the drain loop always
+/// timed out and `LocalWorker::run` returned a fatal error that took down the
+/// whole process in colocated deployments.
+#[nativelink_test]
+async fn disconnect_with_action_in_transit_reconnects_test() -> Result<(), Error> {
+    let mut test_context = setup_local_worker(HashMap::new()).await;
+    let streaming_response = test_context.maybe_streaming_response.take().unwrap();
+
+    {
+        // Ensure our worker connects and properties were sent.
+        let props = test_context
+            .client
+            .expect_connect_worker(Ok(streaming_response))
+            .await;
+        assert_eq!(props, ConnectWorkerRequest::default());
+    }
+
+    let expected_worker_id = "foobar".to_string();
+
+    // Handle registration.
+    let tx_stream = test_context.maybe_tx_stream.take().unwrap();
+    {
+        tx_stream
+            .send(Frame::data(
+                encode_stream_proto(&UpdateForWorker {
+                    update: Some(Update::ConnectionResult(ConnectionResult {
+                        worker_id: expected_worker_id.clone(),
+                    })),
+                })
+                .unwrap(),
+            ))
+            .await
+            .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+    }
+
+    let action_digest = DigestInfo::new([3u8; 32], 10);
+    let action_info = ActionInfo {
+        command_digest: DigestInfo::new([1u8; 32], 10),
+        input_root_digest: DigestInfo::new([2u8; 32], 10),
+        timeout: Duration::from_secs(1),
+        platform_properties: HashMap::new(),
+        priority: 0,
+        load_timestamp: SystemTime::UNIX_EPOCH,
+        insert_timestamp: SystemTime::UNIX_EPOCH,
+        unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+            instance_name: INSTANCE_NAME.to_string(),
+            digest_function: DigestHasherFunc::Sha256,
+            digest: action_digest,
+        }),
+    };
+
+    {
+        // Send execution request.
+        tx_stream
+            .send(Frame::data(
+                encode_stream_proto(&UpdateForWorker {
+                    update: Some(Update::StartAction(StartExecute {
+                        execute_request: Some((&action_info).into()),
+                        operation_id: String::new(),
+                        queued_timestamp: None,
+                        platform: Some(Platform::default()),
+                        worker_id: expected_worker_id.clone(),
+                    })),
+                })
+                .unwrap(),
+            ))
+            .await
+            .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+    }
+
+    // Wait until the action reaches create_and_add_action, but never answer:
+    // the action stays in transit, like an input download in progress.
+    test_context
+        .actions_manager
+        .expect_create_and_add_action_no_reply()
+        .await;
+
+    // Sever the scheduler connection while the action is still in transit.
+    drop(tx_stream);
+
+    tokio::time::timeout(Duration::from_secs(10), async {
+        // The worker must clean up...
+        test_context.actions_manager.expect_kill_all().await;
+
+        // ...and auto reconnect, checking our properties again.
+        let (_, streaming_response) = setup_grpc_stream();
+        let props = test_context
+            .client
+            .expect_connect_worker(Ok(streaming_response))
+            .await;
+        assert_eq!(props, ConnectWorkerRequest::default());
+    })
+    .await
+    .map_err(|_| {
+        make_input_err!(
+            "Worker did not kill-all and reconnect after a disconnect with an action in transit"
+        )
+    })?;
+
+    Ok(())
 }

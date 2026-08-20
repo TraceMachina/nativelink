@@ -18,7 +18,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
 use std::borrow::Cow;
 use std::sync::{Arc, Weak};
-use std::time::UNIX_EPOCH;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use futures::{Stream, TryStreamExt};
@@ -42,6 +42,7 @@ use crate::awaited_action_db::{
     AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, CLIENT_KEEPALIVE_DURATION,
     SortedAwaitedAction, SortedAwaitedActionState,
 };
+use crate::worker_registry::{ORPHANED_ACTION_TIMEOUT, SharedWorkerRegistry, WorkerLiveness};
 
 type ClientOperationId = OperationId;
 
@@ -136,9 +137,8 @@ where
         }
 
         // Helper to convert SystemTime to unix timestamp
-        let to_unix_ts = |t: std::time::SystemTime| -> u64 {
-            t.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
-        };
+        let to_unix_ts =
+            |t: SystemTime| -> u64 { t.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs()) };
 
         // Check the separate keepalive key for the most recent timestamp.
         let keepalive_ts = if USE_SEPARATE_CLIENT_KEEPALIVE_KEY {
@@ -630,6 +630,7 @@ where
     operation_id_creator: F,
     _pull_task_change_subscriber_spawn: JoinHandleDropGuard<()>,
     retain_completed_for: Duration,
+    worker_registry: Option<SharedWorkerRegistry>,
 }
 
 impl<S, F, I, NowFn> StoreAwaitedActionDb<S, F, I, NowFn>
@@ -681,7 +682,53 @@ where
             operation_id_creator,
             _pull_task_change_subscriber_spawn: pull_task_change_subscriber,
             retain_completed_for: Duration::from_secs(retain_completed_for_s.into()),
+            worker_registry: None,
         })
+    }
+
+    /// Whether an executing action looks abandoned and should be recreated
+    /// rather than joined.
+    ///
+    /// `last_worker_updated_timestamp` lives in the shared store and
+    /// heartbeats never refresh it, so on its own it goes stale on any action
+    /// outliving `worker_timeout_s` and a healthy worker looks abandoned.
+    /// Consult the registry first and only fall back to the timestamp for
+    /// workers this instance owns.
+    #[expect(clippy::future_not_send)] // TODO(jhpratt) remove this
+    async fn executing_action_is_abandoned(
+        &self,
+        awaited_action: &AwaitedAction,
+        no_event_action_timeout: Duration,
+        now: SystemTime,
+    ) -> bool {
+        if awaited_action.state().stage != ActionStage::Executing {
+            return false;
+        }
+
+        let liveness = match (&self.worker_registry, awaited_action.worker_id()) {
+            (Some(worker_registry), Some(worker_id)) => {
+                worker_registry
+                    .check_liveness(worker_id, no_event_action_timeout, now)
+                    .await
+            }
+            // No registry, or not assigned yet: timestamp only, as before.
+            _ => WorkerLiveness::Stale,
+        };
+
+        let ceiling = match liveness {
+            // Ours and heartbeating. Never recreate: that forks a second
+            // execution of work already running.
+            WorkerLiveness::Alive => return false,
+            // Ours and gone quiet.
+            WorkerLiveness::Stale => no_event_action_timeout,
+            // A peer's worker, or an orphan nobody owns.
+            WorkerLiveness::Unknown => ORPHANED_ACTION_TIMEOUT,
+        };
+
+        awaited_action
+            .last_worker_updated_timestamp()
+            .checked_add(ceiling)
+            .is_some_and(|deadline| deadline < now)
     }
 
     // `pub` so integration tests in `tests/` can drive this directly;
@@ -731,17 +778,14 @@ where
                 // If the existing job failed then we need to set back to queued or we get
                 // a version mismatch.  Equally we need to check the timeout as the job
                 // may be abandoned in the store.
-                let worker_should_update_before = (awaited_action.state().stage
-                    == ActionStage::Executing)
-                    .then_some(())
-                    .map(|()| awaited_action.last_worker_updated_timestamp())
-                    .and_then(|last_worker_updated| {
-                        last_worker_updated.checked_add(no_event_action_timeout)
-                    });
-                let awaited_action = if awaited_action.state().stage.is_finished()
-                    || worker_should_update_before
-                        .is_some_and(|timestamp| timestamp < (self.now_fn)().now())
-                {
+                let abandoned = self
+                    .executing_action_is_abandoned(
+                        &awaited_action,
+                        no_event_action_timeout,
+                        (self.now_fn)().now(),
+                    )
+                    .await;
+                let awaited_action = if awaited_action.state().stage.is_finished() || abandoned {
                     tracing::debug!(
                         "Recreating action {:?} for operation {client_operation_id}",
                         awaited_action.action_info().digest()
@@ -950,6 +994,10 @@ where
                 self.retain_completed_for,
             ));
         }
+    }
+
+    fn set_worker_registry(&mut self, worker_registry: SharedWorkerRegistry) {
+        self.worker_registry = Some(worker_registry);
     }
 
     async fn get_range_of_actions(

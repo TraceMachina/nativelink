@@ -35,7 +35,9 @@ use std::time::SystemTime;
 use bytes::{Bytes, BytesMut};
 use filetime::{FileTime, set_file_mtime};
 use formatx::Template;
-use futures::future::{BoxFuture, Future, FutureExt, TryFutureExt, try_join, try_join_all};
+use futures::future::{
+    BoxFuture, Future, FutureExt, TryFutureExt, join_all, try_join, try_join_all,
+};
 use futures::stream::{FuturesUnordered, StreamExt, TryStreamExt};
 use nativelink_config::cas_server::{
     EnvironmentSource, UploadActionResultConfig, UploadCacheResultsStrategy,
@@ -55,7 +57,7 @@ use nativelink_store::ac_utils::{
 };
 use nativelink_store::cas_utils::is_zero_digest;
 use nativelink_store::fast_slow_store::FastSlowStore;
-use nativelink_store::filesystem_store::{FileEntry, FilesystemStore};
+use nativelink_store::filesystem_store::{FileEntry, FileEntryImpl, FilesystemStore};
 use nativelink_store::grpc_store::GrpcStore;
 use nativelink_util::action_messages::{
     ActionInfo, ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath, OperationId,
@@ -100,10 +102,18 @@ const DEFAULT_HISTORICAL_RESULTS_STRATEGY: UploadCacheResultsStrategy =
 #[cfg(target_os = "linux")]
 const RESOURCE_USAGE_SAMPLE_INTERVAL: Duration = Duration::from_millis(250);
 
+/// What the sampler observed over an action's lifetime.
+#[cfg(target_os = "linux")]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct SampledResourceUsage {
+    peak_memory_kb: u64,
+    cpu_time_ms: u64,
+}
+
 #[cfg(target_os = "linux")]
 struct ActionResourceUsageSampler {
     stop_tx: watch::Sender<bool>,
-    handle: tokio::task::JoinHandle<u64>,
+    handle: tokio::task::JoinHandle<SampledResourceUsage>,
 }
 
 #[cfg(target_os = "linux")]
@@ -111,24 +121,43 @@ fn start_action_resource_usage_sampler(pgid: u32) -> ActionResourceUsageSampler 
     let (stop_tx, stop_rx) = watch::channel(false);
     let handle = background_spawn!(
         "action_resource_usage_sampler",
-        sample_action_peak_memory_kb(pgid, stop_rx)
+        sample_action_resource_usage(pgid, stop_rx)
     );
     ActionResourceUsageSampler { stop_tx, handle }
 }
 
 #[cfg(target_os = "linux")]
-async fn finish_action_resource_usage_sampler(sampler: ActionResourceUsageSampler) -> Option<u64> {
+async fn finish_action_resource_usage_sampler(
+    sampler: ActionResourceUsageSampler,
+) -> Option<SampledResourceUsage> {
     let _ = sampler.stop_tx.send(true);
     sampler.handle.await.ok()
 }
 
 #[cfg(target_os = "linux")]
-async fn sample_action_peak_memory_kb(pgid: u32, mut stop_rx: watch::Receiver<bool>) -> u64 {
+async fn sample_action_resource_usage(
+    pgid: u32,
+    mut stop_rx: watch::Receiver<bool>,
+) -> SampledResourceUsage {
     let mut peak_memory_kb = 0;
+    // CPU time is cumulative per process and a process that exits stops
+    // appearing, so summing the live group at the end would lose everything
+    // short-lived. Keep the last figure seen for each pid and total them at
+    // the end instead.
+    let mut cpu_ticks_by_pid = HashMap::new();
+
+    let sample = |peak_memory_kb: &mut u64, cpu_ticks_by_pid: &mut HashMap<u32, u64>| {
+        let observed = sample_process_group(pgid, cpu_ticks_by_pid);
+        if let Some(memory_kb) = observed {
+            *peak_memory_kb = (*peak_memory_kb).max(memory_kb);
+        }
+        observed
+    };
+
     loop {
-        if let Some(memory_kb) = sample_process_group_memory_kb(pgid) {
-            peak_memory_kb = peak_memory_kb.max(memory_kb);
-        } else if !Path::new(&format!("/proc/{pgid}")).exists() {
+        if sample(&mut peak_memory_kb, &mut cpu_ticks_by_pid).is_none()
+            && !Path::new(&format!("/proc/{pgid}")).exists()
+        {
             // The group leader has been reaped and no member process remains,
             // so the action is finished.
             break;
@@ -141,16 +170,31 @@ async fn sample_action_peak_memory_kb(pgid: u32, mut stop_rx: watch::Receiver<bo
         tokio::select! {
             changed = stop_rx.changed() => {
                 if changed.is_ok() && *stop_rx.borrow() {
-                    if let Some(memory_kb) = sample_process_group_memory_kb(pgid) {
-                        peak_memory_kb = peak_memory_kb.max(memory_kb);
-                    }
+                    sample(&mut peak_memory_kb, &mut cpu_ticks_by_pid);
                     break;
                 }
             }
             () = tokio::time::sleep(RESOURCE_USAGE_SAMPLE_INTERVAL) => {}
         }
     }
-    peak_memory_kb
+
+    SampledResourceUsage {
+        peak_memory_kb,
+        cpu_time_ms: ticks_to_millis(cpu_ticks_by_pid.values().sum()),
+    }
+}
+
+/// Converts clock ticks from `/proc` into milliseconds.
+///
+/// `_SC_CLK_TCK` is 100 on every Linux we run on, but it is queryable so ask
+/// rather than assume, and fall back to 100 if the query fails.
+#[cfg(target_os = "linux")]
+fn ticks_to_millis(ticks: u64) -> u64 {
+    // SAFETY: `sysconf` takes an int and returns a long, with no memory
+    // safety considerations.
+    let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    let hz = if hz > 0 { hz as u64 } else { 100 };
+    ticks.saturating_mul(1_000) / hz
 }
 
 /// Sums the resident memory of every process in the action's process group.
@@ -165,7 +209,7 @@ async fn sample_action_peak_memory_kb(pgid: u32, mut stop_rx: watch::Receiver<bo
 /// inherited and survives reparenting, and excludes the worker's own group.
 /// Returns `None` when no member process can be read (the group is empty).
 #[cfg(target_os = "linux")]
-fn sample_process_group_memory_kb(pgid: u32) -> Option<u64> {
+fn sample_process_group(pgid: u32, cpu_ticks_by_pid: &mut HashMap<u32, u64>) -> Option<u64> {
     let Ok(entries) = std::fs::read_dir("/proc") else {
         return None;
     };
@@ -176,8 +220,17 @@ fn sample_process_group_memory_kb(pgid: u32) -> Option<u64> {
         let Ok(member_pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
             continue;
         };
-        if read_process_pgid(member_pid) != Some(pgid) {
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{member_pid}/stat")) else {
             continue;
+        };
+        if parse_pgid_from_stat(&stat) != Some(pgid) {
+            continue;
+        }
+        if let Some(ticks) = parse_cpu_ticks_from_stat(&stat) {
+            // Monotonic per process, but a pid could in principle be reused
+            // within one action, so never let the figure go backwards.
+            let entry = cpu_ticks_by_pid.entry(member_pid).or_insert(0);
+            *entry = (*entry).max(ticks);
         }
         if let Some(memory_kb) = read_process_rss_kb(member_pid) {
             total_kb += memory_kb;
@@ -197,12 +250,6 @@ fn read_process_rss_kb(pid: u32) -> Option<u64> {
     })
 }
 
-/// Reads a process's group id (`pgrp`) from `/proc/<pid>/stat`.
-#[cfg(target_os = "linux")]
-fn read_process_pgid(pid: u32) -> Option<u32> {
-    parse_pgid_from_stat(&std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)
-}
-
 /// Parses the process group id (`pgrp`, field 5) from the contents of a
 /// `/proc/<pid>/stat` line.
 ///
@@ -214,6 +261,28 @@ pub fn parse_pgid_from_stat(stat: &str) -> Option<u32> {
     let after_comm = stat.rsplit_once(')')?.1;
     // Fields after the final ')': state(0) ppid(1) pgrp(2) ...
     after_comm.split_whitespace().nth(2)?.parse().ok()
+}
+
+/// Sums user and system CPU ticks (`utime` + `stime`, fields 14 and 15) from
+/// the contents of a `/proc/<pid>/stat` line.
+///
+/// Parsed relative to the final `)` for the same reason as the pgid above:
+/// `comm` can contain spaces and parentheses. Returns `None` when the line is
+/// malformed.
+///
+/// `cutime`/`cstime` are deliberately not included. They only cover children
+/// this process has already reaped, so adding them here would double count
+/// every child that is still its own entry in the group.
+#[cfg(target_os = "linux")]
+pub fn parse_cpu_ticks_from_stat(stat: &str) -> Option<u64> {
+    let after_comm = stat.rsplit_once(')')?.1;
+    let mut fields = after_comm.split_whitespace();
+    // Fields after the final ')': state(0) ppid(1) pgrp(2) session(3) tty(4)
+    // tpgid(5) flags(6) minflt(7) cminflt(8) majflt(9) cmajflt(10)
+    // utime(11) stime(12) ...
+    let utime: u64 = fields.nth(11)?.parse().ok()?;
+    let stime: u64 = fields.next()?.parse().ok()?;
+    Some(utime.saturating_add(stime))
 }
 
 /// Valid string reasons for a failure.
@@ -283,6 +352,97 @@ fn persistent_worker_request_arguments(argv: &[String]) -> Vec<String> {
 /// overhead.
 const DOWNLOAD_TO_DIRECTORY_CONCURRENCY: usize = 64;
 
+/// Keeps every digest used by an action present in locally eviction-managed
+/// CAS tiers.
+///
+/// A lease is registered before a digest is populated. This is important for
+/// blobs that are not yet in the fast tier: reserving the key first prevents
+/// the insertion that follows from immediately evicting the blob under pressure.
+/// Every directly discoverable filesystem tier of the worker's
+/// `FastSlowStore` is leased when present (including a `RefStore` target).
+/// Transforming wrappers remain opaque by design. The reference count lets
+/// concurrent actions share a digest safely.
+#[derive(Debug)]
+struct ActionInputLease {
+    filesystem_stores: Vec<Arc<FilesystemStore>>,
+    digests: Mutex<Option<HashSet<DigestInfo>>>,
+}
+
+impl ActionInputLease {
+    fn new(
+        cas_store: &FastSlowStore,
+        command_digest: DigestInfo,
+        input_root_digest: DigestInfo,
+    ) -> Arc<Self> {
+        let lease = Arc::new(Self {
+            filesystem_stores: cas_store.get_filesystem_stores(),
+            digests: Mutex::new(Some(HashSet::new())),
+        });
+        lease.lease_digest(&command_digest);
+        lease.lease_digest(&input_root_digest);
+        lease
+    }
+
+    fn lease_digest(&self, digest: &DigestInfo) {
+        let mut digests = self.digests.lock();
+        let Some(digests) = digests.as_mut() else {
+            return;
+        };
+        if digests.insert(*digest) {
+            for filesystem_store in &self.filesystem_stores {
+                filesystem_store.lease_digest(digest);
+            }
+        }
+    }
+
+    fn take_release_work(&self) -> Option<(Vec<Arc<FilesystemStore>>, Vec<DigestInfo>)> {
+        let digests = self.digests.lock().take()?.into_iter().collect();
+        Some((self.filesystem_stores.clone(), digests))
+    }
+
+    fn spawn_release(&self) -> Option<tokio::task::JoinHandle<()>> {
+        let (filesystem_stores, digests) = self.take_release_work()?;
+        Some(background_spawn!(
+            "action_input_lease_release",
+            release_filesystem_stores(filesystem_stores, digests)
+        ))
+    }
+
+    async fn release(self: Arc<Self>) {
+        let Some(handle) = self.spawn_release() else {
+            return;
+        };
+        // Detach the actual release before awaiting it so cancellation of the
+        // action cleanup future cannot strand leases in a later filesystem
+        // tier.
+        let _result = handle.await;
+    }
+}
+
+impl crate::directory_cache::DigestLease for ActionInputLease {
+    fn acquire(&self, digest: &DigestInfo) {
+        self.lease_digest(digest);
+    }
+}
+
+impl Drop for ActionInputLease {
+    fn drop(&mut self) {
+        drop(self.spawn_release());
+    }
+}
+
+async fn release_filesystem_stores(
+    filesystem_stores: Vec<Arc<FilesystemStore>>,
+    digests: Vec<DigestInfo>,
+) {
+    join_all(
+        filesystem_stores
+            .iter()
+            .map(|filesystem_store| filesystem_store.release_digests(&digests)),
+    )
+    .await;
+}
+
 /// Aggressively download the digests of files and make a local folder from it. This function
 /// gates each directory level to at most `DOWNLOAD_TO_DIRECTORY_CONCURRENCY`
 /// concurrent in-flight materialization futures.
@@ -299,11 +459,227 @@ pub fn download_to_directory<'a>(
     digest: &'a DigestInfo,
     current_directory: &'a str,
 ) -> BoxFuture<'a, Result<(), Error>> {
+    download_to_directory_with_lease(cas_store, filesystem_store, digest, current_directory, None)
+}
+
+fn download_to_directory_with_lease<'a>(
+    cas_store: &'a FastSlowStore,
+    filesystem_store: Pin<&'a FilesystemStore>,
+    digest: &'a DigestInfo,
+    current_directory: &'a str,
+    input_lease: Option<Arc<ActionInputLease>>,
+) -> BoxFuture<'a, Result<(), Error>> {
     async move {
+        let (dirs, files, inline_nodes) =
+            collect_download_links(cas_store, digest, current_directory, input_lease).await?;
+
+        let (exec_files, plain_files): (Vec<_>, Vec<_>) =
+            files.into_iter().partition(|file| file.executable);
+        let mut links = resolve_plain_files(cas_store, filesystem_store, plain_files).await?;
+        links.extend(resolve_exec_files(cas_store, filesystem_store, exec_files).await?);
+
+        // Every directory exists before anything is written into one, so no
+        // later pass has to create a parent it happens to need.
+        fs::create_dir_many(dirs).await?;
+        materialize_inline_nodes(cas_store, filesystem_store, inline_nodes).await?;
+        materialize_links(filesystem_store, links).await
+    }
+    .boxed()
+}
+
+/// A hardlink deferred to the end of the input-tree walk, so the whole tree is
+/// materialized by one batched [`fs::hard_link_many`] pass instead of one
+/// `spawn_blocking` dispatch per file.
+struct PendingLink {
+    src: PathBuf,
+    dst: PathBuf,
+    /// Keeps the CAS blob's `FileEntry` alive until the link is made, so the
+    /// inode cannot be dropped out from under the batch. `None` for an
+    /// executable variant, which is a private file outside the entry map and so
+    /// has no entry to hold.
+    ///
+    /// Neither case is fully closed: a held entry pins the inode but does not
+    /// stop an eviction from *renaming* the blob, and a variant is deleted
+    /// outright by the eviction callback. Both races predate batching, which
+    /// widens the window from a single file to a whole input tree. An operator
+    /// seeing `NotFound` during staging should enable
+    /// `experimental_active_input_leases`, since a leased digest is not
+    /// evicted, or raise the store's `max_bytes`. The durable fix is a
+    /// `hard_link_locked_many` holding every read guard across the batch.
+    _keepalive: Option<Arc<FileEntryImpl>>,
+}
+
+/// A file whose CAS blob has not been resolved to a path yet.
+struct PendingFile {
+    digest: DigestInfo,
+    dst: String,
+    executable: bool,
+}
+
+/// The directories to create, the files to hardlink, and the nodes to
+/// materialize one at a time, for one input subtree.
+type CollectedTree = (Vec<PathBuf>, Vec<PendingFile>, Vec<InlineNode>);
+
+/// Executes every deferred hardlink of an input tree in one batched pass.
+async fn materialize_links(
+    filesystem_store: Pin<&FilesystemStore>,
+    links: Vec<PendingLink>,
+) -> Result<(), Error> {
+    let pairs = links
+        .iter()
+        .map(|link| (link.src.clone(), link.dst.clone()))
+        .collect();
+    for (link, result) in links.iter().zip(fs::hard_link_many(pairs).await?) {
+        let (src_path, dest) = (&link.src, &link.dst);
+        result.map_err(|e| {
+            let src_metadata = std::fs::metadata(src_path);
+            let dest_metadata = std::fs::metadata(dest);
+            let dest_parent_metadata = dest.parent().map(Path::metadata);
+            let snapshot = filesystem_store.get_eviction_snapshot();
+            warn!(?e, fs_eviction_snapshot = %snapshot, ?src_path, ?src_metadata, ?dest, ?dest_metadata, ?dest_parent_metadata, "Could not make hardlink");
+            if e.code == Code::NotFound {
+                e.append(
+                    format!(
+                    "Could not make hardlink from {} to {}, file was likely evicted from cache.\n\
+                    This error often occurs when the filesystem store's max_bytes is too small for your workload.\n\
+                    To fix this issue:\n\
+                    1. Increase the 'max_bytes' value in your filesystem store configuration\n\
+                    2. Example: Change 'max_bytes: 10000000000' to 'max_bytes: 50000000000' (or higher)\n\
+                    3. The setting is typically found in your nativelink.json config under:\n\
+                    stores -> [your_filesystem_store] -> filesystem -> eviction_policy -> max_bytes\n\
+                    4. Restart NativeLink after making the change\n\n\
+                    If this error persists after increasing max_bytes several times, please report at:\n\
+                    https://github.com/TraceMachina/nativelink/issues\n\
+                    Include your config file and both server and client logs to help us assist you.",
+                    src_path.display(), dest.display()
+                ))
+            } else {
+                e.append(format!("Could not make hardlink from {} to {}", src_path.display(), dest.display()))
+            }
+        })?;
+    }
+    Ok(())
+}
+
+/// Resolves every non-executable file of an input tree to its CAS blob path.
+///
+/// The blob is nearly always resident, and `populate_fast_store` would take the
+/// store's eviction lock only to discover that, so resolving the entry directly
+/// answers the same question and yields the path. Only a genuine miss pays the
+/// populate round trip.
+async fn resolve_plain_files(
+    cas_store: &FastSlowStore,
+    filesystem_store: Pin<&FilesystemStore>,
+    files: Vec<PendingFile>,
+) -> Result<Vec<PendingLink>, Error> {
+    let mut tasks = Vec::with_capacity(files.len());
+    for file in files {
+        tasks.push(async move {
+            let file_entry = if let Ok(entry) = filesystem_store
+                .get_file_entry_for_digest(&file.digest)
+                .await
+            {
+                entry
+            } else {
+                cas_store
+                    .populate_fast_store(file.digest.into())
+                    .await
+                    .err_tip(|| "Populating fast store for hard link")?;
+                filesystem_store
+                    .get_file_entry_for_digest(&file.digest)
+                    .await
+                    .err_tip(|| "During hard link")?
+            };
+            // TODO: add a test for #2051: deadlock with large number of files
+            let src_path = file_entry
+                .get_file_path_locked(|src| async move { Ok(src) })
+                .await
+                .err_tip(|| format!("for digest {}", file.digest))?;
+            Ok::<_, Error>(PendingLink {
+                src: PathBuf::from(src_path),
+                dst: PathBuf::from(file.dst),
+                _keepalive: Some(file_entry),
+            })
+        });
+    }
+    collect_links(tasks).await
+}
+
+/// Runs the resolution tasks of one input tree, bounded, into the link batch.
+async fn collect_links(
+    tasks: Vec<impl Future<Output = Result<PendingLink, Error>>>,
+) -> Result<Vec<PendingLink>, Error> {
+    futures::stream::iter(tasks)
+        .buffer_unordered(DOWNLOAD_TO_DIRECTORY_CONCURRENCY)
+        .try_collect()
+        .await
+}
+
+/// Resolves every executable file of an input tree to its 0o555 variant.
+///
+/// The shared 0o444 CAS blob cannot carry the executable bit, so each of these
+/// digests hardlinks a private variant instead, and the batch checks the whole
+/// tree's variants for existence in one dispatch.
+///
+/// A variant cannot be built from a blob that is not resident, and only this
+/// caller can fetch one, so those digests are populated and retried here.
+async fn resolve_exec_files(
+    cas_store: &FastSlowStore,
+    filesystem_store: Pin<&FilesystemStore>,
+    files: Vec<PendingFile>,
+) -> Result<Vec<PendingLink>, Error> {
+    let digests: Vec<DigestInfo> = files.iter().map(|file| file.digest).collect();
+    let sources = filesystem_store
+        .get_executable_hardlink_sources(&digests)
+        .await;
+
+    let mut tasks = Vec::with_capacity(files.len());
+    for (file, source) in files.into_iter().zip(sources) {
+        tasks.push(async move {
+            let src_path = if let Ok(src_path) = source {
+                src_path
+            } else {
+                cas_store
+                    .populate_fast_store(file.digest.into())
+                    .await
+                    .err_tip(|| "Populating fast store for executable")?;
+                filesystem_store
+                    .get_executable_hardlink_source(&file.digest)
+                    .await
+                    .err_tip(|| format!("Resolving executable variant for {}", file.digest))?
+            };
+            Ok::<_, Error>(PendingLink {
+                src: PathBuf::from(src_path),
+                dst: PathBuf::from(file.dst),
+                _keepalive: None,
+            })
+        });
+    }
+    collect_links(tasks).await
+}
+
+/// Walks the input tree, reading its `Directory` protos and sorting every node
+/// into one of the passes the caller then runs: directories to create, files to
+/// hardlink in a batch, and the few nodes that need individual treatment.
+///
+/// Nothing is written to disk here, which is what lets the caller create every
+/// directory before any node is materialized into one.
+fn collect_download_links<'a>(
+    cas_store: &'a FastSlowStore,
+    digest: &'a DigestInfo,
+    current_directory: &'a str,
+    input_lease: Option<Arc<ActionInputLease>>,
+) -> BoxFuture<'a, Result<CollectedTree, Error>> {
+    async move {
+        if let Some(input_lease) = &input_lease {
+            input_lease.lease_digest(digest);
+        }
         let directory = get_and_decode_digest::<ProtoDirectory>(cas_store, digest.into())
             .await
             .err_tip(|| "Converting digest to Directory")?;
         let mut futures = Vec::new();
+        let mut pending_files = Vec::new();
+        let mut inline_nodes = Vec::new();
 
         for file in directory.files {
             let digest: DigestInfo = file
@@ -317,10 +693,164 @@ pub fn download_to_directory<'a>(
                 Some(properties) => (properties.mtime, properties.unix_mode),
                 None => (None, None),
             };
+            if let Some(input_lease) = &input_lease {
+                input_lease.lease_digest(&digest);
+            }
+            // Hot path: nothing to stamp, so the file needs nothing from the
+            // walk beyond its digest. Hand it up unresolved and let the caller
+            // resolve and link the whole tree in one batch.
+            if mtime.is_none() && custom_unix_mode.is_none() && !is_zero_digest(digest) {
+                pending_files.push(PendingFile {
+                    digest,
+                    dst: dest,
+                    executable: is_executable,
+                });
+                continue;
+            }
+            inline_nodes.push(InlineNode::File {
+                digest,
+                dst: dest,
+                is_executable,
+                mtime: mtime
+                    .map(|mtime| FileTime::from_unix_time(mtime.seconds, mtime.nanos as u32)),
+                custom_unix_mode,
+            });
+        }
+
+        for sub_directory in directory.directories {
+            let digest: DigestInfo = sub_directory
+                .digest
+                .err_tip(|| "Expected Digest to exist in Directory::directories::digest")?
+                .try_into()
+                .err_tip(|| "In Directory::file::digest")?;
+            let new_directory_path = format!("{}/{}", current_directory, sub_directory.name);
+            if let Some(input_lease) = &input_lease {
+                // Reserve queued child directories before their futures are
+                // polled. Without this, a large parent can leave later
+                // directory digests exposed to slow-tier eviction while the
+                // first batch of children is being materialized.
+                input_lease.lease_digest(&digest);
+            }
+            let input_lease = input_lease.clone();
             futures.push(
-                cas_store
-                    .populate_fast_store(digest.into())
-                    .and_then(move |()| async move {
+                async move {
+                    let (mut sub_dirs, files, inline) = collect_download_links(
+                        cas_store,
+                        &digest,
+                        &new_directory_path,
+                        input_lease,
+                    )
+                    .await
+                    .err_tip(|| format!("in download_to_directory : {new_directory_path}"))?;
+                    sub_dirs.push(PathBuf::from(new_directory_path));
+                    Ok::<_, Error>((sub_dirs, files, inline))
+                }
+                .boxed(),
+            );
+        }
+
+        #[cfg(target_family = "unix")]
+        for symlink_node in directory.symlinks {
+            inline_nodes.push(InlineNode::Symlink {
+                target: symlink_node.target,
+                dst: format!("{}/{}", current_directory, symlink_node.name),
+            });
+        }
+
+        // Gate concurrency: at most DOWNLOAD_TO_DIRECTORY_CONCURRENCY futures
+        // polled at once for this directory level. Previously all futures were
+        // pushed into an unbounded FuturesUnordered, which on macOS produced
+        // thousands of parallel hardlink(2) calls fighting APFS's per-volume
+        // metadata lock and regressing throughput vs serial.
+        let collected: Vec<CollectedTree> = futures::stream::iter(futures)
+            .buffer_unordered(DOWNLOAD_TO_DIRECTORY_CONCURRENCY)
+            .try_collect()
+            .await?;
+
+        let mut dirs = Vec::new();
+        for (sub_dirs, sub_files, sub_inline) in collected {
+            dirs.extend(sub_dirs);
+            pending_files.extend(sub_files);
+            inline_nodes.extend(sub_inline);
+        }
+        Ok((dirs, pending_files, inline_nodes))
+    }
+    .boxed()
+}
+
+/// A node materialized one at a time rather than through a batch, because it
+/// needs a private inode or is not a hardlink at all.
+///
+/// These are a tiny fraction of an input tree, and deferring them alongside the
+/// batched files keeps one ordering rule for the whole walk: nothing is written
+/// until every directory exists.
+enum InlineNode {
+    /// A zero-digest file, or one carrying metadata that must be stamped onto
+    /// an inode private to this action.
+    File {
+        digest: DigestInfo,
+        dst: String,
+        is_executable: bool,
+        mtime: Option<FileTime>,
+        custom_unix_mode: Option<u32>,
+    },
+    #[cfg(target_family = "unix")]
+    Symlink { target: String, dst: String },
+}
+
+/// Stamps the mode an input file asked for. `dest` must be an inode private to
+/// this action: the same call on a hardlinked CAS blob would mutate the inode
+/// every other action shares.
+#[cfg(target_family = "unix")]
+async fn stamp_unix_mode(
+    dest: &str,
+    is_executable: bool,
+    custom_unix_mode: Option<u32>,
+) -> Result<(), Error> {
+    let mode = match (custom_unix_mode, is_executable) {
+        (Some(mode), true) => mode | 0o111,
+        (Some(mode), false) => mode,
+        (None, true) => 0o555,
+        (None, false) => return Ok(()),
+    };
+    fs::set_permissions(dest, Permissions::from_mode(mode))
+        .await
+        .err_tip(|| format!("Could not set unix mode in download_to_directory {dest}"))
+}
+
+/// Non-unix has no mode to stamp.
+#[cfg(not(target_family = "unix"))]
+async fn stamp_unix_mode(
+    _dest: &str,
+    _is_executable: bool,
+    _custom_unix_mode: Option<u32>,
+) -> Result<(), Error> {
+    Ok(())
+}
+
+/// Materializes the nodes the batched passes cannot handle.
+async fn materialize_inline_nodes(
+    cas_store: &FastSlowStore,
+    filesystem_store: Pin<&FilesystemStore>,
+    nodes: Vec<InlineNode>,
+) -> Result<(), Error> {
+    let mut futures = Vec::with_capacity(nodes.len());
+    for node in nodes {
+        futures.push(async move {
+            match node {
+                #[cfg(target_family = "unix")]
+                InlineNode::Symlink { target, dst } => fs::symlink(&target, &dst)
+                    .await
+                    .err_tip(|| format!("Could not create symlink {target} -> {dst}")),
+                InlineNode::File {
+                    digest,
+                    dst: dest,
+                    is_executable,
+                    mtime,
+                    custom_unix_mode,
+                } => {
+                    cas_store.populate_fast_store(digest.into()).await?;
+                    async move {
                         if is_zero_digest(digest) {
                             // Zero-digest files are never persisted by the
                             // FilesystemStore, so materialise them directly in
@@ -332,7 +862,7 @@ pub fn download_to_directory<'a>(
                                 .write_all(&[])
                                 .await
                                 .err_tip(|| format!("Could not write zero-digest file at {dest}"))?;
-                        } else if custom_unix_mode.is_some() || mtime.is_some() {
+                        } else {
                             // Rare path: per-file metadata (a custom unix_mode or
                             // an mtime) must land on a PRIVATE inode. A
                             // chmod/utimes on a hardlink mutates the shared CAS
@@ -359,90 +889,16 @@ pub fn download_to_directory<'a>(
                             .err_tip(|| {
                                 "Failed to launch spawn_blocking private copy in download_to_directory"
                             })??;
-                        } else {
-                            // Hot path: hardlink only — no writable fd is ever
-                            // opened for the materialized inode, so a concurrent
-                            // `execve` of an executable input cannot hit ETXTBSY
-                            // ("Text file busy"). Executables hardlink a
-                            // per-digest 0o555 variant created once off the hot
-                            // path (the 0o444 CAS blob is shared and cannot carry
-                            // +x); non-executables hardlink the 0o444 CAS blob.
-                            let src_path = if is_executable {
-                                filesystem_store
-                                    .get_executable_hardlink_source(&digest)
-                                    .await
-                                    .err_tip(|| "Resolving executable hardlink source")?
-                            } else {
-                                let file_entry = filesystem_store
-                                    .get_file_entry_for_digest(&digest)
-                                    .await
-                                    .err_tip(|| "During hard link")?;
-                                // TODO: add a test for #2051: deadlock with large number of files
-                                file_entry
-                                    .get_file_path_locked(|src| async move { Ok(src) })
-                                    .await?
-                            };
-                            fs::hard_link(&src_path, &dest)
-                                .await
-                                .map_err(|e| {
-                                    let src_metadata = std::fs::metadata(&src_path);
-                                    let dest_metadata = std::fs::metadata(&dest);
-                                    let dest_parent_metadata = Path::new(&dest).parent().map(Path::metadata);
-                                    let snapshot = filesystem_store.get_eviction_snapshot();
-                                    warn!(?e, fs_eviction_snapshot = %snapshot, ?src_path, ?src_metadata, %dest, ?dest_metadata, ?dest_parent_metadata, "Could not make hardlink");
-                                    if e.code == Code::NotFound {
-                                        e.append(
-                                            format!(
-                                            "Could not make hardlink from {} to {dest}, file was likely evicted from cache.\n\
-                                            This error often occurs when the filesystem store's max_bytes is too small for your workload.\n\
-                                            To fix this issue:\n\
-                                            1. Increase the 'max_bytes' value in your filesystem store configuration\n\
-                                            2. Example: Change 'max_bytes: 10000000000' to 'max_bytes: 50000000000' (or higher)\n\
-                                            3. The setting is typically found in your nativelink.json config under:\n\
-                                            stores -> [your_filesystem_store] -> filesystem -> eviction_policy -> max_bytes\n\
-                                            4. Restart NativeLink after making the change\n\n\
-                                            If this error persists after increasing max_bytes several times, please report at:\n\
-                                            https://github.com/TraceMachina/nativelink/issues\n\
-                                            Include your config file and both server and client logs to help us assist you.", src_path.display()
-                                        ))
-                                    } else {
-                                        e.append(format!("Could not make hardlink from {} to {dest}", src_path.display()))
-                                    }
-                                })?;
-                            // Hardlinked inodes are already correct (the 0o444
-                            // blob or the 0o555 executable variant) and carry no
-                            // per-file metadata, so there is nothing to stamp.
-                            return Ok(());
                         }
 
                         // Private-inode tail (zero-digest or private copy only):
                         // stamp the requested mode and mtime. Safe because the
                         // inode is private to this action.
-                        #[cfg(target_family = "unix")]
-                        {
-                            let mode = if let Some(mode) = custom_unix_mode {
-                                Some(if is_executable { mode | 0o111 } else { mode })
-                            } else if is_executable {
-                                Some(0o555)
-                            } else {
-                                None
-                            };
-                            if let Some(mode) = mode {
-                                fs::set_permissions(&dest, Permissions::from_mode(mode))
-                                    .await
-                                    .err_tip(|| {
-                                        format!("Could not set unix mode in download_to_directory {dest}")
-                                    })?;
-                            }
-                        }
+                        stamp_unix_mode(&dest, is_executable, custom_unix_mode).await?;
                         if let Some(mtime) = mtime {
                             let spawned_dest = dest.clone();
                             spawn_blocking!("download_to_directory_set_mtime", move || {
-                                set_file_mtime(
-                                    &spawned_dest,
-                                    FileTime::from_unix_time(mtime.seconds, mtime.nanos as u32),
-                                )
-                                .err_tip(|| {
+                                set_file_mtime(&spawned_dest, mtime).err_tip(|| {
                                     format!("Failed to set mtime in download_to_directory {spawned_dest}")
                                 })
                             })
@@ -452,67 +908,17 @@ pub fn download_to_directory<'a>(
                             )??;
                         }
                         Ok(())
-                    })
-                    .map_err(move |e| e.append(format!("for digest {digest}")))
-                    .boxed(),
-            );
-        }
-
-        for directory in directory.directories {
-            let digest: DigestInfo = directory
-                .digest
-                .err_tip(|| "Expected Digest to exist in Directory::directories::digest")?
-                .try_into()
-                .err_tip(|| "In Directory::file::digest")?;
-            let new_directory_path = format!("{}/{}", current_directory, directory.name);
-            futures.push(
-                async move {
-                    fs::create_dir(&new_directory_path)
-                        .await
-                        .err_tip(|| format!("Could not create directory {new_directory_path}"))?;
-                    download_to_directory(
-                        cas_store,
-                        filesystem_store,
-                        &digest,
-                        &new_directory_path,
-                    )
+                    }
                     .await
-                    .err_tip(|| format!("in download_to_directory : {new_directory_path}"))?;
-                    Ok(())
+                    .map_err(|e: Error| e.append(format!("for digest {digest}")))
                 }
-                .boxed(),
-            );
-        }
-
-        #[cfg(target_family = "unix")]
-        for symlink_node in directory.symlinks {
-            let dest = format!("{}/{}", current_directory, symlink_node.name);
-            futures.push(
-                async move {
-                    fs::symlink(&symlink_node.target, &dest).await.err_tip(|| {
-                        format!(
-                            "Could not create symlink {} -> {}",
-                            symlink_node.target, dest
-                        )
-                    })?;
-                    Ok(())
-                }
-                .boxed(),
-            );
-        }
-
-        // Gate concurrency: at most DOWNLOAD_TO_DIRECTORY_CONCURRENCY futures
-        // polled at once for this directory level. Previously all futures were
-        // pushed into an unbounded FuturesUnordered, which on macOS produced
-        // thousands of parallel hardlink(2) calls fighting APFS's per-volume
-        // metadata lock and regressing throughput vs serial.
-        futures::stream::iter(futures)
-            .buffer_unordered(DOWNLOAD_TO_DIRECTORY_CONCURRENCY)
-            .try_collect::<Vec<_>>()
-            .await?;
-        Ok(())
+            }
+        });
     }
-    .boxed()
+    futures::stream::iter(futures)
+        .buffer_unordered(DOWNLOAD_TO_DIRECTORY_CONCURRENCY)
+        .try_collect()
+        .await
 }
 
 /// Prepares action inputs by first trying the directory cache (if available),
@@ -534,7 +940,30 @@ pub async fn prepare_action_inputs(
     digest: &DigestInfo,
     work_directory: &str,
 ) -> Result<(), Error> {
-    // Try cache first if available
+    prepare_action_inputs_with_lease(
+        directory_cache,
+        cas_store,
+        filesystem_store,
+        digest,
+        work_directory,
+        None,
+    )
+    .await
+}
+
+async fn prepare_action_inputs_with_lease(
+    directory_cache: &Option<Arc<crate::directory_cache::DirectoryCache>>,
+    cas_store: &FastSlowStore,
+    filesystem_store: Pin<&FilesystemStore>,
+    digest: &DigestInfo,
+    work_directory: &str,
+    input_lease: Option<Arc<ActionInputLease>>,
+) -> Result<(), Error> {
+    // Try cache first if available. Cache hits are safe while an action lease
+    // is active because the directory cache pins its own materialized tree
+    // across the hardlink operation. On a miss, pass the action lease into
+    // cache construction so every CAS digest is reserved before it is
+    // fetched/populated.
     if let Some(cache) = directory_cache {
         // `clonefile(2)` and `hardlink_directory_tree` both require the
         // destination to not exist. Remove the empty directory the caller
@@ -543,10 +972,20 @@ pub async fn prepare_action_inputs(
         fs::remove_dir(work_directory)
             .await
             .err_tip(|| format!("Failed to clear pre-created work directory {work_directory}"))?;
-        match cache
-            .get_or_create(*digest, Path::new(work_directory))
-            .await
-        {
+        let cache_result = if let Some(input_lease) = &input_lease {
+            cache
+                .get_or_create_with_lease(
+                    *digest,
+                    Path::new(work_directory),
+                    Some(input_lease.as_ref()),
+                )
+                .await
+        } else {
+            cache
+                .get_or_create(*digest, Path::new(work_directory))
+                .await
+        };
+        match cache_result {
             Ok(cache_hit) => {
                 // The materialized tree is already usable. The directory
                 // cache locks each entry down with `set_readonly_recursive`,
@@ -584,7 +1023,14 @@ pub async fn prepare_action_inputs(
     }
 
     // Traditional path (cache disabled or failed)
-    download_to_directory(cas_store, filesystem_store, digest, work_directory).await
+    download_to_directory_with_lease(
+        cas_store,
+        filesystem_store,
+        digest,
+        work_directory,
+        input_lease,
+    )
+    .await
 }
 
 #[cfg(target_family = "windows")]
@@ -1037,6 +1483,9 @@ pub struct RunningActionImpl {
     action_directory: String,
     work_directory: String,
     action_info: ActionInfo,
+    /// `Some` only when the manager was configured with
+    /// `experimental_active_input_leases`; `None` leaves eviction untouched.
+    input_lease: Option<Arc<ActionInputLease>>,
     timeout: Duration,
     running_actions_manager: Arc<RunningActionsManagerImpl>,
     state: Mutex<RunningActionImplState>,
@@ -1054,12 +1503,20 @@ impl RunningActionImpl {
         running_actions_manager: Arc<RunningActionsManagerImpl>,
     ) -> Self {
         let work_directory = format!("{}/{}", action_directory, "work");
+        let input_lease = running_actions_manager.active_input_leases.then(|| {
+            ActionInputLease::new(
+                running_actions_manager.cas_store.as_ref(),
+                action_info.command_digest,
+                action_info.input_root_digest,
+            )
+        });
         let (kill_channel_tx, kill_channel_rx) = oneshot::channel();
         Self {
             operation_id,
             action_directory,
             work_directory,
             action_info,
+            input_lease,
             timeout,
             running_actions_manager,
             state: Mutex::new(RunningActionImplState {
@@ -1072,8 +1529,10 @@ impl RunningActionImpl {
                 execution_metadata,
                 error: None,
             }),
-            // Always need to ensure that we're removed from the manager on Drop.
-            has_manager_entry: AtomicBool::new(true),
+            // Set to true only after the action is inserted into the manager.
+            // The constructor can fail the operation-id uniqueness check
+            // immediately after this object is created.
+            has_manager_entry: AtomicBool::new(false),
             // Only needs to be cleaned up after a prepare_action call, set there.
             did_cleanup: AtomicBool::new(true),
         }
@@ -1122,12 +1581,13 @@ impl RunningActionImpl {
                 // Use directory cache if available for better performance.
                 self.metrics()
                     .download_to_directory
-                    .wrap(prepare_action_inputs(
+                    .wrap(prepare_action_inputs_with_lease(
                         &self.running_actions_manager.directory_cache,
                         &self.running_actions_manager.cas_store,
                         filesystem_store_pin,
                         &self.action_info.input_root_digest,
                         &self.work_directory,
+                        self.input_lease.clone(),
                     ))
                     .await
             })
@@ -1643,20 +2103,27 @@ impl RunningActionImpl {
                     let resource_usage = match maybe_resource_usage_sampler.take() {
                         Some(sampler) => finish_action_resource_usage_sampler(sampler)
                             .await
-                            .and_then(|peak_memory_kb| {
-                                (peak_memory_kb > 0).then_some(ActionResourceUsage {
-                                    peak_memory_kb,
-                                    sampled: true,
-                                    operation_id: String::new(),
-                                    worker_id: String::new(),
-                                })
+                            .and_then(|usage| {
+                                // An action too short to catch a sample leaves
+                                // both at zero; report nothing rather than a
+                                // misleading zero.
+                                (usage.peak_memory_kb > 0 || usage.cpu_time_ms > 0).then_some(
+                                    ActionResourceUsage {
+                                        peak_memory_kb: usage.peak_memory_kb,
+                                        cpu_time_ms: usage.cpu_time_ms,
+                                        sampled: true,
+                                        operation_id: String::new(),
+                                        worker_id: String::new(),
+                                    },
+                                )
                             }),
                         None => None,
                     };
                     #[cfg(not(target_os = "linux"))]
                     let resource_usage = None;
 
-                    info!(?args, "Command complete");
+                    // log something useful instead of repeating same ?arg
+                    info!(?exit_code, "Command complete");
 
                     let maybe_error_override = if let Some(side_channel_file) = maybe_side_channel_file {
                         process_side_channel_file(side_channel_file.clone(), &args, requested_timeout).await
@@ -2092,6 +2559,12 @@ impl Drop for RunningActionImpl {
                         .cleanup_action(&self.operation_id),
                 );
             }
+            if let Some(input_lease) = self.input_lease.clone() {
+                background_spawn!(
+                    "running_action_impl_release_input_lease",
+                    input_lease.release()
+                );
+            }
             return;
         }
         let operation_id = self.operation_id.clone();
@@ -2101,18 +2574,21 @@ impl Drop for RunningActionImpl {
         );
         let running_actions_manager = self.running_actions_manager.clone();
         let action_directory = self.action_directory.clone();
+        let input_lease = self.input_lease.clone();
         background_spawn!("running_action_impl_drop", async move {
-            let Err(err) =
-                do_cleanup(&running_actions_manager, &operation_id, &action_directory).await
-            else {
-                return;
-            };
-            error!(
-                %operation_id,
-                ?action_directory,
-                ?err,
-                "Error cleaning up action"
-            );
+            let cleanup_result =
+                do_cleanup(&running_actions_manager, &operation_id, &action_directory).await;
+            if let Some(input_lease) = input_lease {
+                input_lease.release().await;
+            }
+            if let Err(err) = cleanup_result {
+                error!(
+                    %operation_id,
+                    ?action_directory,
+                    ?err,
+                    "Error cleaning up action"
+                );
+            }
         });
     }
 }
@@ -2212,6 +2688,13 @@ impl RunningAction for RunningActionImpl {
                 .await;
                 self.has_manager_entry.store(false, Ordering::Release);
                 self.did_cleanup.store(true, Ordering::Release);
+                // The work directory and manager entry are gone before the
+                // lease is released. If this future is cancelled while the
+                // release task is finishing, Drop still observes a completed
+                // cleanup and cannot strand the action in the manager.
+                if let Some(input_lease) = self.input_lease.clone() {
+                    input_lease.release().await;
+                }
                 result.map(move |()| self)
             })
             .await;
@@ -2567,6 +3050,11 @@ pub struct RunningActionsManagerArgs<'a> {
     pub max_cleanup_backoff: Duration,
     pub timeout_handled_externally: bool,
     pub directory_cache: Option<Arc<crate::directory_cache::DirectoryCache>>,
+    /// When true, every digest in an active action's input Merkle closure is
+    /// leased in the locally eviction-managed CAS tiers until the action's
+    /// cleanup completes. While leases are held, those tiers may temporarily
+    /// exceed their configured `max_bytes` / `max_count` eviction limits.
+    pub active_input_leases: bool,
     #[cfg(target_os = "linux")]
     pub use_namespaces: UseNamespaces,
 }
@@ -2620,6 +3108,9 @@ pub struct RunningActionsManagerImpl {
     /// Optional directory cache for improving performance by caching reconstructed
     /// input directories and using hardlinks.
     directory_cache: Option<Arc<crate::directory_cache::DirectoryCache>>,
+    /// Whether active action inputs are leased against eviction in the local
+    /// CAS tiers (opt-in via `experimental_active_input_leases`).
+    active_input_leases: bool,
     persistent_worker_pool: PersistentWorkerPool,
 }
 
@@ -2665,6 +3156,7 @@ impl RunningActionsManagerImpl {
             max_cleanup_backoff: args.max_cleanup_backoff,
             cleanup_complete_notify: Arc::new(Notify::new()),
             directory_cache: args.directory_cache,
+            active_input_leases: args.active_input_leases,
             persistent_worker_pool: PersistentWorkerPool::default(),
             #[cfg(target_os = "linux")]
             use_namespaces: args.use_namespaces,
@@ -2696,6 +3188,20 @@ impl RunningActionsManagerImpl {
             };
 
             if !should_wait {
+                let action_is_running = self
+                    .running_actions
+                    .lock()
+                    .get(operation_id)
+                    .and_then(Weak::upgrade)
+                    .is_some();
+                if action_is_running {
+                    return Err(make_err!(
+                        Code::AlreadyExists,
+                        "Action with operation_id {} is already running",
+                        operation_id
+                    ));
+                }
+
                 let dir_path =
                     PathBuf::from(&self.root_action_directory).join(operation_id.to_string());
 
@@ -2936,6 +3442,9 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                             ));
                     }
                     running_actions.insert(operation_id, Arc::downgrade(&running_action));
+                    running_action
+                        .has_manager_entry
+                        .store(true, Ordering::Release);
                 }
                 Ok(running_action)
             })

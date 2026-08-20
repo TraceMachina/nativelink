@@ -1,7 +1,12 @@
 import { Callout } from "@/components/callout";
 import { ConfigVersionSwitcher } from "@/components/config-version-switcher";
 import { Mermaid } from "@/components/mermaid";
+import { MinVersion } from "@/components/min-version";
+import { NextStep } from "@/components/next-step";
+import { Prerequisites } from "@/components/prerequisites";
+import { SourceLink } from "@/components/source-link";
 import { Steps } from "@/components/steps";
+import { VerifyBlock } from "@/components/verify-block";
 import { Accordion, Accordions } from "fumadocs-ui/components/accordion";
 import { Callout as FumadocsCallout } from "fumadocs-ui/components/callout";
 import { Tab, Tabs } from "fumadocs-ui/components/tabs";
@@ -23,6 +28,14 @@ export function getMDXComponents(components?: MDXComponents): MDXComponents {
     Mermaid,
     Accordions,
     Accordion,
+    // The journey components. Every page on the reading path opens with
+    // <Prerequisites> and closes with <NextStep>; every tutorial and how-to
+    // proves itself with <VerifyBlock>; behavioural claims carry a <SourceLink>.
+    Prerequisites,
+    NextStep,
+    VerifyBlock,
+    SourceLink,
+    MinVersion,
     ...components,
   };
 }

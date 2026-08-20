@@ -646,6 +646,86 @@ pub enum StoreSpec {
     ExperimentalMongo(ExperimentalMongoSpec),
 }
 
+impl StoreSpec {
+    pub(crate) fn visit_grpc_specs(&self, visitor: &mut dyn FnMut(&GrpcSpec)) {
+        match self {
+            Self::CacheMetrics(spec) => spec.backend.visit_grpc_specs(visitor),
+            Self::Verify(spec) => spec.backend.visit_grpc_specs(visitor),
+            Self::Compression(spec) => spec.backend.visit_grpc_specs(visitor),
+            Self::Dedup(spec) => {
+                spec.index_store.visit_grpc_specs(visitor);
+                spec.content_store.visit_grpc_specs(visitor);
+            }
+            Self::ExistenceCache(spec) => spec.backend.visit_grpc_specs(visitor),
+            Self::CompletenessChecking(spec) => {
+                spec.backend.visit_grpc_specs(visitor);
+                spec.cas_store.visit_grpc_specs(visitor);
+            }
+            Self::FastSlow(spec) => {
+                spec.fast.visit_grpc_specs(visitor);
+                spec.slow.visit_grpc_specs(visitor);
+            }
+            Self::Shard(spec) => {
+                for shard in &spec.stores {
+                    shard.store.visit_grpc_specs(visitor);
+                }
+            }
+            Self::SizePartitioning(spec) => {
+                spec.lower_store.visit_grpc_specs(visitor);
+                spec.upper_store.visit_grpc_specs(visitor);
+            }
+            Self::Grpc(spec) => visitor(spec),
+            Self::Memory(_)
+            | Self::ExperimentalCloudObjectStore(_)
+            | Self::OntapS3ExistenceCache(_)
+            | Self::Filesystem(_)
+            | Self::RefStore(_)
+            | Self::RedisStore(_)
+            | Self::Noop(_)
+            | Self::ExperimentalMongo(_) => {}
+        }
+    }
+
+    pub(crate) fn visit_grpc_specs_mut(&mut self, visitor: &mut dyn FnMut(&mut GrpcSpec)) {
+        match self {
+            Self::CacheMetrics(spec) => spec.backend.visit_grpc_specs_mut(visitor),
+            Self::Verify(spec) => spec.backend.visit_grpc_specs_mut(visitor),
+            Self::Compression(spec) => spec.backend.visit_grpc_specs_mut(visitor),
+            Self::Dedup(spec) => {
+                spec.index_store.visit_grpc_specs_mut(visitor);
+                spec.content_store.visit_grpc_specs_mut(visitor);
+            }
+            Self::ExistenceCache(spec) => spec.backend.visit_grpc_specs_mut(visitor),
+            Self::CompletenessChecking(spec) => {
+                spec.backend.visit_grpc_specs_mut(visitor);
+                spec.cas_store.visit_grpc_specs_mut(visitor);
+            }
+            Self::FastSlow(spec) => {
+                spec.fast.visit_grpc_specs_mut(visitor);
+                spec.slow.visit_grpc_specs_mut(visitor);
+            }
+            Self::Shard(spec) => {
+                for shard in &mut spec.stores {
+                    shard.store.visit_grpc_specs_mut(visitor);
+                }
+            }
+            Self::SizePartitioning(spec) => {
+                spec.lower_store.visit_grpc_specs_mut(visitor);
+                spec.upper_store.visit_grpc_specs_mut(visitor);
+            }
+            Self::Grpc(spec) => visitor(spec),
+            Self::Memory(_)
+            | Self::ExperimentalCloudObjectStore(_)
+            | Self::OntapS3ExistenceCache(_)
+            | Self::Filesystem(_)
+            | Self::RefStore(_)
+            | Self::RedisStore(_)
+            | Self::Noop(_)
+            | Self::ExperimentalMongo(_) => {}
+        }
+    }
+}
+
 /// Configuration for an individual shard of the store.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
@@ -1496,9 +1576,25 @@ pub struct GrpcSpec {
     /// When combined with `experimental_chunked_uploads`, chunked uploads
     /// take precedence for blobs at or above the chunking threshold.
     ///
-    /// Default: false (disabled).
-    #[serde(default, deserialize_with = "convert_boolean_with_shellexpand")]
-    pub experimental_remote_cache_compression: bool,
+    /// When zstd wire compression is enabled elsewhere in the process,
+    /// omitting this setting enables it automatically for CAS gRPC stores.
+    /// Set it explicitly to `false` to opt this store out.
+    ///
+    /// Default: inherited from the process-wide zstd wire-compression intent.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "convert_boolean_with_shellexpand"
+    )]
+    pub experimental_remote_cache_compression: Option<bool>,
+}
+
+impl GrpcSpec {
+    /// Whether this store should use REAPI zstd wire compression.
+    #[must_use]
+    pub fn remote_cache_compression_enabled(&self) -> bool {
+        self.experimental_remote_cache_compression.unwrap_or(false)
+    }
 }
 
 /// Configuration for experimental small-blob read coalescing in a gRPC
@@ -1688,6 +1784,30 @@ pub struct RedisSpec {
     /// Default: 3
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub connection_pool_size: usize,
+
+    /// Expire keys written by this store after this many seconds.
+    ///
+    /// Redis does not expire these on its own, so a store whose consumer
+    /// stops keeps every key it ever wrote. A BEP store is the case this
+    /// exists for: if the ETL stops consuming, the backlog grows until the
+    /// Redis node runs out of memory.
+    ///
+    /// Set this per store, not globally. The same store type backs the CAS
+    /// fast tier and the scheduler, and expiring scheduler state would drop
+    /// in-flight actions.
+    ///
+    /// This trades data for a bound. Anything not consumed within the window
+    /// is deleted, so the value has to exceed the longest consumer outage you
+    /// intend to survive, and it must also exceed how long a single upload can
+    /// take: the temp key an upload builds carries this same TTL, so a value
+    /// below the upload duration would expire the write in flight.
+    ///
+    /// Zero disables expiry. One second is the smallest value that enables it,
+    /// and any value that small is almost certainly a mistake.
+    ///
+    /// Default: 0 (keys never expire)
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub key_ttl_s: u64,
 
     /// The maximum number of upload chunks to allow per update.
     /// This is used to limit the amount of memory used when uploading

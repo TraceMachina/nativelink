@@ -154,6 +154,8 @@ kubectl
 [Mm]inikube
 [Mm]itigations
 [Pp]recompute
+[Pp]repend
+[Pp]repending
 attrs
 Bzlmod
 [Dd]eps
@@ -316,3 +318,11 @@ subtree
 hardlink
 multiplicatively
 SELinux
+repoint
+inlines
+permalinked
+gitignored
+inlined
+protobufs
+arg
+rustfmt

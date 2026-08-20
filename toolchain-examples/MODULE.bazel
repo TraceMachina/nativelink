@@ -7,7 +7,7 @@ module(
 bazel_dep(name = "platforms", version = "1.1.0")
 
 # C++
-bazel_dep(name = "rules_cc", version = "0.2.19")
+bazel_dep(name = "rules_cc", version = "0.2.20")
 
 # Java
 bazel_dep(name = "rules_java", version = "9.0.3")
@@ -34,12 +34,12 @@ python.toolchain(
 use_repo(pip, "pip")
 
 # Go
-bazel_dep(name = "rules_go", version = "0.60.0")
+bazel_dep(name = "rules_go", version = "0.62.0")
 
 # Rust
 #
-bazel_dep(name = "rules_rs", version = "0.0.96")
-bazel_dep(name = "llvm", version = "0.8.9")
+bazel_dep(name = "rules_rs", version = "0.0.102")
+bazel_dep(name = "llvm", version = "0.8.15")
 
 rust_toolchains = use_extension("@rules_rs//rs/toolchains:module_extension.bzl", "toolchains")
 rust_toolchains.toolchain(

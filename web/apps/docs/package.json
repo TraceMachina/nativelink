@@ -4,6 +4,7 @@
   "dependencies": {
     "@nativelink/tokens": "workspace:*",
     "@nativelink/ui": "workspace:*",
+    "@next/third-parties": "^16.2.11",
     "fumadocs-core": "^16",
     "fumadocs-mdx": "^15",
     "fumadocs-ui": "^16",
@@ -25,12 +26,18 @@
   },
   "private": true,
   "scripts": {
-    "build": "node scripts/gen-changelog.mjs && next build",
+    "build": "node scripts/gen-changelog.mjs && node scripts/gen-llms.mjs && next build",
     "clean": "rm -rf .next .turbo .source",
-    "dev": "node scripts/gen-changelog.mjs && next dev --port 3001",
+    "dev": "node scripts/gen-changelog.mjs && node scripts/gen-llms.mjs && next dev --port 3001",
     "gen:changelog": "node scripts/gen-changelog.mjs",
     "gen:config-reference": "node scripts/gen-config-reference.mjs",
+    "gen:llms": "node scripts/gen-llms.mjs",
     "lint": "biome check .",
+    "lint:anchors": "node scripts/lint-anchors.mjs",
+    "lint:boundaries": "node scripts/lint-boundaries.mjs",
+    "lint:links": "node scripts/lint-links.mjs",
+    "lint:navigation": "node scripts/lint-navigation.mjs",
+    "lint:snippets": "node scripts/lint-snippets.mjs",
     "start": "next start --port 3001",
     "typecheck": "tsc --noEmit"
   },

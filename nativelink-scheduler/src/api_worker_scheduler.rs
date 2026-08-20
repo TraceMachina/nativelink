@@ -31,6 +31,11 @@ use nativelink_proto::com::github::trace_machina::nativelink::events::{
 };
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::ActionResourceUsage;
 use nativelink_util::action_messages::{OperationId, WorkerId};
+use nativelink_util::metrics::{
+    WorkerDisconnectReason, record_execution_cpu_time, record_execution_peak_memory,
+    record_worker_connected, record_worker_disconnected, record_worker_keepalive,
+    record_worker_state,
+};
 use nativelink_util::operation_state_manager::{UpdateOperationType, WorkerStateManager};
 use nativelink_util::origin_event::get_node_id;
 use nativelink_util::platform_properties::PlatformProperties;
@@ -179,6 +184,7 @@ impl ApiWorkerSchedulerImpl {
             running_operations = worker.running_action_infos.len(),
             "Worker keepalive received"
         );
+        record_worker_keepalive();
 
         Ok(())
     }
@@ -188,7 +194,9 @@ impl ApiWorkerSchedulerImpl {
     fn add_worker(&mut self, worker: Worker) -> Result<(), Error> {
         let worker_id = worker.id.clone();
         let platform_properties = worker.platform_properties.clone();
-        self.workers.put(worker_id.clone(), worker);
+        // A replacement is one out and one in, so the gauge only moves for a
+        // genuinely new worker.
+        let replaced = self.workers.put(worker_id.clone(), worker);
 
         // Add to capability index for fast matching
         self.capability_index
@@ -207,6 +215,16 @@ impl ApiWorkerSchedulerImpl {
                 ?err,
                 "Worker connection appears to have been closed while adding to pool"
             );
+        }
+        if let Some(replaced) = &replaced {
+            if replaced.is_draining {
+                record_worker_state("draining", false);
+            }
+            if replaced.is_paused {
+                record_worker_state("paused", false);
+            }
+        } else {
+            record_worker_connected();
         }
         self.worker_change_notify.notify_one();
         res
@@ -234,6 +252,9 @@ impl ApiWorkerSchedulerImpl {
             .workers
             .get_mut(worker_id)
             .err_tip(|| format!("Worker {worker_id} doesn't exist in the pool"))?;
+        if worker.is_draining != is_draining {
+            record_worker_state("draining", is_draining);
+        }
         worker.is_draining = is_draining;
         self.worker_change_notify.notify_one();
         Ok(())
@@ -353,41 +374,50 @@ impl ApiWorkerSchedulerImpl {
         };
 
         // Update the operation in the worker state manager.
-        {
-            let update_operation_res = self
-                .worker_state_manager
-                .update_operation(operation_id, worker_id, update)
-                .await
-                .err_tip(|| "in update_operation on SimpleScheduler::update_action");
-            if let Err(err) = update_operation_res {
-                error!(
-                    %operation_id,
-                    ?worker_id,
-                    ?err,
-                    "Failed to update_operation on update_action"
-                );
-                return Err(err);
-            }
+        let update_operation_res = self
+            .worker_state_manager
+            .update_operation(operation_id, worker_id, update)
+            .await
+            .err_tip(|| "in update_operation on SimpleScheduler::update_action");
+        if let Err(err) = &update_operation_res {
+            error!(
+                %operation_id,
+                ?worker_id,
+                ?err,
+                "Failed to update_operation on update_action"
+            );
         }
 
         if !is_finished {
-            return Ok(());
+            return update_operation_res;
         }
+        // The worker is done with this action even if the state-manager update
+        // failed (e.g. the operation was already torn down after its clients
+        // timed out). The worker bookkeeping below must still run, or the
+        // worker's platform properties leak until it can never match again.
 
         // Clear this action from the current worker if finished.
         let complete_action_res = {
             // Note: We need to run this before dealing with backpressure logic.
+            let was_paused = worker.is_paused;
             let complete_action_res = worker.complete_action(operation_id).await;
 
             if (due_to_backpressure || !worker.can_accept_work()) && worker.has_actions() {
                 worker.is_paused = true;
+            }
+            // complete_action clears is_paused on its way through, so compare
+            // the state either side of it rather than testing the flag after.
+            // Testing afterwards counts a re-pause every time and never
+            // unwinds, which leaves the gauge climbing forever.
+            if was_paused != worker.is_paused {
+                record_worker_state("paused", worker.is_paused);
             }
             complete_action_res
         };
 
         self.worker_change_notify.notify_one();
 
-        complete_action_res
+        update_operation_res.merge(complete_action_res)
     }
 
     /// Notifies the specified worker to run the given action and handles errors by evicting
@@ -459,6 +489,27 @@ impl ApiWorkerSchedulerImpl {
     ) -> Result<(), Error> {
         let mut result = Ok(());
         if let Some(mut worker) = self.remove_worker(worker_id) {
+            // Log every eviction here rather than in each caller, so a worker
+            // can never leave the pool unexplained. Without this, a worker that
+            // vanished mid-build left nothing on the scheduler side to
+            // attribute it to, and the only visible symptom was the worker
+            // reconnecting with a fresh id.
+            info!(
+                ?worker_id,
+                is_disconnect,
+                running_actions = worker.running_action_infos.len(),
+                reason = %err.message_string(),
+                "Evicting worker from pool"
+            );
+            record_worker_disconnected(
+                if is_disconnect {
+                    WorkerDisconnectReason::Disconnected
+                } else {
+                    WorkerDisconnectReason::Evicted
+                },
+                worker.is_draining,
+                worker.is_paused,
+            );
             // We don't care if we fail to send message to worker, this is only a best attempt.
             drop(worker.notify_update(WorkerUpdate::Disconnect).await);
             let update = if is_disconnect {
@@ -648,6 +699,17 @@ impl WorkerScheduler for ApiWorkerScheduler {
         // only override lived on `SimpleScheduler`, which this path never
         // reaches, so the event was silently dropped by the trait's no-op
         // default and `observed_worker_peak_memory_mib` was never recorded.
+        // Sampling is optional, so only record when the worker actually took a
+        // reading. A zero here means "not sampled", not "used no memory".
+        if resource_usage.sampled {
+            if resource_usage.peak_memory_kb > 0 {
+                record_execution_peak_memory(resource_usage.peak_memory_kb, "");
+            }
+            if resource_usage.cpu_time_ms > 0 {
+                record_execution_cpu_time(resource_usage.cpu_time_ms, "");
+            }
+        }
+
         let Some(origin_event_tx) = self.maybe_origin_event_tx.as_ref() else {
             return Ok(());
         };

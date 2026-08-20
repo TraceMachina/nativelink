@@ -61,6 +61,28 @@ use crate::worker_utils::make_connect_worker_request;
 /// consider an error to have occurred.
 const ACTIONS_IN_TRANSIT_TIMEOUT_S: f32 = 10.;
 
+/// Increments `actions_in_transit` on creation and decrements it on drop, so
+/// the count stays accurate even when the owning action future is aborted by
+/// a disconnect. A stranded count makes the disconnect handler conclude the
+/// in-transit actions never drained, turning every disconnect-with-work into
+/// a fatal error instead of a reconnect.
+struct ActionsInTransitGuard {
+    actions_in_transit: Arc<AtomicU64>,
+}
+
+impl ActionsInTransitGuard {
+    fn new(actions_in_transit: Arc<AtomicU64>) -> Self {
+        actions_in_transit.fetch_add(1, Ordering::Release);
+        Self { actions_in_transit }
+    }
+}
+
+impl Drop for ActionsInTransitGuard {
+    fn drop(&mut self) {
+        self.actions_in_transit.fetch_sub(1, Ordering::Release);
+    }
+}
+
 /// If we lose connection to the worker api server we will wait this many seconds
 /// before trying to connect.
 const CONNECTION_RETRY_DELAY_S: f32 = 0.5;
@@ -315,7 +337,8 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                         extra_envs.insert(name.clone(), value.into_owned());
                                     }
                                 }
-                                let actions_in_transit = self.actions_in_transit.clone();
+                                let actions_in_transit_guard =
+                                    ActionsInTransitGuard::new(self.actions_in_transit.clone());
                                 let worker_id = self.worker_id.clone();
                                 let running_actions_manager = self.running_actions_manager.clone();
                                 let mut grpc_client = self.grpc_client.clone();
@@ -328,7 +351,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                     .map(move |r| {
                                         // Now that we either failed or registered our action, we can
                                         // consider the action to no longer be in transit.
-                                        actions_in_transit.fetch_sub(1, Ordering::Release);
+                                        drop(actions_in_transit_guard);
                                         r
                                     })
                                     .and_then(|action| {
@@ -437,8 +460,6 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                     Ok(())
                                 }
                             };
-
-                            self.actions_in_transit.fetch_add(1, Ordering::Release);
 
                             let add_future_channel = add_future_channel.clone();
 
@@ -709,6 +730,7 @@ pub async fn new_local_worker(
             max_cleanup_backoff,
             timeout_handled_externally: config.timeout_handled_externally,
             directory_cache,
+            active_input_leases: config.experimental_active_input_leases,
             #[cfg(target_os = "linux")]
             use_namespaces,
         })?);
@@ -891,24 +913,36 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
 
             // Now listen for connections and run all other services.
             if let Err(err) = inner.run(update_for_worker_stream, &mut shutdown_rx).await {
-                'no_more_actions: {
-                    // Ensure there are no actions in transit before we try to kill
-                    // all our actions.
-                    const ITERATIONS: usize = 1_000;
+                // Give in-transit actions a chance to settle before we kill
+                // them, so their results still reach the scheduler.
+                const ITERATIONS: usize = 1_000;
 
-                    const ERROR_MSG: &str = "Actions in transit did not reach zero before we disconnected from the scheduler";
-
-                    let sleep_duration = ACTIONS_IN_TRANSIT_TIMEOUT_S / ITERATIONS as f32;
-                    for _ in 0..ITERATIONS {
-                        if inner.actions_in_transit.load(Ordering::Acquire) == 0 {
-                            break 'no_more_actions;
-                        }
-                        (sleep_fn_pin)(Duration::from_secs_f32(sleep_duration)).await;
+                let sleep_duration = ACTIONS_IN_TRANSIT_TIMEOUT_S / ITERATIONS as f32;
+                let mut drained = false;
+                for _ in 0..ITERATIONS {
+                    if inner.actions_in_transit.load(Ordering::Acquire) == 0 {
+                        drained = true;
+                        break;
                     }
-                    error!(ERROR_MSG);
-                    return Err(err.append(ERROR_MSG));
+                    (sleep_fn_pin)(Duration::from_secs_f32(sleep_duration)).await;
                 }
-                error!(?err, "Worker disconnected from scheduler");
+                if !drained {
+                    // Deliberately not fatal. Returning here propagates out of
+                    // the worker's main loop and aborts the process, so a
+                    // scheduler blip that happened to catch an action in
+                    // transit took the whole worker down — and every action it
+                    // held then had to run again elsewhere. At fleet scale that
+                    // is a restart storm. kill_all() below discards these
+                    // actions anyway, so the wait is a courtesy and overrunning
+                    // it costs nothing beyond the actions we were already
+                    // giving up on.
+                    error!(
+                        actions_in_transit = inner.actions_in_transit.load(Ordering::Acquire),
+                        "Actions in transit did not reach zero before we disconnected from the scheduler"
+                    );
+                }
+
+                error!(?err, "Worker disconnected from scheduler, reconnecting");
                 // Kill off any existing actions because if we re-connect, we'll
                 // get some more and it might resource lock us.
                 self.running_actions_manager.kill_all().await;

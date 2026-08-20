@@ -1,12 +1,21 @@
 use core::time::Duration;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::SystemTime;
 
+use mock_instant::thread_local::MockClock;
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
+use nativelink_scheduler::awaited_action_db::AwaitedAction;
 use nativelink_scheduler::default_scheduler_factory::memory_awaited_action_db_factory;
 use nativelink_scheduler::simple_scheduler_state_manager::SimpleSchedulerStateManager;
-use nativelink_util::action_messages::{OperationId, WorkerId};
+use nativelink_scheduler::worker_registry::WorkerRegistry;
+use nativelink_util::action_messages::{
+    ActionInfo, ActionStage, ActionState, ActionUniqueKey, ActionUniqueQualifier, OperationId,
+    WorkerId,
+};
+use nativelink_util::common::DigestInfo;
+use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
 use nativelink_util::operation_state_manager::{UpdateOperationType, WorkerStateManager};
 use tokio::sync::Notify;
@@ -42,5 +51,232 @@ async fn drops_missing_actions() -> Result<(), Error> {
     assert!(logs_contain(
         "Unable to update action due to it being missing, probably dropped operation_id=c458c1f4-136e-486d-b9cd-cea07460cde4"
     ));
+    Ok(())
+}
+
+const NOW_TIME: u64 = 10_000;
+const WORKER_TIMEOUT: Duration = Duration::from_mins(2);
+const MAX_EXECUTING: Duration = Duration::from_mins(15);
+
+fn make_system_time(add_time: u64) -> SystemTime {
+    SystemTime::UNIX_EPOCH
+        .checked_add(Duration::from_secs(NOW_TIME + add_time))
+        .unwrap()
+}
+
+/// An action already assigned to `worker_id` and executing since `started`.
+fn executing_action(worker_id: &WorkerId, started: SystemTime) -> AwaitedAction {
+    let action_digest = DigestInfo::zero_digest();
+    let action_info = ActionInfo {
+        command_digest: action_digest,
+        input_root_digest: action_digest,
+        timeout: Duration::ZERO,
+        platform_properties: HashMap::default(),
+        priority: 0,
+        load_timestamp: SystemTime::UNIX_EPOCH,
+        insert_timestamp: started,
+        unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+            instance_name: "main".to_string(),
+            digest_function: DigestHasherFunc::Sha256,
+            digest: action_digest,
+        }),
+    };
+    let operation_id = OperationId::default();
+    let mut action = AwaitedAction::new(operation_id.clone(), Arc::new(action_info), started);
+    action.worker_set_state(
+        Arc::new(ActionState {
+            stage: ActionStage::Executing,
+            client_operation_id: operation_id,
+            action_digest,
+            last_transition_timestamp: started,
+        }),
+        started,
+    );
+    action.set_worker_id(Some(worker_id.clone()), started);
+    action
+}
+
+fn state_manager(
+    registry: Arc<WorkerRegistry>,
+) -> Arc<
+    SimpleSchedulerStateManager<
+        impl nativelink_scheduler::awaited_action_db::AwaitedActionDb,
+        MockInstantWrapped,
+        fn() -> MockInstantWrapped,
+    >,
+> {
+    let task_change_notify = Arc::new(Notify::new());
+    SimpleSchedulerStateManager::new(
+        5,
+        WORKER_TIMEOUT,
+        Duration::from_mins(5),
+        MAX_EXECUTING,
+        memory_awaited_action_db_factory(0, &task_change_notify, MockInstantWrapped::default),
+        MockInstantWrapped::default,
+        Some(registry),
+    )
+}
+
+/// Same as above but with `max_action_executing_timeout_s` disabled, which is
+/// its default.
+fn state_manager_no_executing_ceiling(
+    registry: Arc<WorkerRegistry>,
+) -> Arc<
+    SimpleSchedulerStateManager<
+        impl nativelink_scheduler::awaited_action_db::AwaitedActionDb,
+        MockInstantWrapped,
+        fn() -> MockInstantWrapped,
+    >,
+> {
+    let task_change_notify = Arc::new(Notify::new());
+    SimpleSchedulerStateManager::new(
+        5,
+        WORKER_TIMEOUT,
+        Duration::from_mins(5),
+        Duration::ZERO,
+        memory_awaited_action_db_factory(0, &task_change_notify, MockInstantWrapped::default),
+        MockInstantWrapped::default,
+        Some(registry),
+    )
+}
+
+/// An orphan must still be reaped when `max_action_executing_timeout_s` is
+/// disabled, which is its default.
+///
+/// An HPA scaling a replica down leaves its workers' actions Executing in
+/// shared state, naming worker ids no surviving instance recognises. If the
+/// only ceiling for Unknown were the executing timeout, the default config
+/// would never reap them and every scale-down would leak actions until the
+/// client gave up.
+#[nativelink_test]
+async fn reaps_an_orphan_even_with_the_executing_ceiling_disabled() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let action = executing_action(
+        &WorkerId::from(String::from("owner-was-scaled-down")),
+        make_system_time(0),
+    );
+    let state_mgr = state_manager_no_executing_ceiling(Arc::new(WorkerRegistry::new()));
+
+    // Past worker_timeout_s: still must not fire, this could be a healthy
+    // action on a peer's worker.
+    MockClock::advance(WORKER_TIMEOUT + Duration::from_mins(1));
+    assert!(
+        !state_mgr.should_timeout_operation(&action).await,
+        "must not reap at worker_timeout_s just because the ceiling is disabled"
+    );
+
+    // Past the orphan backstop: now it has to go, or it never will.
+    MockClock::advance(Duration::from_mins(61));
+    assert!(
+        state_mgr.should_timeout_operation(&action).await,
+        "an orphan must be reaped by the backstop when no ceiling is configured"
+    );
+    Ok(())
+}
+
+/// An action on a worker connected to a DIFFERENT scheduler instance must not
+/// be timed out here. This instance never sees that worker's heartbeats, so
+/// the action's timestamp looks frozen however healthy it is.
+#[nativelink_test]
+async fn does_not_time_out_a_peer_instances_worker() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    // Deliberately not registered here: it belongs to another instance.
+    let action = executing_action(
+        &WorkerId::from(String::from("owned-by-another-scheduler")),
+        make_system_time(0),
+    );
+    let state_mgr = state_manager(Arc::new(WorkerRegistry::new()));
+
+    MockClock::advance(WORKER_TIMEOUT + Duration::from_mins(1));
+    assert!(
+        !state_mgr.should_timeout_operation(&action).await,
+        "must not time out an action on a peer instance's worker"
+    );
+    Ok(())
+}
+
+/// A worker registered here that stopped heartbeating is ours and looks dead,
+/// so the short timeout must still fire.
+#[nativelink_test]
+async fn still_times_out_our_own_dead_worker() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let worker_id = WorkerId::from(String::from("connected-to-us"));
+    let action = executing_action(&worker_id, make_system_time(0));
+
+    let registry = Arc::new(WorkerRegistry::new());
+    registry
+        .register_worker(&worker_id, make_system_time(0))
+        .await;
+    let state_mgr = state_manager(registry);
+
+    MockClock::advance(WORKER_TIMEOUT + Duration::from_mins(1));
+    assert!(
+        state_mgr.should_timeout_operation(&action).await,
+        "a registered worker that stopped heartbeating must time out"
+    );
+    Ok(())
+}
+
+/// A registered, heartbeating worker is bounded only by the executing ceiling.
+#[nativelink_test]
+async fn does_not_time_out_a_live_worker_mid_action() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let worker_id = WorkerId::from(String::from("connected-to-us"));
+    let action = executing_action(&worker_id, make_system_time(0));
+
+    let elapsed = WORKER_TIMEOUT + Duration::from_mins(1);
+    let registry = Arc::new(WorkerRegistry::new());
+    registry
+        .update_worker_heartbeat(&worker_id, make_system_time(elapsed.as_secs()))
+        .await;
+    let state_mgr = state_manager(registry);
+
+    MockClock::advance(elapsed);
+    assert!(
+        !state_mgr.should_timeout_operation(&action).await,
+        "a heartbeating worker's action must survive past worker_timeout_s"
+    );
+    Ok(())
+}
+
+/// A heartbeating worker stuck on one action past the executing ceiling must
+/// still be timed out, which is what `max_action_executing_timeout_s` is for.
+#[nativelink_test]
+async fn times_out_a_live_but_stuck_worker() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let worker_id = WorkerId::from(String::from("alive-but-wedged"));
+    let action = executing_action(&worker_id, make_system_time(0));
+
+    let elapsed = MAX_EXECUTING + Duration::from_mins(1);
+    let registry = Arc::new(WorkerRegistry::new());
+    registry
+        .update_worker_heartbeat(&worker_id, make_system_time(elapsed.as_secs()))
+        .await;
+    let state_mgr = state_manager(registry);
+
+    MockClock::advance(elapsed);
+    assert!(
+        state_mgr.should_timeout_operation(&action).await,
+        "a worker stuck past max_action_executing_timeout_s must time out"
+    );
+    Ok(())
+}
+
+/// An orphan whose owning instance died permanently still gets reaped, on the
+/// longer ceiling.
+#[nativelink_test]
+async fn eventually_times_out_an_orphan() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let action = executing_action(
+        &WorkerId::from(String::from("owner-died-permanently")),
+        make_system_time(0),
+    );
+    let state_mgr = state_manager(Arc::new(WorkerRegistry::new()));
+
+    MockClock::advance(MAX_EXECUTING + Duration::from_mins(1));
+    assert!(
+        state_mgr.should_timeout_operation(&action).await,
+        "an orphaned action must still be reaped on max_action_executing_timeout_s"
+    );
     Ok(())
 }
