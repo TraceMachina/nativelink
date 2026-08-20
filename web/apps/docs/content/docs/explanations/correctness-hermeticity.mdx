@@ -1,0 +1,218 @@
+---
+title: Correctness and hermeticity
+description: What content addressing guarantees, what it doesn't, and which of the gaps are yours to close.
+---
+
+{/* archetype: explanation, see /web/apps/docs/templates/explanation.mdx */}
+
+**Who this is for:** anyone who needs to know how much to trust a cache hit,
+and anyone chasing a build that is correct on one machine and wrong on
+another. **What you'll have at the end:** an honest inventory of the
+guarantees: the ones you get for free, the ones you have to configure, and
+the ones nobody is offering. **Time:** twenty minutes.
+
+"Content-addressed" is often heard as "therefore correct". It is not. Content
+addressing gives you one very strong property (*if two things have the same
+hash, they are the same bytes*), and that property is only as useful as the
+process that assigned the hash. Most real correctness incidents in a remote
+build system happen in the space between "the hash matches" and "the hash
+meant anything".
+
+This page is the inventory. It leans on
+[the store model](/explanations/store-model),
+[scheduler internals](/explanations/scheduler-internals) and
+[worker execution](/explanations/worker-execution) for mechanism, and does not
+repeat them.
+
+## What you get for free [#what-you-get-for-free]
+
+**Collision resistance.** SHA-256 and BLAKE3 are the supported digest
+functions. Two different blobs will not share a key.
+
+**Immutability by construction.** A blob is stored under a key derived from
+its content, so an overwrite is a no-op rather than a mutation. Concurrent
+uploads of the same blob cannot interleave into a corrupt result.
+
+**Deduplication across everything.** One instance name, one digest function,
+one copy, regardless of which repository, which developer, or which CI job
+produced it.
+
+**Action identity.** Two actions with the same instance name, digest function
+and action digest are the same action, and the system will merge them rather
+than run both.
+
+## What you do not get by default [#what-you-do-not-get-by-default]
+
+Five gaps, in rough order of how often they bite.
+
+### The digest is a claim until you verify it [#the-digest-is-a-claim-until-you-verify-it]
+
+The server does not hash plain uploaded bytes. The client declares the digest
+and the server files the bytes under it. (Zstd-compressed ByteStream uploads
+are the exception: the decoder checks size and hash as it decodes.) For
+everything else the only thing that checks is a `verify` store, and both
+`verify_hash` and `verify_size` default to `false`.
+
+A cache without one will faithfully store, and forever serve, a blob under a
+digest that does not describe it. Every downstream consumer that trusts the
+digest (which is all of them) then gets the wrong bytes with no error
+anywhere. This is the highest-severity, lowest-visibility failure mode in the
+system.
+
+**What to do:** put a `verify` store with `verify_hash: true` in the write
+path of any cache shared between more than one person. The cost is one hash
+pass, run concurrently with the write.
+
+### Verification is write-side only [#verification-is-write-side-only]
+
+Even with a `verify` store, nothing is re-checked on read. Blobs that entered
+before you added the wrapper, or through a path that bypassed it, are served
+without complaint.
+
+**What to do:** treat adding verification as a change that only protects
+blobs uploaded from that point forward. If you have reason to distrust
+existing content, the answer is a new instance name, not a config change.
+
+### Hermeticity is the client's job [#hermeticity-is-the-clients-job]
+
+The action digest covers exactly what the client put into the `Action`
+message: the command, the input tree, the platform properties, the
+environment variables it declared. Anything the action reads that is not in
+there is invisible to the cache, and a cache hit will confidently return a
+result computed with a different value of it.
+
+NativeLink helps in one significant way: the worker calls `env_clear()` and
+injects no `PATH`, `HOME` or `TMPDIR` on Linux or macOS, so an action that
+depends on an undeclared environment variable tends to fail loudly rather
+than succeed differently.
+
+It does not help in the way that matters most: **there is no network
+isolation, with or without namespaces enabled.** An action that fetches from
+the network will do so, will succeed, and will produce a result cached under
+a digest that says nothing about what it downloaded. That is the classic
+poisoned-cache-entry mechanism, and no server-side setting prevents it.
+
+**What to do:** pin toolchains and inputs at the client. `--incompatible_strict_action_env`
+and equivalent flags exist for this. [Local Remote Execution](/explanations/lre)
+is the toolchain half of the answer.
+
+### Actions can run more than once [#actions-can-run-more-than-once]
+
+The default `max_job_retries` of 3 is checked strictly, so an action may
+execute **four** times. A worker disconnect always costs an attempt; a
+`ResourceExhausted` never does.
+
+For a pure function this is invisible. For an action with side effects (one
+that publishes, deploys, increments, or writes anywhere outside its declared
+outputs) it means the side effect happens up to four times, and NativeLink
+has no way to know that it should not.
+
+**What to do:** actions with side effects do not belong in a remote execution
+system. If one must exist, make it idempotent, and set `max_job_retries: 0`
+for the instance that runs it.
+
+### Some output metadata is discarded [#some-output-metadata-is-discarded]
+
+`node_properties` is never populated, so output file modes and mtimes do not
+survive a round trip. Absolute output symlinks are dereferenced and uploaded
+as content; only relative ones stay symlinks. A declared output that the
+action did not produce is not an error.
+
+**What to do:** do not depend on an output's mode. If an action produces
+something that must be executable, the consumer has to set that itself.
+
+## Caching semantics that surprise people [#caching-semantics-that-surprise-people]
+
+Three, all of which have bitten someone:
+
+**`do_not_cache` does nothing.** NativeLink parses the REAPI flag and no code
+reads it. Setting it does not prevent a result being written.
+
+**`skip_cache_lookup` still writes.** It disables the cache read and disables
+merging, but the result of the re-execution is written to the cache. This is
+the correct behaviour for "re-run this and fix the cache", and the wrong
+mental model if you thought it meant "run this without touching the cache".
+
+**Failures are not cached, by default.** A non-zero exit code goes to the
+historical results store, not the action cache, so a failing compile is
+re-attempted rather than replayed. That is usually what you want and
+occasionally not; a deterministic failure will be re-run by every client
+that encounters it.
+
+## A checklist for a cache you can trust [#a-checklist-for-a-cache-you-can-trust]
+
+<Steps>
+  <li>
+    **Put `verify_hash: true` in the write path.** Everything below is
+    downstream of this being true.
+  </li>
+  <li>
+    **Pin the toolchain at the client**, so the compiler's identity is inside
+    the action digest rather than beside it.
+  </li>
+  <li>
+    **Make undeclared inputs fail rather than succeed.** Strict action
+    environment, strict include checking, no reliance on ambient `PATH`.
+  </li>
+  <li>
+    **Assume the network is reachable from actions**, and design so that no
+    action wants it.
+  </li>
+  <li>
+    **Set `max_action_executing_timeout_s`.** It defaults to disabled. The
+    worker's own `max_action_timeout_s` (20 minutes by default) still kills a
+    hung process, but an action whose worker is alive and heartbeating yet
+    never reports on it has no ceiling without this.
+  </li>
+  <li>
+    **Separate trust domains with instance names**, not with configuration
+    inside one. Instance names are the only isolation boundary the protocol
+    actually has.
+  </li>
+  <li>
+    **Verify by rebuilding.** Build a target twice on different machines and
+    compare. It is the only test that covers the leaks a checklist misses.
+  </li>
+</Steps>
+
+## Common questions [#common-questions]
+
+<Accordions type="multiple">
+  <Accordion title="How do I find a hermeticity leak?" id="find-a-hermeticity-leak">
+    Build the same target on two machines that differ, and compare outputs
+    byte for byte; anything that differs is reading something undeclared.
+    At cluster scale the symptom is subtler: cache misses where you expected
+    hits, because a leaked input changed and moved the action digest with it.
+    A rising miss rate on unchanged code is the signal.
+  </Accordion>
+  <Accordion title="Someone poisoned a cache entry. What now?" id="poisoned-cache-entry">
+    You cannot selectively invalidate by content, because the key is the
+    content. The practical answers are to move to a new instance name, which
+    is a clean namespace with no migration, or to delete the affected
+    action-cache entries if you can identify them. Then add the `verify` store
+    that would have prevented it, and find the client that was wrong.
+  </Accordion>
+  <Accordion title="Is a cache hit as trustworthy as a real execution?" id="is-a-cache-hit-trustworthy">
+    It is exactly as trustworthy as the execution that produced it, plus the
+    integrity of the path in between. Content addressing secures the second
+    part, once verification is on. The first part is the client's hermeticity
+    and nothing else.
+  </Accordion>
+  <Accordion title="Does turning on verification slow uploads down?" id="does-verification-slow-uploads">
+    Marginally. The check runs concurrently with the write rather than as a
+    separate pass, so the cost is CPU for one hash over uploaded bytes, not an
+    extra round trip. On any realistic network the transfer dominates.
+  </Accordion>
+  <Accordion title="Do I need namespaces enabled to get correct results?" id="namespaces-and-correctness">
+    No. Namespaces are about isolation between concurrent actions, not about
+    result correctness, and they provide no network, seccomp or cgroup
+    isolation in any case. Correct results come from the action declaring
+    everything it reads. Enable namespaces to stop actions interfering with
+    each other; do not enable them expecting hermeticity.
+  </Accordion>
+</Accordions>
+
+<NextStep href="/explanations/lre" title="Local Remote Execution">
+  The toolchain-pinning half of hermeticity, and the one piece of it that
+  NativeLink ships rather than delegates.
+</NextStep>

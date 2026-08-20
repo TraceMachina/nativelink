@@ -1,100 +1,198 @@
 ---
 title: Develop with Nix
-description: The official dev shell — hermetic by construction, identical to what CI runs.
+description: The dev shell that generates the bazelrc files the rest of the build assumes, and what is actually inside it.
 ---
 
-The NativeLink flake provisions a complete dev shell — the exact Rust
-toolchain, the exact Bazel version, `protoc`, `mold`, every binary
-the build invokes. Use this if you want absolute reproducibility, or
-if you're working on [LRE](/explanations/lre) (which requires
-Nix).
+{/* archetype: how-to. See /web/apps/docs/templates/how-to.mdx */}
 
-## Install Nix
+**Who this is for:** anyone who wants the toolchain CI uses, and anyone
+working on [LRE](/explanations/lre), which needs it. **What you'll have at
+the end:** the shell, the five generated `bazelrc` files it produces, and an
+accurate list of what it does and does not contain. **Time:** twenty
+minutes, mostly download.
+
+The flake in the repository root is where almost all of NativeLink's tooling
+lives. Entering the shell is not just a convenience: the shell hook is what
+writes the `bazelrc` fragments that `.bazelrc` pulls in with `try-import`,
+and `try-import` means their absence is silent. A build outside the shell is
+not a broken build; it is a *differently configured* one.
+
+## Install Nix [#install-nix]
 
 The
 [next-gen Nix installer](https://github.com/NixOS/experimental-nix-installer)
 is the easiest path:
 
 ```bash
-curl --proto '=https' --tlsv1.2 -sSf \
-  -L https://install.determinate.systems/nix | sh -s -- install
+curl -sSfL https://artifacts.nixos.org/nix-installer | sh -s -- install --enable-flakes
 ```
 
-It enables flakes by default.
+The `--enable-flakes` flag turns on the `nix-command` and `flakes`
+experimental features, which the repository's flake needs.
 
-<Callout type="warn" title="macOS / Linux Nix Setup Gotchas">
-  - **Environment Paths**: If your shell doesn't recognize `nix` commands immediately after installation, you need to restart your terminal or run:
+<Callout type="warn" title="Three things that go wrong on first install">
+  - **`nix` not found after installing.** Restart your terminal, or source
+    the profile script:
+
     ```bash
     . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
     ```
-  - **Experimental Features**: If you used the standard Nix installer and get `experimental Nix feature 'nix-command' is disabled`, enable them by adding the following to your `~/.config/nix/nix.conf` file:
+
+  - **`experimental Nix feature 'nix-command' is disabled`.** You used the
+    standard installer. Add this to `~/.config/nix/nix.conf`:
+
     ```text
     experimental-features = nix-command flakes
     ```
-  - **Disk Space**: Unpacking toolchains, compiler binaries, and caching build artifacts requires considerable storage. Ensure you have at least **15–20 GB of free space** on your drive before running `nix develop`.
+
+  - **Disk space.** Toolchains, compiler binaries and build artifacts are
+    large. Have **15 to 20 GB free** before the first `nix develop`.
 </Callout>
 
-## Enter the dev shell
+## Enter the dev shell [#enter-the-dev-shell]
 
 ```bash
-git clone https://github.com/TraceMachina/nativelink
+git clone git@github.com:yourusername/nativelink
 cd nativelink
 nix develop
 ```
 
-First run downloads the toolchain (a few minutes). Subsequent
-`nix develop` invocations are instant — everything is content-
-addressed in `/nix/store`.
+First run downloads the toolchain, which takes a few minutes. After that,
+entering is close to instant; everything is content-addressed in
+`/nix/store`.
 
-Inside the shell you have:
+<Callout type="info" title="Install `direnv` and stop thinking about this">
+  `CONTRIBUTING.md` recommends it strongly, and the reason is that the shell
+  has to be re-entered after every branch switch or change to a `.nix` file.
+  `direnv` does that for you:
 
-- Cargo + the pinned Rust toolchain.
-- Bazel + Bazelisk.
-- `protoc`, `mold`, `clang`, and friends.
-- Test runners and linters (`cargo-nextest`, `cargo-deny`,
-  `cargo-shear`).
-- The `nativelink` binary itself, prebuilt.
+  ```bash
+  nix profile install nixpkgs#direnv
+  # add the hook for your shell: https://direnv.net/docs/hook.html
+  # then, in the repo: direnv allow
+  ```
 
-## Running things inside the shell
+  To check the environment is active: `env | grep NIX` should print several
+  `*NIX_*` variables.
+</Callout>
 
-Anything from the [Bazel](/contribute/bazel) or
-[Cargo](/contribute/cargo) workflow works inside `nix develop`.
-The shell just guarantees the tooling is the version we tested.
+## What entering the shell generates [#what-the-shell-generates]
 
-## LRE-specific helpers
+This is the part that matters and the part that is invisible. The shell hook
+writes five things into your working tree:
 
-The flake exposes a few LRE-flavoured entry points:
+| Generated file | What it does |
+| --- | --- |
+| `.pre-commit-config.yaml` | Symlink enabling the repo's pre-commit hooks |
+| `lre.bazelrc` | Points Bazel at the LRE toolchains |
+| `nativelink.bazelrc` | Gives your builds access to NativeLink's read-only cache |
+| `nixos.bazelrc` | Adds the required NixOS binary paths (NixOS only) |
+| `darwin.bazelrc` | Configures Darwin libs and frameworks (macOS only) |
+
+`.bazelrc` picks all four `bazelrc` fragments up with `try-import`, so
+outside the shell Bazel silently proceeds without them. That is why a build
+can succeed outside Nix and still not match CI.
+
+## What is in the shell [#what-is-in-the-shell]
+
+The package list is in
+<SourceLink file="flake.nix" symbol="devShells.default" />.
+Broadly:
+
+**Rust and build**: a `bazel` wrapper around Bazelisk (it unsets `TMPDIR`
+first), the pinned stable Rust toolchain from the LRE overlay,
+`rust-analyzer`, `buck2`, `python3`, `git`, `pre-commit`, `git-cliff`.
+
+**Web**: `bun`, `nodejs_22`, `lychee`, the Playwright driver. This is what
+lets you work on the docs without installing anything.
+
+**Infrastructure**: `kubectl`, `kubernetes-helm`, `kustomize`, `kubectx`,
+`kind`, `cilium-cli`, `fluxcd`, `pulumi`, `skopeo`, `dive`, `cosign`,
+`trivy`, `awscli2`, `google-cloud-sdk`, `docker-client`, `tektoncd-cli`,
+`go`.
+
+**Docs and prose**: `vale`, which is the style linter the docs are checked
+against.
+
+**Repo-specific helpers**: the toolchain generators, the local image
+builders, `local-image-test`, and the LRE clang.
+
+<Callout type="warn" title="Some things you might expect are not here">
+  No `protoc` is provided; the generated Rust is checked into
+  `nativelink-proto/genproto/` and nothing invokes `protoc` at build time.
+  No prebuilt `nativelink` binary is in the shell; build it with Bazel
+  or Cargo, or run `nix run .` which builds and runs the flake's default
+  package. And `CONTRIBUTING.md` still advises installing Clang separately;
+  the shell does now ship `lre.clang`, so try without first, and fall back to
+  `nix profile install nixpkgs#clang` if a C++ toolchain error says
+  otherwise.
+</Callout>
+
+## Running things inside the shell [#running-things-inside-the-shell]
+
+Everything from the [Bazel](/contribute/bazel) and
+[Cargo](/contribute/cargo) workflows works unchanged. The shell guarantees
+the versions, and supplies the `bazelrc` fragments those workflows assume.
+
+The two commands worth knowing that only exist here:
 
 ```bash
-# Start an LRE-configured NativeLink server.
-nix run .#nativelink-lre
-
-# Open a shell with the LRE toolchain pinned.
-nix develop .#lre
+pre-commit run -a                       # the full pre-commit suite
+nix build .#nativelinkCoverageForHost   # HTML coverage report in ./result
 ```
 
-See [Explanations → LRE](/explanations/lre) for what these are
-doing.
+## LRE and worker images [#lre-and-worker-images]
 
-## When Nix isn't worth it
+The flake builds the LRE worker images rather than exposing an LRE shell.
+The ones you are likely to want:
 
-If you're making a small, localised change — typo fix, doc tweak, a
-unit test — the Cargo workflow is faster to get into. Nix shines for
-work touching the build graph, the LRE flow, or anything that needs
-exact toolchain reproducibility.
+```bash
+nix build .#nativelink-worker-lre-cc
+nix build .#nativelink-worker-lre-rs
+nix build .#nativelink-worker-lre-java
+```
 
-## FAQ
+`lre.bazelrc`, generated on entering the shell, is what points a local Bazel
+build at the matching toolchains. See [LRE](/explanations/lre) for what the
+scheme is doing and why the `/nix/store` paths have to match on both sides.
+
+## When Nix isn't worth it [#when-nix-isnt-worth-it]
+
+For a typo fix, a doc tweak or a single unit test, the
+[Cargo workflow](/contribute/cargo) is faster to get into and nothing will
+go wrong. Reach for Nix when you are touching the build graph, working on
+LRE, chasing a difference between your machine and CI, or working on the
+docs, since `vale` and `bun` both come from here.
+
+## Common questions [#common-questions]
 
 <Accordions type="multiple">
   <Accordion title="What is Nix, in one sentence?" id="what-is-nix-in-one-sentence">
-    A package manager that builds every package in isolation and
-    addresses the result by a hash of all its inputs — which is why two
-    machines running `nix develop` on this repo get bit-identical
-    toolchains.
+    A package manager that builds every package in isolation and addresses
+    the result by a hash of all its inputs, which is why two machines
+    running `nix develop` on this repo get bit-identical toolchains.
   </Accordion>
   <Accordion title="Is the dev shell required?" id="is-the-dev-shell-required">
-    Only for [LRE](/explanations/lre) work. For everything else it's the
-    most reproducible option, not the mandatory one — the Cargo and Bazel
-    workflows stand on their own.
+    Not for building or testing; Cargo and Bazel both stand on their own.
+    It is required for LRE work, and it is the only way to get the generated
+    `bazelrc` fragments, so a build outside it is configured differently from
+    CI even when it is green.
+  </Accordion>
+  <Accordion title="My Bazel build behaves differently outside the shell." id="different-outside-shell">
+    Almost certainly the `try-import`ed fragments. `lre.bazelrc`,
+    `nativelink.bazelrc`, `nixos.bazelrc` and `darwin.bazelrc` are generated
+    by the shell hook and silently skipped when absent. Enter the shell, or
+    accept that you are building without the LRE toolchains and without the
+    read-only cache.
+  </Accordion>
+  <Accordion title="Do I have to re-enter the shell after switching branches?" id="reenter-after-branch-switch">
+    Yes, whenever the `.nix` files change, which a branch switch can do
+    without you noticing. This is the argument for `direnv`: it re-enters
+    automatically on `cd` and on file changes.
   </Accordion>
 </Accordions>
+
+<NextStep href="/contribute/repo-crate-map" title="Repository and crate map">
+  With a working shell, the next question is where your change goes. Twelve
+  crates, a strict layering, and six places the first guess is wrong.
+</NextStep>

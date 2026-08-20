@@ -1,0 +1,411 @@
+---
+title: Runbooks
+description: "What to do when a NativeLink deployment is on fire: Redis failover, a worker OOM-killed, the disk full, and the queue backpressured. Each entry is a symptom, the signal that confirms it, the immediate action, and the change that stops it recurring."
+---
+
+{/* archetype: how-to (incident response), see /web/apps/docs/templates/how-to.mdx */}
+
+**Who this is for:** you are on call and something is broken right now.
+**What you'll have at the end:** for each of the four incidents NativeLink
+actually produces, a confirming signal, a stop-the-bleeding action, and the
+configuration change that prevents a repeat. **Time:** read once now, so you do
+not read it for the first time at 03:00.
+
+<Prerequisites>
+  A deployment other people depend on.
+</Prerequisites>
+
+These are incident procedures. They deliberately do not explain how NativeLink
+works ([Architecture](/explanations/architecture) does that) and they do not
+tune anything. When you have stopped the bleeding and want to make the system
+faster rather than merely alive, go to [Tuning](/operate/tuning).
+
+If you are not yet sure *which* incident you are having, start at
+[Troubleshooting](/operate/troubleshooting), which indexes symptoms to causes.
+This page assumes you already know.
+
+<Callout type="info" title="Two things to have open before you start">
+
+  The scheduler's `INFO` log. Most of NativeLink's diagnostic output is at
+  `INFO`, and the shipped Compose example defaults to `warn`. If you are at
+  `warn` you will see a hung system and nothing else. `RUST_LOG=info` is the first move in
+  almost every procedure below.
+
+  A metrics pipeline. Several of these incidents are only visible as a rate
+  change. [Observability](/operate/observability) brings one up in about ten
+  minutes; doing it during an incident is a bad trade, so do it beforehand.
+
+</Callout>
+
+## A worker is OOM-killed [#a-worker-is-oom-killed]
+
+The most common production incident, and the one with the most misleading
+first symptom: your developers report a *build* failure, not an
+*infrastructure* failure.
+
+### Confirm it [#confirm-it]
+
+Two distinct failures land here and they need different responses. Work
+out which one you have before doing anything.
+
+**The action's child process was killed.** The worker survived. The action
+reports **exit code 9**, and the worker logs:
+
+```text
+Runner subprocess terminated by signal (no exit code); likely OOMKilled or
+externally killed. If this repeats for the same action, raise
+`workers.specs[*].resources.limits.memory` or shrink the action's concurrency.
+```
+
+That exit code is a fixed sentinel: every signal collapses to 9, so you cannot
+tell SIGKILL from SIGTERM from the code alone. The `warn!` line above is the
+only thing that tells you it was a signal at all. From Bazel's side this looks
+like an ordinary action failure with a non-zero exit status, so **Bazel will
+not treat it as an infrastructure error and will not retry it**. On the
+scheduler it lands in
+`nativelink_execution_completed_count_total{execution_result="failure"}` like
+any other non-zero exit; there is no exported metric that singles out
+signal deaths, so the log line is what you alert on.
+
+**The worker process itself was killed.** The scheduler notices after
+`worker_timeout_s` (default 5 seconds, checked once a second), evicts it, and
+re-queues its in-flight actions. In this tree a disconnect *counts as an
+attempt*, so after `max_job_retries` the client finally sees:
+
+```text
+Worker disconnected repeatedly while executing this action (4 > 3 attempts);
+the runner likely OOMKilled or the pod was evicted. for operation_id: ...,
+maybe_worker_id: ...
+```
+
+That string is the single best diagnostic for a memory-pressured worker fleet.
+If you see it, you are in this case, not the first one.
+
+<Callout type="warn" title="Peak memory is a Linux-only measurement">
+  NativeLink samples per-action peak RSS only on Linux. On macOS workers
+  `resource_usage` is `None`; no memory data is reported at all, so the only
+  evidence you will have is the exit code and the log line.
+</Callout>
+
+### Stop the bleeding [#stop-the-bleeding]
+
+Drain the affected worker rather than killing it, so its in-flight actions
+finish instead of being destroyed:
+
+```sh
+curl -X POST \
+  "http://127.0.0.1:50061/admin/scheduler/MAIN_SCHEDULER/set_drain_worker/${WORKER_ID}/1"
+```
+
+The path segment after `scheduler/` is the scheduler's `name` from the
+`schedulers` list, not a REAPI instance name. The endpoint only exists on a
+listener with `admin: {}` in its services (the shipped Kubernetes config has
+none); put it on the worker-API listener. It has no authentication; reach it
+over a private path only. See
+[Security hardening](/operate/security-hardening#the-admin-endpoint-has-no-authentication).
+
+Undrain with a trailing `0` when the host is healthy again. A drained worker
+appears in the scheduler's matching diagnostics as:
+
+```text
+Worker <id> cannot accept work: is_paused=false, is_draining=true, inflight=0/0
+```
+
+### Make it stop happening [#make-it-stop-happening]
+
+| Change | Where | Effect |
+| --- | --- | --- |
+| Lower `max_inflight_tasks` | worker config | Caps concurrent actions per worker. Defaults to `0`, which means **infinite**; one worker will happily run every action you send it. This is the single most effective knob. |
+| Raise the container memory limit | Kubernetes `resources.limits.memory`, or the host | Named explicitly by the worker's own warning. |
+| Reduce per-action concurrency | Your build's toolchain flags | A single `-j` in a wrapped compiler multiplies with `max_inflight_tasks`. |
+
+NativeLink itself has **no memory configuration**. No `max_memory`, no
+per-action memory cap, nothing. Memory is bounded only indirectly, by store
+eviction policies and by whatever the container runtime enforces. Do not go
+looking for a config field; it does not exist.
+
+## The disk fills up [#the-disk-fills-up]
+
+### Confirm it [#confirm-it-1]
+
+Writes start failing with an OS-level message wrapped in a NativeLink err_tip:
+`Failed to write data into filesystem store`, `Failed to flush in filesystem
+store`, `Failed to sync in filesystem store`.
+
+The gRPC code will be `Unknown`, **not** anything storage-shaped. `ENOSPC`
+arrives as `ErrorKind::StorageFull`, which NativeLink's `io::ErrorKind` to
+gRPC-code map does not name, so it falls to the catch-all arm. No
+ENOSPC-specific handling exists anywhere in the tree.
+
+<SourceLink file="nativelink-error/src/lib.rs" symbol="into_code" />
+
+That has an unpleasant consequence: `Unknown` is **retryable**. A full disk
+gets retried through the entire retry budget before it fails, so the first
+thing you notice is usually latency, not errors.
+
+<Callout type="info" title="At least it does not corrupt the cache">
+  The filesystem store issues an explicit flush before renaming a file into the
+  content path, precisely because tokio defers write errors to the next write
+  or flush. Without it, a truncated file would be renamed in and served as a
+  valid blob, so a disk-full event produces errors, not silent corruption.
+</Callout>
+
+### The signal to look for first [#the-signal-to-look-for-first]
+
+```text
+Bytes: 41231872418 of unlimited;
+```
+
+If your eviction snapshot says **"of unlimited"**, no size-based eviction is
+configured, and this incident was inevitable. `eviction_policy` is an
+`Option` on the filesystem store, and every field in it defaults to `0`, which
+means *never evict*. The config's own doc comment is blunt about it: failure to
+set this value causes items to never be removed.
+
+### Stop the bleeding [#stop-the-bleeding-1]
+
+Set `max_bytes` and restart the process. Eviction is only ever invoked on map
+mutation (on insert and remove), so it runs as soon as traffic resumes.
+
+```json5
+{/* lint-snippets: ignore */}
+{
+  "filesystem": {
+    "content_path": "/var/lib/nativelink/content",
+    "temp_path": "/var/lib/nativelink/temp",
+    "eviction_policy": {
+      "max_bytes": 50000000000,
+      "evict_bytes": 5000000000
+    }
+  }
+}
+```
+
+`evict_bytes` creates a low watermark: once `max_bytes` is reached, eviction
+continues down to `max_bytes - evict_bytes` rather than evicting one entry per
+insert forever. Set it to roughly 10% of `max_bytes`.
+
+<Callout type="warn" title="Nothing consults free space">
+  Eviction compares the store's *own accounting* against `max_bytes`. It never
+  looks at the filesystem's actual free space, and a failed write does not
+  trigger eviction. If you set `max_bytes` larger than the volume, or leave it
+  unset, the store will fill the disk and then keep erroring indefinitely.
+</Callout>
+
+### Size the volume for twice `max_bytes` [#size-the-volume-for-twice-max_bytes]
+
+The filesystem store keeps an executable-variant directory
+(`{content_path}.exec`) alongside the content path, and **that directory is
+invisible to `max_bytes`**. A variant is deleted when its primary entry is
+evicted, which bounds the total at roughly `2 * max_bytes` in the worst case
+(every blob also held as an executable). The variants are only ever created on
+a worker, for executable inputs hardlinked out of its fast store, so this
+applies to worker fast tiers rather than to a CAS server's store.
+
+<SourceLink file="nativelink-store/src/filesystem_store.rs" symbol="ExecutableVariantRemover" />
+
+Provision accordingly: if you want a 50 GB worker cache, give it a 100 GB
+volume.
+
+### Two layout footguns [#two-layout-footguns]
+
+`temp_path` must be on the **same block device** as `content_path`. If it is
+not, the atomic rename becomes a copy: slower, and it doubles peak space
+during every write.
+
+Everything in `temp_path` is deleted at startup, and the content path is
+rescanned and re-accounted. A crash mid-write leaves a partial temp file that
+is reclaimed on the next boot, but only on the next boot. A process that
+crashes repeatedly without a clean restart accumulates.
+
+## Redis fails over [#redis-fails-over]
+
+### What actually happens [#what-actually-happens]
+
+Both Sentinel and Cluster modes are supported; the default is `standard`. On a
+Sentinel failover the demoted master answers `-READONLY`, which NativeLink
+classifies as retryable alongside dropped connections, refusals and IO errors.
+
+Each retryable failure reconnects and sleeps 100 ms, up to 5 attempts.
+Reconnects are serialised behind a dedicated mutex so a failover storm does not
+have every in-flight request stampeding the new master.
+
+**Net behaviour: about 500 ms of retrying, then the operation fails with the
+underlying Redis error. The process does not exit.**
+
+<Callout type="warn" title="A liveness probe will not catch this">
+  NativeLink serves errors during a Redis outage rather than crashing. Process
+  liveness is unchanged and the port still accepts connections. The health
+  endpoint only notices if the Redis store is itself a registered indicator (a
+  leaf at the top of a named store), in which case its `PING` check fails and
+  `/status` returns `503`; wrapped under `fast_slow` or `existence_cache` it
+  registers nothing. Alert on the error rate, not on restarts.
+</Callout>
+
+### What breaks depends on your backend [#what-breaks-depends-on-your-backend]
+
+| Scheduler backend | Impact of a Redis outage |
+| --- | --- |
+| `memory` (the default when unset) | Nothing in the scheduler. Only Redis-backed *stores* fail, serving `Unavailable` (or `DeadlineExceeded` on a timed-out command) after roughly 500 ms of retries. |
+| `redis` | The awaited-action database is unavailable: no new actions can be tracked and existing subscriptions stop delivering. The process stays up and keeps accepting connections. |
+
+### Stop the bleeding [#stop-the-bleeding-2]
+
+If you are on the `memory` backend, this is a cache-availability incident, not
+a scheduler incident. Builds degrade to local execution and cache misses. Fix
+Redis at your leisure.
+
+If you are on the `redis` backend, builds hang. Failing over Redis is the fix;
+there is no NativeLink-side mitigation.
+
+### Configuration worth checking now [#configuration-worth-checking-now]
+
+| Field | Default | Note |
+| --- | --- | --- |
+| `max_client_permits` | 500 | A semaphore, not a limit that errors. Exceeding it **blocks**. If Redis is slow, requests pile up here silently. |
+| `command_timeout_ms` | 10000 | |
+| `connection_timeout_ms` | 3000 | |
+| `health_check_timeout_ms` | 4000 | |
+| `connection_pool_size` | 3 | |
+| `retry.max_retries` |  | A configured `0` is coerced to `1`. |
+
+`response_timeout_s` and `connection_timeout_s` are **deprecated**;
+`response_timeout_s` is ignored entirely. Both log a warning at startup. Setting
+both `connection_timeout_s` and `connection_timeout_ms` is a startup error.
+
+<Callout type="info" title="The scheduler backend expects a standard-mode store">
+  The Redis scheduler backend downcasts to a concrete standard-connection type.
+  Pointing `experimental_backend: redis` at a Cluster- or Sentinel-mode store
+  can fail at startup with `Could not downcast to redis store in
+  RedisAwaitedActionDb::new`. Use a separate standard-mode store for the
+  scheduler if you run Redis in cluster mode for your CAS.
+</Callout>
+
+## The queue backpressures and never recovers [#the-queue-backpressures-and-never-recovers]
+
+The subtlest incident of the four, because nothing errors and nothing restarts.
+Actions re-queue forever.
+
+### The mechanism [#the-mechanism]
+
+`ResourceExhausted` is NativeLink's backpressure code. When a worker returns
+it for an action, two things happen: the action goes back to `Queued` and
+(this is the important part) **its attempt counter is not incremented**. If
+the worker still has other actions in flight it is also marked `is_paused`,
+and that flag clears as soon as any of those actions completes.
+
+<SourceLink file="nativelink-scheduler/src/simple_scheduler_state_manager.rs" symbol="due_to_backpressure" />
+<SourceLink file="nativelink-scheduler/src/api_worker_scheduler.rs" symbol="update_action" />
+
+That is deliberate. Backpressure is not the action's fault, so it should not
+burn a retry. But it means a worker that returns `ResourceExhausted`
+*permanently* produces an invisible infinite loop: the scheduler hands it the
+action, it rejects it, the action requeues without counting, and the next
+matching pass hands it over again. `max_job_retries` does not protect you,
+because no attempt is ever counted, and an idle worker is never paused, so
+nothing takes it out of the candidate set.
+
+The usual cause is `experimental_precondition_script`, the intended hook for
+"do not send me work, my disk is filling up". If the script's condition never
+clears, the loop never ends.
+
+### Confirm it [#confirm-it-2]
+
+```sh
+RUST_LOG=info
+```
+
+then look at the scheduler's periodic pass: the action keeps appearing in
+`Oldest actions in state` as `Queued`, its age grows, and it never reaches a
+retry limit. The worker itself is quiet; the script's exit status is logged
+only at `TRACE` (`Preconditions script returned`), so `RUST_LOG=info` on the
+worker shows nothing. If the worker still holds other work you will also see,
+in the scheduler's matching diagnostics:
+
+```text
+Worker <id> cannot accept work: is_paused=true, is_draining=false, inflight=1/0
+```
+
+`is_paused=true` is only ever set while `inflight` is non-zero; a worker with
+nothing in flight that is still refusing work does not appear here at all,
+because it is, as far as the scheduler can tell, a perfectly available
+worker.
+
+### Stop the bleeding [#stop-the-bleeding-3]
+
+Fix or remove the precondition script and restart the worker. Nothing can
+clear `is_paused` from the outside; it is set and cleared by the scheduler
+in response to what the worker returns.
+
+If the precondition script is doing its job correctly, and the host really is
+out of disk, then this is the disk-full incident wearing a different mask. Go
+to [The disk fills up](#the-disk-fills-up).
+
+### Related limits that block rather than reject [#related-limits-that-block-rather-than-reject]
+
+Several NativeLink limits queue instead of erroring, which is why "hung" is a
+more common symptom than "failed":
+
+| Limit | Default | Behaviour at the limit |
+| --- | --- | --- |
+| Open file descriptors | 24576 (`max_open_files`) | **Blocks on a semaphore.** Never produces `EMFILE`. Permits are 80% of the *achieved* `nofile` limit (19660 by default), which in a container with a hard cap may be far below what you configured. |
+| `max_concurrent_requests` (gRPC scheduler) | unlimited | Queues, does not reject. |
+| `max_client_permits` (Redis) | 500 | Blocks. |
+| `max_concurrent_writes` (filesystem) | unlimited | Blocks when set. |
+
+The FD limit is the one that catches people. If the kernel's hard limit caps
+the raise below what you asked for, the semaphore silently shrinks to 80% of
+what it actually got, and the only evidence is a startup warning (if the
+raise call fails outright, the semaphore stays at 80% of 24576 regardless of
+what the kernel allows):
+
+```text
+The new open file limit (1024) is below the recommended value of 24576.
+Consider raising max_open_files.
+```
+
+## Restarting the scheduler [#restarting-the-scheduler]
+
+Not an incident so much as a procedure that behaves worse than you expect.
+
+Worker reconnect is a **flat 0.5-second retry with no exponential backoff, no
+jitter, no cap and no configuration field**. A scheduler outage therefore
+produces a 2 Hz reconnect storm from every worker, for the whole outage.
+
+Worse, on reconnect each worker calls `kill_all()` and destroys every action it
+had in flight, to avoid resource-locking itself against the new work the
+scheduler will send. A scheduler restart is disruptive to in-flight builds by
+design.
+
+Before restarting a scheduler with running work, drain each worker (see
+[above](#a-worker-is-oom-killed)) and wait for `inflight=0`.
+
+Log lines to grep for during a restart:
+
+```text
+Worker registered with scheduler
+Worker disconnected from scheduler
+Actions in transit did not reach zero before we disconnected from the scheduler
+```
+
+The third means the 10-second drain window expired with work still in transit.
+
+<SourceLink file="nativelink-worker/src/local_worker.rs" symbol="CONNECTION_RETRY_DELAY_S" />
+<SourceLink file="nativelink-util/src/evicting_map.rs" symbol="should_evict" />
+<SourceLink file="nativelink-store/src/redis_store.rs" symbol="is_retryable_redis_error" />
+
+## What's next [#whats-next]
+
+<NextStep href="/operate/troubleshooting" title="Troubleshooting">
+  The symptom-to-cause index, for when you do not yet know which incident you
+  are in.
+</NextStep>
+
+<NextStep href="/operate/tuning" title="Tuning" kind="aside">
+  Once it is alive again: the levers that make it fast, and the ones that do
+  nothing.
+</NextStep>
+
+<NextStep href="/operate/observability" title="Observability" kind="aside">
+  Set up the metrics pipeline before the next incident, not during it.
+</NextStep>

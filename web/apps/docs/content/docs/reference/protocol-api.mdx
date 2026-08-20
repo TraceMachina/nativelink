@@ -1,0 +1,161 @@
+---
+title: Protocol and API surface
+description: Every gRPC service NativeLink serves, which RPCs are implemented, and the values it advertises.
+---
+
+{/* archetype: reference. See /web/apps/docs/templates/reference.mdx */}
+
+**Who this is for:** anyone writing or debugging a client, or checking
+whether a given REAPI feature is available. **What you'll have at the end:**
+the complete service list with implementation status. **Time:** use as a
+lookup.
+
+NativeLink implements the [Remote Execution API](https://github.com/bazelbuild/remote-apis)
+plus the adjacent protocols it depends on (ByteStream, long-running
+Operations, Remote Asset and the Build Event Protocol), and defines exactly
+one service of its own. Every vendored `.proto` under `nativelink-proto/` is
+copied from upstream with only its licence header replaced; there are no
+NativeLink-specific fields or extensions on the standard messages.
+
+## Services [#services]
+
+| Service | Origin | Status |
+| --- | --- | --- |
+| `Execution` | REAPI | Implemented |
+| `ActionCache` | REAPI | Implemented |
+| `ContentAddressableStorage` | REAPI | Implemented |
+| `Capabilities` | REAPI | Implemented |
+| `google.bytestream.ByteStream` | Google API | Implemented |
+| `google.longrunning.Operations` | Google API | Partially implemented, see below |
+| Remote Asset `Fetch` | Remote Asset v1 | Implemented |
+| Remote Asset `Push` | Remote Asset v1 | Implemented |
+| `PublishBuildEvent` | Build Event Protocol | Implemented, marked experimental |
+| `WorkerApi` | **NativeLink** | Implemented |
+
+Each is registered only if the configuration asks for it. Registration order
+at startup is fixed: action cache, CAS, execution, `Operations`, fetch, push,
+ByteStream, capabilities, worker API, BEP.
+
+<Callout type="info" title="Two endpoints are not gRPC">
+  The health endpoint (`/status` by default) and the admin endpoint (`/admin`
+  by default; both paths are configurable) are plain HTTP handlers on the same
+  listener. They will not appear in gRPC reflection, and a health check does
+  not need a gRPC client.
+</Callout>
+
+## `WorkerApi`: the only NativeLink-defined service [#worker-api]
+
+Defined in
+<SourceLink file="nativelink-proto/com/github/trace_machina/nativelink/remote_execution/worker_api.proto" />.
+It has **exactly one RPC**:
+
+```proto
+rpc ConnectWorker(stream UpdateForScheduler) returns (stream UpdateForWorker);
+```
+
+One bidirectional stream carries a worker's entire relationship with its
+scheduler: registration, heartbeats, action assignment, progress and
+completion. No polling RPC and no second connection exist. See
+[worker execution](/explanations/worker-execution#the-connection-is-one-stream).
+
+`events.proto` in the same tree declares message types only, **no services**.
+
+## Partially implemented RPCs [#partially-implemented-rpcs]
+
+Three `Operations` RPCs are registered and return `unimplemented`:
+
+| RPC | Status |
+| --- | --- |
+| `GetOperation` | Implemented |
+| `WaitOperation` | Implemented |
+| `ListOperations` | `unimplemented` |
+| `DeleteOperation` | `unimplemented` |
+| `CancelOperation` | `unimplemented` |
+
+A client that relies on cancellation to release cluster resources will not
+get it here. Actions are instead reaped by timeout; see
+[`client_action_timeout_s`](/explanations/scheduler-internals#two-timeouts-with-very-different-defaults),
+which kills an action nobody is listening to.
+
+<Callout type="info" title="SplitBlob and SpliceBlob are upstream RPCs">
+  Both appear in NativeLink's vendored CAS proto and are sometimes mistaken
+  for NativeLink inventions. They are part of the upstream REAPI definition
+  (content-defined chunking), vendored along with everything else. NativeLink
+  serves them only for CAS instances that configure `experimental_chunking`
+  (or proxy to a `grpc` store that does); elsewhere the capabilities response
+  reports them unsupported and the RPCs return `Unimplemented`.
+  <SourceLink file="nativelink-service/src/cas_server.rs" symbol="split_blob" />
+</Callout>
+
+## What `Capabilities` advertises [#what-capabilities-advertises]
+
+| Field | Value |
+| --- | --- |
+| Supported API versions | 2.0.0 to 2.3.0 |
+| Digest functions | `SHA256`, `BLAKE3` |
+| `max_batch_total_size_bytes` | 65536 (64 KiB) |
+| `max_cas_blob_size_bytes` | 0 (no limit advertised) |
+| `symlink_absolute_path_strategy` | `DISALLOWED` |
+| `update_enabled` (action cache) | `true` |
+| `supported_compressors` | `ZSTD` when the instance's `capabilities` entry sets `remote_cache_compression: true`; empty otherwise |
+| `split_blob_support`, `splice_blob_support`, `fast_cdc_2020_params` | set when the instance's `cas` entry configures `experimental_chunking`; otherwise `false`/unset |
+| `execution_capabilities` | present only when the instance's `capabilities` entry has `remote_execution`; then `exec_enabled` is `true` and the priority range is 0 to `i32::MAX` |
+
+<SourceLink file="nativelink-service/src/capabilities_server.rs" symbol="get_capabilities" />
+
+Two of these need a caveat.
+
+**`exec_enabled` is hardcoded to `true`**, with a TODO in the source
+acknowledging it. Whenever a `capabilities` entry names a `remote_execution`
+scheduler, execution is advertised as enabled; there is no way to advertise
+`exec_enabled: false`. A cache-only `capabilities` entry (no
+`remote_execution`) omits `execution_capabilities` altogether, which is the
+correct signal for a cache-only deployment.
+
+**The 64 KiB batch limit is advisory and small** relative to what some
+clients assume. The CAS handlers do not enforce it themselves; the hard stop
+is the listener's `max_decoding_message_size` (4 MiB unless configured), and
+a batch request above that is rejected at the gRPC layer. Clients that honour
+the advertised limit send anything larger through ByteStream.
+
+## Wire-level details worth knowing [#wire-level-details-worth-knowing]
+
+**ByteStream resource names are parsed right to left.** A resource name is
+`{instance_name}/blobs/{hash}/{size}`, and the instance name may itself
+contain slashes, so left-to-right parsing cannot find the boundary, while
+right-to-left can, because the trailing components are fixed. See
+<SourceLink file="nativelink-util/src/resource_info.rs" symbol="ResourceInfo" />.
+
+**`GetTree` page tokens are `"{hash}-{size}"`**, constructed and parsed by
+splitting on `-`. They are neither opaque nor signed. The protocol asks
+clients to treat them as opaque, and clients that do will keep working if the
+format changes.
+
+**The `Execute` pre-flight input check is shallow and racy by design.** It
+does not walk the full input tree, and a blob can be evicted between the
+check and the worker's fetch. It exists to turn the common "inputs were never
+uploaded" mistake into a fast error, not to provide a guarantee. See
+<SourceLink file="nativelink-service/src/execution_server.rs" symbol="ExecutionServer" />.
+
+**`ActionStage::CacheCheck` is never emitted.** The cache lookup happens in a
+decorator in front of the scheduler, so the state is skipped entirely. A
+client waiting to observe it will wait forever.
+
+**Final action failure arrives as success.** An action that exhausts its
+retries returns `ActionStage::Completed` with `ActionResult.error` set: a
+successful RPC describing a failed action. This is what the REAPI specifies.
+Clients that only inspect the gRPC status will misread it.
+
+**`server_logs` is never populated.** The field exists; the worker does not
+fill it.
+
+## Related [#related]
+
+- [Architecture deep dive](/explanations/architecture-deep-dive): where each
+  service sits in the process
+- [Scheduler internals](/explanations/scheduler-internals): what happens
+  between `Execute` and a worker
+- [Worker execution](/explanations/worker-execution): the `WorkerApi` stream
+  from the worker's side
+- [Configuration reference](/reference/nativelink-config): which services a
+  given config enables

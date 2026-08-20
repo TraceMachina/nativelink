@@ -1,6 +1,6 @@
 ---
 title: Store overview
-description: The mental model behind every store in the configuration reference — what holds data, what wraps another store, and how they compose.
+description: "The mental model behind every store in the configuration reference: what holds data, what wraps another store, and how they compose."
 ---
 
 The [full reference](/reference/nativelink-config) lists every field on
@@ -8,7 +8,7 @@ every store. This page is the map you need before that list is useful:
 what a store actually is, the two families every store falls into, and
 the compositions people actually run in production.
 
-## What a store is
+## What a store is [#what-a-store-is]
 
 A store is a named, pluggable backend for CAS or AC data. You declare
 each one once in the top-level `stores` array, then reference it by
@@ -27,17 +27,19 @@ name from `servers`, `workers`, or from inside another store:
 }
 ```
 
-The store's *type* is whichever key you put inside its object —
+The store's *type* is whichever key you put inside its object:
 `filesystem`, `memory`, `compression`, `fast_slow`, and so on. NativeLink
 picks the implementation from that key; everything else in the object is
-that implementation's config.
+that implementation's config. The set of legal keys is the variant list of a
+single enum, so the reference below and the parser cannot disagree.
+<SourceLink file="nativelink-config/src/stores.rs" symbol="StoreSpec" />
 
-## Two families
+## Two families [#two-families]
 
 Every store type is either **terminal** (it actually holds or fetches
 bytes) or a **wrapper** (it adds behavior in front of another store,
 which it embeds as a nested `StoreSpec`). Wrappers nest arbitrarily
-deep — a `verify` can wrap a `compression`, which wraps a `fast_slow`,
+deep: a `verify` can wrap a `compression`, which wraps a `fast_slow`,
 which wraps two more terminal stores:
 
 <Mermaid>
@@ -49,23 +51,26 @@ which wraps two more terminal stores:
 </Mermaid>
 
 Reads and writes flow through every wrapper in order. Nothing about the
-client changes — it still speaks plain CAS/AC RPCs against whatever
+client changes; it still speaks plain CAS/AC RPCs against whatever
 store name the server exposes.
 
-### Terminal stores — where bytes actually live
+### Terminal stores: where bytes actually live [#terminal-stores--where-bytes-actually-live]
 
 | Store key | Holds data in | Notes |
 | --- | --- | --- |
 | `memory` | An in-process hash map | Fastest, gone on restart. Good for AC tiers and dev. |
 | `filesystem` | Local disk | Survives restarts; scans and rebuilds its index on startup. |
 | `experimental_cloud_object_store` | A cloud object bucket | One store type, six `provider`s: `aws` (S3), `gcs`, `azure`, `ontap` (NetApp ONTAP S3), `r2` (Cloudflare), `oci` (Oracle Cloud Infrastructure). All speak an S3-compatible API except `gcs` and `azure`. |
-| `redis_store` | Any Redis-API-compatible service | Pairs well with `size_partitioning` — most Redis services cap uploads around 256–512 MB. |
+| `redis_store` | Any Redis-API-compatible service | Pairs well with `size_partitioning`; most Redis services cap uploads around 256 to 512 MB. |
 | `experimental_mongo` | MongoDB | Supports CAS and scheduler data, with optional change streams for scheduler subscriptions. |
 | `grpc` | Another NativeLink-compatible gRPC endpoint | Proxies calls upstream. Useful for a regional cache in front of a central cluster. |
-| `ref_store` | Nothing itself — points at another store by name | Lets two composition trees share one underlying store instance (see below). |
+| `ref_store` | Nothing itself; points at another store by name | Lets two composition trees share one underlying store instance (see below). |
 | `noop` | Nothing | Reads 404. Writes vanish. Used to explicitly discard a partition of data. |
 
-### Wrapper stores — behavior layered on a backend
+Every implementation in this table lives in `nativelink-store/src`.
+<SourceLink file="nativelink-store/src" dir symbol="nativelink-store/src/" />
+
+### Wrapper stores: behavior layered on a backend [#wrapper-stores--behavior-layered-on-a-backend]
 
 | Store key | Wraps | What it adds |
 | --- | --- | --- |
@@ -73,27 +78,35 @@ store name the server exposes.
 | `dedup` | two stores (`index_store` + `content_store`) | Rolling-hash chunking so only changed slices upload. |
 | `fast_slow` | two stores (`fast` + `slow`) | Reads try `fast` first, fall back to `slow`, and backfill `fast`. Writes mirror to both. |
 | `shard` | N stores | Routes by digest hash. The standard shape for scaling CAS past one backend. |
-| `size_partitioning` | two stores (`lower_store` + `upper_store`) | Routes by blob size instead of hash. CAS-only — see the gotcha below. |
+| `size_partitioning` | two stores (`lower_store` + `upper_store`) | Routes by blob size instead of hash. CAS-only; see the gotcha below. |
 | `verify` | one store | Rejects uploads that fail a hash and/or size check before they ever reach the backend. |
 | `existence_cache` | one store | Caches `has()` results. CAS-only. |
 | `completeness_checking` | one store + a CAS store | Confirms an `ActionResult`'s output digests exist in CAS before returning it. AC-only. |
-| `cache_metrics` | one store | Emits OpenTelemetry cache-hit/miss metrics for the wrapped store. Opt-in — stores you don't wrap pay nothing extra. |
+| `cache_metrics` | one store | Emits OpenTelemetry cache-hit/miss metrics for the wrapped store. Opt-in; stores you don't wrap pay nothing extra. |
 | `ontap_s3_existence_cache` | (built-in ONTAP S3 backend) | Purpose-built existence cache for ONTAP S3 specifically, with disk-persisted sync instead of a generic wrapped backend. |
 
+The nested-`StoreSpec` shape each wrapper takes (one backend, two named
+backends, or N) is declared alongside the terminal specs.
+<SourceLink file="nativelink-config/src/stores.rs" symbol="StoreSpec" />
+
 <Callout type="warn" title="A few wrappers only make sense one way round">
-  - Put `dedup` *inside* `compression` (compression wraps dedup's output),
-    never the other way — `compression` as `dedup`'s `content_store` negates
-    dedup's gains, since every chunk becomes a differently-compressed blob.
+  - Put `compression` *inside* `dedup` (as its `content_store`, so each
+    chunk is compressed after chunking), never the other way round;
+    `dedup` as `compression`'s backend negates dedup's gains, because
+    chunking then runs over an already-compressed stream whose bytes change
+    completely on any edit.
+    <SourceLink file="nativelink-config/src/stores.rs" symbol="DedupSpec" />
   - `fast_slow` never checks whether an object in `fast` also exists in
-    `slow`. If you need a durability guarantee — e.g. remote execution
-    artifacts that must survive a `fast`-tier wipe — write-through both
+    `slow`. If you need a durability guarantee (e.g. remote execution
+    artifacts that must survive a `fast`-tier wipe), write-through both
     tiers deliberately rather than assuming it.
+    <SourceLink file="nativelink-store/src/fast_slow_store.rs" symbol="FastSlowStore" />
   - `existence_cache` and `size_partitioning` are CAS-only; `completeness_checking`
     is AC-only. Using them on the other store type produces confusing
     correctness bugs, not a config error.
 </Callout>
 
-## Choosing a terminal backend
+## Choosing a terminal backend [#choosing-a-terminal-backend]
 
 | Backend | Durability | Shared across instances | Typical role |
 | --- | --- | --- | --- |
@@ -103,12 +116,12 @@ store name the server exposes.
 | `redis_store` | As durable as your Redis deployment | Yes | Low-latency shared tier, usually fronted by `size_partitioning` to keep large blobs out of it. |
 | `experimental_mongo` | Durable | Yes | Alternative shared backend when you already operate MongoDB and want scheduler-state change streams. |
 
-## Common compositions
+## Common compositions [#common-compositions]
 
-**Single-node dev cache** — no wrapping at all. See
-[Configuration → Basic](/configuration/basic).
+**Single-node dev cache**: no wrapping at all. See
+[Configuration → Stores](/configuration/stores).
 
-**Validated, compressed, tiered CAS** — the shape most self-hosted
+**Validated, compressed, tiered CAS**: the shape most self-hosted
 production clusters converge on:
 
 ```json5
@@ -138,7 +151,7 @@ production clusters converge on:
 }
 ```
 
-**Sharing one store instance across two trees** — use `ref_store`
+**Sharing one store instance across two trees**: use `ref_store`
 instead of declaring the same backend twice:
 
 ```json5
@@ -161,13 +174,14 @@ instead of declaring the same backend twice:
 }
 ```
 
-## FAQ
+## FAQ [#faq]
 
 <Accordions type="multiple">
   <Accordion title="Does fast_slow guarantee the slow tier has everything?" id="does-fast-slow-guarantee-the-slow-tier-has-everything">
-    No — it never checks that an object in `fast` also made it to `slow`.
+    No; it never checks that an object in `fast` also made it to `slow`.
     If an artifact must survive a fast-tier wipe, make sure the write
     path covers both tiers deliberately.
+    <SourceLink file="nativelink-store/src/fast_slow_store.rs" symbol="FastSlowStore" />
   </Accordion>
   <Accordion title="Why pair redis_store with size_partitioning?" id="why-pair-redis-store-with-size-partitioning">
     Redis caps uploads at roughly 256-512 MB. Route large blobs to a
@@ -177,15 +191,16 @@ instead of declaring the same backend twice:
   <Accordion title="Which wrappers only apply to the CAS or the AC?" id="which-wrappers-only-apply-to-the-cas-or-the-ac">
     `existence_cache` and `size_partitioning` are CAS-only;
     `completeness_checking` is AC-only. Misplacing one isn't a config
-    error — it surfaces as a confusing correctness bug.
+    error; it surfaces as a confusing correctness bug.
+    <SourceLink file="nativelink-store/src/completeness_checking_store.rs" symbol="CompletenessCheckingStore" />
   </Accordion>
 </Accordions>
 
-## What's next
+## What's next [#whats-next]
 
-- [Configuration reference](/reference/nativelink-config) — every
+- [Configuration reference](/reference/nativelink-config): every
   field, default, and JSON5 example for every store type above.
-- [Configuration → Introduction](/configuration/intro) — how stores
-  fit alongside servers, schedulers, and workers.
-- [Configuration → Production](/configuration/production) — sharded,
-  multi-region store topologies end to end.
+- [Configuration](/configuration): how stores fit alongside servers,
+  schedulers, and workers.
+- [Production configuration](/operate/production-config): the store
+  composition a real cluster uses end to end.

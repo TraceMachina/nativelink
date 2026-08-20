@@ -1,0 +1,233 @@
+---
+title: Filesystem store
+description: "Put the cache on local disk: the two paths that must share a block device, the eviction policy you cannot skip, and the tuning knobs that matter on real hardware."
+---
+
+{/* archetype: how-to, see /web/apps/docs/templates/how-to.mdx */}
+
+**Who this is for:** anyone who wants the cache to survive a restart without
+paying for object storage, and anyone building the fast tier of a larger
+composition. **What you'll have at the end:** a `filesystem` store sized to
+your disk, with eviction that actually runs. **Time:** fifteen minutes.
+
+<Prerequisites>
+  A config file you can edit. See [Configuration](/configuration).
+</Prerequisites>
+
+## The recipe [#the-recipe]
+
+```json5
+stores: [
+  {
+    name: "CAS_MAIN_STORE",
+    filesystem: {
+      content_path: "/var/lib/nativelink/cas/content",
+      temp_path: "/var/lib/nativelink/cas/tmp",
+      eviction_policy: {
+        max_bytes: "50gb",
+        evict_bytes: "5gb",
+      },
+    },
+  },
+  {
+    name: "AC_MAIN_STORE",
+    filesystem: {
+      content_path: "/var/lib/nativelink/ac/content",
+      temp_path: "/var/lib/nativelink/ac/tmp",
+      eviction_policy: {
+        max_bytes: "5gb",
+      },
+    },
+  },
+],
+```
+
+Create the parent directory and start NativeLink. The store scans
+`content_path` on boot and adopts every file whose name parses as a store key
+(`<hash>-<size>` under `d/`, or a plain string key under `s/`); a file whose
+name does not parse is deleted. The scan reads metadata, not content, so it does not check
+that bytes still match their digest. That scan is what makes the cache survive
+restarts, and it is also why boot time grows with the number of cached
+objects.
+
+<SourceLink file="nativelink-config/src/stores.rs" symbol="FilesystemSpec" />
+<SourceLink file="nativelink-store/src/filesystem_store.rs" symbol="add_files_to_cache" />
+
+## The two paths [#the-two-paths]
+
+`content_path` holds the data. `temp_path` holds objects mid-upload and
+mid-delete, while their contents cannot yet be trusted.
+
+<Callout type="warn" title="`temp_path` must be on the same block device as `content_path`">
+  Completing an upload is an atomic rename from the temp path into the content
+  path. Across a device boundary a rename becomes a copy, which is neither
+  atomic nor free. Put both under one parent directory and the problem cannot
+  arise.
+</Callout>
+
+Everything in `temp_path` is deleted on every startup. Nothing you care about
+should ever be written there by hand.
+
+## The eviction policy you cannot skip [#the-eviction-policy-you-cannot-skip]
+
+`eviction_policy` is optional in the schema and mandatory in practice. Without
+it, nothing is ever removed and the store grows until the disk is full.
+
+Eviction is LRU: touching an entry refreshes its timestamp, and inserts run the
+policy until the store fits again. Four independent limits are available, all
+defaulting to `0`, which means "don't evict on this axis":
+
+| Field | Meaning |
+| --- | --- |
+| `max_bytes` | Total size on disk before eviction starts |
+| `evict_bytes` | Keep evicting until `max_bytes - evict_bytes` is reached |
+| `max_seconds` | Age since last access before an entry is evicted |
+| `max_count` | Number of entries before eviction starts |
+
+Set `evict_bytes` to something like 10% of `max_bytes`. Without it, the store
+sits exactly at the limit and every single insert triggers an eviction;
+a low watermark turns that thrash into one bulk pass per 10%.
+
+Size accounting uses `block_size` (default 4 KiB), not the byte length of the
+file, because a one-byte object still consumes a whole block. If your
+filesystem uses a different block size, set it, or your `max_bytes` will be a
+significant underestimate of real disk use.
+
+## Tuning that matters on real hardware [#tuning-that-matters-on-real-hardware]
+
+**`max_concurrent_writes`** (default `0`, unlimited). Every write streams into
+a temp file and calls `sync_all()`. Enough concurrent writes will saturate disk
+I/O and start blocking the async runtime. On a busy shared CAS, set this to
+something bounded (a few dozen) rather than leaving it open.
+
+**`read_buffer_size`** (default 32 KiB). Leave it alone unless you are
+benchmarking.
+
+**`evict_page_cache`** (default `false`). When true, the store advises the
+kernel to drop the page cache for each blob after it is read or written.
+
+<Callout type="warn" title="Leave `evict_page_cache` off unless you know you want it">
+  On a real filesystem this takes a globally serialized, all-CPU kernel path
+  that stalls on many-core hosts, and it throws away the page cache that
+  makes a fast tier fast in the first place. It exists for deployments that
+  specifically need this store's I/O kept out of the page cache.
+</Callout>
+
+## If this store feeds a worker [#if-this-store-feeds-a-worker]
+
+A worker's `cas_fast_slow_store` must have a `filesystem` store as its `fast`
+half. The worker builds each action's input tree by hard-linking files out of
+that store, and hard links require real files on a real filesystem; a memory
+or object store cannot supply them.
+
+The worker's `work_directory` must be on the **same filesystem** as that
+store's `content_path`, for the same reason. See
+[Schedulers and workers](/configuration/scheduler-and-workers).
+
+## Steps [#steps]
+
+<Steps>
+
+<li>
+
+**Create the directories** and make sure the process user owns them:
+`mkdir -p /var/lib/nativelink/cas/content /var/lib/nativelink/cas/tmp`.
+
+</li>
+
+<li>
+
+**Add the store** with both paths under one parent and an `eviction_policy`
+whose `max_bytes` leaves headroom on the device.
+
+</li>
+
+<li>
+
+**Start NativeLink** and run a build against it.
+
+</li>
+
+<li>
+
+**Restart NativeLink** and run the same build again. The second run should be
+a cache hit.
+
+</li>
+
+</Steps>
+
+<VerifyBlock>
+
+- Files appear under `content_path/d/` named `<hash>-<size>` while a build
+  runs.
+- `temp_path` is empty when no upload is in flight, and empty after a restart.
+- `du -sh` on `content_path` stabilises near `max_bytes` rather than growing
+  past it.
+- A build re-run after a restart of NativeLink is a cache hit, not a rebuild.
+
+</VerifyBlock>
+
+## When it doesn't work [#when-it-doesnt-work]
+
+<Accordions>
+
+<Accordion title="The disk filled up" id="the-disk-filled-up">
+
+The store has no `eviction_policy`, or has one with `max_bytes: 0`. Both mean
+"never evict". Add a real limit and restart; the boot scan will bring the
+store back under the limit.
+
+If the limit is set and the disk still filled, check `block_size`: on a
+filesystem with 16 KiB blocks, an accounting `block_size` of 4 KiB
+underestimates real usage by up to 4x for small objects.
+
+</Accordion>
+
+<Accordion title="Uploads fail with a cross-device link error" id="uploads-fail-with-a-cross-device-link-error">
+
+`temp_path` and `content_path` are on different filesystems. Check with
+`df /var/lib/nativelink/cas/content /var/lib/nativelink/cas/tmp`. If the
+device column differs, move one of them.
+
+</Accordion>
+
+<Accordion title="Startup takes minutes" id="startup-takes-minutes">
+
+That's the boot scan reading the metadata of every file in `content_path`
+(name, size, access time). It's proportional to entry count. A tighter `max_count` or
+`max_seconds` keeps the store smaller; a `fast_slow` pair with a small fast
+tier over a durable slow tier keeps boot cheap without giving up capacity.
+
+</Accordion>
+
+<Accordion title="Everything is slower than expected under load" id="everything-is-slower-than-expected-under-load">
+
+Check `max_concurrent_writes`. Unlimited means the store will happily issue
+more concurrent `sync_all()` calls than the device can retire, at which point
+disk I/O becomes the bottleneck for every request including reads.
+
+</Accordion>
+
+<Accordion title="Cache entries vanish after a restart even though the disk is intact" id="cache-entries-vanish-after-a-restart-even-though-the-disk-is-intact">
+
+The boot scan only deletes files whose names it cannot parse as a store key;
+everything else is re-added, and the eviction policy then runs against the
+whole set, so a store over `max_bytes` or `max_count` is trimmed at startup.
+Separately, switching the digest function between `sha256` and `blake3`
+(`default_digest_hash_function` on the server, `--digest_function` on the
+client) does not delete anything, but every lookup misses because clients now
+compute different digests. See [Stores](/configuration/stores).
+
+</Accordion>
+
+</Accordions>
+
+<NextStep href="/how-to/stores/compose-stores" title="Compose stores">
+  Put this filesystem store in front of a durable one, or behind
+  deduplication and compression.
+</NextStep>
+
+<NextStep href="/how-to/stores/s3-and-compatible" kind="aside" title="S3 and compatible">
+  The usual slow tier: durability you don't have to operate.
+</NextStep>

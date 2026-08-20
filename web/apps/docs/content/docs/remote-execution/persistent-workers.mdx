@@ -1,0 +1,380 @@
+---
+title: Persistent workers
+description: Keep a JVM or Node compiler process warm across actions instead of paying its startup cost every time, and understand exactly what NativeLink gives up to do it.
+---
+
+{/* archetype: how-to, see /web/apps/docs/templates/how-to.mdx */}
+
+**Who this is for:** anyone whose remote builds are dominated by JVM or
+TypeScript compile actions. **What you'll have at the end:** compile actions
+reusing a warm process, and a clear-eyed view of the isolation you trade for it.
+**Time:** an hour, most of it in your build rules rather than in NativeLink.
+
+<Prerequisites>
+  Remote execution working end to end. See [Your first remote action](/remote-execution/first-remote-action).
+</Prerequisites>
+
+A `javac` invocation spends a large fraction of its wall time before it compiles
+anything: start a JVM, load the compiler, warm the JIT. Locally you amortize
+that across a build because Bazel keeps the process alive. Under
+[remote execution](/remote-execution) the default is one process per action, so
+every single compile pays the full tax, and a thousand-target Java build pays it
+a thousand times.
+
+Persistent workers remove that. The tool is started once, told it is a
+persistent worker, and then fed one request per action over stdin while staying
+alive between them.
+
+<Mermaid>
+{`flowchart TB
+  subgraph OS["Default: one process per action"]
+    A1["action 1"] --> P1["start JVM → compile → exit"]
+    A2["action 2"] --> P2["start JVM → compile → exit"]
+    A3["action 3"] --> P3["start JVM → compile → exit"]
+  end
+  subgraph PW["Persistent: one process, many actions"]
+    B1["action 1"] --> W["javac_worker --persistent_worker"]
+    B2["action 2"] --> W
+    B3["action 3"] --> W
+    W --> WW["JVM started once, stays warm"]
+  end`}
+</Mermaid>
+
+<SourceLink file="nativelink-worker/src/persistent_worker/pool.rs" symbol="PersistentWorkerPool" />
+
+## Two things to know before you start [#two-things-to-know-before-you-start]
+
+**Almost nothing needs configuring in NativeLink.** No field anywhere in
+[the configuration model](/configuration) turns this on, tunes the pool, or
+selects a protocol; `LocalWorkerConfig` has no persistent-worker section at
+all, and every pool parameter is a compiled-in constant. The feature is
+driven by two platform properties on each action. The one thing NativeLink
+does need from you is on the scheduler: those two keys must be listed in
+`supported_platform_properties`, because the scheduler rejects an action that
+carries a key it does not know. If you have seen a `persistent_workers`
+config block in older documentation, it did not correspond to anything in the
+binary.
+
+**The module is licensed separately.** Most of the repository is
+`FSL-1.1-Apache-2.0`. Every file under `nativelink-worker/src/persistent_worker/`
+instead carries a Business Source License 1.1 header stating that use of the
+module requires an enterprise license agreement. That is a different obligation
+from the rest of the binary, and nothing in the binary enforces it; the module
+is compiled in and activates from the action, not from a flag you set. Read
+[Open source and Enterprise](/reference/oss-and-enterprise#persistent-workers-activate-from-the-action-not-from-your-config)
+for what that means in practice, and
+[the license](https://nativelink.com/license) against your intended use, before
+you build on this.
+
+## Opt an action in [#opt-an-action-in]
+
+The worker looks at two of the action's platform properties (the REAPI
+`Platform` on the `Action`): `supports-workers` must be exactly `1`, and
+`requires-worker-protocol` picks the wire format. Nothing on the worker's own
+`platform_properties` is involved.
+
+<SourceLink file="nativelink-worker/src/running_actions_manager.rs" symbol="action_supports_persistent_workers" />
+
+Because the scheduler fails to match any action carrying a platform property
+key it has not been told about (`Unknown platform property`), declare both keys
+on the scheduler. `ignore` lets actions request a key without any worker having
+to advertise it:
+
+```json5
+schedulers: [{
+  name: "MAIN_SCHEDULER",
+  simple: {
+    supported_platform_properties: {
+      cpu_count: "minimum",
+      "supports-workers": "ignore",
+      "requires-worker-protocol": "ignore",
+    },
+  },
+}]
+```
+
+Then put the two keys on the action. The rule sketches in
+`deployment-examples/persistent-workers/` (Java, Kotlin and TypeScript) show
+them as `execution_requirements`:
+
+```starlark
+def _javac_worker_impl(ctx):
+    args = ctx.actions.args()
+    args.add("@%s" % ctx.outputs.argfile.path)
+
+    ctx.actions.run(
+        executable = ctx.executable.javac_worker,
+        arguments = [args],
+        inputs = ctx.files.srcs + [ctx.outputs.argfile],
+        outputs = [ctx.outputs.jar],
+        mnemonic = "Javac",
+        execution_requirements = {
+            "supports-workers": "1",
+            "requires-worker-protocol": "proto",
+        },
+    )
+```
+
+Kotlin is identical in shape. TypeScript wrappers conventionally use the JSON
+framing instead:
+
+```starlark
+execution_requirements = {
+    "supports-workers": "1",
+    "requires-worker-protocol": "json",
+}
+```
+
+<Callout type="warn" title="The keys have to reach the remote Platform">
+  The worker reads the `Platform` proto, not Bazel's execution info. Bazel
+  builds the remote `Platform` from `exec_properties` (on the target or the
+  execution platform) and `--remote_default_exec_properties`; it does not copy
+  `execution_requirements` into it. If your actions never take the persistent
+  path, set the same two keys as `exec_properties` on the target, or pass
+  `--remote_default_exec_properties=supports-workers=1` for a whole build, and
+  check the worker log for `Spawned new persistent worker`.
+</Callout>
+
+Both wire formats are fully implemented. `proto` is length-delimited protobuf;
+`json` is newline-delimited JSON with camelCase field names, where a request's
+input digests are base64. `proto` is the default when the property is absent.
+Any other value is logged and the action falls back to ordinary one-shot
+execution.
+
+The decision is made on the worker, per action, at the moment it is about to
+execute. The scheduler only needs to know the keys exist; it does not treat
+these actions differently.
+
+## What makes two actions share a process [#what-makes-two-actions-share-a-process]
+
+Actions are pooled by a key derived from the command line:
+
+The **executable**: the first argument.
+
+The **startup arguments**: every argument after the executable *up to the
+first one beginning with `@`*, which is Bazel's response-file convention.
+Everything from that `@` onward is per-request payload, sent in the
+`WorkRequest` rather than used for pooling.
+
+The **wire format** from `requires-worker-protocol`.
+
+Two actions with the same three share a process; anything else gets its own.
+This is why the argfile convention matters more than it looks: an action with
+**no** `@argfile` puts its entire command line into the key, so every action
+with different arguments becomes its own worker and you get no reuse at all
+while everything still appears to work.
+
+<Callout type="warn" title="`entrypoint` shifts the key">
+  If the worker has an `entrypoint` configured, it is prepended to the command
+  before the key is derived, so the executable in the key is the entrypoint,
+  not your tool, and the tool name becomes a startup argument. It still pools
+  correctly, but the key is not what you would predict from the rule.
+</Callout>
+
+## The isolation you give up [#the-isolation-you-give-up]
+
+This is the part to read twice. NativeLink applies real isolation to ordinary
+actions and **applies none of it to persistent workers**. The persistent path
+returns before any of it runs.
+
+**No namespace sandboxing.** The PID, user, IPC, UTS and mount namespaces that
+ordinary actions get are not applied. `use_namespaces` and `use_mount_namespace`
+have no effect on a persistent worker.
+
+**No environment control.** Ordinary actions get a cleared environment plus
+exactly what the action and config specify. A persistent worker process
+inherits the NativeLink worker process's own environment, and
+`environment_variables` on the command, `additional_environment` on the config,
+and the side-channel environment sources are all ignored.
+
+**A shared, long-lived working directory.** The process's own working directory
+is the worker's root action directory, not the per-action one; it has to be,
+because per-action directories are deleted when their action finishes. The
+per-action directory is instead handed to the tool as `sandbox_dir` on each
+request, and **it is the tool's job to honor it**. A worker that writes relative
+to its own cwd will scribble into a directory shared with every other action it
+ever serves.
+
+**No input digests.** The request carries an empty input list, so a tool cannot
+use it to validate or invalidate its own cached state. Anything the tool caches
+across requests, it caches on trust.
+
+The consequence is a real correctness requirement, not a footnote: **a
+persistent worker must be hermetic by construction, because nothing is enforcing
+it.** State that leaks between requests produces wrong outputs that are then
+cached as if they were right, which is the worst failure mode a build system
+has. Only enable this for tools written for the worker protocol and tested under
+it.
+
+<SourceLink file="nativelink-worker/src/running_actions_manager.rs" symbol="inner_execute" />
+
+## The pool's actual behaviour [#the-pools-actual-behaviour]
+
+Every parameter below is a compiled-in constant. None is configurable.
+
+**Four workers per key.** A fifth concurrent action for the same key does not
+queue; it falls back to normal one-shot execution and logs that it did. Your
+build stays correct and quietly gets slower, which is worth knowing when you are
+measuring.
+
+**Two hundred requests per worker.** After that the process is retired and the
+next action starts a fresh one. This is deliberate recycling of accumulated JVM
+state, and it means a long build will restart workers periodically by design.
+
+**No idle timeout, in practice.** The sweeper that would retire an idle worker
+exists in the code but nothing calls it. A worker lives until the request cap
+retires it, until it dies on its own, or until the NativeLink worker process
+exits.
+
+**Dead workers are noticed on the next acquire**, not proactively. A JVM that
+OOMs while idle is discovered when the next action asks for it, and that action
+starts a replacement.
+
+**Shutdown is not graceful.** Stdin is closed, giving the tool five seconds to
+exit on EOF, and then it is killed outright. No `SIGTERM` is sent.
+
+**One request at a time per process.** Multiplexed workers are not supported; a
+request carrying a non-zero request ID is rejected.
+
+## Steps [#steps]
+
+<Steps>
+
+<li>
+
+**Confirm the tool is actually a worker.** It must accept `--persistent_worker`,
+read framed `WorkRequest` messages from stdin, and write framed `WorkResponse`
+messages to stdout. Most JVM compilers have a worker wrapper already; a plain
+compiler binary does not become one by being declared as one.
+
+</li>
+
+<li>
+
+**Declare the execution requirements** on the action, with an `@argfile` holding
+everything that varies per action so that the pooling key stays stable.
+
+</li>
+
+<li>
+
+**Audit the tool for cross-request state.** Anything cached in memory between
+requests must be keyed on inputs the request actually carries. Anything written
+to disk must go under `sandbox_dir`.
+
+</li>
+
+<li>
+
+**Run a build and read the worker's log.** You are looking for one process
+start serving many actions, not one start per action.
+
+</li>
+
+<li>
+
+**Compare compile durations** against the same build with the execution
+requirements removed. The first action of each key should be unchanged; the
+rest should drop sharply.
+
+</li>
+
+</Steps>
+
+<VerifyBlock>
+
+- The action-duration distribution for that mnemonic becomes bimodal: a few slow
+  first-of-key actions, the rest much faster.
+- Process count on the worker host stays flat during a build instead of churning
+  once per action.
+- Building the same targets twice in a row, cache disabled, is faster the second
+  time within a single build: the pool is warm.
+- Nothing in the NativeLink worker log says it fell back to one-shot execution.
+- Outputs are byte-identical to the same build without persistent workers. This
+  is the one that matters.
+
+</VerifyBlock>
+
+## When it doesn't work [#when-it-doesnt-work]
+
+<Accordions>
+
+<Accordion title="Nothing changes: actions still start a process each time" id="nothing-changes--actions-still-start-a-process-each-time">
+
+Either the properties are not reaching the action's `Platform`, or every action
+is getting its own key. Check `supports-workers` is exactly `"1"` and is sent as
+a platform property (see the callout above), and that the scheduler declares
+both keys; an undeclared key leaves the action queued forever. Then check the
+command line has an `@argfile`: without one, every distinct command line is a
+distinct key, and you get a warm process per action, which is no process reuse
+at all.
+
+</Accordion>
+
+<Accordion title="Outputs are wrong, but only sometimes" id="outputs-are-wrong-but-only-sometimes">
+
+Stop and disable persistent workers for that mnemonic. This is the signature of
+state leaking between requests: a cache in the tool keyed on something the
+request no longer determines, or output written relative to the process's cwd
+instead of `sandbox_dir`. Wrong outputs get cached, so also consider what needs
+invalidating.
+
+</Accordion>
+
+<Accordion title="Builds get slower under high parallelism" id="builds-get-slower-under-high-parallelism">
+
+More than four concurrent actions for one key fall back to one-shot execution,
+and one-shot execution of a worker-wrapped tool can be slower than the plain
+tool. The per-key cap is not configurable, so the levers are reducing
+concurrency for that mnemonic or splitting the work across more distinct keys.
+
+</Accordion>
+
+<Accordion title="The tool can't find its inputs" id="the-tool-cant-find-its-inputs">
+
+It is resolving paths relative to its own working directory, which is the
+worker's root directory rather than the action's. Every path must be resolved
+against the `sandbox_dir` the request carries. Tools written for local Bazel
+workers usually get this right; wrappers written in-house usually do not, at
+first.
+
+</Accordion>
+
+<Accordion title="`Unsupported requires-worker-protocol value`" id="unsupported-requires-worker-protocol-value">
+
+The property must be exactly `proto` or `json`. Anything else is rejected and
+the action falls back to one-shot execution.
+
+</Accordion>
+
+<Accordion title="Where did the tool's output go?" id="where-did-the-tools-output-go">
+
+A persistent worker's stderr is discarded, because it belongs to the process
+rather than to any one action and cannot be attributed safely. What surfaces as
+the action's stderr is the `output` field of the `WorkResponse`, and the
+action's stdout is always empty. If a tool reports errors on its real stderr
+instead of in the response, those errors are invisible; that is a bug in the
+worker wrapper.
+
+</Accordion>
+
+<Accordion title="Memory on the worker host keeps climbing" id="memory-on-the-worker-host-keeps-climbing">
+
+Warm JVMs are the point and they are not free: up to four live processes per
+distinct key, each holding a heap. The 200-request cap recycles them eventually,
+but the steady state is higher than one-shot execution. Size worker hosts for
+the pool, not for one compiler.
+
+</Accordion>
+
+</Accordions>
+
+<NextStep href="/operate/tuning" title="Tuning">
+  Worker-host sizing and the levers that matter once a pool of warm processes is
+  part of your steady state.
+</NextStep>
+
+<NextStep href="/remote-execution/toolchains-and-hermeticity" kind="aside" title="Toolchains and hermeticity">
+  Why hermeticity is the property everything else rests on, and what it means
+  that persistent workers rely on the tool to preserve it.
+</NextStep>

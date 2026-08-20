@@ -1,0 +1,287 @@
+---
+title: Local testing
+description: Keep a NativeLink cluster on your own machine to test config changes, reproduce scheduler behaviour, and prove a client works, in the two shapes the repo itself uses.
+---
+
+{/* archetype: how-to, see /web/apps/docs/templates/how-to.mdx */}
+
+**Who this is for:** anyone changing a config, debugging a client, or
+reproducing something a shared cluster did. **What you'll have at the end:**
+a local cluster in whichever of the two shapes matches what you're testing,
+and a reliable way to tell what actually ran where. **Time:** ten minutes
+for the single-process shape.
+
+<Prerequisites>
+  A cache serving hits to your build. If you don't have one yet, start with [Getting started](/getting-started).
+</Prerequisites>
+
+[Your first remote action](/remote-execution/first-remote-action) gets you
+one remote build. This page is what you do afterwards: keep a cluster around
+as a test fixture, and know which shape to run for what you're testing.
+
+<Callout type="info" title="This is not LRE">
+  Nothing here has a toolchain opinion; it uses whatever is on your `PATH`,
+  and needs no Nix. That's deliberate: it isolates *protocol and config*
+  problems from *toolchain* problems.
+  [Toolchains and hermeticity](/remote-execution/toolchains-and-hermeticity)
+  is the other axis.
+</Callout>
+
+## Which shape to run [#which-shape-to-run]
+
+| You're testing | Run | Why |
+| --- | --- | --- |
+| A client's flags, a store config, scheduler matching | Single process | Fastest loop; one log to read |
+| Cross-process wiring, `grpc` stores, separate CAS and scheduler | The compose split | Same topology as production, and what CI exercises |
+| Toolchain hermeticity | Neither; see [Toolchains](/remote-execution/toolchains-and-hermeticity) | Different problem |
+
+## Shape 1: one process [#shape-1-one-process]
+
+<Mermaid>
+{`flowchart LR
+    subgraph client[Your machine]
+        B[Bazel]
+        subgraph nl["nativelink process"]
+            direction LR
+            L["0.0.0.0:50051\\ncas · ac · bytestream\\nexecution · capabilities"]
+            W["0.0.0.0:50061\\nworker_api (private)"]
+            WK[local worker]
+        end
+    end
+    B -->|"remote_cache\\n+ remote_executor"| L
+    L --- W
+    W --- WK`}
+</Mermaid>
+
+`--remote_cache` and `--remote_executor` both point at `127.0.0.1:50051`.
+`50061` exists only so the worker can register with the scheduler; Bazel
+never talks to it.
+
+```bash
+nativelink ./nativelink-config/examples/local_rbe_self_test.json5
+```
+
+```plaintext
+INFO nativelink: Ready, listening on 0.0.0.0:50051
+INFO nativelink: Ready, listening on 0.0.0.0:50061
+INFO nativelink_worker::local_worker: Worker registered with scheduler, worker_id: 1f175824-...
+```
+
+<SourceLink file="nativelink-config/examples/local_rbe_self_test.json5" />
+
+The interesting parts of that config, for when you start editing it:
+
+```json5
+{
+  stores: [
+    { name: "CAS_MAIN_STORE", filesystem: { /* ... */ } },
+    { name: "AC_MAIN_STORE", filesystem: { /* ... */ } },
+    {
+      // The worker's fast tier and the client-facing CAS share one store,
+      // so anything the worker produces is immediately visible to Bazel.
+      // `fast` must be a filesystem store: the worker hardlinks out of it
+      // to build each action's sandbox.
+      name: "WORKER_FAST_SLOW_STORE",
+      fast_slow: {
+        fast: { filesystem: { /* ... */ } },
+        slow: { ref_store: { name: "CAS_MAIN_STORE" } },
+      },
+    },
+  ],
+  schedulers: [{
+    name: "MAIN_SCHEDULER",
+    simple: { supported_platform_properties: { cpu_count: "minimum" /* ... */ } },
+  }],
+  workers: [{
+    local: {
+      worker_api_endpoint: { uri: "grpc://127.0.0.1:50061" },
+      cas_fast_slow_store: "WORKER_FAST_SLOW_STORE",
+      upload_action_result: { ac_store: "AC_MAIN_STORE" },
+      platform_properties: { cpu_count: { values: ["1"] } /* ... */ },
+    },
+  }],
+  servers: [
+    { name: "local", /* cas · ac · bytestream · execution · capabilities on :50051 */ },
+    { name: "worker_api", /* worker_api · health on :50061 */ },
+  ],
+}
+```
+
+Then:
+
+```bash
+bazel test \
+  --remote_cache=grpc://127.0.0.1:50051 \
+  --remote_executor=grpc://127.0.0.1:50051 \
+  --remote_default_exec_properties=cpu_count=1 \
+  //your:target
+```
+
+<Callout type="warn" title="Set both flags, even to the same address">
+  It's tempting to assume `--remote_executor` alone is enough, since the
+  executor reads and writes the CAS anyway. It isn't. Without an explicit
+  `--remote_cache`, Bazel calls `Execute` with an action digest it never
+  uploaded, and the server correctly rejects it:
+  `FAILED_PRECONDITION: Action ... is missing from CAS`.
+</Callout>
+
+## Shape 2: the compose split [#shape-2-the-compose-split]
+
+When you need separate processes (a CAS process and a scheduler process
+talking over `grpc` stores, which is what a real deployment looks like),
+the repo ships that too, and its own integration tests run against it.
+
+```bash
+cd deployment-examples/docker-compose
+docker compose up
+```
+
+This publishes the CAS on `50051` (plus a TLS listener for the same services on
+`50071`) and the **scheduler, with the execution and AC services, on
+`50052`**. The scheduler's worker API on `50061` is not published from the
+scheduler container at all, so it is only reachable inside the compose
+network; the worker reaches it by service name.
+
+That port split is why the repo's `.bazelrc` reads the way it does:
+
+```bash
+build:self_test --remote_cache=grpc://127.0.0.1:50051
+
+build:self_execute --remote_executor=grpc://127.0.0.1:50052
+build:self_execute --remote_default_exec_properties=cpu_count=1
+build:self_execute --platform_suffix=self-execute
+```
+
+<SourceLink file=".bazelrc" />
+
+```bash
+bazel test --config self_test --config self_execute //:dummy_test
+```
+
+<Callout type="warn" title="These configs are for the compose split, not the single-process example">
+  `self_execute` points at `50052`. If you're running
+  `local_rbe_self_test.json5`, which puts everything on `50051`, these two
+  `--config` flags will not work; use the explicit flags from shape 1
+  instead. This mistake is common because both live in the same
+  repo.
+</Callout>
+
+[Production configuration](/operate/production-config) explains the split
+topology this is a miniature of.
+
+## Verify what actually ran [#verify-what-actually-ran]
+
+Wall-clock time is a bad signal and Bazel's summary line is only a rough
+one. Ask the build event log directly:
+
+```bash
+bazel test \
+  --config self_test --config self_execute \
+  --nocache_test_results \
+  --build_event_json_file=/tmp/bep.json \
+  //:dummy_test
+
+jq --slurp -r '.[] | select(.id.testResult.label=="//:dummy_test")
+  | .testResult.executionInfo.strategy' /tmp/bep.json
+```
+
+```plaintext
+remote
+```
+
+<SourceLink file="integration_tests/simple_remote_execution_test.sh" />
+
+That is exactly what CI asserts, twice: once cold, then again after
+`bazel clean` to confirm the second run is served remotely rather than from
+Bazel's local disk cache.
+
+For per-action detail rather than per-test, `--execution_log_json_file`
+records the runner for every spawn.
+
+<VerifyBlock>
+
+- First run: Bazel's `INFO: N processes: ...` summary line counts the
+  genrule and the test as `remote`, with no `remote cache hit`.
+- After `bazel clean` and a re-run: the genrule that produces
+  `dummy_test.sh` shows up as `remote cache hit` while the test itself
+  re-executes remotely, because `--nocache_test_results` is set.
+- `jq` reports `remote` both times.
+
+</VerifyBlock>
+
+## Troubleshooting [#troubleshooting]
+
+<Accordions type="multiple">
+
+<Accordion title="Actions stay queued forever" id="actions-stay-queued-forever">
+At least one worker's `platform_properties` must satisfy what your actions
+request, and every requested key must be declared in the scheduler's
+`supported_platform_properties`. Starting with just `cpu_count: "minimum"`
+on the scheduler and `cpu_count: { values: ["1"] }` on the worker unblocks
+most local setups.
+[Platform properties](/remote-execution/platform-properties) has the full
+matching rules and the scheduler's own diagnostic logging.
+</Accordion>
+
+<Accordion title="'instance_name' not configured for ''" id="instance-name-not-configured">
+Every service in the example config omits `instance_name`, so it defaults to
+the empty string, the same default Bazel uses when you don't pass
+`--remote_instance_name`. If you add an `instance_name` server-side, pass
+the matching flag client-side, or every request fails this way.
+</Accordion>
+
+<Accordion title="The worker exits immediately on macOS" id="the-worker-exits-immediately-on-macos">
+`use_namespaces` and `use_mount_namespace` are Linux-only and default to
+`false`. Setting either to `true` on an unsupported platform makes the
+worker exit at startup. Leave them unset for local testing.
+</Accordion>
+
+<Accordion title="Stale state between runs" id="stale-state-between-runs">
+Everything the example config writes lives under
+`/tmp/nativelink-local-rbe-test/`. Stop the server and delete that tree for
+a genuinely cold start; `bazel clean` only clears Bazel's side.
+</Accordion>
+
+<Accordion title="Port already in use" id="port-already-in-use">
+Usually a previous run still holding `50051` or `50061`, or the compose
+stack still up. `docker compose rm --stop -f` in
+`deployment-examples/docker-compose` clears the second case.
+</Accordion>
+
+</Accordions>
+
+## FAQ [#faq]
+
+<Accordions type="multiple">
+
+<Accordion title="Can clients other than Bazel use this?" id="can-clients-other-than-bazel-use-this">
+Yes: the config exposes standard Remote Execution API services, so Buck2,
+Pants, Siso, and recc point at `127.0.0.1:50051` the same way. The Bazel
+flags are just the worked example;
+[Connect your build](/getting-started/connect-your-build) has the others.
+</Accordion>
+
+<Accordion title="Is a local cluster a reasonable everyday setup?" id="is-a-local-cluster-a-reasonable-everyday-setup">
+For sandboxed, cached single-machine builds, yes. What it can't give you is
+parallelism beyond one worker's `cpu_count`, or sharing with anyone else.
+The moment you want either, you want a real deployment:
+[Production configuration](/operate/production-config).
+</Accordion>
+
+<Accordion title="Should I test config changes here before deploying them?" id="should-i-test-config-changes-here-before-deploying">
+Yes, and it's the main reason to keep a local cluster around. Store
+composition, scheduler property maps, and service wiring all fail the same
+way locally as they do in a cluster, and the feedback loop is seconds
+instead of a deploy.
+</Accordion>
+
+</Accordions>
+
+<NextStep href="/remote-execution/examples-and-templates" title="Examples and templates">
+  Configs and project scaffolds to copy, for the shape you actually want.
+</NextStep>
+
+<NextStep href="/configuration" kind="aside" title="Configuration">
+  When you want to write these config files yourself rather than
+  edit an example.
+</NextStep>

@@ -1,0 +1,261 @@
+---
+title: Codebase internals
+description: "The traits, the error model, the async rules and the two metric systems: the conventions a reviewer will assume you already know."
+---
+
+{/* archetype: explanation. See /web/apps/docs/templates/explanation.mdx */}
+
+**Who this is for:** anyone about to write NativeLink code rather than read
+it. **What you'll have at the end:** the four things that are enforced
+rather than suggested: the store trait split, the error model, the
+spawning rules, and which metric system to use. **Time:** thirty minutes.
+
+Most of NativeLink's review feedback is about conventions, not logic. The
+conventions are strong, mostly mechanically enforced, and each one exists
+for a reason you can point at in the source. This page is the set of them
+that a first contribution reliably trips over.
+
+The repository targets Rust edition 2024 with `rust-version = "1.93.1"`.
+
+## The three store traits, and which one you implement [#the-three-store-traits]
+
+Three of them exist, and they are not interchangeable.
+
+**`StoreDriver`**
+(<SourceLink file="nativelink-util/src/store_trait.rs" symbol="StoreDriver" />)
+is the one you implement. Its supertraits are
+`Sync + Send + Unpin + MetricsComponent + HealthStatusIndicator + 'static`,
+so a new store is observable and health-checkable by construction, not by
+remembering to add it.
+
+**`Store`** is a `#[repr(transparent)]` newtype over `Arc<dyn StoreDriver>`.
+It is what everything else holds.
+
+**`StoreLike`** is the caller-facing surface: two required methods, every
+convenience built on top of them as a default, and blanket impls so that
+both `Store` and `impl StoreDriver` satisfy it. You call `StoreLike`; you
+implement `StoreDriver`.
+
+The `StoreDriver` methods you must supply are `post_init`,
+`has_with_results`, `update`, `get_part`, `inner_store`, `as_any`,
+`as_any_arc` and `register_remove_callback`.
+
+<Callout type="warn" title="`inner_store` is a barrier, not a getter">
+  It is how a caller resolves an optimization ("can I hardlink this?")
+  through a stack of wrappers. A routing wrapper forwards it; a wrapper that
+  changes the bytes must return `self`, because what is underneath is not the
+  blob. Getting this wrong is a **runtime** error, not a compile error: the
+  trait checks with `addr_eq` and fires an `error_if!` if a store returns
+  `self` while advertising an optimization it cannot honour. [The store
+  model](/explanations/store-model) covers the semantics from the operator's
+  side.
+</Callout>
+
+`StoreKey` is a two-variant enum, `Str` or `Digest`, with a variant-salted
+`Hash` so that a string key and a digest key cannot collide.
+
+Register health with the `default_health_status_indicator!(YourType);`
+macro as the last line of the file, unless the store has something real to
+report. Health checks across all components run **concurrently**
+(`buffer_unordered(usize::MAX)`), with a comment in
+<SourceLink file="nativelink-util/src/health_utils.rs" symbol="health_utils.rs" />
+explaining that a serial sweep would blow the kubelet's probe timeout.
+
+## The scheduler traits are split by caller [#the-scheduler-traits-are-split-by-caller]
+
+No `ActionScheduler` trait exists. The state layer is split into
+`ClientStateManager`, `WorkerStateManager` and `MatchingEngineStateManager`
+in
+<SourceLink file="nativelink-util/src/operation_state_manager.rs" symbol="operation_state_manager.rs" />,
+plus `WorkerScheduler`, `KnownPlatformPropertyProvider` and
+`AwaitedActionDb`. The split by *caller* is what allows the in-memory and
+Redis-backed implementations to be swapped wholesale. See
+[scheduler internals](/explanations/scheduler-internals#there-is-no-actionscheduler-trait).
+
+## The error model [#the-error-model]
+
+`Code` **is** `tonic::Code`, re-exported from
+<SourceLink file="nativelink-error/src/lib.rs" symbol="Error" />.
+No separate internal code enum and no mapping layer exist, which is why
+an error raised deep in a store arrives at a client with a sensible gRPC
+status without anyone writing a conversion.
+
+An `Error` carries a code, a **`Vec<String>` of messages**, and a context.
+The messages are a stack, joined with `" : "` when displayed. This is the
+whole point of the model: each layer appends what it was trying to do, so
+the final message reads outside-in.
+
+```rust
+some_store
+    .get_part_unchunked(key, 0, None)
+    .await
+    .err_tip(|| "while loading the action result")?;
+```
+
+Three macros do most of the work: `make_err!`, `make_input_err!` and
+`error_if!`. `ResultExt`, and therefore `err_tip`, is implemented for
+both `Result` and `Option`, so an `Option` can become a well-described
+error without an intermediate `ok_or_else`.
+
+Around twenty-five `From<…> for Error` impls exist for the common foreign
+error types, so `?` usually just works.
+
+<Callout type="info" title="`err_tip` closures are lazy on purpose">
+  `err_tip` takes a closure so the string is only built on the error path.
+  Passing an already-formatted `String` compiles and costs an allocation on
+  every success.
+</Callout>
+
+`clippy::todo` is denied. `clippy::unwrap_used` is currently `allow`, with a
+`TODO` in the manifest recording the intent to flip it; write new code as
+though it were already denied.
+
+## Async: `tokio::spawn` is banned [#async-tokio-spawn-is-banned]
+
+The Tokio runtime is built by hand in `main()`, not with `#[tokio::main]`:
+the builder installs an `on_thread_start` hook (macOS QoS), and the process
+signal handlers and the shutdown broadcast are spawned onto it before
+`inner_main` runs. Each of those calls carries an
+`#[expect(clippy::disallowed_methods, reason = …)]`, because the same lint
+that bans `tokio::spawn` everywhere else bans the runtime builder too.
+
+Fourteen entries in
+<SourceLink file="clippy.toml" symbol="clippy.toml" />
+make the standard spawning API a lint error. Use the three macros in
+<SourceLink file="nativelink-util/src/task.rs" symbol="task.rs" />
+instead:
+
+| Macro | Returns | Use when |
+| --- | --- | --- |
+| `spawn!` | `JoinHandleDropGuard`, which **aborts on drop** | The task's life is tied to the caller's |
+| `background_spawn!` | A bare `JoinHandle` | The task should outlive the caller |
+| `spawn_blocking!` | `JoinHandleDropGuard` around a blocking-pool task | The work blocks a thread |
+
+The first argument to every one of them is a task name, which becomes a
+`tracing::error_span!`. That name is how a task is identified in logs and
+traces, so make it specific. OpenTelemetry context propagates into spawned
+tasks automatically.
+
+<Callout type="warn" title="`spawn!` aborts when its guard is dropped">
+  This is a feature (it makes cancellation the default) and a trap if you
+  spawn work and then let the handle fall out of scope. If the task must
+  survive, use `background_spawn!` and say why in a comment.
+</Callout>
+
+File I/O goes through `nativelink_util::fs`, which serialises open file
+descriptors behind a global semaphore (`DEFAULT_OPEN_FILE_LIMIT` is 24576).
+Opening a file with `std::fs` or `tokio::fs` directly bypasses the limit and
+will eventually exhaust the process's descriptors under load.
+
+Shutdown is coordinated by
+<SourceLink file="nativelink-util/src/shutdown_guard.rs" symbol="ShutdownGuard" />
+with three priorities: `P0`, `P1`, `LeastImportant`. Awaiting `wait_for` at
+a given priority blocks until everything less important has drained. `SIGTERM`
+drains and then exits `143`; `SIGINT` is a hard exit `130`.
+
+## Two metric systems [#two-metric-systems]
+
+They are not redundant, and picking the wrong one is a common review
+comment.
+
+**System A: `nativelink-metric`.** A `#[derive(MetricsComponent)]` plus
+`#[metric(help = …, kind = …, group = …, handler = …)]` on fields, with
+`RootMetricsComponent` marking a tree root. Roughly 190 `#[metric]`
+attributes exist. Publishing a tree walks the live object graph and emits
+one `tracing` span per component and one event per field, on the target
+`nativelink_metric`, so what it describes is the *structure* of a running
+process. Nothing in the v1.6.5 binary serves that tree over HTTP; the old
+metrics collector went away with the OpenTelemetry migration, so today the
+derive is what keeps every store and scheduler describable, and the trait
+bound on `StoreDriver` is what forces new ones to be.
+
+**System B: `nativelink-util/src/metrics.rs`.** OpenTelemetry instruments
+in eight `LazyLock` bundles (`CACHE_METRICS`, `EXECUTION_METRICS`,
+`WORKER_METRICS`, `RPC_METRICS`, `SCHEDULER_METRICS`, `STORE_TIER_METRICS`,
+`HEALTH_METRICS`, `CONNECTION_METRICS`), wired up in
+`telemetry.rs::init_tracing` and exported over OTLP (`NL_OTEL_ENDPOINT`
+overrides the endpoint). Attribute sets for the hot paths are
+**pre-computed** into `CacheMetricAttrs` and `ExecutionMetricAttrs` structs
+specifically to bound cardinality.
+
+Choose A when you are exposing the *structure* of a component: how many
+stores, which config, what state. Choose B when you want a number someone
+will graph or alert on.
+
+<Callout type="warn" title="Two hazards in the OTel path">
+  `nativelink-util/src/metrics.rs` carries the **Business Source License**
+  header, not the FSL header the rest of the crate uses; do not paste the
+  wrong one in. And never attach a per-action or per-worker identifier to a
+  hot instrument; the pre-computed attribute structs exist precisely to stop
+  that, and adding a high-cardinality dimension will take down a Prometheus
+  before it takes down NativeLink.
+</Callout>
+
+Instrument names are dotted OpenTelemetry style, with `.with_description`
+and a `.with_unit` that is either a UCUM unit (`"By"`, `"s"`, `"ms"`) or a
+braced count such as `"{entry}"`, `"{action}"` or `"{worker}"`.
+
+## Lints, formatting and the small stuff [#lints-formatting-and-the-small-stuff]
+
+`clippy::all`, `clippy::nursery` and `clippy::pedantic` are all denied at
+the workspace level. `std_instead_of_core` is denied too, which is why you
+will see `use core::…` throughout for anything that does not need `std`.
+
+Suppress a lint with `#[expect(lint, reason = "…")]` rather than a bare
+`#[allow]`; `expect` fails the build once the suppression is no longer
+needed, which is how they get cleaned up. `#[allow]` still appears where the
+lint only fires on some targets or feature sets, and it should carry a
+`reason` too. Nothing enforces this mechanically; reviewers do.
+
+`.rustfmt.toml` uses `group_imports = "StdExternalCrate"` and
+`imports_granularity = "Module"`, both nightly-only options. Do not run
+stable `cargo fmt` and expect it to match; run the Bazel target instead:
+
+```bash
+bazel run --config=rustfmt @rules_rust//:rustfmt
+```
+
+`unsafe` is rare: a few dozen blocks in the whole tree, mostly FFI, a few
+measured optimizations, and environment-variable writes in tests. Most carry
+a `// SAFETY:` comment, and a new one without a justification will be asked
+for one.
+
+## Common questions [#common-questions]
+
+<Accordions type="multiple">
+  <Accordion title="Why can't I use `tokio::spawn`?" id="why-not-tokio-spawn">
+    Because a bare spawn has no name, no tracing span, no OpenTelemetry
+    context and no cancellation story. The three macros in
+    `nativelink-util::task` supply all four, and the clippy config makes the
+    alternative a build failure rather than a review comment.
+  </Accordion>
+  <Accordion title="Should my new metric be a derive or an OTel instrument?" id="derive-or-otel">
+    If it describes what a component *is* (its config, its children, its
+    internal counters as part of the object tree), derive; the
+    `MetricsComponent` bound on `StoreDriver` requires the impl anyway. If a
+    dashboard would graph it or an alert would fire on it, OTel. A few things
+    legitimately want both; most want exactly one.
+  </Accordion>
+  <Accordion title="My store compiles but panics at runtime about `inner_store`." id="inner-store-runtime-error">
+    You returned something other than `self` from `inner_store` while
+    advertising an optimization your store cannot honour, or the reverse.
+    A wrapper that changes the bytes on the way through must return `self`;
+    a wrapper that only routes should forward to its inner store.
+  </Accordion>
+  <Accordion title="Which license header do I put on a new file?" id="which-license-header">
+    Copy it from the file next to yours. FSL-1.1-Apache-2.0 is the default;
+    `nativelink-util/src/metrics.rs` and everything under
+    `nativelink-worker/src/persistent_worker/` are Business Source License,
+    and a handful of files are Apache-2.0.
+  </Accordion>
+  <Accordion title="`cargo fmt` keeps fighting with CI. Why?" id="cargo-fmt-fights-ci">
+    The formatting config uses nightly-only options. Stable `cargo fmt`
+    silently ignores them and produces different output. Run
+    `bazel run --config=rustfmt @rules_rust//:rustfmt`, which is what CI runs.
+  </Accordion>
+</Accordions>
+
+<NextStep href="/contribute/how-to-extend" title="How to extend NativeLink">
+  The four recipes (a store, a config field, a metric, a gRPC service),
+  each with the complete list of files a working change touches.
+</NextStep>

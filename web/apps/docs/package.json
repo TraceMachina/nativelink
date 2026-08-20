@@ -32,6 +32,7 @@
     "gen:changelog": "node scripts/gen-changelog.mjs",
     "gen:config-reference": "node scripts/gen-config-reference.mjs",
     "gen:llms": "node scripts/gen-llms.mjs",
+    "gen:metrics-reference": "node scripts/gen-metrics-reference.mjs",
     "lint": "biome check .",
     "lint:anchors": "node scripts/lint-anchors.mjs",
     "lint:boundaries": "node scripts/lint-boundaries.mjs",

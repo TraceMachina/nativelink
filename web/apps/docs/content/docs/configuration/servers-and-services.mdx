@@ -1,0 +1,295 @@
+---
+title: Servers and services
+description: Listeners, the eleven services, instance names, and the port split that keeps the worker API off your public interface.
+---
+
+{/* archetype: explanation, see /web/apps/docs/templates/explanation.mdx */}
+
+**Who this is for:** anyone deciding what a NativeLink process should expose,
+and on which port. **What you'll know at the end:** what a listener is, what
+each of the eleven services does, how `instance_name` partitions a cache, and
+why the worker API must not share a port with anything else. **Time:** thirty
+minutes.
+
+<Prerequisites>
+  Named stores you can refer to. See [Stores](/configuration/stores).
+</Prerequisites>
+
+## A server is a listener plus a set of services [#a-server-is-a-listener-plus-a-set-of-services]
+
+The `servers` array is the only entry point into a NativeLink process.
+Each entry binds one socket and decides what is reachable on it:
+
+```json5
+servers: [
+  {
+    name: "public",
+    listener: {
+      http: {
+        socket_address: "0.0.0.0:50051",
+      },
+    },
+    services: {
+      cas: [{ instance_name: "main", cas_store: "CAS_MAIN_STORE" }],
+      ac: [{ instance_name: "main", ac_store: "AC_MAIN_STORE" }],
+      bytestream: [{ instance_name: "main", cas_store: "CAS_MAIN_STORE" }],
+      capabilities: [{ instance_name: "main" }],
+    },
+  },
+],
+```
+
+Four things are going on there, and each is worth naming.
+
+`name` is documented as a label for telemetry and logs, defaulting to the
+server's index in the array. Set it; it's the cheapest documentation in the
+file.
+
+`listener` currently has exactly one variant, `http`, which serves
+HTTP/HTTP2 and therefore gRPC. `socket_address` is parsed as a Rust
+`SocketAddr`, so it must be an IP literal plus port: `0.0.0.0:50051` to bind
+every IPv4 interface, `[::]:50051` for IPv6, `127.0.0.1:50051` for loopback
+only. A hostname or a bare `:port` is rejected as an invalid address. TLS,
+HTTP/2 tuning, and compression are options on the listener, not on the
+services.
+
+`services` is optional in the schema, but the binary refuses to start a
+server without it (`'services' must be configured`), so in practice every
+server entry carries one.
+
+<SourceLink file="src/bin/nativelink.rs" symbol="inner_main" />
+
+Each service entry names a store or a scheduler as a **string**, the name
+from the `stores` or `schedulers` array. This is where the wiring described in
+[the section overview](/configuration) actually happens.
+
+<SourceLink file="nativelink-config/src/cas_server.rs" symbol="ServerConfig" />
+
+## The eleven services [#the-eleven-services]
+
+| Service | What it serves | Wants |
+| --- | --- | --- |
+| `cas` | REAPI `ContentAddressableStorage`: blob upload and lookup | `cas_store` |
+| `ac` | REAPI `ActionCache`: cached action results | `ac_store` |
+| `bytestream` | Streaming reads and writes for large blobs | `cas_store` |
+| `capabilities` | What this endpoint supports; required by Bazel | optionally a scheduler |
+| `execution` | REAPI `Execution`: accepts `Execute` calls | `cas_store` and `scheduler` |
+| `fetch` | Remote Asset protocol, fetch half | `fetch_store` |
+| `push` | Remote Asset protocol, push half | `push_store` |
+| `worker_api` | Where workers connect and are handed actions | `scheduler` |
+| `experimental_bep` | Build Event Protocol consumption | `store` |
+| `admin` | REST endpoint for administrative tasks | nothing (path defaults to `/admin`) |
+| `health` | Health check endpoint | nothing (path defaults to `/status`) |
+
+A cache-only deployment needs the first four. Adding execution adds
+`execution` and `worker_api`. The rest are opt-in.
+
+`capabilities` is the one that surprises people: it carries almost no config,
+but Bazel queries it before doing anything else and fails the build if the
+call is not served, with an error about querying capabilities rather than one
+naming a missing service. And if `capabilities` has no `remote_execution`
+block, the response carries no `execution_capabilities`, so the client is
+told this endpoint caches but does not execute, which is correct for a
+cache-only Getting started deployment and a silent bug once you add Remote
+execution.
+
+```json5
+capabilities: [
+  {
+    instance_name: "main",
+    remote_execution: { scheduler: "MAIN_SCHEDULER" },
+  },
+],
+```
+
+<SourceLink file="nativelink-config/src/cas_server.rs" symbol="ServicesConfig" />
+
+## Instance names [#instance-names]
+
+Most services are declared as an **array**, and each element carries an
+`instance_name`. That field is a routing key: it selects which store (or
+scheduler) serves a request. The instance name is not part of the storage
+key, so two instance names pointing at *different* stores are fully isolated,
+and two pointing at the *same* store share every blob.
+
+```json5
+cas: [
+  { instance_name: "", cas_store: "CAS_MAIN_STORE" },
+  { instance_name: "main", cas_store: "CAS_MAIN_STORE" },
+],
+```
+
+That pattern (the same store registered twice, once under the empty name and
+once under `main`) appears throughout the shipped examples, and it relies on
+the sharing: clients differ in what they send, some omit the instance name
+entirely, and registering both means either kind of client works, against one
+cache, without a config change on their side.
+
+Pick one name per logical environment. `main` for the production cache,
+`<repo-name>` for per-repo isolation, `<something>-experiments` for a sandbox
+that shouldn't pollute the real cache, each pointed at its own store. Every
+client targeting a given cache must use the same one.
+
+<Callout type="warn" title="Unregistered instance names fail every request">
+  A client using an instance name the server has not registered gets an
+  error on every CAS and AC call (`'instance_name' not configured for
+  '<name>'`), not a silently empty cache. Bazel surfaces that as remote cache
+  warnings and zero hits. If a new client sees 0% hit rate against a cache
+  that's demonstrably working, compare instance names before anything else.
+</Callout>
+
+<SourceLink file="nativelink-service/src/cas_server.rs" symbol="CasServer" />
+
+## The port split [#the-port-split]
+
+The `worker_api` service is different from every other service on this page,
+and the difference is a security boundary rather than a design preference.
+
+A client calling the CAS can upload and fetch blobs. A worker connected to the
+worker API is *handed actions to execute* and reports their results as
+authoritative. Those are not the same permission, and the worker API has no
+authentication of its own to distinguish them.
+
+The rule: **`worker_api` gets its own listener, on its own port, with no
+other service sharing it.** The shipped examples put the public API on
+`:50051` and the worker API on `:50061`, and the second port is the one you
+never expose beyond the cluster:
+
+```json5
+servers: [
+  {
+    name: "public",
+    listener: { http: { socket_address: "0.0.0.0:50051" } },
+    services: {
+      cas: [{ instance_name: "main", cas_store: "CAS_MAIN_STORE" }],
+      ac: [{ instance_name: "main", ac_store: "AC_MAIN_STORE" }],
+      bytestream: [{ instance_name: "main", cas_store: "CAS_MAIN_STORE" }],
+      execution: [{
+        instance_name: "main",
+        cas_store: "CAS_MAIN_STORE",
+        scheduler: "MAIN_SCHEDULER",
+      }],
+      capabilities: [{
+        instance_name: "main",
+        remote_execution: { scheduler: "MAIN_SCHEDULER" },
+      }],
+    },
+  },
+  {
+    name: "private_workers_servers",
+    listener: { http: { socket_address: "0.0.0.0:50061" } },
+    services: {
+      worker_api: { scheduler: "MAIN_SCHEDULER" },
+      admin: {},
+      health: {},
+    },
+  },
+],
+```
+
+Note that `worker_api` takes a single object rather than an array; it has no
+`instance_name`, because it isn't part of the client-facing protocol at all.
+
+<Callout type="warn" title="Do not put worker_api on your public port">
+  The upstream config comment is unusually direct about this: serving
+  `worker_api` alongside client services "is a security risk, as workers have
+  a different permission set than a client that makes the remote
+  execution/cache requests." Treat the worker port as an internal backend API:
+  bound to a private interface, firewalled, or reachable only inside the
+  cluster network.
+</Callout>
+
+`admin` and `health` sit on the private port in the examples for the same
+reason. A build event protocol endpoint (`experimental_bep`), when you enable
+it, can go on its own listener so it can be scaled and secured independently
+of both.
+
+## TLS, when you need it [#tls-when-you-need-it]
+
+TLS is a property of the listener:
+
+```json5
+listener: {
+  http: {
+    socket_address: "0.0.0.0:50071",
+    tls: {
+      cert_file: "/etc/nativelink/tls/server.crt",
+      key_file: "/etc/nativelink/tls/server.key",
+    },
+  },
+},
+```
+
+Adding `client_ca_file` turns that into mutual TLS (clients must present a
+certificate signed by that CA) and `client_crl_file` lets you revoke one.
+That's the closest thing NativeLink has to built-in client authentication, and
+it is a reasonable answer for a cache exposed beyond a trusted network.
+
+<Callout type="info" title="The docker-compose example ships example certs">
+  `deployment-examples/docker-compose/` includes a TLS listener using files
+  named `example-do-not-use-in-prod-rootca.crt` and
+  `example-do-not-use-in-prod-key.pem`. The names are the documentation. Use
+  them to see the shape, never to serve anything.
+</Callout>
+
+## FAQ [#faq]
+
+<Accordions>
+
+<Accordion title="Can one process have more than two servers?" id="can-one-process-have-more-than-two-servers">
+
+Yes; the array is unbounded, and separating concerns by port is the intended
+use. `deployment-examples/docker-compose/local-storage-cas.json5` serves the
+same cache twice, plain on `:50051` and TLS on `:50071`. A third listener for
+build events, or a plain-HTTP health endpoint a load balancer can probe
+without TLS, follows the same pattern.
+
+</Accordion>
+
+<Accordion title="Why is `bytestream` separate from `cas`?" id="why-is-bytestream-separate-from-cas">
+
+REAPI splits them deliberately. The `cas` service handles batched reads and
+writes of small blobs; the ByteStream service streams large ones. Bazel
+strongly prefers the streaming interface for anything sizeable, so a cache
+that serves `cas` but not `bytestream` will appear to work and then fail on
+your first large artifact. Point both at the same store.
+
+</Accordion>
+
+<Accordion title="What does the `admin` service actually do?" id="what-does-the-admin-service-actually-do">
+
+It exposes a small REST endpoint for administrative operations at a
+configurable path, defaulting to `/admin`. It is not an authenticated control
+plane; it belongs on the private port with the worker API, not on anything
+reachable from outside the cluster.
+
+</Accordion>
+
+<Accordion title="Do I need `health` if I have a load balancer?" id="do-i-need-health-if-i-have-a-load-balancer">
+
+You need it *because* you have a load balancer. It serves `/status` by default
+and takes a `timeout_seconds` for the checks it runs. Without it, a probe can
+only test whether the port accepts a TCP connection, which stays true long
+after a process has stopped being useful.
+
+</Accordion>
+
+<Accordion title="I set `read_only: true` on the action cache. What does that stop?" id="i-set-read_only-true-on-the-action-cache-what-does-that-stop">
+
+Clients can read cached action results but cannot write new ones. It's the
+right setting for an endpoint you expose to untrusted or unverified builds
+(they benefit from the cache without being able to poison it) while a trusted
+CI endpoint on a different port writes to the same store.
+
+</Accordion>
+
+</Accordions>
+
+<NextStep href="/configuration/scheduler-and-workers" title="Schedulers and workers">
+  The minimum config for each, and the properties contract that decides
+  whether an action ever gets picked up.
+</NextStep>
+
+<NextStep href="/operate/observability" kind="aside" title="Observability">
+  Once the ports are right, this is how you find out what's happening on them.
+</NextStep>
