@@ -37,7 +37,7 @@ mod tests {
         EnvironmentSource, UploadActionResultConfig, UploadCacheResultsStrategy,
     };
     use nativelink_config::stores::{
-        FastSlowSpec, FilesystemSpec, MemorySpec, StoreDirection, StoreSpec,
+        EvictionPolicy, FastSlowSpec, FilesystemSpec, MemorySpec, StoreDirection, StoreSpec,
     };
     use nativelink_error::{Code, Error, ResultExt, make_input_err};
     use nativelink_macro::nativelink_test;
@@ -67,7 +67,8 @@ mod tests {
     };
     use nativelink_util::common::{DigestInfo, fs, make_temp_path};
     use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
-    use nativelink_util::store_trait::{Store, StoreLike};
+    use nativelink_util::store_trait::{Store, StoreKey, StoreLike};
+    use nativelink_worker::directory_cache::{DirectoryCache, DirectoryCacheConfig};
     #[cfg(target_os = "linux")]
     use nativelink_worker::namespace_utils;
     use nativelink_worker::running_actions_manager::{
@@ -103,10 +104,24 @@ mod tests {
         ),
         Error,
     > {
+        setup_stores_with_eviction_policy(None).await
+    }
+
+    async fn setup_stores_with_eviction_policy(
+        eviction_policy: Option<EvictionPolicy>,
+    ) -> Result<
+        (
+            Arc<FilesystemStore>,
+            Arc<MemoryStore>,
+            Arc<FastSlowStore>,
+            Arc<MemoryStore>,
+        ),
+        Error,
+    > {
         let fast_config = FilesystemSpec {
             content_path: make_temp_path("content_path"),
             temp_path: make_temp_path("temp_path"),
-            eviction_policy: None,
+            eviction_policy,
             ..Default::default()
         };
         let slow_config = MemorySpec::default();
@@ -255,6 +270,288 @@ mod tests {
                 FILE2_MTIME
             );
         }
+        Ok(())
+    }
+
+    #[nativelink_test]
+    async fn active_action_input_lease_survives_fast_store_pressure()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const FILE_CONTENT: &[u8] = b"leased input";
+        const PRESSURE_CONTENT: &[u8] = b"pressure";
+
+        let (fast_store, slow_store, cas_store, _ac_store) =
+            setup_stores_with_eviction_policy(Some(EvictionPolicy {
+                max_count: 1,
+                ..Default::default()
+            }))
+            .await?;
+
+        let file_digest = DigestInfo::new([7u8; 32], FILE_CONTENT.len() as u64);
+        slow_store
+            .as_ref()
+            .update_oneshot(file_digest, FILE_CONTENT.into())
+            .await?;
+        let input_root_digest = serialize_and_upload_message(
+            &Directory {
+                files: vec![FileNode {
+                    name: "input.txt".to_string(),
+                    digest: Some(file_digest.into()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            slow_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let command_digest = serialize_and_upload_message(
+            &Command::default(),
+            slow_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let action_digest = serialize_and_upload_message(
+            &Action {
+                command_digest: Some(command_digest.into()),
+                input_root_digest: Some(input_root_digest.into()),
+                ..Default::default()
+            },
+            slow_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let operation_id = OperationId::default().to_string();
+
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+        let directory_cache = Arc::new(
+            DirectoryCache::new(
+                DirectoryCacheConfig {
+                    cache_root: make_temp_path("directory_cache").into(),
+                    ..Default::default()
+                },
+                cas_store.clone(),
+            )
+            .await?,
+        );
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory,
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: cas_store.clone(),
+                ac_store: None,
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::from_mins(10),
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: true,
+                directory_cache: Some(directory_cache),
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            })?);
+
+        let action = running_actions_manager
+            .create_and_add_action(
+                "test-worker".to_string(),
+                StartExecute {
+                    execute_request: Some(ExecuteRequest {
+                        action_digest: Some(action_digest.into()),
+                        digest_function: ProtoDigestFunction::Sha256.into(),
+                        ..Default::default()
+                    }),
+                    operation_id: operation_id.clone(),
+                    ..Default::default()
+                },
+            )
+            .await?
+            .prepare_action()
+            .await?;
+
+        let pressure_digest = DigestInfo::new([8u8; 32], PRESSURE_CONTENT.len() as u64);
+        fast_store
+            .as_ref()
+            .update_oneshot(pressure_digest, PRESSURE_CONTENT.into())
+            .await?;
+        assert!(
+            fast_store
+                .as_ref()
+                .has(StoreKey::Digest(file_digest))
+                .await?
+                .is_some(),
+            "an active action input must survive fast-tier pressure",
+        );
+
+        let duplicate_result = running_actions_manager
+            .create_and_add_action(
+                "test-worker".to_string(),
+                StartExecute {
+                    execute_request: Some(ExecuteRequest {
+                        action_digest: Some(action_digest.into()),
+                        digest_function: ProtoDigestFunction::Sha256.into(),
+                        ..Default::default()
+                    }),
+                    operation_id,
+                    ..Default::default()
+                },
+            )
+            .await;
+        let duplicate_error =
+            duplicate_result.expect_err("a duplicate operation id must be rejected");
+        assert_eq!(duplicate_error.code, Code::AlreadyExists);
+        assert!(
+            fs::metadata(action.get_work_directory()).await.is_ok(),
+            "a duplicate operation must not remove the active action directory",
+        );
+
+        let action = action.cleanup().await?;
+        let second_pressure_digest = DigestInfo::new([9u8; 32], PRESSURE_CONTENT.len() as u64);
+        fast_store
+            .as_ref()
+            .update_oneshot(second_pressure_digest, PRESSURE_CONTENT.into())
+            .await?;
+        assert_eq!(
+            fast_store
+                .as_ref()
+                .has(StoreKey::Digest(file_digest))
+                .await?,
+            None,
+            "released action inputs must become ordinary eviction candidates",
+        );
+
+        drop(action);
+        Ok(())
+    }
+
+    #[nativelink_test]
+    async fn action_inputs_stay_evictable_when_leases_disabled()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const FILE_CONTENT: &[u8] = b"unleased input";
+        const PRESSURE_CONTENT: &[u8] = b"pressure";
+        // High enough that action preparation never triggers eviction; the
+        // pressure loop below inserts this many fresh digests so every entry
+        // that predates it is evicted.
+        const MAX_COUNT: u64 = 10;
+
+        let (fast_store, slow_store, cas_store, _ac_store) =
+            setup_stores_with_eviction_policy(Some(EvictionPolicy {
+                max_count: MAX_COUNT,
+                ..Default::default()
+            }))
+            .await?;
+
+        let file_digest = DigestInfo::new([7u8; 32], FILE_CONTENT.len() as u64);
+        slow_store
+            .as_ref()
+            .update_oneshot(file_digest, FILE_CONTENT.into())
+            .await?;
+        let input_root_digest = serialize_and_upload_message(
+            &Directory {
+                files: vec![FileNode {
+                    name: "input.txt".to_string(),
+                    digest: Some(file_digest.into()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            slow_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let command_digest = serialize_and_upload_message(
+            &Command::default(),
+            slow_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let action_digest = serialize_and_upload_message(
+            &Action {
+                command_digest: Some(command_digest.into()),
+                input_root_digest: Some(input_root_digest.into()),
+                ..Default::default()
+            },
+            slow_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+        let directory_cache = Arc::new(
+            DirectoryCache::new(
+                DirectoryCacheConfig {
+                    cache_root: make_temp_path("directory_cache").into(),
+                    ..Default::default()
+                },
+                cas_store.clone(),
+            )
+            .await?,
+        );
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory,
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: cas_store.clone(),
+                ac_store: None,
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::from_mins(10),
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                directory_cache: Some(directory_cache),
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            })?);
+
+        let action = running_actions_manager
+            .create_and_add_action(
+                "test-worker".to_string(),
+                StartExecute {
+                    execute_request: Some(ExecuteRequest {
+                        action_digest: Some(action_digest.into()),
+                        digest_function: ProtoDigestFunction::Sha256.into(),
+                        ..Default::default()
+                    }),
+                    operation_id: OperationId::default().to_string(),
+                    ..Default::default()
+                },
+            )
+            .await?
+            .prepare_action()
+            .await?;
+
+        for pressure_index in 0..MAX_COUNT {
+            let pressure_digest = DigestInfo::new(
+                [0x80 + u8::try_from(pressure_index)?; 32],
+                PRESSURE_CONTENT.len() as u64,
+            );
+            fast_store
+                .as_ref()
+                .update_oneshot(pressure_digest, PRESSURE_CONTENT.into())
+                .await?;
+        }
+        assert_eq!(
+            fast_store
+                .as_ref()
+                .has(StoreKey::Digest(file_digest))
+                .await?,
+            None,
+            "with active input leases disabled, the fast tier must honor its eviction limits even while an action is running",
+        );
+
+        let action = action.cleanup().await?;
+        drop(action);
         Ok(())
     }
 
@@ -586,6 +883,7 @@ mod tests {
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -713,6 +1011,7 @@ mod tests {
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -842,6 +1141,7 @@ mod tests {
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -1026,6 +1326,7 @@ mod tests {
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -1212,6 +1513,7 @@ mod tests {
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -1467,6 +1769,7 @@ mod tests {
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -1567,7 +1870,7 @@ mod tests {
             b"hello-from-outside".len()
         );
         // Verify the blob actually landed in CAS by re-reading it.
-        let key: nativelink_util::store_trait::StoreKey<'_> = uploaded.digest.into();
+        let key: StoreKey<'_> = uploaded.digest.into();
         let blob = slow_store.as_ref().get_part_unchunked(key, 0, None).await?;
         assert_eq!(blob.as_ref(), b"hello-from-outside");
         Ok(())
@@ -1620,6 +1923,7 @@ mod tests {
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -1729,7 +2033,7 @@ mod tests {
             .clone()
             .expect("inner.txt must have a digest")
             .try_into()?;
-        let key: nativelink_util::store_trait::StoreKey<'_> = inner_digest.into();
+        let key: StoreKey<'_> = inner_digest.into();
         let blob = slow_store.as_ref().get_part_unchunked(key, 0, None).await?;
         assert_eq!(blob.as_ref(), b"inner-payload");
         Ok(())
@@ -1764,6 +2068,7 @@ mod tests {
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -1903,6 +2208,7 @@ mod tests {
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -2110,6 +2416,7 @@ exit 0
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -2290,6 +2597,7 @@ exit 0
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -2464,6 +2772,7 @@ exit 1
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -2555,6 +2864,7 @@ exit 1
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -2633,6 +2943,7 @@ exit 1
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -2718,6 +3029,7 @@ exit 1
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -2824,6 +3136,7 @@ exit 1
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -2874,6 +3187,7 @@ exit 1
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -2945,6 +3259,7 @@ exit 1
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -3067,6 +3382,7 @@ exit 1
                     max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                     max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                     timeout_handled_externally: false,
+                    active_input_leases: false,
                     directory_cache: None,
                     #[cfg(target_os = "linux")]
                     use_namespaces: use_namespaces(),
@@ -3158,6 +3474,7 @@ exit 1
                     max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                     max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                     timeout_handled_externally: false,
+                    active_input_leases: false,
                     directory_cache: None,
                     #[cfg(target_os = "linux")]
                     use_namespaces: use_namespaces(),
@@ -3249,6 +3566,7 @@ exit 1
                     max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                     max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                     timeout_handled_externally: false,
+                    active_input_leases: false,
                     directory_cache: None,
                     #[cfg(target_os = "linux")]
                     use_namespaces: use_namespaces(),
@@ -3337,6 +3655,7 @@ exit 1
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -3443,7 +3762,7 @@ exit 1
         let command = "[\"cmd\", \"/C\", \"ping -n 99999 127.0.0.1\"]";
 
         assert!(logs_contain(&format!("Executing command args={command}")));
-        assert!(logs_contain(&format!("Command complete args={command}")));
+        assert!(logs_contain("Command complete exit_code="));
 
         assert!(!logs_contain(
             "Child process was not cleaned up before dropping the call to execute(), killing in background spawn"
@@ -3489,6 +3808,7 @@ exit 1
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -3658,6 +3978,7 @@ exit 1
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -3771,6 +4092,7 @@ exit 1
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 // Pin namespaces off so this exercises the no-pre_exec/posix_spawn
                 // path regardless of what the host kernel supports.
@@ -3885,6 +4207,7 @@ exit 1
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -4094,6 +4417,7 @@ exit 1
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -4193,6 +4517,7 @@ done
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -4377,6 +4702,7 @@ done
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -4501,6 +4827,7 @@ done
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -4646,6 +4973,7 @@ done
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -4758,6 +5086,7 @@ done
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -4901,6 +5230,7 @@ done
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -5075,6 +5405,7 @@ done
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -5141,6 +5472,48 @@ done
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn parse_cpu_ticks_from_stat_sums_user_and_system_time() {
+        use nativelink_worker::running_actions_manager::parse_cpu_ticks_from_stat;
+        // Fields after the final ')': state ppid pgrp session tty tpgid flags
+        // minflt cminflt majflt cmajflt utime stime ...
+        // utime = 120, stime = 34, so 154 ticks.
+        assert_eq!(
+            parse_cpu_ticks_from_stat(
+                "315 (perl) S 1 60 60 0 -1 0 100 0 200 0 120 34 7 9 20 0 1 0"
+            ),
+            Some(154)
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn parse_cpu_ticks_from_stat_handles_comm_with_spaces_and_parens() {
+        use nativelink_worker::running_actions_manager::parse_cpu_ticks_from_stat;
+        // Same trap as the pgid parser: a `comm` containing ')' would shift
+        // every field if parsed from the left.
+        assert_eq!(
+            parse_cpu_ticks_from_stat(
+                "1234 (weird )( name) R 1 777 777 0 -1 0 1 2 3 4 11 22 0 0 0 0"
+            ),
+            Some(33)
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn parse_cpu_ticks_from_stat_rejects_malformed_input() {
+        use nativelink_worker::running_actions_manager::parse_cpu_ticks_from_stat;
+        assert_eq!(parse_cpu_ticks_from_stat("no parenthesis here"), None);
+        // Truncated before utime.
+        assert_eq!(
+            parse_cpu_ticks_from_stat("123 (only) S 1 60 60 0 -1 0"),
+            None
+        );
+        assert_eq!(parse_cpu_ticks_from_stat(""), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn parse_pgid_from_stat_rejects_malformed_input() {
         use nativelink_worker::running_actions_manager::parse_pgid_from_stat;
         assert_eq!(parse_pgid_from_stat("no parenthesis here"), None);
@@ -5191,6 +5564,7 @@ done
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
+                active_input_leases: false,
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),

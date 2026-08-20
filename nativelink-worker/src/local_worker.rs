@@ -730,6 +730,7 @@ pub async fn new_local_worker(
             max_cleanup_backoff,
             timeout_handled_externally: config.timeout_handled_externally,
             directory_cache,
+            active_input_leases: config.experimental_active_input_leases,
             #[cfg(target_os = "linux")]
             use_namespaces,
         })?);
