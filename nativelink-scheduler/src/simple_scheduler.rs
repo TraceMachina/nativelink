@@ -792,6 +792,10 @@ impl WorkerScheduler for SimpleScheduler {
             .set_drain_worker(worker_id, is_draining)
             .await
     }
+
+    async fn kill_revoked_operations(&self) -> Result<(), Error> {
+        self.worker_scheduler.kill_revoked_operations().await
+    }
 }
 
 impl RootMetricsComponent for SimpleScheduler {}

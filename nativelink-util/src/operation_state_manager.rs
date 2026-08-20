@@ -148,6 +148,14 @@ pub trait WorkerStateManager: Sync + Send + MetricsComponent {
         worker_id: &WorkerId,
         update: UpdateOperationType,
     ) -> Result<(), Error>;
+
+    /// Whether the operation is still executing on this worker. False once
+    /// it has finished, been requeued or reassigned, or no longer exists.
+    async fn is_executing_on_worker(
+        &self,
+        operation_id: &OperationId,
+        worker_id: &WorkerId,
+    ) -> Result<bool, Error>;
 }
 
 #[async_trait]

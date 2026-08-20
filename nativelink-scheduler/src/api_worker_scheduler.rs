@@ -19,6 +19,7 @@ use std::sync::Arc;
 use std::time::{Instant, UNIX_EPOCH};
 
 use async_lock::Mutex;
+use futures::{StreamExt, future};
 use lru::LruCache;
 use nativelink_config::schedulers::WorkerAllocationStrategy;
 use nativelink_error::{Code, Error, ResultExt, error_if, make_err, make_input_err};
@@ -42,7 +43,11 @@ use nativelink_util::platform_properties::PlatformProperties;
 use nativelink_util::shutdown_guard::ShutdownGuard;
 use tokio::sync::{Notify, mpsc};
 use tonic::async_trait;
-use tracing::{error, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
+
+/// How many state-manager lookups `kill_revoked_operations` has in flight
+/// at once while checking which running operations were revoked.
+const MAX_CONCURRENT_REVOKED_CHECKS: usize = 32;
 use uuid::Uuid;
 
 /// Metrics for tracking scheduler performance.
@@ -374,19 +379,29 @@ impl ApiWorkerSchedulerImpl {
         };
 
         // Update the operation in the worker state manager.
-        let update_operation_res = self
-            .worker_state_manager
-            .update_operation(operation_id, worker_id, update)
-            .await
-            .err_tip(|| "in update_operation on SimpleScheduler::update_action");
-        if let Err(err) = &update_operation_res {
-            error!(
+        let update_operation_res = if worker.is_kill_requested(operation_id) {
+            debug!(
                 %operation_id,
                 ?worker_id,
-                ?err,
-                "Failed to update_operation on update_action"
+                "Ignoring update for operation the worker was told to kill"
             );
-        }
+            Ok(())
+        } else {
+            let update_operation_res = self
+                .worker_state_manager
+                .update_operation(operation_id, worker_id, update)
+                .await
+                .err_tip(|| "in update_operation on SimpleScheduler::update_action");
+            if let Err(err) = &update_operation_res {
+                error!(
+                    %operation_id,
+                    ?worker_id,
+                    ?err,
+                    "Failed to update_operation on update_action"
+                );
+            }
+            update_operation_res
+        };
 
         if !is_finished {
             return update_operation_res;
@@ -478,6 +493,49 @@ impl ApiWorkerSchedulerImpl {
                 )
                 .await
         }
+    }
+
+    /// Tells the worker to kill an operation it is still running but the
+    /// state manager no longer has executing on it. A worker that cannot be
+    /// reached is evicted, the same as for a failed run request.
+    async fn worker_notify_kill_operation(
+        &mut self,
+        worker_id: &WorkerId,
+        operation_id: OperationId,
+    ) -> Result<(), Error> {
+        let Some(worker) = self.workers.get_mut(worker_id) else {
+            // Gone between the snapshot and now; its actions were requeued.
+            return Ok(());
+        };
+        // Already told, or finished in the meantime; nothing more to send.
+        if !worker.running_action_infos.contains_key(&operation_id)
+            || worker.is_kill_requested(&operation_id)
+        {
+            return Ok(());
+        }
+        info!(
+            ?worker_id,
+            %operation_id,
+            "Killing operation the state manager no longer has executing on this worker"
+        );
+        if let Err(err) = worker
+            .notify_update(WorkerUpdate::KillOperation(operation_id.clone()))
+            .await
+        {
+            warn!(
+                ?worker_id,
+                %operation_id,
+                ?err,
+                "Worker command failed, removing worker"
+            );
+            let err = make_err!(
+                Code::Internal,
+                "Worker command failed, removing worker {worker_id} -- {err:?}",
+            );
+            return Result::<(), _>::Err(err.clone())
+                .merge(self.immediate_evict_worker(worker_id, err, true).await);
+        }
+        Ok(())
     }
 
     /// Evicts the worker from the pool and puts items back into the queue if anything was being executed on it.
@@ -911,6 +969,98 @@ impl WorkerScheduler for ApiWorkerScheduler {
     async fn set_drain_worker(&self, worker_id: &WorkerId, is_draining: bool) -> Result<(), Error> {
         let mut inner = self.inner.lock().await;
         inner.set_drain_worker(worker_id, is_draining).await
+    }
+
+    async fn kill_revoked_operations(&self) -> Result<(), Error> {
+        let (worker_state_manager, running) = {
+            let inner = self.inner.lock().await;
+            let running: Vec<(WorkerId, OperationId)> = inner
+                .workers
+                .iter()
+                .flat_map(|(worker_id, worker)| {
+                    worker
+                        .running_action_infos
+                        .iter()
+                        // An operation already told to die is never swept
+                        // again, and nothing re-sends or times out the kill
+                        // itself. A live worker that drops or ignores the
+                        // kill request therefore holds the slot until
+                        // keepalive-timeout eviction (remove_timedout_workers)
+                        // reclaims the whole worker; that is the sole
+                        // recovery path for an unresponsive-but-alive worker.
+                        .filter(|(_, pending_action_info)| !pending_action_info.kill_requested)
+                        .map(|(operation_id, _)| (worker_id.clone(), operation_id.clone()))
+                })
+                .collect();
+            (inner.worker_state_manager.clone(), running)
+        };
+
+        // On store-backed deployments each check is a network round-trip,
+        // so run them lock-free with bounded concurrency.
+        let revoked: Vec<(WorkerId, OperationId)> = futures::stream::iter(running)
+            .map(|(worker_id, operation_id)| {
+                let worker_state_manager = worker_state_manager.clone();
+                async move {
+                    match worker_state_manager
+                        .is_executing_on_worker(&operation_id, &worker_id)
+                        .await
+                    {
+                        Ok(true) => None,
+                        Ok(false) => Some((worker_id, operation_id)),
+                        // Only kill on positive evidence; try again next pass.
+                        Err(err) => {
+                            warn!(
+                                ?worker_id,
+                                %operation_id,
+                                ?err,
+                                "Could not check whether operation is still executing on worker"
+                            );
+                            None
+                        }
+                    }
+                }
+            })
+            .buffer_unordered(MAX_CONCURRENT_REVOKED_CHECKS)
+            .filter_map(future::ready)
+            .collect()
+            .await;
+
+        if revoked.is_empty() {
+            return Ok(());
+        }
+
+        // Re-check lock-free so the scheduler mutex is never held across
+        // store I/O; the checks above may be stale by the time we get here.
+        // The remaining TOCTOU window is fine: worker_notify_kill_operation
+        // re-guards with contains_key + is_kill_requested under the lock.
+        let mut confirmed = Vec::new();
+        for (worker_id, operation_id) in revoked {
+            // A result of Ok(true) or Err(_) means the operation was
+            // reassigned to this worker after the first check, or the state
+            // manager went quiet: nothing to kill on this pass.
+            let revoked = worker_state_manager
+                .is_executing_on_worker(&operation_id, &worker_id)
+                .await
+                .is_ok_and(|executing| !executing);
+            if revoked {
+                confirmed.push((worker_id, operation_id));
+            }
+        }
+
+        if confirmed.is_empty() {
+            return Ok(());
+        }
+
+        let mut inner = self.inner.lock().await;
+        let mut result = Ok(());
+        for (worker_id, operation_id) in confirmed {
+            result = result.merge(
+                inner
+                    .worker_notify_kill_operation(&worker_id, operation_id)
+                    .await,
+            );
+        }
+        result
     }
 }
 
